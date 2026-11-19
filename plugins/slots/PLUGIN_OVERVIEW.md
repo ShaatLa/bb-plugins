@@ -1,9 +1,9 @@
 # Machine Slots plugin overview
 
 Coordinates advisory pools (`heavy`, `local-model`) on the BB server host.
-Agents request, gate before each launch, heartbeat on warnings, release promptly,
+Agents run heavy commands through the slots-run wrapper (or request a slot), heartbeat on warnings, release promptly,
 lease ports, or transfer work to a QA child. Remote threads are refused. The optional load watch reads only own-user process pid, start time, CPU time and cwd, never environment or command lines; it samples every 30s and uses a checkout-level heuristic (local host only, short-lived processes may be missed, containers are not covered). Cost is ~0.03% of one core in-process and ~0.6% including `ps`/`lsof` children on a busy 18-core machine; diagnostics appear in `bb slots status --json`.
-Manager operations are unrestricted in v1.
+Manager commands (`prioritize`, `revoke`, `grant`, `capacity`) are not access-checked in v1, but only the manager or owner runs them; other agents must ask the manager.
 
 - `contract.ts`: pure DTOs, `RpcMethods`, `StatusView`, `SLOTS_CHANGED` (`slots.changed`).
 - `core/`: deterministic scheduling, gate hysteresis, leases, transfers, ports.

@@ -112,7 +112,7 @@ export interface RequestParams {
 }
 export type UseOutcome = ({ kind: "queued"; request: SlotRequest; useId: string } | { kind: "leased"; lease: Lease; useId: string });
 export type RequestOutcome = { kind: "queued"; request: SlotRequest } | { kind: "leased"; lease: Lease };
-export interface ReleaseParams { threadId: string; leaseId?: string }
+export interface ReleaseParams { threadId: string; leaseId?: string; all?: boolean }
 export interface ReleaseOutcome { released: string[]; returned: string[]; canceled: string[] }
 export interface HeartbeatParams { threadId: string }
 export interface HeartbeatOutcome { leases: Lease[] }

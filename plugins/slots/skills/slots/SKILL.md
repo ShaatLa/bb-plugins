@@ -32,14 +32,20 @@ and PID reuse is not excluded. If the renewal supervisor is stuck during cleanup
 an in-flight heartbeat may outlive it until that heartbeat returns.
 
 On an expiry warning, run `bb slots heartbeat` if still working. Release promptly
-with `bb slots release [lease-or-request]`; a granted request ID releases its lease; no ID also cancels queued requests.
+with `bb slots release <lease-or-request>` (example: `bb slots release lease-12`); a
+granted request ID releases its lease. Without an ID, release works only when your
+thread has exactly one lease or request; `--all` releases every lease and cancels
+every request of your thread. Do not pass `--thread` inside a thread: any ID other
+than your own is refused.
 Use `bb slots port` for dev servers. Transfer to a QA child with
 `bb slots transfer --to <thread> [--lease <id>]`; child release returns the lease.
 
 Manager commands: `prioritize <req> --priority high|urgent|normal`,
 `revoke <lease> --reason "..."`, `grant <req>` (no force),
-`capacity --pool heavy 4`. Inspect `status` and `log --since 2h --limit 100`.
-Manager commands are unrestricted. V1 supports only the BB server host.
+`capacity --pool heavy 4`. Only the manager or owner runs them; other agents must
+not, and ask the manager instead. The tools do not check the caller in v1.
+Anyone may inspect `status` and `log --since 2h --limit 100`. V1 supports only
+the BB server host.
 
 On start, a manager session runs `bb slots observer --self`.
 

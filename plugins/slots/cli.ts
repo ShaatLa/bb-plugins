@@ -59,11 +59,14 @@ export function renderResult(method: string, result: Result<unknown>, json: bool
 }
 export function registerCli(bb: BbPluginApi, invoke: Invoke) {
   const json = { type: "boolean", description: "Return bounded JSON" } as const;
-  const thread = { type: "string", description: "Caller thread (defaults to BB_THREAD_ID)" } as const;
+  const thread = { type: "string", description: "Caller thread when run outside a thread; inside a thread it must be your own" } as const;
   const pool = { type: "enum", values: ["heavy", "local-model"], description: "Resource pool", required: true } as const;
   const priority = { type: "enum", values: ["normal", "high", "urgent"], description: "Queue priority" } as const;
   const id = (name: string, required = true) => [{ name, description: `${name} identifier`, required }] as const;
+  // --thread is for callers outside a thread; inside one it must not act for another thread.
+  const foreign = (own: string): Result<never> => ({ ok: false, error: { code: "forbidden", message: `--thread must be your own thread (${own}) or omitted; ask the other thread or the manager to act on its slots` } });
   async function call(method: keyof RpcMethods, params: Record<string, unknown>, ctx: PluginCliContext, needsThread = true) {
+    if (needsThread && params.threadId && ctx.threadId && params.threadId !== ctx.threadId) return foreign(ctx.threadId);
     if (needsThread && !params.threadId) params.threadId = ctx.threadId;
     if (["request", "acquire", "gate", "port", "setCapacity"].includes(method)) params.hostId = (await bb.sdk.system.config()).primaryHostId;
     return invoke(method, params);
@@ -80,7 +83,7 @@ export function registerCli(bb: BbPluginApi, invoke: Invoke) {
     },
   });
   bb.cli.register(defineCli({ name: "slots", summary: "Advisory local resource leases and machine gate", commands: {
-    config: cliCommand({ summary: "Show, set or unset Machine Slots configuration", options: { json }, positionals: [
+    config: cliCommand({ summary: "Get, set or unset one Machine Slots setting; without a key, list all", options: { json }, positionals: [
       { name: "operation", description: "show (alias get), set or unset; with a key, only that key is returned", required: false },
       { name: "key", description: "Setting name", required: false },
       { name: "value", description: "New value", required: false },
@@ -104,6 +107,7 @@ export function registerCli(bb: BbPluginApi, invoke: Invoke) {
       const o = input.options;
       const timeout = o.timeout ?? 1800000;
       if (timeout <= 0 || timeout > 3600000) return renderResult("request", { ok: false, error: { code: "invalid-input", message: "timeout must be positive and at most 60m" } }, !!o.json);
+      if (o.thread && ctx.threadId && o.thread !== ctx.threadId) return renderResult("request", foreign(ctx.threadId), !!o.json);
       const caller = o.thread ?? ctx.threadId;
       let result = await call("request", { threadId: caller, pool: o.pool, job: o.job, estMs: o.est, ...(o.priority ? { priority: o.priority } : {}) }, ctx);
       if (!result.ok || !o.wait || (result.data as RequestOutcome).kind !== "queued") return renderResult("request", result, !!o.json);
@@ -147,6 +151,7 @@ export function registerCli(bb: BbPluginApi, invoke: Invoke) {
       est: { type: "duration", defaultUnit: "m", required: true, description: "Estimated duration" }, priority,
       timeout: { type: "duration", defaultUnit: "m", description: "Wait deadline (default 30m, maximum 60m)" },
     }, async run(i, c) {
+      if (i.options.thread && c.threadId && i.options.thread !== c.threadId) return renderResult("acquire", foreign(c.threadId), !!i.options.json);
       const o = i.options, caller = o.thread ?? c.threadId, timeout = o.timeout ?? 1800000;
       if (timeout <= 0 || timeout > 3600000) return renderResult("acquire", { ok: false, error: { code: "invalid-input", message: "timeout must be positive and at most 60m" } }, !!o.json);
       const params: Record<string, unknown> = { threadId: caller, pool: o.pool, job: o.job, estMs: o.est, ...(o.priority ? { priority: o.priority } : {}) };
@@ -206,8 +211,8 @@ export function registerCli(bb: BbPluginApi, invoke: Invoke) {
       if (process.platform === "win32") return { exitCode: 1, stdout: "slots-run requires macOS or Linux" };
       return { exitCode: 0, stdout: await readFile(new URL(import.meta.url.includes("/dist/") ? "../slots-run.sh" : "./slots-run.sh", import.meta.url), "utf8") };
     } }),
-    release: cliCommand({ summary: "Release leases or cancel queued requests", options: { json, thread }, positionals: id("id", false),
-      async run(i, c) { return renderResult("release", await call("release", { threadId: i.options.thread, ...(i.positionals.id ? { leaseId: i.positionals.id } : {}) }, c), !!i.options.json); } }),
+    release: cliCommand({ summary: "Release one lease or cancel one queued request; without an ID only when you hold exactly one", options: { json, thread, all: { type: "boolean", description: "Release every lease and cancel every request of your thread" } }, positionals: id("id", false),
+      async run(i, c) { return renderResult("release", await call("release", { threadId: i.options.thread, ...(i.positionals.id ? { leaseId: i.positionals.id } : {}), ...(i.options.all ? { all: true } : {}) }, c), !!i.options.json); } }),
     heartbeat: cliCommand({ summary: "Extend held leases or a use", options: { json, thread, use: { type: "string", description: "Use ID" } }, async run(i,c) {
       if (!i.options.use) return renderResult("heartbeat", await call("heartbeat", { threadId: i.options.thread }, c), !!i.options.json);
       const result = await call("heartbeatUse", { threadId: i.options.thread, useId: i.options.use }, c);
@@ -219,13 +224,13 @@ export function registerCli(bb: BbPluginApi, invoke: Invoke) {
     transfer: cliCommand({ summary: "Transfer a lease to a QA child", options: { json, thread, to: { type: "string", required: true, description: "Child thread ID" }, lease: { type: "string", description: "Lease ID (required if ambiguous)" } },
       async run(i,c) { return renderResult("transfer", await call("transfer", { threadId: i.options.thread, toThreadId: i.options.to, ...(i.options.lease ? { leaseId: i.options.lease } : {}) }, c), !!i.options.json); } }),
     port: simple("port", "Lease an available loopback port for a held lease"),
-    prioritize: cliCommand({ summary: "Change queue priority (manager)", options: { json, priority: { ...priority, required: true } }, positionals: id("request"),
+    prioritize: cliCommand({ summary: "Change queue priority (manager only; other agents ask the manager)", options: { json, priority: { ...priority, required: true } }, positionals: id("request"),
       async run(i,c) { return renderResult("prioritize", await call("prioritize", { requestId: i.positionals.request, priority: i.options.priority },c,false), !!i.options.json); } }),
-    revoke: cliCommand({ summary: "Revoke a lease with a reason (manager)", options: { json, reason: { type: "string", required: true, description: "Reason sent to the holder" } }, positionals: id("lease"),
+    revoke: cliCommand({ summary: "Revoke a lease with a reason (manager only; other agents ask the manager)", options: { json, reason: { type: "string", required: true, description: "Reason sent to the holder" } }, positionals: id("lease"),
       async run(i,c) { return renderResult("revoke", await call("revoke", { leaseId: i.positionals.lease, reason: i.options.reason },c,false), !!i.options.json); } }),
-    grant: cliCommand({ summary: "Grant out of queue order; still checks capacity and gate", options: { json }, positionals: id("request"),
+    grant: cliCommand({ summary: "Grant out of queue order; still checks capacity and gate (manager only)", options: { json }, positionals: id("request"),
       async run(i,c) { return renderResult("grant", await call("grant", { requestId: i.positionals.request },c,false), !!i.options.json); } }),
-    capacity: cliCommand({ summary: "Persist pool capacity without revoking live leases", options: { json, pool }, positionals: [{ name: "count", description: "Nonnegative capacity", required: true }],
+    capacity: cliCommand({ summary: "Persist pool capacity without revoking live leases (manager only)", options: { json, pool }, positionals: [{ name: "count", description: "Nonnegative capacity", required: true }],
       async run(i,c) { return renderResult("setCapacity", await call("setCapacity", { pool: i.options.pool, capacity: Number(i.positionals.count) },c,false), !!i.options.json); } }),
     log: cliCommand({ summary: "Read audit JSONL (retained 14 days)", options: { json, since: { type: "string", description: "Duration (2h) or ISO UTC time" }, limit: { type: "integer", min: 1, max: 1000, description: "Maximum events (1–1000, default 100)" } },
       async run(i,c) { return renderResult("log", await call("log", { ...(i.options.since ? { since: parseSince(i.options.since, Date.now()) } : {}), ...(i.options.limit !== undefined ? { limit: i.options.limit } : {}) },c,false), !!i.options.json); } }),

@@ -19,7 +19,7 @@ export const inputs = {
   done: z.object({ ...thread, useId: id }).strict(),
   detach: z.object({ ...thread, useId: id }).strict(),
   heartbeatUse: z.object({ ...thread, useId: id }).strict(),
-  release: z.object({ ...thread, leaseId: id.optional() }).strict(),
+  release: z.object({ ...thread, leaseId: id.optional(), all: z.boolean().optional() }).strict(),
   heartbeat: z.object(thread).strict(), gate: z.object({ ...thread, ...host }).strict(),
   status: z.object({ hostId: id.optional() }).strict(),
   transfer: z.object({ ...thread, toThreadId: id, leaseId: id.optional() }).strict(),

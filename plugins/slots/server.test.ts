@@ -56,6 +56,9 @@ it("parses macOS/Linux memory and duration/ISO log bounds", () => {
 });
 it("gate exit code reflects a failed reading and prints thresholds", async () => {
   const h = await setup(); h.metrics.mockRejectedValueOnce(new Error("probe failed"));
+  const foreign = await h.harness.behavior.runCli(["release", "--thread", "b", "--json"], { threadId: "a" });
+  expect(foreign.exitCode).toBe(1);
+  expect(JSON.parse(foreign.stdout)).toMatchObject({ ok: false, error: { code: "forbidden" } });
   const gate = await h.harness.behavior.runCli(["gate", "--json"], { threadId: "a" });
   expect(gate.exitCode).toBe(1); expect(JSON.parse(gate.stdout!)).toMatchObject({ ok: true, data: { passed: false, thresholds: { local: { loadMax: 18 } } } });
   expect(renderResult("gate", { ok: true, data: { passed: true } }, true).exitCode).toBe(0);

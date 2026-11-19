@@ -300,6 +300,15 @@ it("release cancels all queued pools or a single owned request", () => {
   expect(h.state.requests).toHaveLength(1);
   h.send({ type: "release", threadId: "a" }); expect(h.state.requests).toHaveLength(0);
 });
+it("a release without an ID refuses when the thread has several leases or requests", () => {
+  const h = harness(); h.request("a"); h.request("a", "normal", "local-model");
+  const refused = h.send({ type: "release", threadId: "a" }).result;
+  expect(refused).toMatchObject({ ok: false, error: { code: "invalid-input" } });
+  expect(!refused.ok && refused.error.message).toContain("bb slots release --all");
+  expect(h.state.requests).toHaveLength(2);
+  expect(h.send({ type: "release", threadId: "a", all: true }).result).toMatchObject({ ok: true });
+  expect(h.state.requests).toHaveLength(0);
+});
 it("warning and grant name exact commands with a relative expiry", () => {
   const h = harness(); h.request("a");
   expect(h.open().effects.some(e => rendered(e).includes("Run heavy commands through `slots-run` (`bb slots wrapper`); release with `bb slots release"))).toBe(true);

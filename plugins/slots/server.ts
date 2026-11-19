@@ -237,7 +237,7 @@ export async function register(bb: BbPluginApi, overrides: Partial<Runtime> = {}
         if (method === "config") {
           // With a key, config reads and returns only that setting to keep agent output small.
           if (p.operation === "show" || p.operation === "get") return { ok: true, data: p.key ? settingView(p.key) : formView() };
-          if (!p.key || (p.operation === "set" && p.value === undefined)) throw new Error("Config set needs key and value; unset needs a key");
+          if (!p.key || (p.operation === "set" && p.value === undefined)) throw new Error("Config needs a key: `bb slots config get loadMax`, `bb slots config set loadMax 12` or `bb slots config unset loadMax`");
           if (p.operation === "unset") unset = [p.key];
           else patch = { [p.key]: typeof defaults[p.key as SettingKey] === "number" && typeof p.value === "string" ? Number(p.value) : p.value };
         }
@@ -308,9 +308,30 @@ export async function register(bb: BbPluginApi, overrides: Partial<Runtime> = {}
   };
   const handlers = Object.fromEntries(Object.keys(inputs).map(method => [method, (p: unknown) => invoke(method as keyof RpcMethods, p)]));
   bb.rpc.register(rpcContract, handlers as unknown as Parameters<typeof bb.rpc.register<typeof rpcContract>>[1]);
+  // Agent-facing rules live here, in the skill and in CLI help; keep the three in step.
+  const TOOL_DESCRIPTIONS: Partial<Record<keyof RpcMethods, string>> = {
+    request: "Queue a heavy or local-model slot for your thread and return at once (granted or queued). Example: {pool:\"heavy\", job:\"full test suite\", estMs:1200000}. For a command, prefer the slots-run wrapper from `bb slots wrapper`; it waits and releases for you.",
+    acquire: "Queue a use for a script and return a use ID at once. Renew with slots_heartbeatUse while it runs and finish with slots_done; an unrenewed use expires.",
+    done: "Finish one of your uses. The lease is released when its last use is done.",
+    detach: "Stop waiting for a queued use while keeping its queue place for one heartbeat interval.",
+    heartbeatUse: "Renew one of your uses so it does not expire.",
+    release: "Release one of your leases or cancel one of your queued requests: pass leaseId (a lease or request ID). Without leaseId it works only when you hold exactly one; pass all:true to release every lease and request of your thread.",
+    heartbeat: "Extend every lease your thread holds; run it after an expiry warning if you are still working.",
+    gate: "Read the machine check (memory free, load) for this host. Read-only.",
+    status: "Read pools, leases, queue and recent events. Read-only.",
+    transfer: "Hand one of your leases to a child thread you spawned: toThreadId, and leaseId when you own more than one. The child's release returns it to you.",
+    port: "Reserve a dev-server port; needs a lease held by your thread. Released with your last lease.",
+    prioritize: "Manager only: change a queued request's priority (normal, high, urgent). Other agents must not call it; ask the manager.",
+    revoke: "Manager only: take a lease back with a reason sent to the holder. Other agents must not call it; ask the manager.",
+    grant: "Manager only: grant a queued request out of order; capacity and the machine check still apply. Other agents must not call it.",
+    setCapacity: "Manager only: persist a pool's capacity; live leases are kept. Other agents must not call it.",
+    log: "Read audit events (since, limit 1–1000). Read-only.",
+    config: "Read or change one setting: {operation:\"get\", key:\"loadMax\"} or {operation:\"set\", key:\"loadMax\", value:12}; unset resets to the machine default. Returns only that key. operation \"show\" without key lists all.",
+    observer: "Show or change the manager (observer) thread and its event filter. Only the manager or owner changes it.",
+  };
   const agentMethods = (Object.keys(inputs) as (keyof RpcMethods)[]).filter(method => !["settingsRead", "settingsWrite"].includes(method));
   for (const method of agentMethods) {
-    bb.agents.registerTool({ name: `slots_${method}`, description: `Slots ${method}. Returns immediately. Manager operations are unrestricted.`,
+    bb.agents.registerTool({ name: `slots_${method}`, description: TOOL_DESCRIPTIONS[method] ?? `Slots ${method}. Returns immediately.`,
       parameters: z.object(Object.fromEntries(Object.entries(inputs[method].shape).filter(([key]) => key !== "threadId").map(([key, schema]) => [key, key === "hostId" ? schema.optional() : schema]))),
       async execute(params, ctx) {
         const p = params as Record<string, unknown>;

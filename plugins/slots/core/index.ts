@@ -204,7 +204,7 @@ export function apply(original: State, input: Input, ctx: Context): Transition {
     case "request": {
       if (!text(input.job) || !Number.isSafeInteger(input.estMs) || input.estMs <= 0 ||
           !Number.isSafeInteger(ctx.now + input.estMs + 900_000) ||
-          (input.priority !== undefined && !priority(input.priority))) return fail("invalid-input", "Job, positive estimate and valid priority required");
+          (input.priority !== undefined && !priority(input.priority))) return fail("invalid-input", "Job, positive estimate and valid priority required, e.g. --job \"full test suite\" --est 20m");
       host(input.hostId);
       const lease = state.leases.find(l => l.hostId === input.hostId && l.pool === input.pool &&
         (l.holderThreadId === input.threadId || l.ownerThreadId === input.threadId));
@@ -221,7 +221,7 @@ export function apply(original: State, input: Input, ctx: Context): Transition {
     case "acquire": {
       if (!text(input.job) || !Number.isSafeInteger(input.estMs) || input.estMs <= 0 ||
           !Number.isSafeInteger(ctx.now + input.estMs + 900_000) ||
-          (input.priority !== undefined && !priority(input.priority))) return fail("invalid-input", "Job, positive estimate and valid priority required");
+          (input.priority !== undefined && !priority(input.priority))) return fail("invalid-input", "Job, positive estimate and valid priority required, e.g. --job \"full test suite\" --est 20m");
       const lease = state.leases.find(l => l.hostId === input.hostId && l.pool === input.pool && (l.holderThreadId === input.threadId || l.ownerThreadId === input.threadId));
       if (lease && lease.holderThreadId !== input.threadId) return fail("transferred", "Lease is held by another thread");
       let request = state.requests.find(r => r.hostId === input.hostId && r.pool === input.pool && r.threadId === input.threadId);
@@ -241,9 +241,9 @@ export function apply(original: State, input: Input, ctx: Context): Transition {
     }
     case "done": case "detach": case "heartbeatUse": {
       const target = [...state.leases, ...state.requests].find(item => item.uses?.some(use => use.id === input.useId));
-      if (!target) return fail("not-found", "Use not found");
+      if (!target) return fail("not-found", "Use not found; it may have expired. Start a new one with `bb slots acquire`");
       const use = target.uses!.find(use => use.id === input.useId)!;
-      if (use.threadId !== input.threadId) return fail("forbidden", "Use belongs to another thread");
+      if (use.threadId !== input.threadId) return fail("forbidden", "Use belongs to another thread; finish only uses your thread started");
       const lease = "holderThreadId" in target ? target : undefined;
       if (input.type === "heartbeatUse") {
         use.expiresAt = ctx.now + settingsFor(ctx.settings, target.hostId).heartbeatIntervalMs;
@@ -292,23 +292,28 @@ export function apply(original: State, input: Input, ctx: Context): Transition {
         // A request id also names the lease it was granted as.
         const lease = state.leases.find(l => l.id === input.leaseId || l.requestId === input.leaseId);
         const request = state.requests.find(r => r.id === input.leaseId);
-        if (!lease && !request) return fail("not-found", "Lease or request not found");
-        if (request && request.threadId !== input.threadId) return fail("forbidden", "Only requester may cancel");
-        if (lease && lease.ownerThreadId !== input.threadId && lease.holderThreadId !== input.threadId) return fail("forbidden", "Only owner or holder may release");
+        if (!lease && !request) return fail("not-found", "Lease or request not found; list your leases and requests with `bb slots status`");
+        if (request && request.threadId !== input.threadId) return fail("forbidden", "Request belongs to another thread; only the thread that queued it can cancel it");
+        if (lease && lease.ownerThreadId !== input.threadId && lease.holderThreadId !== input.threadId) return fail("forbidden", "Lease is held by another thread; release only your own leases (see `bb slots status`)");
+      } else if (!input.all) {
+        // A bare release must not quietly free more than the caller meant.
+        const mine = [...state.leases.filter(l => l.ownerThreadId === input.threadId || l.holderThreadId === input.threadId).map(l => l.id),
+          ...state.requests.filter(r => r.threadId === input.threadId).map(r => r.id)];
+        if (mine.length > 1) return fail("invalid-input", `Your thread has ${mine.length} leases or requests (${mine.join(", ")}). Release one with \`bb slots release <id>\`, or all of them with \`bb slots release --all\``);
       }
       data = release(input.threadId, state.leases.find(l => l.requestId === input.leaseId)?.id ?? input.leaseId); break;
     }
     case "threadEnded": data = release(input.threadId, undefined, input.reason, true); break;
     case "transfer": {
-      if (!text(input.toThreadId) || input.toThreadId === input.threadId) return fail("invalid-input", "Transfer needs a different target thread");
+      if (!text(input.toThreadId) || input.toThreadId === input.threadId) return fail("invalid-input", "Transfer needs a different target thread: --to <child-thread-id>");
       const owned = state.leases.filter(l => l.ownerThreadId === input.threadId && (input.leaseId === undefined || l.id === input.leaseId));
-      if (owned.length !== 1) return fail(owned.length ? "invalid-input" : "forbidden", "Specify exactly one lease owned by the caller");
-      if (!input.isChild) return fail("forbidden", "Target must be a child of the holder");
+      if (owned.length !== 1) return fail(owned.length ? "invalid-input" : "forbidden", owned.length ? "You own several leases; pass --lease <id> (see `bb slots status`)" : "You own no lease to transfer; only the lease owner can transfer it");
+      if (!input.isChild) return fail("forbidden", "Target must be a child thread you spawned; transfer only to your own children");
       const lease = owned[0];
-      if (lease.uses?.length || lease.graceUntil != null) return fail("in-use", "Lease has active uses or grace");
+      if (lease.uses?.length || lease.graceUntil != null) return fail("in-use", "Lease has active uses or grace; transfer after its slots-run or acquire uses finish");
       if (state.leases.some(l => l.id !== lease.id && l.hostId === lease.hostId && l.pool === lease.pool &&
           (l.ownerThreadId === input.toThreadId || l.holderThreadId === input.toThreadId)) ||
-          state.requests.some(r => r.hostId === lease.hostId && r.pool === lease.pool && r.threadId === input.toThreadId)) return fail("invalid-input", "Target already has an open request or lease in this pool");
+          state.requests.some(r => r.hostId === lease.hostId && r.pool === lease.pool && r.threadId === input.toThreadId)) return fail("invalid-input", "Target already has an open request or lease in this pool; the child can use its own slot instead");
       lease.holderThreadId = input.toThreadId; refresh(lease);
       audit("transfer", { ...fields(lease), reason: `from ${input.threadId}` });
       const message: NotificationMessage = { title: "Slot transferred to you", lines: [{ value: lease.job }, { label: "Lease", value: `\`${lease.id}\` · ${lease.pool} slot ${lease.slotIndex}` }], hint: `Run heavy commands through \`slots-run\` (\`bb slots wrapper\`); release with \`bb slots release ${lease.id}\`.` };
@@ -317,7 +322,7 @@ export function apply(original: State, input: Input, ctx: Context): Transition {
       data = lease; break;
     }
     case "portLease": {
-      if (!state.leases.some(l => l.hostId === input.hostId && l.holderThreadId === input.threadId)) return fail("forbidden", "Port requires a held lease on this host");
+      if (!state.leases.some(l => l.hostId === input.hostId && l.holderThreadId === input.threadId)) return fail("forbidden", "Port requires a lease held by your thread; get one first with slots-run or `bb slots request --wait`");
       heartbeat(input.threadId);
       const existing = state.ports.find(p => p.hostId === input.hostId && p.threadId === input.threadId);
       if (existing) { data = existing; break; }
@@ -337,7 +342,7 @@ export function apply(original: State, input: Input, ctx: Context): Transition {
       data = request; break;
     }
     case "revoke": {
-      if (!text(input.reason)) return fail("invalid-input", "Revocation reason required");
+      if (!text(input.reason)) return fail("invalid-input", "Revocation reason required: --reason \"why the lease is taken back\"");
       const lease = state.leases.find(l => l.id === input.leaseId);
       if (!lease) return fail("not-found", "Lease not found");
       free(lease, "revoke", input.reason);

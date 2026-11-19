@@ -2,9 +2,11 @@
 
 Advisory resource pools for heavy jobs on the BB server machine. Requires BB
 0.49.0+ and SDK 0.6.132+. Slots coordinates agents; it never kills processes or reads environment values or command lines. Its optional load watch reads only own-user process IDs, start times, CPU time and working directories (cwd), never environment or command lines. It samples every 30 seconds and is a checkout-level heuristic: local host only, short-lived processes can be missed, and containers are not covered. Measured cost is ~0.03% of one core in-process and ~0.6% including `ps`/`lsof` children on a busy 18-core machine; see `bb slots status --json` diagnostics.
-Manager commands are unrestricted in v1. Threads on other hosts are refused.
+Manager commands (`prioritize`, `revoke`, `grant`, `capacity`) are not access-checked in v1, but only the manager or owner runs them; other agents must ask the manager. Threads on other hosts are refused.
 
 ## Sidebar (0.4.0)
+
+Version 0.5.3 tightens agent rules: each agent tool has its own description; refusals name the fix; `release` without an ID is refused when the thread has several leases or requests (pass the ID or `--all`); inside a thread, `--thread` must be the caller's own; manager commands are documented as manager-only.
 
 Version 0.5.2 makes configuration granular: `bb slots config get <key>` and the `slots_config` tool with a key read one setting, and `set`/`unset` return only the changed key as `{key, value, default, max?, set}`. `show` without a key and `settingsWrite` still return the whole view.
 
@@ -56,7 +58,7 @@ and gate-hold alerts, and `bb slots observer` for manager session handover.
 
 Plain output summarizes gate readings, requests, pools and audit events in short
 lines. Commands other than `wrapper` support `--json`. Caller identity defaults to the CLI context's
-BB_THREAD_ID; holder commands also accept `--thread <id>`.
+BB_THREAD_ID. Holder commands accept `--thread <id>` only for callers outside a thread; inside a thread any other ID is refused, so an agent cannot act on another thread's slots.
 
 ```sh
 sh -c "$(bb slots wrapper)" slots-run --est 20m --job "..." -- <command> [args...]
@@ -68,7 +70,7 @@ bb slots gate
 bb slots heartbeat
 bb slots config [show | set <key> <value> | unset <key>] [--json]
 bb slots observer [--self | --thread <id> | --clear] [--events warn,expire,revoke,queue-wait,gate-hold,unleased-load,idle-lease] [--json]
-bb slots release [lease-or-request]
+bb slots release [lease-or-request] [--all]
 bb slots status
 bb slots transfer --to <child-thread> [--lease <id>]
 bb slots port
@@ -102,8 +104,10 @@ an in-flight heartbeat running until it returns. The wrapper supports macOS and
 Linux. Acquire timeout exits 75 and keeps the queue position for one use TTL;
 retry within that grace period. A holder may reuse its lease for nested, sequential or concurrent wrapper runs without re-gating. Each use must be renewed independently.
 
-A thread has one request or lease per pool. Release without an ID releases all
-its leases and cancels all its queued requests. A request ID cancels only that
+A thread has one request or lease per pool. Release without an ID works only
+when the thread has exactly one lease or request; with several it is refused and
+lists their IDs. `--all` (`all: true`) releases all its leases and cancels all its
+queued requests. A request ID cancels only that
 request. Transfer verifies the target is the owner's child on the local host;
 child release/archive/deletion returns the lease to the owner. Owner end frees
 it. Revoke and expiry always free it. Port allocation requires a held lease,
