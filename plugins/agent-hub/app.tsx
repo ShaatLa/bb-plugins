@@ -200,13 +200,15 @@ function UpdateCaption({ item, time }: { item: Item; time: ReactNode }) {
 // latest on bb's nested-rows rail; expanded, each shows as usual. reveal: a jump or search target that opens the group.
 const OPEN_GROUPS = 'bb-plugin-answers:open-update-groups';
 const openGroups = (): string[] => { try { const ids = JSON.parse(localStorage.getItem(OPEN_GROUPS) ?? '[]'); return Array.isArray(ids) ? ids : []; } catch { return []; } };
+// An update with no reply yet (still being worked on, or one that joined a running turn) previews the message it quotes.
+const groupPreview = (item: Item) => item.answer?.trim() ? item.answer : item.trigger?.kind === 'agent' || item.trigger?.kind === 'plugin' ? unlabel(item.question) : '';
 export function UpdateGroup({ items, reveal, children }: { items: Item[]; reveal?: string | null; children: (item: Item) => ReactNode }) {
   // A group is known by its first update, which a newer update joining it does not change; an opened group stays open
   // across chats, screens and reloads (the last 200 are remembered).
   const key = items[0]!.id, [open, setOpenState] = useState(() => openGroups().includes(key)), row = useRef<HTMLLIElement>(null), last = items.at(-1)!;
   const setOpen = (value: boolean) => { setOpenState(value); try { localStorage.setItem(OPEN_GROUPS, JSON.stringify([...openGroups().filter(id => id !== key), ...(value ? [key] : [])].slice(-200))); } catch { /* storage unavailable */ } };
   useEffect(() => { if (reveal && items.some(item => item.id === reveal)) setOpen(true); }, [reveal]);
-  const at = activityAt(last), age = ago(at), previewText = (last.answer ?? '').replace(/\*\*|`|^#+\s*/gm, '').replace(/\s+/g, ' ').trim();
+  const at = activityAt(last), age = ago(at), previewText = groupPreview(last).replace(/\*\*|`|^#+\s*/gm, '').replace(/\s+/g, ' ').trim();
   // The stack-card look of "Active child threads", so the group stands out from the caption rows around it; the earlier
   // updates open above the latest, like older messages in a chat.
   // Opening shows the latest update whole: its end just above the composer, or its start under the chat's header when it

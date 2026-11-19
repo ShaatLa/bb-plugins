@@ -110,6 +110,11 @@ it('drops a sender\'s own leading [tag] from the quote but keeps task keys, link
   expect(unlabel('[EXA-1](/plugins/work-board/work-board/task/EXA-1) ready')).toBe('[EXA-1](/plugins/work-board/work-board/task/EXA-1) ready');
   expect(unlabel('[x] done')).toBe('[x] done');
 });
+it('previews the quoted message of a background update that has no reply yet', () => {
+  const plugin = { ...item, id:'ans_noreply', kind:'update' as const, status:'answered' as const, question:'[bb message from plugin:work-board]\n\n`New comment` on EXA-1', answer:null, answerSeq:null, trigger:{ kind:'plugin' as const, sourceId:'work-board', sourceTitle:null } } as any;
+  const slot = renderSlot({ component:UpdateGroup }, { items:[{ ...plugin, id:'ans_first', answer:'Earlier' }, plugin], children:(i: any) => <ItemCard item={i} chat /> }, { sdk } as any);
+  expect(slot.container.querySelector('[data-update-group]')?.textContent).toContain('New comment on EXA-1');
+});
 it('gives an open background updates group the side inset the chat list has, for quotes and bled-out tables alike', () => {
   const plugin = { ...item, id:'ans_plugin', kind:'update' as const, status:'answered' as const, question:'**EXA-1 · READY** from a lead', trigger:{ kind:'plugin' as const, sourceId:'work-board', label:null } } as any;
   const slot = renderSlot({ component:UpdateGroup }, { items:[plugin, { ...plugin, id:'ans_plugin2' }], children:(i: any) => <ItemCard item={i} chat /> }, { sdk } as any);
