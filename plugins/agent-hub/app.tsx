@@ -375,6 +375,9 @@ export function ItemCard({ item, members, late, live = true, chat = false, marka
       // A message another agent or a plugin (a Work Board report, a CI notice) sent, still being worked on: the robot under it
       // shares a row with its Show more, dimmed like the other robots. The chat's own end robot stands back for it.
       const working = chat && live && item.status === 'waiting' && item.kind === 'update';
+      // A quoted message's expand is the same icon as in a message with no reply, left under the quote.
+      const quoted = chat && item.kind === 'update' && (item.trigger?.kind === 'agent' || item.trigger?.kind === 'plugin') && !!item.question;
+      if (!bare && quoted) return (clamped || expanded) && <div className="flex px-1 text-muted-foreground opacity-60 transition-opacity hover:opacity-100 focus-within:opacity-100"><Button size="sm" {...iconProps(expanded ? 'Show less' : 'Show more')} aria-expanded={expanded} onClick={() => setExpanded(!expanded)}><Icon name={expanded ? 'ChevronUp' : 'ChevronDown'} aria-hidden /></Button></div>;
       const more = !bare && (clamped || expanded) && <Button variant="ghost" size="sm" className={chat ? `ml-auto flex h-6 shrink-0 px-2 text-xs text-muted-foreground ${working ? 'mt-1' : ''}` : undefined} aria-expanded={expanded} onClick={() => setExpanded(!expanded)}>{chat ? (expanded ? 'Show less' : 'Show more') : (expanded ? 'Collapse question' : 'Expand question')}</Button>;
       return working ? <div className="flex items-start gap-2"><div className="min-w-0 flex-1 px-2 text-muted-foreground opacity-60 transition-opacity hover:opacity-100 has-[[aria-expanded=true]]:opacity-100"><WorkLog threadId={item.threadId} turnId={item.turnId} sourceSeqStart={item.questionSeq} startedAt={item.createdAt} live><RobotLoader className="h-8" label="Working on the message" /></WorkLog></div>{more}</div> : more;
     })()}
