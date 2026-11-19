@@ -43,7 +43,6 @@ export const emptyRepoState = (): ObserverRepoState => ({ sent: {}, pending: [],
 
 // --- lines ---
 // Lines are Markdown (BB chat renders it): a bold source, ids and shas as code, and a short link instead of a bare URL.
-export const PREFIX = "**CI Dashboard**";
 const MAX_LINE = 400, MAX_TESTS = 3, MAX_JOBS = 4, MAX_DIGEST = 30;
 const squash = (text: string) => text.replace(/\s+/g, " ").trim();
 const clip = (text: string, max: number) => text.length > max ? `${text.slice(0, Math.max(0, max - 1))}…` : text;
@@ -381,7 +380,7 @@ export function dispatch(state: ObserverRepoState, items: Rendered[], global: Ob
       const mine = list.filter((item) => item.at >= global.threads[threadId]!);
       if (!mine.length) continue;
       const lines = mine.slice(0, MAX_DIGEST).map((item) => `- ${item.text}`);
-      out.push({ threadId, text: mine.length === 1 ? `${PREFIX} ${mine[0]!.text}` : [`${PREFIX} ${mine.length} CI events`, ...lines, ...(mine.length > MAX_DIGEST ? [`- … +${mine.length - MAX_DIGEST} more`] : [])].join("\n") });
+      out.push({ threadId, text: mine.length === 1 ? `${mine[0]!.text}` : [`${mine.length} CI events`, ...lines, ...(mine.length > MAX_DIGEST ? [`- … +${mine.length - MAX_DIGEST} more`] : [])].join("\n") });
     }
   };
   if (batchMs === 0) {
@@ -399,5 +398,5 @@ export function dispatch(state: ObserverRepoState, items: Rendered[], global: Ob
 /** First message to a newly subscribed thread. */
 export function subscriptionNotice(repositories: string[], enabled: Record<ObserverType, boolean>, quietMinutes: number, batchMinutes: number, mode = "all") {
   const types = OBSERVER_TYPES.filter((type) => enabled[type]).map((type) => type === "deploy" && mode === "failures" ? "deployment failures" : OBSERVER_TYPE_LABELS[type]).join(", ") || "no event types";
-  return fit(`${PREFIX} Subscribed to CI events for ${repositories.join(", ") || "no repositories"}: ${types}; quiet window ${quietMinutes} min${batchMinutes > 0 ? `; digest every ${batchMinutes} min` : ""}`);
+  return fit(`Subscribed to CI events for ${repositories.join(", ") || "no repositories"}: ${types}; quiet window ${quietMinutes} min${batchMinutes > 0 ? `; digest every ${batchMinutes} min` : ""}`);
 }

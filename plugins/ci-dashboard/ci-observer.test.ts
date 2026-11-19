@@ -481,7 +481,7 @@ describe("noise control", () => {
     global.threads.thr_late = T0 + 1;
     const repo = emptyRepoState(), items = rendered([event("old"), event("new", { at: T0 + 2 })]);
     expect(dispatch(repo, items, global, { batchMs: 0, now: T0 + 3 })).toEqual([
-      { threadId: "thr_a", text: "**CI Dashboard** event old" }, { threadId: "thr_a", text: "**CI Dashboard** event new" }, { threadId: "thr_late", text: "**CI Dashboard** event new" }]);
+      { threadId: "thr_a", text: "event old" }, { threadId: "thr_a", text: "event new" }, { threadId: "thr_late", text: "event new" }]);
   });
   it("batches into one digest every N minutes, one line per event, and flushes leftovers when batching is switched off", () => {
     const global = state(["thr_a"]), repo = emptyRepoState();
@@ -489,10 +489,10 @@ describe("noise control", () => {
     expect(repo.pending).toHaveLength(1);
     expect(dispatch(repo, rendered([event("b")]), global, { batchMs: 10 * MIN, now: T0 + 5 * MIN })).toEqual([]);
     const digest = dispatch(repo, [], global, { batchMs: 10 * MIN, now: T0 + 10 * MIN });
-    expect(digest).toEqual([{ threadId: "thr_a", text: "**CI Dashboard** 2 CI events\n- event a\n- event b" }]);
+    expect(digest).toEqual([{ threadId: "thr_a", text: "2 CI events\n- event a\n- event b" }]);
     expect(repo).toMatchObject({ pending: [], pendingSince: null });
     expect(dispatch(repo, rendered([event("c")]), global, { batchMs: 10 * MIN, now: T0 + 11 * MIN })).toEqual([]);
-    expect(dispatch(repo, [], global, { batchMs: 0, now: T0 + 12 * MIN })).toEqual([{ threadId: "thr_a", text: "**CI Dashboard** event c" }]);
+    expect(dispatch(repo, [], global, { batchMs: 0, now: T0 + 12 * MIN })).toEqual([{ threadId: "thr_a", text: "event c" }]);
     // A huge digest is capped.
     const many = Array.from({ length: 40 }, (_, i) => event(`e${i}`));
     const big = emptyRepoState();
@@ -502,8 +502,8 @@ describe("noise control", () => {
     expect(flushed[0]!.text).toContain("- … +10 more");
   });
   it("confirms a subscription in one line", () => {
-    expect(subscriptionNotice(["acme/widgets"], { ...enabledEvents({}), deploy: false, mass: false }, 30, 0)).toBe("**CI Dashboard** Subscribed to CI events for acme/widgets: merge queue removals, runner losses, default-branch red, pool stalls; quiet window 30 min");
-    expect(subscriptionNotice([], enabledEvents({ observeQueueRemoval: false, observeRunnerLoss: false, observeDefaultRed: false, observePoolStall: false, observeMassCancel: false, observeDeployments: false }), 0, 15)).toBe("**CI Dashboard** Subscribed to CI events for no repositories: no event types; quiet window 0 min; digest every 15 min");
+    expect(subscriptionNotice(["acme/widgets"], { ...enabledEvents({}), deploy: false, mass: false }, 30, 0)).toBe("Subscribed to CI events for acme/widgets: merge queue removals, runner losses, default-branch red, pool stalls; quiet window 30 min");
+    expect(subscriptionNotice([], enabledEvents({ observeQueueRemoval: false, observeRunnerLoss: false, observeDefaultRed: false, observePoolStall: false, observeMassCancel: false, observeDeployments: false }), 0, 15)).toBe("Subscribed to CI events for no repositories: no event types; quiet window 0 min; digest every 15 min");
   });
 });
 

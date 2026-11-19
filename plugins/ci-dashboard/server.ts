@@ -23,7 +23,7 @@ import { buildSignals, shouldPush, sortSignals, summarizeAnalysis } from "./ci-s
 import { compactSignalsRow, handledSchema, investigateInputSchema, investigateOutputSchema, navigationBadgeOutputSchema, problemActionInputSchema, problemActionOutputSchema, repositorySignalsSchema, signalsInputSchema, signalsOutputSchema, SIGNALS_CHANGED, type Handled, type SignalsChanged, type SignalsOutput } from "./ci-signals-contract";
 import { buildProblems, problemContext, seedPrompt, withoutBenignAlerts } from "./ci-problems";
 import { alertStreak, type CiInsights } from "./ci-insights";
-import { deploymentMode, acceptEvents, attachPrHeads, confirmRemovals, deployRunOutcome, defaultRedEvents, deploymentEvents, dispatch, emptyGlobal, emptyRepoState, enabledEvents, globalStateSchema, isThreadId, massCancelEvent, observerThreadsSchema, OBSERVER_TYPE_LABELS, OBSERVER_TYPES, parseObserverThreads, queueRemovalEvents, REJECTED, repoStateSchema, runnerLossEvents, stallEvent, subscriptionNotice, fit, PREFIX, syncGlobal, type ObserverEvent, type ObserverGlobal, type Rendered } from "./ci-observer";
+import { deploymentMode, acceptEvents, attachPrHeads, confirmRemovals, deployRunOutcome, defaultRedEvents, deploymentEvents, dispatch, emptyGlobal, emptyRepoState, enabledEvents, globalStateSchema, isThreadId, massCancelEvent, observerThreadsSchema, OBSERVER_TYPE_LABELS, OBSERVER_TYPES, parseObserverThreads, queueRemovalEvents, REJECTED, repoStateSchema, runnerLossEvents, stallEvent, subscriptionNotice, fit, syncGlobal, type ObserverEvent, type ObserverGlobal, type Rendered } from "./ci-observer";
 
 const dashboardSchema = z.object({
   repositories: z.array(metricsSchema.extend({ projectName: z.string().nullable() })),
@@ -495,8 +495,10 @@ export default async function plugin(bb: BbPluginApi) {
     await settings.experimental_set({ observerThreads: ids.filter((id) => id !== threadId).join(", ") });
     logOnce(`CI observer: ${threadId} removed from observer threads (${why})`);
   }
+  // Marks the sender for the receiving agent, like bb's own thread-message header.
+  const withHeader = (text: string) => `[bb message from plugin:${bb.pluginId}]\n\n${text}`;
   async function notify(threadId: string, text: string) {
-    try { await bb.sdk.threads.send({ threadId, mode: "queue-if-active", originPluginId: bb.pluginId, input: [{ type: "text", text, mentions: [] }] }); }
+    try { await bb.sdk.threads.send({ threadId, mode: "queue-if-active", originPluginId: bb.pluginId, input: [{ type: "text", text: withHeader(text), mentions: [] }] }); }
     catch (error) {
       // Logged once per thread; the event is not retried (it is already marked sent), and a thread that no longer exists is dropped.
       logOnce(`CI observer: message to ${threadId} failed: ${describe(error)}`);
@@ -506,7 +508,7 @@ export default async function plugin(bb: BbPluginApi) {
   }
   /** One line to the observer threads when a claim is dropped by the plugin (never when an agent or a person releases it, or when the problem resolves). */
   async function echoClaimDropped(values: Values, title: string, id: string, reason: string) {
-    const text = `${PREFIX} ${fit(`Claim dropped · ${title}`, undefined, ` · problem \`${id}\` · ${reason}`)}`;
+    const text = `${fit(`Claim dropped · ${title}`, undefined, ` · problem \`${id}\` · ${reason}`)}`;
     for (const threadId of parseObserverThreads(values.observerThreads)) await notify(threadId, text);
   }
   /** Brings subscriptions and event-type start times in line with the settings; new subscribers get the one-line confirmation and no history. */
@@ -577,7 +579,7 @@ export default async function plugin(bb: BbPluginApi) {
         if (!matches.length) continue;
         routed.add(event);
         const line = event.render();
-        for (const entry of matches) direct.push({ threadId: entry.threadId, text: `${PREFIX} ${entry.number === deploy.pullRequest ? line : line.replace(/success(?: · #\d+)? · /, `success · #${entry.number} · in `)}` });
+        for (const entry of matches) direct.push({ threadId: entry.threadId, text: `${entry.number === deploy.pullRequest ? line : line.replace(/success(?: · #\d+)? · /, `success · #${entry.number} · in `)}` });
         entries = entries.filter((entry) => !matches.includes(entry));
       }
       return { entries, result: undefined };
@@ -850,7 +852,7 @@ export default async function plugin(bb: BbPluginApi) {
         refs: relatedRefs(problem, { classified: rt.analysis?.classified ?? [], massCancels: rt.analysis?.massCancels ?? [], pools: rt.pools, alerts: rt.alerts ?? [], runs: stored?.records.runs }, 8),
       }), bb.pluginId);
       let target = threadId;
-      if (target) await bb.sdk.threads.send({ threadId: target, mode: "queue-if-active", input: [{ type: "text", text: prompt, mentions: [] }] });
+      if (target) await bb.sdk.threads.send({ threadId: target, mode: "queue-if-active", input: [{ type: "text", text: withHeader(prompt), mentions: [] }] });
       else {
         const projectId = projectIds.get(repo.toLowerCase());
         if (!projectId) throw new Error(`No BB project is linked to ${repo}. Link the repository to a BB project, or send the problem to an existing session.`);
