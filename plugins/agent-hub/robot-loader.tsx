@@ -86,8 +86,10 @@ const css = `
 @keyframes ar-type{from{transform:rotate(-4deg)}to{transform:rotate(5deg)}}
 @keyframes ar-scroll{0%,20%{transform:translateY(0)}33.3%,53.3%{transform:translateY(-2px)}66.6%,86.6%{transform:translateY(-4px)}100%{transform:translateY(-6px)}}
 @keyframes ar-tap{0%,45%{transform:rotate(-10deg)}60%{transform:rotate(10deg)}100%{transform:rotate(-10deg)}}
+.ar-track{animation:ar-track 1.3s infinite}
 .ar-lean{transform-box:view-box;transform-origin:12px 18px;animation:ar-lean 1.3s infinite}
 .ar-strike{transform-box:view-box;transform-origin:12px 11px;animation:ar-strike 1.3s infinite}
+@keyframes ar-track{0%{transform:translate(0,-.6px);animation-timing-function:cubic-bezier(.55,0,1,.6)}20%,45%{transform:translate(0,.9px);animation-timing-function:ease-in-out}100%{transform:translate(0,-.6px)}}
 @keyframes ar-lean{0%{transform:rotate(-3deg);animation-timing-function:cubic-bezier(.55,0,1,.6)}20%,45%{transform:rotate(3deg);animation-timing-function:ease-in-out}100%{transform:rotate(-3deg)}}
 @keyframes ar-strike{0%,20%{transform:rotate(0);animation-timing-function:ease-out}27%{transform:rotate(7deg);animation-timing-function:ease-in-out}45%,100%{transform:rotate(0)}}
 @keyframes ar-hammer{0%{transform:rotate(-15deg);animation-timing-function:cubic-bezier(.55,0,1,.6)}20%,45%{transform:rotate(26.7deg);animation-timing-function:ease-in-out}100%{transform:rotate(-15deg)}}
@@ -225,9 +227,9 @@ function Scene({ activity, fix }: { activity: Activity; fix: 'hammer' | 'wrench'
     </>;
     case 'fix': return fix === 'hammer' ? <>
       {/* In profile, hammering a nail into a block (a nearly straight arm, the thinner handle rising from the fist at 35°, the head across it); the head's face lands on the nail head, sparks fly. The robot leans back on the swing and forward on the blow (the hammer angle
-          makes up for the lean, so the face still lands on the nail), its head jolting forward on impact. */}
+          makes up for the lean, so the face still lands on the nail), its head jolting forward on impact and its eye following the hammer. */}
       {standingLegs}<rect x="17.5" y="18.2" width="4.6" height="3.3" rx=".4" /><line x1="19.9" y1="16.8" x2="19.9" y2="18.2" /><line x1="19.1" y1="16.8" x2="20.7" y2="16.8" />
-      <g className="ar-lean"><g className="ar-strike">{sideHead}</g>{sideBody}<g className="ar-hammer"><path d="M12 13 Q14 13.6 16 13.4" /><line x1="16" y1="13.4" x2="18.62" y2="11.56" strokeWidth=".7" /><rect x="-1.2" y="-2" width="2.4" height="4" rx=".4" transform="translate(19.6 10.87) rotate(-35)" /></g></g><g transform="translate(.7 0)"><g className="ar-spark" strokeWidth=".7"><line x1="17.70" y1="16.75" x2="16.00" y2="16.69" /><line x1="17.88" y1="16.10" x2="16.37" y2="15.30" /><line x1="18.32" y1="15.59" x2="17.32" y2="14.21" /><line x1="20.08" y1="15.59" x2="21.08" y2="14.21" /><line x1="20.52" y1="16.10" x2="22.03" y2="15.30" /><line x1="20.70" y1="16.75" x2="22.40" y2="16.69" /></g></g>
+      <g className="ar-lean"><g className="ar-strike">{antenna}<rect x="8" y="4" width="8" height="7" rx="2" /><circle className="ar-track" cx="14" cy="7.5" r=".9" /></g>{sideBody}<g className="ar-hammer"><path d="M12 13 Q14 13.6 16 13.4" /><line x1="16" y1="13.4" x2="18.62" y2="11.56" strokeWidth=".7" /><rect x="-1.2" y="-2" width="2.4" height="4" rx=".4" transform="translate(19.6 10.87) rotate(-35)" /></g></g><g transform="translate(.7 0)"><g className="ar-spark" strokeWidth=".7"><line x1="17.70" y1="16.75" x2="16.00" y2="16.69" /><line x1="17.88" y1="16.10" x2="16.37" y2="15.30" /><line x1="18.32" y1="15.59" x2="17.32" y2="14.21" /><line x1="20.08" y1="15.59" x2="21.08" y2="14.21" /><line x1="20.52" y1="16.10" x2="22.03" y2="15.30" /><line x1="20.70" y1="16.75" x2="22.40" y2="16.69" /></g></g>
     </> : <>
       {/* Facing us, turning an open-end wrench on a bolt atop a post; the hand stays on the handle, the arm bending at the elbow (fixed-length segments, solved per keyframe); the eyes, turned to the wrench, rise and fall with its handle. */}
       {faceless}<g><animateTransform attributeName="transform" type="translate" values="1.1 .95;1.1 .45;1.1 .95" dur="2.2s" repeatCount="indefinite" />{eyes}</g><line x1="6.5" y1="13" x2="6.5" y2="16.5" /><line x1="21.8" y1="14.8" x2="21.8" y2="21.5" />
