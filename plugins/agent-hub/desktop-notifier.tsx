@@ -1,11 +1,25 @@
 import { useEffect, useRef } from 'react';
-import { useRealtime, useRpc } from '@get-bb/plugin-sdk/app';
+import { useBbContext, useRealtime, useRpc } from '@get-bb/plugin-sdk/app';
 import { desktopNotificationSchema, NOTIFICATIONS_CHANNEL, type AgentHubRpcContract } from './contract';
 import { isChatOpen, selectContact } from './open-chat';
 import { openAppRoute } from './lib/app-route';
 
 export function DesktopNotifier() {
-  const rpc = useRpc<AgentHubRpcContract>(), holder = useRef(false);
+  const rpc = useRpc<AgentHubRpcContract>(), holder = useRef(false), { threadId: bbThreadId } = useBbContext(), attention = useRef(0);
+  // A click on a push lands in bb's thread view; the owner works in Agent Hub, so a landing right after the window regained attention continues there.
+  useEffect(() => {
+    const regained = () => { attention.current = Date.now(); }, input = () => { attention.current = 0; };
+    const visible = () => { if (document.visibilityState === 'visible') regained(); };
+    window.addEventListener('focus', regained); document.addEventListener('visibilitychange', visible);
+    window.addEventListener('pointerdown', input, true); window.addEventListener('keydown', input, true);
+    return () => { window.removeEventListener('focus', regained); document.removeEventListener('visibilitychange', visible); window.removeEventListener('pointerdown', input, true); window.removeEventListener('keydown', input, true); };
+  }, []);
+  useEffect(() => {
+    if (!bbThreadId || location.pathname.startsWith('/plugins/') || Date.now() - attention.current > 3000) return;
+    attention.current = 0;
+    const selected = selectContact(bbThreadId);
+    openAppRoute(`/plugins/agent-hub/agent-hub${selected ? '' : `?thread=${encodeURIComponent(bbThreadId)}`}`);
+  }, [bbThreadId]);
   useRealtime(NOTIFICATIONS_CHANNEL, payload => {
     const event = desktopNotificationSchema.safeParse(payload);
     if (!holder.current || !event.success || typeof Notification === 'undefined' || Notification.permission !== 'granted') return;
