@@ -105,6 +105,7 @@ describe("tasks route grammar", () => {
       { kind: "active" },
       { kind: "manage" },
       { kind: "task", taskKey: "TSK-4" },
+      { kind: "plan", taskKey: "TSK-4" },
       { kind: "project", projectId: PROJECT_ID, view: "list" },
       { kind: "project", projectId: PROJECT_ID, view: "board" },
       { kind: "project", projectId: PROJECT_ID, view: null },
@@ -117,6 +118,10 @@ describe("tasks route grammar", () => {
       projectId: PROJECT_ID,
       view: "board",
     });
+    expect(tasksRouteToSubPath({ kind: "plan", taskKey: "EXA-1" })).toBe("task/EXA-1/plan");
+    expect(parseTasksRoute("task/EXA-1/plan/")).toEqual({ kind: "plan", taskKey: "EXA-1" });
+    expect(parseTasksRoute("task%2FEXA-1%2Fplan")).toEqual({ kind: "plan", taskKey: "EXA-1" });
+    expect(parseTasksRoute("task/EXA-1/other")).toEqual({ kind: "task", taskKey: "EXA-1" });
     expect(parseTasksRoute("")).toEqual({ kind: "all" });
     expect(parseTasksRoute(`${PROJECT_ID}?view=kanban`)).toEqual({
       kind: "project",

@@ -4,11 +4,12 @@ import {
   experimental_useAppPanel,
 } from "@get-bb/plugin-sdk/app";
 import { TASK_TAB } from "../views/embed/index.js";
+import { openPlanTab } from "../views/plan/open.js";
 
-const TASK_LINK = /\/plugins\/work-board\/work-board\/task\/([^/?#]+)/;
+const TASK_LINK = /\/plugins\/work-board\/work-board\/task\/([^/?#]+)(\/plan(?![^/?#]))?/;
 
 /**
- * Opens chat links to Work Board tasks in the thread's Work Board side-panel tab
+ * Opens chat links to Work Board tasks (and their plans) in the thread's side-panel tabs
  * instead of the main area. Modified clicks and declined opens keep bb's navigation.
  *
  * It is the `useVisible` hook of a never-shown thread context segment: bb runs it for
@@ -35,7 +36,10 @@ export function useTaskLinkInterception(_input: ExperimentalThreadContextSegment
       }
       if (!TASK_TAB.experimental_target.validate({ taskKey })) return;
       // Only swallow the click when the host actually opened the tab.
-      if (current.current.openTab({ tab: TASK_TAB, target: { taskKey } })) {
+      const opened = match[2]
+        ? openPlanTab(current.current, taskKey)
+        : current.current.openTab({ tab: TASK_TAB, target: { taskKey } });
+      if (opened) {
         event.preventDefault();
         event.stopPropagation();
       }

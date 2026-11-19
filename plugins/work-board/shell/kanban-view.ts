@@ -6,7 +6,7 @@ export function projectForRoute(
   projects: readonly Project[] | undefined,
 ): Project | null {
   if (route.kind === "project") return projects?.find((p) => p.id === route.projectId) ?? null;
-  if (route.kind === "task") {
+  if (route.kind === "task" || route.kind === "plan") {
     const prefix = route.taskKey.split("-", 1)[0] ?? "";
     return projects?.find((p) => p.prefix === prefix) ?? null;
   }

@@ -36,7 +36,7 @@ const readMethods = new Set<string>([
   "listTemplates", "getTask", "getTaskByKey", "listTasks", "listLabels",
   "listComments", "listAttachments", "listTaskThreads", "listTaskCardMeta",
   "listTaskPullRequests", "listPresets", "listMachines", "searchThreads",
-  "listBbProjects", "getNavigationBadgeCriteria", "navigationBadge",
+  "listBbProjects", "getTaskPlan", "listTaskPlanVersions", "getNavigationBadgeCriteria", "navigationBadge",
   "sidebarOpenTaskCount", "sidebarSummary", "prSummaries",
 ]);
 

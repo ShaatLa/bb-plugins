@@ -4,6 +4,8 @@ import { TasksAppShell } from "./shell/app-shell.js";
 import { useOpenTasksBadge } from "./shell/open-tasks-badge.js";
 import { TasksNavigationPanel } from "./shell/navigation-panel.js";
 import { KanbanGlyph, KanbanPanel, KANBAN_ICON, KANBAN_TAB } from "./shell/kanban-panel.js";
+import { PLAN_NAV_TAB, PLAN_THREAD_TAB } from "./views/plan/open.js";
+import { PlanTabPanel } from "./views/plan/tab.js";
 import { TASK_TAB, TaskDirectiveCard, TaskEmbedPanel } from "./views/embed/index.js";
 import { WorkBoardHosts } from "./views/embed/hosts.js";
 import { useTaskLinkInterception } from "./components/task-link-interceptor.js";
@@ -53,6 +55,9 @@ export default definePluginApp((app) => {
     component: TaskEmbedPanel,
     layout: "flush",
   });
+  // One Plan tab per task (params.taskKey), in a thread's side panel and in the Work Board page's.
+  for (const tab of [PLAN_THREAD_TAB, PLAN_NAV_TAB])
+    app.slots.experimental_tab({ ...tab, title: "Plan", icon: "FileText", component: PlanTabPanel, layout: "flush" });
   // Never shown: its useVisible hook hosts the chat task-link click handler inside each thread.
   app.slots.experimental_threadContextSegment({
     id: "task-links",

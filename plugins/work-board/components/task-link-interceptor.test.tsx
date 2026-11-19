@@ -46,4 +46,29 @@ describe("task link interception", () => {
     expect(clickLink("/plugins/work-board/work-board/task/EXA-12").defaultPrevented).toBe(false);
     expect(openTab).toHaveBeenCalledTimes(1);
   });
+
+  it("opens plan links in a Plan tab of the thread, one per task", () => {
+    const openTab = vi.fn(() => true);
+    renderSlot({ component: Host }, {}, { experimental_panel: { openTab } });
+    for (const href of ["/plugins/work-board/work-board/task/EXA-12/plan", "/plugins/work-board/work-board/task/EXA-12/plan/", "/plugins/work-board/work-board/task/EXA-12/plan?x=1"]) {
+      openTab.mockClear();
+      const event = clickLink(href);
+      expect(openTab).toHaveBeenCalledTimes(1);
+      expect(openTab).toHaveBeenCalledWith({
+        tab: expect.objectContaining({ id: "plan", context: { kind: "thread" }, availability: "action" }),
+        params: { taskKey: "EXA-12" },
+        title: "Plan · EXA-12",
+      });
+      expect(event.defaultPrevented).toBe(true);
+    }
+  });
+
+  it("keeps navigation for a plan link when the host declines, and treats a longer path as a task link", () => {
+    const openTab = vi.fn(() => false);
+    renderSlot({ component: Host }, {}, { experimental_panel: { openTab } });
+    expect(clickLink("/plugins/work-board/work-board/task/EXA-12/plan").defaultPrevented).toBe(false);
+    openTab.mockClear();
+    clickLink("/plugins/work-board/work-board/task/EXA-12/planning");
+    expect(openTab).toHaveBeenCalledWith(expect.objectContaining({ target: { taskKey: "EXA-12" } }));
+  });
 });

@@ -16,7 +16,8 @@ export type TasksRoute =
   | { kind: "manage" }
   | { kind: "scheduled"; tab: ScheduledTab }
   | { kind: "project"; projectId: string; view: TaskViewMode | null }
-  | { kind: "task"; taskKey: string };
+  | { kind: "task"; taskKey: string }
+  | { kind: "plan"; taskKey: string };
 
 export type ResolvedTasksRoute =
   | Exclude<TasksRoute, { kind: "project" }>
@@ -47,7 +48,7 @@ export function parseTasksRoute(rawSubPath: string): TasksRoute {
   }
   if (head === "task") {
     const taskKey = segments[1];
-    if (taskKey !== undefined) return { kind: "task", taskKey };
+    if (taskKey !== undefined) return segments[2] === "plan" ? { kind: "plan", taskKey } : { kind: "task", taskKey };
     return { kind: "all" };
   }
   const view = new URLSearchParams(query).get("view");
@@ -72,6 +73,8 @@ export function tasksRouteToSubPath(route: TasksRoute): string {
       return route.tab === "all" ? "scheduled" : `scheduled?tab=${route.tab}`;
     case "task":
       return `task/${route.taskKey}`;
+    case "plan":
+      return `task/${route.taskKey}/plan`;
     case "project":
       return route.view === null
         ? route.projectId

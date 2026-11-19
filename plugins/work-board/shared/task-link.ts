@@ -8,6 +8,16 @@ export function taskMarkdownLink(key: string): string {
   return `[${key}](${taskHref(key)})`;
 }
 
+/** In-app route of a task's plan page. */
+export function taskPlanHref(key: string): string {
+  return `${taskHref(key)}/plan`;
+}
+
+/** Inline chat link for a task's plan, e.g. [EXA-12 plan](/plugins/work-board/work-board/task/EXA-12/plan). */
+export function taskPlanMarkdownLink(key: string): string {
+  return `[${key} plan](${taskPlanHref(key)})`;
+}
+
 /** Standing guidance for agents in bb projects linked to Work Board. */
 export const TASK_LINK_INSTRUCTIONS = `# Work Board task links
 

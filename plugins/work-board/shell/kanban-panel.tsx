@@ -38,7 +38,7 @@ function KanbanPanelContent({ subPath }: PluginNavPanelProps) {
   const route = parseTasksRoute(subPath);
   const project = projects.data?.find((project) =>
     route.kind === "project" ? project.id === route.projectId :
-    route.kind === "task" ? project.prefix === route.taskKey.split("-", 1)[0]?.toUpperCase() :
+    route.kind === "task" || route.kind === "plan" ? project.prefix === route.taskKey.split("-", 1)[0]?.toUpperCase() :
     project.id === loadLastProjectId(),
   ) ?? projects.data?.[0];
 

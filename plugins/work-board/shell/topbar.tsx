@@ -293,6 +293,7 @@ export function TasksTopbar({
           </DropdownMenu>
         );
       case "task":
+      case "plan":
         return (
           <span className="flex min-w-0 items-center gap-1.5">
             {project ? (

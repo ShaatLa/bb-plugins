@@ -21,6 +21,7 @@ import { TasksTopbar } from "./topbar.js";
 import { ListView } from "../views/list/index.js";
 import { BoardView } from "../views/board/index.js";
 import { DetailView } from "../views/detail/index.js";
+import { PlanView } from "../views/plan/plan-view.js";
 import { useTaskScrollResume } from "../views/detail/scroll-resume.js";
 import { NewTaskDialog } from "../views/manage/new-task-dialog.js";
 import { NewProjectDialog } from "../views/manage/new-project-dialog.js";
@@ -68,6 +69,8 @@ function RouteOutlet({
       return <ScheduledView tab={route.tab} />;
     case "task":
       return <TaskRouteView taskKey={route.taskKey} onBack={onBack} />;
+    case "plan":
+      return <PlanView key={route.taskKey} taskKey={route.taskKey} surface="page" />;
     case "project":
       return route.view === "board" ? (
         <div className="h-full min-h-0"><BoardView projectId={route.projectId} /></div>
@@ -166,12 +169,13 @@ function TasksAppShellContent({ subPath }: PluginNavPanelProps) {
 
   const lastBrowseRouteRef = useRef<TasksRoute | null>(null);
   useEffect(() => {
-    if (!opening && route.kind !== "task") lastBrowseRouteRef.current = route;
+    if (!opening && route.kind !== "task" && route.kind !== "plan") lastBrowseRouteRef.current = route;
     // oxlint-disable-next-line react/exhaustive-deps
   }, [resolvedSubPath, opening]);
+  // Escape leaves a plan for its task, and a task for the list it was opened from.
   const backFromTask = () =>
-    navigation.go(lastBrowseRouteRef.current ?? { kind: "all" });
-  const onTaskRoute = route.kind === "task";
+    navigation.go(route.kind === "plan" ? { kind: "task", taskKey: route.taskKey } : (lastBrowseRouteRef.current ?? { kind: "all" }));
+  const onTaskRoute = route.kind === "task" || route.kind === "plan";
   const backRef = useRef(backFromTask);
   backRef.current = backFromTask;
   useEffect(() => {
@@ -225,7 +229,7 @@ function TasksAppShellContent({ subPath }: PluginNavPanelProps) {
           onNewTask={() => setNewTaskOpen(true)}
         />
         <div ref={contentRef} className="min-h-0 flex-1 overflow-auto">
-          {opening ? <p role="status" className="p-4 text-sm text-muted-foreground">Loading tasks…</p> : noProjects && route.kind !== "task" && route.kind !== "manage" ? (
+          {opening ? <p role="status" className="p-4 text-sm text-muted-foreground">Loading tasks…</p> : noProjects && route.kind !== "task" && route.kind !== "plan" && route.kind !== "manage" ? (
             <EmptyState
               icon="ListTodo"
               title="No projects yet"

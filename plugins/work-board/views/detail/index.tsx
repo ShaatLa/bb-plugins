@@ -1,4 +1,5 @@
 import { CurrentState } from "./current-state";
+import { PlanCard } from "../plan/card.js";
 import { useActivityPoll, useAdvisoryRecheck } from "../../shell/activity-poll.js";
 import { ActivityStatus } from "./activity-status.js";
 import { isActiveThread } from "./meta.js";
@@ -630,6 +631,8 @@ function TaskDetail({
             onOpenThread={(threadId) => openThread(threadId)}
             onOpenUrl={(url) => navigate.openUrl(url)}
           />
+
+          <PlanCard key={`plan-${task.id}`} task={task} />
 
           <CurrentState key={task.id} task={task} />
 
