@@ -494,7 +494,7 @@ Put the implementation plan in the task's `plan`, not in comments, and never spl
 2. Create it once: `bb work-board plan set KEY --file plan.md --base-version 0 --summary "Initial plan"`.
 3. Change it precisely instead of rewriting it: `plan edit KEY --section "Steps 1–4" --file part.md --base-version N --summary "..."` replaces one section (the heading may be written with or without its `#`; the file contains the heading line too; an empty file deletes the section; use `"Parent > Child"` when a heading repeats), and `plan edit KEY --find-file old.md --replace-file new.md --base-version N --summary "..."` replaces one exact fragment that occurs exactly once (a single trailing newline from your editor or heredoc is tolerated: if the text as given is not found, it is retried without that newline, in both files). `plan set` replaces everything; `plan restore KEY --version N --base-version M` brings back an old version.
 4. Always pass `--base-version` (the version you last read; 0 for the first). On a conflict re-read with `plan show`, reapply your change to the new text and retry. Every write needs a `--summary` of up to 300 characters, because it is the entry in the task log.
-5. When the plan is ready for the owner, run `bb work-board plan submit KEY`. Approval and change requests are the owner's. A new version after either returns the plan to `draft`.
+5. When the plan is ready for the owner, run `bb work-board plan submit KEY`, then wait: the owner approves it or sends notes. Approval and change requests are the owner's. A new version after either returns the plan to `draft`.
 6. `plan log KEY` lists versions and `plan diff KEY [--from N] [--to M]` shows what changed (default: previous → current).
 
 The plan is Markdown up to 256 KB, passes the secret guard and is read-only while the task is archived. Each version writes a system comment (`Plan v4 by <author>: <summary> · section "..." · +12 −4 lines`). Export format v18 carries the plan and its versions; v1–v17 imports still work.
@@ -538,3 +538,18 @@ The UI Share button copies a Markdown task link for pasting into any agent chat.
 Export v14 (0.28.0) adds optional per-project workflow policy, outcome evidence and deploy PR citations; imports retain v1–v13 compatibility. Older releases cannot read v14 exports.
 
 Use `list --stale-status` to filter diagnostic warnings before pagination; `list --json` and `show --json` expose `staleStatusFlags`. Diagnostics use recorded state, not a fresh remote check. Record non-PR results explicitly with `comment KEY --kind outcome --body "Result"`. Existing done cards with ordinary non-system comments are grandfathered until a status change. Configure rules using `project update PREFIX --workflow-policy-file policy.json`; omitted fields reset to defaults, null disables the corresponding rule.
+
+### Review loop (0.58.0)
+
+The owner reviews the plan in the Plan tab: notes on passages (comment or remove) and general notes, sent to you in one batch, or an approval.
+
+- **The plan is the question.** Do not ask the owner "do you accept the plan?" with `question add`. Write the plan, `plan submit` it, and wait for approval or feedback. Questions stay for real decisions inside the work.
+- **Approved is the go-ahead.** A message `KEY · plan vN approved by the owner` means: start the work as planned (an optional `Owner's note:` line may add a remark). Any new version returns the plan to `draft` and needs a new review, so do not change an approved plan without telling the owner.
+- **Feedback arrives as a message** that starts `KEY · plan vN: changes requested by the owner`, with the rules and the numbered notes in plan order. Read the same text any time with `bb work-board plan notes KEY` (only sent notes you have not answered; `--all` shows every note with its state and your reply; `--json` is structured). A note is `N1`, `N2` …: a quote of the passage (cut to 200 characters), the owner's text, and the section it sits in. A note marked `unanchored (made on vK)` quotes text that is no longer in the plan: find the passage that replaced it, or answer why not. A `Remove` note asks to drop that passage; a `General` note concerns the whole plan.
+- **Do the review in this order:**
+  1. `plan show KEY` to re-read the plan and take the current version.
+  2. Change the plan with `plan edit` (by section or fragment) or `plan set`; never answer in comments.
+  3. Answer every note: `bb work-board plan reply KEY N1 --body "what changed, or why not" --addressed`. `--addressed` marks the note done in the current version; without it the reply is only a message and the note stays open. A note you disagree with still gets a reply that says why.
+  4. `bb work-board plan submit KEY`. It does not refuse while notes are unanswered, but it lists them: answer them first. Do not resubmit the plan unchanged.
+- The owner then resolves a note (done), reopens it (it goes out again with the next batch) or approves. You cannot resolve or delete notes, and a note stays readable after you answered it.
+- RPC: `listPlanNotes`, `createPlanNote`, `updatePlanNote`, `deletePlanNote`, `setPlanNoteState` (owner), `replyPlanNote` (you), `sendPlanFeedback`, `approvePlan`. `show KEY` and `plan show KEY` add `· N open notes` (sent notes you have not answered). Export format v19 carries the notes; v1–v18 imports still work.

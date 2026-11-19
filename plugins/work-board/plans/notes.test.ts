@@ -122,7 +122,8 @@ describe("send feedback and approve", () => {
     const { threadId, input } = sent()[0]![0];
     expect(threadId).toBe("thr_plan");
     const text = input[0]!.text;
-    expect(text.startsWith("EXA-1 · plan v1: changes requested by the owner\n\nYOUR PLAN WAS NOT APPROVED.")).toBe(true);
+    expect(text.startsWith("[bb message from plugin:work-board]\n\nEXA-1 · plan v1: changes requested by the owner\n\nYOUR PLAN WAS NOT APPROVED.")).toBe(true);
+    expect(text).not.toContain("[Work Board]");
     expect(text).toContain("Owner's notes on v1 (3), in plan order:");
     expect(text.indexOf("N3 · Comment")).toBeLessThan(text.indexOf("N2 · Remove"));
     expect(text.indexOf("N2 · Remove")).toBeLessThan(text.indexOf("N1 · General"));
@@ -177,7 +178,7 @@ describe("send feedback and approve", () => {
     expect(approved).toMatchObject({ ok: true, delivered: "sent", threadId: "thr_plan", plan: { state: "approved" } });
     expect(systemComments()).toContain("Plan v1: approved by Owner · note: Go ahead.");
     expect(sent().at(-1)![0].input[0]!.text).toBe(
-      "EXA-1 · plan v1 approved by the owner\n\nStart the work as planned. The approved plan is v1: any new version returns it to draft and needs a new review.\nPlan: [EXA-1 plan](/plugins/work-board/work-board/task/EXA-1/plan)\n\nOwner's note: Go ahead.",
+      "[bb message from plugin:work-board]\n\nEXA-1 · plan v1 approved by the owner\n\nStart the work as planned. The approved plan is v1: any new version returns it to draft and needs a new review.\nPlan: [EXA-1 plan](/plugins/work-board/work-board/task/EXA-1/plan)\n\nOwner's note: Go ahead.",
     );
     expect(await call("approvePlan", { taskId: task.id, author: owner })).toMatchObject({ ok: false, error: { code: "plan_state" } });
     await save({ baseVersion: 1, body: `${BODY}\nMore.\n` });
