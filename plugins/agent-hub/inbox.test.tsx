@@ -536,6 +536,15 @@ it('says why a queued message is held, as bb does', async () => {
   const { slot, recipients } = setup({ queuedMessages: { list: () => Promise.resolve([row]) }, plugins: { list: async () => ({ plugins:[{ id:'concurrency-limit', name:'Concurrency limit', icon:'Gauge' }] }) } }); fireEvent.click(await recipients.findByRole('option'));
   expect(await slot.findByText('Held by Concurrency limit · 14 of 14 running on host Mac')).toBeTruthy();
 });
+it('shows a plugin\'s queued message with the plugin icon instead of bb\'s header and the From line', async () => {
+  const row = { id:'q1', threadId:'thr_one', originPluginId:'concurrency-limit', content:[{ type:'text', text:'[bb message from plugin:concurrency-limit]\n\n`Needs attention` · 2 to review', mentions:[] }], updatedAt:1 };
+  const { slot, recipients } = setup({ queuedMessages: { list: () => Promise.resolve([row]) }, plugins: { list: async () => ({ plugins:[{ id:'concurrency-limit', name:'Concurrency limit', icon:'Gauge' }] }) } }); fireEvent.click(await recipients.findByRole('option'));
+  expect(await slot.findByRole('img', { name:'From Concurrency limit' })).toBeTruthy();
+  const preview = slot.container.querySelector('[data-queue-row="q1"]')!;
+  expect(preview.textContent).not.toContain('[bb message from');
+  expect(preview.textContent).toContain('Needs attention');
+  expect(preview.textContent).not.toMatch(/From\s*Concurrency limit/);
+});
 it('slides a queue card in once: coming back to its chat draws it in place, a new one after it left slides again', async () => {
   const first = { ...one, threadId:'thr_slide' }, two = { ...one, threadId:'thr_two', threadTitle:'Two' };
   let rows: Record<string, any[]> = { thr_slide:[{ id:'q1', threadId:'thr_slide', content:[{ type:'text', text:'Queued one', mentions:[] }], updatedAt:1 }], thr_two:[] };
