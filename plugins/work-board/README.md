@@ -10,8 +10,32 @@ Daily cleanup removes orphan activity claims/queue markers and PR snapshots with
 
 **Optimize storage** also shares identical immutable blobs using filesystem hard links, preserving every attachment ID/path/URL and exact contents, then rebuilds SQLite and truncates its WAL when readers permit. The operation can take time on large boards. Unsupported hard links leave originals intact and report skips. Fresh databases use incremental vacuum; older databases enable it after the first explicit optimization. Later daily cleanups return up to 256 free pages per sweep. Retained WAL allocation is limited to 4 MiB when SQLite can reset it after checkpoints; active readers or a transaction may temporarily require more. Live data still consumes space as the board grows; this is not a retention policy that deletes accessible history.
 
-CLI: `bb work-board storage status --json`, `storage clean --json`, `storage optimize --json`. Actions return before/after usage, removed file/cache-row counts, shared duplicate count and warnings. Statistics count allocated blocks by unique inode; filesystem compression/clones can make these differ from device-wide free space. Current export format is v17. Maintenance only touches this plugin's database and managed blob directories, not external project exports, repository files, old installation releases, BB logs or backups.
+CLI: `bb work-board storage status --json`, `storage clean --json`, `storage optimize --json`. Actions return before/after usage, removed file/cache-row counts, shared duplicate count and warnings. Statistics count allocated blocks by unique inode; filesystem compression/clones can make these differ from device-wide free space. Current export format is v18. Maintenance only touches this plugin's database and managed blob directories, not external project exports, repository files, old installation releases, BB logs or backups.
 
+
+## Task plan (0.56.0)
+
+A task has one plan: a Markdown document with numbered versions, kept apart from comments. Agents put the implementation plan there instead of posting "Plan 1/6 … 6/6" comments, revise it in place, and the current text is always one command away.
+
+```sh
+bb work-board plan show ABC-12 [--section "Steps 1–4"] [--version N] [--json]
+bb work-board plan set ABC-12 --file plan.md --base-version 0 --summary "Initial plan"
+bb work-board plan edit ABC-12 --section "Steps 1–4" --file part.md --base-version 1 --summary "Narrow the steps"
+bb work-board plan edit ABC-12 --find-file old.md --replace-file new.md --base-version 2 --summary "Fix a number"
+bb work-board plan restore ABC-12 --version 1 --base-version 3 --summary "Back to v1"
+bb work-board plan log ABC-12          # versions: who, when, what, +/- lines
+bb work-board plan diff ABC-12 [--from N] [--to M]
+bb work-board plan submit ABC-12       # ready for the owner's review
+```
+
+- Every write passes `--base-version N`, the version you read. If the plan has changed, the command refuses, names the current version and asks you to re-read with `plan show`, so nobody's edit is overwritten. The first version uses `--base-version 0`. `--summary` (up to 300 characters) says what changed.
+- A section is a heading line plus its body up to the next heading of the same or a higher level (headings inside fenced code are ignored). Address it by the heading text, or by `Parent > Child` when the text repeats; a missing or ambiguous heading is refused with the list of headings. `plan edit --section` replaces the whole section including its heading, and an empty replacement deletes it. `--find-file` text must occur exactly once. A write that changes nothing is refused.
+- A plan is at most 256 KB of UTF-8 and goes through the secret guard. Every version keeps its full text. The plan of an archived task is read-only.
+- States: a new plan is `draft`; `plan submit` makes it `in_review`. The owner's approve and request-changes decisions arrive with the review UI; any new version returns an approved or changes-requested plan to `draft`.
+- Every version, submit and state change writes a system comment on the task, for example `Plan v4 by <author>: <summary> · section "Steps 1–4" · +12 −4 lines`.
+- `bb work-board show KEY` has a `Plan` line (`v4 · in_review · bb work-board plan show KEY`, or `-`); `show --with-plan` prints the plan after the description, and `show --json` has `plan` (`version`, `state`, `updatedAt`, `updatedBy`, plus `body` with `--with-plan`) or null.
+- RPC: `getTaskPlan`, `listTaskPlanVersions`, `saveTaskPlan`, `diffTaskPlan`, `submitTaskPlan`, `setTaskPlanState` (`in_review | approved | changes_requested` only).
+- Export **v18** stores the current plan and all its versions in the task record. Imports of v1–v17 work as before and leave local plans untouched; importing v18 over a different local plan needs `--overwrite`, which replaces the plan and its history.
 
 ## Task dependencies (0.22.0)
 
@@ -276,7 +300,7 @@ bb work-board import --from .bb/tasks/<project-id> --overwrite
   attachments/<attachment-id>
 ```
 
-`project.json` contains the bb-work-board format marker, version 17, project metadata, folders, labels, task IDs and templates. Task files preserve Markdown, comments/evidence, questions, worker links, aliases, dependencies and attachment hashes. Attachments use immutable IDs. Export contains no storage paths. Imports support v1–v16; see the v17 field changes below.
+`project.json` contains the bb-work-board format marker, version 18, project metadata, folders, labels, task IDs and templates. Task files preserve Markdown, comments/evidence, questions, worker links, aliases, dependencies and attachment hashes. Attachments use immutable IDs. Export contains no storage paths. Imports support v1–v16; see the v17 field changes below.
 
 The export is first assembled in a temporary directory, then replaces the existing copy. On write or replacement failure, the original copy is preserved. Unrelated files are not allowed in the export directory; repository sources must be kept outside it.
 

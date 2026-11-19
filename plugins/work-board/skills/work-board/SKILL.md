@@ -486,6 +486,19 @@ A session created directly in BB is attached to every unfinished agent card whos
 
 
 
+## Task plan (0.56.0)
+
+Put the implementation plan in the task's `plan`, not in comments, and never split it into "Plan 1/6" comments. Progress still goes to `--progress`.
+
+1. Read it first: `bb work-board plan show KEY` prints the version, state and the `--base-version` for your next edit, then the Markdown. `--section "Heading"` prints one section; `--version N` an earlier version; `bb work-board show KEY` has a one-line `Plan` summary and `--with-plan` prints it in full.
+2. Create it once: `bb work-board plan set KEY --file plan.md --base-version 0 --summary "Initial plan"`.
+3. Change it precisely instead of rewriting it: `plan edit KEY --section "Steps 1–4" --file part.md --base-version N --summary "..."` replaces one section (the file contains the heading line too; an empty file deletes the section; use `"Parent > Child"` when a heading repeats), and `plan edit KEY --find-file old.md --replace-file new.md --base-version N --summary "..."` replaces one exact fragment that occurs exactly once (write the find file without a surplus trailing newline). `plan set` replaces everything; `plan restore KEY --version N --base-version M` brings back an old version.
+4. Always pass `--base-version` (the version you last read; 0 for the first). On a conflict re-read with `plan show`, reapply your change to the new text and retry. Every write needs a `--summary` of up to 300 characters, because it is the entry in the task log.
+5. When the plan is ready for the owner, run `bb work-board plan submit KEY`. Approval and change requests are the owner's. A new version after either returns the plan to `draft`.
+6. `plan log KEY` lists versions and `plan diff KEY [--from N] [--to M]` shows what changed (default: previous → current).
+
+The plan is Markdown up to 256 KB, passes the secret guard and is read-only while the task is archived. Each version writes a system comment (`Plan v4 by <author>: <summary> · section "..." · +12 −4 lines`). Export format v18 carries the plan and its versions; v1–v17 imports still work.
+
 ## Dependencies (0.22.0)
 
 Read `bb work-board dependency list KEY --json` before starting a task. Add `bb work-board dependency add ABC-2 --blocked-by ABC-1`; remove with `dependency remove ABC-2 --blocked-by ABC-1`. Reverse the keys to express Blocks instead. Only the predecessor's Done status satisfies a link; Canceled stays unresolved, and reopening restores the warning. These links warn; they never forbid dispatch or status changes. Respect the ordering and report blockers instead of assuming a permitted command means the task is ready. `show --json` provides `dependencies: {blockedBy, blocks}` and `blocked`; `list --json` adds unresolved `blockedBy`. Dispatch context includes unresolved predecessors. Both endpoints receive a system history comment on add/remove.
