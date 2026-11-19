@@ -6,6 +6,8 @@ Manager commands are unrestricted in v1. Threads on other hosts are refused.
 
 ## Sidebar (0.4.0)
 
+Version 0.5.3 starts every message Slots sends into a thread with a `[bb message from plugin:slots]` header line, so the agent does not read it as the owner's, and drops the "Machine Slots" name from the message title.
+
 Version 0.5.2 makes configuration granular: `bb slots config get <key>` and the `slots_config` tool with a key read one setting, and `set`/`unset` return only the changed key as `{key, value, default, max?, set}`. `show` without a key and `settingsWrite` still return the whole view.
 
 Version 0.5.1 sends no "Slot granted" message when the grant goes to a waiting `acquire` (slots-run, plugin RPC), and no "Slot released" message to the thread whose own last `done` freed the lease; plain requests still get grant messages.
