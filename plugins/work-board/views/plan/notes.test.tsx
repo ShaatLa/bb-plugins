@@ -110,6 +110,35 @@ describe("selecting text to leave a note", () => {
     expect(slot.container.contains(popover)).toBe(false);
   });
 
+  it("opens the popover on a full mouse press on Comment even when the selection is lost on the way, and the note can be added", async () => {
+    const { slot, notes } = await open();
+    await ready(slot);
+    select(slot.container, "second step");
+    const comment = within(await slot.findByRole("toolbar", { name: "Note on selection" })).getByRole("button", { name: "Comment" });
+    // What a real mouse sends, in order; a press inside the toolbar must not count as outside.
+    fireEvent.pointerDown(comment);
+    fireEvent.mouseDown(comment);
+    // A host that clears the selection on a press does so after the press; the toolbar is gone before the click.
+    window.getSelection()!.removeAllRanges();
+    act(() => void document.dispatchEvent(new Event("selectionchange")));
+    fireEvent.pointerUp(comment);
+    fireEvent.mouseUp(comment);
+    fireEvent.click(comment, { detail: 1 });
+    const popover = await slot.findByRole("dialog", { name: "Add note" });
+    const box = within(popover).getByRole("textbox", { name: "Note" });
+    fireEvent.pointerDown(box);
+    fireEvent.mouseDown(box);
+    fireEvent.change(box, { target: { value: "Needs a rollback." } });
+    const add = within(popover).getByRole("button", { name: "Add note" });
+    fireEvent.pointerDown(add);
+    fireEvent.mouseDown(add);
+    fireEvent.pointerUp(add);
+    fireEvent.mouseUp(add);
+    fireEvent.click(add);
+    await waitFor(() => expect(list(slot).getByText("Needs a rollback.")).toBeTruthy());
+    expect(await notes()).toMatchObject([{ kind: "comment", body: "Needs a rollback." }]);
+  });
+
   it("closes the toolbar and the popover on Escape and on a press outside", async () => {
     const { slot } = await open();
     await ready(slot);

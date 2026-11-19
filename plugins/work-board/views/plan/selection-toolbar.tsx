@@ -69,6 +69,8 @@ export function useBodySelection(root: RefObject<HTMLElement | null>, enabled: b
   return [selected, () => setSelected(null)];
 }
 
+// Above any panel or overlay of the host: the controls live in document.body, not in the panel's stacking context.
+const TOP_LAYER = 2147483000;
 const MARGIN = 8;
 const GAP = 6;
 
@@ -95,7 +97,7 @@ export function placeFloating(
  * plugin scope that bb's stylesheet needs.
  */
 function Floating({ children }: { children: ReactNode }) {
-  return createPortal(<div data-bb-plugin="work-board">{children}</div>, document.body);
+  return createPortal(<div data-bb-plugin="work-board" style={{ position: "relative", zIndex: TOP_LAYER }}>{children}</div>, document.body);
 }
 
 /** Calls `onClose` on Escape and on a press outside `ref`. */
@@ -107,7 +109,7 @@ function useDismiss(ref: RefObject<HTMLElement | null>, onClose: () => void) {
       if (event.key === "Escape") latest.current();
     };
     const press = (event: Event) => {
-      if (!ref.current?.contains(event.target as Node)) latest.current();
+      if (!event.composedPath().includes(ref.current as EventTarget)) latest.current();
     };
     document.addEventListener("keydown", key);
     document.addEventListener("pointerdown", press);
@@ -134,12 +136,25 @@ export function SelectionToolbar({ selected, onPick, onClose }: { selected: Sele
           role="toolbar"
           aria-label="Note on selection"
           style={{ position: "fixed", ...placeFloating(selected, TOOLBAR_SIZE, viewportSize()), width: TOOLBAR_SIZE.width }}
-          className="z-50 flex gap-1 rounded-md border border-border bg-popover p-1 text-popover-foreground shadow-md"
+          className="flex gap-1 rounded-md border border-border bg-popover p-1 text-popover-foreground shadow-md"
           onMouseDown={(event) => event.preventDefault()}
         >
-          <Button type="button" size="sm" variant="ghost" className="h-7 flex-1 px-2 text-xs" onClick={() => onPick("comment")}>Comment</Button>
-          <Button type="button" size="sm" variant="ghost" className="h-7 flex-1 px-2 text-xs" onClick={() => onPick("remove")}>Remove</Button>
-        </div>
+          {(["comment", "remove"] as const).map((kind) => (
+          <Button
+            key={kind}
+            type="button"
+            size="sm"
+            variant="ghost"
+            className="h-7 flex-1 px-2 text-xs"
+            // Act on the press: the selection that the toolbar stands for can vanish before the click lands. A click
+            // with no press before it (detail 0) is the keyboard.
+            onMouseDown={(event) => event.button === 0 && onPick(kind)}
+            onClick={(event) => event.detail === 0 && onPick(kind)}
+          >
+            {kind === "comment" ? "Comment" : "Remove"}
+          </Button>
+        ))}
+      </div>
     </Floating>
   );
 }
@@ -174,7 +189,7 @@ export function CommentPopover({
         role="dialog"
         aria-label="Add note"
         style={{ position: "fixed", ...placeFloating(at, POPOVER_SIZE, viewportSize()), width: POPOVER_SIZE.width }}
-        className="z-50 space-y-2 rounded-md border border-border bg-popover p-2 text-xs text-popover-foreground shadow-md"
+        className="space-y-2 rounded-md border border-border bg-popover p-2 text-xs text-popover-foreground shadow-md"
       >
         <p className="line-clamp-2 text-muted-foreground [overflow-wrap:anywhere]">“{quote}”</p>
         <Textarea aria-label="Note" autoFocus rows={3} value={text} disabled={busy} placeholder="Your comment" className="min-h-16 text-xs" onChange={(event) => setText(event.target.value)} />
