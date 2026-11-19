@@ -37,6 +37,8 @@ test('registers CLI and native tool, queries fake router and excludes self',asyn
     const status=await cli.run(['status','--json'],ctx);assert.equal(status.exitCode,0);assert.equal(JSON.parse(status.stdout).models[0].contextSize,65536);
     assert.equal((await cli.run(['unload','--all'],ctx)).exitCode,0);
     assert.equal((await cli.run(['ask','hi','--model','missing','--json'],ctx)).exitCode,1);
+    assert.equal((await cli.run(['unload','m','--all'],ctx)).exitCode,1);
+    assert.match((await tool.execute({prompt:'hello',model:'missing'},ctx)).content[0].text,/Run bb local-models status/);
     baseUrl='http://127.0.0.1:1/v1';
     assert.equal((await tool.execute({prompt:'hello'},ctx)).isError,true);
   }finally{await server.close();}

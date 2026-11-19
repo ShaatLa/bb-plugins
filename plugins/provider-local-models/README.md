@@ -44,9 +44,15 @@ bb plugin config local-models set defaultModel 'ggml-org/gpt-oss-20b-GGUF:MXFP4'
 - BB's own MCP tools are pre-approved in the shim.
 - Permission modes are `full` and `accept-edits`; gated tool calls request user
   approval inside the shim.
+- A thread spawned by an agent must use `--permission-mode full`: BB denies
+  approval requests in agent-sent turns, so accept-edits shell calls fail. Run
+  at most one local-models thread per GPU; threads take no Slots use themselves,
+  so the parent holds a `local-model` lease and transfers it to the child.
 - The plugin registers the agent tool `local_models_ask` for one-shot prompts
   to local models. It is available to threads using other providers; local-models
-  threads do not get it to avoid recursive GPU requests.
+  threads do not get it to avoid recursive GPU requests. It queues behind other
+  Machine Slots `local-model` work and fails after 20 minutes; failures carry
+  the fix (for example, where to find model ids).
 - The bundled `local-models` skill provides guidance for model choice,
   reasoning levels, and troubleshooting.
 
@@ -66,7 +72,10 @@ One-shot chat completion without tools. Use `--json` for machine-readable output
 ```sh
 bb local-models unload <model> | --all
 ```
-Unload a specific model or all models.
+Unload one model, or every loaded model with `--all` (including ones other
+threads use). Pass one or the other, not both. Run from a thread, unload first
+takes a Machine Slots `local-model` use, so it waits for running local-model
+requests instead of cutting them off.
 
 ```sh
 bb local-models splash-setup '<llama model id>'
