@@ -55,14 +55,18 @@ const quietUpdate = (entry: Entry) => !entry.part && entry.group.length === 1 &&
 // showLast: the chat is the newest page and has gone quiet (it and its sub-sessions idle), so its last message is final.
 // keep: an update already shown in full that way stays so while it is the last (a turn starting must not fold it back).
 export function conversation(groups: Item[][], more: boolean, carried: Item[][] = [], showLast = true, keep: string | null = null, groupUpdates = true) {
-  const floor = groups.length ? activityAt(groups[0][0]) : Infinity, marks = groups.flatMap(group => [group[0].createdAt, activityAt(group[0])]);
+  // A message that joined the turn answering the owner (a child's completion, another thread's or a plugin's message) stands
+  // above the owner's message, so the question and its answer stay together.
+  const asked = new Map(groups.filter(group => group[0].kind === 'mine' && group[0].turnId).map(group => [group[0].turnId!, group[0].createdAt] as const));
+  const above = (group: Item[]) => { const item = group[0]; return item.kind === 'update' && !item.answer && item.turnId ? asked.get(item.turnId) ?? null : null; };
+  const floor = groups.length ? activityAt(groups[0][0]) : Infinity, marks = groups.filter(group => above(group) === null).flatMap(group => [group[0].createdAt, activityAt(group[0])]);
   const placed: [number, Entry][] = [], orphans: Item[][] = [];
   const ask = (group: Item[]) => { if (more && group[0].createdAt < floor) orphans.push(group); else placed.push([group[0].createdAt, { group, part: 'question' }]); };
   carried.forEach(ask);
   for (const group of groups) {
     const asked = group[0].createdAt, at = activityAt(group.at(-1)!);
     if (group[0].kind === 'mine' && group.at(-1)!.answer !== null && marks.some(mark => mark > asked && mark < at)) { ask(group); placed.push([at, { group, part: 'answer' }]); }
-    else placed.push([at, { group }]);
+    else placed.push([above(group) ?? at, { group }]);
   }
   // One message can answer an older question and a new one; it shows once, under the new question, echoing the older one.
   for (let i = placed.length - 1; i >= 0; i--) {
@@ -72,7 +76,7 @@ export function conversation(groups: Item[][], more: boolean, carried: Item[][] 
     if (home) { home[1].late = [...(home[1].late ?? []), ...entry.group]; placed.splice(i, 1); }
   }
   const entries: Entry[] = [];
-  for (const [, entry] of placed.sort((a, b) => a[0] - b[0])) { const prev = entries.at(-1); if (groupUpdates && prev && quietUpdate(entry) && (prev.updates || quietUpdate(prev))) entries[entries.length - 1] = { group: [...prev.group, ...entry.group], updates: true }; else entries.push(entry); }
+  for (const [, entry] of placed.sort((a, b) => a[0] - b[0] || Number(above(b[1].group) !== null) - Number(above(a[1].group) !== null))) { const prev = entries.at(-1); if (groupUpdates && prev && quietUpdate(entry) && (prev.updates || quietUpdate(prev))) entries[entries.length - 1] = { group: [...prev.group, ...entry.group], updates: true }; else entries.push(entry); }
   // Once the chat has gone quiet its latest message does not hide in a collapsed group: a final report after a run of updates
   // stays in full view. While work goes on, the updates still flying in stay collapsed.
   const tail = entries.at(-1);

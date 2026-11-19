@@ -293,6 +293,16 @@ it('shows only the quoted answer while its question is beyond the loaded window,
 const quiet = (n: number, answer: string, asks = false) => ({ ...between, id:`ans_u${n}`, answer, asks, createdAt:asked + n * minute, answeredAt:asked + n * minute });
 // The owner's later message, so the quiet run is not the chat's latest message (that one always shows in full).
 const after = { ...base, id:'ans_after', question:'Thanks', createdAt:asked + 9 * minute, answeredAt:asked + 9 * minute };
+it('puts a message that joined the turn answering the owner above the owner\'s message, keeping the question and answer together', async () => {
+  const { conversation } = await import('./inbox');
+  const mine = { ...base, id:'ans_mine', turnId:'turn-1', status:'waiting', answer:null, answerSeq:null, createdAt:asked, answeredAt:null };
+  const joined = { ...between, id:'ans_joined', turnId:'turn-1', answer:null, createdAt:asked + minute, answeredAt:asked + minute };
+  const other = { ...between, id:'ans_other', turnId:null, answer:null, createdAt:asked + 2 * minute, answeredAt:asked + 2 * minute };
+  const shape = (entries: any[]) => entries.map(e => `${e.part ?? ''}${e.group.map((i: any) => i.id).join('+')}`);
+  expect(shape(conversation([[mine], [joined], [other]] as any, false, [], false, null, false).entries)).toEqual(['ans_joined', 'ans_mine', 'ans_other']);
+  const done = { ...mine, status:'answered', answer:'Answer', answerSeq:9, answeredAt:asked + 3 * minute };
+  expect(shape(conversation([[done], [joined]] as any, false, [], true, null, false).entries)).toEqual(['ans_joined', 'ans_mine']);
+});
 it('does not fold the last update shown in full back into its group when a turn starts (a queued message sent)', async () => {
   const { conversation } = await import('./inbox');
   const run = [[quiet(1, 'One')], [quiet(2, 'Two')], [quiet(3, 'Long final report')]] as any;

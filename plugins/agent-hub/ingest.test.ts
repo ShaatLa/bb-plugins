@@ -129,7 +129,7 @@ describe('updates',()=>{
  it('shows another thread\'s or a plugin\'s message that joins a turn already under way, read, while the owner\'s message keeps the reply',()=>{
   const db=setup(); const tool=(seq:number)=>ev(seq,'item/completed','x',{item:{type:'commandExecution',command:'ls'}});
   applyEvents(db,'t',[req(1),start(),accept(),tool(4),req(5,'s',{initiator:'agent',senderThreadId:'thr_s',input:text('[bb message from thread:thr_s] steer')}),accept(6,'s'),req(7,'q',{originPluginId:'example-plugin',input:text('notice')}),accept(8,'q'),message(9),done(10)],'p',100,true,true);
-  expect(updates(db)).toEqual(expect.arrayContaining([expect.objectContaining({status:'answered',question:'[bb message from thread:thr_s] steer',answer:null,trigger_kind:'agent',trigger_source:'thr_s',read_at:100}),expect.objectContaining({status:'answered',question:'notice',trigger_kind:'plugin',trigger_source:'example-plugin',read_at:100})]));
+  expect(updates(db)).toEqual(expect.arrayContaining([expect.objectContaining({status:'answered',question:'[bb message from thread:thr_s] steer',answer:null,trigger_kind:'agent',trigger_source:'thr_s',read_at:100,turn_id:'x'}),expect.objectContaining({status:'answered',question:'notice',trigger_kind:'plugin',trigger_source:'example-plugin',read_at:100})]));
   expect(updates(db)).toHaveLength(2);
   expect(rows(db).find(r=>r.kind==='mine')).toMatchObject({status:'answered',answer:'answer'});
  });
