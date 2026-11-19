@@ -9,6 +9,21 @@ import { loadLastProjectId } from "./view-preference.js";
 import { DialogScope } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { LockChips } from "../components/lock-chips.js";
+import { cn } from "@/lib/utils";
+
+/** Shared app icon of a kanban board: cards stacked in three columns. */
+export const KANBAN_ICON = "work-board/kanban";
+export function KanbanGlyph({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden className={cn("size-4 shrink-0", className)}>
+      <rect x="2.75" y="3.75" width="5" height="7" rx="1.5" />
+      <rect x="2.75" y="13.25" width="5" height="7" rx="1.5" />
+      <rect x="9.5" y="3.75" width="5" height="7" rx="1.5" />
+      <rect x="16.25" y="3.75" width="5" height="7" rx="1.5" />
+      <rect x="16.25" y="13.25" width="5" height="4" rx="1.5" />
+    </svg>
+  );
+}
 
 export const KANBAN_TAB = {
   id: "kanban",

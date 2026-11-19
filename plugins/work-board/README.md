@@ -33,6 +33,8 @@ With the optional Tokenomos plugin installed, the task rail shows what agents sp
 
 `threadBoard({threadId})` returns the board of the Work Board project linked to the thread's bb project, so another plugin can show it beside a chat: `project {id, name, url}` (null when no project is linked) and `columns` in workflow order, each with `status` (same shape as above), `total` active top-level tasks and up to 30 `cards {key, title, type, priority, mine, url}`. `mine` marks tasks linked to the thread, and those cards are always included even past the cap (0.52.0).
 
+The kanban board glyph is the shared app icon `work-board/kanban`, so a tab that shows the board can use `icon: "work-board/kanban"` (0.52.1).
+
 ## Scheduled tasks CLI
 
 `bb work-board schedule ...` manages recurring and one-time scheduled tasks through the same validated RPC

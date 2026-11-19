@@ -3,7 +3,7 @@ import { TasksSettings } from "./views/settings.js";
 import { TasksAppShell } from "./shell/app-shell.js";
 import { useOpenTasksBadge } from "./shell/open-tasks-badge.js";
 import { TasksNavigationPanel } from "./shell/navigation-panel.js";
-import { KanbanPanel, KANBAN_TAB } from "./shell/kanban-panel.js";
+import { KanbanGlyph, KanbanPanel, KANBAN_ICON, KANBAN_TAB } from "./shell/kanban-panel.js";
 import { TASK_TAB, TaskDirectiveCard, TaskEmbedPanel } from "./views/embed/index.js";
 import { useTaskLinkInterception } from "./components/task-link-interceptor.js";
 import { StatusGlyph } from "./components/status-icon.js";
@@ -13,6 +13,7 @@ export default definePluginApp((app) => {
   // Other plugins draw status glyphs by name; threadTasks returns the name and color.
   for (const { id } of STATUS_ICONS)
     app.experimental_icons.register({ name: STATUS_ICON_NAME_PREFIX + id, component: ({ className }) => <StatusGlyph glyph={id} className={className} /> });
+  app.experimental_icons.register({ name: KANBAN_ICON, component: KanbanGlyph });
   app.slots.settingsSection({
     id: "settings",
     title: "Work Board",
@@ -40,7 +41,7 @@ export default definePluginApp((app) => {
   app.slots.experimental_tab({
     ...KANBAN_TAB,
     title: "Kanban",
-    icon: "Columns2",
+    icon: KANBAN_ICON,
     component: KanbanPanel,
     layout: "flush",
   });
