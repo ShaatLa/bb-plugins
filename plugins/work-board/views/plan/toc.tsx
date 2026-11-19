@@ -3,8 +3,8 @@ import { Icon } from "@/components/ui/icon";
 import { cn } from "@/lib/utils";
 
 /**
- * Table of contents of a plan. In a wide container it is a left rail; in a narrow one it is a collapsible
- * list above the text. It is one element: the container-query classes decide which it looks like.
+ * Table of contents of a plan. In a wide container it is a sticky rail to the right of the text; in a narrow one it is a collapsible
+ * list above the text (it comes after the text in the DOM and is moved up with `order`). The container-query classes decide which it looks like.
  */
 export function PlanToc({
   headings,
@@ -22,7 +22,7 @@ export function PlanToc({
   if (headings.length === 0) return null;
   const top = Math.min(...headings.map((heading) => heading.level));
   return (
-    <nav aria-label="Table of contents" className="shrink-0 text-sm @[56rem]:sticky @[56rem]:top-0 @[56rem]:w-56 @[56rem]:self-start">
+    <nav aria-label="Table of contents" className="order-first shrink-0 text-sm @[56rem]:sticky @[56rem]:order-last @[56rem]:border-l @[56rem]:border-border-hairline @[56rem]:pl-4 @[56rem]:top-0 @[56rem]:w-56 @[56rem]:self-start">
       <button
         type="button"
         aria-expanded={open}

@@ -37,14 +37,14 @@ bb work-board plan submit ABC-12       # ready for the owner's review
 - RPC: `getTaskPlan`, `listTaskPlanVersions`, `saveTaskPlan`, `diffTaskPlan`, `submitTaskPlan`, `setTaskPlanState` (`in_review | approved | changes_requested` only).
 - Export **v18** stores the current plan and all its versions in the task record. Imports of v1–v17 work as before and leave local plans untouched; importing v18 over a different local plan needs `--overwrite`, which replaces the plan and its history.
 
-## Task plan in the UI (0.57.0)
+## Task plan in the UI (0.57.0, polished in 0.57.1)
 
 People read, compare and edit the plan without leaving the board.
 
-- **Plan card.** The task detail has a **Plan** section between the description and **Current state**. Without a plan it says "No plan yet" and that agents create one with `bb work-board plan set`; **Write plan** opens the editor. With a plan it shows the version, the state (draft, in review, changes requested, approved), who updated it and when, and the summary of the last version, with **Open plan** and **Copy link**. The plan text is not repeated in the detail. The card refreshes live.
+- **Plan card.** The task detail has a **Plan** section between the description and **Current state**. Without a plan it says "No plan yet" and that agents create one with `bb work-board plan set`; **Write plan** opens the editor. With a plan it is a bordered card: the title with the state (draft, in review, changes requested, approved) next to it, the version and a **Copy link** icon on the right, the summary of the last version (two lines at most) and "Updated by … · time". The whole card opens the plan. The plan text is not repeated in the detail. The card refreshes live.
 - **Plan tab.** **Open plan** opens a **Plan · ABC-12** tab in the side panel (in a thread and on the Work Board page; one tab per task). Without a side panel it opens the same view in the main area at `task/ABC-12/plan`.
-  - The header has the task (click to open it), a version selector, the state, **Edit**, **History**, **Compare with previous** and a menu with **Copy Markdown**, **Copy link** and **Open task**.
-  - The plan is shown read-only with the same renderer as task descriptions, at a readable width. The table of contents lists the headings (not `#` lines inside code blocks), follows the reader while scrolling and jumps to a heading on click; it is a left rail in a wide panel and a collapsible list in a narrow one.
+  - The header has the task (click to open it) with the state next to it; on the right a compact version selector and icon buttons **Edit**, **History**, **Compare with previous** and a menu with **Copy Markdown**, **Copy link** and **Open task**. A muted line under the header says who saved the version on screen and when.
+  - The plan is shown read-only with the same renderer as task descriptions, at a readable width. The table of contents lists the headings (not `#` lines inside code blocks), follows the reader while scrolling and jumps to a heading on click; it is a sticky rail to the right of the text in a wide panel and a collapsible list above the text in a narrow one.
   - **History** lists every version with author, time, operation, summary and +/− lines. Opening an older one shows it with a "Viewing v2 of v5 · Back to current" banner.
   - **Compare** shows a source diff of two versions (any pair, or a version and its previous): added and removed lines with changed words highlighted inside a revised line, and long unchanged runs folded.
   - A new version arrives live. While you read the current version it replaces the text; while you view an older version or edit, a "v6 is available · Show" notice appears instead and nothing moves under you.

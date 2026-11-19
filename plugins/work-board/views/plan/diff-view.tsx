@@ -100,7 +100,7 @@ export function PlanDiffView({ from, to }: { from: string; to: string }) {
     </div>
   );
   return (
-    <div aria-label="Plan changes" role="group" className="overflow-hidden rounded-md border border-border font-mono text-xs leading-5">
+    <div aria-label="Plan changes" role="group" className="overflow-hidden rounded-lg border border-border font-mono text-xs leading-5">
       {items.map((item) => {
         if ("row" in item) return renderRow(item.row, item.index);
         if (expanded.has(item.fold)) return rows.slice(item.fold, item.fold + item.count).map((row, offset) => renderRow(row, item.fold + offset));

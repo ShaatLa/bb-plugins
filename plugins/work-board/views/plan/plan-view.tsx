@@ -26,24 +26,58 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Icon } from "@/components/ui/icon";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { cn } from "@/lib/utils";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 
 type Mode = "read" | "compare" | "edit";
 
 const noop = () => {};
 
+/** A compact, borderless version picker: `v3`, with "current" muted for the newest. */
 function VersionSelect({ label, value, versions, current, onChange }: { label: string; value: number; versions: readonly number[]; current: number; onChange: (version: number) => void }) {
   return (
     <Select value={String(value)} onValueChange={(next) => onChange(Number(next))}>
-      <SelectTrigger aria-label={label} className="h-7 w-36 text-xs">
+      <SelectTrigger aria-label={label} className="h-7 w-auto gap-1 border-transparent bg-transparent px-2 text-xs shadow-none hover:bg-state-hover">
         <SelectValue />
       </SelectTrigger>
       <SelectContent>
         {versions.map((version) => (
-          <SelectItem key={version} value={String(version)}>{`v${version}${version === current ? " (current)" : ""}`}</SelectItem>
+          <SelectItem key={version} value={String(version)}>
+            v{version}
+            {version === current ? <span className="text-muted-foreground"> current</span> : null}
+          </SelectItem>
         ))}
       </SelectContent>
     </Select>
+  );
+}
+
+/** A ghost icon button with a tooltip, like the buttons of the Work Board top bar. */
+function ActionButton({ label, icon, fallback, tooltip = label, pressed, disabled, onClick }: { label: string; icon: string; fallback?: string; tooltip?: string; pressed?: boolean; disabled?: boolean; onClick: () => void }) {
+  return (
+    <TooltipProvider delayDuration={300}>
+      <Tooltip disableHoverableContent>
+        <TooltipTrigger asChild>
+          {/* The span keeps the tooltip reachable when the button is disabled. */}
+          <span className="inline-flex">
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon"
+              className={cn("size-7 shrink-0 text-muted-foreground hover:text-foreground", pressed && "bg-state-hover text-foreground")}
+              aria-label={label}
+              aria-pressed={pressed}
+              disabled={disabled}
+              onClick={onClick}
+            >
+              <Icon name={icon} fallback={fallback} className="size-3.5" />
+            </Button>
+          </span>
+        </TooltipTrigger>
+        <TooltipContent side="bottom">{tooltip}</TooltipContent>
+      </Tooltip>
+    </TooltipProvider>
   );
 }
 
@@ -162,69 +196,85 @@ export function PlanView({ taskKey, surface }: { taskKey: string; surface: "pane
     setViewing(null);
   };
 
+  const versionNumbers = versions.map((version) => version.version);
+  const shownVersion = versions.find((version) => version.version === (target ?? headVersion));
+  const meta = shownVersion ? { name: shownVersion.author.name, at: shownVersion.createdAt } : head ? { name: head.updatedBy.name, at: head.updatedAt } : null;
+  const menu = (
+    <DropdownMenu>
+      <TooltipProvider delayDuration={300}>
+        <Tooltip disableHoverableContent>
+          <TooltipTrigger asChild>
+            <DropdownMenuTrigger asChild>
+              <Button type="button" variant="ghost" size="icon" className="size-7 shrink-0 text-muted-foreground hover:text-foreground" aria-label="Plan actions">
+                <Icon name="MoreHorizontal" className="size-3.5" />
+              </Button>
+            </DropdownMenuTrigger>
+          </TooltipTrigger>
+          <TooltipContent side="bottom">Plan actions</TooltipContent>
+        </Tooltip>
+      </TooltipProvider>
+      <DropdownMenuContent align="end">
+        <DropdownMenuItem disabled={display === null} onSelect={() => display && void copy(display.body, "Markdown copied")}>Copy Markdown</DropdownMenuItem>
+        <DropdownMenuItem onSelect={() => void copy(taskPlanMarkdownLink(task.data?.key ?? taskKey), "Link copied")}>Copy link</DropdownMenuItem>
+        <DropdownMenuItem onSelect={openTask}>Open task</DropdownMenuItem>
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+  // On a narrow panel the row wraps: the badge stays with the title, the version and actions stay together on the right.
   const header = (
-    <header className="shrink-0 space-y-2 border-b border-border px-3 py-2">
-      <div className="flex min-w-0 items-center gap-2">
-        {surface === "page" ? (
-          <Button type="button" variant="ghost" size="icon" className="size-7 shrink-0 text-muted-foreground hover:text-foreground" aria-label={`Back to ${taskKey}`} onClick={openTask}>
-            <Icon name="ArrowLeft" className="size-4" />
-          </Button>
-        ) : null}
-        <button
-          type="button"
-          title="Open task"
-          className="min-w-0 flex-1 truncate rounded-sm text-left text-sm font-medium hover:underline focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-          onClick={openTask}
-        >
-          <span className="text-muted-foreground">{task.data?.key ?? taskKey}</span>
-          {task.data ? <span> {task.data.title}</span> : null}
-        </button>
-        <DropdownMenu>
-          <DropdownMenuTrigger asChild>
-            <Button type="button" variant="ghost" size="icon" className="size-7 shrink-0" aria-label="Plan actions">
-              <Icon name="MoreHorizontal" className="size-4" />
+    <header className="shrink-0 border-b border-border px-3 py-2">
+      <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+        <div className="flex min-w-48 flex-1 items-center gap-2">
+          {surface === "page" ? (
+            <Button type="button" variant="ghost" size="icon" className="size-7 shrink-0 text-muted-foreground hover:text-foreground" aria-label={`Back to ${taskKey}`} onClick={openTask}>
+              <Icon name="ArrowLeft" className="size-4" />
             </Button>
-          </DropdownMenuTrigger>
-          <DropdownMenuContent align="end">
-            <DropdownMenuItem disabled={display === null} onSelect={() => display && void copy(display.body, "Markdown copied")}>Copy Markdown</DropdownMenuItem>
-            <DropdownMenuItem onSelect={() => void copy(taskPlanMarkdownLink(task.data?.key ?? taskKey), "Link copied")}>Copy link</DropdownMenuItem>
-            <DropdownMenuItem onSelect={openTask}>Open task</DropdownMenuItem>
-          </DropdownMenuContent>
-        </DropdownMenu>
-      </div>
-      {head && mode !== "edit" ? (
-        <div className="flex flex-wrap items-center gap-2">
-          {mode === "compare" ? (
+          ) : null}
+          <button
+            type="button"
+            title="Open task"
+            className="min-w-0 truncate rounded-sm text-left text-sm font-medium hover:underline focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+            onClick={openTask}
+          >
+            <span className="text-muted-foreground">{task.data?.key ?? taskKey}</span>
+            {task.data ? <span> {task.data.title}</span> : null}
+          </button>
+          {head ? <PlanStateChip state={head.state} /> : null}
+        </div>
+        <div className="ml-auto flex items-center gap-0.5">
+          {head && mode === "compare" ? (
             <>
-              <VersionSelect label="Compare from" value={compare.from} versions={versions.map((version) => version.version)} current={headVersion} onChange={(from) => setCompare({ ...compare, from })} />
+              <VersionSelect label="Compare from" value={compare.from} versions={versionNumbers} current={headVersion} onChange={(from) => setCompare({ ...compare, from })} />
               <span aria-hidden className="text-xs text-muted-foreground">→</span>
-              <VersionSelect label="Compare to" value={compare.to} versions={versions.map((version) => version.version)} current={headVersion} onChange={(to) => setCompare({ ...compare, to })} />
-              <Button type="button" size="sm" variant="ghost" onClick={() => setMode("read")}>Close compare</Button>
+              <VersionSelect label="Compare to" value={compare.to} versions={versionNumbers} current={headVersion} onChange={(to) => setCompare({ ...compare, to })} />
+              <ActionButton label="Close compare" icon="X" onClick={() => setMode("read")} />
             </>
-          ) : (
+          ) : head && mode !== "edit" ? (
             <>
-              <VersionSelect label="Plan version" value={target ?? headVersion} versions={versions.map((version) => version.version).reverse()} current={headVersion} onChange={showVersion} />
-              <PlanStateChip state={head.state} />
-              {!archived && viewedVersion === null ? (
-                <Button type="button" size="sm" variant="outline" onClick={() => setWantsEdit(true)}>Edit</Button>
-              ) : null}
-              <Button type="button" size="sm" variant="ghost" aria-pressed={historyOpen} onClick={() => setHistoryOpen(!historyOpen)}>History</Button>
-              <Button
-                type="button"
-                size="sm"
-                variant="ghost"
+              <VersionSelect label="Plan version" value={target ?? headVersion} versions={[...versionNumbers].reverse()} current={headVersion} onChange={showVersion} />
+              {!archived && viewedVersion === null ? <ActionButton label="Edit" icon="Edit" onClick={() => setWantsEdit(true)} /> : null}
+              <ActionButton label="History" icon="History" fallback="Clock" pressed={historyOpen} onClick={() => setHistoryOpen(!historyOpen)} />
+              <ActionButton
+                label="Compare with previous"
+                icon="GitCompare"
+                fallback="GitBranch"
+                tooltip={(target ?? 0) < 2 ? "Compare with previous: v1 has no previous version" : "Compare with previous"}
                 disabled={(target ?? 0) < 2}
                 onClick={() => {
                   setCompare({ from: (target ?? 2) - 1, to: target ?? 2 });
                   setMode("compare");
                 }}
-              >
-                Compare with previous
-              </Button>
+              />
             </>
-          )}
-          <span role="status" className="text-xs text-muted-foreground">{copied}</span>
+          ) : null}
+          {menu}
         </div>
+      </div>
+      {head && mode !== "edit" && meta ? (
+        <p className="mt-1 text-xs text-muted-foreground">
+          Updated by {meta.name} · <time dateTime={meta.at} title={meta.at}>{formatRelativeTime(meta.at, Date.now())}</time>
+          {copied ? <span role="status"> · {copied}</span> : null}
+        </p>
       ) : (
         <span role="status" className="sr-only">{copied}</span>
       )}
@@ -319,14 +369,8 @@ export function PlanView({ taskKey, surface }: { taskKey: string; surface: "pane
     }
     content = (
       <div ref={scrollRef} className="@container min-h-0 flex-1 overflow-y-auto">
-        <div className="flex flex-col gap-3 p-3 @[56rem]:flex-row @[56rem]:gap-6 @[56rem]:p-5">
-          {mode === "read" && head ? <PlanToc headings={headings} active={active} open={tocOpen} onToggle={() => setTocOpen(!tocOpen)} onSelect={(index) => { elements[index]?.scrollIntoView({ behavior: "smooth", block: "start" }); setActive(index); setTocOpen(false); }} /> : null}
-          <div className="mx-auto w-full min-w-0 max-w-[72ch] flex-1 space-y-3">
-            {head ? (
-              <p className="text-xs text-muted-foreground">
-                Updated by {head.updatedBy.name} <time dateTime={head.updatedAt} title={head.updatedAt}>{formatRelativeTime(head.updatedAt, Date.now())}</time>
-              </p>
-            ) : null}
+        <div className="flex flex-col gap-3 p-3 @[56rem]:flex-row @[56rem]:justify-center @[56rem]:gap-8 @[56rem]:p-5">
+          <div className="w-full min-w-0 max-w-[72ch] flex-1 space-y-3">
             {notices}
             {viewedVersion !== null && mode === "read" ? (
               <div role="status" className="flex flex-wrap items-center gap-1 rounded-md border border-border bg-muted/50 px-2 py-1 text-xs">
@@ -345,6 +389,7 @@ export function PlanView({ taskKey, surface }: { taskKey: string; surface: "pane
             ) : null}
             {body}
           </div>
+          {mode === "read" && head ? <PlanToc headings={headings} active={active} open={tocOpen} onToggle={() => setTocOpen(!tocOpen)} onSelect={(index) => { elements[index]?.scrollIntoView({ behavior: "smooth", block: "start" }); setActive(index); setTocOpen(false); }} /> : null}
         </div>
       </div>
     );

@@ -50,8 +50,28 @@ describe("Plan tab", () => {
     await waitFor(() => expect(rendered(slot)).toEqual(["Release plan", "Steps", "Risks"]));
     expect(slot.getByRole("button", { name: /Planned work/ })).toBeTruthy();
     expect(slot.getByText("Draft")).toBeTruthy();
-    expect(slot.getByRole("combobox", { name: "Plan version" }).textContent).toContain("v1 (current)");
+    expect(slot.getByRole("combobox", { name: "Plan version" }).textContent).toContain("v1 current");
     expect(slot.container.querySelector(".tiptap")?.getAttribute("contenteditable")).toBe("false");
+  });
+
+  it("keeps the state badge next to the title, and the version and actions together on the right", async () => {
+    const { slot } = await open();
+    const title = await slot.findByRole("button", { name: /Planned work/ });
+    const badge = await slot.findByText("Draft");
+    expect(badge.parentElement).toBe(title.parentElement);
+    const version = await slot.findByRole("combobox", { name: "Plan version" });
+    const actions = ["Edit", "History", "Compare with previous", "Plan actions"].map((name) => slot.getByRole("button", { name }));
+    expect(new Set([version.parentElement, ...actions.map((button) => button.closest("div"))]).size).toBe(1);
+    expect((slot.getByRole("button", { name: "Compare with previous" }) as HTMLButtonElement).disabled).toBe(true);
+    expect(slot.getByText(/Updated by agent/)).toBeTruthy();
+  });
+
+  it("puts the table of contents after the text in the DOM, so the wide layout shows it on the right", async () => {
+    const { slot } = await open();
+    await waitFor(() => expect(rendered(slot)).toHaveLength(3));
+    const toc = slot.getByRole("navigation", { name: "Table of contents" });
+    expect(slot.container.querySelector(".tiptap")!.compareDocumentPosition(toc) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(toc.className).toContain("@[56rem]:order-last");
   });
 
   it("shows a clear message for an unknown task and for missing params", async () => {
@@ -124,7 +144,7 @@ describe("Plan tab", () => {
     expect(diff.querySelector("ins")?.textContent).toBe("third");
     expect(diff.querySelector("del")?.textContent).toBe("second");
     expect(slot.getByRole("combobox", { name: "Compare from" }).textContent).toContain("v1");
-    expect(slot.getByRole("combobox", { name: "Compare to" }).textContent).toContain("v2 (current)");
+    expect(slot.getByRole("combobox", { name: "Compare to" }).textContent).toContain("v2 current");
     fireEvent.click(slot.getByRole("button", { name: "Close compare" }));
     await waitFor(() => expect(rendered(slot)).toHaveLength(3));
   });

@@ -29,7 +29,7 @@ describe("Plan card in the task detail", () => {
     await plan.findByText("No plan yet");
     expect(plan.getByText(/bb work-board plan set/)).toBeTruthy();
     expect(plan.getByRole("button", { name: "Write plan" })).toBeTruthy();
-    expect(plan.queryByRole("button", { name: "Open plan" })).toBeNull();
+    expect(plan.queryByRole("button", { name: /Open plan/ })).toBeNull();
   });
 
   it("sits between the description and the current state", async () => {
@@ -47,10 +47,23 @@ describe("Plan card in the task detail", () => {
     const plan = await card(host.slot);
     await plan.findByText("v2");
     expect(plan.getByText("Draft")).toBeTruthy();
-    expect(plan.getByText(/updated by agent \(thr_example\)/)).toBeTruthy();
+    expect(plan.getByText(/Updated by agent \(thr_example\)/)).toBeTruthy();
     expect(plan.getByText("Added a closing note")).toBeTruthy();
     expect(plan.queryByText("Release plan")).toBeNull();
     expect(plan.queryByRole("button", { name: "Write plan" })).toBeNull();
+  });
+
+  it("puts the state badge in the card header next to the title, with the version on the right", async () => {
+    const host = openDetail(() => true);
+    await host.save({ baseVersion: 0, body: BODY });
+    const plan = await card(host.slot);
+    const title = await plan.findByRole("heading", { name: "Plan" });
+    const badge = plan.getByText("Draft");
+    const version = plan.getByText("v1");
+    expect(title.parentElement).toBe(badge.parentElement);
+    expect(title.compareDocumentPosition(badge) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(badge.compareDocumentPosition(version) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(version.parentElement).toBe(title.parentElement);
   });
 
   it("refreshes when the task changes", async () => {
@@ -69,7 +82,7 @@ describe("Plan card in the task detail", () => {
     const openTab = vi.fn(() => true);
     const host = openDetail(openTab);
     await host.save({ baseVersion: 0, body: BODY });
-    fireEvent.click(await (await card(host.slot)).findByRole("button", { name: "Open plan" }));
+    fireEvent.click(await (await card(host.slot)).findByRole("button", { name: "Open plan for EXA-1" }));
     expect(openTab).toHaveBeenCalledTimes(1);
     expect(openTab).toHaveBeenCalledWith({
       tab: expect.objectContaining({ id: "plan", availability: "action" }),
@@ -83,7 +96,7 @@ describe("Plan card in the task detail", () => {
     const openTab = vi.fn((options: { tab: { context: { kind: string } } }) => options.tab.context.kind === "nav-panel");
     const host = openDetail(openTab as never);
     await host.save({ baseVersion: 0, body: BODY });
-    fireEvent.click(await (await card(host.slot)).findByRole("button", { name: "Open plan" }));
+    fireEvent.click(await (await card(host.slot)).findByRole("button", { name: "Open plan for EXA-1" }));
     expect(openTab.mock.calls.map(([options]) => options.tab.context)).toEqual([{ kind: "thread" }, { kind: "nav-panel", panelId: "work-board" }]);
     expect(host.slot.navigateCalls).toEqual([]);
   });
@@ -92,15 +105,17 @@ describe("Plan card in the task detail", () => {
     const openTab = vi.fn(() => false);
     const host = openDetail(openTab);
     await host.save({ baseVersion: 0, body: BODY });
-    fireEvent.click(await (await card(host.slot)).findByRole("button", { name: "Open plan" }));
+    fireEvent.click(await (await card(host.slot)).findByRole("button", { name: "Open plan for EXA-1" }));
     expect(openTab).toHaveBeenCalledTimes(2);
     expect(host.slot.navigateCalls).toContainEqual({ method: "toPluginPanel", path: "work-board", options: { subPath: "task/EXA-1/plan" } });
   });
 
-  it("copies the plan link as Markdown", async () => {
-    const host = openDetail(() => true);
+  it("copies the plan link as Markdown from the icon button without opening the plan", async () => {
+    const openTab = vi.fn(() => true);
+    const host = openDetail(openTab);
     await host.save({ baseVersion: 0, body: BODY });
     fireEvent.click(await (await card(host.slot)).findByRole("button", { name: "Copy link" }));
+    expect(openTab).not.toHaveBeenCalled();
     await waitFor(() => expect(host.slot.inspection.experimental_clipboardWrites).toEqual([{ text: "[EXA-1 plan](/plugins/work-board/work-board/task/EXA-1/plan)" }]));
   });
 
