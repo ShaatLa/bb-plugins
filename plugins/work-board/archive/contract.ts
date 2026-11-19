@@ -16,6 +16,7 @@ import {
   planAuthorSchema,
   planStateSchema,
   planVersionSchema,
+  planNoteSchema,
 } from "../shared/contract";
 import { PLAN_FORMATS } from "../shared/plan";
 import { MAX_ATTACHMENT_SIZE_BYTES } from "../shared/attachments";
@@ -43,6 +44,7 @@ export const archiveProjectSchema = z
       z.literal(16),
       z.literal(17),
       z.literal(18),
+      z.literal(19),
     ]),
     project: projectSchema,
     gitSync: gitSyncConfigSchema.optional(),
@@ -70,6 +72,9 @@ export const archivePlanSchema = z
   })
   .strict();
 
+/** v19: an owner's note on the plan; the task record that holds it replaces `taskId`. */
+export const archivePlanNoteSchema = planNoteSchema.omit({ taskId: true });
+
 export const archiveTaskSchema = z
   .object({
     task: taskSchema,
@@ -82,6 +87,8 @@ export const archiveTaskSchema = z
     questions: z.array(questionSchema).default([]),
     /** v18: null when the task has no plan. */
     plan: archivePlanSchema.nullable().optional(),
+    /** v19: the owner's notes on the plan, by number. */
+    planNotes: z.array(archivePlanNoteSchema).optional(),
     attachments: z.array(
       attachmentSchema
         .extend({
@@ -200,6 +207,15 @@ export function validateArchive(archive: ProjectArchive): void {
     unique(record.related ?? [], "related task");
     if (manifest.version >= 18 && record.plan === undefined) throw new Error("Archive v18 requires plan");
     if (manifest.version < 18 && record.plan) throw new Error("Task plans require archive v18");
+    if (manifest.version >= 19 && record.planNotes === undefined) throw new Error("Archive v19 requires planNotes");
+    if (manifest.version < 19 && record.planNotes?.length) throw new Error("Plan notes require archive v19");
+    if (record.planNotes?.length) {
+      if (!record.plan) throw new Error(`Plan notes of ${record.task.id} need a plan`);
+      unique(record.planNotes.map((note) => String(note.number)), "plan note number");
+      unique(record.planNotes.map((note) => note.id), "plan note");
+      if (record.planNotes.some((note) => note.madeOnVersion > record.plan!.version || (note.sentInVersion ?? 0) > record.plan!.version))
+        throw new Error(`Plan notes of ${record.task.id} refer to a version the plan does not have`);
+    }
     if (record.plan) {
       const { versions } = record.plan;
       if (versions.some((version, index) => version.version !== index + 1))

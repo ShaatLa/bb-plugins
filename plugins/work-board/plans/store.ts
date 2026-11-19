@@ -237,6 +237,17 @@ export function createPlanStore(db: Database, tasks: TasksStore) {
     return { ...changeState(taskId, state, by, text), changed: true };
   });
 
+  /** The thread of the newest agent-written version: the session that is expected to react to a review. */
+  function latestAgentThread(taskId: string): string | null {
+    return (
+      db
+        .prepare<[string], { author_thread: string }>(
+          "SELECT author_thread FROM task_plan_versions WHERE task_id = ? AND author_kind = 'agent' AND author_thread IS NOT NULL ORDER BY version DESC LIMIT 1",
+        )
+        .get(taskId)?.author_thread ?? null
+    );
+  }
+
   /** Line diff between two versions; version 0 is the empty plan. Defaults: previous version → current. */
   function diff(taskId: string, from?: number, to?: number): PlanDiff & { from: number; to: number } {
     const task = requireTask(taskId);
@@ -291,7 +302,7 @@ export function createPlanStore(db: Database, tasks: TasksStore) {
     ).run(taskId, plan.format, plan.version, plan.body, plan.state, plan.updatedAt, plan.updatedBy.kind, plan.updatedBy.threadId, plan.updatedBy.name);
   }
 
-  return { head, get, listVersions, save, submit, setState, diff, capture, captureProject, restore };
+  return { head, get, listVersions, save, submit, setState, diff, latestAgentThread, capture, captureProject, restore };
 }
 
 export type PlanStore = ReturnType<typeof createPlanStore>;

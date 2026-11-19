@@ -33,6 +33,14 @@ function steerPrompt(
   );
 }
 
+/**
+ * The thread a message about a task goes to when nothing names one: the first linked session, else the thread of the
+ * latest agent comment (other than `excludeCommentId`). Question answers and plan reviews use the same rule.
+ */
+export function defaultTaskThreadId(store: TasksStore, taskId: string, excludeCommentId = ""): string | undefined {
+  return store.listTaskThreads(taskId)[0]?.threadId ?? store.getLatestAgentComment(taskId, excludeCommentId)?.threadId;
+}
+
 export const QUEUED_NOTICE_SEPARATOR = "\n\n---\n\n";
 
 /** bb's origin line, so the receiving agent reads a Work Board message as the plugin's, not the owner's words. */

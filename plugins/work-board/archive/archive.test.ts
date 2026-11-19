@@ -29,6 +29,7 @@ import { createScheduledStore } from "../scheduled/store";
 import { DEFAULT_TASK_STATUSES, type TaskStatusDefinition } from "../shared/statuses";
 import { createStructuredStore } from "../structured/store";
 import { createPlanStore } from "../plans/store";
+import { createPlanNoteStore } from "../plans/notes";
 
 const harnesses: FakePluginHarness[] = [];
 const directories: string[] = [];
@@ -824,7 +825,7 @@ it("exports v17 typed questions and imports v16 owner tasks as plain tasks", asy
   await exportProject(source.bb, source.store, source.project.id, out);
   const manifestPath = join(out, "project.json");
   const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
-  expect(manifest.version).toBe(18);
+  expect(manifest.version).toBe(19);
   const path = join(out, "tasks", `${source.task.id}.json`);
   const record = JSON.parse(await readFile(path, "utf8"));
   expect(record.task).not.toHaveProperty("executionTarget");
@@ -849,7 +850,7 @@ it("exports v17 typed questions and imports v16 owner tasks as plain tasks", asy
 });
 
 
-it("exports v18 plans with every version, refuses a differing local plan without --overwrite and ignores plans in older archives", async () => {
+it("exports plans (v18+) with every version, refuses a differing local plan without --overwrite and ignores plans in older archives", async () => {
   const source = await seed();
   const author = { kind: "agent" as const, threadId: "thr_example", name: "agent (thr_example)" };
   const sourcePlans = createPlanStore(source.bb.storage.database(), source.store.tasks);
@@ -861,7 +862,7 @@ it("exports v18 plans with every version, refuses a differing local plan without
   await exportProject(source.bb, source.store, source.project.id, out);
   const manifestPath = join(out, "project.json");
   const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
-  expect(manifest.version).toBe(18);
+  expect(manifest.version).toBe(19);
   const recordPath = join(out, "tasks", `${source.task.id}.json`);
   const record = JSON.parse(await readFile(recordPath, "utf8"));
   expect(record.plan).toMatchObject({ format: "markdown", version: 2, state: "in_review", body: "# Plan\n\n## Steps\n- one\n- two\n" });
@@ -911,6 +912,60 @@ it("exports v18 plans with every version, refuses a differing local plan without
 });
 
 
+it("exports v19 plan notes with their replies, refuses differing local notes without --overwrite and ignores notes in older archives", async () => {
+  const source = await seed();
+  const author = { kind: "agent" as const, threadId: "thr_example", name: "agent (thr_example)" };
+  const person = { kind: "person" as const, threadId: null, name: "Owner" };
+  const planStoreOf = (host: Awaited<ReturnType<typeof seed>>) => createPlanStore(host.bb.storage.database(), host.store.tasks);
+  const notesOf = (host: Awaited<ReturnType<typeof seed>>) => createPlanNoteStore(host.bb.storage.database(), host.store.tasks, planStoreOf(host).head);
+  const sourcePlans = planStoreOf(source);
+  const sourceNotes = notesOf(source);
+  sourcePlans.save({ taskId: source.task.id, op: "replace", baseVersion: 0, body: "# Plan\n\n## Steps\n- one\n", summary: "First", author });
+  sourceNotes.create({ taskId: source.task.id, kind: "comment", exact: "one", prefix: "Steps - ", suffix: "", headingPath: "Steps", body: "Say more.", authorName: "Owner" });
+  sourceNotes.create({ taskId: source.task.id, kind: "general", body: "Add a rollback.", authorName: "Owner" });
+  sourceNotes.sendFeedback(source.task.id, person);
+  sourceNotes.reply({ taskId: source.task.id, number: 1, body: "Added detail.", addressed: true, author });
+  const out = join(await directory(), "notes-v19");
+  await exportProject(source.bb, source.store, source.project.id, out);
+  const recordPath = join(out, "tasks", `${source.task.id}.json`);
+  const record = JSON.parse(await readFile(recordPath, "utf8"));
+  expect(record.planNotes.map((note: { number: number; state: string; taskId?: string }) => [note.number, note.state, note.taskId])).toEqual([[1, "addressed", undefined], [2, "sent", undefined]]);
+  expect(record.planNotes[0]).toMatchObject({ kind: "comment", exact: "one", headingPath: "Steps", reply: "Added detail.", replyBy: author.name, addressedInVersion: 1, sentInVersion: 1 });
+
+  const target = setup();
+  await importProject(target.bb, target.store, out, false);
+  const targetNotes = notesOf(target as never);
+  expect(targetNotes.capture(source.task.id)).toEqual(sourceNotes.capture(source.task.id));
+  const again = join(await directory(), "notes-again");
+  await exportProject(target.bb, target.store, source.project.id, again);
+  expect(await readFile(join(again, "tasks", `${source.task.id}.json`), "utf8")).toBe(await readFile(recordPath, "utf8"));
+  await importProject(target.bb, target.store, out, false);
+
+  targetNotes.create({ taskId: source.task.id, kind: "general", body: "Local note.", authorName: "Owner" });
+  await expect(importProject(target.bb, target.store, out, false)).rejects.toThrow(/Import conflict: plan notes .* use --overwrite/);
+  await importProject(target.bb, target.store, out, true);
+  expect(targetNotes.capture(source.task.id)).toEqual(sourceNotes.capture(source.task.id));
+
+  // v18 archives have no notes key: they import and leave local notes alone; v19 requires the key; older versions refuse notes.
+  const manifestPath = join(out, "project.json");
+  const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
+  manifest.version = 18;
+  await writeFile(manifestPath, jsonText(manifest));
+  const { planNotes, ...withoutNotes } = record;
+  await writeFile(recordPath, jsonText(withoutNotes));
+  targetNotes.create({ taskId: source.task.id, kind: "general", body: "Newer local.", authorName: "Owner" });
+  await importProject(target.bb, target.store, out, true);
+  expect(targetNotes.list(source.task.id)).toHaveLength(3);
+  manifest.version = 19;
+  await writeFile(manifestPath, jsonText(manifest));
+  await expect(importProject(setup().bb, setup().store, out, false)).rejects.toThrow(/Archive v19 requires planNotes/);
+  manifest.version = 18;
+  await writeFile(manifestPath, jsonText(manifest));
+  await writeFile(recordPath, jsonText({ ...withoutNotes, planNotes }));
+  await expect(importProject(setup().bb, setup().store, out, false)).rejects.toThrow(/Plan notes require archive v19/);
+});
+
+
 it("round-trips configurable project statuses, their order and custom task stages in v10", async () => {
   const source = await seed();
   const statuses: TaskStatusDefinition[] = DEFAULT_TASK_STATUSES.map((status) => ({ ...status }));
@@ -923,7 +978,7 @@ it("round-trips configurable project statuses, their order and custom task stage
   const out = join(await directory(), "statuses-v6");
   await exportProject(source.bb, source.store, source.project.id, out);
   const manifest = JSON.parse(await readFile(join(out, "project.json"), "utf8"));
-  expect(manifest.version).toBe(18);
+  expect(manifest.version).toBe(19);
   expect(manifest.project.statuses).toEqual(statuses);
   expect(manifest.project).toMatchObject({ autoArchiveAfterDays: "14", staleIdleMinutes: "120" });
   const target = setup();
@@ -1024,7 +1079,7 @@ describe("archive v13 scheduled tasks", () => {
     const out = join(await directory(), "scheduled-v13");
     await exportProject(f.bb, f.store, f.project.id, out);
     const manifest = JSON.parse(await readFile(join(out, "project.json"), "utf8"));
-    expect(manifest.version).toBe(18);
+    expect(manifest.version).toBe(19);
     expect(manifest.schedules).toHaveLength(2);
     expect(JSON.stringify(manifest)).not.toMatch(/thr_server_local|thr_gone|q_live|req_live|01ARZ3NDEKTSV4RRFFQ69G5FAV/);
     const target = setup();
@@ -1158,7 +1213,7 @@ it("round-trips v16 current state and imports v15 without it", async () => {
   await exportProject(source.bb, source.store, source.project.id, out);
   const manifestPath = join(out, "project.json");
   const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
-  expect(manifest.version).toBe(18);
+  expect(manifest.version).toBe(19);
   const target = setup();
   await importProject(target.bb, target.store, out, false);
   expect(target.store.tasks.getTask(source.task.id)).toEqual(source.store.tasks.getTask(source.task.id));

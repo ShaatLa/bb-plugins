@@ -175,7 +175,75 @@ describe("bb work-board plan", () => {
     expect(withPlan.indexOf("Description\n")).toBeLessThan(withPlan.indexOf("Plan v1 (in_review)"));
 
     const json = JSON.parse(await ok(["show", "EXA-1", "--json"]));
-    expect(json.plan).toEqual({ version: 1, state: "in_review", updatedAt: expect.any(String), updatedBy: "agent (thr_example)" });
+    expect(json.plan).toEqual({ version: 1, state: "in_review", noteCounts: { draft: 0, open: 0, addressed: 0, resolved: 0 }, updatedAt: expect.any(String), updatedBy: "agent (thr_example)" });
     expect(JSON.parse(await ok(["show", "EXA-1", "--json", "--with-plan"])).plan.body).toBe(PLAN);
+  });
+
+  describe("review notes", () => {
+    const owner = { kind: "person", threadId: null, name: "Owner" };
+    async function withNotes() {
+      const host = await setup();
+      await host.ok(["plan", "set", "EXA-1", "--body", PLAN, "--base-version", "0", "--summary", "Initial"], "thr_example");
+      const taskId = JSON.parse(await host.ok(["show", "EXA-1", "--json"])).task.id;
+      const call = (method: string, input: Record<string, unknown>) => host.harness.callRpc(method as never, input as never) as Promise<any>;
+      await call("createPlanNote", { taskId, kind: "comment", exact: "second", prefix: "- first - ", suffix: "", headingPath: "Plan > Steps 1–4", body: "Say what second means." });
+      await call("createPlanNote", { taskId, kind: "remove", exact: "None.", prefix: "", suffix: "", headingPath: "Plan > Risks" });
+      await call("createPlanNote", { taskId, kind: "general", body: "Add a rollback." });
+      return { ...host, call, taskId };
+    }
+
+    it("lists nothing before feedback is sent, then the sent notes in the message format", async () => {
+      const { ok, call, taskId } = await withNotes();
+      expect(await ok(["plan", "notes", "EXA-1"])).toBe("EXA-1 plan has no open notes");
+      expect(await ok(["plan", "notes", "EXA-1", "--all"])).toContain("N1 · Comment · section \"Plan > Steps 1–4\" · draft");
+      await call("sendPlanFeedback", { taskId, author: owner });
+      const text = await ok(["plan", "notes", "EXA-1"], "thr_example");
+      expect(text.startsWith("YOUR PLAN WAS NOT APPROVED.")).toBe(true);
+      expect(text).toContain("Owner's notes on v1 (3), in plan order:");
+      expect(text).toContain('N1 · Comment · section "Plan > Steps 1–4"\n> second\nSay what second means.\n\nN2 · Remove · section "Plan > Risks"\n> None.\n\nN3 · General\nAdd a rollback.');
+      expect(text).not.toContain("[Work Board]");
+      const json = JSON.parse(await ok(["plan", "notes", "EXA-1", "--json"]));
+      expect(json).toMatchObject({ taskKey: "EXA-1", version: 1, noteCounts: { open: 3 } });
+      expect(json.notes.map((note: { number: number; placement: string }) => `${note.number}:${note.placement}`)).toEqual(["1:anchored", "2:anchored", "3:general"]);
+      expect(await ok(["plan", "show", "EXA-1"])).toMatch(/^Plan v1 · changes_requested · updated \S+ by .* · 3 open notes$/m);
+      expect(await ok(["show", "EXA-1"])).toMatch(/^Plan\s+v1 · changes_requested · 3 open notes · bb work-board plan show EXA-1$/m);
+      expect(JSON.parse(await ok(["show", "EXA-1", "--json"])).plan.noteCounts).toEqual({ draft: 0, open: 3, addressed: 0, resolved: 0 });
+    });
+
+    it("replies to a note, marks it addressed in the current version and hides it from the open list", async () => {
+      const { ok, run, call, taskId } = await withNotes();
+      expect((await run(["plan", "reply", "EXA-1", "N1", "--body", "Early"])).stderr).toContain("not been sent");
+      await call("sendPlanFeedback", { taskId, author: owner });
+      expect((await run(["plan", "reply", "EXA-1", "first", "--body", "x"])).stderr).toContain("not a note number");
+      expect((await run(["plan", "reply", "EXA-1", "N9", "--body", "x"])).stderr).toContain("no note N9");
+      expect(await ok(["plan", "reply", "EXA-1", "N1", "--body", "Looking at it."], "thr_example")).toBe("EXA-1 N1 answered · not marked addressed");
+      expect(await ok(["plan", "reply", "EXA-1", "n1", "--body", "Explained in the text.", "--addressed"], "thr_example")).toBe("EXA-1 N1 answered · addressed in v1");
+      const open = await ok(["plan", "notes", "EXA-1"]);
+      expect(open).toContain("Owner's notes on v1 (2)");
+      expect(open).not.toContain("Say what second means.");
+      const all = await ok(["plan", "notes", "EXA-1", "--all"]);
+      expect(all).toContain("N1 · Comment · section \"Plan > Steps 1–4\" · addressed in v1\n> second\nSay what second means.\nReply from agent (thr_example): Explained in the text.");
+      expect(all).toContain("N2 · Remove");
+      expect(await ok(["plan", "show", "EXA-1"])).toContain("· 2 open notes");
+      expect(JSON.parse(await ok(["plan", "reply", "EXA-1", "N2", "--body", "Gone.", "--addressed", "--json"], "thr_example")).note).toMatchObject({ number: 2, state: "addressed", reply: "Gone." });
+    });
+
+    it("warns, without refusing, when a plan is resubmitted while sent notes are unanswered", async () => {
+      const { ok, call, taskId } = await withNotes();
+      await call("sendPlanFeedback", { taskId, author: owner });
+      await ok(["plan", "reply", "EXA-1", "N2", "--body", "Done.", "--addressed"], "thr_example");
+      await ok(["plan", "edit", "EXA-1", "--section", "Risks", "--body", "## Risks\nSome.", "--base-version", "1", "--summary", "Changed"], "thr_example");
+      const submitted = await ok(["plan", "submit", "EXA-1"], "thr_example");
+      expect(submitted).toBe('EXA-1 plan v2 submitted for review\nWarning: 2 notes are still unanswered: N1, N3. Answer each with `bb work-board plan reply EXA-1 N1 --body "…" --addressed`.');
+      expect(await ok(["plan", "show", "EXA-1"])).toContain("Plan v2 · in_review");
+    });
+
+    it("does not warn when every sent note is answered, or when no review was requested", async () => {
+      const { ok, call, taskId } = await withNotes();
+      await call("sendPlanFeedback", { taskId, author: owner });
+      for (const n of ["N1", "N2", "N3"]) await ok(["plan", "reply", "EXA-1", n, "--body", "Done.", "--addressed"], "thr_example");
+      await ok(["plan", "edit", "EXA-1", "--section", "Risks", "--body", "## Risks\nSome.", "--base-version", "1", "--summary", "Changed"], "thr_example");
+      expect(await ok(["plan", "submit", "EXA-1"], "thr_example")).toBe("EXA-1 plan v2 submitted for review");
+    });
   });
 });

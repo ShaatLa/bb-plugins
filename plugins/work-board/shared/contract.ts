@@ -6,6 +6,7 @@ import { gitSyncMethods } from "./git-sync";
 import { lockMethods } from "./locks";
 import { taskDateFiltersSchema } from "./task-dates.js";
 import { PLAN_FORMATS, PLAN_OPS, PLAN_STATES } from "./plan";
+import { PLAN_NOTE_BODY_MAX, PLAN_NOTE_CONTEXT_MAX, PLAN_NOTE_HEADING_MAX, PLAN_NOTE_KINDS, PLAN_NOTE_QUOTE_MAX, PLAN_NOTE_STATES } from "./plan-notes";
 import type { PluginRpcContract } from "@get-bb/plugin-sdk";
 import { z } from "zod";
 import { autoArchiveAfterDaysSchema, staleIdleThresholdSchema, statusNotificationsSchema, boardPreferencesSchema } from "./project-settings";
@@ -698,9 +699,10 @@ export const taskPlanHeadSchema = z
     updatedBy: planAuthorSchema,
   })
   .strict();
+const planErrorCodes = ["plan_conflict", "plan_no_change", "plan_invalid", "plan_archived", "plan_state", "secret_detected"] as const;
 const planErrorSchema = z
   .object({
-    code: z.enum(["plan_conflict", "plan_no_change", "plan_invalid", "plan_archived", "plan_state", "secret_detected"]),
+    code: z.enum(planErrorCodes),
     message: z.string(),
   })
   .strict();
@@ -716,6 +718,64 @@ const savePlanInputSchema = z.discriminatedUnion("op", [
   z.object({ ...planWriteBase, op: z.literal("restore"), restoreVersion: z.number().int().min(1) }).strict(),
 ]);
 export const SETTABLE_PLAN_STATES = ["in_review", "approved", "changes_requested"] as const;
+
+export const planNoteKindSchema = z.enum(PLAN_NOTE_KINDS);
+export const planNoteStateSchema = z.enum(PLAN_NOTE_STATES);
+/** An owner's note on the plan; the anchor (exact, prefix, suffix) is null for a general note. */
+export const planNoteSchema = z
+  .object({
+    id: idSchema,
+    taskId: idSchema,
+    number: z.number().int().min(1),
+    kind: planNoteKindSchema,
+    exact: z.string().max(PLAN_NOTE_QUOTE_MAX).nullable(),
+    prefix: z.string().max(PLAN_NOTE_CONTEXT_MAX).nullable(),
+    suffix: z.string().max(PLAN_NOTE_CONTEXT_MAX).nullable(),
+    headingPath: z.string().max(PLAN_NOTE_HEADING_MAX).nullable(),
+    madeOnVersion: z.number().int().min(1),
+    body: z.string().max(PLAN_NOTE_BODY_MAX),
+    state: planNoteStateSchema,
+    sentInVersion: z.number().int().min(1).nullable(),
+    sentAt: z.string().nullable(),
+    reply: z.string().max(PLAN_NOTE_BODY_MAX).nullable(),
+    replyBy: z.string().nullable(),
+    repliedAt: z.string().nullable(),
+    addressedInVersion: z.number().int().min(1).nullable(),
+    authorName: nonBlankStringSchema,
+    createdAt: z.string(),
+    updatedAt: z.string(),
+  })
+  .strict();
+/** Notes per state; `open` are the sent ones the agent has not answered yet. */
+export const planNoteCountsSchema = z
+  .object({ draft: z.number().int().min(0), open: z.number().int().min(0), addressed: z.number().int().min(0), resolved: z.number().int().min(0) })
+  .strict();
+const planNoteErrorSchema = z
+  .object({ code: z.enum(planErrorCodes), message: z.string() })
+  .strict();
+const planNoteResultSchema = z.discriminatedUnion("ok", [
+  z.object({ ok: z.literal(true), note: planNoteSchema }).strict(),
+  z.object({ ok: z.literal(false), error: planNoteErrorSchema }).strict(),
+]);
+const createPlanNoteInputSchema = z
+  .object({
+    taskId: idSchema,
+    kind: planNoteKindSchema,
+    exact: z.string().max(PLAN_NOTE_QUOTE_MAX).nullish(),
+    prefix: z.string().max(PLAN_NOTE_CONTEXT_MAX).nullish(),
+    suffix: z.string().max(PLAN_NOTE_CONTEXT_MAX).nullish(),
+    headingPath: z.string().max(PLAN_NOTE_HEADING_MAX).nullish(),
+    /** The version the selection was made on; defaults to the current one. */
+    madeOnVersion: z.number().int().min(1).optional(),
+    body: z.string().max(PLAN_NOTE_BODY_MAX).default(""),
+    authorName: nonBlankStringSchema.default("You"),
+  })
+  .strict();
+const planDeliverySchema = z.enum(["sent", "failed", "no_thread"]);
+const planReviewResultSchema = z.discriminatedUnion("ok", [
+  z.object({ ok: z.literal(true), plan: taskPlanHeadSchema, delivered: planDeliverySchema, threadId: z.string().nullable(), notes: z.number().int().min(0) }).strict(),
+  z.object({ ok: z.literal(false), error: planNoteErrorSchema }).strict(),
+]);
 
 export const tasksRpcContract = {
   // One per-project setting at a time; without a key, get lists them all.
@@ -997,11 +1057,43 @@ export const tasksRpcContract = {
   },
   getTaskPlan: {
     input: z.object({ taskId: idSchema, version: z.number().int().min(1).optional() }).strict(),
-    output: z.object({ plan: taskPlanHeadSchema.extend({ requested: planVersionSchema.extend({ body: z.string() }).strict() }).strict().nullable() }).strict(),
+    output: z.object({ plan: taskPlanHeadSchema.extend({ requested: planVersionSchema.extend({ body: z.string() }).strict(), noteCounts: planNoteCountsSchema }).strict().nullable() }).strict(),
   },
   listTaskPlanVersions: {
     input: z.object({ taskId: idSchema }).strict(),
-    output: z.object({ plan: taskPlanHeadSchema.nullable(), versions: z.array(planVersionSchema) }).strict(),
+    output: z.object({ plan: taskPlanHeadSchema.nullable(), versions: z.array(planVersionSchema), noteCounts: planNoteCountsSchema }).strict(),
+  },
+  listPlanNotes: {
+    input: z.object({ taskId: idSchema }).strict(),
+    output: z.object({ notes: z.array(planNoteSchema) }).strict(),
+  },
+  createPlanNote: { input: createPlanNoteInputSchema, output: planNoteResultSchema },
+  // Only a draft note can be edited or deleted; once sent it is the record of what the agent was told.
+  updatePlanNote: {
+    input: z.object({ noteId: idSchema, body: z.string().max(PLAN_NOTE_BODY_MAX) }).strict(),
+    output: planNoteResultSchema,
+  },
+  deletePlanNote: {
+    input: z.object({ noteId: idSchema }).strict(),
+    output: z.discriminatedUnion("ok", [z.object({ ok: z.literal(true) }).strict(), z.object({ ok: z.literal(false), error: planNoteErrorSchema }).strict()]),
+  },
+  // The owner closes an answered note ("resolved") or reopens it ("draft": it goes out again with the next send).
+  setPlanNoteState: {
+    input: z.object({ noteId: idSchema, state: z.enum(["resolved", "draft"]) }).strict(),
+    output: planNoteResultSchema,
+  },
+  // The agent answers a sent note; `addressed` marks it done in the current plan version.
+  replyPlanNote: {
+    input: z.object({ taskId: idSchema, number: z.number().int().min(1), body: z.string().max(PLAN_NOTE_BODY_MAX), addressed: z.boolean().default(false), author: planAuthorSchema }).strict(),
+    output: planNoteResultSchema,
+  },
+  sendPlanFeedback: {
+    input: z.object({ taskId: idSchema, author: planAuthorSchema }).strict(),
+    output: planReviewResultSchema,
+  },
+  approvePlan: {
+    input: z.object({ taskId: idSchema, author: planAuthorSchema, note: z.string().max(PLAN_NOTE_BODY_MAX).optional() }).strict(),
+    output: planReviewResultSchema,
   },
   saveTaskPlan: { input: savePlanInputSchema, output: planMutationResultSchema },
   diffTaskPlan: {
@@ -1321,6 +1413,9 @@ export type Attachment = z.infer<typeof attachmentSchema>;
 export type PlanAuthor = z.infer<typeof planAuthorSchema>;
 export type PlanVersion = z.infer<typeof planVersionSchema>;
 export type TaskPlanHead = z.infer<typeof taskPlanHeadSchema>;
+export type PlanNote = z.infer<typeof planNoteSchema>;
+export type PlanNoteCounts = z.infer<typeof planNoteCountsSchema>;
+export type CreatePlanNoteInput = z.input<typeof createPlanNoteInputSchema>;
 export type SaveTaskPlanInput = z.infer<typeof savePlanInputSchema>;
 export type TaskThread = z.infer<typeof taskThreadSchema>;
 export type ThreadHealth = z.infer<typeof threadHealthSchema>;

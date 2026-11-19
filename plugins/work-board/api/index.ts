@@ -8,6 +8,9 @@ import { getBadgeCriteria, getBoardPreferences, setBadgeCriteria, setBoardPrefer
 import { activityService } from "../activity/index.js";
 import { createDependencyStore } from "../dependencies/store";
 import { createPlanStore, PlanError } from "../plans/store";
+import { createPlanNoteStore } from "../plans/notes";
+import { deliverPlanReview } from "../plans/delivery";
+import { buildApprovalMessage, buildFeedbackMessage, orderNotes } from "../shared/plan-notes";
 import { storageService } from "../storage";
 import { gitSyncService } from "../git-sync/service";
 import { projectConfigHandlers } from "../config";
@@ -39,7 +42,7 @@ import { BADGE_CRITERIA, DEFAULT_BADGE_CRITERIA } from "../shared/badge";
 import { errorMessage } from "../shared/errors";
 import { SecretDetectedError } from "../shared/secret-guard.js";
 import { createStructuredStore } from "../structured/store";
-import type { Evidence } from "../shared/contract";
+import type { Evidence, PlanNote } from "../shared/contract";
 import { isSideChatShapedThread } from "../shared/side-chat";
 import {
   tasksRpcContract,
@@ -747,6 +750,25 @@ export function registerHandlers(
       throw error;
     }
   }
+  const planNotes = createPlanNoteStore(bb.storage.database(), store.tasks, plans.head);
+  /** Runs a note write; refusals come back as results, and a success refreshes the task feeds. */
+  function noteWrite<T extends { taskId: string }>(write: () => T, options: { comments?: boolean } = {}) {
+    try {
+      const result = store.transaction(write);
+      const task = store.tasks.getTask(result.taskId)!;
+      publishTasksChanged(bb, task.id, task.projectId);
+      if (options.comments) publishCommentsChanged(bb, task.id);
+      return { ok: true as const, result };
+    } catch (error) {
+      if (error instanceof PlanError) return { ok: false as const, error: { code: error.code, message: error.message } };
+      if (error instanceof SecretDetectedError) return { ok: false as const, error: { code: "secret_detected" as const, message: error.message } };
+      throw error;
+    }
+  }
+  const noteResult = (write: () => PlanNote) => {
+    const outcome = noteWrite(write);
+    return outcome.ok ? { ok: true as const, note: outcome.result } : outcome;
+  };
   function changeDependency(input: { taskId: string; blockingTaskId: string; authorName: string }, add: boolean) {
     const changed = store.transaction(() => {
       const changed = add ? dependencies.add(input.taskId, input.blockingTaskId) : dependencies.remove(input.taskId, input.blockingTaskId);
@@ -780,8 +802,37 @@ export function registerHandlers(
     return { changed };
   }
   return {
-    getTaskPlan: ({ taskId, version }) => ({ plan: plans.get(taskId, version) }),
-    listTaskPlanVersions: ({ taskId }) => plans.listVersions(taskId),
+    getTaskPlan: ({ taskId, version }) => {
+      const plan = plans.get(taskId, version);
+      return { plan: plan && { ...plan, noteCounts: planNotes.counts(taskId) } };
+    },
+    listTaskPlanVersions: ({ taskId }) => ({ ...plans.listVersions(taskId), noteCounts: planNotes.counts(taskId) }),
+    listPlanNotes: ({ taskId }) => ({ notes: planNotes.list(taskId) }),
+    createPlanNote: (input) => noteResult(() => planNotes.create(input as Parameters<typeof planNotes.create>[0])),
+    updatePlanNote: ({ noteId, body }) => noteResult(() => planNotes.update(noteId, body)),
+    deletePlanNote: ({ noteId }) => {
+      const outcome = noteWrite(() => ({ taskId: planNotes.remove(noteId) }));
+      return outcome.ok ? { ok: true as const } : outcome;
+    },
+    setPlanNoteState: ({ noteId, state }) => noteResult(() => planNotes.setState(noteId, state)),
+    replyPlanNote: (input) => noteResult(() => planNotes.reply(input)),
+    sendPlanFeedback: async ({ taskId, author }) => {
+      const outcome = noteWrite(() => ({ taskId, ...planNotes.sendFeedback(taskId, author) }), { comments: true });
+      if (!outcome.ok) return outcome;
+      const { plan, version, body, taskKey, notes } = outcome.result;
+      // The feedback is saved above; delivery only wakes the agent, and its failure is reported, not undone.
+      const text = buildFeedbackMessage({ taskKey, version, notes: orderNotes(notes, body) });
+      const delivery = await deliverPlanReview(bb, store.tasks, { taskId, authorThread: plans.latestAgentThread(taskId), text });
+      return { ok: true as const, plan, ...delivery, notes: notes.length };
+    },
+    approvePlan: async ({ taskId, author, note }) => {
+      const outcome = noteWrite(() => ({ taskId, ...planNotes.approve(taskId, author, note) }), { comments: true });
+      if (!outcome.ok) return outcome;
+      const { plan, version, taskKey, note: given } = outcome.result;
+      const text = buildApprovalMessage({ taskKey, version, note: given });
+      const delivery = await deliverPlanReview(bb, store.tasks, { taskId, authorThread: plans.latestAgentThread(taskId), text });
+      return { ok: true as const, plan, ...delivery, notes: 0 };
+    },
     diffTaskPlan: ({ taskId, from, to }) => plans.diff(taskId, from, to),
     saveTaskPlan: (input) => planWrite(() => plans.save(input)),
     submitTaskPlan: ({ taskId, author }) => planWrite(() => plans.submit(taskId, author)),

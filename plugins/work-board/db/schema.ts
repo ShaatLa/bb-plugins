@@ -487,6 +487,30 @@ const MIGRATIONS = [
      created_at TEXT NOT NULL,
      PRIMARY KEY (task_id, version)
    );`,
+  // 0.58.0: the owner's notes on a plan, anchored by quote and context; they outlive plan versions and re-anchor at render time.
+  `CREATE TABLE task_plan_notes (
+     id TEXT PRIMARY KEY,
+     task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+     number INTEGER NOT NULL CHECK (number >= 1),
+     kind TEXT NOT NULL CHECK (kind IN ('comment', 'remove', 'general')),
+     exact TEXT,
+     prefix TEXT,
+     suffix TEXT,
+     heading_path TEXT,
+     made_on_version INTEGER NOT NULL CHECK (made_on_version >= 1),
+     body TEXT NOT NULL DEFAULT '',
+     state TEXT NOT NULL CHECK (state IN ('draft', 'sent', 'addressed', 'resolved')),
+     sent_in_version INTEGER,
+     sent_at TEXT,
+     reply TEXT,
+     reply_by TEXT,
+     replied_at TEXT,
+     addressed_in_version INTEGER,
+     author_name TEXT NOT NULL,
+     created_at TEXT NOT NULL,
+     updated_at TEXT NOT NULL,
+     UNIQUE (task_id, number)
+   );`,
 ] as const;
 
 export function initializeTasksSchema(db: PluginDatabase): void {

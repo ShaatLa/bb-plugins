@@ -2,6 +2,7 @@ import { PluginCliError, cliCommand, type BbPluginApi, type PluginCliContext, ty
 import type { registerHandlers } from "../api";
 import { tasksRpcContract, type PlanAuthor, type SaveTaskPlanInput, type Task } from "../shared/contract";
 import { getSection } from "../shared/plan";
+import { buildFeedbackBody, noteLabel, orderNotes, parseNoteNumber, renderNote } from "../shared/plan-notes";
 import { oneLine, table } from "./format";
 
 type Domain = ReturnType<typeof registerHandlers>;
@@ -97,8 +98,10 @@ export function planCommands(deps: PlanCliDeps) {
         "  bb work-board plan log KEY",
         "  bb work-board plan diff KEY [--from N] [--to M]",
         "  bb work-board plan submit KEY",
+        "  bb work-board plan notes KEY [--all]",
+        "  bb work-board plan reply KEY N1 --body TEXT [--addressed]",
       ].join("\n"),
-      positionals: [{ name: "subcommand", description: "show, set, edit, restore, log, diff or submit", variadic: true }],
+      positionals: [{ name: "subcommand", description: "show, set, edit, restore, log, diff, submit, notes or reply", variadic: true }],
       options: common,
       run(input) {
         const [subcommand] = input.positionals.subcommand;
@@ -131,7 +134,7 @@ export function planCommands(deps: PlanCliDeps) {
             return JSON.stringify({ taskKey: task.key, plan: { ...plan, requested: undefined }, requested: { ...plan.requested, body: undefined }, section: input.options.section ?? null, body: text });
           const historical = plan.requested.version !== plan.version;
           return [
-            `Plan v${plan.version} · ${plan.state} · updated ${plan.updatedAt} by ${plan.updatedBy.name}`,
+            `Plan v${plan.version} · ${plan.state} · updated ${plan.updatedAt} by ${plan.updatedBy.name}${plan.noteCounts.open ? ` · ${plan.noteCounts.open} open note${plan.noteCounts.open === 1 ? "" : "s"}` : ""}`,
             `Next edit: --base-version ${plan.version}`,
             ...(historical ? [`Showing historical v${plan.requested.version} (${plan.requested.summary}); do not use it as a base version`] : []),
             ...(input.options.section !== undefined ? [`Section: ${input.options.section}`] : []),
@@ -243,8 +246,59 @@ export function planCommands(deps: PlanCliDeps) {
       run(input, ctx) {
         return guard(async () => {
           const task = await resolveTask(domain, input.positionals["key-or-id"]);
+          // Notes the owner sent and nobody answered: submitting does not refuse, but the agent should know.
+          // A new version already moved the plan from changes_requested back to draft, so the notes decide, not the state.
+          const unanswered = (await domain.listPlanNotes({ taskId: task.id })).notes.filter((note) => note.state === "sent");
           const result = unwrap(tasksRpcContract.submitTaskPlan.output.parse(await domain.submitTaskPlan({ taskId: task.id, author: authorOf(ctx) })));
-          return input.options.json ? JSON.stringify({ plan: result.plan }) : oneLine(`${task.key} plan v${result.plan.version} submitted for review`);
+          if (input.options.json) return JSON.stringify({ plan: result.plan, unansweredNotes: unanswered.map((note) => note.number) });
+          const warning = unanswered.length
+            ? `\nWarning: ${unanswered.length} note${unanswered.length === 1 ? " is" : "s are"} still unanswered: ${unanswered.map((note) => noteLabel(note.number)).join(", ")}. Answer each with \`bb work-board plan reply ${task.key} N1 --body "…" --addressed\`.`
+            : "";
+          return oneLine(`${task.key} plan v${result.plan.version} submitted for review`) + warning;
+        });
+      },
+    }),
+    "plan notes": cliCommand({
+      summary: "The owner's notes on the plan: the open ones by default, in the order of the review message",
+      positionals: [deps.keyPositional],
+      options: {
+        all: { type: "boolean", description: "Every note with its state and your reply, not only the sent ones you have not answered" },
+        ...common,
+      },
+      run(input) {
+        return guard(async () => {
+          const task = await resolveTask(domain, input.positionals["key-or-id"]);
+          const { plan } = tasksRpcContract.getTaskPlan.output.parse(await domain.getTaskPlan({ taskId: task.id }));
+          if (!plan) return input.options.json ? JSON.stringify({ taskKey: task.key, version: null, notes: [] }) : fail(noPlan(task.key), "plan_not_found");
+          const { notes } = tasksRpcContract.listPlanNotes.output.parse(await domain.listPlanNotes({ taskId: task.id }));
+          const ordered = orderNotes(input.options.all ? notes : notes.filter((note) => note.state === "sent"), plan.requested.body);
+          if (input.options.json) return JSON.stringify({ taskKey: task.key, version: plan.version, noteCounts: plan.noteCounts, notes: ordered.map(({ note, placement }) => ({ ...note, placement })) });
+          if (ordered.length === 0) return input.options.all ? `${task.key} plan has no notes` : `${task.key} plan has no open notes`;
+          if (input.options.all)
+            return [`Notes on ${task.key} plan v${plan.version} (${ordered.length}), in plan order:`, "", ordered.map(({ note, placement }) => renderNote(note, placement, { detail: true })).join("\n\n")].join("\n");
+          return buildFeedbackBody({ taskKey: task.key, version: plan.version, notes: ordered });
+        });
+      },
+    }),
+    "plan reply": cliCommand({
+      summary: "Answer one of the owner's notes; --addressed marks it done in the current plan version",
+      positionals: [deps.keyPositional, { name: "note", description: "Note number, for example N1", required: true }],
+      options: {
+        body: { type: "string", required: true, description: "What changed, or why not" },
+        addressed: { type: "boolean", description: "The current plan version answers this note" },
+        json: deps.jsonOption,
+      },
+      run(input, ctx) {
+        return guard(async () => {
+          const task = await resolveTask(domain, input.positionals["key-or-id"]);
+          const number = parseNoteNumber(input.positionals.note);
+          if (number === null) return fail(`"${input.positionals.note}" is not a note number; use N1, N2 … as printed by \`bb work-board plan notes ${task.key}\``, "invalid_value");
+          const result = unwrap(
+            tasksRpcContract.replyPlanNote.output.parse(await domain.replyPlanNote({ taskId: task.id, number, body: input.options.body, addressed: input.options.addressed === true, author: authorOf(ctx) })),
+          );
+          return input.options.json
+            ? JSON.stringify({ note: result.note })
+            : oneLine(`${task.key} ${noteLabel(number)} answered${result.note.state === "addressed" ? ` · addressed in v${result.note.addressedInVersion}` : " · not marked addressed"}`);
         });
       },
     }),

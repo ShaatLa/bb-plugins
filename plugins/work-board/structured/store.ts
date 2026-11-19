@@ -4,7 +4,7 @@ import type { BbPluginApi, PluginRpcHandlers } from "@get-bb/plugin-sdk";
 import type { TasksApiStore } from "../api";
 import { createUlid } from "../db/store";
 import { getWorkflowPolicy } from "../shared/workflow-policy";
-import { deliverCommentToLatestAgent } from "../steer";
+import { defaultTaskThreadId, deliverCommentToLatestAgent } from "../steer";
 import {
   questionSchema,
   templateSchema,
@@ -257,10 +257,7 @@ export function createStructuredStore(bb: BbPluginApi, store: TasksApiStore) {
       changed(question.taskId);
       if (!comment) return { ...result, question, notification: "unchanged" as const };
       bb.realtime.publish("comments:changed", { taskId: question.taskId });
-      const threadId = question.askedByThread ??
-        store.tasks.listTaskThreads(question.taskId)[0]?.threadId ??
-        store.tasks.getLatestAgentComment(question.taskId, comment.id)
-          ?.threadId;
+      const threadId = question.askedByThread ?? defaultTaskThreadId(store.tasks, question.taskId, comment.id);
       if (!threadId) return { ...result, question, notification: "none" as const };
       const notifiedCount = await deliverCommentToLatestAgent(bb, store.tasks, {
         taskId: question.taskId,

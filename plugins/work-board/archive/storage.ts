@@ -11,10 +11,12 @@ import {
 } from "../shared/secret-guard.js";
 import { createStructuredStore } from "../structured/store";
 import { createPlanStore } from "../plans/store";
+import { createPlanNoteStore } from "../plans/notes";
 import { scheduleRunSchema, scheduleSchema, scheduleSourceSchema, type ScheduleRun } from "../shared/scheduled";
 import {
   archiveProjectSchema,
   archivePlanSchema,
+  archivePlanNoteSchema,
   archiveTaskSchema,
   validateArchive,
   type ArchiveTask,
@@ -62,7 +64,7 @@ export function captureProject(
     const taskIdSet = new Set(tasks.map(task => task.id));
     const manifest = archiveProjectSchema.parse({
       format: "bb-work-board",
-      version: 18,
+      version: 19,
       gitSync: createGitSyncStore(bb.storage.database()).config(projectId),
       project,
       folders,
@@ -110,7 +112,9 @@ export function captureProject(
     const labelsByTask = group(store.tasks.listTaskLabelsForProject(projectId), (l) => l.taskId);
     const threadsByTask = group(store.tasks.listTaskThreadsForProject(projectId), (t) => t.taskId);
     const questionsByTask = structured.listQuestionsForProject(projectId);
-    const plansByTask = createPlanStore(bb.storage.database(), store.tasks).captureProject(projectId);
+    const planStore = createPlanStore(bb.storage.database(), store.tasks);
+    const plansByTask = planStore.captureProject(projectId);
+    const notesByTask = createPlanNoteStore(bb.storage.database(), store.tasks, planStore.head).captureProject(projectId);
     const linksByTask = group(createGitSyncStore(db).linksForProject(projectId), (l) => l.taskId);
     const dependenciesByTask = group(db.prepare<[string], { taskId: string; blockingTaskId: string }>(`
       SELECT d.task_id AS taskId, d.blocking_task_id AS blockingTaskId
@@ -151,6 +155,7 @@ export function captureProject(
       comments: [...(commentsByTask.get(task.id) ?? [])].sort(byId),
       questions: questionsByTask.get(task.id) ?? [],
       plan: plansByTask.get(task.id) ?? null,
+      planNotes: notesByTask.get(task.id) ?? [],
       attachments: [...(attachmentsByTask.get(task.id) ?? [])].sort(byId),
       threads: [...(threadsByTask.get(task.id) ?? [])].sort(byId),
       aliases: (aliasesByTask.get(task.id) ?? []).map(({ prefix, number }) => ({ prefix, number })),
@@ -229,6 +234,11 @@ export function restoreProject(
       assertNoSecrets(version.summary, "plan summary");
       assertNoSecrets(version.target ?? undefined, "plan target");
     }
+    for (const note of record.planNotes ?? []) {
+      assertNoSecrets(note.body, "plan note");
+      assertNoSecrets(note.reply ?? undefined, "plan note reply");
+      assertNoSecrets(note.exact ?? undefined, "plan note quote");
+    }
   }
   for (const template of archive.manifest.templates) {
     assertNoSecrets(template.name, "template name");
@@ -274,6 +284,14 @@ export function restoreProject(
       const imported = planOf(record)!;
       if (JSON.stringify(local && archivePlanSchema.parse(local)) !== JSON.stringify(imported))
         throw new Error(`Import conflict: plan ${record.task.key}; use --overwrite`);
+    }
+    // Archives before v19 cannot carry plan notes either, so they leave local notes untouched.
+    const planNotes = createPlanNoteStore(db, store.tasks, plans.head);
+    const notesOf = (record: (typeof records)[number]) => (manifest.version >= 19 ? record.planNotes ?? [] : undefined);
+    const localNotes = (taskId: string) => archivePlanNoteSchema.array().parse(planNotes.capture(taskId));
+    for (const record of records) if (notesOf(record) !== undefined && localTaskIds.has(record.task.id) && !overwrite) {
+      if (JSON.stringify(localNotes(record.task.id)) !== JSON.stringify(notesOf(record)))
+        throw new Error(`Import conflict: plan notes ${record.task.key}; use --overwrite`);
     }
     const changes: Array<{ table: string; row: Row; keys: string[] }> = [];
     const plan = (
@@ -538,6 +556,10 @@ export function restoreProject(
       if (imported === undefined) continue;
       const local = plans.capture(record.task.id);
       if (JSON.stringify(local && archivePlanSchema.parse(local)) !== JSON.stringify(imported)) plans.restore(record.task.id, imported);
+    }
+    for (const record of records) {
+      const imported = notesOf(record);
+      if (imported !== undefined && JSON.stringify(localNotes(record.task.id)) !== JSON.stringify(imported)) planNotes.restore(record.task.id, imported);
     }
     if (manifest.gitSync) db.prepare<[string]>("DELETE FROM git_pr_snapshots WHERE project_id=?").run(projectId);
     for (const { task } of records) {
