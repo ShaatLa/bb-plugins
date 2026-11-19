@@ -166,33 +166,35 @@ export function usePluginBrand(id: string | null) {
   const brands = usePluginBrands(!!id);
   return id ? brands.find(brand => brand.id === id) ?? null : null;
 }
-// An update has no owner message; bb's own row for what started its turn names it: a finished child or another thread
-// (bb's "… finished" and "Message from" rows, same classes and icons), or a plugin. bb's quote of the trigger is left out.
-// The notice that woke the agent, as one line after its sender: the text below is the agent's reply to it, not the sender's.
-function notice(text: string, sender: string) {
-  const line = text.replace(/<!--[\s\S]*?-->/g, '').split('\n').map(l => l.replace(/[*`_#>]/g, '').trim()).find(Boolean) ?? '';
-  const rest = (line.toLowerCase().startsWith(sender.toLowerCase()) ? line.slice(sender.length) : line.replace(/^\[[^\]]*\]\s*/, '')).replace(/^[\s·:—-]+/, '');
-  return rest ? ` · ${rest}` : '';
-}
-// The text under the caption, without bb's [bb message from …] header or the sender's own leading [tag] (its name or role, which the
-// caption already says); a tag that starts with a task key is content and stays, as do links and checkboxes.
+// A message someone other than the owner or this agent put into the thread has one header: an icon, the sender, an optional verb and
+// the time. bb's own rows are the model: "Message from" another thread or a plugin, "… finished"/"failed" for a child, a script's tag.
+const SYSTEM_NOTICE = /@thread:(thr_[\w-]+) (completed|failed)\b/g;
+// The children a bb notice names (a batch names several) and whether all of them failed.
+const noticeChildren = (text: string) => { const found = [...text.matchAll(SYSTEM_NOTICE)]; return { ids: [...new Set(found.map(m => m[1]!))], failed: found.length > 0 && found.every(m => m[2] === 'failed') }; };
+// The text under the header, without bb's [bb message from …] header, a bb notice's own "@thread:… completed:" line or the sender's own
+// leading [tag] (its name or role, which the header already says); a tag that starts with a task key is content and stays, as do links and checkboxes.
 export function unlabel(text: string) {
   const rest = text.replace(/^\[bb message from [^\]]*\]\s*/, ''), tag = /^\[([^\]\n]{2,40})\](?![(:])\s+/.exec(rest);
-  return tag && !/^[A-Z][A-Z0-9]*-\d+/.test(tag[1]!) ? rest.slice(tag[0].length) : rest;
+  const body = tag && !/^[A-Z][A-Z0-9]*-\d+/.test(tag[1]!) ? rest.slice(tag[0].length) : rest;
+  return text.startsWith('[bb system]') ? body.replace(/^@thread:thr_[\w-]+ (?:completed:?|failed\.?)[ \t]*/gm, '').trim() : body;
 }
-function UpdateCaption({ item, time }: { item: Item; time: ReactNode }) {
-  const { threads } = experimental_useSidebarThreads(), trigger = item.trigger, source = trigger?.sourceId ?? null, brand = usePluginBrand(trigger?.kind === 'plugin' ? source : null);
+function IncomingHeader({ item, time }: { item: Item; time: ReactNode }) {
+  const { threads } = experimental_useSidebarThreads(), trigger = item.trigger, system = trigger?.kind === 'system' ? noticeChildren(item.question) : null;
+  const source = system ? system.ids[0] ?? trigger?.sourceId ?? null : trigger?.sourceId ?? null, brand = usePluginBrand(trigger?.kind === 'plugin' ? source : null);
   const thread = threads.find(t => t.id === source), projectId = thread?.projectId ?? item.projectId, title = thread?.displayTitle ?? thread?.title ?? trigger?.sourceTitle ?? source ?? '';
   const href = source ? `${projectId ? `/projects/${encodeURIComponent(projectId)}` : ''}/threads/${encodeURIComponent(source)}` : '';
   const mention = source ? { kind: 'thread' as const, threadId: source, label: title, ...(projectId ? { projectId } : {}) } : null, look = mention && experimental_describePromptMention(mention);
+  const muted = (text: string) => <span className="shrink-0 whitespace-pre text-muted-foreground">{text}</span>;
   const [icon, body]: [IconName | null, ReactNode] = !source ? [null, null]
-    : trigger?.kind === 'system' ? ['CircleCheck', <><UrlLink href={href} className="min-w-0 cursor-pointer truncate whitespace-pre text-left font-medium text-foreground underline underline-offset-2 opacity-70 focus-visible:outline-none">{title}</UrlLink><span className="shrink-0 whitespace-pre text-muted-foreground"> finished</span></>]
-    : trigger?.kind === 'agent' && mention && look ? ['MessageSquare', <><span className="shrink-0 whitespace-pre text-muted-foreground">Message from </span><UrlLink href={href} title={look.title} className={`${look.className} min-w-0 bg-surface-raised/50 font-normal no-underline hover:no-underline whitespace-nowrap`}><PromptMentionIcon mention={mention} className="size-3.5 shrink-0 self-center text-muted-foreground" /><span className="truncate"><ThreadTitleText title={title} /></span></UrlLink></>]
+    // A batch names its children by count; one child is a link to its thread.
+    : system ? [system.failed ? 'CircleX' : 'CircleCheck', system.ids.length > 1 ? <><span className="min-w-0 truncate whitespace-pre font-medium text-foreground opacity-70">{system.ids.length} child threads</span>{muted(system.failed ? ' failed' : ' finished')}</>
+      : <><UrlLink href={href} className="min-w-0 cursor-pointer truncate whitespace-pre text-left font-medium text-foreground underline underline-offset-2 opacity-70 focus-visible:outline-none">{title}</UrlLink>{muted(system.failed ? ' failed' : ' finished')}</>]
+    : trigger?.kind === 'agent' && mention && look ? ['MessageSquare', <>{muted('Message from ')}<UrlLink href={href} title={look.title} className={`${look.className} min-w-0 bg-surface-raised/50 font-normal no-underline hover:no-underline whitespace-nowrap`}><PromptMentionIcon mention={mention} className="size-3.5 shrink-0 self-center text-muted-foreground" /><span className="truncate"><ThreadTitleText title={title} /></span></UrlLink></>]
     // bb has no plugin pill; a thread pill's look with the plugin's icon reads the same as "Message from" another thread.
     // A plugin that is not installed any more is named by its bare id.
-    : trigger?.kind === 'plugin' ? ['MessageSquare', <><span className="shrink-0 whitespace-pre text-muted-foreground">Message from </span><span className={`${experimental_describePromptMention({ kind: 'thread', threadId: source, label: brand?.name ?? source }).className} min-w-0 bg-surface-raised/50 font-normal whitespace-nowrap`}>{brand && <PluginIcon pluginId={brand.id} icon={brand.icon} className="size-3.5 shrink-0 self-center" />}<span className="truncate">{brand?.name ?? source}</span></span></>]
+    : trigger?.kind === 'plugin' ? ['MessageSquare', <>{muted('Message from ')}<span className={`${experimental_describePromptMention({ kind: 'thread', threadId: source, label: brand?.name ?? source }).className} min-w-0 bg-surface-raised/50 font-normal whitespace-nowrap`}>{brand && <PluginIcon pluginId={brand.id} icon={brand.icon} className="size-3.5 shrink-0 self-center" />}<span className="truncate">{brand?.name ?? source}</span></span></>]
     // A tagged script waking its own thread: bb's automation icon.
-    : trigger?.kind === 'other' ? ['Repeat', <span className="min-w-0 truncate whitespace-pre text-muted-foreground"><span className="text-foreground/80">{source}</span>{notice(item.question, source)}</span>] : [null, null];
+    : trigger?.kind === 'other' ? ['Repeat', <span className="min-w-0 truncate whitespace-pre text-foreground/80">{source}</span>] : [null, null];
   if (!body && !time) return null;
   return <div data-update-caption className="flex min-w-0 items-center gap-2 px-2 text-sm leading-5">{icon && <Icon name={icon} aria-hidden className="size-4 shrink-0 text-muted-foreground" />}{(body || time) && <span className="inline-flex min-w-0 max-w-full items-baseline overflow-hidden whitespace-nowrap">{body}{time && <span className="shrink-0 whitespace-pre text-muted-foreground [&_time]:text-sm">{body && ' · '}{time}</span>}</span>}</div>;
 }
@@ -265,7 +267,7 @@ export function ItemCard({ item, members, late, live = true, chat = false, marka
     if (!menu) return;
     // The robot opens its own one-item menu under itself; the rest follow the More button.
     const anchor = menu === 'robot' ? robotButton.current : moreButton.current;
-    const place = () => { const r = anchor?.getBoundingClientRect(); if (r) setMenuAt(r.top > 240 ? { left: r.left, bottom: window.innerHeight - r.top + 4 } : { left: r.left, top: r.bottom + 4 }); };
+    const place = () => { const r = anchor?.getBoundingClientRect(); if (r) { const left = Math.max(8, Math.min(r.left, window.innerWidth - 200)); setMenuAt(r.top > 240 ? { left, bottom: window.innerHeight - r.top + 4 } : { left, top: r.bottom + 4 }); }; };
     const close = (event: Event) => { if (!menuBox.current?.contains(event.target as Node) && !(event.type === 'pointerdown' && anchor?.contains(event.target as Node))) setMenu(null); };
     place(); window.addEventListener('scroll', close, true); window.addEventListener('resize', place); document.addEventListener('pointerdown', close, true);
     return () => { window.removeEventListener('scroll', close, true); window.removeEventListener('resize', place); document.removeEventListener('pointerdown', close, true); setMenuAt(null); };
@@ -320,8 +322,14 @@ export function ItemCard({ item, members, late, live = true, chat = false, marka
   // Same look as bb chat: my message is a recessed bubble on the right, the agent's text has no background.
   const userBubble = 'max-w-full rounded-xl border border-border-seam bg-surface-recessed px-4 py-2.5 text-sm leading-relaxed text-foreground';
   const agentText = 'w-full px-2 text-sm leading-relaxed';
+  // An incoming message (not the owner's, not this agent's) is drawn as a quote under its header; the agent's reply to it is a separate agent message.
+  const incoming = chat && item.kind === 'update' && !!item.trigger, quoteText = incoming ? unlabel(item.question).trim() : '';
   const bare = chat && item.kind === 'update' && !item.answer;
-  const iconProps = (text: string) => ({ 'aria-label': text, title: text, variant: 'ghost' as const, className: 'size-6 px-0 [&_[data-icon-root]]:size-[13px]' });
+  const iconProps = (text: string) => ({ 'aria-label': text, title: text, variant: 'ghost' as const, className: 'size-6 px-0 [&_[data-icon-root]]:size-[13px] [@media(hover:none)]:size-8' });
+  // In the chat every clamped body (owner bubble, agent text, incoming quote) expands from this icon at the left of its message's action row.
+  const expandButton = (clamped || expanded) && <Button size="sm" {...iconProps(expanded ? 'Show less' : 'Show more')} aria-expanded={expanded} onClick={() => setExpanded(!expanded)}><Icon name={expanded ? 'ChevronUp' : 'ChevronDown'} aria-hidden /></Button>;
+  // Always visible on touch screens, where there is no hover.
+  const rowFade = 'text-muted-foreground opacity-60 transition-opacity hover:opacity-100 focus-within:opacity-100 [@media(hover:none)]:opacity-100';
   const unread = group.some(isUnread), card = useRef<HTMLLIElement>(null);
   // Telegram-style status: a dot while the answer is new, a double check once read.
   const readMark = unread ? <span className="size-1.5 rounded-full bg-foreground/70" aria-label="Unread" /> : group.every(member => member.readAt !== null) && (last.kind === 'mine' || (last.kind === 'update' && last.asks)) && last.status === 'answered' ? <ReadTicks at={last.readAt!} /> : null;
@@ -357,30 +365,25 @@ export function ItemCard({ item, members, late, live = true, chat = false, marka
     {item.kind === 'for_me' ? <div className="space-y-1">
       <div className="flex min-h-8 items-center gap-2 pl-2 text-xs text-muted-foreground">{chat && time}{item.status === 'open' && item.deadlineAt !== null && <Deadline item={item} />}{item.status === 'replied' && item.answerSource === 'agent' && <span>Defaulted</span>}{item.urgency === 'blocking' && <span>Blocking</span>}{item.chatAsked && <span title="The agent asked this in its reply text, not through Agent Hub" className="inline-flex items-center gap-1"><Icon name="MessageSquare" aria-hidden className="size-3" />Asked in chat</span>}{item.dismissedAt !== null && item.answerSource === 'agent' && <span title="The agent withdrew this question; its reason is below">Withdrawn</span>}<span className="flex-1" /><span className="opacity-60 transition-opacity hover:opacity-100 focus-within:opacity-100">{/* Only outside the chat it leads anywhere: in the chat the conversation is already open. */}{open && !item.threadDeleted && <Button asChild size="sm" {...iconProps(open.label)}><UrlLink href={open.href} onClick={event => { if (open.onClick) { event.preventDefault(); open.onClick(); } }}><Icon name="ExternalLink" aria-hidden /></UrlLink></Button>}</span></div>
       <div ref={question} className={expanded ? '' : 'line-clamp-6'}>{agentBody(item.question, item.questionSeq)}</div>
-    </div> : item.kind === 'update' ? <><UpdateCaption item={item} time={chat ? time : null} />
-      {/* Another thread's or a plugin's message is quoted under "Message from …"; its [bb message from …] header and a plugin's own leading [tag] are already the caption. */}
-      {chat && (item.trigger?.kind === 'agent' || item.trigger?.kind === 'plugin') && item.question && <div data-agent-message className="ml-8 mr-2 border-l-2 border-border-seam pl-3 text-sm text-muted-foreground"><div ref={question} className={`break-words ${expanded ? '' : '[&_p]:my-0 line-clamp-3'}`}><AgentMarkdown content={unlabel(item.question)} threadId={item.threadId} /></div></div>}
-    </> : part === 'answer' ? <div className="ml-auto flex w-fit min-w-0 max-w-[70%] flex-col items-end gap-1">{group.map(echo)}</div> : <div className="ml-auto flex w-fit max-w-[70%] flex-col items-end gap-1">
+    </div> : item.kind === 'update' ? <><IncomingHeader item={item} time={chat ? time : null} />
+      {/* The quote has no header text: bb's [bb message from …] header, a notice's own line and a sender's leading [tag] are already in the header. */}
+      {quoteText && <div data-agent-message className="ml-3 mr-2 border-l-2 sm:ml-8 border-border-seam pl-3 text-sm text-muted-foreground"><div ref={question} className={`break-words ${expanded ? '' : '[&_p]:my-0 line-clamp-3'}`}><AgentMarkdown content={quoteText} threadId={item.threadId} /></div></div>}
+      {chat && <div className={`flex items-center gap-0.5 px-1 ${rowFade}`}>{expandButton}<MessageCopy small link text={messageLink(item.projectId, item.threadId, item.questionSeq)} /></div>}
+    </> : part === 'answer' ? <div className="ml-auto flex w-fit min-w-0 max-w-[85%] sm:max-w-[70%] flex-col items-end gap-1">{group.map(echo)}</div> : <div className="ml-auto flex w-fit max-w-[85%] sm:max-w-[70%] flex-col items-end gap-1">
       {late?.map(echo)}
       {group.map(member => <div key={member.id} className={userBubble}>{member.question && <div ref={member === item ? question : undefined} className={`whitespace-pre-wrap break-words ${expanded ? '' : 'line-clamp-6'}`}><InlineCommentText threadId={member.threadId} text={member.question} prefixes={workBoard?.projects.map(p => p.prefix)} /></div>}{member.attachments.length > 0 && <ItemAttachments attachments={member.attachments} projectId={member.projectId} />}</div>)}
       {/* bb's row under the owner's own message: time, then Copy and Save, shown on hover (always on touch screens). */}
       {chat && <div className="flex items-center gap-[13px] text-muted-foreground">{time}<span className="flex items-center gap-0.5 opacity-60 transition-opacity hover:opacity-100 focus-within:opacity-100 [@media(hover:none)]:opacity-100">
+        {expandButton}
         <MessageCopy small text={group.map(member => member.question).filter(Boolean).join('\n\n')} />
         <MessageCopy small link text={messageLink(item.projectId, item.threadId, item.questionSeq)} />
-        {item.kind === 'mine' && group.every(member => member.questionSeq !== null) && <Button size="sm" {...iconProps(savedOwn ? 'Saved to Agent Hub' : 'Save to Agent Hub')} className="size-6 px-0 [&_[data-icon-root]]:size-[13px]" onClick={() => void act(async () => { for (const member of group) await rpc.call('save', { threadId: member.threadId, seq: member.questionSeq!, role: 'user', text: member.question }); setSavedOwn(true); })}><Icon name={savedOwn ? 'Check' : 'Star'} aria-hidden /></Button>}
-        {editSent && item.kind === 'mine' && group.length === 1 && item.questionSeq !== null && !item.threadDeleted && <Button size="sm" {...iconProps('Edit message')} className="size-6 px-0 [&_[data-icon-root]]:size-[13px]" onClick={() => editSent(item)}><Icon name="Edit" aria-hidden /></Button>}
+        {item.kind === 'mine' && group.every(member => member.questionSeq !== null) && <Button size="sm" {...iconProps(savedOwn ? 'Saved to Agent Hub' : 'Save to Agent Hub')} className="size-6 px-0 [&_[data-icon-root]]:size-[13px] [@media(hover:none)]:size-8" onClick={() => void act(async () => { for (const member of group) await rpc.call('save', { threadId: member.threadId, seq: member.questionSeq!, role: 'user', text: member.question }); setSavedOwn(true); })}><Icon name={savedOwn ? 'Check' : 'Star'} aria-hidden /></Button>}
+        {editSent && item.kind === 'mine' && group.length === 1 && item.questionSeq !== null && !item.threadDeleted && <Button size="sm" {...iconProps('Edit message')} className="size-6 px-0 [&_[data-icon-root]]:size-[13px] [@media(hover:none)]:size-8" onClick={() => editSent(item)}><Icon name="Edit" aria-hidden /></Button>}
       </span></div>}
     </div>}
-    {(() => {
-      // A message another agent or a plugin (a Work Board report, a CI notice) sent, still being worked on: the robot under it
-      // shares a row with its Show more, dimmed like the other robots. The chat's own end robot stands back for it.
-      const working = chat && live && item.status === 'waiting' && item.kind === 'update';
-      // A quoted message's expand is the same icon as in a message with no reply, left under the quote.
-      const quoted = chat && item.kind === 'update' && (item.trigger?.kind === 'agent' || item.trigger?.kind === 'plugin') && !!item.question;
-      if (!bare && quoted) return (clamped || expanded) && <div className="flex px-1 text-muted-foreground opacity-60 transition-opacity hover:opacity-100 focus-within:opacity-100"><Button size="sm" {...iconProps(expanded ? 'Show less' : 'Show more')} aria-expanded={expanded} onClick={() => setExpanded(!expanded)}><Icon name={expanded ? 'ChevronUp' : 'ChevronDown'} aria-hidden /></Button></div>;
-      const more = !bare && (clamped || expanded) && <Button variant="ghost" size="sm" className={chat ? `ml-auto flex h-6 shrink-0 px-2 text-xs text-muted-foreground ${working ? 'mt-1' : ''}` : undefined} aria-expanded={expanded} onClick={() => setExpanded(!expanded)}>{chat ? (expanded ? 'Show less' : 'Show more') : (expanded ? 'Collapse question' : 'Expand question')}</Button>;
-      return working ? <div className="flex items-start gap-2"><div className="min-w-0 flex-1 px-2 text-muted-foreground opacity-60 transition-opacity hover:opacity-100 has-[[aria-expanded=true]]:opacity-100"><WorkLog threadId={item.threadId} turnId={item.turnId} sourceSeqStart={item.questionSeq} startedAt={item.createdAt} live><RobotLoader className="h-8" label="Working on the message" /></WorkLog></div>{more}</div> : more;
-    })()}
+    {!chat && (clamped || expanded) && <Button variant="ghost" size="sm" aria-expanded={expanded} onClick={() => setExpanded(!expanded)}>{expanded ? 'Collapse question' : 'Expand question'}</Button>}
+    {/* An incoming message still being worked on: the robot is its add-on, dimmed like the other robots. The chat's own end robot stands back for it. */}
+    {chat && live && item.status === 'waiting' && item.kind === 'update' && <div className="px-2 text-muted-foreground opacity-60 transition-opacity hover:opacity-100 has-[[aria-expanded=true]]:opacity-100"><WorkLog threadId={item.threadId} turnId={item.turnId} sourceSeqStart={item.questionSeq} startedAt={item.createdAt} live><RobotLoader className="h-8" label="Working on the message" /></WorkLog></div>}
     {/* Where the agent's reply would be, so on its side. */}{part === 'question' && <Button variant="ghost" size="sm" className="flex h-6 gap-1.5 px-2 text-xs text-muted-foreground" onClick={() => onJump?.(`${last.id}:answer`)}><Icon name="ArrowDown" aria-hidden className="size-3.5" />Answered below</Button>}
     {/* An interim reply and the final answer in one card: the interim goes first, as it came, under the same "Answered below"
         line a split card has (the answer is right under it here, so the line only says so). */}
@@ -388,7 +391,7 @@ export function ItemCard({ item, members, late, live = true, chat = false, marka
     {part !== 'question' && item.answer && <>{/* An agent's question carries its asking turn, but the owner's reply has no work behind it. */}{chat && item.turnId && item.kind !== 'for_me' && <div className="px-2"><WorkLog threadId={item.threadId} turnId={item.turnId} sourceSeqStart={item.questionSeq} sourceSeqEnd={item.answerSeq} startedAt={item.createdAt} completedAt={item.answeredAt ?? item.updatedAt} answerSeq={item.answerSeq} /></div>}{item.kind !== 'for_me' ? agentBody(item.answer, item.answerSeq)
       /* The owner's reply goes into the chat as their own message (the question quoted), so the conversation shows that one
          bubble; elsewhere it stands under the question on the owner's side, as bb draws the owner's messages. */
-      : !chat || compact ? <div className="ml-auto w-fit min-w-0 max-w-[70%]"><div className={userBubble}><div className="whitespace-pre-wrap break-words"><InlineCommentText threadId={item.threadId} text={item.answer} prefixes={workBoard?.projects.map(p => p.prefix)} /></div></div></div> : null}</>}
+      : !chat || compact ? <div className="ml-auto w-fit min-w-0 max-w-[85%] sm:max-w-[70%]"><div className={userBubble}><div className="whitespace-pre-wrap break-words"><InlineCommentText threadId={item.threadId} text={item.answer} prefixes={workBoard?.projects.map(p => p.prefix)} /></div></div></div> : null}</>}
     {!answeredHere && <>{interimReply}</>}
     {part !== 'question' && <>{item.likelyInterim && item.status === 'answered' && <div className="flex flex-wrap items-center gap-2 px-2 text-xs text-muted-foreground"><span>Looks like an interim reply</span><Button size="sm" variant="ghost" onClick={() => void act(() => rpc.call('keepWaiting', { id: last.id }))}>Keep waiting</Button><Button size="sm" variant="ghost" onClick={() => void act(() => rpc.call('setInterim', { id: last.id, value: false }))}>It's the answer</Button></div>}
     {item.interruptedAt != null && <div className="px-2 text-xs text-muted-foreground">Turn interrupted</div>}
@@ -398,29 +401,27 @@ export function ItemCard({ item, members, late, live = true, chat = false, marka
     </>}{part !== 'answer' && item.note && <p className="px-2 text-sm text-muted-foreground whitespace-pre-wrap"><UserText threadId={item.threadId} text={item.note} /></p>}
     {/* While the answer is owed, the robot walks where it will appear, above the actions (raw statuses told the owner nothing). */}
     {/* While the message is still on its way (see sendingItem in inbox.tsx) the robot's place is kept but left empty. */}{robot && part !== 'question' && item.status === 'waiting' && <div className={`${item.id.startsWith('ans_sending') ? 'invisible ' : ''}px-2 text-muted-foreground opacity-60 transition-opacity hover:opacity-100 has-[[aria-expanded=true]]:opacity-100`}><WorkLog threadId={item.threadId} turnId={item.turnId} sourceSeqStart={item.questionSeq} startedAt={item.createdAt} live><button {...robotProps} title="Waiting for the answer"><RobotLoader className="h-8" label="Waiting for the answer" /></button></WorkLog></div>}
-    {part !== 'question' && <><div className="flex items-center gap-2"><div className="flex items-center gap-0.5 px-1 text-muted-foreground opacity-60 transition-opacity hover:opacity-100 focus-within:opacity-100 has-[[role=menu]]:opacity-100">
-      {/* A message with no reply of its own has nothing to save, snooze or task; it keeps only expand and its link, as icons. */}
-      {bare ? <>{(clamped || expanded) && <Button size="sm" {...iconProps(expanded ? 'Show less' : 'Show more')} aria-expanded={expanded} onClick={() => setExpanded(!expanded)}><Icon name={expanded ? 'ChevronUp' : 'ChevronDown'} aria-hidden /></Button>}<MessageCopy small link text={messageLink(item.projectId, item.threadId, seq)} /></> : <>
+    {part !== 'question' && <>{/* One action row for all agent text. An incoming message with no reply of its own has none: its own row has expand and its link. */}{!bare && <div className="flex items-center gap-2"><div className={`flex items-center gap-0.5 px-1 ${rowFade} has-[[role=menu]]:opacity-100`}>
       {item.kind === 'for_me' && replyButton}
+      {chat && item.kind === 'for_me' && expandButton}
       {(text => text && <MessageCopy small text={text} />)(item.answer || (item.kind === 'for_me' ? item.question : ''))}
+      <MessageCopy small link text={messageLink(item.projectId, item.threadId, seq)} />
       {/* In the chat the conversation is already open here; other views still link to it. */}{!chat && item.kind !== 'for_me' && !item.threadDeleted && <Button asChild size="sm" {...iconProps('Open in chat')}><UrlLink href={href} onClick={() => { if (unread) void act(() => rpc.call('markRead', { ids: group.filter(isUnread).map(member => member.id) })); }}><Icon name="ExternalLink" aria-hidden /></UrlLink></Button>}
       {markable && unread && <Button size="sm" {...iconProps('Mark read')} onClick={() => void act(() => rpc.call('markRead', { ids: group.filter(isUnread).map(member => member.id) }))}><Icon name="MailOpen" aria-hidden /></Button>}
       <div className="relative" onBlur={event => { if (!event.currentTarget.contains(event.relatedTarget as Node) && !menuBox.current?.contains(event.relatedTarget as Node)) setMenu(null); }} onKeyDown={event => { if (event.key === 'Escape') setMenu(null); }}>
         <Button ref={moreButton} size="sm" {...iconProps('More')} aria-haspopup="menu" aria-expanded={!!menu} onClick={() => setMenu(menu ? null : 'main')}><Icon name="MoreHorizontal" aria-hidden /></Button>
-        {menu && menuAt && createPortal(<div ref={menuBox} role="menu" aria-label="Item actions" className="fixed z-[100] w-48 rounded-lg border border-border bg-background p-1 shadow-lg" style={menuAt} onBlur={event => { if (!event.currentTarget.contains(event.relatedTarget as Node) && event.relatedTarget !== moreButton.current && event.relatedTarget !== robotButton.current) setMenu(null); }} onKeyDown={event => { if (event.key === 'Escape') { setMenu(null); (menu === 'robot' ? robotButton : moreButton).current?.focus(); } }}>
+        {menu && menuAt && createPortal(<div ref={menuBox} role="menu" aria-label="Item actions" className="fixed z-[100] max-h-[70vh] w-48 overflow-y-auto rounded-lg border border-border bg-background p-1 shadow-lg" style={menuAt} onBlur={event => { if (!event.currentTarget.contains(event.relatedTarget as Node) && event.relatedTarget !== moreButton.current && event.relatedTarget !== robotButton.current) setMenu(null); }} onKeyDown={event => { if (event.key === 'Escape') { setMenu(null); (menu === 'robot' ? robotButton : moreButton).current?.focus(); } }}>
           {menu === 'robot' ? dismiss && <button role="menuitem" className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-sm hover:bg-state-hover" onClick={() => { setMenu(null); void act(async () => { for (const member of group) await rpc.call('setDismissed', { id: member.id, dismissed: true }); }); }}><Icon name={dismiss[1]} aria-hidden className="size-4 text-muted-foreground" />{dismiss[0]}</button>
           : menu === 'main' ? <>
-            <MessageCopy menu link text={messageLink(item.projectId, item.threadId, seq)} />
             {item.kind !== 'saved' && <button role="menuitem" className="w-full rounded px-2 py-1.5 text-left text-sm hover:bg-state-hover" onClick={() => { setMenu(null); void act(() => rpc.call('setPinned', { id: last.id, pinned: !item.pinned })); }}>{item.pinned ? 'Remove from Saved' : 'Save'}</button>}
             {item.kind !== 'saved' && <button role="menuitem" className="w-full rounded px-2 py-1.5 text-left text-sm hover:bg-state-hover" onClick={() => setMenu('snooze')}>Remind later</button>}
             {item.kind !== 'saved' && workBoard?.available && <button type="button" role="menuitem" className="w-full rounded px-2 py-1.5 text-left text-sm hover:bg-state-hover" onClick={() => setMenu('task')}>Create task</button>}
-            {dismiss && !robot && <button role="menuitem" className="w-full rounded px-2 py-1.5 text-left text-sm hover:bg-state-hover" onClick={() => { setMenu(null); void act(async () => { for (const member of group) await rpc.call('setDismissed', { id: member.id, dismissed: true }); }); }}>{dismiss[0]}</button>}
+            {item.kind === 'saved' && dismiss && <button role="menuitem" className="w-full rounded px-2 py-1.5 text-left text-sm hover:bg-state-hover" onClick={() => { setMenu(null); void act(async () => { for (const member of group) await rpc.call('setDismissed', { id: member.id, dismissed: true }); }); }}>{dismiss[0]}</button>}
           </> : menu === 'snooze' ? <>{(['In 1 hour', 'This evening', 'Tomorrow 9:00', 'Next Monday 9:00'] as const).map((label, index) => <button key={label} role="menuitem" className="w-full rounded px-2 py-1.5 text-left text-sm hover:bg-state-hover" onClick={() => { const now = new Date(), until = new Date(now); if (index === 0) until.setHours(now.getHours() + 1); if (index === 1) { until.setHours(18, 0, 0, 0); if (+until <= +now) until.setTime(+now + 3 * 3600000); } if (index === 2) { until.setDate(now.getDate() + 1); until.setHours(9, 0, 0, 0); } if (index === 3) { until.setDate(now.getDate() + ((8 - now.getDay()) % 7 || 7)); until.setHours(9, 0, 0, 0); } setMenu(null); void act(() => rpc.call('snooze', { id: last.id, until: +until })); }}>{label}</button>)}</> : [...(workBoard?.projects ?? [])].sort((a, b) => Number(b.id === localStorage.getItem(PROJECT_CHOICE)) - Number(a.id === localStorage.getItem(PROJECT_CHOICE))).map(project => <button key={project.id} role="menuitem" className="w-full rounded px-2 py-1.5 text-left text-sm hover:bg-state-hover" onClick={() => { localStorage.setItem(PROJECT_CHOICE, project.id); setMenu(null); void act(() => rpc.call('createTask', { id: last.id, projectId: project.id })); }}>{project.name}</button>)}
         </div>, document.body)}
       </div>
       {item.kind !== 'for_me' && replyButton}
-      </>}
-    </div>{readMark && <span className="ml-auto flex items-center px-2 text-muted-foreground">{readMark}</span>}</div>
+    </div>{readMark && <span className="ml-auto flex items-center px-2 text-muted-foreground">{readMark}</span>}</div>}
     {item.kind === 'for_me' && item.status === 'open' && !item.questions && <div className="flex flex-wrap gap-1 px-2">{(item.options ?? defaultChoices(item.question)).map(option => <Button key={option} size="sm" variant={option === item.recommended ? 'default' : 'outline'} className="h-auto min-h-8 whitespace-normal py-1 text-left" disabled={pending} onClick={() => void reply(undefined, option)}>{option}{option === item.recommended && <>{' '}<span className="sr-only">(recommended)</span></>}</Button>)}
       {item.recommendReason && <p className="w-full pt-1 text-xs text-muted-foreground">{item.recommendReason}</p>}</div>}
     {item.kind === 'for_me' && item.status === 'open' && item.questions && <div className="px-2"><QuestionForm threadId={item.threadId} requireAny questions={item.questions} hidePrompt={item.questions.length === 1} onSubmit={answers => reply(undefined, answerText(item.questions!, answers))} />

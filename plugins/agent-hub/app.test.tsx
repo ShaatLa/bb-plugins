@@ -47,14 +47,13 @@ describe('Answers app', () => {
     expect(slot.queryByText(/resolved by plugin/)).toBeNull();
   });
 
-  it('a question card in the chat has no link out to the chat it is in, and More lets the owner skip it without replying', async () => {
+  it('a question card in the chat has no link out to the chat it is in, and its More menu has no dismiss entry', async () => {
     const { ItemCard } = await import('./app');
-    const setDismissed = vi.fn(() => ({ ok: true }));
     const ask = { ...item, id: 'ans_ask', kind: 'for_me' as const, status: 'open' as const, question: 'Choose?', answer: null };
-    const slot = renderSlot({ component: () => <ul><ItemCard item={ask} chat compact /></ul> }, {}, { rpc: { setDismissed } } as any);
+    const slot = renderSlot({ component: () => <ul><ItemCard item={ask} chat compact /></ul> }, {}, {} as any);
     expect(slot.queryByRole('link', { name: 'Open in chat' })).toBeNull();
-    fireEvent.click(slot.getByRole('button', { name: 'More' })); fireEvent.click(slot.getByRole('menuitem', { name: 'Won’t reply' }));
-    await waitFor(() => expect(setDismissed).toHaveBeenCalledWith({ id: 'ans_ask', dismissed: true }));
+    fireEvent.click(slot.getByRole('button', { name: 'More' }));
+    expect(slot.queryByRole('menuitem', { name: 'Won’t reply' })).toBeNull();
   });
 
   it('offers yes and no in the question\'s language when the agent gave no choices', async () => {
@@ -492,13 +491,12 @@ it('offers quick replies on agent questions in the Questions section', async () 
   fireEvent.click(slot.getByRole('button', { name: 'Yes (recommended)' }));
   await waitFor(() => expect(reply).toHaveBeenCalledWith({ id: 'ans_ask', text: 'Yes' }));
 });
-it('marks a question filed from the agent\'s reply text as asked in chat, dismissable as not a question', async () => {
-  const setDismissed = vi.fn(() => ({ ok: true }));
-  const slot = await questionsSetup({ setDismissed }, { chatAsked: true });
+it('marks a question filed from the agent\'s reply text as asked in chat, without a dismiss entry', async () => {
+  const slot = await questionsSetup({}, { chatAsked: true });
   expect(slot.getByText('Asked in chat')).toBeTruthy();
   fireEvent.click(slot.getByRole('button', { name: 'More' }));
-  fireEvent.click(await slot.findByRole('menuitem', { name: 'Not a question' }));
-  await waitFor(() => expect(setDismissed).toHaveBeenCalledWith(expect.objectContaining({ id: 'ans_ask', dismissed: true })));
+  await slot.findByRole('menuitem', { name: 'Save' });
+  expect(slot.queryByRole('menuitem', { name: 'Not a question' })).toBeNull();
 });
 it('answers a composite question with checkboxes in one reply', async () => {
   const reply = vi.fn(() => ({ delivery: 'sent' }));
@@ -895,16 +893,14 @@ it('saves an attachment through the host file API', async () => {
   await waitFor(() => expect(saveFile).toHaveBeenCalledWith({ fileName: 'notes.txt', blob: expect.any(Blob) }));
 });
 
-it('copies the agent Markdown and its message link from More', async () => {
+it('copies the agent Markdown and its message link from separate icons', async () => {
   const { ItemCard } = await import('./app');
   const slot = renderSlot({ component: () => <ItemCard item={{ ...item, threadId: 'thr_example', projectId: 'proj_example', answerSeq: 12 }} chat /> }, {});
   fireEvent.click(slot.getAllByRole('button', { name: 'Copy' }).at(-1)!);
   await slot.findByRole('button', { name: 'Copied' });
   expect(slot.inspection.experimental_clipboardWrites).toContainEqual({ text: 'The answer' });
-  fireEvent.click(slot.getByRole('button', { name: 'More' }));
-  fireEvent.click(slot.getByRole('menuitem', { name: 'Copy link' }));
-  await slot.findByRole('menuitem', { name: 'Copied' });
-  expect(slot.inspection.experimental_clipboardWrites).toContainEqual({ text: window.location.origin + '/projects/proj_example/threads/thr_example?msg=12' });
+  fireEvent.click(slot.getAllByRole('button', { name: 'Copy link' }).at(-1)!);
+  await waitFor(() => expect(slot.inspection.experimental_clipboardWrites).toContainEqual({ text: window.location.origin + '/projects/proj_example/threads/thr_example?msg=12' }));
 });
 
 it('shows the failure reason and a quiet interruption label', async () => {

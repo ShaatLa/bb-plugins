@@ -110,7 +110,9 @@ Each conversation includes a search feature for questions and answers that jumps
 
 With the **Tokenomos** plugin enabled, the conversation header displays the session cost in USD based on API rates (the session's own cost). A tilde (`~`) indicates an estimate or partial data. A click opens today's and the last 7 days' cost, the models and the sub-sessions. Without Tokenomos, the header is unaffected.
 
-The **More** menu includes **Save** / **Remove from Saved**, **Remind later**, and, when Work Board is available, **Create task** with project selection. A reminder hides the item until the scheduled time; **Unsnooze** restores it. Failed turns are flagged as **Turn failed** and include a **Retry** button.
+The chat draws every message by its author, in one of three kinds: the **owner's** bubble (time, Copy, Copy link, Save to Agent Hub, Edit), the **agent's** text, and an **incoming** message that someone else put into the thread (another thread, a plugin, a bb notice such as a finished or failed child, or a script's `[tag]`). An incoming message has one header (icon, sender, optional verb, time) and its text quoted under it, clamped to three lines; its row has only expand and Copy link, and the agent's reply stands under it as an ordinary agent message. Every clamped body expands from the same chevron icon at the left of its message's row. Rows are always visible on touch screens, with 32px touch areas.
+
+Agent text has one row: Copy, Copy link, and a **More** menu. The **More** menu includes **Save** / **Remove from Saved**, **Remind later**, and, when Work Board is available, **Create task** with project selection. A reminder hides the item until the scheduled time; **Unsnooze** restores it. Failed turns are flagged as **Turn failed** and include a **Retry** button.
 
 The `notify` setting controls alerts: `off` disables them, `asked` covers agent questions directed at you, `questions` adds answers to your messages that end with a question mark, and `all` triggers for all matching events. The default is `asked` since BB already notifies when turns complete, so separate answer notifications are unnecessary. `quietHours` defines a local `HH:MM-HH:MM` window; events during this period are batched into a single notification once it ends. Fallback delivery requires the Push Notifications plugin.
 
@@ -130,7 +132,7 @@ Coarse-pointer controls have at least 40×40px targets, with desktop spacing and
 
 The selected chat header shows the host-rendered title, a parent link that opens in Agent Hub, and bb’s thread actions menu. Rename uses bb’s dialog; lifecycle confirmations and selection fallback remain host-driven.
 
-Copy link is in the existing More menu for agent messages; owner bubbles and interim replies without their own menu use an icon action.
+Copy link is its own icon in every message row; interim replies use the same icon.
 
 With a chat open on desktop, its avatar and title, section selector, inline search, Mark all read and thread actions share one toolbar row. Phones keep Back, title, inline search and thread actions in the chat header.
 
