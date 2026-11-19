@@ -182,11 +182,13 @@ const AIMS = { up: -14, down: 20 } as const;
 const aim = () => Math.random() < .5 ? 'up' : 'down';
 function SearchScene() {
   const [aims, setAims] = useState<[keyof typeof AIMS, keyof typeof AIMS]>(() => [aim(), aim()]);
-  const side = (which: keyof typeof AIMS) => <>{standingLegs}<g transform={`rotate(${AIMS[which]} 12.2 18)`}>{sideHead}{sideBody}
+  const side = (which: keyof typeof AIMS) => <>{standingLegs}<g transform={`rotate(${AIMS[which]} 12.2 18)`}>
+    {/* The body sways back from the hip as the lens goes out, and forward as it comes back. */}
+    <g><animateTransform attributeName="transform" type="rotate" values="0 12.2 18;-3 12.2 18;0 12.2 18" dur="1.6s" repeatCount="indefinite" />{sideHead}{sideBody}
     <line x1="9.5" y1="13.4" x2="8.3" y2="16.3" />
     {/* The lens stands upright like the face, pushed out and drawn back by an arm bent at the elbow (SMIL keeps hand and lens together). */}
     <line x1="12" y1="13" x2="14.58" y2="15.05"><animate attributeName="x2" values="14.58;14.76;14.94;15.12;15.28;15.12;14.94;14.76;14.58" dur="1.6s" repeatCount="indefinite" /><animate attributeName="y2" values="15.05;14.81;14.50;14.08;13.37;14.08;14.50;14.81;15.05" dur="1.6s" repeatCount="indefinite" /></line><line x1="14.58" y1="15.05" x2="16.40" y2="12.30"><animate attributeName="x1" values="14.58;14.76;14.94;15.12;15.28;15.12;14.94;14.76;14.58" dur="1.6s" repeatCount="indefinite" /><animate attributeName="y1" values="15.05;14.81;14.50;14.08;13.37;14.08;14.50;14.81;15.05" dur="1.6s" repeatCount="indefinite" /><animate attributeName="x2" values="16.40;16.90;17.40;17.90;18.40;17.90;17.40;16.90;16.40" dur="1.6s" repeatCount="indefinite" /><animate attributeName="y2" values="12.30;12.30;12.30;12.30;12.30;12.30;12.30;12.30;12.30" dur="1.6s" repeatCount="indefinite" /></line><g><animateTransform attributeName="transform" type="translate" values="0 0;0.5 0;1 0;1.5 0;2 0;1.5 0;1 0;0.5 0;0 0" dur="1.6s" repeatCount="indefinite" /><line x1="16.4" y1="12.3" x2="17.6" y2="9.9" strokeWidth="1.4" /><ellipse cx="17.6" cy="7.5" rx="1.3" ry="2.4" strokeWidth="1.1" /></g>
-    </g></>;
+    </g></g></>;
   // A new aim for both sides each lap of the turn (child animations bubble here too, hence the name check).
   return <g className="ar-look" onAnimationIteration={event => { if (event.animationName === 'ar-right') setAims([aim(), aim()]); }}>
     <g className="ar-right">{side(aims[0])}</g>
