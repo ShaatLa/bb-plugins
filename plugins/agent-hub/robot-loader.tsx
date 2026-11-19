@@ -89,8 +89,10 @@ const antenna = <line x1="12" y1="2.5" x2="12" y2="4" />;
 const sideHead = <>{antenna}<rect x="8" y="4" width="8" height="7" rx="2" /><circle cx="14" cy="7.5" r=".9" /></>;
 const sideBody = <rect x="9.5" y="12" width="5" height="6" rx="1" />;
 const standingLegs = <><line x1="12" y1="18" x2="12" y2="21.5" /><line x1="12.4" y1="18" x2="12.4" y2="21.5" /></>;
-const front = <>{antenna}<rect x="7" y="4" width="10" height="7" rx="2" /><circle cx="10" cy="7.5" r=".9" /><circle cx="14" cy="7.5" r=".9" />
+const eyes = <><circle cx="10" cy="7.5" r=".9" /><circle cx="14" cy="7.5" r=".9" /></>;
+const faceless = <>{antenna}<rect x="7" y="4" width="10" height="7" rx="2" />
   <rect x="8.5" y="12" width="7" height="6" rx="1" /><line x1="10.5" y1="18" x2="10.5" y2="21.5" /><line x1="13.5" y1="18" x2="13.5" y2="21.5" /></>;
+const front = <>{faceless}{eyes}</>;
 const dots = (y: number, x0: number) => <><circle className="ar-dot" cx={x0} cy={y} r=".3" fill="currentColor" stroke="none" /><circle className="ar-dot b" cx={x0 + 2.2} cy={y} r=".3" fill="currentColor" stroke="none" /><circle className="ar-dot c" cx={x0 + 4.4} cy={y} r=".3" fill="currentColor" stroke="none" /></>;
 
 // Thinking, each walk to a side in one of two moods, picked at random every lap: chin up, rubbing it (the arm raised to
@@ -215,8 +217,8 @@ function Scene({ activity, fix }: { activity: Activity; fix: 'hammer' | 'wrench'
       {sideHead}{sideBody}{standingLegs}<rect x="17.5" y="18.2" width="4.6" height="3.3" rx=".4" /><line x1="19.9" y1="16.8" x2="19.9" y2="18.2" /><line x1="19.1" y1="16.8" x2="20.7" y2="16.8" />
       <g className="ar-hammer"><path d="M12 13 Q14 13.6 16 13.4" /><line x1="16" y1="13.4" x2="18.62" y2="11.56" strokeWidth=".7" /><rect x="-1.2" y="-2" width="2.4" height="4" rx=".4" transform="translate(19.6 10.87) rotate(-35)" /></g><g transform="translate(.7 0)"><g className="ar-spark" strokeWidth=".7"><line x1="17.70" y1="16.75" x2="16.00" y2="16.69" /><line x1="17.88" y1="16.10" x2="16.37" y2="15.30" /><line x1="18.32" y1="15.59" x2="17.32" y2="14.21" /><line x1="20.08" y1="15.59" x2="21.08" y2="14.21" /><line x1="20.52" y1="16.10" x2="22.03" y2="15.30" /><line x1="20.70" y1="16.75" x2="22.40" y2="16.69" /></g></g>
     </> : <>
-      {/* Facing us, turning an open-end wrench on a bolt atop a post; the hand stays on the handle, the arm bending at the elbow (fixed-length segments, solved per keyframe). */}
-      {front}<line x1="6.5" y1="13" x2="6.5" y2="16.5" /><line x1="21.8" y1="14.8" x2="21.8" y2="21.5" />
+      {/* Facing us, turning an open-end wrench on a bolt atop a post; the hand stays on the handle, the arm bending at the elbow (fixed-length segments, solved per keyframe); the eyes, turned to the wrench, rise and fall with its handle. */}
+      {faceless}<g><animateTransform attributeName="transform" type="translate" values="1.1 .95;1.1 .45;1.1 .95" dur="2.2s" repeatCount="indefinite" />{eyes}</g><line x1="6.5" y1="13" x2="6.5" y2="16.5" /><line x1="21.8" y1="14.8" x2="21.8" y2="21.5" />
       <line x1="17.5" y1="13" x2="18.88" y2="14.72"><animate attributeName="x2" values="18.88;19.23;19.32;19.24;18.56;19.24;19.32;19.23;18.88" dur="2.2s" repeatCount="indefinite" /><animate attributeName="y2" values="14.72;14.36;14.23;14.35;14.93;14.35;14.23;14.36;14.72" dur="2.2s" repeatCount="indefinite" /></line><line x1="18.88" y1="14.72" x2="18.91" y2="16.92"><animate attributeName="x1" values="18.88;19.23;19.32;19.24;18.56;19.24;19.32;19.23;18.88" dur="2.2s" repeatCount="indefinite" /><animate attributeName="y1" values="14.72;14.36;14.23;14.35;14.93;14.35;14.23;14.36;14.72" dur="2.2s" repeatCount="indefinite" /><animate attributeName="x2" values="18.91;18.14;17.52;17.06;16.78;17.06;17.52;18.14;18.91" dur="2.2s" repeatCount="indefinite" /><animate attributeName="y2" values="16.92;16.27;15.49;14.60;13.64;14.60;15.49;16.27;16.92" dur="2.2s" repeatCount="indefinite" /></line>
       <g transform="translate(-1.2 -0.8)"><g><animateTransform attributeName="transform" type="rotate" values="-25 23 13.5;-13.75 23 13.5;-2.5 23 13.5;8.75 23 13.5;20 23 13.5;8.75 23 13.5;-2.5 23 13.5;-13.75 23 13.5;-25 23 13.5" dur="2.2s" repeatCount="indefinite" />
         <path d="M24 13.5 L23.5 14.37 H22.5 L22 13.5 L22.5 12.63 H23.5 Z" /><line x1="21.28" y1="14.52" x2="18.6" y2="16.1" strokeWidth="1.4" /><path d="M24.89 14.16 A2 2 0 1 1 23.33 11.53" /></g></g>
