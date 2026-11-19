@@ -59,7 +59,10 @@ export function conversation(groups: Item[][], more: boolean, carried: Item[][] 
   // above the owner's message, so the question and its answer stay together.
   const asked = new Map(groups.filter(group => group[0].kind === 'mine' && group[0].turnId).map(group => [group[0].turnId!, group[0].createdAt] as const));
   const above = (group: Item[]) => { const item = group[0]; return item.kind === 'update' && !item.answer && item.turnId ? asked.get(item.turnId) ?? null : null; };
-  const floor = groups.length ? activityAt(groups[0][0]) : Infinity, marks = groups.filter(group => above(group) === null).flatMap(group => [group[0].createdAt, activityAt(group[0])]);
+  // One the agent answered in that turn follows the owner's answer instead, without splitting the owner's message from it.
+  const after = (group: Item[]) => { const item = group[0]; return item.kind === 'update' && !!item.answer && !!item.turnId && asked.has(item.turnId); };
+  const rank = (group: Item[]) => above(group) !== null ? -1 : after(group) ? 1 : 0;
+  const floor = groups.length ? activityAt(groups[0][0]) : Infinity, marks = groups.filter(group => rank(group) === 0).flatMap(group => [group[0].createdAt, activityAt(group[0])]);
   const placed: [number, Entry][] = [], orphans: Item[][] = [];
   const ask = (group: Item[]) => { if (more && group[0].createdAt < floor) orphans.push(group); else placed.push([group[0].createdAt, { group, part: 'question' }]); };
   carried.forEach(ask);
@@ -76,7 +79,7 @@ export function conversation(groups: Item[][], more: boolean, carried: Item[][] 
     if (home) { home[1].late = [...(home[1].late ?? []), ...entry.group]; placed.splice(i, 1); }
   }
   const entries: Entry[] = [];
-  for (const [, entry] of placed.sort((a, b) => a[0] - b[0] || Number(above(b[1].group) !== null) - Number(above(a[1].group) !== null))) { const prev = entries.at(-1); if (groupUpdates && prev && quietUpdate(entry) && (prev.updates || quietUpdate(prev))) entries[entries.length - 1] = { group: [...prev.group, ...entry.group], updates: true }; else entries.push(entry); }
+  for (const [, entry] of placed.sort((a, b) => a[0] - b[0] || rank(a[1].group) - rank(b[1].group))) { const prev = entries.at(-1); if (groupUpdates && prev && quietUpdate(entry) && (prev.updates || quietUpdate(prev))) entries[entries.length - 1] = { group: [...prev.group, ...entry.group], updates: true }; else entries.push(entry); }
   // Once the chat has gone quiet its latest message does not hide in a collapsed group: a final report after a run of updates
   // stays in full view. While work goes on, the updates still flying in stay collapsed.
   const tail = entries.at(-1);

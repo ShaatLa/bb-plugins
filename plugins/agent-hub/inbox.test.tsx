@@ -302,6 +302,8 @@ it('puts a message that joined the turn answering the owner above the owner\'s m
   expect(shape(conversation([[mine], [joined], [other]] as any, false, [], false, null, false).entries)).toEqual(['ans_joined', 'ans_mine', 'ans_other']);
   const done = { ...mine, status:'answered', answer:'Answer', answerSeq:9, answeredAt:asked + 3 * minute };
   expect(shape(conversation([[done], [joined]] as any, false, [], true, null, false).entries)).toEqual(['ans_joined', 'ans_mine']);
+  const replied = { ...joined, id:'ans_replied', answer:'Steer reply', answeredAt:done.answeredAt };
+  expect(shape(conversation([[done], [replied]] as any, false, [], true, null, false).entries)).toEqual(['ans_mine', 'ans_replied']);
 });
 it('does not fold the last update shown in full back into its group when a turn starts (a queued message sent)', async () => {
   const { conversation } = await import('./inbox');

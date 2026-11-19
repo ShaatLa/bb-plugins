@@ -133,6 +133,18 @@ describe('updates',()=>{
   expect(updates(db)).toHaveLength(2);
   expect(rows(db).find(r=>r.kind==='mine')).toMatchObject({status:'answered',answer:'answer'});
  });
+ it('gives a steer\'s reply to the steer once the agent has seen it, and keeps the owner\'s answer from before',()=>{
+  const db=setup(); const tool=(seq:number)=>ev(seq,'item/completed','x',{item:{type:'commandExecution',command:'ls'}});
+  applyEvents(db,'t',[req(1),start(),accept(),tool(4),req(5,'s',{initiator:'agent',senderThreadId:'thr_s',input:text('[bb message from thread:thr_s] released')}),accept(6,'s'),message(7,'owner answer'),tool(8),message(9,'steer reply'),done(10)],'p',100,true,true);
+  expect(rows(db).find(r=>r.kind==='mine')).toMatchObject({status:'answered',answer:'owner answer'});
+  expect(updates(db)).toEqual([expect.objectContaining({trigger_kind:'agent',answer:'steer reply',read_at:100,turn_id:'x'})]);
+ });
+ it('gives the owner the reply written only after a steer was seen, as it answers both',()=>{
+  const db=setup(); const tool=(seq:number)=>ev(seq,'item/completed','x',{item:{type:'commandExecution',command:'ls'}});
+  applyEvents(db,'t',[req(1),start(),accept(),tool(4),req(5,'s',{originPluginId:'example-plugin',input:text('[bb message from plugin:example-plugin] notice')}),accept(6,'s'),tool(7),message(8,'both answered'),done(9)],'p',100,true,true);
+  expect(rows(db).find(r=>r.kind==='mine')).toMatchObject({status:'answered',answer:'both answered'});
+  expect(updates(db)).toEqual([expect.objectContaining({trigger_kind:'plugin',answer:null})]);
+ });
  it('shows another thread\'s message when the turn takes it, and keeps it when the turn stops without a reply',()=>{
   const db=setup(); applyEvents(db,'t',[req(1,'r',{initiator:'agent',senderThreadId:'thr_s',input:text('[bb message from thread:thr_s] hi')}),start(),accept()],'p',100,true,true);
   expect(updates(db)).toEqual([expect.objectContaining({status:'waiting',question:'[bb message from thread:thr_s] hi',answer:null,trigger_kind:'agent',trigger_source:'thr_s',created_at:100,read_at:100})]);
