@@ -61,7 +61,7 @@ function select(container: HTMLElement, text: string) {
 }
 
 const ready = (slot: { container: HTMLElement }) => waitFor(() => expect(slot.container.querySelectorAll(".tiptap h2")).toHaveLength(2));
-const list = (slot: Awaited<ReturnType<typeof open>>["slot"]) => within(slot.getByRole("list", { name: "Plan notes" }));
+const list = (slot: Awaited<ReturnType<typeof open>>["slot"]) => within(slot.getByRole("group", { name: "Plan notes" }));
 
 describe("selecting text to leave a note", () => {
   it("shows a toolbar for a selection, opens a popover for Comment and stores the note with its anchor", async () => {
@@ -88,6 +88,54 @@ describe("selecting text to leave a note", () => {
     expect(stored!.prefix).toContain("first step");
     expect(stored!.suffix).toContain("Risks");
     expect(slot.getByRole("button", { name: "Send feedback (1)" })).toBeTruthy();
+  });
+
+  it("renders the toolbar and the popover in document.body under the plugin scope, outside the panel", async () => {
+    const { slot } = await open();
+    await ready(slot);
+    select(slot.container, "second step");
+    const toolbar = await slot.findByRole("toolbar", { name: "Note on selection" });
+    const scope = toolbar.parentElement!;
+    expect(scope.getAttribute("data-bb-plugin")).toBe("work-board");
+    expect(scope.parentElement).toBe(document.body);
+    expect(slot.container.contains(toolbar)).toBe(false);
+    expect(toolbar.style.position).toBe("fixed");
+    const prevented = !fireEvent.mouseDown(toolbar);
+    expect(prevented).toBe(true);
+
+    fireEvent.click(within(toolbar).getByRole("button", { name: "Comment" }));
+    const popover = await slot.findByRole("dialog", { name: "Add note" });
+    expect(popover.parentElement!.getAttribute("data-bb-plugin")).toBe("work-board");
+    expect(popover.parentElement!.parentElement).toBe(document.body);
+    expect(slot.container.contains(popover)).toBe(false);
+  });
+
+  it("closes the toolbar and the popover on Escape and on a press outside", async () => {
+    const { slot } = await open();
+    await ready(slot);
+    select(slot.container, "second step");
+    await slot.findByRole("toolbar", { name: "Note on selection" });
+    fireEvent.keyDown(document, { key: "Escape" });
+    expect(slot.queryByRole("toolbar", { name: "Note on selection" })).toBeNull();
+
+    select(slot.container, "second step");
+    await slot.findByRole("toolbar", { name: "Note on selection" });
+    fireEvent.pointerDown(slot.container.querySelector("header")!);
+    expect(slot.queryByRole("toolbar", { name: "Note on selection" })).toBeNull();
+
+    select(slot.container, "second step");
+    fireEvent.click(within(await slot.findByRole("toolbar", { name: "Note on selection" })).getByRole("button", { name: "Comment" }));
+    const popover = await slot.findByRole("dialog", { name: "Add note" });
+    fireEvent.pointerDown(within(popover).getByRole("textbox", { name: "Note" }));
+    expect(slot.queryByRole("dialog", { name: "Add note" })).not.toBeNull();
+    fireEvent.keyDown(within(popover).getByRole("textbox", { name: "Note" }), { key: "Escape" });
+    expect(slot.queryByRole("dialog", { name: "Add note" })).toBeNull();
+
+    select(slot.container, "second step");
+    fireEvent.click(within(await slot.findByRole("toolbar", { name: "Note on selection" })).getByRole("button", { name: "Comment" }));
+    await slot.findByRole("dialog", { name: "Add note" });
+    fireEvent.pointerDown(slot.container.querySelector("header")!);
+    expect(slot.queryByRole("dialog", { name: "Add note" })).toBeNull();
   });
 
   it("creates a Remove note at once and asks for an optional reason in the list", async () => {
@@ -131,6 +179,8 @@ describe("general notes, Send feedback and Approve", () => {
     await ready(slot);
     const send = slot.getByRole("button", { name: "Send feedback (0)" }) as HTMLButtonElement;
     expect(send.disabled).toBe(true);
+    fireEvent.pointerMove(send.parentElement!);
+    expect((await slot.findAllByText("Add a note first: select text in the plan or add a general note")).length).toBeGreaterThan(0);
     fireEvent.click(slot.getByRole("button", { name: "Add general note" }));
     fireEvent.change(await slot.findByRole("textbox", { name: "General note" }), { target: { value: "Add a rollback step." } });
     fireEvent.click(slot.getByRole("button", { name: "Add note" }));
@@ -192,6 +242,8 @@ describe("general notes, Send feedback and Approve", () => {
     await waitFor(() => expect(slot.getByText("Approved")).toBeTruthy());
     const done = slot.getByRole("button", { name: "Approve" }) as HTMLButtonElement;
     expect(done.disabled).toBe(true);
+    fireEvent.pointerMove(done.parentElement!);
+    expect((await slot.findAllByText("Plan v1 is already approved")).length).toBeGreaterThan(0);
   });
 });
 
@@ -277,25 +329,64 @@ describe("the notes list", () => {
 });
 
 describe("the notes column", () => {
-  it("has Contents and Notes tabs for wide layouts and a collapsible Notes section for narrow ones", async () => {
+  it("opens on the drafts: the Notes tab and the expanded Notes section, with Contents one click away", async () => {
     const { slot, note } = await open();
     await note({ kind: "general", body: "One." });
     await note({ kind: "general", body: "Two." });
     await ready(slot);
     const tabs = within(slot.getByRole("tablist", { name: "Plan sidebar" }));
     await waitFor(() => expect(tabs.getAllByRole("tab").map((tab) => tab.textContent)).toEqual(["Contents", "Notes (2)"]));
-    expect(tabs.getByRole("tab", { name: "Contents" }).getAttribute("aria-selected")).toBe("true");
-    fireEvent.click(tabs.getByRole("tab", { name: "Notes (2)" }));
     expect(tabs.getByRole("tab", { name: "Notes (2)" }).getAttribute("aria-selected")).toBe("true");
     const section = slot.getByRole("region", { name: "Notes" });
     expect(section.className).not.toContain("@[56rem]:hidden");
     const toggle = within(section).getByRole("button", { name: "Notes (2)" });
-    expect(toggle.getAttribute("aria-expanded")).toBe("false");
-    fireEvent.click(toggle);
     expect(toggle.getAttribute("aria-expanded")).toBe("true");
+    expect(within(section).getByRole("heading", { name: "Drafts to send (2)" })).toBeTruthy();
+    fireEvent.click(toggle);
+    expect(toggle.getAttribute("aria-expanded")).toBe("false");
+    fireEvent.click(tabs.getByRole("tab", { name: "Contents" }));
+    expect(tabs.getByRole("tab", { name: "Contents" }).getAttribute("aria-selected")).toBe("true");
     const aside = slot.container.querySelector("aside")!;
     expect(slot.container.querySelector(".tiptap")!.compareDocumentPosition(aside) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(aside.className).toContain("@[56rem]:order-last");
+  });
+
+  it("stays on Contents with the Notes section collapsed when no note is a draft", async () => {
+    const { slot, note, call, refresh } = await open();
+    await note({ kind: "general", body: "Sent already." });
+    await call("sendPlanFeedback", { author: OWNER });
+    await refresh();
+    await ready(slot);
+    const tabs = within(slot.getByRole("tablist", { name: "Plan sidebar" }));
+    await waitFor(() => expect(tabs.getByRole("tab", { name: "Notes (1)" })).toBeTruthy());
+    await waitFor(() => expect(tabs.getByRole("tab", { name: "Contents" }).getAttribute("aria-selected")).toBe("true"));
+    expect(within(slot.getByRole("region", { name: "Notes" })).getByRole("button", { name: "Notes (1)" }).getAttribute("aria-expanded")).toBe("false");
+  });
+
+  it("puts drafts under their own header above the sent and answered notes", async () => {
+    const { slot, note, call } = await open();
+    await note({ kind: "general", body: "Went out." });
+    await call("sendPlanFeedback", { author: OWNER });
+    await note({ kind: "general", body: "Still a draft." });
+    const group = await slot.findByRole("group", { name: "Plan notes" });
+    await within(group).findByText("Still a draft.");
+    const headings = within(group).getAllByRole("heading").map((heading) => heading.textContent);
+    expect(headings).toEqual(["Drafts to send (1)", "Sent and answered"]);
+    expect(within(within(group).getByRole("list", { name: "Drafts to send (1)" })).getByText("Still a draft.")).toBeTruthy();
+    expect(within(within(group).getByRole("list", { name: "Sent and answered" })).getByText("Went out.")).toBeTruthy();
+  });
+
+  it("explains how to start when there are no notes, with the general note one click away", async () => {
+    const { slot, notes } = await open();
+    await ready(slot);
+    const section = slot.getByRole("region", { name: "Notes" });
+    expect(within(section).getByRole("button", { name: "Notes (0)" }).getAttribute("aria-expanded")).toBe("true");
+    expect(section.textContent).toContain("Select text in the plan to comment on it, or add a general note");
+    fireEvent.click(within(section).getByRole("button", { name: "add a general note" }));
+    fireEvent.change(await slot.findByRole("textbox", { name: "General note" }), { target: { value: "From the hint." } });
+    fireEvent.click(slot.getByRole("button", { name: "Add note" }));
+    await waitFor(() => expect(list(slot).getByText("From the hint.")).toBeTruthy());
+    expect(await notes()).toMatchObject([{ kind: "general", body: "From the hint." }]);
   });
 
   it("shows notes read-only on an older version and in compare mode", async () => {

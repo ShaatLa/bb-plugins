@@ -6,6 +6,7 @@ import type { Outcome, usePlanReviewActions } from "./notes-data.js";
 import { Button } from "@/components/ui/button";
 import { Icon } from "@/components/ui/icon";
 import { Textarea } from "@/components/ui/textarea";
+import { GeneralNoteButton } from "./review-actions.js";
 import { cn } from "@/lib/utils";
 
 const STATE_LABELS: Record<PlanNoteState, string> = { draft: "Draft", sent: "Sent", addressed: "Addressed", resolved: "Resolved" };
@@ -155,7 +156,7 @@ function NoteItem({
   );
 }
 
-/** The notes of a plan: quote, text, state, the agent's reply, and the owner's actions on them. */
+/** The notes of a plan: drafts to send first, then the sent and answered ones, with the owner's actions on them. */
 export function PlanNotesList({
   notes,
   placements,
@@ -165,6 +166,7 @@ export function PlanNotesList({
   actions,
   onJump,
   onHover,
+  onAddGeneral,
 }: {
   notes: readonly PlanNote[];
   placements: ReadonlyMap<string, TextSpan | null> | null;
@@ -174,25 +176,44 @@ export function PlanNotesList({
   actions: Actions;
   onJump: (noteId: string) => void;
   onHover: (noteId: string | null) => void;
+  onAddGeneral: (body: string) => Promise<string | null>;
 }) {
   if (notes.length === 0)
-    return <p className="text-xs text-muted-foreground">{readOnly ? "No notes." : "No notes yet. Select text in the plan to comment on it, or add a general note."}</p>;
+    return readOnly ? (
+      <p className="text-xs text-muted-foreground">No notes.</p>
+    ) : (
+      <p className="text-xs text-muted-foreground">
+        Select text in the plan to comment on it, or <GeneralNoteButton inline onAdd={onAddGeneral} />
+      </p>
+    );
+  const drafts = notes.filter((note) => note.state === "draft");
+  const others = notes.filter((note) => note.state !== "draft");
+  const group = (items: readonly PlanNote[], label: string | null) =>
+    items.length === 0 ? null : (
+      <div className="space-y-1.5">
+        {label ? <h3 className="text-xs font-medium text-muted-foreground">{label}</h3> : null}
+        <ul aria-label={label ?? "Notes"} className="space-y-1.5">
+          {sortNotes(items, placements).map((note) => (
+            <NoteItem
+              key={note.id}
+              note={note}
+              span={placements?.get(note.id)}
+              known={placements !== null}
+              readOnly={readOnly}
+              editing={editingId === note.id}
+              actions={actions}
+              onEdit={(editing) => onEditingChange(editing ? note.id : null)}
+              onJump={onJump}
+              onHover={onHover}
+            />
+          ))}
+        </ul>
+      </div>
+    );
   return (
-    <ul aria-label="Plan notes" className="space-y-1.5">
-      {sortNotes(notes, placements).map((note) => (
-        <NoteItem
-          key={note.id}
-          note={note}
-          span={placements?.get(note.id)}
-          known={placements !== null}
-          readOnly={readOnly}
-          editing={editingId === note.id}
-          actions={actions}
-          onEdit={(editing) => onEditingChange(editing ? note.id : null)}
-          onJump={onJump}
-          onHover={onHover}
-        />
-      ))}
-    </ul>
+    <div role="group" aria-label="Plan notes" className="space-y-3">
+      {group(drafts, `Drafts to send (${drafts.length})`)}
+      {group(others, drafts.length > 0 ? "Sent and answered" : null)}
+    </div>
   );
 }

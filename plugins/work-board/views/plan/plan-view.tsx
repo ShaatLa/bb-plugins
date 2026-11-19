@@ -191,8 +191,11 @@ export function PlanView({ taskKey, surface }: { taskKey: string; surface: "pane
   });
   const [selected, clearSelected] = useBodySelection(bodyRef, canAnnotate, elements, headings);
   const [pending, setPending] = useState<Selected | null>(null);
-  const [railTab, setRailTab] = useState<RailTab>("contents");
-  const [notesOpen, setNotesOpen] = useState(false);
+  // Until the reader chooses, the notes are what to look at when there are drafts to send, or nothing yet to look at.
+  const [railChoice, setRailTab] = useState<RailTab | null>(null);
+  const [notesChoice, setNotesOpen] = useState<boolean | null>(null);
+  const railTab: RailTab = railChoice ?? (draftCount > 0 ? "notes" : "contents");
+  const notesOpen = notesChoice ?? (draftCount > 0 || (canReview && allNotes.length === 0));
   const [editingId, setEditingId] = useState<string | null>(null);
   const [hovered, setHovered] = useState<string | null>(null);
   const [pulse, setPulse] = useState<string | null>(null);
@@ -530,6 +533,7 @@ export function PlanView({ taskKey, surface }: { taskKey: string; surface: "pane
                   actions={actions}
                   onJump={jumpToNote}
                   onHover={setHovered}
+                  onAddGeneral={addGeneral}
                 />
               }
             />
@@ -544,7 +548,7 @@ export function PlanView({ taskKey, surface }: { taskKey: string; surface: "pane
       <style>{NOTE_HIGHLIGHT_CSS}</style>
       {header}
       {content}
-      {selected && !pending && canAnnotate ? <SelectionToolbar selected={selected} onPick={(kind) => void pickKind(kind)} /> : null}
+      {selected && !pending && canAnnotate ? <SelectionToolbar selected={selected} onPick={(kind) => void pickKind(kind)} onClose={clearSelected} /> : null}
       {pending ? <CommentPopover quote={pending.anchor.exact} at={pending} onAdd={addComment} onCancel={() => setPending(null)} /> : null}
     </section>
   );

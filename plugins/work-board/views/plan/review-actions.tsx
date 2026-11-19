@@ -48,22 +48,28 @@ function NoteForm({ label, placeholder, confirm, required, intro, onSubmit, onCl
 }
 
 /** Icon button that opens a popover to write a note on the plan as a whole. */
-export function GeneralNoteButton({ onAdd }: { onAdd: (body: string) => Promise<string | null> }) {
+export function GeneralNoteButton({ onAdd, inline = false }: { onAdd: (body: string) => Promise<string | null>; inline?: boolean }) {
   const [open, setOpen] = useState(false);
   return (
     <Popover open={open} onOpenChange={setOpen}>
-      <TooltipProvider delayDuration={300}>
-        <Tooltip disableHoverableContent>
-          <TooltipTrigger asChild>
-            <PopoverTrigger asChild>
-              <Button type="button" variant="ghost" size="icon" className={cn("size-7 shrink-0 text-muted-foreground hover:text-foreground", open && "bg-state-hover text-foreground")} aria-label="Add general note">
-                <Icon name="MessageSquarePlus" fallback="MessageSquare" className="size-3.5" />
-              </Button>
-            </PopoverTrigger>
-          </TooltipTrigger>
-          <TooltipContent side="bottom">Add general note</TooltipContent>
-        </Tooltip>
-      </TooltipProvider>
+      {inline ? (
+        <PopoverTrigger asChild>
+          <button type="button" className="font-medium text-foreground underline-offset-2 hover:underline">add a general note</button>
+        </PopoverTrigger>
+      ) : (
+        <TooltipProvider delayDuration={300}>
+          <Tooltip disableHoverableContent>
+            <TooltipTrigger asChild>
+              <PopoverTrigger asChild>
+                <Button type="button" variant="ghost" size="icon" className={cn("size-7 shrink-0 text-muted-foreground hover:text-foreground", open && "bg-state-hover text-foreground")} aria-label="Add general note">
+                  <Icon name="MessageSquarePlus" fallback="MessageSquare" className="size-3.5" />
+                </Button>
+              </PopoverTrigger>
+            </TooltipTrigger>
+            <TooltipContent side="bottom">Add general note</TooltipContent>
+          </Tooltip>
+        </TooltipProvider>
+      )}
       <PopoverContent align="end" className="w-72 p-3" mobileTitle="General note">
         <NoteForm label="General note" placeholder="A note on the plan as a whole" confirm="Add note" required onSubmit={onAdd} onClose={() => setOpen(false)} />
       </PopoverContent>
