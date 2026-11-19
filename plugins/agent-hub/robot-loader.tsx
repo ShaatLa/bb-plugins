@@ -37,6 +37,7 @@ const css = `
 .ar-nod{transform-box:view-box;transform-origin:12px 11px;animation:ar-nod .25s ease-in-out infinite alternate}
 .ar-peek{animation:ar-peek 7s ease-in-out infinite}
 .ar-idle{transform-box:view-box;transform-origin:6.5px 13px;animation:ar-idle 6s ease-in-out infinite}
+.ar-nod.slow{animation-duration:.325s;animation-delay:.374s}
 .ar-scratch{transform-box:view-box;transform-origin:16.3px 13px;animation:ar-scratch .55s ease-in-out infinite alternate}
 .ar-z{animation:ar-z 2.4s linear infinite;opacity:0}
 .ar-near{transform-box:view-box;transform-origin:14px 7.5px;animation:ar-near 1s ease-in-out infinite alternate}.ar-near.eye{animation-name:ar-near-eye}
@@ -117,14 +118,14 @@ function ThinkScene() {
 }
 
 // Walking in profile: legs scissor from one hip while the body bobs; the thinking robot scratches its chin. The wait scene
-// walks slower (ar-quick: 13 s a lap, a quick turn at the right end; at the left end it checks its watch) past a pebble lying on the ground: once
+// walks slower, nodding with each step (ar-quick: 13 s a lap, a quick turn at the right end; at the left end it checks its watch) past a pebble lying on the ground: once
 // each way the front foot kicks it (the walking legs swap for a kicking pair for half a second) and it tumbles to where
 // the walk back will meet it. Kick times follow from the walk: rightward at 7.877% (x = -5, the pebble at 8.5), leftward
 // at 52.877% (x = 5.4, the pebble at 15.5); each walk takes 42% of the lap. Legs and the arm swing together in .65 s
 // half-strides phased so the legs pass vertical exactly as each kick window opens and closes (the kicking pair starts and
 // ends vertical too), so a kick never cuts a step short.
 const walker = (pebble: boolean, mood: Mood = 'chin') => <>
-  <g className="ar-bob">{pebble ? <>{antenna}<rect x="8" y="4" width="8" height="7" rx="2" /><circle className="ar-down" cx="14" cy="7.5" r=".9" />{sideBody}<line className="ar-arm slow" x1="12" y1="13" x2="12" y2="16.5" /></>
+  <g className="ar-bob">{pebble ? <><g className="ar-nod slow">{antenna}<rect x="8" y="4" width="8" height="7" rx="2" /><circle className="ar-down" cx="14" cy="7.5" r=".9" /></g>{sideBody}<line className="ar-arm slow" x1="12" y1="13" x2="12" y2="16.5" /></>
     : thinker(mood)}</g>
   {pebble ? <><g className="ar-walking"><line className="ar-leg slow" x1="12" y1="18" x2="12" y2="21.5" /><line className="ar-leg slow b" x1="12" y1="18" x2="12" y2="21.5" /></g>
     <g className="ar-kicking"><line x1="12" y1="18" x2="12" y2="21.5" /><line className="ar-kick" x1="12" y1="18" x2="12" y2="21.5" /></g></>
@@ -142,7 +143,7 @@ const pacing = (bubble: boolean, pebble: boolean, extra?: ReactNode, moods?: [Mo
       looks down at the pebble (ar-down). */}
   {pebble && <g className="ar-watch">{antenna}<rect x="7" y="4" width="10" height="7" rx="2" /><circle cx="10.4" cy="9.1" r=".9" /><circle cx="14.4" cy="9.1" r=".9" />
     <rect x="8.5" y="12" width="7" height="6" rx="1" /><line x1="10.5" y1="18" x2="10.5" y2="21.5" /><line x1="13.5" y1="18" x2="13.5" y2="21.5" />
-    <line x1="6.5" y1="13" x2="6.5" y2="16.5" /><path d="M17.5 13 V15.4 L13.4 13.9" /><circle className="ar-solid" cx="15" cy="14.05" r=".8" strokeWidth=".6" /></g>}
+    <line x1="6.5" y1="13" x2="6.5" y2="16.5" /><path d="M17.5 13 V15.4 L13.4 13.9" /><circle className="ar-solid" cx="15.45" cy="14.65" r="1.1" strokeWidth=".6" /></g>}
   {extra}
 </g>;
 
