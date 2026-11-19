@@ -53,7 +53,7 @@ describe("feedback message", () => {
   it("is exactly the approved text", () => {
     expect(buildFeedbackMessage({ taskKey: "EXA-1", version: 1, notes })).toBe(
       [
-        "[Work Board] EXA-1 · plan v1: changes requested by the owner",
+        "EXA-1 · plan v1: changes requested by the owner",
         "",
         "YOUR PLAN WAS NOT APPROVED. Revise it to address every note below, then submit it again.",
         "",
@@ -106,7 +106,7 @@ describe("feedback message", () => {
 describe("approval message", () => {
   it("is exactly the approved text, with the note line only when a note was given", () => {
     const base = [
-      "[Work Board] EXA-1 · plan v1 approved by the owner",
+      "EXA-1 · plan v1 approved by the owner",
       "",
       "Start the work as planned. The approved plan is v1: any new version returns it to draft and needs a new review.",
       "Plan: [EXA-1 plan](/plugins/work-board/work-board/task/EXA-1/plan)",

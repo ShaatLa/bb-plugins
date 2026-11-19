@@ -71,7 +71,7 @@ describe("Plan tab", () => {
     await waitFor(() => expect(rendered(slot)).toHaveLength(3));
     const toc = slot.getByRole("navigation", { name: "Table of contents" });
     expect(slot.container.querySelector(".tiptap")!.compareDocumentPosition(toc) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    expect(toc.className).toContain("@[56rem]:order-last");
+    expect(toc.closest("aside")!.className).toContain("@[56rem]:order-last");
   });
 
   it("shows a clear message for an unknown task and for missing params", async () => {

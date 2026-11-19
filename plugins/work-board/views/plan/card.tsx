@@ -30,6 +30,14 @@ export function PlanCard({ task }: { task: Task }) {
       setCopied("failed");
     }
   };
+  const noteCounts = overview.data?.noteCounts;
+  const counts = noteCounts
+    ? [
+        noteCounts.open ? `${noteCounts.open} open note${noteCounts.open === 1 ? "" : "s"}` : "",
+        noteCounts.draft ? `${noteCounts.draft} draft` : "",
+        noteCounts.addressed ? `${noteCounts.addressed} addressed` : "",
+      ].filter(Boolean)
+    : [];
   const frame = "relative rounded-lg border bg-card p-3 shadow-2xs";
   return (
     <section aria-label="Plan" className="my-4">
@@ -85,6 +93,7 @@ export function PlanCard({ task }: { task: Task }) {
           {last?.summary ? <p className="mt-2 line-clamp-2 text-sm [overflow-wrap:anywhere]">{last.summary}</p> : null}
           <p className="mt-1 text-xs text-muted-foreground">
             Updated by {plan.updatedBy.name} · <time dateTime={plan.updatedAt} title={plan.updatedAt}>{formatRelativeTime(plan.updatedAt, Date.now())}</time>
+            {counts.length ? <span data-testid="note-counts"> · {counts.join(" · ")}</span> : null}
           </p>
         </div>
       )}

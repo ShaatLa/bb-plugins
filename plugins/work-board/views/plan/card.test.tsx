@@ -137,4 +137,21 @@ describe("Plan card in the task detail", () => {
     await plan.findByText("No plan yet");
     expect(plan.queryByRole("button", { name: "Write plan" })).toBeNull();
   });
+
+  it("shows the counts of open, draft and addressed notes next to the meta", async () => {
+    const host = openDetail(() => true);
+    await host.save({ baseVersion: 0, body: BODY });
+    const plan = await card(host.slot);
+    await plan.findByText("v1");
+    expect(plan.queryByTestId("note-counts")).toBeNull();
+    const owner = { kind: "person", threadId: null, name: "You" };
+    const call = (method: string, input: Record<string, unknown>) => host.harness.callRpc(method as never, { taskId: host.task.id, ...input } as never) as Promise<any>;
+    for (const body of ["One.", "Two.", "Three."]) await call("createPlanNote", { kind: "general", body });
+    await call("sendPlanFeedback", { author: owner });
+    await call("createPlanNote", { kind: "general", body: "Four." });
+    await call("replyPlanNote", { number: 1, body: "Done.", addressed: true, author: { kind: "agent", threadId: "thr_example", name: "agent (thr_example)" } });
+    await host.slot.behavior.emitRealtime("tasks:changed", { taskId: host.task.id, projectId: host.project.id });
+    await waitFor(() => expect(plan.getByTestId("note-counts").textContent).toBe(" · 2 open notes · 1 draft · 1 addressed"));
+    expect(plan.getByText("Changes requested")).toBeTruthy();
+  });
 });

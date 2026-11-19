@@ -115,16 +115,16 @@ export function buildFeedbackBody(input: { taskKey: string; version: number; not
   ].join("\n");
 }
 
-/** The message that wakes the agent when the owner sends feedback. */
+/** The message that wakes the agent when the owner sends feedback. The sender header (plugin:work-board) is added when it is delivered. */
 export function buildFeedbackMessage(input: { taskKey: string; version: number; notes: ReadonlyArray<{ note: NoteLike; placement: NotePlacement }> }): string {
-  return `[Work Board] ${input.taskKey} · plan v${input.version}: changes requested by the owner\n\n${buildFeedbackBody(input)}`;
+  return `${input.taskKey} · plan v${input.version}: changes requested by the owner\n\n${buildFeedbackBody(input)}`;
 }
 
 /** The message that tells the agent the plan is approved. */
 export function buildApprovalMessage(input: { taskKey: string; version: number; note?: string | null }): string {
   const note = input.note?.trim();
   return [
-    `[Work Board] ${input.taskKey} · plan v${input.version} approved by the owner`,
+    `${input.taskKey} · plan v${input.version} approved by the owner`,
     "",
     `Start the work as planned. The approved plan is v${input.version}: any new version returns it to draft and needs a new review.`,
     `Plan: ${taskPlanMarkdownLink(input.taskKey)}`,

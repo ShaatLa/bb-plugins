@@ -201,7 +201,6 @@ describe("bb work-board plan", () => {
       expect(text.startsWith("YOUR PLAN WAS NOT APPROVED.")).toBe(true);
       expect(text).toContain("Owner's notes on v1 (3), in plan order:");
       expect(text).toContain('N1 · Comment · section "Plan > Steps 1–4"\n> second\nSay what second means.\n\nN2 · Remove · section "Plan > Risks"\n> None.\n\nN3 · General\nAdd a rollback.');
-      expect(text).not.toContain("[Work Board]");
       const json = JSON.parse(await ok(["plan", "notes", "EXA-1", "--json"]));
       expect(json).toMatchObject({ taskKey: "EXA-1", version: 1, noteCounts: { open: 3 } });
       expect(json.notes.map((note: { number: number; placement: string }) => `${note.number}:${note.placement}`)).toEqual(["1:anchored", "2:anchored", "3:general"]);

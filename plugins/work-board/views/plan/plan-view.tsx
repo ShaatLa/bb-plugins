@@ -8,12 +8,18 @@ import { TasksEditor } from "../../editor/tasks-editor.js";
 import { useOpenThread } from "../../components/open-thread.js";
 import { TASK_TAB } from "../embed/index.js";
 import { formatRelativeTime } from "../activity/time.js";
+import { ACTIVE_NOTE_HIGHLIGHT, NOTE_HIGHLIGHT, NOTE_HIGHLIGHT_CSS, paintHighlight, rangeOfSpan, useBodyText } from "./anchors.js";
 import { planDrafts, usePlanBody, usePlanOverview } from "./data.js";
 import { PlanDiffView } from "./diff-view.js";
 import { PlanEditor } from "./editor.js";
 import { useActiveHeading, useRenderedHeadings } from "./headings.js";
 import { PlanHistory } from "./history.js";
+import { deliveryNotice, usePlacements, usePlanNotes, usePlanReviewActions } from "./notes-data.js";
+import { PlanNotesList } from "./notes-panel.js";
 import { subscribePlanEditRequests, takePlanEditRequest } from "./open.js";
+import { PlanRail, type RailTab } from "./rail.js";
+import { ApproveButton, GeneralNoteButton, SendFeedbackButton } from "./review-actions.js";
+import { CommentPopover, SelectionToolbar, useBodySelection, type Selected } from "./selection-toolbar.js";
 import { PlanStateChip } from "./state-chip.js";
 import { PlanToc } from "./toc.js";
 import { Button } from "@/components/ui/button";
@@ -169,6 +175,106 @@ export function PlanView({ taskKey, surface }: { taskKey: string; surface: "pane
   };
 
   const archived = Boolean(task.data?.archivedAt);
+
+  // Owner notes: anchored by quote in the text on screen, highlighted without touching the editor DOM.
+  const notesQuery = usePlanNotes(taskId);
+  const allNotes = useMemo(() => notesQuery.data?.notes ?? [], [notesQuery.data]);
+  const draftCount = allNotes.filter((note) => note.state === "draft").length;
+  const showsBody = mode === "read" && display !== null;
+  const bodyText = useBodyText(bodyRef, `${mode}:${display?.version}`);
+  const placements = usePlacements(allNotes, bodyText, showsBody);
+  const canReview = head !== null && mode === "read" && viewedVersion === null && !archived;
+  const canAnnotate = canReview && display !== null && display.version === headVersion;
+  const actions = usePlanReviewActions(taskId, () => {
+    notesQuery.refresh();
+    overview.refresh();
+  });
+  const [selected, clearSelected] = useBodySelection(bodyRef, canAnnotate, elements, headings);
+  const [pending, setPending] = useState<Selected | null>(null);
+  const [railTab, setRailTab] = useState<RailTab>("contents");
+  const [notesOpen, setNotesOpen] = useState(false);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [hovered, setHovered] = useState<string | null>(null);
+  const [pulse, setPulse] = useState<string | null>(null);
+  const [review, setReview] = useState<{ tone: "ok" | "warn"; text: string } | null>(null);
+  const [sending, setSending] = useState(false);
+  const activeNote = pulse ?? hovered;
+
+  useEffect(() => {
+    const root = bodyRef.current;
+    const ranges = root && placements ? allNotes.flatMap((note) => {
+      const span = note.state === "resolved" ? null : placements.get(note.id);
+      const range = span ? rangeOfSpan(root, span) : null;
+      return range ? [range] : [];
+    }) : [];
+    paintHighlight(NOTE_HIGHLIGHT, ranges);
+  }, [allNotes, placements, display?.version, mode]);
+  useEffect(() => {
+    const root = bodyRef.current;
+    const span = activeNote ? placements?.get(activeNote) : null;
+    const range = root && span ? rangeOfSpan(root, span) : null;
+    paintHighlight(ACTIVE_NOTE_HIGHLIGHT, range ? [range] : []);
+  }, [activeNote, placements, mode]);
+  useEffect(() => () => {
+    paintHighlight(NOTE_HIGHLIGHT, []);
+    paintHighlight(ACTIVE_NOTE_HIGHLIGHT, []);
+  }, []);
+  useEffect(() => {
+    if (pulse === null) return;
+    const timer = window.setTimeout(() => setPulse(null), 1600);
+    return () => window.clearTimeout(timer);
+  }, [pulse]);
+
+  const showNotes = () => {
+    setRailTab("notes");
+    setNotesOpen(true);
+  };
+  const jumpToNote = (noteId: string) => {
+    const span = placements?.get(noteId);
+    const range = bodyRef.current && span ? rangeOfSpan(bodyRef.current, span) : null;
+    if (!range) return;
+    range.startContainer.parentElement?.scrollIntoView?.({ behavior: "smooth", block: "center" });
+    setPulse(noteId);
+  };
+  const anchorFields = (found: Selected) => ({ exact: found.anchor.exact, prefix: found.anchor.prefix, suffix: found.anchor.suffix, headingPath: found.headingPath, madeOnVersion: display?.version });
+  const pickKind = async (kind: "comment" | "remove") => {
+    if (!selected) return;
+    clearSelected();
+    if (kind === "comment") return setPending(selected);
+    // A removal needs no text; its reason is optional and is asked in the list right away.
+    const result = await actions.create({ kind: "remove", body: "", ...anchorFields(selected) });
+    if (result.ok) {
+      showNotes();
+      setEditingId(result.note.id);
+    } else setReview({ tone: "warn", text: result.message });
+  };
+  const addComment = async (body: string) => {
+    if (!pending) return null;
+    const result = await actions.create({ kind: "comment", body, ...anchorFields(pending) });
+    if (!result.ok) return result.message;
+    setPending(null);
+    showNotes();
+    return null;
+  };
+  const addGeneral = async (body: string) => {
+    const result = await actions.create({ kind: "general", body, madeOnVersion: headVersion });
+    if (!result.ok) return result.message;
+    showNotes();
+    return null;
+  };
+  const sendFeedback = async () => {
+    setSending(true);
+    const result = await actions.send();
+    setSending(false);
+    setReview(result.ok ? deliveryNotice(result.delivered, "Feedback") : { tone: "warn", text: result.message });
+  };
+  const approve = async (note: string) => {
+    const result = await actions.approve(note);
+    if (!result.ok) return result.message;
+    setReview(deliveryNotice(result.delivered, "Approval"));
+    return null;
+  };
+
   const startEdit = () => {
     setMode("edit");
     setViewing(null);
@@ -265,6 +371,13 @@ export function PlanView({ taskKey, surface }: { taskKey: string; surface: "pane
                   setMode("compare");
                 }}
               />
+              {canReview ? (
+                <>
+                  <GeneralNoteButton onAdd={addGeneral} />
+                  <ApproveButton state={head.state} version={headVersion} drafts={draftCount} busy={sending} onApprove={approve} />
+                  <SendFeedbackButton drafts={draftCount} busy={sending} onSend={() => void sendFeedback()} />
+                </>
+              ) : null}
             </>
           ) : null}
           {menu}
@@ -284,6 +397,12 @@ export function PlanView({ taskKey, surface }: { taskKey: string; surface: "pane
   const draft = taskId === null ? undefined : planDrafts.get(taskId);
   const notices = (
     <>
+      {review ? (
+        <div role="status" className={cn("flex flex-wrap items-center gap-1 rounded-md border px-2 py-1 text-xs", review.tone === "ok" ? "border-success/40" : "border-warning/40")}>
+          <span>{review.text}</span>·
+          <button type="button" className="font-medium underline-offset-2 hover:underline" onClick={() => setReview(null)}>Dismiss</button>
+        </div>
+      ) : null}
       {newerVersion !== null ? (
         <div role="status" className="flex flex-wrap items-center gap-1 rounded-md border border-border bg-muted/50 px-2 py-1 text-xs">
           <span>v{newerVersion} is available</span>·
@@ -389,7 +508,32 @@ export function PlanView({ taskKey, surface }: { taskKey: string; surface: "pane
             ) : null}
             {body}
           </div>
-          {mode === "read" && head ? <PlanToc headings={headings} active={active} open={tocOpen} onToggle={() => setTocOpen(!tocOpen)} onSelect={(index) => { elements[index]?.scrollIntoView({ behavior: "smooth", block: "start" }); setActive(index); setTocOpen(false); }} /> : null}
+          {head ? (
+            <PlanRail
+              contents={
+                mode === "read" && headings.length > 0 ? (
+                  <PlanToc headings={headings} active={active} open={tocOpen} onToggle={() => setTocOpen(!tocOpen)} onSelect={(index) => { elements[index]?.scrollIntoView({ behavior: "smooth", block: "start" }); setActive(index); setTocOpen(false); }} />
+                ) : null
+              }
+              noteCount={allNotes.length}
+              tab={railTab}
+              onTab={setRailTab}
+              notesOpen={notesOpen}
+              onNotesToggle={() => setNotesOpen(!notesOpen)}
+              notes={
+                <PlanNotesList
+                  notes={allNotes}
+                  placements={mode === "read" ? placements : null}
+                  readOnly={!canReview || viewedVersion !== null}
+                  editingId={editingId}
+                  onEditingChange={setEditingId}
+                  actions={actions}
+                  onJump={jumpToNote}
+                  onHover={setHovered}
+                />
+              }
+            />
+          ) : null}
         </div>
       </div>
     );
@@ -397,8 +541,11 @@ export function PlanView({ taskKey, surface }: { taskKey: string; surface: "pane
 
   return (
     <section aria-label={`Plan ${taskKey}`} className="flex h-full min-h-0 flex-col bg-background">
+      <style>{NOTE_HIGHLIGHT_CSS}</style>
       {header}
       {content}
+      {selected && !pending && canAnnotate ? <SelectionToolbar selected={selected} onPick={(kind) => void pickKind(kind)} /> : null}
+      {pending ? <CommentPopover quote={pending.anchor.exact} at={pending} onAdd={addComment} onCancel={() => setPending(null)} /> : null}
     </section>
   );
 }
