@@ -5,10 +5,11 @@ import { isChatOpen, selectContact } from './open-chat';
 import { openAppRoute } from './lib/app-route';
 
 export function DesktopNotifier() {
-  const rpc = useRpc<AgentHubRpcContract>(), holder = useRef(false), { threadId: bbThreadId } = useBbContext(), attention = useRef(0);
+  const rpc = useRpc<AgentHubRpcContract>(), holder = useRef(false), { threadId: bbThreadId } = useBbContext(), attention = useRef(0), lastInput = useRef(0);
   // A click on a push lands in bb's thread view; the owner works in Agent Hub, so a landing right after the window regained attention continues there.
   useEffect(() => {
-    const regained = () => { attention.current = Date.now(); }, input = () => { attention.current = 0; };
+    // A click that itself brings the window forward is the owner's own navigation, whichever of pointerdown and focus fires first.
+    const regained = () => { if (Date.now() - lastInput.current > 500) attention.current = Date.now(); }, input = () => { attention.current = 0; lastInput.current = Date.now(); };
     const visible = () => { if (document.visibilityState === 'visible') regained(); };
     window.addEventListener('focus', regained); document.addEventListener('visibilitychange', visible);
     window.addEventListener('pointerdown', input, true); window.addEventListener('keydown', input, true);

@@ -38,6 +38,10 @@ describe('landing in bb thread view', () => {
   const slot = mount(); act(() => { window.dispatchEvent(new Event('focus')); window.dispatchEvent(new Event('pointerdown')); }); land(slot);
   expect(location.pathname).toBe('/threads/x');
  });
+ it('keeps a click that brings the window forward', () => {
+  const slot = mount(); act(() => { window.dispatchEvent(new Event('pointerdown')); window.dispatchEvent(new Event('focus')); }); land(slot);
+  expect(location.pathname).toBe('/threads/x');
+ });
  it('ignores a landing without recent focus', () => {
   const slot = mount(); act(() => { window.dispatchEvent(new Event('focus')); vi.advanceTimersByTime(3500); }); land(slot);
   expect(location.pathname).toBe('/threads/x');
