@@ -11,16 +11,17 @@ import { Button } from "@/components/ui/button";
 import { LockChips } from "../components/lock-chips.js";
 import { cn } from "@/lib/utils";
 
-/** Shared app icon of a kanban board: cards stacked in three columns. */
+/** Shared app icon of a kanban board: three column headers with cards stacked under them. */
 export const KANBAN_ICON = "work-board/kanban";
 export function KanbanGlyph({ className }: { className?: string }) {
   return (
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden className={cn("size-4 shrink-0", className)}>
-      <rect x="2.75" y="3.75" width="5" height="7" rx="1.5" />
-      <rect x="2.75" y="13.25" width="5" height="7" rx="1.5" />
-      <rect x="9.5" y="3.75" width="5" height="7" rx="1.5" />
-      <rect x="16.25" y="3.75" width="5" height="7" rx="1.5" />
-      <rect x="16.25" y="13.25" width="5" height="4" rx="1.5" />
+      <path d="M3 3.75H7.5M9.75 3.75H14.25M16.5 3.75H21" />
+      <rect x="3" y="7" width="4.5" height="5" rx="1.25" />
+      <rect x="3" y="14.5" width="4.5" height="5" rx="1.25" />
+      <rect x="9.75" y="7" width="4.5" height="5" rx="1.25" />
+      <rect x="16.5" y="7" width="4.5" height="5" rx="1.25" />
+      <rect x="16.5" y="14.5" width="4.5" height="5" rx="1.25" />
     </svg>
   );
 }
