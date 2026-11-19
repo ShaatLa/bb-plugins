@@ -1257,7 +1257,7 @@ export function registerTasksCli(
             step: {
               type: "string",
               repeatable: true,
-              description: "One \"How to check\" step, shown as a numbered list under the question; repeat in order (at most 10)",
+              description: "One \"How to check\" step, shown as a numbered list under the question; repeat in order (at most 10). Steps say how to check this one thing; the prompt and all steps together carry at most one link, so separate states are separate --kind check questions",
             },
             option: {
               type: "string",
@@ -1328,8 +1328,9 @@ export function registerTasksCli(
               const warnings = [
                 ...(!task.progressNote && ["backlog", "todo"].includes(task.status)
                   ? [`Task is in ${task.status} with no Current state; set it with ` + `\`bb work-board update ${task.key} --progress ...\`` + " and move the status if the work stage changed, so the owner sees why it waits on them."] : []),
-                ...(input.options.prompt.length > 300 || (input.options.prompt.match(/https?:\/\//g)?.length ?? 0) > 1
-                  ? ["The question is long or has several links. Ask one decision or one check in one or two short sentences with at most one link; put what to do in --step, split a multi-part acceptance into several --kind check questions and put evidence in a task comment."] : []),
+                // More than one link is refused by the store; length stays a warning.
+                ...(input.options.prompt.length > 300
+                  ? ["The question is long. Ask one decision or one check in one or two short sentences; put what to do in --step, split a multi-part acceptance into several --kind check questions and put evidence in a task comment."] : []),
               ];
               return input.options.json
                 ? JSON.stringify({ ...result, warnings })
@@ -1464,7 +1465,7 @@ export function registerTasksCli(
             step: {
               type: "string",
               repeatable: true,
-              description: "Replacement \"How to check\" steps; repeat in order (omit to keep the current steps)",
+              description: "Replacement \"How to check\" steps; repeat in order (omit to keep the current steps). The prompt and all steps together carry at most one link",
             },
             mode: {
               type: "enum",
@@ -1493,7 +1494,7 @@ export function registerTasksCli(
             reopen: {
               type: "boolean",
               description:
-                "Clear the existing answer and require a new decision",
+                "Clear the existing answer and ask the same thing again; the reopening thread becomes the asker. It cannot add steps or links the answered revision lacked: a new state is a new question",
             },
             machine: MACHINE_OPTION,
             json: JSON_OPTION,
@@ -1542,6 +1543,7 @@ export function registerTasksCli(
                 mode: input.options.mode ?? current.mode,
                 options,
                 reopen: input.options.reopen,
+                ...((ctx.threadId ?? process.env.BB_THREAD_ID) ? { askedByThread: ctx.threadId ?? process.env.BB_THREAD_ID } : {}),
                 authorName: taskAuthor(ctx),
               });
               const recommended = input.options.recommend;

@@ -215,6 +215,11 @@ bb work-board project update EXA --statuses-file ./statuses.json
 ```sh
 bb work-board question add EXA-8 --prompt 'Какой размер?' --option 'Маленький' --option 'Большой' --json
 bb work-board question add EXA-8 --prompt 'Какие платформы?' --option macOS --option Linux --multiple --json
+```
+
+Один вопрос — одно решение или одна проверка: формулировка и все строки `--step` вместе содержат не больше одной ссылки (Markdown или голый URL), `question add` и `question update` отказывают при большем числе. Приёмка из нескольких частей — это несколько вопросов `--kind check`, у каждого своя ссылка. `question update --reopen` задаёт тот же вопрос заново, делает переоткрывший поток автором вопроса, чтобы новый ответ пришёл ему, и отказывает, если добавлены шаги или ссылки, которых не было в отвеченной ревизии: новое состояние — это новый вопрос (0.58.2).
+
+```sh
 bb work-board question list EXA-8 --json
 bb work-board question answer EXA-8 --question <question-id> --answer <option-id> --revision 1
 bb work-board question answer EXA-8 --question <question-id> --clear --revision 2

@@ -1001,6 +1001,8 @@ export const tasksRpcContract = {
           .max(20),
         allowOther: z.boolean().optional(),
         reopen: z.boolean().optional(),
+        /** The thread reopening an answered question becomes its asker. */
+        askedByThread: evidenceThreadSchema.optional(),
         authorName: nonBlankStringSchema.default("You"),
       })
       .strict(),

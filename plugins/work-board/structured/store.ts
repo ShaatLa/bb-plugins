@@ -1,4 +1,4 @@
-import { isQuestionOpen } from "../shared/questions";
+import { assertQuestionShape, assertReopenKeepsScope, isQuestionOpen } from "../shared/questions";
 import { UNANSWERED_QUESTION, WAITING_ON_OWNER, NEWEST_UNANSWERED } from "../db/waiting-on-owner";
 import type { BbPluginApi, PluginRpcHandlers } from "@get-bb/plugin-sdk";
 import type { TasksApiStore } from "../api";
@@ -155,6 +155,7 @@ export function createStructuredStore(bb: BbPluginApi, store: TasksApiStore) {
     }),
     createQuestion(input) {
       requireTask(input.taskId);
+      assertQuestionShape(input.prompt, input.steps ?? []);
       const now = new Date().toISOString();
       const question = questionSchema.parse({
         id: createUlid(),
@@ -318,10 +319,14 @@ export function createStructuredStore(bb: BbPluginApi, store: TasksApiStore) {
           throw new Error(
             "Question has an answer; confirm reopen to clear it and request a new decision",
           );
+        assertQuestionShape(content.prompt, content.steps);
+        if (current.answeredBy) assertReopenKeepsScope(current, content);
         const { id, taskId, createdAt, history, ...snapshot } = current;
         const next = questionSchema.parse({
           ...current,
           ...content,
+          // Whoever reopens an answered question asks it now, so the new answer goes to them.
+          ...(current.answeredBy && input.askedByThread ? { askedByThread: input.askedByThread } : {}),
           selectedOptionIds: [],
           answerText: null,
           answeredBy: null,

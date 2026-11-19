@@ -357,17 +357,23 @@ Use a decision when you cannot proceed without a choice, or a check when you kno
 
 Rules for owner questions (long questions are hard to answer):
 1. One question = one decision or one thing to check: one state or topic, in one or two short plain sentences.
-2. Split a multi-part acceptance into several `--kind check` questions, each answerable on its own, each with its own single link.
+2. Split a multi-part acceptance into several `--kind check` questions, each answerable on its own, each with its own single link. The prompt and all `--step` lines together may carry at most one link (Markdown or bare URL); `question add` and `question update` refuse more.
 3. What the owner has to do goes into `--step` (repeat it, at most 10 short steps; the card lists them under the question). Evidence, tables, quotes of earlier remarks, inventories and history go into a task comment (attachment if long), never into the question.
 4. Acceptance material is links only (a local design/canvas server or the product), never screenshots or image pairs.
 
-`question add` warns (stderr; `warnings` in JSON) when a prompt is longer than 300 characters or carries more than one URL; it still saves the question.
+`question add` warns (stderr; `warnings` in JSON) when a prompt is longer than 300 characters; it still saves the question.
+
+`question update --reopen` asks the same check again and makes your thread the asker, so the new answer comes to you. It refuses new steps or links the answered revision did not have: a new state is a new question.
 
 The owner can withdraw a saved answer. You then get a notification "Answer withdrawn (was: …)": treat the question as open again, stop acting on the earlier answer, undo or report what you already did because of it (for example move the task back from Done), and wait for the new answer.
 
 ```sh
 bb work-board question add ABC-12 --kind decision --prompt 'Which approach?' --option 'Use the existing service'
 bb work-board question add ABC-12 --kind check --prompt 'Does the form save?' --step 'Open the form' --step 'Press Save'
+# Three states to accept are three checks, each with its own link, not one check with three linked steps:
+bb work-board question add ABC-12 --kind check --prompt 'Does [the normal state](https://example.com/normal) look right?'
+bb work-board question add ABC-12 --kind check --prompt 'Do [both notices](https://example.com/two-notices) read well together?'
+bb work-board question add ABC-12 --kind check --prompt 'Is [the state after dismissing a notice](https://example.com/dismissed) right?'
 ```
 
 Both types use options and always-available free text. Decisions require at least one option. Checks default to Confirmed and Problem found when no options are supplied; explicit options replace those defaults. Multiple choice permits several options. Type is a label, not a different answer workflow. The answer is delivered to the asking agent thread (queue-if-active), falling back to an attached thread or the latest agent commenter for older questions.
