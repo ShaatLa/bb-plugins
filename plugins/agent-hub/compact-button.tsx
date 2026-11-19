@@ -38,7 +38,7 @@ export function CompactButton({ threadId, status, onError }: { threadId: string;
   }, [sdk, threadId, queueable, watch]);
   if (!available || (!ready && !queueable && !state)) return null;
   const queued = state === 'queued';
-  return <Button type="button" size="sm" variant="ghost" className="h-6 gap-1 px-1.5 text-xs text-muted-foreground max-[639px]:hidden"
+  return <Button type="button" size="sm" variant="ghost" className="h-6 gap-1 px-1.5 text-xs font-normal text-muted-foreground max-[639px]:hidden"
     disabled={state === 'busy' || state === 'running' || (!ready && !queueable)} onClick={async () => {
       if (!queued) setState('busy');
       try {
