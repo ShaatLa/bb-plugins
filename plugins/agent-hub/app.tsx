@@ -320,6 +320,7 @@ export function ItemCard({ item, members, late, live = true, chat = false, marka
   // Same look as bb chat: my message is a recessed bubble on the right, the agent's text has no background.
   const userBubble = 'max-w-full rounded-xl border border-border-seam bg-surface-recessed px-4 py-2.5 text-sm leading-relaxed text-foreground';
   const agentText = 'w-full px-2 text-sm leading-relaxed';
+  const bare = chat && item.kind === 'update' && !item.answer;
   const iconProps = (text: string) => ({ 'aria-label': text, title: text, variant: 'ghost' as const, className: 'size-6 px-0 [&_[data-icon-root]]:size-[13px]' });
   const unread = group.some(isUnread), card = useRef<HTMLLIElement>(null);
   // Telegram-style status: a dot while the answer is new, a double check once read.
@@ -374,7 +375,7 @@ export function ItemCard({ item, members, late, live = true, chat = false, marka
       // A message another agent or a plugin (a Work Board report, a CI notice) sent, still being worked on: the robot under it
       // shares a row with its Show more, dimmed like the other robots. The chat's own end robot stands back for it.
       const working = chat && live && item.status === 'waiting' && item.kind === 'update';
-      const more = (clamped || expanded) && <Button variant="ghost" size="sm" className={chat ? `ml-auto flex h-6 shrink-0 px-2 text-xs text-muted-foreground ${working ? 'mt-1' : ''}` : undefined} aria-expanded={expanded} onClick={() => setExpanded(!expanded)}>{chat ? (expanded ? 'Show less' : 'Show more') : (expanded ? 'Collapse question' : 'Expand question')}</Button>;
+      const more = !bare && (clamped || expanded) && <Button variant="ghost" size="sm" className={chat ? `ml-auto flex h-6 shrink-0 px-2 text-xs text-muted-foreground ${working ? 'mt-1' : ''}` : undefined} aria-expanded={expanded} onClick={() => setExpanded(!expanded)}>{chat ? (expanded ? 'Show less' : 'Show more') : (expanded ? 'Collapse question' : 'Expand question')}</Button>;
       return working ? <div className="flex items-start gap-2"><div className="min-w-0 flex-1 px-2 text-muted-foreground opacity-60 transition-opacity hover:opacity-100 has-[[aria-expanded=true]]:opacity-100"><WorkLog threadId={item.threadId} turnId={item.turnId} sourceSeqStart={item.questionSeq} startedAt={item.createdAt} live><RobotLoader className="h-8" label="Working on the message" /></WorkLog></div>{more}</div> : more;
     })()}
     {/* Where the agent's reply would be, so on its side. */}{part === 'question' && <Button variant="ghost" size="sm" className="flex h-6 gap-1.5 px-2 text-xs text-muted-foreground" onClick={() => onJump?.(`${last.id}:answer`)}><Icon name="ArrowDown" aria-hidden className="size-3.5" />Answered below</Button>}
@@ -395,6 +396,8 @@ export function ItemCard({ item, members, late, live = true, chat = false, marka
     {/* While the answer is owed, the robot walks where it will appear, above the actions (raw statuses told the owner nothing). */}
     {/* While the message is still on its way (see sendingItem in inbox.tsx) the robot's place is kept but left empty. */}{robot && part !== 'question' && item.status === 'waiting' && <div className={`${item.id.startsWith('ans_sending') ? 'invisible ' : ''}px-2 text-muted-foreground opacity-60 transition-opacity hover:opacity-100 has-[[aria-expanded=true]]:opacity-100`}><WorkLog threadId={item.threadId} turnId={item.turnId} sourceSeqStart={item.questionSeq} startedAt={item.createdAt} live><button {...robotProps} title="Waiting for the answer"><RobotLoader className="h-8" label="Waiting for the answer" /></button></WorkLog></div>}
     {part !== 'question' && <><div className="flex items-center gap-2"><div className="flex items-center gap-0.5 px-1 text-muted-foreground opacity-60 transition-opacity hover:opacity-100 focus-within:opacity-100 has-[[role=menu]]:opacity-100">
+      {/* A message with no reply of its own has nothing to save, snooze or task; it keeps only expand and its link, as icons. */}
+      {bare ? <>{(clamped || expanded) && <Button size="sm" {...iconProps(expanded ? 'Show less' : 'Show more')} aria-expanded={expanded} onClick={() => setExpanded(!expanded)}><Icon name={expanded ? 'ChevronUp' : 'ChevronDown'} aria-hidden /></Button>}<MessageCopy small link text={messageLink(item.projectId, item.threadId, seq)} /></> : <>
       {item.kind === 'for_me' && replyButton}
       {(text => text && <MessageCopy small text={text} />)(item.answer || (item.kind === 'for_me' ? item.question : ''))}
       {/* In the chat the conversation is already open here; other views still link to it. */}{!chat && item.kind !== 'for_me' && !item.threadDeleted && <Button asChild size="sm" {...iconProps('Open in chat')}><UrlLink href={href} onClick={() => { if (unread) void act(() => rpc.call('markRead', { ids: group.filter(isUnread).map(member => member.id) })); }}><Icon name="ExternalLink" aria-hidden /></UrlLink></Button>}
@@ -413,6 +416,7 @@ export function ItemCard({ item, members, late, live = true, chat = false, marka
         </div>, document.body)}
       </div>
       {item.kind !== 'for_me' && replyButton}
+      </>}
     </div>{readMark && <span className="ml-auto flex items-center px-2 text-muted-foreground">{readMark}</span>}</div>
     {item.kind === 'for_me' && item.status === 'open' && !item.questions && <div className="flex flex-wrap gap-1 px-2">{(item.options ?? defaultChoices(item.question)).map(option => <Button key={option} size="sm" variant={option === item.recommended ? 'default' : 'outline'} className="h-auto min-h-8 whitespace-normal py-1 text-left" disabled={pending} onClick={() => void reply(undefined, option)}>{option}{option === item.recommended && <>{' '}<span className="sr-only">(recommended)</span></>}</Button>)}
       {item.recommendReason && <p className="w-full pt-1 text-xs text-muted-foreground">{item.recommendReason}</p>}</div>}
