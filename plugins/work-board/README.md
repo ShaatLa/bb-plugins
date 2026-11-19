@@ -35,6 +35,8 @@ With the optional Tokenomos plugin installed, the task rail shows what agents sp
 
 The kanban board glyph is the shared app icon `work-board/kanban`, so a tab that shows the board can use `icon: "work-board/kanban"` (0.52.1).
 
+To show the full Work Board board inside another plugin's UI, render an empty `<div data-work-board-host="board" data-thread-id="thr_…">` and let React leave it empty. Work Board's app overlay finds the node and renders the thread's board there: the board of the project linked to the thread's bb project, with the thread's own cards outlined, and filters, drag and drop, and task opening. It keeps Work Board's own RPC, realtime and navigation, so nothing is bundled into the host plugin. Once rendered, Work Board sets `data-work-board-ready="true"` on the node. Give the node a height (for example `h-full min-h-0`). The native thread side panel tab outlines the thread's own cards the same way (0.53.0).
+
 ## Scheduled tasks CLI
 
 `bb work-board schedule ...` manages recurring and one-time scheduled tasks through the same validated RPC

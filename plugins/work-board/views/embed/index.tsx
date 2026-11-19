@@ -8,8 +8,10 @@ import {
   type ExperimentalThreadTabProps,
   useBbNavigate,
   useRealtime,
+  useRpc,
   useSdk,
 } from "@get-bb/plugin-sdk/app";
+import type { publicRpcContract } from "../../shared/public.js";
 import { DialogScope } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Icon } from "@/components/ui/icon";
@@ -313,10 +315,17 @@ function TaskDirectiveCardContent({ attributes }: PluginMessageDirectiveProps) {
   );
 }
 
-function TaskEmbedPanelContent({ threadId }: ExperimentalThreadTabProps) {
+type OpenTaskRequest = { target: TaskTabTarget; sequence: number; clear: () => void } | null;
+
+function ThreadBoardContent({ threadId, target = null }: { threadId: string; target?: OpenTaskRequest }) {
   const sdk = useSdk();
   const navigate = useBbNavigate();
-  const target = experimental_useFixedTabTarget(TASK_TAB);
+  const publicRpc = useRpc<typeof publicRpcContract>();
+  const ownKeys = useTasksQuery(
+    async () => new Set((await publicRpc.call("threadTasks", { threadId }).catch(() => ({ tasks: [] }))).tasks.map((task) => task.key)),
+    ["tasks:changed", "threads:changed"],
+    [threadId],
+  );
   const [route, setRoute] = useState<TasksRoute>(() =>
     target ? { kind: "task", taskKey: target.target.taskKey } : (loadPanelRoute(threadId) ?? { kind: "all" }),
   );
@@ -380,7 +389,7 @@ function TaskEmbedPanelContent({ threadId }: ExperimentalThreadTabProps) {
   } else if (projects.data === undefined || threadProject.data === undefined) {
     content = <p role="status" className="p-4 text-sm text-muted-foreground">Loading project board…</p>;
   } else if (project) {
-    content = <div className="min-h-0 flex-1"><BoardView key={project.id} projectId={project.id} /></div>;
+    content = <div className="min-h-0 flex-1"><BoardView key={project.id} projectId={project.id} highlightKeys={ownKeys.data} /></div>;
   } else {
     content = (
       <div className="space-y-3 p-4 text-sm text-muted-foreground">
@@ -414,14 +423,19 @@ function TaskEmbedPanelContent({ threadId }: ExperimentalThreadTabProps) {
   );
 }
 
-export function TaskEmbedPanel(props: ExperimentalThreadTabProps) {
+/** The thread's board and task detail, shared by the thread side panel tab and host nodes in other plugins' UI. */
+export function ThreadBoard({ threadId, target = null }: { threadId: string; target?: OpenTaskRequest }) {
   return (
     <DialogScope className="relative h-full min-h-0">
       <TasksRefreshProvider>
-        <TaskStatusesProvider><TaskEmbedPanelContent key={props.threadId} {...props} /></TaskStatusesProvider>
+        <TaskStatusesProvider><ThreadBoardContent key={threadId} threadId={threadId} target={target} /></TaskStatusesProvider>
       </TasksRefreshProvider>
     </DialogScope>
   );
+}
+
+export function TaskEmbedPanel(props: ExperimentalThreadTabProps) {
+  return <ThreadBoard threadId={props.threadId} target={experimental_useFixedTabTarget(TASK_TAB)} />;
 }
 
 export function TaskDirectiveCard(props: PluginMessageDirectiveProps) {

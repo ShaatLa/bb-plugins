@@ -5,6 +5,7 @@ import { useOpenTasksBadge } from "./shell/open-tasks-badge.js";
 import { TasksNavigationPanel } from "./shell/navigation-panel.js";
 import { KanbanGlyph, KanbanPanel, KANBAN_ICON, KANBAN_TAB } from "./shell/kanban-panel.js";
 import { TASK_TAB, TaskDirectiveCard, TaskEmbedPanel } from "./views/embed/index.js";
+import { WorkBoardHosts } from "./views/embed/hosts.js";
 import { useTaskLinkInterception } from "./components/task-link-interceptor.js";
 import { StatusGlyph } from "./components/status-icon.js";
 import { STATUS_ICONS, STATUS_ICON_NAME_PREFIX } from "./shared/statuses.js";
@@ -61,4 +62,5 @@ export default definePluginApp((app) => {
     useVisible: useTaskLinkInterception,
   });
   app.slots.messageDirective({ id: "task", component: TaskDirectiveCard });
+  app.slots.experimental_appOverlay({ id: "board-hosts", component: WorkBoardHosts });
 });
