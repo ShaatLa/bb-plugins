@@ -1,4 +1,4 @@
-import { assertQuestionShape, assertReopenKeepsScope, isQuestionOpen } from "../shared/questions";
+import { assertNotPlanApproval, assertQuestionShape, assertReopenKeepsScope, isQuestionOpen } from "../shared/questions";
 import { UNANSWERED_QUESTION, WAITING_ON_OWNER, NEWEST_UNANSWERED } from "../db/waiting-on-owner";
 import type { BbPluginApi, PluginRpcHandlers } from "@get-bb/plugin-sdk";
 import type { TasksApiStore } from "../api";
@@ -26,6 +26,8 @@ export function createStructuredStore(bb: BbPluginApi, store: TasksApiStore) {
   const requireTask = (id: string) => {
     if (!store.tasks.getTask(id)) throw new Error(`Task not found: ${id}`);
   };
+  const assertNotPlanQuestion = (taskId: string, prompt: string, steps: readonly string[]) =>
+    assertNotPlanApproval(prompt, steps, store.tasks.getTask(taskId)!.key, db.prepare<[string], { found: number }>("SELECT 1 AS found FROM task_plans WHERE task_id = ?").get(taskId) !== undefined);
   const getQuestion = (id: string) => {
     const row = db
       .prepare<
@@ -156,6 +158,7 @@ export function createStructuredStore(bb: BbPluginApi, store: TasksApiStore) {
     createQuestion(input) {
       requireTask(input.taskId);
       assertQuestionShape(input.prompt, input.steps ?? []);
+      assertNotPlanQuestion(input.taskId, input.prompt, input.steps ?? []);
       const now = new Date().toISOString();
       const question = questionSchema.parse({
         id: createUlid(),
@@ -320,6 +323,7 @@ export function createStructuredStore(bb: BbPluginApi, store: TasksApiStore) {
             "Question has an answer; confirm reopen to clear it and request a new decision",
           );
         assertQuestionShape(content.prompt, content.steps);
+        assertNotPlanQuestion(current.taskId, content.prompt, content.steps);
         if (current.answeredBy) assertReopenKeepsScope(current, content);
         const { id, taskId, createdAt, history, ...snapshot } = current;
         const next = questionSchema.parse({

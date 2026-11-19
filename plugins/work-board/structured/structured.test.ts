@@ -122,6 +122,20 @@ describe("task questions", () => {
     expect(reopened.steps).toEqual(["Open https://example.com/a", "Press Save and reload"]);
   });
 
+  it("refuses plan-approval questions: any link to a task plan, and approval wording once the task has a plan", async () => {
+    const { bb, structured, task } = setup();
+    const ask = (prompt: string, steps: string[] = []) => structured.handlers.createQuestion({ kind: "decision", askedByThread: null, taskId: task.id, prompt, steps, mode: "single", options: ["Yes", "No"] });
+    expect(() => ask(`Do you accept [the plan](/plugins/work-board/work-board/task/${task.key}/plan)?`)).toThrow(/plan submit/);
+    // Without a plan on the task, approval wording alone is an ordinary question (e.g. a plan of something else).
+    await ask("Do you approve the pricing plan change?");
+    const now = new Date().toISOString();
+    bb.storage.database().prepare("INSERT INTO task_plans (task_id, format, version, body, state, updated_at, author_kind, author_thread, author_name) VALUES (?, 'markdown', 1, '# Plan', 'in_review', ?, 'agent', NULL, 'agent')").run(task.id, now);
+    expect(() => ask("Do you accept the plan so I can start?")).toThrow(/Plan approval is not an owner question/);
+    expect(() => ask("Принимаете план от 19.11?")).toThrow(/plan submit/);
+    expect(() => ask("Can I start step 1?", ["Approve the plan first"])).toThrow(/plan submit/);
+    await ask("Which database should step 2 use?");
+  });
+
   it("keeps the decision label until the last open question is answered or deleted", async () => {
     const { structured, store, project, task } = setup();
     const keep = store.tasks.createLabel({ projectId: project.id, name: "Keep", color: "blue" });

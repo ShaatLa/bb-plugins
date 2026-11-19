@@ -38,3 +38,22 @@ export function assertReopenKeepsScope(previous: { prompt: string; steps: readon
   if (next.steps.length > previous.steps.length || added.length)
     throw new Error(`Reopening an answered question asks the same check again; it cannot add ${added.length ? "links" : "steps"} the answered revision did not have. Ask the new state as a new question instead. ${QUESTION_SPLIT_HINT}`);
 }
+
+const PLAN_LINK = /\/plugins\/work-board\/work-board\/task\/[^/\s)]+\/plan(?![\w-])/;
+// "accept/approve … plan" either way round, English and Russian, within one sentence.
+const PLAN_APPROVAL = [
+  /\b(?:accept|approve|sign[ -]?off|confirm)\w*\b[^.?!\n]{0,60}\bplan\b/i,
+  /\bplan\b[^.?!\n]{0,60}\b(?:accept|approve|sign[ -]?off|confirm)\w*/i,
+  /(?:принима|приним|одобр|соглас|утвержд|подтвержд)[а-яё]*[^.?!\n]{0,60}план/i,
+  /план[а-яё]*[^.?!\n]{0,60}(?:принима|одобр|соглас|утвержд|подтвержд)/i,
+];
+
+/**
+ * The plan's own review replaces "do you accept the plan?" questions. A question that links a task plan is refused;
+ * on a task that has a plan, so is one that asks to accept or approve a plan.
+ */
+export function assertNotPlanApproval(prompt: string, steps: readonly string[], taskKey: string, taskHasPlan: boolean): void {
+  const text = [prompt, ...steps].join("\n");
+  if (PLAN_LINK.test(text) || (taskHasPlan && PLAN_APPROVAL.some((pattern) => pattern.test(text))))
+    throw new Error(`Plan approval is not an owner question: run \`bb work-board plan submit ${taskKey}\` and wait. The owner approves the plan or sends notes in the Plan tab, and you get a message either way. Ask questions only for decisions inside the work.`);
+}

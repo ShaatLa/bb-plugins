@@ -224,6 +224,8 @@ bb work-board question add EXA-8 --prompt 'Which platforms?' --option macOS --op
 
 One question asks one decision or one check: the prompt and all `--step` lines together carry at most one link (Markdown or bare URL), and `question add` and `question update` refuse more. A multi-part acceptance is several `--kind check` questions, each with its own link. `question update --reopen` asks the same thing again, makes the reopening thread the asker so the new answer reaches it, and refuses steps or links the answered revision did not have: a new state is a new question (0.58.2).
 
+A plan is not approved through a question: `question add` and `question update` refuse a question that links a task plan, and, on a task that has a plan, one that asks to accept or approve a plan. The agent runs `plan submit` and the owner approves or sends notes in the Plan tab (0.58.3).
+
 ```sh
 bb work-board question list EXA-8 --json
 bb work-board question answer EXA-8 --question <question-id> --answer <option-id> --revision 1

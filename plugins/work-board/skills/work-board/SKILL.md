@@ -360,6 +360,7 @@ Rules for owner questions (long questions are hard to answer):
 2. Split a multi-part acceptance into several `--kind check` questions, each answerable on its own, each with its own single link. The prompt and all `--step` lines together may carry at most one link (Markdown or bare URL); `question add` and `question update` refuse more.
 3. What the owner has to do goes into `--step` (repeat it, at most 10 short steps; the card lists them under the question). Evidence, tables, quotes of earlier remarks, inventories and history go into a task comment (attachment if long), never into the question.
 4. Acceptance material is links only (a local design/canvas server or the product), never screenshots or image pairs.
+5. Never ask the owner to accept or approve a plan. Put the plan in `plan`, run `plan submit` and wait for the approval or the notes (see Task plan → Review loop). `question add` refuses a question that links a task plan, and, on a task that has a plan, one that asks to accept or approve a plan.
 
 `question add` warns (stderr; `warnings` in JSON) when a prompt is longer than 300 characters; it still saves the question.
 
@@ -507,6 +508,21 @@ The plan is Markdown up to 256 KB, passes the secret guard and is read-only whil
 
 Sharing: the owner reads and edits the plan in the Plan card of the task and in a Plan tab. When you tell the owner the plan is ready or changed, you may link it as `[ABC-12 plan](/plugins/work-board/work-board/task/ABC-12/plan)` (replace both ABC-12 with the real key); in bb chat it opens the plan next to the conversation. Do not paste the plan into the chat. A person's edits arrive as new versions (author "You"): re-read with `plan show` and pass the new `--base-version`.
 
+### Review loop (0.58.0)
+
+The owner reviews the plan in the Plan tab: notes on passages (comment or remove) and general notes, sent to you in one batch, or an approval.
+
+- **The plan is the question.** Do not ask the owner "do you accept the plan?" with `question add`. Write the plan, `plan submit` it, and wait for approval or feedback. Questions stay for real decisions inside the work.
+- **Approved is the go-ahead.** A message `KEY · plan vN approved by the owner` means: start the work as planned (an optional `Owner's note:` line may add a remark). Any new version returns the plan to `draft` and needs a new review, so do not change an approved plan without telling the owner.
+- **Feedback arrives as a message** that starts `KEY · plan vN: changes requested by the owner`, with the rules and the numbered notes in plan order. Read the same text any time with `bb work-board plan notes KEY` (only sent notes you have not answered; `--all` shows every note with its state and your reply; `--json` is structured). A note is `N1`, `N2` …: a quote of the passage (cut to 200 characters), the owner's text, and the section it sits in. A note marked `unanchored (made on vK)` quotes text that is no longer in the plan: find the passage that replaced it, or answer why not. A `Remove` note asks to drop that passage; a `General` note concerns the whole plan.
+- **Do the review in this order:**
+  1. `plan show KEY` to re-read the plan and take the current version.
+  2. Change the plan with `plan edit` (by section or fragment) or `plan set`; never answer in comments.
+  3. Answer every note: `bb work-board plan reply KEY N1 --body "what changed, or why not" --addressed`. `--addressed` marks the note done in the current version; without it the reply is only a message and the note stays open. A note you disagree with still gets a reply that says why.
+  4. `bb work-board plan submit KEY`. It does not refuse while notes are unanswered, but it lists them: answer them first. Do not resubmit the plan unchanged.
+- The owner then resolves a note (done), reopens it (it goes out again with the next batch) or approves. You cannot resolve or delete notes, and a note stays readable after you answered it.
+- RPC: `listPlanNotes`, `createPlanNote`, `updatePlanNote`, `deletePlanNote`, `setPlanNoteState` (owner), `replyPlanNote` (you), `sendPlanFeedback`, `approvePlan`. `show KEY` and `plan show KEY` add `· N open notes` (sent notes you have not answered). Export format v19 carries the notes; v1–v18 imports still work.
+
 ## Dependencies (0.22.0)
 
 Read `bb work-board dependency list KEY --json` before starting a task. Add `bb work-board dependency add ABC-2 --blocked-by ABC-1`; remove with `dependency remove ABC-2 --blocked-by ABC-1`. Reverse the keys to express Blocks instead. Only the predecessor's Done status satisfies a link; Canceled stays unresolved, and reopening restores the warning. These links warn; they never forbid dispatch or status changes. Respect the ordering and report blockers instead of assuming a permitted command means the task is ready. `show --json` provides `dependencies: {blockedBy, blocks}` and `blocked`; `list --json` adds unresolved `blockedBy`. Dispatch context includes unresolved predecessors. Both endpoints receive a system history comment on add/remove.
@@ -544,18 +560,3 @@ The UI Share button copies a Markdown task link for pasting into any agent chat.
 Export v14 (0.28.0) adds optional per-project workflow policy, outcome evidence and deploy PR citations; imports retain v1–v13 compatibility. Older releases cannot read v14 exports.
 
 Use `list --stale-status` to filter diagnostic warnings before pagination; `list --json` and `show --json` expose `staleStatusFlags`. Diagnostics use recorded state, not a fresh remote check. Record non-PR results explicitly with `comment KEY --kind outcome --body "Result"`. Existing done cards with ordinary non-system comments are grandfathered until a status change. Configure rules using `project update PREFIX --workflow-policy-file policy.json`; omitted fields reset to defaults, null disables the corresponding rule.
-
-### Review loop (0.58.0)
-
-The owner reviews the plan in the Plan tab: notes on passages (comment or remove) and general notes, sent to you in one batch, or an approval.
-
-- **The plan is the question.** Do not ask the owner "do you accept the plan?" with `question add`. Write the plan, `plan submit` it, and wait for approval or feedback. Questions stay for real decisions inside the work.
-- **Approved is the go-ahead.** A message `KEY · plan vN approved by the owner` means: start the work as planned (an optional `Owner's note:` line may add a remark). Any new version returns the plan to `draft` and needs a new review, so do not change an approved plan without telling the owner.
-- **Feedback arrives as a message** that starts `KEY · plan vN: changes requested by the owner`, with the rules and the numbered notes in plan order. Read the same text any time with `bb work-board plan notes KEY` (only sent notes you have not answered; `--all` shows every note with its state and your reply; `--json` is structured). A note is `N1`, `N2` …: a quote of the passage (cut to 200 characters), the owner's text, and the section it sits in. A note marked `unanchored (made on vK)` quotes text that is no longer in the plan: find the passage that replaced it, or answer why not. A `Remove` note asks to drop that passage; a `General` note concerns the whole plan.
-- **Do the review in this order:**
-  1. `plan show KEY` to re-read the plan and take the current version.
-  2. Change the plan with `plan edit` (by section or fragment) or `plan set`; never answer in comments.
-  3. Answer every note: `bb work-board plan reply KEY N1 --body "what changed, or why not" --addressed`. `--addressed` marks the note done in the current version; without it the reply is only a message and the note stays open. A note you disagree with still gets a reply that says why.
-  4. `bb work-board plan submit KEY`. It does not refuse while notes are unanswered, but it lists them: answer them first. Do not resubmit the plan unchanged.
-- The owner then resolves a note (done), reopens it (it goes out again with the next batch) or approves. You cannot resolve or delete notes, and a note stays readable after you answered it.
-- RPC: `listPlanNotes`, `createPlanNote`, `updatePlanNote`, `deletePlanNote`, `setPlanNoteState` (owner), `replyPlanNote` (you), `sendPlanFeedback`, `approvePlan`. `show KEY` and `plan show KEY` add `· N open notes` (sent notes you have not answered). Export format v19 carries the notes; v1–v18 imports still work.
