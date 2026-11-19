@@ -38,7 +38,7 @@ const reportOutput = z.object({
 
 const reportTag = (projectId?: string) => projectId ? `report:${projectId}` : "report";
 export const reportContract = defineRpcContract({
-  report: { input: reportInput, output: reportOutput, tags: ({ projectId }) => [reportTag(projectId)] },
+  report: { experimental_description: 'Read activity over inclusive UTC dates. Omit projectId for all projects. Set events to include refusals, e.g. {"projectId":"proj_example","events":true}.', input: reportInput, output: reportOutput, tags: ({ projectId }) => [reportTag(projectId)] },
 });
 
 type ProjectReport = z.infer<typeof projectReport>;

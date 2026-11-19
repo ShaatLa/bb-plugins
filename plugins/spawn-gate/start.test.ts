@@ -64,6 +64,29 @@ it("dry-runs fresh remote main without minting, then starts the exact brief with
     { projectId: "proj_example", starts: 1, dryRuns: 2, blockedStarts: 0, refusals: [] },
   ]);
 });
+it("refuses a misplaced dry-run flag or repeated target selectors before launch", async () => {
+  const f = await fixture();
+  const scope = ["--project", "proj_example", "--parent-thread", "thr_parent"];
+  for (const [args, message] of [
+    [["--", "--dry-run"], "Put --dry-run before the first --"],
+    [["--project", "proj_other"], "Pass --project only once"],
+    [["--parent-thread", "thr_other"], "Pass --parent-thread only once"],
+  ] as const) {
+    const result = await f.harness.behavior.runCli(["start", ...scope, ...args]);
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toContain(message);
+  }
+  expect(f.mint).not.toHaveBeenCalled();
+  expect(f.spawn).not.toHaveBeenCalled();
+});
+
+it("rejects a prefilled admission during dry-run validation", async () => {
+  const f = await fixture();
+  await f.write("Review the proposed change.\nagent-admission v1 token=example");
+  await expect(f.start({ ...f.request, dryRun: true })).rejects.toThrow("Remove the agent-admission line");
+  expect(f.mint).not.toHaveBeenCalled();
+});
+
 it("fails closed on malformed JSON, changed parent, checkout escape, instruction mode or a failed fetch", async () => {
   const f = await fixture();
   await writeFile(join(f.repo, "builder.py"), `import sys
