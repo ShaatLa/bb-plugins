@@ -34,6 +34,7 @@ const css = `
 .ar-hammer{transform-box:view-box;transform-origin:12px 13px;animation:ar-hammer 1.3s infinite}
 .ar-look .ar-right,.ar-look .ar-left,.ar-look .ar-front{animation-duration:6s}
 .ar-move.ar-quick{animation-name:ar-move-q}.ar-move.ar-quick,.ar-quick .ar-right,.ar-quick .ar-left,.ar-quick .ar-front{animation-duration:13s}.ar-quick .ar-right{animation-name:ar-right-q}.ar-quick .ar-left{animation-name:ar-left-q}.ar-quick .ar-front{animation-name:ar-front-q}.ar-watch{animation:ar-watch 13s step-end infinite;opacity:0}
+.ar-nod{transform-box:view-box;transform-origin:12px 11px;animation:ar-nod .25s ease-in-out infinite alternate}
 .ar-scratch{transform-box:view-box;transform-origin:16.3px 13px;animation:ar-scratch .55s ease-in-out infinite alternate}
 .ar-z{animation:ar-z 2.4s linear infinite;opacity:0}
 .ar-near{transform-box:view-box;transform-origin:14px 7.5px;animation:ar-near 1s ease-in-out infinite alternate}.ar-near.eye{animation-name:ar-near-eye}
@@ -57,6 +58,7 @@ const css = `
 @keyframes ar-left-q{0%{opacity:0}46%{opacity:1}88%{opacity:0}}
 @keyframes ar-front-q{0%{opacity:0}42%{opacity:1}46%{opacity:0}}
 @keyframes ar-watch{0%{opacity:0}88%{opacity:1}}
+@keyframes ar-nod{from{transform:rotate(6deg)}to{transform:rotate(-1deg)}}
 @keyframes ar-scratch{from{transform:rotate(-10deg)}to{transform:rotate(24deg)}}
 @keyframes ar-z{0%{transform:translate(0,0) scale(.7);opacity:0}20%{opacity:1}100%{transform:translate(5px,-9px) scale(1.2);opacity:0}}
 @keyframes ar-near{from{transform:scale(1)}to{transform:scale(1.15)}}
@@ -92,12 +94,12 @@ const front = <>{antenna}<rect x="7" y="4" width="10" height="7" rx="2" /><circl
 const dots = (y: number, x0: number) => <><circle className="ar-dot" cx={x0} cy={y} r=".3" fill="currentColor" stroke="none" /><circle className="ar-dot b" cx={x0 + 2.2} cy={y} r=".3" fill="currentColor" stroke="none" /><circle className="ar-dot c" cx={x0 + 4.4} cy={y} r=".3" fill="currentColor" stroke="none" /></>;
 
 // Thinking, each walk to a side in one of two moods, picked at random every lap: chin up, rubbing it (the arm raised to
-// reach the lifted chin), or hands clasped behind the back, leaning forward from the hip, head bowed, eyes on the floor.
+// reach the lifted chin), or hands clasped behind the back, leaning forward from the hip, head bowed, eyes on the floor, nodding with each step.
 type Mood = 'chin' | 'behind';
 const pickMood = (): Mood => Math.random() < .5 ? 'chin' : 'behind';
 const thinker = (mood: Mood) => mood === 'chin'
   ? <><g transform="rotate(-12 12 11)">{sideHead}</g>{sideBody}<line x1="12" y1="12.8" x2="16.3" y2="13" /><line className="ar-scratch" x1="16.3" y1="13" x2="15.8" y2="10.3" /></>
-  : <g transform="rotate(8 12 18)"><g transform="rotate(12 12 11)">{antenna}<rect x="8" y="4" width="8" height="7" rx="2" /><circle cx="14" cy="8.3" r=".9" /></g>{sideBody}<path d="M12 13 L11.2 16.2 L7.9 15.5" /><circle cx="7.9" cy="15.5" r=".45" fill="currentColor" stroke="none" /></g>;
+  : <g transform="rotate(8 12 18)"><g transform="rotate(12 12 11)"><g className="ar-nod">{antenna}<rect x="8" y="4" width="8" height="7" rx="2" /><circle cx="14" cy="8.3" r=".9" /></g></g>{sideBody}<path d="M12 13 L11.2 16.2 L7.9 15.5" /><circle cx="7.9" cy="15.5" r=".45" fill="currentColor" stroke="none" /></g>;
 function ThinkScene() {
   const [moods, setMoods] = useState<[Mood, Mood]>(() => [pickMood(), pickMood()]);
   // New moods each lap (child animations bubble here too, hence the name check).
