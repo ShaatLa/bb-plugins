@@ -4,7 +4,7 @@ import { z } from "zod";
 import { registerGateCli } from "./cli";
 import { createMetrics, reportContract } from "./metrics";
 import { migrateLegacyGate } from "./migration";
-import { createStart, startInput, startOutput } from "./start";
+import { briefInput, createStart, startInput, startOutput } from "./start";
 
 const hash = (text: string) => createHash("sha256").update(text).digest("hex");
 const admission = /^agent-admission v1 token=([a-f0-9]{64})$/;
@@ -17,14 +17,15 @@ const configSetInput = z.discriminatedUnion("key", [
   fieldInput("enabled"), fieldInput("method"), fieldInput("instruction"), fieldInput("script"), fieldInput("ttlMinutes"),
 ]);
 export const rpcContract = defineRpcContract({
-  "settings.read": { input: z.null(), output: z.object({ projects: z.array(z.object({ id: z.string(), name: z.string(), values: projectValues })) }) },
-  "settings.write": { input: z.object({ projectId: z.string(), values: projectValues.partial() }).strict(), output: projectValues },
-  "config.get": { input: configGetInput, output: projectValues.partial() },
-  "config.set": { input: configSetInput, output: projectValues.partial() },
-  start: { input: startInput, output: startOutput },
+  "settings.read": { experimental_description: "Legacy settings read for all projects. To read one field, call config.get with projectId and key.", input: z.null(), output: z.object({ projects: z.array(z.object({ id: z.string(), name: z.string(), values: projectValues })) }) },
+  "settings.write": { experimental_description: "Legacy partial settings write for one project. For one field, call config.set with projectId, key and value.", input: z.object({ projectId: z.string(), values: projectValues.partial() }).strict(), output: projectValues },
+  "config.get": { experimental_description: 'Read a project setting, e.g. {"projectId":"proj_example","key":"enabled"}. Omit key to read all fields for that project.', input: configGetInput, output: projectValues.partial() },
+  "config.set": { experimental_description: 'Change one project setting, e.g. {"projectId":"proj_example","key":"ttlMinutes","value":15}.', input: configSetInput, output: projectValues.partial() },
+  start: { experimental_description: 'Run the project builder in Script mode. Set dryRun explicitly to validate without minting or launching, e.g. {"projectId":"proj_example","parentThreadId":"thr_example","args":[],"dryRun":true}.', input: startInput, output: startOutput },
   ...reportContract,
   mint: {
-    input: z.object({ projectId: z.string().regex(/^proj_[a-z0-9]+$/), parentThreadId: z.string().regex(/^thr_[a-z0-9]+$/), brief: z.string().min(1).max(1_000_000) }).strict(),
+    experimental_description: 'After following the configured workflow, mint one admission for the same project, parent and exact brief, e.g. {"projectId":"proj_example","parentThreadId":"thr_example","brief":"Review the proposed change."}. Submit the returned prompt verbatim once. In Script mode, start handles minting.',
+    input: z.object({ projectId: z.string().regex(/^proj_[a-z0-9]+$/), parentThreadId: z.string().regex(/^thr_[a-z0-9]+$/), brief: briefInput }).strict(),
     output: z.object({ token: z.string(), expiresAt: z.number(), prompt: z.string() }).strict(),
   },
 });
@@ -41,18 +42,22 @@ export default async function plugin(bb: BbPluginApi) {
   });
   const view = (projectId: string) => { const { ttl, ...values } = policy(projectId); return { ...values, ttlMinutes: ttl / 60_000 }; };
   let writes = Promise.resolve();
+  const launchInstructions = (rules: ReturnType<typeof policy>, projectId: string, parentThreadId: string | null) => {
+    const parent = parentThreadId ?? "<parent-thread-id>";
+    if (rules.method === "script") {
+      return `Use this launch script: ${rules.script}. Run bb agent-spawn-gate start --project ${projectId} --parent-thread ${parent} -- <builder args>. The plugin fetches the remote default branch, runs the builder, and mints and submits the admission. Put --dry-run before -- to validate without minting or starting.`;
+    }
+    if (!rules.instruction.trim()) return "Configure nonempty launch instructions in Spawn Gate before minting.";
+    return `Follow these launch instructions:
+${rules.instruction}
+Call RPC mint with {"projectId":"${projectId}","parentThreadId":"${parent}","brief":"Review the proposed change."}. Save your actual request to request.json and run bb plugin rpc call ${bb.pluginId} mint --input-file request.json --json. Save the returned prompt verbatim to prompt.txt and submit it once with bb thread spawn --project ${projectId} --parent-thread ${parent} --prompt-file prompt.txt. If the prompt changes or the admission expires, mint again.`;
+  };
   bb.agents.contributeInstructions(({ projectId, threadId }) => {
     const rules = policy(projectId);
     if (!rules.enabled) return null;
-    const workflow = rules.method === "script" ? `Use this launch script: ${rules.script}. Run bb agent-spawn-gate start -- <builder args> to use its current remote-default-branch version` : `Follow these launch instructions:
-${rules.instruction || "Launch instructions are empty. Ask the owner to configure Spawn Gate before starting children."}`;
-    const launch = rules.method === "script"
-      ? `Run bb agent-spawn-gate start --project ${projectId} --parent-thread ${threadId} -- <builder args>. The plugin refreshes the remote default branch, runs the builder, mints and starts the child. Use --dry-run before -- to validate without starting. RPC start takes {projectId, parentThreadId, args, dryRun?}.`
-      : `Call plugin ${bb.pluginId} RPC mint with {projectId: "${projectId}", parentThreadId: "${threadId}", brief: <complete child task>}. CLI: bb plugin rpc call ${bb.pluginId} mint --input-file <request.json> --json. Submit its prompt verbatim with bb thread spawn --project ${projectId} --parent-thread ${threadId} --prompt-file <prompt.txt>. Do not modify or reuse tokens.`;
-    return `Spawn Gate — child sessions in project ${projectId}:
-${workflow}
-${launch}
-The brief may be plain task text; no Work Board card or marker is required.`;
+    return `Spawn Gate requires an admission for every new agent or CLI start in ${projectId}.
+${launchInstructions(rules, projectId, threadId)}
+Use the configured workflow. Changing gate settings to get a child started changes the policy for every start in the project.`;
   });
   const db = bb.storage.database();
   db.exec(`CREATE TABLE IF NOT EXISTS admissions (thread TEXT PRIMARY KEY);
@@ -69,11 +74,9 @@ The brief may be plain task text; no Work Board card or marker is required.`;
   });
   const mint = async ({ projectId, parentThreadId, brief }: { projectId: string; parentThreadId: string; brief: string }) => {
       const rules = policy(projectId);
-      if (rules.method === "instruction" && !rules.instruction.trim()) throw new Error("Configure launch instructions before minting an admission");
-      if (brief.split("\n").some(line => line.startsWith("agent-admission ")))
-        throw new Error("Embedded admission is not allowed");
+      if (rules.method === "instruction" && !rules.instruction.trim()) throw new Error("Configure launch instructions with a nonempty instruction field in Spawn Gate before minting");
       const parent = await bb.sdk.threads.get({ threadId: parentThreadId });
-      if (parent.projectId !== projectId) throw new Error("Parent belongs to another project");
+      if (parent.projectId !== projectId) throw new Error("Use a parent thread in the requested project, or change projectId to match the parent");
       const token = randomBytes(32).toString("hex"), expiresAt = Date.now() + rules.ttl;
       db.prepare("DELETE FROM tokens WHERE expires <= ?").run(Date.now());
       db.prepare("INSERT INTO tokens VALUES (?, ?, ?, ?, ?)").run(hash(token), projectId, parentThreadId, hash(brief), expiresAt);
@@ -82,7 +85,7 @@ The brief may be plain task text; no Work Board card or marker is required.`;
       return { token, expiresAt, prompt: lines.join("\n") };
     };
   const requireProject = async (projectId: string) => {
-    if (!(await bb.sdk.projects.list()).some(project => project.id === projectId)) throw new Error("Unknown project");
+    if (!(await bb.sdk.projects.list()).some(project => project.id === projectId)) throw new Error("Unknown project. Run bb project list and pass an existing project ID");
   };
   const writeProject = async (projectId: string, values: Partial<ProjectValues>) => {
     await requireProject(projectId);
@@ -121,7 +124,7 @@ The brief may be plain task text; no Work Board card or marker is required.`;
     mint,
     start: (input, context) => start(input, context.experimental_signal),
     report: metrics.report,
-  });
+  }, { experimental_discoverable: true });
   bb.experimental_hooks.on("message.dispatch", async (ctx: MessageDispatchHookContext) => {
     const rules = policy(ctx.project.id);
     if (!rules.enabled || admitted.get(ctx.thread.id)) return { action: "proceed" };
@@ -138,10 +141,13 @@ The brief may be plain task text; no Work Board card or marker is required.`;
     const lines = ctx.input.text.split("\n"), parent = ctx.parentThreadId, token = admission.exec(lines[1] ?? "")?.[1];
     const hasMarker = lines[1]?.startsWith("agent-admission ");
     lines.splice(1, 1);
-    if (parent && token && parent === ctx.parentThreadId && consume(token, ctx.project.id, parent, lines.join("\n"), ctx.thread.id))
+    if (parent && token && consume(token, ctx.project.id, parent, lines.join("\n"), ctx.thread.id))
       return { action: "proceed" };
     metrics.record(ctx.project.id, "dispatch", hasMarker ? "invalid_admission" : "missing_admission", { parentThreadId: ctx.parentThreadId });
     bb.log.info(`Rejected start ${ctx.thread.id} in ${ctx.project.id} (${ctx.thread.providerId}, ${ctx.initiator})`);
-    return { action: "reject", message: `Spawn Gate: starts in ${ctx.project.name} require ${rules.method === "script" ? `bb agent-spawn-gate start -- (${rules.script})` : `these launch instructions: ${rules.instruction || "(not configured)"}`} and a fresh ${bb.pluginId} mint admission for this project, parent and exact brief.` };
+    const problem = !parent ? "Choose a parent thread in this project." : hasMarker
+      ? "Admission is invalid for this start. Obtain a fresh admission for this project, parent and exact brief."
+      : "This start needs a fresh admission.";
+    return { action: "reject", message: `Spawn Gate: ${problem} ${launchInstructions(rules, ctx.project.id, parent)}` };
   });
 }

@@ -36,13 +36,17 @@ there is no custom stylesheet.
 
 The selected workflow and mint procedure are contributed to agents when their
 provider sessions are next constructed. Existing sessions are not hot-rewritten.
-Refusals also show the selected workflow. In Script mode, start executes the configured builder from a fresh remote
-default-branch checkout. It does not verify compliance with instruction text.
+Refusals also show how to use the selected workflow. In Script mode, start
+executes the configured builder from a fresh remote default-branch checkout.
+The caller is responsible for following Instruction mode's text.
 
 ## Settings RPC
 
-UI and CLI share the same schema-validated RPC and storage. The plugin does
-not register native `bb plugin config` fields.
+UI and CLI share the same schema-validated RPC and storage. Run
+`bb plugin rpc inspect spawn-gate` for the RPC descriptions and schemas.
+Use one field per call for agent settings changes. The whole-object RPCs below
+remain available for existing clients. Settings changes apply to all future
+starts in the selected project.
 
 ```sh
 bb plugin rpc call spawn-gate settings.read --json
@@ -82,7 +86,15 @@ bb agent-spawn-gate start --project <projectId> --parent-thread <threadId> -- <b
 bb agent-spawn-gate start --project <projectId> --parent-thread <threadId> --dry-run -- <builder args...>
 ```
 
-Project and parent default to the invoking CLI context. The plugin owns a clean
+Project and parent default to the invoking CLI context. Pass each selector once.
+Put Spawn Gate flags before the first `--` and builder arguments after it:
+
+```sh
+bb agent-spawn-gate start --project proj_example --parent-thread thr_example --dry-run -- --card EXA-1
+```
+
+A misplaced `--dry-run` among builder options is rejected. A later real start
+fetches and runs the builder again. The plugin owns a clean
 checkout under its data directory, fetches the Git remote's current default
 branch on every invocation, runs the configured JSON builder there, validates
 its output, mints the exact brief and starts the child via bb SDK. No stale
@@ -114,7 +126,8 @@ bb agent-spawn-gate report --project proj_example --from 2025-01-01 --to 2025-01
 ```
 
 RPC `report` takes `{projectId?,from?,to?,events?}`. Both return JSON. Dates are
-inclusive UTC dates, defaulting to today and the preceding six days. Omit the
+inclusive UTC dates. The default window is seven days ending at `--to`
+(today if omitted). Omit the
 project to report all projects. Each row counts successful Script-mode
 `start` calls, successful dry-runs, blocked admission dispatches and
 refusals by operation and reason. A successful start means bb accepted the
@@ -140,9 +153,14 @@ After following the configured workflow, call:
 bb plugin rpc call spawn-gate mint --input-file request.json --json
 ```
 
-Input: `{projectId,parentThreadId,brief}`. The parent must belong to the project;
-the brief is nonempty plain task text, with no required card, role or marker.
-A brief containing an `agent-admission ` line is rejected. Minting also works
+Input: `{projectId,parentThreadId,brief}`. The parent must belong to the project.
+Provide a nonempty plain task brief, for example:
+
+```json
+{"projectId":"proj_example","parentThreadId":"thr_example","brief":"Review the proposed change."}
+```
+
+A brief containing an `agent-admission ` line is rejected. Remove the line before minting. Minting also works
 while enforcement is disabled, allowing rollout checks before enabling it.
 
 Output: `{token,expiresAt,prompt}`, with expiresAt in epoch milliseconds.
@@ -150,10 +168,11 @@ The returned prompt inserts `agent-admission v1 token=<64 hex characters>` as
 its second line. Submit it verbatim:
 
 ```sh
-bb thread spawn --project <projectId> --parent-thread <parentThreadId> --prompt-file <prompt.txt>
+bb thread spawn --project proj_example --parent-thread thr_example --prompt-file prompt.txt
 ```
 
-Admissions are cryptographically random, project/parent/brief scoped,
+Mint again if the project, parent or brief changes, or the admission expires
+or was used. Admissions are cryptographically random, project/parent/brief scoped,
 time-limited and single-use. SQLite stores token and brief hashes. Exact
 prompt binding, expiry and token consumption are checked transactionally.
 Consumed admissions and settings survive reloads. Each admitted session's

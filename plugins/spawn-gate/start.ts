@@ -18,8 +18,12 @@ const environment = z.discriminatedUnion("type", [
     z.object({ type: z.literal("unmanaged"), path: text.refine(isAbsolute, "Workspace path must be absolute") }).strict(),
   ]) }).strict(),
 ]);
+export const briefInput = z.string().max(1_000_000)
+  .refine(brief => brief.trim().length > 0, "Supply a nonempty brief, for example: Review the proposed change.")
+  .refine(brief => !brief.split("\n").some(line => line.startsWith("agent-admission ")),
+    "Remove the agent-admission line and supply the plain task brief.");
 export const buildSchema = z.object({
-  version: z.literal(1), brief: z.string().min(1).max(1_000_000),
+  version: z.literal(1), brief: briefInput,
   spawn: z.object({
     parentThreadId, title: text.optional(), providerId: text.optional(), model: text.optional(), reasoningLevel: text.optional(), serviceTier: text.optional(),
     permissionMode: z.enum(["accept-edits", "auto", "full"]).optional(), parentNotifications: z.enum(["auto", "stuck", "off"]).optional(), environment: environment.optional(),
@@ -115,14 +119,14 @@ export function createStart(bb: BbPluginApi, mint: (request: { projectId: string
     const operation = async () => {
       signal.throwIfAborted();
       const parent = await bb.sdk.threads.get({ threadId: request.parentThreadId });
-      if (parent.projectId !== request.projectId) throw new Error("Parent belongs to another project");
+      if (parent.projectId !== request.projectId) throw new Error("Use a parent thread in the requested project, or change projectId to match the parent");
       tracked = true;
       const rules = policy(request.projectId);
-      if (rules.method !== "script") throw new Error("start requires Script mode; Instruction mode still uses mint");
+      if (rules.method !== "script") throw new Error("start requires Script mode. In Instruction mode, follow the configured instructions and call the spawn-gate mint RPC");
       reason = "checkout_error";
       const project = await bb.sdk.projects.get({ projectId: request.projectId });
       const remote = project.gitRemoteUrl;
-      if (!remote || remote.startsWith("-")) throw new Error("Project needs a Git remote");
+      if (!remote || remote.startsWith("-")) throw new Error("Configure a Git remote for the selected project before running start");
       const root = join(dirname(bb.storage.database().name), "checkouts", request.projectId);
       await mkdir(root, { recursive: true });
       const git = (args: string[]) => run("git", ["-c", "core.hooksPath=/dev/null", ...args], root, signal, "", { ...process.env, GIT_TERMINAL_PROMPT: "0" });
@@ -135,16 +139,19 @@ export function createStart(bb: BbPluginApi, mint: (request: { projectId: string
       await git(["remote", "set-url", "origin", remote]);
       const head = await git(["ls-remote", "--symref", "origin", "HEAD"]);
       const branch = /^ref: (refs\/heads\/[^\s]+)\s+HEAD$/m.exec(head)?.[1];
-      if (!branch) throw new Error("Remote HEAD must identify a default branch");
+      if (!branch) throw new Error("Set the Git remote HEAD to its default branch, then rerun start");
       await git(["fetch", "--depth=1", "origin", branch]);
       sourceCommit = (await git(["rev-parse", "FETCH_HEAD"])).trim();
       await git(["checkout", "--force", "--detach", sourceCommit]);
       await git(["clean", "-ffdx"]);
       const candidate = join(root, rules.script), lexical = relative(root, candidate);
-      if (isAbsolute(rules.script) || lexical === ".." || lexical.startsWith("../") || isAbsolute(lexical)) throw new Error("Launch script must stay inside the checkout");
-      const script = await realpath(candidate);
+      if (isAbsolute(rules.script) || lexical === ".." || lexical.startsWith("../") || isAbsolute(lexical)) throw new Error("Set a repository-relative launch script inside the checkout");
+      const script = await realpath(candidate).catch(error => {
+        if (error.code !== "ENOENT") throw error;
+        throw new Error("Set script to a file on the remote default branch, or publish the configured script there");
+      });
       const inside = relative(await realpath(root), script);
-      if (isAbsolute(rules.script) || inside === ".." || inside.startsWith("../") || isAbsolute(inside)) throw new Error("Launch script must stay inside the checkout");
+      if (isAbsolute(rules.script) || inside === ".." || inside.startsWith("../") || isAbsolute(inside)) throw new Error("Set a repository-relative launch script inside the checkout");
       reason = "builder_error";
       const env = { ...await builderEnvironment(), BB_PROJECT_ID: request.projectId, BB_THREAD_ID: request.parentThreadId };
       const python = script.endsWith(".py") ? await executable("python3", env) : undefined;
@@ -155,7 +162,7 @@ export function createStart(bb: BbPluginApi, mint: (request: { projectId: string
       let parsed: unknown;
       try { parsed = JSON.parse(stdout); } catch { throw new Error("Builder stdout must be one JSON object (v1); send logs to stderr"); }
       const build = buildSchema.parse(parsed);
-      if (build.spawn.parentThreadId !== request.parentThreadId) throw new Error("Builder parent must match the requested parent");
+      if (build.spawn.parentThreadId !== request.parentThreadId) throw new Error("Builder parent must match the requested parent. Copy parentThreadId from the builder stdin into spawn.parentThreadId");
       const target = build.spawn.environment;
       if (target?.type === "host" && !target.hostId && target.workspace.type !== "personal") {
         reason = "host_error";
