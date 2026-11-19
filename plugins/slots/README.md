@@ -187,6 +187,8 @@ MemTotal. A probe failure closes the gate and logs an error. Only the local host
 is sampled: every gateIntervalMs with queued work, otherwise every 60s; ticks run
 every 15s. Observer notifications are optional and never fatal on send failure.
 
+Every message it sends into a thread starts with a `[bb message from plugin:slots]` header line and a blank line, so the receiving agent can tell it from the owner's own words.
+
 `observer` shows the current observer ID, title and filter. `--self`, `--thread`
 and `--clear` persist the selection in plugin settings; `--events` can accompany
 any of them or change only the filter. Unknown names are rejected; whitespace is
