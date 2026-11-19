@@ -126,13 +126,13 @@ export async function deliverCommentToLatestAgent(
   for (const threadId of candidates) {
     try {
       const thread = await bb.sdk.threads.get({ threadId });
-      if (
-        isSideChatShapedThread(thread) ||
-        thread.archivedAt != null ||
-        thread.deletedAt != null ||
-        thread.status === "stopping"
-      )
+      if (isSideChatShapedThread(thread)) continue;
+      if (thread.archivedAt != null || thread.deletedAt != null) {
+        // An archived asker's work moved up to its parent, so the message follows it there.
+        if (thread.parentThreadId && !candidates.includes(thread.parentThreadId)) candidates.push(thread.parentThreadId);
         continue;
+      }
+      if (thread.status === "stopping") continue;
       if (await appendToQueuedNotice(bb, threadId, prompt)) return 1;
       await bb.sdk.threads.send({
         threadId,

@@ -165,6 +165,19 @@ describe("comment notification delivery", () => {
     expect(harness.sdk.callsTo("threads.send")).toEqual([]);
   });
 
+  it("delivers to the parent of an archived thread", async () => {
+    const { bb, harness, store, task } = setup((threadId) =>
+      threadId === "thr_child"
+        ? makeThreadResponse({ id: threadId, status: "idle", archivedAt: 1, parentThreadId: "thr_parent" })
+        : makeThreadResponse({ id: threadId, status: "active" }),
+    );
+
+    await expect(
+      deliverCommentToLatestAgent(bb, store, { taskId: task.id, ...input, threadId: "thr_child" }),
+    ).resolves.toBe(1);
+    expect(harness.sdk.callsTo("threads.send").map(([call]) => (call as { threadId: string }).threadId)).toEqual(["thr_parent"]);
+  });
+
   it("preserves side-chat privacy and does not fall back", async () => {
     const { bb, harness, store, task } = setup((threadId) =>
       makeThreadResponse({
