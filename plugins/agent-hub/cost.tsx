@@ -1,7 +1,8 @@
 import { RollingText } from './rolling-text';
 import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties } from 'react';
 import { createPortal } from 'react-dom';
-import { useRpc } from '@get-bb/plugin-sdk/app';
+import { useRpc, experimental_PluginIcon as PluginIcon } from '@get-bb/plugin-sdk/app';
+import { usePluginBrands } from './app';
 import type { AgentHubRpcContract, Cost } from './contract';
 
 type ThreadCost = { threadId: string; own: Cost; total: Cost; descendantCount: number };
@@ -21,7 +22,8 @@ export function useThreadCost(threadId: string | null | undefined, working: bool
   useEffect(() => {
     if (!threadId) return;
     setCost({ threadId, value: known.get(threadId) ?? null });
-    if (working) return;
+    // A busy chat skips repeat reads until its turn ends, but still gets its first one: a chat that is always busy would never show a cost.
+    if (working && known.get(threadId)) return;
     let live = true;
     const read = () => { readAt.set(threadId, Date.now()); void rpc.call('threadCost', { threadId }).then(r => {
     // No tokens yet usually means Tokenomos has not matched this thread (e.g. still backfilling), so show nothing rather than $0.00.
@@ -86,13 +88,13 @@ function CostDetails({ anchor, cost, onClose }: { anchor: HTMLElement; cost: Thr
 }
 
 export function ThreadCostLabel({ cost, className = '' }: { cost: ThreadCost | null; className?: string }) {
-  const [open, setOpen] = useState(false), [anchor, setAnchor] = useState<HTMLButtonElement | null>(null), id = cost?.threadId;
+  const [open, setOpen] = useState(false), [anchor, setAnchor] = useState<HTMLButtonElement | null>(null), id = cost?.threadId, brand = usePluginBrands(!!cost).find(b => b.id === 'tokenomos');
   useEffect(() => setOpen(false), [id]);
   if (!cost) return null;
   const subs = cost.descendantCount, own = money(cost.own), total = money(cost.total);
   const title = `This session: ${own} (${compact(tokens(cost.own))} tokens)${subs ? `\nWith ${subs} sub-session${subs === 1 ? '' : 's'}: ${total} (${compact(tokens(cost.total))} tokens)` : ''}\nAPI-equivalent cost, by Tokenomos. Click for details`;
   // A click toggles the details; shift- or cmd-click is left alone.
-  return <><button ref={setAnchor} type="button" title={title} aria-label={title.replaceAll('\n', '. ')} aria-haspopup="dialog" aria-expanded={open} onClick={event => { if (event.metaKey || event.ctrlKey || event.shiftKey) return; setOpen(o => !o); }} className={`flex min-w-0 cursor-pointer items-center gap-1.5 truncate rounded-md px-1 text-xs tabular-nums text-muted-foreground hover:text-foreground ${className}`}>
-    <RollingText text={own} />
+  return <><button ref={setAnchor} type="button" title={title} aria-label={title.replaceAll('\n', '. ')} aria-haspopup="dialog" aria-expanded={open} onClick={event => { if (event.metaKey || event.ctrlKey || event.shiftKey) return; setOpen(o => !o); }} className={`flex h-6 min-w-0 cursor-pointer items-center gap-1 truncate rounded-md px-1.5 text-xs tabular-nums text-muted-foreground hover:bg-state-hover hover:text-foreground ${className}`}>
+    {brand && <PluginIcon pluginId={brand.id} icon={brand.icon} className="size-3.5 shrink-0" />}<RollingText text={own} />
   </button>{open && anchor && <CostDetails anchor={anchor} cost={cost} onClose={() => setOpen(false)} />}</>;
 }

@@ -65,6 +65,15 @@ it('never renders the previous thread cost after switching', async () => {
   expect(seen[0]).toBeNull();
 });
 
+it('reads the cost of a chat that is busy when opened, once', async () => {
+  const { renderSlot } = await import('@get-bb/plugin-sdk/testing/app');
+  const read = vi.fn(() => ({ available: true, own: cost(5), total: cost(5), descendantCount: 0 }));
+  function Probe() { const value = useThreadCost('cost_busy', true); return <span>{value?.own.usd ?? 'none'}</span>; }
+  const slot = renderSlot({ component: Probe }, { threadId: 'cost_busy' }, { rpc: { threadCost: read } });
+  await waitFor(() => expect(slot.getByText('5')).toBeTruthy());
+  slot.rerender(<Probe />); expect(read).toHaveBeenCalledTimes(1);
+});
+
 it('rolls only the changed characters of the cost: the new one in from above, the old one out below', async () => {
   const { RollingText } = await import('./rolling-text');
   const runs: { frames: Keyframe[]; animation: { onfinish: (() => void) | null } }[] = [];
