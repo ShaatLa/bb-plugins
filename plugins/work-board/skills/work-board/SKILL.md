@@ -335,7 +335,7 @@ Settings → Work Board → General exposes the shared `defaultScreen`: `last-pr
 
 ## Kanban in the side panel
 
-On the Tasks page the project (and task) header's `List | Board` toggle drives the native `Kanban` tab beside Browser and Terminal: `Board` selects it, `List` selects the native `Navigation` tab without closing other tabs or the panel. The toggle always mirrors the panel (another tab or a hidden panel reads as `List`); the main area keeps showing the list or task. The tab follows the current project, including when viewing one of its tasks; all-tasks screens use the last selected or first available project. The board header has a `Scheduled` button that opens Scheduled in the main area. Board edits and task changes refresh both views through realtime.
+On the Tasks page the project (and task) header's `List | Board` toggle switches the main area between the list and the full-width board. The native `Kanban` tab beside Browser and Terminal is independent and opens from the panel's tab strip. The tab follows the current project, including when viewing one of its tasks; all-tasks screens use the last selected or first available project. The board header has a `Scheduled` button that opens Scheduled in the main area. Board edits and task changes refresh both views through realtime.
 
 ## Default existing thread
 
