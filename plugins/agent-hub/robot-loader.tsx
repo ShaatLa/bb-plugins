@@ -35,6 +35,7 @@ const css = `
 .ar-look .ar-right,.ar-look .ar-left,.ar-look .ar-front{animation-duration:6s}
 .ar-move.ar-quick{animation-name:ar-move-q}.ar-move.ar-quick,.ar-quick .ar-right,.ar-quick .ar-left,.ar-quick .ar-front{animation-duration:13s}.ar-quick .ar-right{animation-name:ar-right-q}.ar-quick .ar-left{animation-name:ar-left-q}.ar-quick .ar-front{animation-name:ar-front-q}.ar-watch{animation:ar-watch 13s step-end infinite;opacity:0}
 .ar-nod{transform-box:view-box;transform-origin:12px 11px;animation:ar-nod .25s ease-in-out infinite alternate}
+.ar-peek{animation:ar-peek 7s ease-in-out infinite}
 .ar-scratch{transform-box:view-box;transform-origin:16.3px 13px;animation:ar-scratch .55s ease-in-out infinite alternate}
 .ar-z{animation:ar-z 2.4s linear infinite;opacity:0}
 .ar-near{transform-box:view-box;transform-origin:14px 7.5px;animation:ar-near 1s ease-in-out infinite alternate}.ar-near.eye{animation-name:ar-near-eye}
@@ -59,6 +60,7 @@ const css = `
 @keyframes ar-front-q{0%{opacity:0}42%{opacity:1}46%{opacity:0}}
 @keyframes ar-watch{0%{opacity:0}88%{opacity:1}}
 @keyframes ar-nod{from{transform:rotate(6deg)}to{transform:rotate(-1deg)}}
+@keyframes ar-peek{0%,26%,38%,77%,86%,100%{transform:translate(0,0)}29%,35%,80%,83%{transform:translate(-.2px,.8px)}}
 @keyframes ar-scratch{from{transform:rotate(-10deg)}to{transform:rotate(24deg)}}
 @keyframes ar-z{0%{transform:translate(0,0) scale(.7);opacity:0}20%{opacity:1}100%{transform:translate(5px,-9px) scale(1.2);opacity:0}}
 @keyframes ar-near{from{transform:scale(1)}to{transform:scale(1.15)}}
@@ -198,8 +200,8 @@ function Scene({ activity, fix }: { activity: Activity; fix: 'hammer' | 'wrench'
   switch (activity) {
     case 'write': return <g transform="translate(-6 0)">
       {/* Sitting on a stool at a desk, typing on a desktop computer turned three-quarters toward it (its near edge, to the right, taller), the screen filling with lines. */}
-      {/* The far arm reaches the keys from behind the (solid) body and taps out of step with the near one. */}
-      <line className="ar-type b" x1="12" y1="13.4" x2="17.8" y2="14.3" />{sideHead}<rect className="ar-solid" x="9.5" y="12" width="5" height="6" rx="1" /><line x1="9" y1="18.6" x2="13.5" y2="18.6" /><line x1="9.6" y1="18.6" x2="9.6" y2="21.5" /><line x1="12.9" y1="18.6" x2="12.9" y2="21.5" />
+      {/* The far arm reaches the keys from behind the (solid) body and taps out of step with the near one; now and then the eye glances down at the keyboard. */}
+      <line className="ar-type b" x1="12" y1="13.4" x2="17.8" y2="14.3" />{antenna}<rect x="8" y="4" width="8" height="7" rx="2" /><circle className="ar-peek" cx="14" cy="7.5" r=".9" /><rect className="ar-solid" x="9.5" y="12" width="5" height="6" rx="1" /><line x1="9" y1="18.6" x2="13.5" y2="18.6" /><line x1="9.6" y1="18.6" x2="9.6" y2="21.5" /><line x1="12.9" y1="18.6" x2="12.9" y2="21.5" />
       <path d="M12.4 18 H15.2 V21.5" /><line className="ar-type" x1="12" y1="13" x2="16.8" y2="14.4" />
       <line x1="15.5" y1="15" x2="26.6" y2="15" /><line x1="16.6" y1="15" x2="16.6" y2="21.5" /><line x1="25.8" y1="15" x2="25.8" y2="21.5" />
       <line x1="16.6" y1="14.6" x2="20.2" y2="14.6" />
