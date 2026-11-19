@@ -36,6 +36,7 @@ const css = `
 .ar-move.ar-quick{animation-name:ar-move-q}.ar-move.ar-quick,.ar-quick .ar-right,.ar-quick .ar-left,.ar-quick .ar-front{animation-duration:13s}.ar-quick .ar-right{animation-name:ar-right-q}.ar-quick .ar-left{animation-name:ar-left-q}.ar-quick .ar-front{animation-name:ar-front-q}.ar-watch{animation:ar-watch 13s step-end infinite;opacity:0}
 .ar-nod{transform-box:view-box;transform-origin:12px 11px;animation:ar-nod .25s ease-in-out infinite alternate}
 .ar-peek{animation:ar-peek 7s ease-in-out infinite}
+.ar-idle{transform-box:view-box;transform-origin:6.5px 13px;animation:ar-idle 6s ease-in-out infinite}
 .ar-scratch{transform-box:view-box;transform-origin:16.3px 13px;animation:ar-scratch .55s ease-in-out infinite alternate}
 .ar-z{animation:ar-z 2.4s linear infinite;opacity:0}
 .ar-near{transform-box:view-box;transform-origin:14px 7.5px;animation:ar-near 1s ease-in-out infinite alternate}.ar-near.eye{animation-name:ar-near-eye}
@@ -61,6 +62,7 @@ const css = `
 @keyframes ar-watch{0%{opacity:0}88%{opacity:1}}
 @keyframes ar-nod{from{transform:rotate(6deg)}to{transform:rotate(-1deg)}}
 @keyframes ar-peek{0%,26%,38%,77%,86%,100%{transform:translate(0,0)}29%,35%,80%,83%{transform:translate(-.2px,.8px)}}
+@keyframes ar-idle{0%,55%,85%,100%{transform:rotate(0)}60%{transform:rotate(14deg)}66%{transform:rotate(-9deg)}72%{transform:rotate(10deg)}78%{transform:rotate(-5deg)}}
 @keyframes ar-scratch{from{transform:rotate(-10deg)}to{transform:rotate(24deg)}}
 @keyframes ar-z{0%{transform:translate(0,0) scale(.7);opacity:0}20%{opacity:1}100%{transform:translate(5px,-9px) scale(1.2);opacity:0}}
 @keyframes ar-near{from{transform:scale(1)}to{transform:scale(1.15)}}
@@ -210,12 +212,12 @@ function Scene({ activity, fix }: { activity: Activity; fix: 'hammer' | 'wrench'
       <line className="ar-glow" x1="21" y1="7.44" x2="24.4" y2="7.08" /><line className="ar-glow b" x1="21" y1="8.9" x2="23.8" y2="8.9" /><line className="ar-glow c" x1="21" y1="10.36" x2="23.2" y2="10.59" />
     </g>;
     case 'terminal': return <>
-      {/* Back to us at a wide screen; each press of the right hand scrolls the output up one line (both loops share 0.8 s steps). */}
+      {/* Back to us at a wide screen; each press of the right hand scrolls the output up one line (both loops share 0.8 s steps); now and then the free left arm swings idly. */}
       <defs><clipPath id="ar-screen"><rect x="3.6" y="3.1" width="18.8" height="8.8" /></clipPath></defs>
       <rect x="3" y="2.5" width="20" height="10" rx="1" />
       <g clipPath="url(#ar-screen)"><g className="ar-scroll">{[15, 9, 18, 15, 9, 18, 15, 9].map((end, i) => <line key={i} x1="5" y1={5 + i * 2} x2={end + 3} y2={5 + i * 2} />)}</g></g>
       <g transform="translate(-4 0)">{antenna}<rect className="ar-solid" x="7" y="4" width="10" height="7" rx="2" /><rect className="ar-solid" x="8.5" y="12" width="7" height="6" rx="1" />
-        <line x1="6.5" y1="13" x2="6.5" y2="16.5" /><line className="ar-tap" x1="17.5" y1="13" x2="19" y2="10.5" />
+        <line className="ar-idle" x1="6.5" y1="13" x2="6.5" y2="16.5" /><line className="ar-tap" x1="17.5" y1="13" x2="19" y2="10.5" />
         <line x1="10.5" y1="18" x2="10.5" y2="21.5" /><line x1="13.5" y1="18" x2="13.5" y2="21.5" /></g>
     </>;
     case 'fix': return fix === 'hammer' ? <>
