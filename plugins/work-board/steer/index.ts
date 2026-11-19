@@ -35,8 +35,11 @@ function steerPrompt(
 
 export const QUEUED_NOTICE_SEPARATOR = "\n\n---\n\n";
 
+/** bb's origin line, so the receiving agent reads a Work Board message as the plugin's, not the owner's words. */
+export const withPluginHeader = (pluginId: string, text: string) => `[bb message from plugin:${pluginId}]\n\n${text}`;
+
 // Extend our own notice when it is still the last queued row, so a busy thread
-// gets one message instead of a stack of them. Any doubt falls back to send.
+// gets one message instead of a stack of them; that message already starts with the header. Any doubt falls back to send.
 async function appendToQueuedNotice(
   bb: BbPluginApi,
   threadId: string,
@@ -76,7 +79,7 @@ export async function notifyThread(
   await bb.sdk.threads.send({
     threadId,
     originPluginId: bb.pluginId,
-    input: [{ type: "text", text, mentions: [] }],
+    input: [{ type: "text", text: withPluginHeader(bb.pluginId, text), mentions: [] }],
     mode: "queue-if-active",
   });
 }
@@ -125,7 +128,7 @@ export async function deliverCommentToLatestAgent(
       await bb.sdk.threads.send({
         threadId,
         originPluginId: bb.pluginId,
-        input: [{ type: "text", text: prompt, mentions: [] }],
+        input: [{ type: "text", text: withPluginHeader(bb.pluginId, prompt), mentions: [] }],
         mode: input.mode ?? "steer-if-active",
       });
       return 1;

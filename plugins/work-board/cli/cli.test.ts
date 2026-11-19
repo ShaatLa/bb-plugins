@@ -259,7 +259,7 @@ describe("bb work-board CLI", () => {
       expect(harness.sdk.callsTo("threads.send")).toEqual([[expect.objectContaining({
         threadId: "thr_parent",
         mode: "queue-if-active",
-        input: [expect.objectContaining({ text: expect.stringMatching(/^\*\*REP-1 · READY\*\* from @thread:thr_child\n\nMerged as abc/) })],
+        input: [expect.objectContaining({ text: expect.stringMatching(/^\[bb message from plugin:work-board\]\n\n\*\*REP-1 · READY\*\* from @thread:thr_child\n\nMerged as abc/) })],
       })]]);
       expect(await card()).toMatchObject({ progressNote: "**READY**\n\nMerged as abc", progressUpdatedBy: "thr_child" });
       expect(await sessions()).toEqual(["thr_child"]);
@@ -297,7 +297,7 @@ describe("bb work-board CLI", () => {
         expect((await report("thr_child", "--kind", "blocker", "--need", need, "--body", "x")).exitCode).toBe(0);
       const asked = await report("thr_child", "--kind", "question", "--need", "Pick option A or B.", "--body", "Details");
       expect(asked.exitCode).toBe(0);
-      expect((harness.sdk.callsTo("threads.send").at(-1)![0] as { input: { text: string }[] }).input[0]!.text).toMatch(/^\*\*REP-1 · QUESTION\*\* from @thread:thr_child\n\nNeeded: Pick option A or B\.\n\nDetails/);
+      expect((harness.sdk.callsTo("threads.send").at(-1)![0] as { input: { text: string }[] }).input[0]!.text).toMatch(/^\[bb message from plugin:work-board\]\n\n\*\*REP-1 · QUESTION\*\* from @thread:thr_child\n\nNeeded: Pick option A or B\.\n\nDetails/);
       expect((await card()).progressNote).toBe("**QUESTION**\n\nNeeded: Pick option A or B.\n\nDetails");
 
       const long = await report("thr_child", "--kind", "question", "--need", "Decide.", "--body", "é".repeat(3000));

@@ -1,3 +1,4 @@
+import { withPluginHeader } from "../steer";
 import { dispatchMarker } from "../activity/dispatch.js";
 import { createDependencyStore } from "../dependencies/store";
 import type { DependencyTask } from "../shared/contract";
@@ -387,7 +388,7 @@ export function handlers(
       const delivery = await bb.sdk.threads.send({
         threadId: thread.id,
         mode: "queue-if-active",
-        input: [{ type: "text", text: prompt, mentions: [] }],
+        input: [{ type: "text", text: withPluginHeader(bb.pluginId, prompt), mentions: [] }],
       });
       store.transaction(() => {
         store.tasks.upsertTaskThread({

@@ -93,6 +93,7 @@ describe("comment notification delivery", () => {
             {
               type: "text",
               text:
+                "[bb message from plugin:work-board]\n\n" +
                 "**Work Board** · `New comment`\n" +
                 "- Task: [PLUG-1](/plugins/work-board/work-board/task/PLUG-1)\n" +
                 "- From: Sawyer\n\nPlease include the regression test.\n\n" +
