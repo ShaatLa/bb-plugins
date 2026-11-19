@@ -1,8 +1,7 @@
-import { useEffect, useState, type ReactNode } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { useSdk, experimental_useTabVisible as useTabVisible, experimental_useRpcQuery as useQuery, experimental_useRpcMutation as useMutation, experimental_InfoSection as InfoSection, experimental_InfoList as InfoList, experimental_InfoListRow as InfoListRow, experimental_DetailRow as DetailRow, experimental_Icon as Icon, experimental_Diff as Diff, experimental_FileLink as FileLink } from '@get-bb/plugin-sdk/app';
 import { useOpenChat } from './open-chat';
-import { openAppRoute } from './lib/app-route';
-import { gitContract, boardContract, unavailable, type GitFile, type GitTarget } from './tab-contracts';
+import { gitContract, unavailable, type GitFile, type GitTarget } from './tab-contracts';
 
 const git = { pluginId: 'bb--git', contract: gitContract };
 type Sdk = ReturnType<typeof useSdk>;
@@ -122,28 +121,25 @@ function DiffFile({ file, input, initial, viewed, visible, refreshViewed }: { fi
     {!viewed && (patch ? <><Diff path={file.path} patch={patch.patch} />{patch.truncated && <p className="p-3 text-xs text-muted-foreground">Diff truncated</p>}</> : file.binary ? <div className="flex flex-wrap items-center gap-x-2 gap-y-1 px-3 py-3 text-xs text-muted-foreground">Binary file.</div> : file.loadMode === 'too_large' ? <div className="flex flex-wrap items-center gap-x-2 gap-y-1 px-3 py-3 text-xs text-muted-foreground">Too large to display ({file.additions + file.deletions} changed lines).</div> : patches.error ? <Empty>{patches.error.message}</Empty> : result && result.outcome !== 'available' ? <Empty>{unavailable(result)}</Empty> : !load ? <button type="button" onClick={() => setLoad(true)} className="p-3 text-xs text-muted-foreground">Load diff</button> : <Empty>Loading…</Empty>)}
   </section>;
 }
-const openBoardRoute = (url: string) => { if (url.startsWith('/plugins/work-board/')) openAppRoute(url); };
 export function WorkBoardTab() {
-  const chat = useOpenChat(), visible = useTabVisible();
-  const board = useQuery({ pluginId: 'work-board', contract: boardContract, method: 'threadBoard', input: { threadId: chat.threadId ?? '' }, enabled: visible && !!chat.threadId });
-  useEffect(() => { if (visible && chat.threadId) void board.refetch(); }, [visible, chat.threadId, chat.revision]);
+  const chat = useOpenChat(), visible = useTabVisible(), host = useRef<HTMLDivElement>(null);
+  const [state, setState] = useState<'loading' | 'ready' | 'unavailable'>('loading');
+  // Work Board portals its own board into the host node and marks it ready; nothing of its UI is bundled here.
+  useEffect(() => {
+    const node = host.current;
+    if (!node) return;
+    setState('loading');
+    const sync = () => setState(old => node.dataset.workBoardReady === 'true' ? 'ready' : old === 'ready' ? 'unavailable' : old);
+    const observer = new MutationObserver(sync);
+    observer.observe(node, { attributes: true, attributeFilter: ['data-work-board-ready'] });
+    sync();
+    const timer = setTimeout(() => setState(old => old === 'ready' ? old : 'unavailable'), 3000);
+    return () => { observer.disconnect(); clearTimeout(timer); };
+  }, [visible, chat.threadId]);
   if (!chat.threadId) return <Empty>No chat open</Empty>;
-  if (board.error) return <Empty>Work Board unavailable</Empty>;
-  if (!board.data) return <Empty>Loading…</Empty>;
-  const { project, columns } = board.data;
-  if (!project) return <Empty>No board linked</Empty>;
-  // Column and card look mirror Work Board's own board (views/board/index.tsx), minus drag, labels and badges.
-  return <div className="flex h-full min-h-0 flex-col gap-2">
-    <button type="button" onClick={() => openBoardRoute(project.url)} className="self-start text-sm font-medium text-primary hover:underline">{project.name}</button>
-    <div className="flex min-h-0 flex-1 gap-2 overflow-x-auto">{columns.map(({ status, total, cards }) => <div key={status.id} data-board-column={status.id} className="flex max-h-full w-[230px] shrink-0 flex-col">
-      <div className="flex items-center gap-1.5 px-1 pb-2 text-sm font-semibold"><span className="flex shrink-0" style={{ color: status.cssColor }}><Icon name={status.iconName} className="size-3.5" /></span><span>{status.name}</span><span className="font-normal text-muted-foreground">{total}</span></div>
-      <div className="flex min-h-16 flex-col gap-2 overflow-y-auto rounded-lg p-1">
-        {cards.map(card => <button key={card.key} type="button" title={card.title} aria-label={`Open ${card.key}: ${card.title}`} data-mine={card.mine ? 'true' : undefined} onClick={() => openBoardRoute(card.url)} className={`shrink-0 rounded-lg border bg-card px-2.5 py-2 text-left shadow-2xs hover:border-input ${card.mine ? 'border-primary bg-state-hover' : 'border-border'}`}>
-          <div className="text-2xs tabular-nums text-subtle-foreground">{card.key}</div>
-          <div className="mt-1 line-clamp-2 text-sm font-medium leading-snug">{card.title}</div>
-        </button>)}
-        {total > cards.length && <p className="px-1 text-xs text-muted-foreground">+{total - cards.length} more</p>}
-      </div>
-    </div>)}</div>
+  if (!visible) return <></>;
+  return <div className="relative h-full min-h-0">
+    {state !== 'ready' && <div className="absolute inset-x-0 top-0"><Empty>{state === 'loading' ? 'Loading…' : 'Work Board unavailable'}</Empty></div>}
+    <div ref={host} data-work-board-host="board" data-thread-id={chat.threadId} className="h-full min-h-0" />
   </div>;
 }

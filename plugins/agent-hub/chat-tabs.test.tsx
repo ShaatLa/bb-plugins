@@ -65,35 +65,26 @@ it('renders files and saves and clears revision-aware Viewed marks', async () =>
   fireEvent.change(slot.getByRole('combobox', { name: 'Diff target' }), { target: { value: 'branch' } });
   await waitFor(() => expect(files).toHaveBeenCalledWith({ environmentId: 'env', target: { type: 'branch_committed', mergeBaseBranch: 'main' }, ignoreWhitespace: false }));
 });
-const column = (id: string, name: string, extra = {}) => ({ status: { id, name, iconName: `work-board/status-${id}`, cssColor: 'goldenrod' }, total: 0, cards: [], ...extra });
-const card = (key: string, extra = {}) => ({ key, title: `Title ${key}`, type: 'task', priority: 'medium', mine: false, url: `/plugins/work-board/work-board/task/${key}`, ...extra });
-const board = { project: { id: 'proj_example', name: 'Example', url: '/plugins/work-board/work-board/board/proj_example' }, columns: [column('todo', 'Todo', { total: 3, cards: [card('EXA-1', { mine: true }), card('EXA-2')] }), column('done', 'Done')] };
-it('shows the project board with columns in order, empty ones included', async () => {
-  const { slot } = setup(WorkBoardTab, { threadBoard: () => board });
-  await slot.findByText('Example');
-  const cols = Array.from(slot.container.querySelectorAll('[data-board-column]'));
-  expect(cols.map(c => c.getAttribute('data-board-column'))).toEqual(['todo', 'done']);
-  expect(cols[0]!.textContent).toContain('Todo3'); expect(cols[1]!.textContent).toContain('Done0');
-  expect(slot.getByRole('button', { name: 'Open EXA-1: Title EXA-1' }).getAttribute('data-mine')).toBe('true');
-  expect(slot.getByRole('button', { name: 'Open EXA-2: Title EXA-2' }).getAttribute('data-mine')).toBeNull();
-  expect(slot.getByText('+1 more')).toBeTruthy();
-  expect(cols[0]!.querySelector('span[style]')!.getAttribute('style')).toContain('goldenrod');
-});
-it('opens a card and the project in-app', async () => {
-  const { slot } = setup(WorkBoardTab, { threadBoard: () => board });
-  const moved = vi.fn(); window.addEventListener('popstate', moved);
-  fireEvent.click(await slot.findByRole('button', { name: 'Open EXA-1: Title EXA-1' }));
-  expect(window.location.pathname).toBe('/plugins/work-board/work-board/task/EXA-1'); expect(moved).toHaveBeenCalledOnce();
-  fireEvent.click(slot.getByRole('button', { name: 'Example' }));
-  expect(window.location.pathname).toBe('/plugins/work-board/work-board/board/proj_example'); window.removeEventListener('popstate', moved);
-});
-it('says no board is linked when the chat has no project', async () => {
-  const { slot } = setup(WorkBoardTab, { threadBoard: () => ({ project: null, columns: [] }) });
-  await slot.findByText('No board linked');
-});
-it.each([undefined, () => { throw new Error('offline'); }])('fails softly without Work Board', async handler => {
-  const { slot } = setup(WorkBoardTab, handler ? { threadBoard: handler } : {});
+it('leaves an empty host for Work Board to portal its board into, and waits for it', async () => {
+  const { slot } = setup(WorkBoardTab);
+  const host = slot.container.querySelector<HTMLElement>('[data-work-board-host="board"]')!;
+  expect(host.dataset.threadId).toBe('thr_one'); expect(host.childElementCount).toBe(0);
+  expect(slot.getByText('Loading…')).toBeTruthy();
+  host.setAttribute('data-work-board-ready', 'true');
+  await waitFor(() => expect(slot.queryByText('Loading…')).toBeNull());
+  act(() => setOpenChat('thr_two', false));
+  expect(slot.container.querySelector<HTMLElement>('[data-work-board-host]')!.dataset.threadId).toBe('thr_two');
+  await waitFor(() => expect(slot.queryByText('Loading…')).toBeNull());
+  host.removeAttribute('data-work-board-ready');
   await slot.findByText('Work Board unavailable');
+});
+it('says Work Board is unavailable when nothing fills the host', async () => {
+  vi.useFakeTimers();
+  try {
+    const { slot } = setup(WorkBoardTab);
+    act(() => { vi.advanceTimersByTime(3100); });
+    expect(slot.getByText('Work Board unavailable')).toBeTruthy();
+  } finally { vi.useRealTimers(); }
 });
 it('loads on-demand patches using the file revision and surfaces truncation', async () => {
   const patches = vi.fn(({ keys }: { keys: string[] }) => ({ [keys[0]!]: { outcome: 'available', patch: { ...patch, truncated: true } } }));
@@ -119,10 +110,7 @@ it('does not mark a file Viewed when the save fails', async () => {
   await slot.findByText('Cannot save Viewed');
   expect((slot.getByRole('checkbox') as HTMLInputElement).checked).toBe(false);
 });
-it('avoids Work Board reads while hidden', async () => {
-  const threadBoard = vi.fn(() => board);
-  const hidden = setup(WorkBoardTab, { threadBoard }, { tabVisible: false });
-  expect(threadBoard).not.toHaveBeenCalled(); hidden.slot.unmount();
-  const { slot } = setup(WorkBoardTab, { threadBoard });
-  await slot.findByText('Example'); expect(threadBoard).toHaveBeenCalled();
+it('removes the host while the tab is hidden', () => {
+  const { slot } = setup(WorkBoardTab, {}, { tabVisible: false });
+  expect(slot.container.querySelector('[data-work-board-host]')).toBeNull();
 });
