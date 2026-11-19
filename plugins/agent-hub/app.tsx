@@ -585,7 +585,7 @@ function AgentHubPanelContent({ threadId }: { threadId?: string }) {
   // iOS zooms into a focused field under 16px; bb's phone text-sm is 15px, so every field here reads 16px on touch screens.
   return <section onPointerDownCapture={activate} onFocusCapture={activate} className="flex h-full flex-col bg-background [@media(pointer:coarse)]:[&_:is(input,textarea,select,[contenteditable=true])]:text-[16px]">
     {threadId && <Pools threadId={threadId} />}
-    {/* Left edge on bb's page title row above, so the chat title starts under its icon. */}<div className="space-y-2 border-b border-border-seam bg-background py-2 pl-4 pr-4">
+    {/* Left edge on the chat text column (the history list pl-4 plus its rows px-2), so the title lines up with the messages. */}<div className="space-y-2 border-b border-border-seam bg-background py-2 pl-6 pr-4">
       <div data-page-toolbar className="flex min-h-8 items-center gap-1">
         {/* Never narrower than the avatar, so a crowded row truncates the title instead of overlapping the selector. */}<div ref={setChatTitleTarget} className="mr-1.5 hidden min-w-8 max-w-[40%] items-center gap-2.5 overflow-hidden min-[640px]:[&:not(:empty)]:flex" />
         {threadId ? <ViewPicker options={viewOptions} value={view} onChange={setView} />
