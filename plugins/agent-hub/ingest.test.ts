@@ -115,6 +115,7 @@ describe('updates',()=>{
  const count=(db:Database.Database,table:string)=>(db.prepare(`SELECT count(*) n FROM ${table}`).get() as {n:number}).n;
  const text=(t:string)=>[{type:'text',text:t}];
  const system={initiator:'system',input:text('[bb system] @thread:thr_child-1 completed: done')};
+ const wake={input:text('[example-watcher] changed')};
  it.each([
   [system,'system','thr_child-1'],
   [{initiator:'agent',senderThreadId:'thr_s',input:text('[bb message from thread:thr_s] hi')},'agent','thr_s'],
@@ -122,7 +123,7 @@ describe('updates',()=>{
   [{input:text('[merge-queue watcher] Merge queue changed: empty')},'other','merge-queue watcher'],
  ] as const)('records the final message of a %j turn',(extra,kind,source)=>{
   const db=setup(); applyEvents(db,'t',[req(1,'r',extra),start(),accept(),message(4,'first'),message(5,'report'),{...done(6),createdAt:77}],'p',100,true,true);
-  expect(updates(db)).toEqual([expect.objectContaining({status:'answered',question:extra.input[0].text,answer:'report',answer_seq:5,answer_source:'turn',answered_at:77,created_at:kind==='agent'||kind==='plugin' ? 100 : 77,read_at:77,asks:0,notify_state:0,trigger_kind:kind,trigger_source:source,project_id:'p'})]);
+  expect(updates(db)).toEqual([expect.objectContaining({status:'answered',question:extra.input[0].text,answer:'report',answer_seq:5,answer_source:'turn',answered_at:77,created_at:kind==='other' ? 77 : 100,read_at:77,asks:0,notify_state:0,trigger_kind:kind,trigger_source:source,project_id:'p'})]);
   expect([count(db,'request_triggers'),count(db,'turn_updates')]).toEqual([0,0]);
  });
  it('shows another thread\'s or a plugin\'s message that joins a turn already under way, read, while the owner\'s message keeps the reply',()=>{
@@ -137,6 +138,12 @@ describe('updates',()=>{
   expect(updates(db)).toEqual([expect.objectContaining({status:'waiting',question:'[bb message from thread:thr_s] hi',answer:null,trigger_kind:'agent',trigger_source:'thr_s',created_at:100,read_at:100})]);
   applyEvents(db,'t',[message(4,'half'),done(5,'interrupted')],'p',200,true,true);
   expect(updates(db)).toEqual([expect.objectContaining({status:'answered',answer:null,read_at:100})]);
+ });
+ it('shows a child\'s completion when the turn takes it, before the reply',()=>{
+  const db=setup(); applyEvents(db,'t',[req(1,'r',system),start(),accept()],'p',100,true,true);
+  expect(updates(db)).toEqual([expect.objectContaining({status:'waiting',answer:null,trigger_kind:'system',trigger_source:'thr_child-1',read_at:100})]);
+  applyEvents(db,'t',[message(4,'report'),done(5)],'p',200,true,true);
+  expect(updates(db)).toEqual([expect.objectContaining({status:'answered',answer:'report'})]);
  });
  it('turns the final message of a turn the agent marked with agent_hub_report into an unread, pushed report',()=>{
   const db=setup(); applyEvents(db,'t',[req(1,'r',system),start(),accept(),message(4,'Task done.')],'p',100,true,true);
@@ -160,19 +167,19 @@ describe('updates',()=>{
  it('adds nothing when the turn answered the owner: own question, steer-in, agent_hub_resolve',()=>{
   const db=setup();
   applyEvents(db,'t',[req(1),start(),accept(),message(),done()]);
-  applyEvents(db,'t',[req(6,'s',system),start(7,'y'),accept(8,'s','y'),req(9,'o'),accept(10,'o','y'),message(11,'steered','y'),done(12,'completed','y')]);
+  applyEvents(db,'t',[req(6,'s',wake),start(7,'y'),accept(8,'s','y'),req(9,'o'),accept(10,'o','y'),message(11,'steered','y'),done(12,'completed','y')]);
   applyEvents(db,'t',[req(13,'d'),start(14,'z'),accept(15,'d','z'),done(16,'completed','z')]); db.prepare("UPDATE items SET status='deferred' WHERE request_id='d'").run();
-  applyEvents(db,'t',[req(17,'s2',system),start(18,'w'),accept(19,'s2','w')]); db.prepare("UPDATE items SET resolve_turn_id='w' WHERE request_id='d'").run();
+  applyEvents(db,'t',[req(17,'s2',wake),start(18,'w'),accept(19,'s2','w')]); db.prepare("UPDATE items SET resolve_turn_id='w' WHERE request_id='d'").run();
   applyEvents(db,'t',[message(20,'resolved','w'),done(21,'completed','w')]);
   expect(updates(db)).toHaveLength(0); expect(rows(db).map(r=>r.answer)).toEqual(['answer','steered','resolved']);
  });
  it.each(['failed','interrupted'])('adds nothing for a %s turn and cleans its bookkeeping',status=>{
-  const db=setup(); applyEvents(db,'t',[req(1,'s',system),start(),accept(3,'s'),message(),done(5,status)]);
+  const db=setup(); applyEvents(db,'t',[req(1,'s',wake),start(),accept(3,'s'),message(),done(5,status)]);
   expect(updates(db)).toHaveLength(0); expect(count(db,'turn_updates')).toBe(0);
  });
  it('keeps a sub-thread final message read and ignores empty final messages',()=>{
-  const db=setup(); applyEvents(db,'t',[req(1,'s',system),start(),accept(3,'s'),done(4)]);
-  applyEvents(db,'u',[req(1,'s',system),start(),accept(3,'s'),message(),done()],null,0,false);
+  const db=setup(); applyEvents(db,'t',[req(1,'s',wake),start(),accept(3,'s'),done(4)]);
+  applyEvents(db,'u',[req(1,'s',wake),start(),accept(3,'s'),message(),done()],null,0,false);
   expect(updates(db)).toMatchObject([{thread_id:'u',read_at:0}]); expect([count(db,'request_triggers'),count(db,'turn_updates')]).toEqual([0,0]);
  });
  it('is idempotent on re-ingest, also from a reset cursor',()=>{
