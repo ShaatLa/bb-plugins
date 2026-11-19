@@ -61,7 +61,8 @@ async function appendToQueuedNotice(
       !part ||
       part.type !== "text" ||
       last.originPluginId !== bb.pluginId ||
-      last.state !== "queued" ||
+      // bb marks a row held for a busy thread `waiting`; both states are still unsent.
+      (last.state !== "queued" && last.state !== "waiting") ||
       !last.editable
     )
       return false;

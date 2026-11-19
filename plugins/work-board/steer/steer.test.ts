@@ -240,6 +240,18 @@ describe("comment notification delivery", () => {
       return f;
     }
 
+    it("extends a notice waiting for a busy thread", async () => {
+      const { bb, harness, store, task } = withLatest();
+      harness.sdk.stub("threads.queuedMessages.list", async () => [row({ state: "waiting" })] as never);
+      harness.sdk.stub("threads.queuedMessages.update", async () => row() as never);
+
+      await expect(
+        deliverCommentToLatestAgent(bb, store, { taskId: task.id, ...input }),
+      ).resolves.toBe(1);
+      expect(harness.sdk.callsTo("threads.send")).toEqual([]);
+      expect(harness.sdk.callsTo("threads.queuedMessages.update")).toHaveLength(1);
+    });
+
     it("extends the last queued Work Board notice instead of sending another", async () => {
       const { bb, harness, store, task } = withLatest();
       harness.sdk.stub("threads.queuedMessages.list", async () => [row()] as never);
