@@ -78,6 +78,15 @@ it('leaves an empty host for Work Board to portal its board into, and waits for 
   host.removeAttribute('data-work-board-ready');
   await slot.findByText('Work Board unavailable');
 });
+it('opens links Work Board hands over in bb\'s browser', () => {
+  const { slot } = setup(WorkBoardTab, {}, { openUrl: () => true });
+  const host = slot.container.querySelector<HTMLElement>('[data-work-board-host]')!, link = document.createElement('a');
+  host.append(link);
+  const event = new CustomEvent('work-board:open-url', { bubbles: true, cancelable: true, detail: { url: 'https://example.com/' } });
+  link.dispatchEvent(event);
+  expect(event.defaultPrevented).toBe(true);
+  expect(slot.navigateCalls).toContainEqual({ method: 'openUrl', url: 'https://example.com/' });
+});
 it('says Work Board is unavailable when nothing fills the host', async () => {
   vi.useFakeTimers();
   try {

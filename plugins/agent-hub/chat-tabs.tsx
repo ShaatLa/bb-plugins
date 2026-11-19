@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
-import { useSdk, experimental_useTabVisible as useTabVisible, experimental_useRpcQuery as useQuery, experimental_useRpcMutation as useMutation, experimental_InfoSection as InfoSection, experimental_InfoList as InfoList, experimental_InfoListRow as InfoListRow, experimental_DetailRow as DetailRow, experimental_Icon as Icon, experimental_Diff as Diff, experimental_FileLink as FileLink } from '@get-bb/plugin-sdk/app';
+import { useBbNavigate, useSdk, experimental_useTabVisible as useTabVisible, experimental_useRpcQuery as useQuery, experimental_useRpcMutation as useMutation, experimental_InfoSection as InfoSection, experimental_InfoList as InfoList, experimental_InfoListRow as InfoListRow, experimental_DetailRow as DetailRow, experimental_Icon as Icon, experimental_Diff as Diff, experimental_FileLink as FileLink } from '@get-bb/plugin-sdk/app';
 import { useOpenChat } from './open-chat';
 import { gitContract, unavailable, type GitFile, type GitTarget } from './tab-contracts';
 
@@ -122,7 +122,8 @@ function DiffFile({ file, input, initial, viewed, visible, refreshViewed }: { fi
   </section>;
 }
 export function WorkBoardTab() {
-  const chat = useOpenChat(), visible = useTabVisible(), host = useRef<HTMLDivElement>(null);
+  const chat = useOpenChat(), visible = useTabVisible(), host = useRef<HTMLDivElement>(null), navigate = useRef(useBbNavigate());
+  navigate.current = useBbNavigate();
   const [state, setState] = useState<'loading' | 'ready' | 'unavailable'>('loading');
   // Work Board portals its own board into the host node and marks it ready; nothing of its UI is bundled here.
   useEffect(() => {
@@ -134,7 +135,10 @@ export function WorkBoardTab() {
     observer.observe(node, { attributes: true, attributeFilter: ['data-work-board-ready'] });
     sync();
     const timer = setTimeout(() => setState(old => old === 'ready' ? old : 'unavailable'), 3000);
-    return () => { observer.disconnect(); clearTimeout(timer); };
+    // Work Board renders from its app overlay, outside this page's surface, so its links would leave bb; this surface opens them in bb's browser.
+    const open = (event: Event) => { const url = (event as CustomEvent<{ url?: unknown }>).detail?.url; if (typeof url === 'string' && navigate.current.openUrl(url)) event.preventDefault(); };
+    node.addEventListener('work-board:open-url', open);
+    return () => { observer.disconnect(); clearTimeout(timer); node.removeEventListener('work-board:open-url', open); };
   }, [visible, chat.threadId]);
   if (!chat.threadId) return <Empty>No chat open</Empty>;
   if (!visible) return <></>;
