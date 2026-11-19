@@ -230,7 +230,9 @@ function Scene({ activity, fix }: { activity: Activity; fix: 'hammer' | 'wrench'
       const page = (side: 1 | -1) => <><path d={`M12 14.4 Q${12 + side * 2.8} 13.8 ${12 + side * 5.6} 14.4 L${12 + side * 7} 18.2 Q${12 + side * 3.5} 17.5 12 18.2 Z`} className="ar-solid" />
         {[15.5, 16.9].map(y => { const end = outer(y) - .9; return <path key={y} d={`M${12 + side * 1.2} ${y} Q${12 + side * (1.2 + end) / 2} ${y - .12 * (end - 1.2)} ${12 + side * end} ${y}`} strokeWidth=".6" />; })}</>;
       const turn = { dur: '2.4s', repeatCount: 'indefinite', keyTimes: '0;.55;.9;1', calcMode: 'spline', keySplines: '0 0 1 1;.42 0 .58 1;0 0 1 1' } as const;
-      return <>{antenna}<rect x="7" y="4" width="10" height="7" rx="2" /><circle cx="10" cy="8.4" r=".9" /><circle cx="14" cy="8.4" r=".9" />
+      return <>{antenna}<rect x="7" y="4" width="10" height="7" rx="2" />
+        {/* The eyes read across the spread, then follow the turning page back to the left. */}
+        <g><animateTransform attributeName="transform" type="translate" values="-.6 0;.6 0;-.6 0;-.6 0" dur="2.4s" repeatCount="indefinite" keyTimes="0;.55;.9;1" calcMode="spline" keySplines=".42 0 .58 1;.42 0 .58 1;0 0 1 1" /><circle cx="10" cy="8.4" r=".9" /><circle cx="14" cy="8.4" r=".9" /></g>
         <rect x="8.5" y="12" width="7" height="6" rx="1" /><line x1="10.5" y1="18" x2="10.5" y2="21.5" /><line x1="13.5" y1="18" x2="13.5" y2="21.5" />
         <path d="M5 18.2 V18.9 Q8.5 18.2 12 18.9 Q15.5 18.2 19 18.9 V18.2" />{page(-1)}{page(1)}<g transform="translate(12 0)"><g><animateTransform attributeName="transform" type="scale" values="1 1;1 1;-1 1;-1 1" {...turn} /><g transform="translate(-12 0)">{page(1)}</g></g></g>
         <line x1="15.5" y1="13" x2="17.6" y2="14.4"><animate attributeName="x2" values="17.6;17.6;6.4;6.4" {...turn} /></line></>;
