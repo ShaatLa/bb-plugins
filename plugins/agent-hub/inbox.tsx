@@ -208,6 +208,8 @@ export const keepInList: Modifier = ({ transform, draggingNodeRect, scrollableAn
   if (!draggingNodeRect || !box) return { ...transform, x: 0 };
   return { ...transform, x: 0, y: Math.min(Math.max(transform.y, box.top - draggingNodeRect.top), box.bottom - draggingNodeRect.bottom) };
 };
+// Only the owner's own words come back as a chat message; a bb notice, another thread's or plugin's message never does, so holding it would leave it hanging.
+const landsInChat = (row: QueueRow) => !row.systemNotice && !row.senderThreadId && (!row.originPluginId || ['agent-hub', 'answers'].includes(row.originPluginId));
 const isScheduled = (row: QueueRow) => !!row.sendAt && row.sendAt > Date.now();
 const RETIME_MINUTES = [3, 5, 10, 20, 40];
 const span = (minutes: number) => minutes < 60 ? `${minutes} min` : `${Math.floor(minutes / 60)} h${minutes % 60 ? ` ${minutes % 60} min` : ''}`;
@@ -580,7 +582,7 @@ function InboxChat({ onBulkRead, bbChat = false, search: searchProp, onSearch, t
   useEffect(() => { if (!optimistic.length) return; const timer = setTimeout(() => setOptimistic(old => old.filter(b => Date.now() - b.id < 30000)), 30000); return () => clearTimeout(timer); }, [optimistic]);
   // The server bumps this stamp on bb's queue events, so rows queued from bb's chat or by agents show up at once.
   const queueStamp = useQuery({ contract: rpcContract, method: 'queueStamp', input: { threadId: selected ?? 'thr_none' }, enabled: !!selected }).data?.stamp;
-  useEffect(() => { if (!selected || !visible) return; let active = true; void sdk.threads.queuedMessages.list({ threadId: selected }).then(rows => { if (active) { setQueue(old => { const gone = old.filter(row => row.threadId === selected && !rows.some(next => next.id === row.id) && !dropped.current.has(row.id)); if (gone.length) setLeaving(current => [...current.filter(l => !gone.some(g => g.id === l.row.id)), ...gone.map(row => ({ row, at: Date.now() }))]); return rows; }); setQueueOf(selected); setQueueError(''); } }).catch(e => { if (active) setQueueError(errorText(e)); }); return () => { active = false; }; }, [sdk, selected, visible, queueVersion, queueStamp, sidebarThreads.find(t => t.id === selected)?.queuedWork]);
+  useEffect(() => { if (!selected || !visible) return; let active = true; void sdk.threads.queuedMessages.list({ threadId: selected }).then(rows => { if (active) { setQueue(old => { const gone = old.filter(row => row.threadId === selected && landsInChat(row) && !rows.some(next => next.id === row.id) && !dropped.current.has(row.id)); if (gone.length) setLeaving(current => [...current.filter(l => !gone.some(g => g.id === l.row.id)), ...gone.map(row => ({ row, at: Date.now() }))]); return rows; }); setQueueOf(selected); setQueueError(''); } }).catch(e => { if (active) setQueueError(errorText(e)); }); return () => { active = false; }; }, [sdk, selected, visible, queueVersion, queueStamp, sidebarThreads.find(t => t.id === selected)?.queuedWork]);
   // A scheduled row needs the 5 s tick (its due time and "in Nm" label); other rows only change when bb's chat sends or
   // deletes them, which queuedWork may not reflect, so they get a slow 30 s check.
   const scheduledQueue = queue.some(row => !!row.sendAt && row.sendAt > Date.now());
