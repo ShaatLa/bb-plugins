@@ -130,8 +130,8 @@ function ViewToggle({
   );
   return (
     <div className="flex items-center rounded-md bg-muted p-0.5">
-      {segment("list", "List")}
       {segment("board", "Board")}
+      {segment("list", "List")}
     </div>
   );
 }

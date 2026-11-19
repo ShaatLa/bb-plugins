@@ -233,7 +233,7 @@ describe("project view preference", () => {
     expect(slot.navigateCalls.at(-1)).toEqual({
       method: "toPluginPanel",
       path: "work-board",
-      options: { subPath: `${PROJECT_ID}?view=list` },
+      options: { subPath: `${PROJECT_ID}?view=board` },
     });
   });
 

@@ -24,7 +24,7 @@ export default definePluginApp((app) => {
   app.slots.navPanel({
     id: "work-board",
     title: "Work Board",
-    icon: "ListTodo",
+    icon: KANBAN_ICON,
     path: "work-board",
     component: TasksAppShell,
     experimental_useBadge: useOpenTasksBadge,
@@ -49,7 +49,7 @@ export default definePluginApp((app) => {
   app.slots.experimental_tab({
     ...TASK_TAB,
     title: "Work Board",
-    icon: "ListTodo",
+    icon: KANBAN_ICON,
     component: TaskEmbedPanel,
     layout: "flush",
   });
