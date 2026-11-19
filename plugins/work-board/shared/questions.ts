@@ -57,3 +57,35 @@ export function assertNotPlanApproval(prompt: string, steps: readonly string[], 
   if (PLAN_LINK.test(text) || (taskHasPlan && PLAN_APPROVAL.some((pattern) => pattern.test(text))))
     throw new Error(`Plan approval is not an owner question: run \`bb work-board plan submit ${taskKey}\` and wait. The owner approves the plan or sends notes in the Plan tab, and you get a message either way. Ask questions only for decisions inside the work.`);
 }
+
+export const STEP_SPLIT_HINT =
+  'One --step is one action or one observation: split it into separate --step values, in order, e.g. --step "Press Retry" --step "Close the message" --step "Check that the list reloads".';
+
+// A new sentence starts after . ! ? or … and whitespace, with a capital letter, a quote or a digit.
+const SENTENCE_BREAK = /[.!?…]["»”)]?\s+(?=["«“(]?[A-ZА-ЯЁ0-9])/u;
+// Common abbreviations end in a dot without ending the sentence.
+const ABBREVIATION = /\b(?:e\.g|i\.e|etc|vs|т\.е|т\.к|т\.д|т\.п|напр|см|стр)\.$/i;
+
+/** Each "How to check" step is a single sentence; several sentences are several steps. Steps in `kept` are not checked. */
+export function assertStepsAtomic(steps: readonly string[], kept: readonly string[] = []): void {
+  steps.forEach((step, index) => {
+    if (kept.includes(step)) return;
+    const parts = step.trim().split(SENTENCE_BREAK);
+    let sentences = 1;
+    for (let i = 0; i < parts.length - 1; i++) if (!ABBREVIATION.test(parts[i]!.trim())) sentences++;
+    if (sentences > 1)
+      throw new Error(`Step ${index + 1} has ${sentences} sentences ("${step.slice(0, 80)}${step.length > 80 ? "…" : ""}"). ${STEP_SPLIT_HINT}`);
+  });
+}
+
+const ACTION = String.raw`(?:press|click|tap|open|close|select|choose|type|enter|scroll|drag|wait|check|verify|confirm|go|switch|reload|нажм|нажи|закро|закры|откро|откры|выбер|выбра|введ|введ|прокру|перетащ|подожд|дожд|провер|убед|перейд|переключ|обнов)`;
+// Actions chained inside one sentence: "then", or a comma or "and" followed by another action verb.
+const CHAINED = new RegExp(String.raw`\b(?:then|after that|afterwards)\b|затем|потом|после чего|,\s*(?:and\s+|и\s+)?${ACTION}|\s(?:and|и)\s+${ACTION}`, "iu");
+
+/** Steps that look like several actions joined into one; a warning, since wording alone cannot prove it. */
+export function compoundStepWarnings(steps: readonly string[]): string[] {
+  const numbers = steps.flatMap((step, index) => (CHAINED.test(step) ? [index + 1] : []));
+  return numbers.length
+    ? [`Step${numbers.length > 1 ? "s" : ""} ${numbers.join(", ")} may join several actions ("then", or a comma or "and" before another action). ${STEP_SPLIT_HINT}`]
+    : [];
+}

@@ -358,7 +358,7 @@ Use a decision when you cannot proceed without a choice, or a check when you kno
 Rules for owner questions (long questions are hard to answer):
 1. One question = one decision or one thing to check: one state or topic, in one or two short plain sentences.
 2. Split a multi-part acceptance into several `--kind check` questions, each answerable on its own, each with its own single link. The prompt and all `--step` lines together may carry at most one link (Markdown or bare URL); `question add` and `question update` refuse more.
-3. What the owner has to do goes into `--step` (repeat it, at most 10 short steps; the card lists them under the question). Evidence, tables, quotes of earlier remarks, inventories and history go into a task comment (attachment if long), never into the question.
+3. What the owner has to do goes into `--step` (repeat it, at most 10 short steps; the card lists them under the question). One `--step` is one action or one observation in one sentence: "press A, then B and check C" is three steps. A step with several sentences is refused; a step that chains actions with "then", "and" or a comma before another action gets a warning. Evidence, tables, quotes of earlier remarks, inventories and history go into a task comment (attachment if long), never into the question.
 4. Acceptance material is links only (a local design/canvas server or the product), never screenshots or image pairs.
 5. Never ask the owner to accept or approve a plan. Put the plan in `plan`, run `plan submit` and wait for the approval or the notes (see Task plan → Review loop). `question add` refuses a question that links a task plan, and, on a task that has a plan, one that asks to accept or approve a plan.
 
@@ -371,6 +371,10 @@ The owner can withdraw a saved answer. You then get a notification "Answer withd
 ```sh
 bb work-board question add ABC-12 --kind decision --prompt 'Which approach?' --option 'Use the existing service'
 bb work-board question add ABC-12 --kind check --prompt 'Does the form save?' --step 'Open the form' --step 'Press Save'
+# One action per step. Before (one step, four actions):
+#   --step 'Press Retry, close the message with the cross and press Reload. Check that the list appears.'
+# After:
+bb work-board question add ABC-12 --kind check --prompt 'Does Retry recover the list?' --step 'Press Retry' --step 'Close the message with the cross' --step 'Press Reload' --step 'Check that the list appears'
 # Three states to accept are three checks, each with its own link, not one check with three linked steps:
 bb work-board question add ABC-12 --kind check --prompt 'Does [the normal state](https://example.com/normal) look right?'
 bb work-board question add ABC-12 --kind check --prompt 'Do [both notices](https://example.com/two-notices) read well together?'

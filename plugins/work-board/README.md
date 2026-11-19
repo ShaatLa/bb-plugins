@@ -226,6 +226,8 @@ One question asks one decision or one check: the prompt and all `--step` lines t
 
 A plan is not approved through a question: `question add` and `question update` refuse a question that links a task plan, and, on a task that has a plan, one that asks to accept or approve a plan. The agent runs `plan submit` and the owner approves or sends notes in the Plan tab (0.58.3).
 
+Each `--step` is one action or one observation in one sentence, shown as its own numbered line: `--step 'Press Retry' --step 'Close the message' --step 'Check that the list appears'`, not one step that does all three. A step with several sentences is refused; a step that chains actions with "then", "and" or a comma before another action gets a warning that names the step and the fix (0.58.4).
+
 ```sh
 bb work-board question list EXA-8 --json
 bb work-board question answer EXA-8 --question <question-id> --answer <option-id> --revision 1

@@ -14,6 +14,7 @@ import {
   type Comment,
 } from "../shared/contract";
 import { createStructuredStore } from "./store";
+import { compoundStepWarnings } from "../shared/questions";
 import { evidenceFlags, evidenceIndex } from "./evidence";
 
 const harnesses: FakePluginHarness[] = [];
@@ -134,6 +135,18 @@ describe("task questions", () => {
     expect(() => ask("Принимаете план от 19.11?")).toThrow(/plan submit/);
     expect(() => ask("Can I start step 1?", ["Approve the plan first"])).toThrow(/plan submit/);
     await ask("Which database should step 2 use?");
+  });
+
+  it("keeps each check step to one sentence and warns about chained actions", async () => {
+    const { structured, task, cli } = setup();
+    const ask = (steps: string[]) => structured.handlers.createQuestion({ kind: "check", askedByThread: null, taskId: task.id, prompt: "Does Retry recover the list?", steps, mode: "single", options: [] });
+    expect(() => ask(["Press Retry, close the message and press Reload. Check that the list appears."])).toThrow(/Step 1 has 2 sentences.*separate --step values, in order/);
+    expect(() => ask(["Press Retry", "Нажмите Retry. Проверьте список."])).toThrow(/Step 2 has 2 sentences/);
+    await ask(["Open settings, e.g. the Storage page", "Check that the list appears."]);
+    expect(compoundStepWarnings(["Press Retry, close the message and press Reload", "Check that the list appears", "Нажмите Retry, затем закройте окно"])).toEqual([expect.stringMatching(/^Steps 1, 3 may join several actions.*separate --step values, in order/)]);
+    expect(compoundStepWarnings(["Open Settings and Storage", "Check the list"])).toEqual([]);
+    const result = await cli("question", "add", task.key, "--kind", "check", "--prompt", "Does it reload?", "--step", "Press Retry and press Reload", "--json");
+    expect(result.warnings.join("\n")).toMatch(/Step 1 may join several actions/);
   });
 
   it("keeps the decision label until the last open question is answered or deleted", async () => {

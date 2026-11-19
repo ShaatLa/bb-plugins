@@ -1,4 +1,4 @@
-import { assertNotPlanApproval, assertQuestionShape, assertReopenKeepsScope, isQuestionOpen } from "../shared/questions";
+import { assertNotPlanApproval, assertQuestionShape, assertReopenKeepsScope, assertStepsAtomic, isQuestionOpen } from "../shared/questions";
 import { UNANSWERED_QUESTION, WAITING_ON_OWNER, NEWEST_UNANSWERED } from "../db/waiting-on-owner";
 import type { BbPluginApi, PluginRpcHandlers } from "@get-bb/plugin-sdk";
 import type { TasksApiStore } from "../api";
@@ -158,6 +158,7 @@ export function createStructuredStore(bb: BbPluginApi, store: TasksApiStore) {
     createQuestion(input) {
       requireTask(input.taskId);
       assertQuestionShape(input.prompt, input.steps ?? []);
+      assertStepsAtomic(input.steps ?? []);
       assertNotPlanQuestion(input.taskId, input.prompt, input.steps ?? []);
       const now = new Date().toISOString();
       const question = questionSchema.parse({
@@ -323,6 +324,8 @@ export function createStructuredStore(bb: BbPluginApi, store: TasksApiStore) {
             "Question has an answer; confirm reopen to clear it and request a new decision",
           );
         assertQuestionShape(content.prompt, content.steps);
+        // Only new or changed steps must be single sentences, so an untouched legacy step does not block an edit.
+        assertStepsAtomic(content.steps, current.steps ?? []);
         assertNotPlanQuestion(current.taskId, content.prompt, content.steps);
         if (current.answeredBy) assertReopenKeepsScope(current, content);
         const { id, taskId, createdAt, history, ...snapshot } = current;

@@ -1,4 +1,4 @@
-import { isQuestionOpen } from "../shared/questions";
+import { compoundStepWarnings, isQuestionOpen } from "../shared/questions";
 import { newestOpenQuestion, waitingOnOwner } from "../shared/waiting-on-owner";
 import { createGithubClient, githubToken } from "../git-sync/github";
 import { waitForPrCi } from "../git-sync/ci-wait";
@@ -1257,7 +1257,7 @@ export function registerTasksCli(
             step: {
               type: "string",
               repeatable: true,
-              description: "One \"How to check\" step, shown as a numbered list under the question; repeat in order (at most 10). Steps say how to check this one thing; the prompt and all steps together carry at most one link, so separate states are separate --kind check questions",
+              description: "One \"How to check\" step: one action or one observation in one sentence, shown as a numbered list under the question. Repeat in order (at most 10): \"press A, then B and check C\" is three steps. Several sentences in one step are refused. The prompt and all steps together carry at most one link, so separate states are separate --kind check questions",
             },
             option: {
               type: "string",
@@ -1331,6 +1331,7 @@ export function registerTasksCli(
                 // More than one link is refused by the store; length stays a warning.
                 ...(input.options.prompt.length > 300
                   ? ["The question is long. Ask one decision or one check in one or two short sentences; put what to do in --step, split a multi-part acceptance into several --kind check questions and put evidence in a task comment."] : []),
+                ...compoundStepWarnings(input.options.step),
               ];
               return input.options.json
                 ? JSON.stringify({ ...result, warnings })
@@ -1465,7 +1466,7 @@ export function registerTasksCli(
             step: {
               type: "string",
               repeatable: true,
-              description: "Replacement \"How to check\" steps; repeat in order (omit to keep the current steps). The prompt and all steps together carry at most one link",
+              description: "Replacement \"How to check\" steps, each one action or one observation in one sentence; repeat in order (omit to keep the current steps). The prompt and all steps together carry at most one link",
             },
             mode: {
               type: "enum",
@@ -1580,9 +1581,10 @@ export function registerTasksCli(
                 }));
               }
               const result = await domain.updateQuestion(update);
+              const warnings = compoundStepWarnings(input.options.step);
               return input.options.json
-                ? JSON.stringify(result)
-                : `Saved question ${result.question.id} (revision ${result.question.revision})`;
+                ? JSON.stringify({ ...result, warnings })
+                : { exitCode: 0, stdout: `Saved question ${result.question.id} (revision ${result.question.revision})`, stderr: warnings.join("\n") };
             });
           },
         }),
