@@ -37,6 +37,20 @@ bb work-board plan submit ABC-12       # ready for the owner's review
 - RPC: `getTaskPlan`, `listTaskPlanVersions`, `saveTaskPlan`, `diffTaskPlan`, `submitTaskPlan`, `setTaskPlanState` (`in_review | approved | changes_requested` only).
 - Export **v18** stores the current plan and all its versions in the task record. Imports of v1–v17 work as before and leave local plans untouched; importing v18 over a different local plan needs `--overwrite`, which replaces the plan and its history.
 
+## Task plan in the UI (0.57.0)
+
+People read, compare and edit the plan without leaving the board.
+
+- **Plan card.** The task detail has a **Plan** section between the description and **Current state**. Without a plan it says "No plan yet" and that agents create one with `bb work-board plan set`; **Write plan** opens the editor. With a plan it shows the version, the state (draft, in review, changes requested, approved), who updated it and when, and the summary of the last version, with **Open plan** and **Copy link**. The plan text is not repeated in the detail. The card refreshes live.
+- **Plan tab.** **Open plan** opens a **Plan · ABC-12** tab in the side panel (in a thread and on the Work Board page; one tab per task). Without a side panel it opens the same view in the main area at `task/ABC-12/plan`.
+  - The header has the task (click to open it), a version selector, the state, **Edit**, **History**, **Compare with previous** and a menu with **Copy Markdown**, **Copy link** and **Open task**.
+  - The plan is shown read-only with the same renderer as task descriptions, at a readable width. The table of contents lists the headings (not `#` lines inside code blocks), follows the reader while scrolling and jumps to a heading on click; it is a left rail in a wide panel and a collapsible list in a narrow one.
+  - **History** lists every version with author, time, operation, summary and +/− lines. Opening an older one shows it with a "Viewing v2 of v5 · Back to current" banner.
+  - **Compare** shows a source diff of two versions (any pair, or a version and its previous): added and removed lines with changed words highlighted inside a revised line, and long unchanged runs folded.
+  - A new version arrives live. While you read the current version it replaces the text; while you view an older version or edit, a "v6 is available · Show" notice appears instead and nothing moves under you.
+- **Editing by a person.** **Edit** opens the exact Markdown source in a plain text area (no rich-text round trip, so diffs stay meaningful). A summary of the change is required (up to 300 characters). **Save** writes a new version with author "You" from the version you started on. If someone saved meanwhile, the editor says "The plan changed to vN while you were editing" and offers **Show the new version** (your text stays as a draft notice with **Copy my text** and **Continue editing**) or **Overwrite with mine**. Other refusals (no change, invalid, secret detected, archived task) are shown inline. An unsaved draft is kept per task while the app stays open. Archived tasks are read-only.
+- **Links.** **Copy link** puts `[ABC-12 plan](/plugins/work-board/work-board/task/ABC-12/plan)` on the clipboard; in bb chat it opens the plan tab. **Copy Markdown** copies the source of the version on screen.
+
 ## Task dependencies (0.22.0)
 
 Use the task's **Dependencies** section to add or remove **Blocked by / Blocks** links and search predecessors by key or title. Board cards and list rows show **Blocked** with the unfinished predecessors; task details retain satisfied links and their status. A predecessor satisfies its links only in **Done**. Canceled does not satisfy them, and reopening Done restores the warning. These are warnings: dispatch and status changes remain available, and workflow status is never replaced automatically.

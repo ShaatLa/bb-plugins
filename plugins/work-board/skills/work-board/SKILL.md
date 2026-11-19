@@ -499,6 +499,8 @@ Put the implementation plan in the task's `plan`, not in comments, and never spl
 
 The plan is Markdown up to 256 KB, passes the secret guard and is read-only while the task is archived. Each version writes a system comment (`Plan v4 by <author>: <summary> · section "..." · +12 −4 lines`). Export format v18 carries the plan and its versions; v1–v17 imports still work.
 
+Sharing: the owner reads and edits the plan in the Plan card of the task and in a Plan tab. When you tell the owner the plan is ready or changed, you may link it as `[ABC-12 plan](/plugins/work-board/work-board/task/ABC-12/plan)` (replace both ABC-12 with the real key); in bb chat it opens the plan next to the conversation. Do not paste the plan into the chat. A person's edits arrive as new versions (author "You"): re-read with `plan show` and pass the new `--base-version`.
+
 ## Dependencies (0.22.0)
 
 Read `bb work-board dependency list KEY --json` before starting a task. Add `bb work-board dependency add ABC-2 --blocked-by ABC-1`; remove with `dependency remove ABC-2 --blocked-by ABC-1`. Reverse the keys to express Blocks instead. Only the predecessor's Done status satisfies a link; Canceled stays unresolved, and reopening restores the warning. These links warn; they never forbid dispatch or status changes. Respect the ordering and report blockers instead of assuming a permitted command means the task is ready. `show --json` provides `dependencies: {blockedBy, blocks}` and `blocked`; `list --json` adds unresolved `blockedBy`. Dispatch context includes unresolved predecessors. Both endpoints receive a system history comment on add/remove.
