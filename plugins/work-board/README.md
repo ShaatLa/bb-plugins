@@ -31,6 +31,8 @@ With the optional Tokenomos plugin installed, the task rail shows what agents sp
 
 `threadTasks({threadId})` is discoverable (`bb plugin rpc list work-board`) and returns the tasks currently linked to a thread, newest link first: `key`, `title`, `status {id, name, icon?, color?, iconName, cssColor}`, `projectName`, `archived`, `linkName`, `linkedAt` and `url` (the in-app path that opens the task). Call it through `bb.sdk.plugins.callRpc({ pluginId: "work-board", method: "threadTasks", ... })`. `status.iconName` is a shared app icon (`work-board/status-<glyph>`, registered with `app.experimental_icons`, drawn in currentColor), so another plugin renders `<Icon name={status.iconName} />` inside `style={{ color: status.cssColor }}` and gets the same glyph and theme color as Work Board (0.37.0). The contract only grows with fields.
 
+`threadBoard({threadId})` returns the board of the Work Board project linked to the thread's bb project, so another plugin can show it beside a chat: `project {id, name, url}` (null when no project is linked) and `columns` in workflow order, each with `status` (same shape as above), `total` active top-level tasks and up to 30 `cards {key, title, type, priority, mine, url}`. `mine` marks tasks linked to the thread, and those cards are always included even past the cap (0.52.0).
+
 ## Scheduled tasks CLI
 
 `bb work-board schedule ...` manages recurring and one-time scheduled tasks through the same validated RPC
