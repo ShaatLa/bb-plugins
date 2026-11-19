@@ -459,6 +459,34 @@ const MIGRATIONS = [
   // 0.47.0 changed the default owner-decision label to "owner decision"; existing projects keep the label they had.
   `UPDATE projects SET workflow_policy = json_set(COALESCE(workflow_policy, '{}'), '$.ownerDecisionLabel', 'решение владельца')
    WHERE workflow_policy IS NULL OR json_type(workflow_policy, '$.ownerDecisionLabel') IS NULL;`,
+  // 0.56.0: one numbered, versioned plan per task. Every version keeps its full body; format stays open for later kinds.
+  `CREATE TABLE task_plans (
+     task_id TEXT PRIMARY KEY REFERENCES tasks(id) ON DELETE CASCADE,
+     format TEXT NOT NULL DEFAULT 'markdown',
+     version INTEGER NOT NULL CHECK (version >= 1),
+     body TEXT NOT NULL,
+     state TEXT NOT NULL CHECK (state IN ('draft', 'in_review', 'changes_requested', 'approved')),
+     updated_at TEXT NOT NULL,
+     author_kind TEXT NOT NULL CHECK (author_kind IN ('agent', 'person')),
+     author_thread TEXT CHECK (author_thread IS NULL OR author_thread GLOB 'thr_*'),
+     author_name TEXT NOT NULL
+   );
+   CREATE TABLE task_plan_versions (
+     task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+     version INTEGER NOT NULL CHECK (version >= 1),
+     body TEXT NOT NULL,
+     base_version INTEGER NOT NULL CHECK (base_version >= 0),
+     op TEXT NOT NULL CHECK (op IN ('create', 'replace', 'section', 'fragment', 'restore')),
+     target TEXT,
+     summary TEXT NOT NULL,
+     author_kind TEXT NOT NULL CHECK (author_kind IN ('agent', 'person')),
+     author_thread TEXT CHECK (author_thread IS NULL OR author_thread GLOB 'thr_*'),
+     author_name TEXT NOT NULL,
+     added INTEGER NOT NULL DEFAULT 0 CHECK (added >= 0),
+     removed INTEGER NOT NULL DEFAULT 0 CHECK (removed >= 0),
+     created_at TEXT NOT NULL,
+     PRIMARY KEY (task_id, version)
+   );`,
 ] as const;
 
 export function initializeTasksSchema(db: PluginDatabase): void {

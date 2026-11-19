@@ -28,6 +28,7 @@ import { jsonText } from "./contract";
 import { createScheduledStore } from "../scheduled/store";
 import { DEFAULT_TASK_STATUSES, type TaskStatusDefinition } from "../shared/statuses";
 import { createStructuredStore } from "../structured/store";
+import { createPlanStore } from "../plans/store";
 
 const harnesses: FakePluginHarness[] = [];
 const directories: string[] = [];
@@ -823,7 +824,7 @@ it("exports v17 typed questions and imports v16 owner tasks as plain tasks", asy
   await exportProject(source.bb, source.store, source.project.id, out);
   const manifestPath = join(out, "project.json");
   const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
-  expect(manifest.version).toBe(17);
+  expect(manifest.version).toBe(18);
   const path = join(out, "tasks", `${source.task.id}.json`);
   const record = JSON.parse(await readFile(path, "utf8"));
   expect(record.task).not.toHaveProperty("executionTarget");
@@ -848,6 +849,68 @@ it("exports v17 typed questions and imports v16 owner tasks as plain tasks", asy
 });
 
 
+it("exports v18 plans with every version, refuses a differing local plan without --overwrite and ignores plans in older archives", async () => {
+  const source = await seed();
+  const author = { kind: "agent" as const, threadId: "thr_example", name: "agent (thr_example)" };
+  const sourcePlans = createPlanStore(source.bb.storage.database(), source.store.tasks);
+  const write = (plans: typeof sourcePlans, taskId: string, input: object) => plans.save({ taskId, summary: "Edit", author, ...input } as Parameters<typeof plans.save>[0]);
+  write(sourcePlans, source.task.id, { op: "replace", baseVersion: 0, body: "# Plan\n\n## Steps\n- one\n" });
+  write(sourcePlans, source.task.id, { op: "section", baseVersion: 1, section: "Steps", body: "## Steps\n- one\n- two\n" });
+  sourcePlans.submit(source.task.id, author);
+  const out = join(await directory(), "plans-v18");
+  await exportProject(source.bb, source.store, source.project.id, out);
+  const manifestPath = join(out, "project.json");
+  const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
+  expect(manifest.version).toBe(18);
+  const recordPath = join(out, "tasks", `${source.task.id}.json`);
+  const record = JSON.parse(await readFile(recordPath, "utf8"));
+  expect(record.plan).toMatchObject({ format: "markdown", version: 2, state: "in_review", body: "# Plan\n\n## Steps\n- one\n- two\n" });
+  expect(record.plan.versions.map((version: { version: number; op: string }) => [version.version, version.op])).toEqual([[1, "create"], [2, "section"]]);
+  expect(record.plan.versions[0].body).toBe("# Plan\n\n## Steps\n- one\n");
+
+  const target = setup();
+  await importProject(target.bb, target.store, out, false);
+  const targetPlans = createPlanStore(target.bb.storage.database(), target.store.tasks);
+  expect(targetPlans.capture(source.task.id)).toEqual(sourcePlans.capture(source.task.id));
+  // The restored task logs (system comments) travel with it, and a second export is byte-identical.
+  const again = join(await directory(), "plans-again");
+  await exportProject(target.bb, target.store, source.project.id, again);
+  expect(await readFile(join(again, "tasks", `${source.task.id}.json`), "utf8")).toBe(await readFile(recordPath, "utf8"));
+  await importProject(target.bb, target.store, out, false);
+
+  write(targetPlans, source.task.id, { op: "replace", baseVersion: 2, body: "# Local edit\n" });
+  await expect(importProject(target.bb, target.store, out, false)).rejects.toThrow(/Import conflict: plan .* use --overwrite/);
+  expect(targetPlans.head(source.task.id)?.version).toBe(3);
+  await importProject(target.bb, target.store, out, true);
+  expect(targetPlans.capture(source.task.id)).toEqual(sourcePlans.capture(source.task.id));
+  expect(targetPlans.listVersions(source.task.id).versions).toHaveLength(2);
+
+  // v17 archives have no plan key: they import and leave the local plan alone.
+  manifest.version = 17;
+  await writeFile(manifestPath, jsonText(manifest));
+  delete record.plan;
+  await writeFile(recordPath, jsonText(record));
+  write(targetPlans, source.task.id, { op: "replace", baseVersion: 2, body: "# Newer local\n" });
+  await importProject(target.bb, target.store, out, true);
+  expect(targetPlans.get(source.task.id)?.requested.body).toBe("# Newer local\n");
+  const fresh = setup();
+  await importProject(fresh.bb, fresh.store, out, false);
+  expect(createPlanStore(fresh.bb.storage.database(), fresh.store.tasks).head(source.task.id)).toBeNull();
+
+  // v18 requires the key, older versions refuse real plan data, and a plan must be internally consistent.
+  manifest.version = 18;
+  await writeFile(manifestPath, jsonText(manifest));
+  await expect(importProject(setup().bb, setup().store, out, false)).rejects.toThrow(/Archive v18 requires plan/);
+  const inconsistent = { ...sourcePlans.capture(source.task.id)!, version: 5 };
+  await writeFile(recordPath, jsonText({ ...record, plan: inconsistent }));
+  await expect(importProject(setup().bb, setup().store, out, false)).rejects.toThrow(/does not match its latest version/);
+  manifest.version = 17;
+  await writeFile(manifestPath, jsonText(manifest));
+  await writeFile(recordPath, jsonText({ ...record, plan: sourcePlans.capture(source.task.id) }));
+  await expect(importProject(setup().bb, setup().store, out, false)).rejects.toThrow(/require archive v18/);
+});
+
+
 it("round-trips configurable project statuses, their order and custom task stages in v10", async () => {
   const source = await seed();
   const statuses: TaskStatusDefinition[] = DEFAULT_TASK_STATUSES.map((status) => ({ ...status }));
@@ -860,7 +923,7 @@ it("round-trips configurable project statuses, their order and custom task stage
   const out = join(await directory(), "statuses-v6");
   await exportProject(source.bb, source.store, source.project.id, out);
   const manifest = JSON.parse(await readFile(join(out, "project.json"), "utf8"));
-  expect(manifest.version).toBe(17);
+  expect(manifest.version).toBe(18);
   expect(manifest.project.statuses).toEqual(statuses);
   expect(manifest.project).toMatchObject({ autoArchiveAfterDays: "14", staleIdleMinutes: "120" });
   const target = setup();
@@ -961,7 +1024,7 @@ describe("archive v13 scheduled tasks", () => {
     const out = join(await directory(), "scheduled-v13");
     await exportProject(f.bb, f.store, f.project.id, out);
     const manifest = JSON.parse(await readFile(join(out, "project.json"), "utf8"));
-    expect(manifest.version).toBe(17);
+    expect(manifest.version).toBe(18);
     expect(manifest.schedules).toHaveLength(2);
     expect(JSON.stringify(manifest)).not.toMatch(/thr_server_local|thr_gone|q_live|req_live|01ARZ3NDEKTSV4RRFFQ69G5FAV/);
     const target = setup();
@@ -1095,7 +1158,7 @@ it("round-trips v16 current state and imports v15 without it", async () => {
   await exportProject(source.bb, source.store, source.project.id, out);
   const manifestPath = join(out, "project.json");
   const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
-  expect(manifest.version).toBe(17);
+  expect(manifest.version).toBe(18);
   const target = setup();
   await importProject(target.bb, target.store, out, false);
   expect(target.store.tasks.getTask(source.task.id)).toEqual(source.store.tasks.getTask(source.task.id));

@@ -74,6 +74,7 @@ import { taskMarkdownLink } from "../shared/task-link";
 import { ACTIVITY_LABELS } from "../shared/task-activity.js";
 import { threadHealthJson } from "../shared/thread-health";
 import { scheduledCliCommands } from "../scheduled/cli";
+import { planCommands } from "./plan";
 
 const TASK_KEY_PATTERN = /^([A-Z][A-Z0-9]{0,9})-(\d+)$/;
 const BB_PROJECT_ID_PATTERN = /^proj_[A-Za-z0-9_-]+$/;
@@ -1149,6 +1150,7 @@ export function registerTasksCli(
         }),
         ...templateReadCommands,
         ...lockCommands(domain),
+        ...planCommands({ bb, domain, guard, resolveTask, resolveClientHostId, readTextOption, taskAuthor, keyPositional: KEY_POSITIONAL, jsonOption: JSON_OPTION, machineOption: MACHINE_OPTION }),
         template: groupCommand(
           "template",
           "Manage project description templates",
@@ -2750,6 +2752,7 @@ export function registerTasksCli(
           options: {
             brief: { type: "boolean", description: "Leave out comments, evidence records, question history and per-check PR details; counts stay" },
             comments: { type: "integer", min: 0, max: COMMENTS_PAGE_MAX, description: "Include only the latest N comments (default: all, or none with --brief)" },
+            "with-plan": { type: "boolean", description: "Print the full task plan after the description (JSON: plan.body); without it show lists only the plan's version and state" },
             json: JSON_OPTION,
           },
           run(input) {
@@ -2826,6 +2829,8 @@ export function registerTasksCli(
                 ? allPrLinks.map((entry) => entry.snapshot ? { ...entry, snapshot: (({ checks: _checks, ...snapshot }) => snapshot)(entry.snapshot) } : entry)
                 : allPrLinks;
               const dependencies = await domain.listTaskDependencies({ taskId: task.id });
+              const taskPlan = (await domain.getTaskPlan({ taskId: task.id })).plan;
+              const withPlan = input.options["with-plan"] === true;
               const more: Record<string, string> = {};
               if (omittedComments) more.comments = `bb work-board comment list ${task.key} --kind user --kind agent --kind system`;
               if (brief && evidence.records.length) more.evidence = `bb work-board evidence ${task.key}`;
@@ -2837,6 +2842,7 @@ export function registerTasksCli(
                   overlaps,
                   task: { ...task, waitingOnOwner: waiting },
                   link: taskMarkdownLink(task.key),
+                  plan: taskPlan ? { version: taskPlan.version, state: taskPlan.state, updatedAt: taskPlan.updatedAt, updatedBy: taskPlan.updatedBy.name, ...(withPlan ? { body: taskPlan.requested.body } : {}) } : null,
                   project,
                   labels,
                   subtasks: task.type === "epic" ? [] : subtasks,
@@ -2888,6 +2894,7 @@ export function registerTasksCli(
                     "Labels",
                     labels.map((label) => label.name).join(", ") || "-",
                   ],
+                  ["Plan", taskPlan ? `v${taskPlan.version} · ${taskPlan.state} · bb work-board plan show ${task.key}` : "-"],
                   ["Created", task.createdAt],
                   ["Updated", task.updatedAt],
                 ]),
@@ -2899,6 +2906,7 @@ ${activity.diagnostics?.inactiveSessions.map((session) => `@thread:${session.thr
                 ...(activity?.diagnostics?.hasWorked ? [`Activity reports\n${comments.filter((comment) => comment.kind === "agent" && comment.threadId).slice(-5).map((comment) => `${comment.createdAt} · @thread:${comment.threadId} · comment ${comment.id}`).join("\n") || "Previous work is recorded; historical execution details were not retained."}`] : []),
                 ...(waiting ? [`Waiting on you: ${newestQuestion?.prompt.split(/\r?\n/)[0] ?? "Question"}`] : []),
                 `Description\n${task.description || "(none)"}`,
+                ...(withPlan && taskPlan ? [`Plan v${taskPlan.version} (${taskPlan.state})\n${taskPlan.requested.body}`] : []),
                 task.progressNote ? `Current state (updated ${task.progressUpdatedAt} by ${task.progressUpdatedBy})\n${task.progressNote}` : "Current state\n(none)",
                 `${task.type === "epic" ? "Tasks in epic" : "Sub-tasks"}\n${table(
                   ["KEY", "STATUS", "PRIORITY", "TITLE"],

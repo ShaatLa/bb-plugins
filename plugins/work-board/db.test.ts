@@ -78,9 +78,12 @@ describe("tasks storage", () => {
             "SELECT COUNT(*) AS count FROM schema_version",
           )
           .get()?.count,
-      ).toBe(33);
+      ).toBe(34);
       const columns = db.prepare<[], { name: string }>("PRAGMA table_info(tasks)").all().map(column => column.name);
       expect(columns).toEqual(expect.arrayContaining(["progress_note", "progress_updated_at", "progress_updated_by"]));
+      const planColumns = (table: string) => db.prepare<[], { name: string }>(`PRAGMA table_info(${table})`).all().map(column => column.name);
+      expect(planColumns("task_plans")).toEqual(expect.arrayContaining(["task_id", "format", "version", "body", "state", "updated_at", "author_kind", "author_thread", "author_name"]));
+      expect(planColumns("task_plan_versions")).toEqual(expect.arrayContaining(["task_id", "version", "body", "base_version", "op", "target", "summary", "author_kind", "author_thread", "author_name", "created_at"]));
     } finally {
       await harness.dispose();
     }

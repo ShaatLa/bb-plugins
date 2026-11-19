@@ -1,3 +1,4 @@
+import { createPlanStore } from "../plans/store";
 import { createFakePluginHost, type FakePluginHarness } from "@get-bb/plugin-sdk/testing";
 import { afterEach, describe, expect, it } from "vitest";
 import { createStore } from "../api";
@@ -67,6 +68,10 @@ async function populate(h: Host, tasks: number, perTask: { rich: boolean }, pref
     db.prepare("INSERT INTO task_key_aliases (prefix, number, task_id) VALUES (?, ?, ?)").run(`OLD${prefix === "CAP" ? "" : prefix}`, 1000 + i, task.id);
     db.prepare("INSERT INTO task_key_aliases (prefix, number, task_id) VALUES (?, ?, ?)").run(`AAA${prefix === "CAP" ? "" : prefix}`, 2000 + i, task.id);
     if (i % 2 === 0) db.prepare("INSERT OR IGNORE INTO task_activity_history(task_id) VALUES (?)").run(task.id);
+    const plans = createPlanStore(db, store.tasks);
+    const planAuthor = { kind: "agent" as const, threadId: "thr_cap_0", name: "agent (thr_cap_0)" };
+    plans.save({ taskId: task.id, op: "replace", baseVersion: 0, body: `# Plan ${i}\n`, summary: "First", author: planAuthor });
+    if (i % 2 === 0) plans.save({ taskId: task.id, op: "replace", baseVersion: 1, body: `# Plan ${i}\n\nMore.\n`, summary: "Second", author: planAuthor });
     const repository = "org/repo";
     createGitSyncStore(db).saveLink(
       prLinkSchema.parse({ taskId: task.id, repository, number: i + 1, url: `https://github.com/${repository}/pull/${i + 1}`, source: "manual", confirmed: true, createdAt: "2026-11-05T00:00:00.000Z", updatedAt: "2026-11-05T00:00:00.000Z" }),
@@ -95,6 +100,7 @@ function legacyRecords(h: Host, projectId: string) {
         task: { ...task, labelIds: store.tasks.listTaskLabels(task.id).map((link) => link.labelId).sort() },
         comments,
         questions: structured.listQuestions(task.id),
+        plan: createPlanStore(db, store.tasks).capture(task.id),
         attachments: [
           ...store.tasks.listAttachmentsForTask(task.id),
           ...comments.flatMap((comment) => store.tasks.listAttachmentsForComment(comment.id)),
@@ -139,7 +145,7 @@ describe("captureProject batching", () => {
     }
     expect(counts[1]).toBe(counts[0]);
     // Per-task reads cost 96 / 906 statements for these fixtures; batching plus dependency rows and the three schedule tables measures 18.
-    expect(counts[0]).toBeLessThanOrEqual(19);
+    expect(counts[0]).toBeLessThanOrEqual(21);
   });
 
   it("keeps the statement count constant for populated questions, evidence, attachments and threads", async () => {
@@ -152,7 +158,7 @@ describe("captureProject batching", () => {
       counts.push(h.counter.statements);
     }
     expect(counts[1]).toBe(counts[0]);
-    expect(counts[0]).toBeLessThanOrEqual(19);
+    expect(counts[0]).toBeLessThanOrEqual(21);
   });
 
   it("keeps the statement count constant as schedules, sources and runs grow", async () => {
@@ -174,7 +180,7 @@ describe("captureProject batching", () => {
       counts.push(h.counter.statements);
     }
     expect(counts[1]).toBe(counts[0]);
-    expect(counts[0]).toBeLessThanOrEqual(19);
+    expect(counts[0]).toBeLessThanOrEqual(21);
   });
 
   it("round-trips captured records through restoreProject", async () => {

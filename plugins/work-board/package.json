@@ -1,6 +1,6 @@
 {
   "name": "bb-plugin-work-board",
-  "version": "0.55.3",
+  "version": "0.56.0",
   "description": "Project tracking for people and AI agents in BB: kanban, epics, questions, archives, GitHub PR/CI and portable project exports.",
   "private": true,
   "license": "MIT",
@@ -95,6 +95,7 @@
     "@tiptap/pm": "^2.27.2",
     "@tiptap/starter-kit": "^2.27.2",
     "@tiptap/suggestion": "^2.27.2",
+    "diff": "^9.0.0",
     "tiptap-markdown": "^0.8.10",
     "zod": "^4.3.6",
     "@radix-ui/react-slot": "^1.3.0",

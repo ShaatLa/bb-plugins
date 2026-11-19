@@ -7,6 +7,7 @@ import { idleThreshold } from "../shared/project-settings";
 import { getBadgeCriteria, getBoardPreferences, setBadgeCriteria, setBoardPreferences } from "../global-settings";
 import { activityService } from "../activity/index.js";
 import { createDependencyStore } from "../dependencies/store";
+import { createPlanStore, PlanError } from "../plans/store";
 import { storageService } from "../storage";
 import { gitSyncService } from "../git-sync/service";
 import { projectConfigHandlers } from "../config";
@@ -731,6 +732,21 @@ export function registerHandlers(
 ): PluginRpcHandlers<typeof tasksRpcContract> {
   const structured = createStructuredStore(bb, store);
   const dependencies = createDependencyStore(bb.storage.database(), store.tasks);
+  const plans = createPlanStore(bb.storage.database(), store.tasks);
+  // Plan writes report refusals as results; every success logs a system comment, so both feeds refresh.
+  function planWrite<T extends { plan: { taskId: string } }>(write: () => T) {
+    try {
+      const result = store.transaction(write);
+      const task = store.tasks.getTask(result.plan.taskId)!;
+      publishTasksChanged(bb, task.id, task.projectId);
+      publishCommentsChanged(bb, task.id);
+      return { ok: true as const, ...result };
+    } catch (error) {
+      if (error instanceof PlanError) return { ok: false as const, error: { code: error.code, message: error.message } };
+      if (error instanceof SecretDetectedError) return { ok: false as const, error: { code: "secret_detected" as const, message: error.message } };
+      throw error;
+    }
+  }
   function changeDependency(input: { taskId: string; blockingTaskId: string; authorName: string }, add: boolean) {
     const changed = store.transaction(() => {
       const changed = add ? dependencies.add(input.taskId, input.blockingTaskId) : dependencies.remove(input.taskId, input.blockingTaskId);
@@ -764,6 +780,16 @@ export function registerHandlers(
     return { changed };
   }
   return {
+    getTaskPlan: ({ taskId, version }) => ({ plan: plans.get(taskId, version) }),
+    listTaskPlanVersions: ({ taskId }) => plans.listVersions(taskId),
+    diffTaskPlan: ({ taskId, from, to }) => plans.diff(taskId, from, to),
+    saveTaskPlan: (input) => planWrite(() => plans.save(input)),
+    submitTaskPlan: ({ taskId, author }) => planWrite(() => plans.submit(taskId, author)),
+    setTaskPlanState: ({ taskId, state, author }) => {
+      const result = planWrite(() => plans.setState(taskId, state, author));
+      // Drops the store's internal changed flag; a repeated state wrote no system comment.
+      return result.ok ? { ok: true as const, plan: result.plan, version: result.version } : result;
+    },
     listTaskDependencies: ({ taskId }) => dependencies.list(taskId),
     addTaskRelation: (input) => changeRelation(input, true),
     removeTaskRelation: (input) => changeRelation(input, false),

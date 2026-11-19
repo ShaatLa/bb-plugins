@@ -5,6 +5,7 @@ import { storageMethods } from "./storage";
 import { gitSyncMethods } from "./git-sync";
 import { lockMethods } from "./locks";
 import { taskDateFiltersSchema } from "./task-dates.js";
+import { PLAN_FORMATS, PLAN_OPS, PLAN_STATES } from "./plan";
 import type { PluginRpcContract } from "@get-bb/plugin-sdk";
 import { z } from "zod";
 import { autoArchiveAfterDaysSchema, staleIdleThresholdSchema, statusNotificationsSchema, boardPreferencesSchema } from "./project-settings";
@@ -665,6 +666,57 @@ const sequenceSchema = z.object({ projectId: idSchema, name: sequenceNameSchema,
 const sequenceClaimSchema = z.object({ id: z.number().int(), projectId: idSchema, name: sequenceNameSchema, value: sequenceNumberSchema, rendered: z.string(), taskId: idSchema.nullable(), taskKey: z.string(), prUrl: z.string().nullable(), threadId: z.string().nullable(), claimedAt: z.string(), state: z.enum(["active", "released"]), releasedAt: z.string().nullable(), reason: z.string().nullable() }).strict();
 const sequenceKeySchema = z.object({ projectId: idSchema, name: sequenceNameSchema }).strict();
 
+export const planAuthorSchema = z
+  .object({
+    kind: z.enum(["agent", "person"]),
+    threadId: z.string().regex(/^thr_/).nullable().default(null),
+    name: nonBlankStringSchema,
+  })
+  .strict();
+export const planStateSchema = z.enum(PLAN_STATES);
+/** Version metadata; bodies are read one version at a time. */
+export const planVersionSchema = z
+  .object({
+    version: z.number().int().min(1),
+    baseVersion: z.number().int().min(0),
+    op: z.enum(PLAN_OPS),
+    target: z.string().nullable(),
+    summary: z.string(),
+    author: planAuthorSchema,
+    createdAt: z.string(),
+    added: z.number().int().min(0),
+    removed: z.number().int().min(0),
+  })
+  .strict();
+export const taskPlanHeadSchema = z
+  .object({
+    taskId: idSchema,
+    format: z.enum(PLAN_FORMATS),
+    version: z.number().int().min(1),
+    state: planStateSchema,
+    updatedAt: z.string(),
+    updatedBy: planAuthorSchema,
+  })
+  .strict();
+const planErrorSchema = z
+  .object({
+    code: z.enum(["plan_conflict", "plan_no_change", "plan_invalid", "plan_archived", "plan_state", "secret_detected"]),
+    message: z.string(),
+  })
+  .strict();
+const planMutationResultSchema = z.discriminatedUnion("ok", [
+  z.object({ ok: z.literal(true), plan: taskPlanHeadSchema, version: planVersionSchema.nullable() }).strict(),
+  z.object({ ok: z.literal(false), error: planErrorSchema }).strict(),
+]);
+const planWriteBase = { taskId: idSchema, baseVersion: z.number().int().min(0), summary: z.string(), author: planAuthorSchema };
+const savePlanInputSchema = z.discriminatedUnion("op", [
+  z.object({ ...planWriteBase, op: z.literal("replace"), body: z.string() }).strict(),
+  z.object({ ...planWriteBase, op: z.literal("section"), section: z.string(), body: z.string() }).strict(),
+  z.object({ ...planWriteBase, op: z.literal("fragment"), find: z.string(), replace: z.string() }).strict(),
+  z.object({ ...planWriteBase, op: z.literal("restore"), restoreVersion: z.number().int().min(1) }).strict(),
+]);
+export const SETTABLE_PLAN_STATES = ["in_review", "approved", "changes_requested"] as const;
+
 export const tasksRpcContract = {
   // One per-project setting at a time; without a key, get lists them all.
   "config.get": {
@@ -942,6 +994,27 @@ export const tasksRpcContract = {
   archiveCompleted: {
     input: z.object({ projectId: idSchema, authorName: nonBlankStringSchema.default("You") }).strict(),
     output: z.object({ archivedCount: z.number().int().nonnegative() }).strict(),
+  },
+  getTaskPlan: {
+    input: z.object({ taskId: idSchema, version: z.number().int().min(1).optional() }).strict(),
+    output: z.object({ plan: taskPlanHeadSchema.extend({ requested: planVersionSchema.extend({ body: z.string() }).strict() }).strict().nullable() }).strict(),
+  },
+  listTaskPlanVersions: {
+    input: z.object({ taskId: idSchema }).strict(),
+    output: z.object({ plan: taskPlanHeadSchema.nullable(), versions: z.array(planVersionSchema) }).strict(),
+  },
+  saveTaskPlan: { input: savePlanInputSchema, output: planMutationResultSchema },
+  diffTaskPlan: {
+    input: z.object({ taskId: idSchema, from: z.number().int().min(0).optional(), to: z.number().int().min(1).optional() }).strict(),
+    output: z.object({ from: z.number().int().min(0), to: z.number().int().min(1), patch: z.string(), added: z.number().int().min(0), removed: z.number().int().min(0) }).strict(),
+  },
+  submitTaskPlan: {
+    input: z.object({ taskId: idSchema, author: planAuthorSchema }).strict(),
+    output: planMutationResultSchema,
+  },
+  setTaskPlanState: {
+    input: z.object({ taskId: idSchema, state: z.enum(SETTABLE_PLAN_STATES), author: planAuthorSchema }).strict(),
+    output: planMutationResultSchema,
   },
   listTasks: {
     input: z
@@ -1245,6 +1318,10 @@ export type Comment = z.infer<typeof commentSchema>;
 export type CommentProvider = z.infer<typeof commentProviderSchema>;
 export type DisplayComment = z.infer<typeof displayCommentSchema>;
 export type Attachment = z.infer<typeof attachmentSchema>;
+export type PlanAuthor = z.infer<typeof planAuthorSchema>;
+export type PlanVersion = z.infer<typeof planVersionSchema>;
+export type TaskPlanHead = z.infer<typeof taskPlanHeadSchema>;
+export type SaveTaskPlanInput = z.infer<typeof savePlanInputSchema>;
 export type TaskThread = z.infer<typeof taskThreadSchema>;
 export type ThreadHealth = z.infer<typeof threadHealthSchema>;
 export type TaskPullRequest = z.infer<typeof taskPullRequestSchema>;
