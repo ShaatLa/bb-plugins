@@ -75,7 +75,7 @@ export default async function plugin(bb: BbPluginApi) {
     const manager = (await configs())[id]?.manager;
     try {
       const threadId = await managerFor(manager);
-      await bb.sdk.threads.send({ threadId, mode: 'queue-if-active', originPluginId: bb.pluginId, input: [{ type: 'text', text: message, mentions: [] }] });
+      await bb.sdk.threads.send({ threadId, mode: 'queue-if-active', originPluginId: bb.pluginId, input: [{ type: 'text', text: `[bb message from plugin:${bb.pluginId}]\n\n${message}`, mentions: [] }] });
       current.deliveredTo = threadId;
       current.deliveredNoticeId = undefined;
       current.fallbackReason = undefined;

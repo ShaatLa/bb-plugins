@@ -42,12 +42,12 @@ function outputBlock(output: string) {
 
 export function formatNotification(status: 'alive' | number, output: string) {
   if (typeof status === 'number' && status >= 2) {
-    const title = `**Sweep** · \`Check failed\` (exit ${status})`;
+    const title = `\`Check failed\` (exit ${status})`;
     return output.trim() ? `${title}\n\n${outputBlock(output.trimEnd())}` : title;
   }
 
   const title = status === 'alive' ? 'No new actions' : status === 1 ? 'Needs attention' : 'Check complete';
-  const blocks = [`**Sweep** · \`${title}\``];
+  const blocks = [`\`${title}\``];
   const groups = new Map<string, string[]>();
   const other: string[] = [];
   for (const line of output.split(/\r?\n/)) {

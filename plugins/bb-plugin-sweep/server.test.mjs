@@ -79,8 +79,8 @@ try {
  const original=Date.now;Date.now=()=>original()+120000;
  try {await harness.behavior.runSchedule('sweep');}finally{Date.now=original;}
  assert.equal(sent[0].threadId,second);
- assert.equal(sent[0].input[0].text, [
-   '**Sweep** · `Needs attention` · 2 to review · 2 threads · 3 cards checked',
+ assert.equal(sent[0].input[0].text, '[bb message from plugin:sweep]\n\n' + [
+   '`Needs attention` · 2 to review · 2 threads · 3 cards checked',
    '**Owner answers**',
    '- [EXA-1](/plugins/work-board/work-board/task/EXA-1) — «Пример \\*ответа\\*» · `q1`',
    '**Actions**',
@@ -247,9 +247,9 @@ try {
   assert.equal(deliveryStore(db).read(projectId).committed.toString(),'{"value": "two"}');
 }finally{Date.now=realNow;await repeatHost.harness.lifecycle.dispose();await rm(repo,{recursive:true,force:true});}
 
-assert.equal(formatNotification(0, 'STATE owner-answers: reopened q1\n'), '**Sweep** · `Check complete`\n\n**State changes**\n\n- owner-answers: reopened q1');
-assert.equal(formatNotification(1, 'ACTION bad-block thr_example: missing closing block\n'), '**Sweep** · `Needs attention`\n\n**Actions**\n\n- `bad block` · @thread:thr_example: missing closing block');
-assert.equal(formatNotification(2, 'ERROR checkout failed\n```\n  indented detail\n'), '**Sweep** · `Check failed` (exit 2)\n\n````text\nERROR checkout failed\n```\n  indented detail\n````');
+assert.equal(formatNotification(0, 'STATE owner-answers: reopened q1\n'), '`Check complete`\n\n**State changes**\n\n- owner-answers: reopened q1');
+assert.equal(formatNotification(1, 'ACTION bad-block thr_example: missing closing block\n'), '`Needs attention`\n\n**Actions**\n\n- `bad block` · @thread:thr_example: missing closing block');
+assert.equal(formatNotification(2, 'ERROR checkout failed\n```\n  indented detail\n'), '`Check failed` (exit 2)\n\n````text\nERROR checkout failed\n```\n  indented detail\n````');
 
 // A reload must cancel in-flight repository work before the service stop deadline.
 const slowRepo = await mkdtemp(join(tmpdir(), 'sweep-stop-'));
