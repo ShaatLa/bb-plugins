@@ -122,22 +122,28 @@ function DiffFile({ file, input, initial, viewed, visible, refreshViewed }: { fi
     {!viewed && (patch ? <><Diff path={file.path} patch={patch.patch} />{patch.truncated && <p className="p-3 text-xs text-muted-foreground">Diff truncated</p>}</> : file.binary ? <div className="flex flex-wrap items-center gap-x-2 gap-y-1 px-3 py-3 text-xs text-muted-foreground">Binary file.</div> : file.loadMode === 'too_large' ? <div className="flex flex-wrap items-center gap-x-2 gap-y-1 px-3 py-3 text-xs text-muted-foreground">Too large to display ({file.additions + file.deletions} changed lines).</div> : patches.error ? <Empty>{patches.error.message}</Empty> : result && result.outcome !== 'available' ? <Empty>{unavailable(result)}</Empty> : !load ? <button type="button" onClick={() => setLoad(true)} className="p-3 text-xs text-muted-foreground">Load diff</button> : <Empty>Loading…</Empty>)}
   </section>;
 }
+const openBoardRoute = (url: string) => { if (url.startsWith('/plugins/work-board/')) openAppRoute(url); };
 export function WorkBoardTab() {
   const chat = useOpenChat(), visible = useTabVisible();
-  const tasks = useQuery({ pluginId: 'work-board', contract: boardContract, method: 'threadTasks', input: { threadId: chat.threadId ?? '' }, enabled: visible && !!chat.threadId });
-  useEffect(() => { if (visible && chat.threadId) void tasks.refetch(); }, [visible, chat.threadId, chat.revision]);
+  const board = useQuery({ pluginId: 'work-board', contract: boardContract, method: 'threadBoard', input: { threadId: chat.threadId ?? '' }, enabled: visible && !!chat.threadId });
+  useEffect(() => { if (visible && chat.threadId) void board.refetch(); }, [visible, chat.threadId, chat.revision]);
   if (!chat.threadId) return <Empty>No chat open</Empty>;
-  if (tasks.error) return <Empty>Work Board unavailable</Empty>;
-  if (!tasks.data) return <Empty>Loading…</Empty>;
-  if (!tasks.data.tasks.length) return <Empty>No linked tasks</Empty>;
-  // Mirrors Work Board's TaskRow (views/list/row.tsx): status glyph, key, title, then project; the whole row opens the task.
-  // Glyph and color are Work Board's shared icon and color when it sends them; before that the status name stands in.
-  return <div role="list" aria-label="Linked tasks">{tasks.data.tasks.map(task => <div key={task.key} role="listitem" data-task-key={task.key} className={`relative flex h-[34px] w-full items-center gap-x-2 border-b border-border-hairline px-3.5 text-left transition-opacity hover:bg-state-hover ${task.archived ? 'opacity-50' : ''}`}>
-    <button type="button" aria-label={`Open ${task.key}: ${task.title}`} onClick={() => { if (task.url.startsWith('/plugins/work-board/')) openAppRoute(task.url); }} className="absolute inset-0 rounded-none focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring" />
-    {task.status.iconName && <span title={task.status.name} aria-label={task.status.name} className="flex shrink-0" style={{ color: task.status.cssColor }}><Icon name={task.status.iconName} className="size-3.5" /></span>}
-    <span className="w-14 shrink-0 truncate text-xs tabular-nums text-subtle-foreground">{task.key}</span>
-    <span className="min-w-0 flex-1 truncate text-sm">{task.title}</span>
-    {!task.status.iconName && <span className="shrink-0 text-xs text-subtle-foreground">{task.status.name}</span>}
-    <span className="shrink-0 truncate text-xs text-subtle-foreground">{task.projectName}</span>
-  </div>)}</div>;
+  if (board.error) return <Empty>Work Board unavailable</Empty>;
+  if (!board.data) return <Empty>Loading…</Empty>;
+  const { project, columns } = board.data;
+  if (!project) return <Empty>No board linked</Empty>;
+  // Column and card look mirror Work Board's own board (views/board/index.tsx), minus drag, labels and badges.
+  return <div className="flex h-full min-h-0 flex-col gap-2">
+    <button type="button" onClick={() => openBoardRoute(project.url)} className="self-start text-sm font-medium text-primary hover:underline">{project.name}</button>
+    <div className="flex min-h-0 flex-1 gap-2 overflow-x-auto">{columns.map(({ status, total, cards }) => <div key={status.id} data-board-column={status.id} className="flex max-h-full w-[230px] shrink-0 flex-col">
+      <div className="flex items-center gap-1.5 px-1 pb-2 text-sm font-semibold"><span className="flex shrink-0" style={{ color: status.cssColor }}><Icon name={status.iconName} className="size-3.5" /></span><span>{status.name}</span><span className="font-normal text-muted-foreground">{total}</span></div>
+      <div className="flex min-h-16 flex-col gap-2 overflow-y-auto rounded-lg p-1">
+        {cards.map(card => <button key={card.key} type="button" title={card.title} aria-label={`Open ${card.key}: ${card.title}`} data-mine={card.mine ? 'true' : undefined} onClick={() => openBoardRoute(card.url)} className={`shrink-0 rounded-lg border bg-card px-2.5 py-2 text-left shadow-2xs hover:border-input ${card.mine ? 'border-primary bg-state-hover' : 'border-border'}`}>
+          <div className="text-2xs tabular-nums text-subtle-foreground">{card.key}</div>
+          <div className="mt-1 line-clamp-2 text-sm font-medium leading-snug">{card.title}</div>
+        </button>)}
+        {total > cards.length && <p className="px-1 text-xs text-muted-foreground">+{total - cards.length} more</p>}
+      </div>
+    </div>)}</div>
+  </div>;
 }
