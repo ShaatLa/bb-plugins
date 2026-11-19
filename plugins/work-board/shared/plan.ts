@@ -69,10 +69,12 @@ export interface PlanSection {
 
 /** Resolves a heading text or a `Parent > Child` path to exactly one section. */
 export function findSection(body: string, target: string): PlanSection {
-  const wanted = target.trim();
+  // Agents often paste the heading with its hashes ("## Title"); the address is the text only.
+  const bare = (value: string) => value.trim().replace(/^#{1,6}[ \t]+/, "").trim();
+  const wanted = bare(target);
   if (!wanted) throw new PlanEditError("Section heading must not be empty");
   const headings = parseHeadings(body);
-  const segments = wanted.split(">").map((segment) => segment.trim());
+  const segments = wanted.split(">").map(bare);
   const suffixMatches = (heading: PlanHeading) =>
     segments.length <= heading.path.length && segments.every((segment, index) => heading.path[heading.path.length - segments.length + index] === segment);
   let candidates = headings.filter(suffixMatches);
@@ -118,10 +120,19 @@ export function countOccurrences(body: string, find: string): number {
   return count;
 }
 
-/** Replaces the single exact occurrence of `find`; zero or several occurrences are refused. */
+/**
+ * Replaces the single exact occurrence of `find`; zero or several occurrences are refused.
+ * Files end with "\n" by habit: when the text as given is not found and ends with one, a single
+ * trailing "\n" is dropped from both find and replacement, if that yields exactly one match.
+ */
 export function replaceFragment(body: string, find: string, replacement: string): string {
   if (!find) throw new PlanEditError("The fragment to find must not be empty");
-  const count = countOccurrences(body, find);
+  let count = countOccurrences(body, find);
+  if (count === 0 && find.endsWith("\n") && find.length > 1 && countOccurrences(body, find.slice(0, -1)) === 1) {
+    find = find.slice(0, -1);
+    if (replacement.endsWith("\n")) replacement = replacement.slice(0, -1);
+    count = 1;
+  }
   if (count === 0) throw new PlanEditError("Fragment not found in the current plan (0 matches); it must match exactly, including whitespace and line breaks");
   if (count > 1) throw new PlanEditError(`Fragment is not unique (${count} matches); include more surrounding text so it occurs exactly once`);
   const at = body.indexOf(find);

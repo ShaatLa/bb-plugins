@@ -2,7 +2,7 @@ import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import type { TasksStore } from "../db";
 import type { PlanAuthor, PlanVersion, SaveTaskPlanInput, TaskPlanHead } from "../shared/contract";
 import { assertNoSecrets } from "../shared/secret-guard.js";
-import { diffPlanBodies, type PlanDiff } from "../shared/plan-diff";
+import { countPlanChanges, diffPlanBodies, type PlanDiff } from "../shared/plan-diff";
 import {
   assertPlanText,
   PlanEditError,
@@ -179,7 +179,7 @@ export function createPlanStore(db: Database, tasks: TasksStore) {
     if (current && body === current.body) throw new PlanError("plan_no_change", "No change: the plan already has exactly this content");
 
     const summary = input.summary.trim();
-    const { added, removed } = diffPlanBodies(current?.body ?? "", body, { from: "", to: "" });
+    const { added, removed } = countPlanChanges(current?.body ?? "", body);
     const version = (current?.version ?? 0) + 1;
     const resetState = current && (current.state === "approved" || current.state === "changes_requested");
     const state: PlanState = resetState ? "draft" : (current?.state ?? "draft");

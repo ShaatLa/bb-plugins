@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { diffPlanBodies } from "./plan-diff";
+import { countPlanChanges, diffPlanBodies } from "./plan-diff";
 import { assertPlanText, countOccurrences, findSection, getSection, parseHeadings, PlanEditError, replaceFragment, replaceSection } from "./plan";
 
 const PLAN = [
@@ -62,6 +62,13 @@ describe("sections", () => {
     expect(getSection(body, "Plan > Backend > Tests")).toBe("### Tests\na");
   });
 
+  it("accepts a heading copied with its hashes, also inside a path", () => {
+    const body = ["# Guide", "## Setup", "### Tests", "a", "## Usage", "### Tests", "b"].join("\n");
+    expect(getSection(body, "## Setup")).toBe("## Setup\n### Tests\na");
+    expect(() => findSection(body, "### Tests")).toThrow(/ambiguous/);
+    expect(getSection(body, "## Usage > ### Tests")).toBe("### Tests\nb");
+  });
+
   it("refuses a missing heading and lists what exists", () => {
     expect(() => findSection(PLAN, "Nope")).toThrow(PlanEditError);
     expect(() => findSection(PLAN, "Nope")).toThrow(/not found[\s\S]*Plan > Steps 1–4[\s\S]*Plan > Steps 1–4 > Details/);
@@ -82,6 +89,24 @@ describe("fragments", () => {
     expect(replaceFragment(PLAN, "- second", "- second ($1 safe)")).toContain("- second ($1 safe)\n");
   });
 
+  it("retries once without the single trailing newline of a file-shaped find", () => {
+    const body = "# Plan\n- one\n- two";
+    // At the very end of the plan there is no newline to match.
+    expect(replaceFragment(body, "- two\n", "- 2\n")).toBe("# Plan\n- one\n- 2");
+    // From the middle of a line.
+    expect(replaceFragment("keep this part, drop this\nnext", "this part\n", "x")).toBe("keep x, drop this\nnext");
+    expect(replaceFragment("see old text here", "old text\n", "new text\n")).toBe("see new text here");
+    // A replacement without a newline stays as it is.
+    expect(replaceFragment("see old text here", "old text\n", "new")).toBe("see new here");
+    // The text as given wins when it matches.
+    expect(replaceFragment("a\nb\n", "b\n", "c\n")).toBe("a\nc\n");
+    // Only one newline is removed, and ambiguity or absence keeps the original refusal.
+    expect(() => replaceFragment("zz", "zz\n\n", "y")).toThrow(/0 matches/);
+    expect(() => replaceFragment("ab ab", "ab\n", "x")).toThrow(/0 matches/);
+    expect(() => replaceFragment("abc", "zz\n", "x")).toThrow(/0 matches/);
+    expect(() => replaceFragment("abc", "\n", "x")).toThrow(/0 matches/);
+  });
+
   it("refuses zero matches and several matches with their count", () => {
     expect(() => replaceFragment(PLAN, "absent", "x")).toThrow(/0 matches/);
     expect(() => replaceFragment("ab ab", "ab", "x")).toThrow(/2 matches/);
@@ -99,6 +124,11 @@ describe("limits and diff", () => {
     expect(() => assertPlanText("  ", "ok")).toThrow(/must not be empty/);
     expect(() => assertPlanText("x", "  ")).toThrow(/summary/);
     expect(() => assertPlanText("x", "s".repeat(301))).toThrow(/300/);
+  });
+
+  it("counts changes without building a patch", () => {
+    expect(countPlanChanges("a\nb\nc\n", "a\nB\nc\nd\n")).toEqual({ added: 2, removed: 1 });
+    expect(countPlanChanges("same\n", "same\n")).toEqual({ added: 0, removed: 0 });
   });
 
   it("counts added and removed lines", () => {

@@ -118,6 +118,15 @@ describe("bb work-board plan", () => {
     expect(noMode.exitCode).toBe(1);
   });
 
+  it("tolerates the trailing newline of fragment files and a section copied with its hashes", async () => {
+    const { file, ok } = await setup();
+    await ok(["plan", "set", "EXA-1", "--body", "# Plan\n\n## Notes\nlast line", "--base-version", "0", "--summary", "Initial"]);
+    const find = await file("find.md", "last line\n");
+    const replace = await file("replace.md", "final line\n");
+    expect(await ok(["plan", "edit", "EXA-1", "--find-file", find, "--replace-file", replace, "--base-version", "1", "--summary", "Fragment"])).toContain("saved as v2");
+    expect(await ok(["plan", "show", "EXA-1", "--section", "## Notes"])).toContain("## Notes\nfinal line");
+  });
+
   it("restores a version, lists the log and diffs versions", async () => {
     const { ok, run } = await setup();
     await ok(["plan", "set", "EXA-1", "--body", "a\nb\n", "--base-version", "0", "--summary", "One"]);
