@@ -174,6 +174,12 @@ function notice(text: string, sender: string) {
   const rest = (line.toLowerCase().startsWith(sender.toLowerCase()) ? line.slice(sender.length) : line.replace(/^\[[^\]]*\]\s*/, '')).replace(/^[\s·:—-]+/, '');
   return rest ? ` · ${rest}` : '';
 }
+// The text under the caption: without bb's [bb message from …] header or the plugin's own [id] / [name] tag.
+function unlabel(text: string, plugin: { id: string; name: string } | null) {
+  const rest = text.replace(/^\[bb message from [^\]]*\]\s*/, '');
+  const names = plugin ? [plugin.id, plugin.name, ...(plugin.id === 'agent-hub' ? ['answers'] : [])].map(n => n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')) : [];
+  return names.length ? rest.replace(new RegExp(`^\\[(?:${names.join('|')})\\]\\s*`, 'i'), '') : rest;
+}
 function UpdateCaption({ item, time }: { item: Item; time: ReactNode }) {
   const { threads } = experimental_useSidebarThreads(), trigger = item.trigger, source = trigger?.sourceId ?? null, brand = usePluginBrand(trigger?.kind === 'plugin' ? source : null);
   const thread = threads.find(t => t.id === source), projectId = thread?.projectId ?? item.projectId, title = thread?.displayTitle ?? thread?.title ?? trigger?.sourceTitle ?? source ?? '';
@@ -182,9 +188,11 @@ function UpdateCaption({ item, time }: { item: Item; time: ReactNode }) {
   const [icon, body]: [IconName | null, ReactNode] = !source ? [null, null]
     : trigger?.kind === 'system' ? ['CircleCheck', <><UrlLink href={href} className="min-w-0 cursor-pointer truncate whitespace-pre text-left font-medium text-foreground underline underline-offset-2 opacity-70 focus-visible:outline-none">{title}</UrlLink><span className="shrink-0 whitespace-pre text-muted-foreground"> finished</span></>]
     : trigger?.kind === 'agent' && mention && look ? ['MessageSquare', <><span className="shrink-0 whitespace-pre text-muted-foreground">Message from </span><UrlLink href={href} title={look.title} className={`${look.className} min-w-0 bg-surface-raised/50 font-normal no-underline hover:no-underline whitespace-nowrap`}><PromptMentionIcon mention={mention} className="size-3.5 shrink-0 self-center text-muted-foreground" /><span className="truncate"><ThreadTitleText title={title} /></span></UrlLink></>]
-    : trigger?.kind === 'plugin' && brand ? [null, <span className="flex min-w-0 items-center gap-2"><PluginIcon pluginId={brand.id} icon={brand.icon} className="size-4 shrink-0" /><span className="min-w-0 truncate whitespace-pre text-muted-foreground"><span className="text-foreground/80">{brand.name}</span>{notice(item.question, brand.name)}</span></span>]
-    // A tagged script waking its own thread: bb's automation icon; a plugin that is not installed any more: its bare id.
-    : trigger?.kind === 'plugin' || trigger?.kind === 'other' ? [trigger.kind === 'other' ? 'Repeat' : 'Info', <span className="min-w-0 truncate whitespace-pre text-muted-foreground"><span className="text-foreground/80">{source}</span>{notice(item.question, source)}</span>] : [null, null];
+    // bb has no plugin pill; a thread pill's look with the plugin's icon reads the same as "Message from" another thread.
+    // A plugin that is not installed any more is named by its bare id.
+    : trigger?.kind === 'plugin' ? ['MessageSquare', <><span className="shrink-0 whitespace-pre text-muted-foreground">Message from </span><span className={`${experimental_describePromptMention({ kind: 'thread', threadId: source, label: brand?.name ?? source }).className} min-w-0 bg-surface-raised/50 font-normal whitespace-nowrap`}>{brand && <PluginIcon pluginId={brand.id} icon={brand.icon} className="size-3.5 shrink-0 self-center" />}<span className="truncate">{brand?.name ?? source}</span></span></>]
+    // A tagged script waking its own thread: bb's automation icon.
+    : trigger?.kind === 'other' ? ['Repeat', <span className="min-w-0 truncate whitespace-pre text-muted-foreground"><span className="text-foreground/80">{source}</span>{notice(item.question, source)}</span>] : [null, null];
   if (!body && !time) return null;
   return <div data-update-caption className="flex min-w-0 items-center gap-2 px-2 text-sm leading-5">{icon && <Icon name={icon} aria-hidden className="size-4 shrink-0 text-muted-foreground" />}{(body || time) && <span className="inline-flex min-w-0 max-w-full items-baseline overflow-hidden whitespace-nowrap">{body}{time && <span className="shrink-0 whitespace-pre text-muted-foreground [&_time]:text-sm">{body && ' · '}{time}</span>}</span>}</div>;
 }
@@ -346,15 +354,9 @@ export function ItemCard({ item, members, late, live = true, chat = false, marka
     {item.kind === 'for_me' ? <div className="space-y-1">
       <div className="flex min-h-8 items-center gap-2 pl-2 text-xs text-muted-foreground">{chat && time}{item.status === 'open' && item.deadlineAt !== null && <Deadline item={item} />}{item.status === 'replied' && item.answerSource === 'agent' && <span>Defaulted</span>}{item.urgency === 'blocking' && <span>Blocking</span>}{item.chatAsked && <span title="The agent asked this in its reply text, not through Agent Hub" className="inline-flex items-center gap-1"><Icon name="MessageSquare" aria-hidden className="size-3" />Asked in chat</span>}{item.dismissedAt !== null && item.answerSource === 'agent' && <span title="The agent withdrew this question; its reason is below">Withdrawn</span>}<span className="flex-1" /><span className="opacity-60 transition-opacity hover:opacity-100 focus-within:opacity-100">{/* Only outside the chat it leads anywhere: in the chat the conversation is already open. */}{open && !item.threadDeleted && <Button asChild size="sm" {...iconProps(open.label)}><UrlLink href={open.href} onClick={event => { if (open.onClick) { event.preventDefault(); open.onClick(); } }}><Icon name="ExternalLink" aria-hidden /></UrlLink></Button>}</span></div>
       <div ref={question} className={expanded ? '' : 'line-clamp-6'}>{agentBody(item.question, item.questionSeq)}</div>
-    </div> : item.kind === 'update' && chat && item.trigger?.kind === 'plugin' && item.question ? <div data-bubble-row className="ml-auto flex w-fit min-w-0 max-w-[70%] flex-col items-end gap-1">
-      {/* bb shows a plugin's message (a Work Board comment, a CI notice) as a user bubble with its markdown, so it does too. */}
-      {/* bb gives a plugin's message no sender line; here it names the plugin, and its leading [tag] (how a plugin marks its own notes) is left out. */}
-      {sender && <span data-plugin-sender className="flex items-center gap-1.5 px-1 text-xs text-muted-foreground"><PluginIcon pluginId={sender.id} icon={sender.icon} className="size-3.5 shrink-0" />{sender.name}</span>}
-      <div data-plugin-message className={userBubble}><div ref={question} className={`break-words [&_p]:my-0 ${expanded ? '' : 'line-clamp-6'}`}><Markdown content={sender ? item.question.replace(new RegExp(`^\\[(?:${[sender.id, sender.name, ...(sender.id === 'agent-hub' ? ['answers'] : [])].map(n => n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|')})\\]\\s*`, 'i'), '') : item.question} /></div></div>
-      {time}<span className="flex gap-0.5"><MessageCopy small text={item.question} /><MessageCopy small link text={messageLink(item.projectId, item.threadId, item.questionSeq)} /></span>
     </div> : item.kind === 'update' ? <><UpdateCaption item={item} time={chat ? time : null} />
-      {/* bb quotes another thread's message under "Message from …"; the [bb message from …] header is already the caption. */}
-      {chat && item.trigger?.kind === 'agent' && item.question && <div data-agent-message className="ml-8 mr-2 border-l-2 border-border-seam pl-3 text-sm text-muted-foreground"><div ref={question} className={`break-words [&_p]:my-0 ${expanded ? '' : 'line-clamp-3'}`}><Markdown content={item.question.replace(/^\[bb message from [^\]]*\]\s*/, '')} /></div></div>}
+      {/* Another thread's or a plugin's message is quoted under "Message from …"; its [bb message from …] header and a plugin's own leading [tag] are already the caption. */}
+      {chat && (item.trigger?.kind === 'agent' || item.trigger?.kind === 'plugin') && item.question && <div data-agent-message className="ml-8 mr-2 border-l-2 border-border-seam pl-3 text-sm text-muted-foreground"><div ref={question} className={`break-words [&_p]:my-0 ${expanded ? '' : 'line-clamp-3'}`}><Markdown content={unlabel(item.question, sender)} /></div></div>}
     </> : part === 'answer' ? <div className="ml-auto flex w-fit min-w-0 max-w-[70%] flex-col items-end gap-1">{group.map(echo)}</div> : <div className="ml-auto flex w-fit max-w-[70%] flex-col items-end gap-1">
       {late?.map(echo)}
       {group.map(member => <div key={member.id} className={userBubble}>{member.question && <div ref={member === item ? question : undefined} className={`whitespace-pre-wrap break-words ${expanded ? '' : 'line-clamp-6'}`}><InlineCommentText threadId={member.threadId} text={member.question} prefixes={workBoard?.projects.map(p => p.prefix)} /></div>}{member.attachments.length > 0 && <ItemAttachments attachments={member.attachments} projectId={member.projectId} />}</div>)}
