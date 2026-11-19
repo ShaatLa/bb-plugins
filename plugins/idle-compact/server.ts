@@ -58,8 +58,8 @@ const message = (error: unknown) => (error instanceof Error ? error.message : St
 export default async function plugin(bb: BbPluginApi, now: () => number = Date.now) {
   const settings = bb.settings.define({
     enabled: { type: "boolean", label: "Compact idle threads", description: "Compact a Claude Code thread after 50 minutes idle, while its prompt cache is still warm, and any thread that stops with a nearly full context.", default: true },
-    minTokens: { type: "number", label: "Minimum context, tokens", description: "After 50 minutes idle, threads with a smaller context are left alone: compacting them saves less than it costs.", default: 100_000 },
-    thresholdPercent: { type: "select", label: "Compact at once when context usage reaches", description: "Share of the model's context window from which a thread on any provider is compacted before its next message (or after 50 minutes idle if none comes); a failed thread at once.", options: ["off", "70", "75", "80", "85", "90", "95"], default: "80" },
+    minTokens: { type: "number", label: "Minimum context, tokens", description: "After 50 minutes idle, Claude Code threads below the window share and with a smaller context are left alone: compacting them saves less than it costs. A thread at the share is compacted whatever its size.", default: 100_000 },
+    thresholdPercent: { type: "select", label: "Compact a full thread when context usage reaches", description: "Share of the model's context window from which a thread on any provider is compacted before its next message (or after 50 minutes idle if none comes); a failed thread at once.", options: ["off", "70", "75", "80", "85", "90", "95"], default: "80" },
   });
   let config = await settings.get();
   settings.onChange(next => { config = next; });
@@ -218,13 +218,18 @@ export default async function plugin(bb: BbPluginApi, now: () => number = Date.n
       return more ? { items, nextCursor: items.at(-1)!.id } : { items };
     },
     compact: async ({ threadId, queue: later }) => {
-      if (!later) { await manual(threadId); return { ok: true as const }; }
+      const refuseArchived = (thread: { archivedAt?: unknown }) => { if (thread.archivedAt) throw new Error("The thread is archived; Idle Compact never compacts an archived thread. Unarchive it first to compact it"); };
+      if (!later) {
+        refuseArchived(await bb.sdk.threads.get({ threadId }));
+        try { await manual(threadId); } catch (error) { if (NOT_IDLE.test(message(error))) throw new Error(`${message(error)}; call again once it is idle or failed, or call compact with queue: true to compact it when it stops`); throw error; }
+        return { ok: true as const };
+      }
       // A repeat request, or one made while a compaction is already under way, adds nothing.
       if (queued.has(threadId)) return { ok: true as const, queued: true as const };
       // An accepted compaction covers the request; a check still in flight may skip, so the request is kept (see release).
       if (running.has(threadId) && !inflight.has(threadId)) return { ok: true as const };
       const thread = await bb.sdk.threads.get({ threadId });
-      if (thread.archivedAt) throw new Error("The thread is archived");
+      refuseArchived(thread);
       // While another call holds the in-flight guard the request is queued; release() runs it if that call compacts nothing.
       if (!inflight.has(threadId) && (thread.status === "idle" || thread.status === "error")) {
         try { await manual(threadId); return { ok: true as const }; } catch (error) { if (!NOT_IDLE.test(message(error))) throw error; }
@@ -299,7 +304,7 @@ export default async function plugin(bb: BbPluginApi, now: () => number = Date.n
   // A threshold compaction (one the dispatch hook started) still follows the settings, keep and share up to the call, as
   // attempt() does; it returns the reason when it skips.
   async function manual(threadId: string, trigger: Compaction["trigger"] = "manual"): Promise<string | undefined> {
-    if (inflight.has(threadId)) throw new Error("An earlier compaction of this thread has not finished");
+    if (inflight.has(threadId)) throw new Error("An earlier compaction of this thread has not finished; wait until compactState.running is false and call again, or call compact with queue: true to compact it at its next stop even if the earlier check skips");
     inflight.add(threadId);
     try {
       // usedTokensBefore is null when bb does not know the context size.
@@ -381,13 +386,14 @@ export default async function plugin(bb: BbPluginApi, now: () => number = Date.n
   bb.onDispose(() => { periods.clear(); beforeNext.clear(); for (const timer of timers.values()) clearTimeout(timer); timers.clear(); });
 
   const usage = "Usage:\n  bb idle-compact status [--json]\n  bb idle-compact keep [thread-id]\n  bb idle-compact release [thread-id]";
+  let keeping: Promise<unknown> = Promise.resolve();
   bb.cli.register({
     name: "idle-compact",
-    summary: "Compact Claude Code threads idle for 50 minutes while their cache is warm",
+    summary: "Compact idle Claude Code threads at 50 minutes, and full threads on any provider before their next message",
     commands: [
-      { name: "status", summary: "Show settings, pending compactions and threads that keep full context", usage: "bb idle-compact status [--json]" },
-      { name: "keep", summary: "Never idle-compact this thread", usage: "bb idle-compact keep [thread-id]" },
-      { name: "release", summary: "Let this thread be idle-compacted again", usage: "bb idle-compact release [thread-id]" },
+      { name: "status", summary: "Show settings, pending compactions and kept threads", usage: "bb idle-compact status [--json]" },
+      { name: "keep", summary: "Exempt a thread from automatic compaction (Compact buttons and bb thread compact still work)", usage: "bb idle-compact keep [thread-id]" },
+      { name: "release", summary: "Undo keep. A keep set from a thread is released only from that thread or a terminal; one set from a terminal or before 0.5.2, from anywhere", usage: "bb idle-compact release [thread-id]" },
     ],
     async run(argv, ctx) {
       const json = argv.includes("--json"), [command, ...rest] = argv.filter(arg => arg !== "--json");
@@ -396,14 +402,23 @@ export default async function plugin(bb: BbPluginApi, now: () => number = Date.n
         for (const key of await bb.storage.kv.list(IDLE)) { const since = await bb.storage.kv.get<number>(key); if (typeof since === "number") pending[key.slice(IDLE.length)] = new Date(since + IDLE_MS).toISOString(); }
         const kept = (await bb.storage.kv.list(KEEP)).map(key => key.slice(KEEP.length));
         const value = { enabled: config.enabled, idleMinutes: IDLE_MS / 60_000, minTokens: config.minTokens, thresholdPercent: config.thresholdPercent, pending, beforeNextMessage: [...beforeNext.keys()], kept };
-        return { exitCode: 0, stdout: json ? JSON.stringify(value) : [`enabled: ${value.enabled}`, `compacts after: ${value.idleMinutes} min idle, ${value.minTokens} tokens or more`, `compacts a full thread from: ${value.thresholdPercent === "off" ? "off" : `${value.thresholdPercent}% of the window, before its next message (failed: at once)`}`, `pending: ${Object.entries(pending).map(([id, at]) => `${id} at ${at}`).join(", ") || "none"}`, `before next message: ${value.beforeNextMessage.join(", ") || "none"}`, `keep full context: ${kept.join(", ") || "none"}`].join("\n") };
+        return { exitCode: 0, stdout: json ? JSON.stringify(value) : [`enabled: ${value.enabled}`, `compacts after: ${value.idleMinutes} min idle, ${value.minTokens} tokens or more`, `compacts a full thread from: ${value.thresholdPercent === "off" ? "off" : `${value.thresholdPercent}% of the window, before its next message (failed: at once)`}`, `pending: ${Object.entries(pending).map(([id, at]) => `${id} at ${at}`).join(", ") || "none"}`, `before next message: ${value.beforeNextMessage.join(", ") || "none"}`, `kept (no automatic compaction): ${kept.join(", ") || "none"}`].join("\n") };
       }
       if (command === "keep" || command === "release") {
-        const threadId = rest[0] ?? ctx.threadId;
-        if (!threadId || rest.length > 1) return { exitCode: 1, stderr: usage };
-        await bb.sdk.threads.get({ threadId });
-        if (command === "keep") { beforeNext.delete(threadId); periods.delete(threadId); clearTimeout(timers.get(threadId)); timers.delete(threadId); await bb.storage.kv.set(KEEP + threadId, true); } else await bb.storage.kv.delete(KEEP + threadId);
-        return { exitCode: 0, stdout: json ? JSON.stringify({ threadId, keep: command === "keep" }) : `${threadId}: ${command === "keep" ? "keeps its full context" : "can be idle-compacted"}` };
+        // Serialized, so two concurrent keeps cannot both read an empty key and each record itself.
+        const turn = keeping.then(async () => {
+          const threadId = rest[0] ?? ctx.threadId;
+          if (!threadId || rest.length > 1) return { exitCode: 1, stderr: usage };
+          try { await bb.sdk.threads.get({ threadId }); } catch (error) { return { exitCode: 1, stderr: `${threadId}: ${message(error)}. Pass an existing thread id (for example thr_example), or none inside a thread to mean that thread.\n${usage}` }; }
+          // A keep records the thread that set it (true when set outside a thread); only that thread or a terminal releases it.
+          // shortcut: guards against an accidental release, not a deliberate one: a caller that clears BB_THREAD_ID looks like a terminal.
+          const by = await bb.storage.kv.get<string | true>(KEEP + threadId);
+          if (command === "release" && typeof by === "string" && ctx.threadId && ctx.threadId !== by) return { exitCode: 1, stderr: `${threadId}: kept by thread ${by}. Release it from that thread, or ask the owner to run \`bb idle-compact release ${threadId}\` in a terminal.` };
+          if (command === "keep") { beforeNext.delete(threadId); periods.delete(threadId); clearTimeout(timers.get(threadId)); timers.delete(threadId); if (!by) await bb.storage.kv.set(KEEP + threadId, ctx.threadId ?? true); } else await bb.storage.kv.delete(KEEP + threadId);
+          return { exitCode: 0, stdout: json ? JSON.stringify({ threadId, keep: command === "keep" }) : `${threadId}: ${command === "keep" ? "exempt from automatic compaction" : "automatic compaction may reach it again"}` };
+        });
+        keeping = turn.catch(() => {});
+        return turn;
       }
       if (command && command !== "help" && command !== "--help") return { exitCode: 1, stderr: usage };
       return { exitCode: 0, stdout: usage };

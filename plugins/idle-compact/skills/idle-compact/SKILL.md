@@ -1,6 +1,6 @@
 ---
 name: idle-compact
-description: "Explain or control automatic compaction of Claude Code threads left idle for 50 minutes; exempt a thread that must keep its full context."
+description: "Explain or control Idle Compact: automatic compaction of Claude Code threads idle for 50 minutes and of nearly full threads on any provider; exempt a thread that must keep its full context."
 ---
 
 Idle Compact compacts a Claude Code thread after 50 minutes idle when its context is
@@ -25,10 +25,18 @@ compact` instead.
 
 Commands:
 - `bb idle-compact status [--json]`: settings, threads due for compaction and when, full
-  threads waiting for their next message, and threads that keep their full context.
-- `bb idle-compact keep [thread-id]`: never idle-compact this thread (defaults to the
-  current thread). Use it for a thread whose exact earlier wording matters more than cost.
-- `bb idle-compact release [thread-id]`: let the thread be idle-compacted again.
+  threads waiting for their next message, and kept threads.
+- `bb idle-compact keep [thread-id]`: exempt the thread from every automatic compaction
+  (the 50-minute check, the full-thread compaction before its next message, and the one
+  after a failure). Without an id it marks the current thread. Use it for a thread whose
+  exact earlier wording matters more than cost, for example an executor spawned for one
+  task: `bb idle-compact keep thr_example`. Keep does not stop the Compact buttons,
+  `bb thread compact`, or the provider's own compaction at the window limit.
+- `bb idle-compact release [thread-id]`: undo keep, for example `bb idle-compact release
+  thr_example`. A keep set from a thread is released only from that thread; from any other
+  thread the command is refused. A keep set from a terminal, or before 0.5.2, can be
+  released from any thread. If the owner wants a keep released, they run the command in a
+  terminal. This guards against accidental releases. It is not access control.
 
 Compaction keeps Claude Code's summary of the conversation. Durable notes belong in Work
 Board cards or thread storage, not only in the conversation.

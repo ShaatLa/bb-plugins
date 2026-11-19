@@ -9,10 +9,10 @@ async function setup({ used = 250_000, provider = "claude-code", status = "idle"
   vi.useFakeTimers();
   let clock = Date.parse("2026-11-14T12:00:00Z");
   const now = () => clock;
-  const state = { used, provider, status, timeline: null as Promise<void> | null };
+  const state = { used, provider, status, archivedAt: null as string | null, timeline: null as Promise<void> | null };
   const compact = vi.fn(async (_input: { threadId: string }): Promise<{ ok: true }> => ({ ok: true }));
   const host = createFakePluginHost({ pluginId: "idle-compact", sdk: { threads: {
-    get: async ({ threadId }: { threadId: string }) => makeThreadResponse({ id: threadId, status: state.status, providerId: state.provider } as any),
+    get: async ({ threadId }: { threadId: string }) => { if (threadId === "thr_missing") throw new Error("Thread not found"); return makeThreadResponse({ id: threadId, status: state.status, providerId: state.provider, archivedAt: state.archivedAt } as any); },
     timeline: async () => (await state.timeline, { contextWindowUsage: { usedTokens: state.used, modelContextWindow: 1_000_000, estimated: true } }) as any,
     compact,
   } } as any });
@@ -63,6 +63,14 @@ it("skips a thread exempted with keep, and compacts it again after release", asy
   await h.emit("thread.idle"); await h.advance(IDLE_MS);
   expect(h.compact).not.toHaveBeenCalled();
   await h.host.harness.behavior.runCli(["release", "thr_a"]);
+  const refused = await h.host.harness.behavior.runCli(["keep", "thr_missing"]);
+  expect(refused).toMatchObject({ exitCode: 1, stderr: expect.stringMatching(/Thread not found.*Pass an existing thread id/) });
+  // A keep set from another thread is released only from that thread (or a terminal).
+  const cli = h.host.harness.behavior.runCli;
+  await cli(["keep", "thr_b"], { threadId: "thr_parent" } as any);
+  expect(await cli(["release"], { threadId: "thr_b" } as any)).toMatchObject({ exitCode: 1, stderr: expect.stringMatching(/kept by thread thr_parent/) });
+  expect((await cli(["release", "thr_b"], { threadId: "thr_parent" } as any)).exitCode).toBe(0);
+  expect(JSON.parse((await cli(["status", "--json"])).stdout!).kept).toEqual([]);
   await h.emit("thread.idle"); await h.advance(IDLE_MS);
   expect(h.compact).toHaveBeenCalledTimes(1);
 });
@@ -385,7 +393,7 @@ it("compacts from the header button regardless of provider, settings and size, l
   expect(h.compact).toHaveBeenCalledTimes(1);
   // A refused call is not logged and leaves no marker: the next real stop is checked as usual.
   h.compact.mockRejectedValueOnce(new Error("Context can only be compacted while the thread is idle or errored"));
-  await expect(compact()).rejects.toThrow(/only be compacted/);
+  await expect(compact()).rejects.toThrow(/only be compacted.*queue: true/);
   expect(await list()).toHaveLength(1);
   h.state.provider = "claude-code"; h.state.used = 910_000;
   await h.emit("thread.active"); await h.emit("thread.idle"); await h.advance(0); await h.send();
@@ -604,4 +612,15 @@ it("does not compact again after a restart when a request was made after the sto
   await queueing(h).call("compact", { queue: true });
   await h.host.harness.lifecycle.reload(bb => plugin(bb, h.now)); await h.advance(0);
   expect(h.compact).toHaveBeenCalledTimes(1);
+});
+
+it("refuses to compact or queue an archived thread", async () => {
+  const h = await setup();
+  h.state.archivedAt = new Date(0).toISOString();
+  const rpc = (method: string, input: object) => h.host.harness.behavior.callRpc(method as any, input as any) as Promise<any>;
+  for (const queue of [false, true]) await expect(rpc("compact", { threadId: "thr_a", queue })).rejects.toThrow(/archived.*Unarchive it first/);
+  h.state.status = "running" as any;
+  await expect(rpc("compact", { threadId: "thr_a", queue: true })).rejects.toThrow(/archived/);
+  expect(h.compact).not.toHaveBeenCalled();
+  expect(await rpc("compactState", { threadId: "thr_a" })).toEqual({ queued: false, running: false });
 });

@@ -1,7 +1,9 @@
 # Idle Compact
 
 Compacts a Claude Code thread in bb after it has been idle for 50 minutes with a context
-of 100k tokens or more.
+of 100k tokens or more, and a thread on any provider whose context reaches a set share of
+the window (default 80%): at once if it fails, otherwise before its next message, or after
+50 minutes idle if none comes.
 
 Claude's prompt cache lives one hour. A thread woken after that writes its whole context
 to the cache again. Compacting at 50 minutes, while the cache is warm, costs a cache read
@@ -121,6 +123,12 @@ bb idle-compact status [--json]
 bb idle-compact keep [thread-id]      # exempt a thread
 bb idle-compact release [thread-id]   # undo keep
 ```
+
+Keep exempts a thread from every automatic compaction (50-minute, before the next message,
+after a failure). It does not stop the Compact buttons, `bb thread compact`, or the
+provider's own compaction at the window limit. Without an id, both commands act on the
+current thread; an unknown id is refused. A keep set from a thread can be released only from
+that thread or a terminal (`bb idle-compact release thr_example`).
 
 ## Measuring
 
