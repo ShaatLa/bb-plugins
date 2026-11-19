@@ -21,4 +21,4 @@ Click either chart’s bars for a popup with statistics for the exact UTC interv
 Use repository headings to open GitHub in BB’s configured browser while keeping the dashboard available.
 
 
-Agents can read cached or freshly collected CI metrics with ci_dashboard_metrics: pass rates, outcomes, branch/workflow problem signals and elapsed timings, with explicit timestamps, staleness and missing-data errors. CI access is read-only.
+Agents can read cached or freshly collected CI metrics with ci_dashboard_metrics: pass rates, outcomes, branch/workflow problem signals and elapsed timings, with explicit timestamps, staleness and missing-data errors. ci_dashboard_metrics and the ci RPC are read-only. ci_dashboard_manage and the manage RPC change plugin state only: claims, observers and PR subscriptions. Manage refuses unused action parameters and CI inspection refs as fix references (use #12, FIX-1 or a URL). Claim results include previous and handled; observer replacement returns removed thread ids for the caller to inspect. For example, {"action":"fix_pending","id":"pool_stall:self-hosted","ref":"#12"} preserves the worker when threadId is omitted.

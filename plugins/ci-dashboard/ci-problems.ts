@@ -265,8 +265,8 @@ export function seedPrompt(repository: string, problem: ProblemLike, context: Co
     `- ci_dashboard_metrics tool (view: signals | stall | losses | failures | reruns, or ref=<ref> from the Refs section for one drill-down), or \`bb plugin rpc call ${pluginId} ci --input-file <json>\`.`,
     `- gh run view <runId> --repo ${repository} --log-failed`, `- gh run view <runId> --repo ${repository} --json jobs`, `- gh api repos/${repository}/actions/jobs/<jobId>/logs`,
     "", "## Your task",
-    "Classify the root cause: infrastructure, flaky test, real failure, or tool/network. Give the evidence, propose the fix and say who should act. Find the root cause and report back.",
-    "Do not re-run workflows, cancel runs or change CI configuration unless the owner asks.",
+    "Classify the root cause: infrastructure, flaky test, real failure, or tool/network. Give the evidence, propose the fix and name who must act. Find the root cause and report back.",
+    "You must not re-run workflows, cancel runs or change CI configuration unless the owner asks. For example, inspect job:123 and report the cause before proposing a rerun.",
   ].join("\n");
   const { body } = fitSections(context, PROMPT_CAP - head.length - tail.length - 1);
   return [head, body, tail].join("\n");

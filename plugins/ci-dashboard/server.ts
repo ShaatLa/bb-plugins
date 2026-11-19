@@ -453,7 +453,7 @@ export default async function plugin(bb: BbPluginApi) {
   const problemsOf = async (repo: string, rt: Runtime) => buildProblems(repo, (await loadIncidents(repo, rt))?.open ?? [], withoutBenignAlerts(rt.alerts ?? [], rt.analysis?.classified ?? []), await loadHandled(repo, rt));
   async function configuredRepository(repository: string, values: Values) {
     const found = (await repositoryNames(values)).find((name) => name.toLowerCase() === repository.toLowerCase());
-    if (!found) throw new Error("Repository is not configured in CI Dashboard or could not be discovered.");
+    if (!found) throw new Error("Repository is not configured in CI Dashboard or could not be discovered. Pass a configured owner/repo such as acme/app, or add it in plugin settings and retry.");
     return found;
   }
   // Same numbers for the navigationBadge RPC and the SIGNALS_CHANGED payload, so the badge needs no extra RPC. Handled problems do not count.
@@ -552,7 +552,7 @@ export default async function plugin(bb: BbPluginApi) {
     }
     // Only group runs whose PR really left the queue are removals; a group cancelled because the one ahead left is not.
     const confirmed = await confirmRemovals(events, state, async (number) => {
-      if (!token || !rt.backfill) throw new Error("No token for the merge queue timeline");
+      if (!token || !rt.backfill) throw new Error("No token for the merge queue timeline. Configure the secret token in plugin settings or sign in with gh on the BB server.");
       const [owner, name] = repo.split("/");
       const { body } = await rt.backfill.run.spend(signal, () => githubRequest("/graphql", token, signal, { method: "POST", body: JSON.stringify({ query: REMOVED_FROM_QUEUE, variables: { owner, name, number } }) }));
       const parsed = removedFromQueueSchema.parse(body);
@@ -814,7 +814,7 @@ export default async function plugin(bb: BbPluginApi) {
       const values = await settings.get();
       const names = await repositoryNames(values);
       const wanted = input?.repository ? names.filter((name) => name.toLowerCase() === input.repository!.toLowerCase()) : names;
-      if (input?.repository && !wanted.length) throw new Error("Repository is not configured in CI Dashboard or could not be discovered.");
+      if (input?.repository && !wanted.length) throw new Error("Repository is not configured in CI Dashboard or could not be discovered. Pass a configured owner/repo such as acme/app, or add it in plugin settings and retry.");
       return { actors: actorNames(values), repositories: await Promise.all(wanted.map(async (repo) => {
         const rt = runtimeFor(repo), incidents = await loadIncidents(repo, rt);
         const row = { ...rangedView(rt, await readView(repo, rt, values.jobHistoryDays), input), signals: sortSignals([...(incidents?.open ?? []), ...(incidents?.recent ?? [])]),
@@ -829,7 +829,7 @@ export default async function plugin(bb: BbPluginApi) {
       const values = await settings.get();
       const repo = await configuredRepository(repository, values), rt = runtimeFor(repo), handled = await loadHandled(repo, rt);
       if (action === "dismiss") {
-        if (!(await problemsOf(repo, rt)).some((problem) => problem.id === id)) throw new Error("This problem is no longer open.");
+        if (!(await problemsOf(repo, rt)).some((problem) => problem.id === id)) throw new Error("This problem is no longer open. Re-read ci_dashboard_metrics view=problems and use a current problems[].id.");
         handled[id] = { state: "dismissed", by: "user", at: new Date().toISOString() };
       } else delete handled[id];
       await saveHandled(repo, rt);
@@ -841,7 +841,7 @@ export default async function plugin(bb: BbPluginApi) {
       const values = await settings.get();
       const repo = await configuredRepository(repository, values), rt = runtimeFor(repo);
       const problem = (await problemsOf(repo, rt)).find((item) => item.id === id);
-      if (!problem) throw new Error("This problem is no longer open.");
+      if (!problem) throw new Error("This problem is no longer open. Re-read ci_dashboard_metrics view=problems and use a current problems[].id.");
       // Built from what is already in memory: investigating makes no GitHub requests.
       const backfill = rt.backfill?.status, stored = readHistory(repo, configuration(values));
       const prompt = seedPrompt(repo, problem, problemContext(problem, {
@@ -871,7 +871,7 @@ export default async function plugin(bb: BbPluginApi) {
     },
     async deployProduction() {
       requireChanges();
-      if (deploying) throw new Error("A production deployment request is already in progress.");
+      if (deploying) throw new Error("A production deployment request is already in progress. Check the workflow on GitHub and wait for the current request before retrying.");
       deploying = true;
       try {
         const values = await settings.get();
@@ -892,7 +892,7 @@ export default async function plugin(bb: BbPluginApi) {
     },
     async interval({ repository, since, until }) {
       const start = Date.parse(since), end = Date.parse(until);
-      if (start < Date.parse(minimumDate()) || start > end || end > Date.now()) throw new Error("Invalid statistics interval.");
+      if (start < Date.parse(minimumDate()) || start > end || end > Date.now()) throw new Error("Invalid statistics interval. Pass ISO UTC since/until endpoints within the past year through now, with since on or before until.");
       const values = await settings.get();
       const { token } = await resolveGithubToken(values.token, controller.signal);
       const range: DateRange = { since, until, label: "selected interval", bucketMs: Math.max(1, end - start) };
@@ -958,7 +958,7 @@ export default async function plugin(bb: BbPluginApi) {
   /** ref=...: one small inspection from memory and the local store (no GitHub requests). */
   async function inspectRef(ref: string, repository: string | undefined) {
     const values = await settings.get(), names = await repositoryNames(values);
-    if (!repository && names.length !== 1) throw new Error(names.length ? `Several repositories are configured; pass repository (${names.join(", ")}).` : "No repository is configured in CI Dashboard.");
+    if (!repository && names.length !== 1) throw new Error(names.length ? `Several repositories are configured; pass repository (${names.join(", ")}).` : "No repository is configured in CI Dashboard. Set repository to an owner/repo such as acme/app in plugin settings, or enable importBbRepositories for linked BB projects.");
     const repo = repository ? await configuredRepository(repository, values) : names[0]!, rt = runtimeFor(repo);
     const row = (await handlers.signals({ repository: repo })).repositories[0]!, stored = readHistory(repo, configuration(values));
     const observer = repoStateSchema.safeParse(await bb.storage.kv.get(`observer:${repo}`)), artifacts = flakeSettings(values.flakeSignatures, values.flakeArtifacts).artifacts;
@@ -992,11 +992,11 @@ export default async function plugin(bb: BbPluginApi) {
   }
   bb.rpc.register(ciRpcContract, { ci: readCi }, {
     experimental_discoverable: true,
-    experimental_description: "Read-only CI Dashboard summaries: pass rates, outcomes, workflow health, estimated elapsed timings and job-level signals (runner pool stalls, runner losses, reruns, flakes). Pass view=stall|losses|failures|reruns|signals for one job-level slice only, or ref=<job:ID|run:ID|queue:RUN:ATTEMPT|pool:NAME|pr:N|sha:SHA|problem id> for one drill-down. Cached by default; timestamps and staleness are explicit.",
+    experimental_description: "Read-only CI Dashboard summaries: pass rates, outcomes, workflow health, estimated elapsed timings and job-level signals (runner pool stalls, runner losses, reruns, flakes). Pass view=stall|losses|failures|reruns|signals for one job-level slice only (also view=problems|lanes), or ref=<job:ID|run:ID|queue:RUN:ATTEMPT|pool:NAME|pr:N|sha:SHA|problem id> for one drill-down. Cached by default; timestamps and staleness are explicit.",
   });
   bb.agents.registerTool({
     name: "ci_dashboard_metrics",
-    description: "Read GitHub Actions CI data for CI Dashboard repositories: pass rate, outcomes, failures, branch/workflow health, estimated timings in milliseconds, and slow-run links by ID. Also job-level signals: runner pool stalls, runner losses and mass cancels, reruns that still fail, flaky and transient failures. Failure and rerun rows carry the run event (pull_request, push, merge_group); merge_group failure rows add queuePullRequest and queueOnly (passes on the PR, fails only in the merge queue), and failureCountsByEvent splits the failure counts. view=lanes gives seven UTC days of full-attempt wall and lane p50/p90 with sample counts; event selects a pipeline. view=stall gives the live runner pool queues plus per runner pool job counts and p50/p90 queue wait and duration in ms, overall (poolTimings) and by event (poolTimingsByEvent). Signals are deploy-agnostic: they come from run and job facts only, not from deployment tooling. view=summary (default) adds open signals and runner pool queues to the run-level report; view=problems returns only the open CI health problems with ids and handled state (smallest; use it before ci_dashboard_manage); view=signals|stall|losses|failures|reruns returns only that job-level slice with no run-level metrics. Index views are compact and give every row a ref (job:ID, run:ID:ATTEMPT, queue:RUN:ATTEMPT, pool:NAME, pr:N, sha:SHA, or a problem/signal id); to see more about one row call this tool again with ref=<that ref> (view, selection and refresh are then ignored): the answer is a few lines of summary, facts and related refs from the local store, with no log text, so walk index view -> ref -> related ref instead of asking for big dumps. Job-level data comes from a local store filled by a budgeted backfill of job history, so check backfill.remaining and backfill.coveredSince before concluding something did not happen. Defaults to a local cached snapshot; inspect stale, pending, updatedAt and errors. Set refresh:true to collect fresh run-level data. Pass rates exclude cancelled/skipped; timing estimates use successful runs only. Never writes to GitHub: no deployments, reruns, cancellations or other writes are triggered.",
+    description: "Read GitHub Actions CI data for CI Dashboard repositories: pass rate, outcomes, failures, branch/workflow health, estimated timings in milliseconds, and slow-run links by ID. Also job-level signals: runner pool stalls, runner losses and mass cancels, reruns that still fail, flaky and transient failures. Failure and rerun rows carry the run event (pull_request, push, merge_group); merge_group failure rows add queuePullRequest and queueOnly (passes on the PR, fails only in the merge queue), and failureCountsByEvent splits the failure counts. view=lanes gives seven UTC days of full-attempt wall and lane p50/p90 with sample counts; event selects a pipeline. view=stall gives the live runner pool queues plus per runner pool job counts and p50/p90 queue wait and duration in ms, overall (poolTimings) and by event (poolTimingsByEvent). Signals are deploy-agnostic: they come from run and job facts only, not from deployment tooling. view=summary (default) adds open signals and runner pool queues to the run-level report; view=problems returns only the open CI health problems with ids and handled state (smallest; use it before ci_dashboard_manage); view=signals|stall|losses|failures|reruns returns only that job-level slice with no run-level metrics. Index views are compact and give every row a ref (job:ID, run:ID:ATTEMPT, queue:RUN:ATTEMPT, pool:NAME, pr:N, sha:SHA, or a problem/signal id); to see more about one row call this tool again with ref=<that ref> (view, selection, refresh and event are then ignored): the answer is a few lines of summary, facts and related refs from the local store, with no log text, so walk index view -> ref -> related ref instead of asking for big dumps. Job-level data comes from a local store filled by a budgeted backfill of job history, so you must check backfill.remaining and backfill.coveredSince before concluding something did not happen. Defaults to a local cached snapshot; you must inspect stale, pending, updatedAt and errors. Set refresh:true to collect fresh run-level data. Pass rates exclude cancelled/skipped; timing estimates use successful runs only. Never writes to GitHub: no deployments, reruns, cancellations or other writes are triggered.",
     parameters: ciQuerySchema,
     presentation: { label: { pending: "Reading CI Dashboard", completed: "Read CI Dashboard" } },
     async execute(input, { signal }) {
@@ -1034,28 +1034,46 @@ export default async function plugin(bb: BbPluginApi) {
   const PROBLEM_ACTIONS = ["take", "fix_pending", "release", "dismiss"] as const, OBSERVER_ACTIONS = ["subscribe", "unsubscribe", "replace", "list"] as const;
   const manageInput = z.object({
     action: z.enum([...PROBLEM_ACTIONS, ...OBSERVER_ACTIONS, "subscribe_pr", "unsubscribe_pr"]).describe("Problem actions (id required): take: you (or the worker in threadId) are working on the problem; fix_pending: a fix PR/card exists (ref required); release: back to open; dismiss: nobody needs to act. Observer actions: subscribe: add the thread to the observers; unsubscribe: remove it; replace: make it the only observer; list: show observers and PR subscriptions. subscribe_pr/unsubscribe_pr: subscribe the lead to the next success containing its PR, then end; failures go to observers only; expires on archive/deletion or after 14 days"),
-    number: z.number().int().min(1).optional().describe("PR number, required for subscribe_pr and unsubscribe_pr"),
+    number: z.number().int().min(1).optional().describe("PR number, e.g. 12; required and accepted only for subscribe_pr and unsubscribe_pr"),
     id: z.string().min(1).max(300).optional().describe("Problem actions only (required): problem id from ci_dashboard_metrics view=problems or view=signals (problems[].id), from an observer line (`problem <id>`) or from a ref"),
-    repository: repositorySchema.optional().describe("Problem actions: owner/repo; needed only when several repositories are configured"),
-    threadId: z.string().optional().describe("BB thread id (thr_...). take: whoever works on the problem (defaults to the calling thread; pass the worker's id when you delegate); fix_pending: keeps or sets the worker; observer actions: the thread to change (defaults to the calling thread)"),
+    repository: repositorySchema.optional().describe("Problem and PR actions only: owner/repo, e.g. acme/app; required when several repositories are configured"),
+    threadId: z.string().optional().describe("BB thread id, e.g. thr_example. Only take, fix_pending, subscribe, unsubscribe, replace, subscribe_pr, unsubscribe_pr accept it. Tool defaults to caller; fix_pending preserves the worker when omitted. RPC requires it except for fix_pending."),
     ref: z.string().trim().min(1).max(80).optional().describe('fix_pending only (required): the fix, as a PR number like "#12", a tracker key like "FIX-1" or a URL. Not a ci_dashboard_metrics ref'),
-  });
+  }).strict();
+  function validateManage(input: z.infer<typeof manageInput>) {
+    const accepted: Record<typeof input.action, string[]> = {
+      take: ["id", "repository", "threadId"], fix_pending: ["id", "repository", "threadId", "ref"],
+      release: ["id", "repository"], dismiss: ["id", "repository"],
+      subscribe: ["threadId"], unsubscribe: ["threadId"], replace: ["threadId"], list: [],
+      subscribe_pr: ["number", "repository", "threadId"], unsubscribe_pr: ["number", "repository", "threadId"],
+    };
+    const fields = accepted[input.action];
+    for (const key of ["id", "repository", "threadId", "ref", "number"] as const) {
+      if (input[key] !== undefined && !fields.includes(key)) throw new Error(`action=${input.action} does not use ${key}; pass only action${fields.length ? ", " + fields.join(", ") : ""}.${key === "ref" ? " Pass ref with action=fix_pending once the fix PR/card exists." : " Remove " + key + " and retry."}`);
+    }
+    if (input.action === "fix_pending" && input.ref && /^(?:job|run|queue|pool|pr|sha|pool_stall|runner_loss|mass_cancel|rerun_failed|flake|transient|timeout):/i.test(input.ref)) {
+      throw new Error("fix_pending ref must identify the fix, not CI data; pass #12, FIX-1 or a URL instead.");
+    }
+  }
   const prDescription = "The lead subscribes to its PR with subscribe_pr (number required); unsubscribe_pr cancels. The next successful deployment containing the PR goes to its subscribers instead of observers, then the subscription ends. Failures go to observers only. Subscriptions end on delivery, thread archive/deletion, or after 14 days.";
   async function manage(input: z.infer<typeof manageInput>, ctx: { threadId: string; signal: AbortSignal }) {
+    validateManage(input);
     if (input.action !== "list") requireChanges();
     if (input.action === "subscribe_pr" || input.action === "unsubscribe_pr") {
       if (!input.number) throw new Error(`action=${input.action} needs number: a PR number.`);
       const values = await settings.get(), names = await repositoryNames(values);
-      if (!input.repository && names.length !== 1) throw new Error(names.length ? `Several repositories are configured; pass repository (${names.join(", ")}).` : "No repository is configured in CI Dashboard.");
+      if (!input.repository && names.length !== 1) throw new Error(names.length ? `Several repositories are configured; pass repository (${names.join(", ")}).` : "No repository is configured in CI Dashboard. Set repository to an owner/repo such as acme/app in plugin settings, or enable importBbRepositories for linked BB projects.");
       const repository = input.repository ? await configuredRepository(input.repository, values) : names[0]!, threadId = input.threadId ?? ctx.threadId;
-      if (!isThreadId(threadId)) throw new Error(`"${threadId.slice(0, 40)}" is not a BB thread id.`);
+      if (!isThreadId(threadId)) throw new Error(`"${threadId.slice(0, 40)}" is not a BB thread id. Pass an existing BB thread id, e.g. thr_example.`);
       const thread = await bb.sdk.threads.get({ threadId }).catch(() => null);
-      if (!thread || thread.archivedAt) throw new Error(`Thread ${threadId} does not exist or is archived, so it cannot observe CI.`);
+      if (!thread || thread.archivedAt) throw new Error(`Thread ${threadId} does not exist or is archived, so it cannot observe CI. Pass an active threadId; for the tool, omit it to use the calling thread.`);
       return updatePr((entries) => {
         const matches = (entry: PrSubscription) => entry.repository === repository && entry.number === input.number && entry.threadId === threadId;
         if (input.action === "unsubscribe_pr") entries = entries.filter((entry) => !matches(entry));
-        else if (!entries.some(matches)) entries.push({ repository, number: input.number!, threadId, at: new Date().toISOString() });
-        entries = entries.sort((a, b) => a.at.localeCompare(b.at)).slice(-200);
+        else if (!entries.some(matches)) {
+          if (entries.length >= 200) throw new Error("PR subscription limit (200) reached. Call action=list, then unsubscribe_pr with number, repository and threadId for an obsolete subscription before retrying.");
+          entries.push({ repository, number: input.number!, threadId, at: new Date().toISOString() });
+        }
         return { entries, result: { repository, number: input.number, threadIds: entries.filter((entry) => entry.repository === repository && entry.number === input.number).map((entry) => entry.threadId), deploymentMode: deploymentMode(values.observeDeployments) } };
       });
     }
@@ -1063,56 +1081,61 @@ export default async function plugin(bb: BbPluginApi) {
   }
   bb.rpc.register(defineRpcContract({ manage: { input: manageInput, output: z.unknown() } }), { manage: async (input) => {
     requireReady();
+    validateManage(input);
     if (input.action !== "list") requireChanges();
-    if (!input.threadId && ["take", "subscribe", "replace", "subscribe_pr", "unsubscribe_pr", "unsubscribe"].includes(input.action)) throw new Error("threadId is required when called over RPC");
+    if (!input.threadId && ["take", "subscribe", "replace", "subscribe_pr", "unsubscribe_pr", "unsubscribe"].includes(input.action)) throw new Error("threadId is required when called over RPC; pass an active BB thread id, e.g. thr_example, or use ci_dashboard_manage from that thread.");
     return manage(input, { threadId: input.threadId ?? "", signal: controller.signal });
-  } }, { experimental_discoverable: true, experimental_description: "Manage CI observers, PR deployment subscriptions and problem claims." });
+  } }, { experimental_discoverable: true, experimental_description: "Manage CI observers, PR deployment subscriptions and problem claims. Only action-specific fields are accepted. RPC requires threadId for take and subscription changes. Claim results include previous; replace returns removed thread ids." });
   async function manageProblem({ action, id, repository, threadId, ref }: z.infer<typeof manageInput> & { action: typeof PROBLEM_ACTIONS[number] }, ctx: { threadId: string; signal: AbortSignal }) {
     if (!id) throw new Error(`action=${action} needs id: a problem id from ci_dashboard_metrics view=problems.`);
     const values = await settings.get(), names = await repositoryNames(values);
-    if (!repository && names.length !== 1) throw new Error(names.length ? `Several repositories are configured; pass repository (${names.join(", ")}).` : "No repository is configured in CI Dashboard.");
+    if (!repository && names.length !== 1) throw new Error(names.length ? `Several repositories are configured; pass repository (${names.join(", ")}).` : "No repository is configured in CI Dashboard. Set repository to an owner/repo such as acme/app in plugin settings, or enable importBbRepositories for linked BB projects.");
     const repo = repository ? await configuredRepository(repository, values) : names[0]!, rt = runtimeFor(repo), handled = await loadHandled(repo, rt);
-    if (!(await problemsOf(repo, rt)).some((problem) => problem.id === id)) throw new Error(`Problem ${id} is not open (unknown id, or it already resolved).`);
-    const at = new Date().toISOString();
+    if (!(await problemsOf(repo, rt)).some((problem) => problem.id === id)) throw new Error(`Problem ${id} is not open (unknown id, or it already resolved). Re-read ci_dashboard_metrics view=problems and use a current problems[].id.`);
+    const previous = handled[id] ?? null, at = new Date().toISOString();
     if (action === "release") delete handled[id];
     else if (action === "dismiss") handled[id] = { state: "dismissed", by: "agent", at };
     else if (action === "take") {
       const target = threadId ?? ctx.threadId;
-      if (!isThreadId(target)) throw new Error(`"${target.slice(0, 40)}" is not a BB thread id.`);
+      if (!isThreadId(target)) throw new Error(`"${target.slice(0, 40)}" is not a BB thread id. Pass an existing BB thread id, e.g. thr_example.`);
       const thread = await bb.sdk.threads.get({ threadId: target }).catch(() => null);
-      if (!thread || thread.archivedAt) throw new Error(`Thread ${target} does not exist or is archived, so it cannot work on a problem.`);
+      if (!thread || thread.archivedAt) throw new Error(`Thread ${target} does not exist or is archived, so it cannot work on a problem. Pass an active worker threadId; for the tool, omit it to use the calling thread.`);
       handled[id] = { state: "investigating", threadId: target, by: "agent", at };
     } else {
       if (!ref) throw new Error("fix_pending needs ref: a PR number like #12, a tracker key like FIX-1 or a URL.");
-      if (threadId && !isThreadId(threadId)) throw new Error(`"${threadId.slice(0, 40)}" is not a BB thread id.`);
+      if (threadId) {
+        if (!isThreadId(threadId)) throw new Error(`"${threadId.slice(0, 40)}" is not a BB thread id. Pass an existing BB thread id, e.g. thr_example.`);
+        const thread = await bb.sdk.threads.get({ threadId }).catch(() => null);
+        if (!thread || thread.archivedAt) throw new Error(`Thread ${threadId} does not exist or is archived. Pass an active worker threadId, or omit threadId to keep the current worker.`);
+      }
       const keep = threadId ?? handled[id]?.threadId;
       handled[id] = { state: "fix_pending", ref, ...(keep ? { threadId: keep } : {}), by: "agent", at };
     }
     await saveHandled(repo, rt);
     bb.realtime.publish(SIGNALS_CHANGED, await changed(values, repo));
-    return { repository: repo, id, handled: rt.handled![id] ?? null };
+    return { repository: repo, id, previous, handled: rt.handled![id] ?? null };
   }
   async function manageObservers({ action, threadId }: z.infer<typeof manageInput> & { action: typeof OBSERVER_ACTIONS[number] }, ctx: { threadId: string }) {
     const target = threadId ?? ctx.threadId, current = parseObserverThreads((await settings.get()).observerThreads);
     let next = current;
     if (action === "unsubscribe") next = current.filter((id) => id !== target);
     else if (action !== "list") {
-      if (!isThreadId(target)) throw new Error(`"${target.slice(0, 40)}" is not a BB thread id.`);
+      if (!isThreadId(target)) throw new Error(`"${target.slice(0, 40)}" is not a BB thread id. Pass an existing BB thread id, e.g. thr_example.`);
       const thread = await bb.sdk.threads.get({ threadId: target }).catch(() => null);
-      if (!thread || thread.archivedAt) throw new Error(`Thread ${target} does not exist or is archived, so it cannot observe CI.`);
+      if (!thread || thread.archivedAt) throw new Error(`Thread ${target} does not exist or is archived, so it cannot observe CI. Pass an active threadId; for the tool, omit it to use the calling thread.`);
       next = action === "replace" ? [target] : [...new Set([...current, target])];
     }
     if (next.join() !== current.join()) await settings.experimental_set({ observerThreads: next.join(", ") });
     const values = await settings.get(), enabled = enabledEvents(values);
     // The subscription confirmation goes out now, not at the next loop.
     await syncObservers(values, await repositoryNames(values));
-    return { prSubscriptions: await readPr(), observerThreads: parseObserverThreads(values.observerThreads), events: OBSERVER_TYPES.filter((type) => enabled[type]).map((type) => OBSERVER_TYPE_LABELS[type]),
+    return { ...(action === "replace" ? { removed: current.filter((id) => !next.includes(id)) } : {}), prSubscriptions: await readPr(), observerThreads: parseObserverThreads(values.observerThreads), events: OBSERVER_TYPES.filter((type) => enabled[type]).map((type) => OBSERVER_TYPE_LABELS[type]),
       quietMinutes: values.observerQuietMinutes, batchMinutes: values.observerBatchMinutes };
   }
   // All writes live here; ci_dashboard_metrics stays read-only.
   bb.agents.registerTool({
     name: "ci_dashboard_manage",
-    description: prDescription + ' Change CI Dashboard state (the read tool is ci_dashboard_metrics). Problem actions claim CI problems so the CI health status shows who deals with them: action=take when you or a worker start on a problem (id required; pass the worker\'s threadId when you delegate, it defaults to this thread), action=fix_pending with ref (PR number, tracker key or URL) once a fix PR/card exists, action=release to hand it back, action=dismiss when nobody needs to act. The claim closes itself when the problem resolves, is dropped when its investigating thread is archived or deleted, and expires after the claimTimeoutHours setting (default 24 h; observers get one "Claim dropped" line). Problem ids come from ci_dashboard_metrics view=problems or view=signals, from "problem <id>" in observer lines, or from a ref. Returns the problem\'s new handled state. Observer actions choose which BB threads receive CI event messages (merge queue removals, runner losses, default-branch red, pool stalls, mass cancels, deployments), pushed as short classified lines that wake an idle agent so nobody has to poll: action=subscribe when you start watching CI (threadId defaults to this thread), action=replace to take over as the only observer, action=unsubscribe when you stop, action=list to read the current observers. A newly subscribed thread gets one confirmation line and no history; archived or deleted threads are removed automatically. Returns the observer list and the enabled event types. Writes only plugin state and the observerThreads setting; nothing is written to GitHub.',
+    description: prDescription + ' Change CI Dashboard state (the read tool is ci_dashboard_metrics). Problem actions claim CI problems so the CI health status shows who deals with them: action=take when you or a worker start on a problem (id required; pass the worker\'s threadId when you delegate, it defaults to this thread), action=fix_pending with ref (PR number, tracker key or URL) once a fix PR/card exists, action=release to hand it back, action=dismiss when nobody needs to act. The claim closes itself when the problem resolves, is dropped when its investigating thread is archived or deleted, and expires after the claimTimeoutHours setting (default 24 h; observers get one "Claim dropped" line). Problem ids come from ci_dashboard_metrics view=problems or view=signals, from "problem <id>" in observer lines, or from a ref. Returns previous and new handled states; changes may replace another thread\'s claim. Observer actions choose which BB threads receive CI event messages (merge queue removals, runner losses, default-branch red, pool stalls, mass cancels, deployments), pushed as short classified lines that wake an idle agent so nobody has to poll: action=subscribe when you start watching CI (threadId defaults to this thread), action=replace to take over as the only observer (returns removed thread ids), action=unsubscribe when you stop, action=list to read the current observers. A newly subscribed thread gets one confirmation line and no history; archived or deleted threads are removed automatically. Returns the observer list and the enabled event types. Writes only plugin state and the observerThreads setting; nothing is written to GitHub.',
     parameters: manageInput,
     presentation: { label: { pending: "Updating CI Dashboard", completed: "Updated CI Dashboard" } },
     async execute(input, ctx) {

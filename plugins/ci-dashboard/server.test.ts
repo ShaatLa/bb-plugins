@@ -1402,7 +1402,7 @@ test("investigate without a thread spawns a session in the linked project with a
     expect(args.providerId).toBeUndefined(); expect(args.model).toBeUndefined();
     for (const fact of ["Problem: Runner pool stalled: self-hosted (critical)", "What happened:", "Impact:", "- Repository: acme/widgets", "- Pool: self-hosted", "Since: 2026-10-20T11:40:00.000Z",
       "ci_dashboard_metrics tool (view: signals | stall | losses | failures | reruns, or ref=<ref>", "## Refs", "drill down with ci_dashboard_metrics ref=<ref>: pool:self-hosted", "bb plugin rpc call ci-dashboard ci", "## Pool stall", "Queued runs:", "Find the root cause and report back.",
-      "Do not re-run workflows, cancel runs or change CI configuration unless the owner asks."]) expect(args.prompt).toContain(fact);
+      "You must not re-run workflows, cancel runs or change CI configuration unless the owner asks."]) expect(args.prompt).toContain(fact);
     expect((await problemsOf(harness)).problems[0].handled).toMatchObject({ state: "investigating", threadId: "thr_new" });
     expect(await harness.behavior.callRpc("navigationBadge", null)).toEqual({ count: 0, critical: 0 });
     const agent = await harness.behavior.callRpc("ci", { view: "signals" }) as { repositories: { problems: { id: string; handled: unknown }[] }[] };
@@ -1509,7 +1509,7 @@ function claimsHost(settings: object = {}) {
 }
 const STALL_TITLE = "Runner pool stalled: self-hosted";
 const claimTool = async (harness: { behavior: { callAgentTool(name: string, input: unknown, context?: { threadId: string }): Promise<unknown> } }, input: object, threadId = "thr_manager") =>
-  JSON.parse(await harness.behavior.callAgentTool("ci_dashboard_manage", { id: stallId, ...input }, { threadId }) as string) as { repository: string; id: string; handled: Record<string, unknown> | null };
+  JSON.parse(await harness.behavior.callAgentTool("ci_dashboard_manage", { id: stallId, ...input }, { threadId }) as string) as { repository: string; id: string; previous: Record<string, unknown> | null; handled: Record<string, unknown> | null };
 const observerLines = (send: { mock: { calls: unknown[][] } }) => sentTo(send, "thr_observer");
 
 test("ci_dashboard_manage problem actions: take (default and delegated thread), fix_pending, release and dismiss change the status and are not echoed to observers", async () => {
@@ -1525,7 +1525,7 @@ test("ci_dashboard_manage problem actions: take (default and delegated thread), 
     expect(lines[1].length).toBeLessThanOrEqual(400);
     expect(await harness.behavior.callRpc("navigationBadge", null)).toEqual({ count: 1, critical: 1 });
     // take defaults to the calling thread ...
-    expect(await claimTool(harness, { action: "take" })).toEqual({ repository: "acme/widgets", id: stallId, handled: { state: "investigating", threadId: "thr_manager", by: "agent", at: expect.any(String) } });
+    expect(await claimTool(harness, { action: "take" })).toEqual({ repository: "acme/widgets", id: stallId, previous: null, handled: { state: "investigating", threadId: "thr_manager", by: "agent", at: expect.any(String) } });
     expect(await harness.behavior.callRpc("navigationBadge", null)).toEqual({ count: 0, critical: 0 });
     // ... or the worker the caller delegates to.
     expect((await claimTool(harness, { action: "take", threadId: "thr_worker" })).handled).toMatchObject({ state: "investigating", threadId: "thr_worker", by: "agent" });
@@ -2064,7 +2064,8 @@ test("ci_dashboard_manage observer actions subscribe, replaces, unsubscribes and
     await call({ action: "subscribe" });
     expect(sentTo(send)).toHaveLength(1);
     expect(await call({ action: "subscribe", threadId: "thr_other" })).toMatchObject({ observerThreads: ["thr_caller", "thr_other"] });
-    expect(await call({ action: "replace" }, "thr_manager")).toMatchObject({ observerThreads: ["thr_manager"] });
+    expect(await call({ action: "replace" }, "thr_manager")).toMatchObject({ observerThreads: ["thr_manager"], removed: ["thr_caller", "thr_other"] });
+    expect(await call({ action: "replace" }, "thr_manager")).toMatchObject({ removed: [] });
     expect(sentTo(send, "thr_manager")).toHaveLength(1);
     expect(await call({ action: "unsubscribe" }, "thr_manager")).toMatchObject({ observerThreads: [] });
     expect(await call({ action: "unsubscribe", threadId: "thr_nobody" })).toMatchObject({ observerThreads: [] });
@@ -2439,4 +2440,79 @@ test("cutover fresh installation has no verification mode and delivers normally"
     expect(await f.harness.behavior.callRpc("ci", {})).not.toHaveProperty("cutover");
     expect(f.harness.logEntries.filter(row => row.message.includes("cut-over verification mode"))).toHaveLength(0);
   } finally { await f.dispose(); }
+});
+
+
+test("manage rejects unused action fields over both tool and RPC before side effects", async () => {
+  const { bb, harness, send, get } = claimsHost();
+  const accepted: Record<string, string[]> = {
+    take: ["id", "repository", "threadId"], fix_pending: ["id", "repository", "threadId", "ref"],
+    release: ["id", "repository"], dismiss: ["id", "repository"],
+    subscribe: ["threadId"], unsubscribe: ["threadId"], replace: ["threadId"], list: [],
+    subscribe_pr: ["number", "repository", "threadId"], unsubscribe_pr: ["number", "repository", "threadId"],
+  };
+  const fields = { id: stallId, repository: "acme/widgets", threadId: "thr_example", ref: "#12", number: 12 };
+  try {
+    await plugin(bb);
+    for (const [action, allowed] of Object.entries(accepted)) {
+      const valid = Object.fromEntries(Object.entries(fields).filter(([key]) => allowed.includes(key)));
+      for (const [key, value] of Object.entries(fields).filter(([key]) => !allowed.includes(key))) {
+        const input = { action, ...valid, [key]: value };
+        for (const call of [() => harness.behavior.callAgentTool("ci_dashboard_manage", input), () => harness.behavior.callRpc("manage", input)]) {
+          await expect(call()).rejects.toThrow(`action=${action} does not use ${key}; pass only action`);
+        }
+      }
+    }
+    await expect(harness.behavior.callRpc("manage", { action: "list", extra: true })).rejects.toThrow();
+    expect(get).not.toHaveBeenCalled();
+    expect(send).not.toHaveBeenCalled();
+    expect(await bb.storage.kv.get("handled:acme/widgets")).toBeUndefined();
+  } finally { await harness.lifecycle.dispose(); }
+});
+
+test("claim changes expose previous state and validate fix refs and explicit workers", async () => {
+  live([queuedJob]);
+  const { bb, harness } = claimsHost();
+  try {
+    await plugin(bb);
+    await stalledPass(harness);
+    let state = (await claimTool(harness, { action: "take", threadId: "thr_example" })).handled;
+    for (const ref of ["job:123", "run:456", "pr:12", "sha:abc1234", "queue:1:1", "pool:self-hosted", "run:main:1", "runner_loss:1", "flake:1", "transient:1", "timeout:1", "rerun_failed:1:1", "pool_stall:self-hosted", "mass_cancel:2026-10-20T12:00:00Z"]) {
+      for (const call of [() => claimTool(harness, { action: "fix_pending", ref }), () => harness.behavior.callRpc("manage", { action: "fix_pending", id: stallId, ref })]) {
+        await expect(call()).rejects.toThrow("pass #12, FIX-1 or a URL instead");
+      }
+    }
+    for (const threadId of ["thr_archived", "thr_missing", "invalid"]) {
+      await expect(claimTool(harness, { action: "fix_pending", ref: "#12", threadId })).rejects.toThrow(threadId === "invalid" ? "Pass an existing BB thread id" : "Pass an active worker threadId");
+    }
+    expect((await problemsOf(harness)).problems[0].handled).toEqual(state);
+    for (const input of [{ action: "take", threadId: "thr_other" }, { action: "fix_pending", ref: "#12" }, { action: "fix_pending", ref: "FIX-1" }, { action: "fix_pending", ref: "https://example.com/fix/12" }, { action: "dismiss" }, { action: "release" }]) {
+      const result = await claimTool(harness, input);
+      expect(result.previous).toEqual(state);
+      if (input.action === "fix_pending") expect(result.handled?.threadId).toBe("thr_other");
+      state = result.handled;
+    }
+    expect(state).toBeNull();
+    await expect(claimTool(harness, { action: "take", id: "flake:unknown" })).rejects.toThrow("Re-read ci_dashboard_metrics view=problems");
+  } finally { await harness.lifecycle.dispose(); }
+});
+
+
+test("PR subscription capacity refuses new entries without evicting earlier subscribers", async () => {
+  const { bb, harness } = observerHost({ observerThreads: "" });
+  try {
+    await plugin(bb);
+    const entries = Array.from({ length: 200 }, (_, i) => ({ repository: "acme/widgets", number: i + 1, threadId: "thr_example", at: new Date().toISOString() }));
+    await bb.storage.kv.set("prSubscriptions", entries);
+    const call = (number: number, action = "subscribe_pr") => harness.behavior.callRpc("manage", { action, number, threadId: "thr_example" });
+    await expect(call(201)).rejects.toThrow("Call action=list, then unsubscribe_pr");
+    expect(await bb.storage.kv.get("prSubscriptions")).toEqual(entries);
+    await call(1);
+    expect(await bb.storage.kv.get("prSubscriptions")).toEqual(entries);
+    await call(1, "unsubscribe_pr");
+    await call(201);
+    const stored = await bb.storage.kv.get("prSubscriptions") as typeof entries;
+    expect(stored).toHaveLength(200);
+    expect(stored.map((entry) => entry.number)).toEqual([...entries.slice(1).map((entry) => entry.number), 201]);
+  } finally { await harness.lifecycle.dispose(); }
 });
