@@ -9,4 +9,5 @@ it("correlates only the accepted request and finds each marked input group", () 
   expect(acceptedScheduledRuns(request, "r")).toEqual([a, b]);
   expect(acceptedScheduledRuns(request, "other")).toEqual([]);
   expect(acceptedScheduledRuns({ requestId: "r", input: [text(`quoted ${scheduledRunMarker(a)}`)] }, "r")).toEqual([]);
+  expect(acceptedScheduledRuns({ requestId: "r", input: [text(`[bb message from plugin:work-board]\n\n${scheduledRunMarker(a)}\nA`)] }, "r")).toEqual([a]);
 });

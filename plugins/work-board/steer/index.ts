@@ -22,7 +22,7 @@ function steerPrompt(
   replyHint = true,
 ): string {
   return (
-    "**Work Board** · `New comment`\n" +
+    "`New comment`\n" +
     `- Task: [${taskKey}](/plugins/work-board/work-board/task/${taskKey})\n` +
     `- From: ${authorName}\n\n${body}` +
     (replyHint
