@@ -133,7 +133,7 @@ describe('server',()=>{
   await call('agent_hub_withdraw',{id,reason:' Found it '});
   expect(db.prepare('SELECT status,answer_source,note,notify_state,dismissed_at IS NOT NULL AS gone FROM items WHERE id=?').get(id)).toEqual({status:'open',answer_source:'agent',note:'Found it',notify_state:0,gone:1});
   expect(String(await call('agent_hub_list',{}))).not.toContain(id);
-  await expect(call('agent_hub_withdraw',{id,reason:'again'})).rejects.toThrow('open question not found');
+  await expect(call('agent_hub_withdraw',{id,reason:'again'})).rejects.toThrow('already answered or withdrawn');
  });
  it('registers agent_hub_* tools and keeps answers_* as deprecated aliases with the same behaviour',async()=>{
   const {harness,db}=setup(); seed(db,'ans_q','mine','t');

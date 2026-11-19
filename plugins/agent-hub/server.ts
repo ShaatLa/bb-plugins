@@ -5,7 +5,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import type { BbPluginApi } from '@get-bb/plugin-sdk';
 import { z } from 'zod';
 import { deliveryError } from './delivery';
-import { rpcContract, inputs, idSchema, itemSchema, ITEMS_TAG, COUNTS_TAG, POOLS_TAG, QUEUE_TAG, CONTEXT_TAG, inlinePreviewSchema, tokenomosThreads, tokenomosSum, type Item, type ListInput, type Counts, type Attachment, type SendOptions, type FormQuestion, YOUR_CALL, defaultAnswer } from './contract';
+import { rpcContract, inputs, itemSchema, ITEMS_TAG, COUNTS_TAG, POOLS_TAG, QUEUE_TAG, CONTEXT_TAG, inlinePreviewSchema, tokenomosThreads, tokenomosSum, type Item, type ListInput, type Counts, type Attachment, type SendOptions, type FormQuestion, YOUR_CALL, defaultAnswer } from './contract';
 import { migrations } from './schema';
 import { cap, ATTENTION_SQL, ACTIVE_THREAD_SQL, OWNER_ITEM_SQL, failRequest } from './ingest';
 import { createDriver } from './driver';
@@ -15,28 +15,38 @@ import { buildReplyMessage } from './reply-message';
 export { buildReplyMessage };
 import { inlineCommentPreview } from './inline-comments';
 
-export const INSTRUCTIONS = "Agent Hub tracks user messages and final replies. For a later answer, call agent_hub_defer; when it arrives, agent_hub_list then agent_hub_resolve. Ask decisions via agent_hub_ask, then end the turn. With no pending question, call agent_hub_report for an awaited result or when handing work to the owner (ready for review, decisions awaiting them). Scripts waking their own thread via bb thread tell start with a [tag].";
-const optionsSchema=z.array(z.string().trim().min(1).max(200)).min(1).max(6).refine(v=>new Set(v).size===v.length,'Options must be unique');
+export const INSTRUCTIONS = "Agent Hub tracks the owner's messages and your final replies. For a later answer, call agent_hub_defer; when it arrives, call agent_hub_list, then agent_hub_resolve with the listed id. You must ask the owner a decision with agent_hub_ask, then end the turn; never put the question in chat text. With no pending question, you must call agent_hub_report to deliver a result the owner awaits or to hand work to the owner (ready for review, decisions awaiting them). A script waking its own thread via `bb thread tell` must start the text with a [tag], e.g. `[example-watcher] done`.";
+const optionsSchema=z.array(z.string({error:'options must be a list of strings'}).trim().min(1,'an option is empty; give it text or remove it').max(200,'an option is longer than 200 characters; shorten it'),{error:'options must be a list of 1–6 strings'}).min(1,'options is empty; give 1–6 options or leave options out').max(6,'options has more than 6 entries; keep at most 6').refine(v=>new Set(v).size===v.length,'options must be unique after trimming; remove the duplicate');
 // A session started before a tool gained a flag sends it as a string; read 'true'/'false' as the boolean.
-const flag=z.preprocess(v=>v==='true' ? true : v==='false' ? false : v,z.boolean());
+const flag=z.preprocess(v=>v==='true' ? true : v==='false' ? false : v,z.boolean({error:'multiSelect must be true or false'}));
+const ID_PATTERN=/^ans_[A-Za-z0-9_-]+$/;
+const toolId=(fix:string)=>z.string({error:`id is required: ${fix}`}).regex(ID_PATTERN,`id must be an item id such as ans_… exactly as returned by the tools: ${fix}`);
+// An unknown field is refused with the accepted ones, since a wrong name is the usual cause.
+const strictInput=<T extends z.ZodRawShape>(tool:string,shape:T)=>z.object(shape,{error:iss=>iss.code==='unrecognized_keys' ? `unknown field ${iss.keys.map(k=>`"${k}"`).join(', ')}; ${tool} accepts ${Object.keys(shape).join(', ') || 'no arguments'}` : undefined}).strict();
+const DEADLINE='deadlineMinutes must be an integer from 5 to 10080 (minutes); change it or leave it out';
+const OPTIONS_NEED='needs options; add options (1–6) that contain it, or drop it';
 const toolInputs = {
-  list: z.object({}).strict(),
-  defer: z.object({id:idSchema.optional(),note:z.string().max(2000).optional()}).strict(),
-  resolve: z.object({id:idSchema}).strict(),
-  report: z.object({}).strict(),
-  withdraw: z.object({id:idSchema,reason:z.string().trim().min(1).max(300)}).strict(),
-  ask: z.object({urgency:z.enum(['blocking','normal','low']).optional(),deadlineMinutes:z.number().int().min(5).max(10080).optional(),question:z.string().trim().min(1).max(2000),options:optionsSchema.optional(),multiSelect:flag.optional(),recommended:z.string().trim().min(1).optional(),reason:z.string().trim().min(1).max(300).optional(),
-    questions:z.array(z.object({question:z.string().trim().min(1).max(1000),header:z.string().trim().min(1).max(40).optional(),options:optionsSchema.optional(),multiSelect:flag.optional(),recommended:z.string().trim().min(1).optional()}).strict()
-      .refine(q=>!q.multiSelect || !!q.options,{message:'multiSelect requires options',path:['multiSelect']})
-      .refine(q=>q.recommended===undefined || q.options?.includes(q.recommended),{message:'recommended must equal one of options',path:['recommended']})).min(2).max(10).optional()}).strict()
-    .refine(p=>!p.questions || (p.options===undefined && p.multiSelect===undefined && p.recommended===undefined),{message:'with questions, put options, multiSelect and recommended on each question',path:['questions']})
-    .refine(p=>!p.multiSelect || !!p.options,{message:'multiSelect requires options',path:['multiSelect']})
-    .refine(p=>p.recommended===undefined || p.options?.includes(p.recommended),{message:'recommended must equal one of options',path:['recommended']})
-    .refine(p=>p.deadlineMinutes===undefined || !!p.questions || p.recommended!==undefined,{message:'deadlineMinutes requires recommended for a single question',path:['deadlineMinutes']})
-    .refine(p=>p.reason===undefined || p.recommended!==undefined,{message:'reason requires recommended',path:['reason']}),
+  list: strictInput('agent_hub_list',{}),
+  defer: strictInput('agent_hub_defer',{id:toolId('copy it from agent_hub_list, or leave id out to defer this thread’s newest waiting message').optional(),note:z.string({error:'note must be text'}).max(2000,'note is longer than 2000 characters; shorten it').optional()}),
+  resolve: strictInput('agent_hub_resolve',{id:toolId('call agent_hub_list and pass the id of the deferred question whose answer you now have')}),
+  report: strictInput('agent_hub_report',{}),
+  withdraw: strictInput('agent_hub_withdraw',{id:toolId('copy it from the agent_hub_ask result or from "Your open questions to the user" in agent_hub_list'),reason:z.string({error:'reason is required: say in a few words why the question needs no answer'}).trim().min(1,'reason is empty: say in a few words why the question needs no answer').max(300,'reason is longer than 300 characters; shorten it')}),
+  ask: strictInput('agent_hub_ask',{urgency:z.enum(['blocking','normal','low'],{error:'urgency must be blocking, normal or low'}).optional(),deadlineMinutes:z.number({error:DEADLINE}).int(DEADLINE).min(5,DEADLINE).max(10080,DEADLINE).optional(),question:z.string({error:'question must be text'}).trim().min(1,'question is empty; write the question or leave it out and pass questions').max(2000,'question is longer than 2000 characters; shorten it').optional(),options:optionsSchema.optional(),multiSelect:flag.optional(),recommended:z.string({error:'recommended must be text'}).trim().min(1,'recommended is empty; copy one of the options or drop it').optional(),reason:z.string({error:'reason must be text'}).trim().min(1,'reason is empty; explain the recommended option or drop reason').max(300,'reason is longer than 300 characters; shorten it').optional(),
+    questions:z.array(strictInput('a part of questions',{question:z.string({error:'each part needs a question: add the question text'}).trim().min(1,'a part has an empty question; write it or remove the part').max(1000,'a part’s question is longer than 1000 characters; shorten it'),header:z.string({error:'header must be text'}).trim().min(1,'header is empty; give a short label or drop it').max(40,'header is longer than 40 characters; shorten it').optional(),options:optionsSchema.optional(),multiSelect:flag.optional(),recommended:z.string({error:'recommended must be text'}).trim().min(1,'recommended is empty; copy one of the options or drop it').optional()})
+      .refine(q=>!q.multiSelect || !!q.options,{message:'multiSelect needs options to tick; add options to this part or drop multiSelect',path:['multiSelect']})
+      .refine(q=>q.recommended===undefined || !!q.options,{message:`recommended ${OPTIONS_NEED}`,path:['recommended']})
+      .refine(q=>q.recommended===undefined || !q.options || q.options.includes(q.recommended),{message:'recommended must equal one of this part’s options exactly; fix it or add it to options',path:['recommended']}),{error:'questions must be a list of 2–10 parts, each with its own question'}).min(2,'questions needs 2–10 parts; for one question pass question instead').max(10,'questions has more than 10 parts; split them over two asks or merge some').optional()})
+    .refine(p=>p.question!==undefined || !!p.questions,{message:'question is required for a single question: add question, or pass questions (2–10 parts) instead',path:['question']})
+    .refine(p=>!p.questions || (p.options===undefined && p.multiSelect===undefined && p.recommended===undefined && p.reason===undefined),{message:'with questions, put options, multiSelect and recommended on each part and drop the top-level reason (parts take no reason)',path:['questions']})
+    .refine(p=>!!p.questions || !p.multiSelect || !!p.options,{message:'multiSelect needs options to tick; add options or drop multiSelect',path:['multiSelect']})
+    .refine(p=>!!p.questions || p.recommended===undefined || !!p.options,{message:`recommended ${OPTIONS_NEED}`,path:['recommended']})
+    .refine(p=>!!p.questions || p.recommended===undefined || !p.options || p.options.includes(p.recommended),{message:'recommended must equal one of options exactly (after trimming); fix recommended or add it to options',path:['recommended']})
+    .refine(p=>p.deadlineMinutes===undefined || !!p.questions || p.recommended!==undefined,{message:'deadlineMinutes on a single question needs recommended (equal to one of options): it is the answer applied at the deadline; add recommended, drop deadlineMinutes, or use questions',path:['deadlineMinutes']})
+    .refine(p=>!!p.questions || p.reason===undefined || p.recommended!==undefined,{message:'reason explains the recommended option; add recommended (equal to one of options) or drop reason',path:['reason']}),
 };
 const formQuestion=(id:string,prompt:string,q:{header?:string;options?:string[];multiSelect?:boolean;recommended?:string;reason?:string}):FormQuestion=>({id,prompt,...(q.header ? {shortLabel:q.header} : {}),
   options:[...(q.options ?? []).filter(o=>o!==YOUR_CALL).map(o=>({value:o,label:o,...(o===q.recommended ? {description:q.reason ? `Recommended: ${q.reason}` : 'Recommended'} : {})})),{value:YOUR_CALL,label:YOUR_CALL,description:'Let the agent decide'}],multiSelect:!!q.multiSelect,allowFreeText:true,required:false});
+const NO_TURN='no active turn in this thread; call this from inside the running turn whose final message should carry it';
 // Deferred answers expire after three days without answer movement.
 export const OWED_EXPIRY_MS = 3 * 24 * 60 * 60 * 1000;
 type Row = Record<string, any>;
@@ -492,7 +502,7 @@ function start(bb: BbPluginApi, migrationError: string | null) {
   bb.rpc.register(rpcContract,handlers);
   for (const method of Object.keys(toolInputs) as (keyof typeof toolInputs)[]) {
     // answers_* are deprecated aliases for sessions that bound the tools before the rename; drop them at the post-rename cleanup.
-    for (const prefix of ['agent_hub','answers'] as const) bb.agents.registerTool({name:`${prefix}_${method}`,description:(prefix==='answers' ? `Deprecated alias of agent_hub_${method}; call agent_hub_${method} instead. ` : '')+{list:'List this thread’s pending user questions and your own open questions to the user.',withdraw:'Withdraw your open question to the user (from agent_hub_ask or one Agent Hub caught in your reply text) once it no longer needs an answer. It closes with your reason and stays in the user’s history.',defer:'Defer a user question until a later turn.',resolve:'Use this turn’s final message to answer a pending question.',report:'Show this turn’s final message in the user’s history as a report, not a background update. Use it when work the user gave you finishes in a turn they did not start (another agent, a child, a script) and no question of theirs is pending.',ask:'Ask the user a question, including a decision that blocks your work. Do not wait in this turn: the reply arrives later as a user message quoting the question. Optional: 1–6 unique options (≤200 chars each), multiSelect to let the user tick several, recommended (must equal one option) and a short reason. For several related decisions ask once with questions (2–10, each with its own header, options, multiSelect, recommended): the user answers them in one form and you get one reply. Asks in the same turn merge up to 10 parts. Parts may return Skipped or Your call (decide yourself). urgency: blocking (own push, first in lists), normal, low (no push). deadlineMinutes (5–10080 integer) auto-answers with recommended; required on singles, missing part defaults to Your call.'}[method],parameters:toolInputs[method],
+    for (const prefix of ['agent_hub','answers'] as const) bb.agents.registerTool({name:`${prefix}_${method}`,description:(prefix==='answers' ? `Deprecated alias of agent_hub_${method}; call agent_hub_${method} instead. ` : '')+{list:'List this thread’s pending user questions (ids for agent_hub_resolve and agent_hub_defer) and your own open questions to the user (ids for agent_hub_withdraw). Takes no arguments.',withdraw:'Withdraw your own open question (from agent_hub_ask, or one Agent Hub caught in your reply text) once it needs no answer. id and reason are both required. It closes with your reason and stays in the user’s history. Only an unanswered question of this thread can be withdrawn, and a merged multi-part form is withdrawn whole.',defer:'Defer an owner message until a later turn, for example while delegated work runs. Without id it defers this thread’s newest waiting message; pass an id from agent_hub_list to pick another. It also defers the owner messages this same turn handles together.',resolve:'When a deferred answer arrives: call agent_hub_list, then this with the listed id (required). This turn’s final message becomes the answer to that question. Refused if the id is not a waiting or deferred question of this thread.',report:'Show this turn’s final message in the user’s history as a report, not a background update. Call it in the turn that delivers a result the owner awaits or hands work to the owner (ready for review, decisions awaiting them) when no question of theirs is pending, for example work they gave you finishing in a turn they did not start. Takes no arguments.',ask:'Ask the user a question, including a decision that blocks your work; you must use this instead of writing the question in your reply. Do not wait in this turn: end it, and the reply arrives later as a user message quoting the question. A single question needs question; optional options (1–6 unique, ≤200 chars each), multiSelect (needs options), recommended (must equal one option) and reason (explains recommended, so it needs recommended). Example: {question:\"Which database?\",options:[\"SQLite\",\"Postgres\"],recommended:\"SQLite\",reason:\"No server to run\"}. For several related decisions pass questions (2–10 parts, each with question, header, options, multiSelect, recommended) instead of question; question then only titles the form and may be left out. The user answers a form in one go and you get one reply; asks in the same turn merge into one form of up to 10 parts. Parts may return Skipped or Your call (decide yourself). urgency: blocking (own push, first in lists), normal, low (no push). deadlineMinutes (optional integer 5–10080) auto-answers with recommended if the owner does not reply: on a single question it needs recommended, a part without recommended defaults to Your call.'}[method],parameters:toolInputs[method],
       async execute(raw,ctx) {
         if (migrationPending) throw new Error('Agent Hub migration failed; restart to retry before writing');
         const p=toolInputs[method].parse(raw);
@@ -510,11 +520,11 @@ function start(bb: BbPluginApi, migrationError: string | null) {
             const id='ans_'+randomUUID();
             const ask=p as z.infer<typeof toolInputs.ask>;
             // Several questions or checkboxes go to bb's question form; the text keeps every part for the quote, push and search.
-            const form=ask.questions ? ask.questions.map((q,i)=>formQuestion(`q${i+1}`,q.question,q)) : ask.multiSelect ? [formQuestion('q1',ask.question,ask)] : null;
-            const text=ask.questions ? `${ask.question}\n\n${ask.questions.map((q,i)=>`${i+1}. ${q.header ? `**${q.header}.** ` : ''}${q.question}`).join('\n')}` : ask.question;
+            const form=ask.questions ? ask.questions.map((q,i)=>formQuestion(`q${i+1}`,q.question,q)) : ask.multiSelect ? [formQuestion('q1',ask.question!,ask)] : null;
+            const text=ask.questions ? `${ask.question ? ask.question+'\n\n' : ''}${ask.questions.map((q,i)=>`${i+1}. ${q.header ? `**${q.header}.** ` : ''}${q.question}`).join('\n')}` : ask.question!;
             const turn=(db.prepare('SELECT active_turn_id FROM threads_state WHERE thread_id=?').get(ctx.threadId) as Row|undefined)?.active_turn_id ?? null, deadline=ask.deadlineMinutes===undefined ? null : now+ask.deadlineMinutes*60000;
             const candidates=turn ? db.prepare("SELECT * FROM items WHERE thread_id=? AND turn_id=? AND kind='for_me' AND chat_asked=0 AND status='open' AND dismissed_at IS NULL ORDER BY created_at DESC,rowid DESC").all(ctx.threadId,turn) as Row[] : [];
-            const added=form ?? [formQuestion('q1',ask.question,ask)], partsText=(parts:FormQuestion[])=>parts.map((q,i)=>`${i+1}. ${q.shortLabel ? `**${q.shortLabel}.** ` : ''}${q.prompt}`).join('\n');
+            const added=form ?? [formQuestion('q1',ask.question!,ask)], partsText=(parts:FormQuestion[])=>parts.map((q,i)=>`${i+1}. ${q.shortLabel ? `**${q.shortLabel}.** ` : ''}${q.prompt}`).join('\n');
             for(const old of candidates) {
               if(sending.has(ctx.threadId)) break;
               const parts:FormQuestion[]=old.questions ? JSON.parse(old.questions) : [formQuestion('q1',old.question,{options:old.options ? JSON.parse(old.options) ?? undefined : undefined,recommended:old.recommended ?? undefined,reason:old.recommend_reason ?? undefined})];
@@ -537,30 +547,32 @@ function start(bb: BbPluginApi, migrationError: string | null) {
           if (method==='report') {
             if (db.prepare('SELECT 1 FROM sub_threads WHERE thread_id=?').get(ctx.threadId)) return 'This sub-thread’s final message stays in its read chat history.';
             const state=db.prepare('SELECT active_turn_id FROM threads_state WHERE thread_id=?').get(ctx.threadId) as {active_turn_id:string|null} | undefined;
-            if (!state?.active_turn_id) throw new Error('no active turn');
+            if (!state?.active_turn_id) throw new Error(NO_TURN);
             commit('INSERT INTO turn_updates(thread_id,turn_id,started_at,report) VALUES (?,?,?,1) ON CONFLICT(thread_id,turn_id) DO UPDATE SET report=1',ctx.threadId,state.active_turn_id,now);
             return 'This turn’s final message will reach the user as a report.';
           }
           if (method==='withdraw') {
             const {id,reason}=p as z.infer<typeof toolInputs.withdraw>;
             const item=db.prepare('SELECT * FROM items WHERE id=?').get(id) as Row | undefined;
-            if (!item || item.thread_id!==ctx.threadId || item.kind!=='for_me' || item.status!=='open' || item.dismissed_at!==null) throw new Error('open question not found in calling thread');
+            if (!item || item.thread_id!==ctx.threadId || item.kind!=='for_me') throw new Error('open question not found in calling thread; call agent_hub_list and pass an id from "Your open questions to the user" (questions you asked with agent_hub_ask in this thread). To answer an owner message, use agent_hub_resolve or your final reply instead.');
+            if (item.status!=='open' || item.dismissed_at!==null) throw new Error('that question is already answered or withdrawn, so there is nothing to withdraw; call agent_hub_list to see which of your questions are still open');
             // answer_source='agent' tells a withdrawal from the owner's "Won't reply"; an owner reply still goes through afterwards.
             commit("UPDATE items SET dismissed_at=?,answer_source='agent',note=?,notify_state=0,updated_at=? WHERE id=?",now,reason,now,id);
             return 'Withdrawn.';
           }
           const params=p as {id?:string;note?:string};
-          const item=params.id ? get(params.id) : db.prepare("SELECT * FROM items WHERE thread_id=? AND kind='mine' AND status='waiting' ORDER BY question_seq DESC LIMIT 1").get(ctx.threadId) as Row | undefined;
+          const item=(params.id ? db.prepare('SELECT * FROM items WHERE id=?').get(params.id) : db.prepare("SELECT * FROM items WHERE thread_id=? AND kind='mine' AND status='waiting' ORDER BY question_seq DESC LIMIT 1").get(ctx.threadId)) as Row | undefined;
           // The owner may mark an owed question answered before the agent's report lands; resolving it still attaches that report.
           const settledByOwner=method==='resolve' && item?.status==='answered' && item.answer_source==='user' && item.answer===null && item.dismissed_at===null;
-          if (!item || item.thread_id!==ctx.threadId || item.kind!=='mine' || !(['waiting','deferred'].includes(item.status) || settledByOwner)) throw new Error('pending question not found in calling thread');
+          if (!item || item.thread_id!==ctx.threadId || item.kind!=='mine') throw new Error(params.id ? 'pending question not found in calling thread; call agent_hub_list and pass an id from its list of pending questions (ids under "Your open questions to the user" are yours: agent_hub_withdraw closes those)' : `no waiting message in this thread to ${method}; if you deferred it earlier, call agent_hub_list and pass its id`);
+          if (!(['waiting','deferred'].includes(item.status) || settledByOwner)) throw new Error(`pending question not found: ${item.id} is already answered; call agent_hub_list and pass the id of a waiting or deferred question`);
           // The owner's messages one turn handles (a question and the steers added to it) are deferred and resolved together,
           // so the turn's reply is not an answer to one and an interim to another.
           const mates="(id=? OR (thread_id=? AND kind='mine' AND turn_id IS NOT NULL AND turn_id=? AND steer_seq IS NULL AND status IN ('waiting','deferred')))";
           if (method==='defer') commit(`UPDATE items SET status='deferred',note=?,wait_children=NULL,updated_at=? WHERE ${mates}`,params.note ?? null,now,item.id,ctx.threadId,item.turn_id ?? null);
           else {
             const state=db.prepare('SELECT active_turn_id FROM threads_state WHERE thread_id=?').get(ctx.threadId) as {active_turn_id:string|null};
-            if (!state?.active_turn_id) throw new Error('no active turn');
+            if (!state?.active_turn_id) throw new Error(NO_TURN);
             commit(`UPDATE items SET resolve_turn_id=?,candidate=NULL,candidate_seq=NULL,updated_at=? WHERE ${mates}`,state.active_turn_id,now,item.id,ctx.threadId,item.turn_id ?? null);
           }
           return item.id as string;

@@ -5,8 +5,8 @@ import { createNotifier } from './notify';
 import { migrations } from './schema';
 const cleanup: (() => Promise<void>)[] = [];
 afterEach(async () => {for (const f of cleanup.splice(0)) await f();});
-const handoff = '[agent-hub] Your last reply hands work to the owner but did not call `agent_hub_report`; call it now so the owner sees it as needing them.';
-const question = '[agent-hub] Your last reply asks the owner a question in chat; ask it with `agent_hub_ask` and end the turn.';
+const handoff = '[agent-hub] Your last reply hands work to the owner but did not call `agent_hub_report`. Call `agent_hub_report` now and restate the handoff in this turn’s final message: that message becomes the report the owner sees as needing them.';
+const question = '[agent-hub] Your last reply asks the owner a question in chat. Call `agent_hub_ask` now with that question (add options and recommended if you have them), then end the turn without waiting; the answer arrives as a new message.';
 function setup() {
  const send=vi.fn(async () => ({ok:true,delivery:'sent'}));
  let events:any[]=[], seq=0;
