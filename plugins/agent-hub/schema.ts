@@ -132,4 +132,6 @@ BEGIN
 END;`,
   `ALTER TABLE items ADD COLUMN failure_reason TEXT;
 ALTER TABLE items ADD COLUMN interrupted_at INTEGER;`,
+  // A steer from another thread or a plugin seen mid-turn: candidate holds what the agent had written for the owner by then, steer_tools the tool results since.
+  `ALTER TABLE items ADD COLUMN steer_tools INTEGER NOT NULL DEFAULT 0;`,
 ];

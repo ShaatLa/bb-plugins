@@ -133,11 +133,18 @@ describe('updates',()=>{
   expect(updates(db)).toHaveLength(2);
   expect(rows(db).find(r=>r.kind==='mine')).toMatchObject({status:'answered',answer:'answer'});
  });
- it('gives a steer\'s reply to the steer once the agent has seen it, and keeps the owner\'s answer from before',()=>{
-  const db=setup(); const tool=(seq:number)=>ev(seq,'item/completed','x',{item:{type:'commandExecution',command:'ls'}});
-  applyEvents(db,'t',[req(1),start(),accept(),tool(4),req(5,'s',{initiator:'agent',senderThreadId:'thr_s',input:text('[bb message from thread:thr_s] released')}),accept(6,'s'),message(7,'owner answer'),tool(8),message(9,'steer reply'),done(10)],'p',100,true,true);
-  expect(rows(db).find(r=>r.kind==='mine')).toMatchObject({status:'answered',answer:'owner answer'});
+ it('gives a steer\'s reply to the steer when the owner\'s full answer came before it and little work followed',()=>{
+  const db=setup(), long='Full answer. '.repeat(40); const tool=(seq:number)=>ev(seq,'item/completed','x',{item:{type:'commandExecution',command:'ls'}});
+  applyEvents(db,'t',[req(1),start(),accept(),tool(4),req(5,'s',{initiator:'agent',senderThreadId:'thr_s',input:text('[bb message from thread:thr_s] released')}),accept(6,'s'),message(7,long),tool(8),message(9,'steer reply'),done(10)],'p',100,true,true);
+  expect(rows(db).find(r=>r.kind==='mine')).toMatchObject({status:'answered',answer:long,answer_seq:7});
   expect(updates(db)).toEqual([expect.objectContaining({trigger_kind:'agent',answer:'steer reply',read_at:100,turn_id:'x'})]);
+ });
+ it('keeps the turn\'s last message as the owner\'s answer when only a progress note came before the steer, or much work followed',()=>{
+  const tool=(seq:number)=>ev(seq,'item/completed','x',{item:{type:'commandExecution',command:'ls'}}), steer=[req(5,'s',{initiator:'agent',senderThreadId:'thr_s',input:text('[bb message from thread:thr_s] addendum')}),accept(6,'s')];
+  const note=setup(); applyEvents(note,'t',[req(1),start(),accept(),tool(4),...steer,message(7,'Reading the tests first.'),tool(8),message(9,'Final report'),done(10)],'p',100,true,true);
+  expect(rows(note).find(r=>r.kind==='mine')).toMatchObject({answer:'Final report'}); expect(updates(note)[0]).toMatchObject({answer:null});
+  const busy=setup(); applyEvents(busy,'t',[req(1),start(),accept(),tool(4),...steer,message(7,'Long status. '.repeat(40)),tool(8),tool(9),tool(10),tool(11),message(12,'Final report'),done(13)],'p',100,true,true);
+  expect(rows(busy).find(r=>r.kind==='mine')).toMatchObject({answer:'Final report'}); expect(updates(busy)[0]).toMatchObject({answer:null});
  });
  it('gives the owner the reply written only after a steer was seen, as it answers both',()=>{
   const db=setup(); const tool=(seq:number)=>ev(seq,'item/completed','x',{item:{type:'commandExecution',command:'ls'}});

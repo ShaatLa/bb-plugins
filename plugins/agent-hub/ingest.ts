@@ -62,6 +62,8 @@ export type Event = { seq: number; type: string; scope?: { kind?: string; turnId
 /** Apply an ascending page inside the caller's transaction; returns whether anything the UI shows changed. */
 /** `trackQuestions` is false for sub-threads: their history stays read and never files chat questions. */
 // One message from another thread or a plugin per turn: the chat item shown when the turn took it.
+// shortcut: a length and work-count heuristic for "the owner's answer came before the steer"; replace it if agents get a way to say which message answers whom.
+const STEER_ANSWER_MIN = 400, STEER_TOOLS_MAX = 3;
 const turnUpdateId = (threadId: string, turn: string) => 'ans_'+createHash('sha256').update(threadId+'|turn-update|'+turn).digest('hex');
 export function applyEvents(db: Database.Database, threadId: string, events: Event[], projectId: string | null = null, now = 0, trackQuestions = true, live = false, onWarning?: (text: string, at: number, turn: string, seq: number) => void, channelCommands: string[] = projectSchema.parse({}).channelCommands): boolean {
  // Writes that only move bookkeeping (pending candidate text, turn links, the cursor) are not worth a UI refetch.
@@ -141,13 +143,16 @@ export function applyEvents(db: Database.Database, threadId: string, events: Eve
    hidden += db.prepare('UPDATE turn_updates SET busy=1 WHERE thread_id=? AND turn_id=? AND busy=0').run(threadId,turn).changes;
    // Explicit channels suppress the chat-question fallback.
    if (['agent_hub_ask','answers_ask',...channelCommands].some(fragment => (`${d.item.tool ?? ''} ${d.item.name ?? ''} ${d.item.command ?? ''}`).includes(fragment))) hidden += db.prepare('UPDATE turn_updates SET asked=1 WHERE thread_id=? AND turn_id=? AND asked=0').run(threadId,turn).changes;
-   if (d.item.type !== 'reasoning') hidden += db.prepare('UPDATE items SET steer_seq=NULL WHERE thread_id=? AND turn_id=? AND steer_seq IS NOT NULL AND steer_seq<?').run(threadId,turn,e.seq).changes;
+   if (d.item.type !== 'reasoning') {
+    // A steer from another thread or a plugin, seen now: remember what the agent had written for the owner, and count the work after it.
+    const mine = `SELECT candidate FROM items m WHERE m.thread_id=items.thread_id AND m.turn_id=items.turn_id AND m.kind='mine' AND m.status IN ('waiting','deferred') AND length(trim(coalesce(m.candidate,'')))>0 ORDER BY m.candidate_seq DESC LIMIT 1`;
+    db.prepare(`UPDATE items SET steer_tools=steer_tools+1 WHERE thread_id=? AND turn_id=? AND kind='update' AND request_id IS NOT NULL AND steer_seq IS NULL`).run(threadId,turn);
+    db.prepare(`UPDATE items SET candidate=(${mine}),candidate_seq=(${mine.replace('SELECT candidate','SELECT candidate_seq')}),steer_tools=1 WHERE thread_id=? AND turn_id=? AND kind='update' AND request_id IS NOT NULL AND steer_seq IS NOT NULL AND steer_seq<?`).run(threadId,turn,e.seq);
+    hidden += db.prepare('UPDATE items SET steer_seq=NULL WHERE thread_id=? AND turn_id=? AND steer_seq IS NOT NULL AND steer_seq<?').run(threadId,turn,e.seq).changes;
+   }
   } else if (e.type === 'item/completed' && turn && d.item?.type === 'agentMessage' && !d.item.parentToolCallId && typeof d.item.text === 'string') {
-   // Once the agent has seen a steer from another thread or a plugin, its messages answer that steer (the newest seen one), not the owner.
-   const steered = db.prepare(`SELECT id FROM items WHERE thread_id=? AND turn_id=? AND kind='update' AND request_id IS NOT NULL AND steer_seq IS NULL ORDER BY created_at DESC,rowid DESC LIMIT 1`).get(threadId,turn) as {id:string}|undefined;
-   if (steered) hidden += db.prepare('UPDATE items SET candidate=?,candidate_seq=?,updated_at=? WHERE id=?').run(cap(d.item.text,20000),e.seq,now,steered.id).changes;
-   else hidden += db.prepare(`UPDATE items SET candidate=?,candidate_seq=?,updated_at=? WHERE thread_id=? AND ((turn_id=? AND status IN ('waiting','deferred') AND question_seq<? AND steer_seq IS NULL) OR resolve_turn_id=?)`).run(cap(d.item.text,20000),e.seq,now,threadId,turn,e.seq,turn).changes;
-   hidden += steered ? db.prepare('UPDATE turn_updates SET busy=1 WHERE thread_id=? AND turn_id=?').run(threadId,turn).changes : db.prepare('UPDATE turn_updates SET answer=?,answer_seq=?,busy=1 WHERE thread_id=? AND turn_id=?').run(cap(d.item.text,20000),e.seq,threadId,turn).changes;
+   hidden += db.prepare(`UPDATE items SET candidate=?,candidate_seq=?,updated_at=? WHERE thread_id=? AND ((turn_id=? AND status IN ('waiting','deferred') AND question_seq<? AND steer_seq IS NULL) OR resolve_turn_id=?)`).run(cap(d.item.text,20000),e.seq,now,threadId,turn,e.seq,turn).changes;
+   hidden += db.prepare('UPDATE turn_updates SET answer=?,answer_seq=?,busy=1 WHERE thread_id=? AND turn_id=?').run(cap(d.item.text,20000),e.seq,threadId,turn).changes;
   } else if (e.type === 'turn/completed' && turn) {
    if (d.status === 'completed') {
     // A turn that answered nothing of the owner's (a child finished, another thread or plugin wrote) still reports to them.
@@ -168,16 +173,19 @@ export function applyEvents(db: Database.Database, threadId: string, events: Eve
     if (reply && shown) db.prepare(`UPDATE items SET status='answered',answer=?,answer_seq=?,answer_source='turn',answered_at=?,read_at=?,asks=?,notify_state=?,updated_at=? WHERE id=? AND status='waiting'`).run(update!.answer,update!.answer_seq,e.createdAt ?? now,asks ? null : e.createdAt ?? now,Number(asks),Number(live && asks),now,early);
     else if (reply)
      db.prepare(`INSERT OR IGNORE INTO items(id,kind,thread_id,project_id,status,question,answer,answer_seq,answer_source,answered_at,read_at,asks,notify_state,trigger_kind,trigger_source,created_at,updated_at) VALUES (?,'update',?,?,'answered',?,?,?,'turn',?,?,?,?,?,?,?,?)`).run('ans_'+createHash('sha256').update(threadId+'|update|'+update!.answer_seq).digest('hex'),threadId,projectId,update!.question,update!.answer,update!.answer_seq,e.createdAt ?? now,asks ? null : e.createdAt ?? now,Number(asks),Number(live && asks),update!.kind ?? 'other',update!.source_id,e.createdAt ?? now,now);
-    // The agent wrote nothing for the owner before it saw a steer: its later reply answers both, so the owner gets it.
-    const owed = `thread_id=? AND turn_id=? AND kind='mine' AND status IN ('waiting','deferred') AND resolve_turn_id IS NULL AND steer_seq IS NULL AND length(trim(coalesce(candidate,'')))=0`;
-    const taken = !db.prepare(`SELECT 1 FROM items WHERE ${owed}`).get(threadId,turn) ? undefined : db.prepare(`SELECT id,candidate,candidate_seq FROM items WHERE thread_id=? AND turn_id=? AND kind='update' AND request_id IS NOT NULL AND length(trim(candidate))>0 ORDER BY candidate_seq DESC LIMIT 1`).get(threadId,turn) as {id:string;candidate:string;candidate_seq:number}|undefined;
-    if (taken) { db.prepare(`UPDATE items SET candidate=?,candidate_seq=? WHERE ${owed}`).run(taken.candidate,taken.candidate_seq,threadId,turn); db.prepare('UPDATE items SET candidate=NULL,candidate_seq=NULL WHERE id=?').run(taken.id); }
+    // The owner's answer was written in full before a steer was seen, and only a little work followed: the turn's last message
+    // replies to the steer, so the owner keeps the earlier one and the steer gets the last one.
+    const steer = db.prepare(`SELECT id,candidate,candidate_seq,steer_tools FROM items WHERE thread_id=? AND turn_id=? AND kind='update' AND request_id IS NOT NULL AND steer_seq IS NULL AND length(trim(coalesce(candidate,'')))>=${STEER_ANSWER_MIN} AND steer_tools<=${STEER_TOOLS_MAX} ORDER BY created_at DESC,rowid DESC LIMIT 1`).get(threadId,turn) as {id:string;candidate:string;candidate_seq:number}|undefined;
+    const last = steer && db.prepare(`SELECT id,candidate,candidate_seq FROM items WHERE thread_id=? AND turn_id=? AND kind='mine' AND status IN ('waiting','deferred') AND resolve_turn_id IS NULL AND candidate_seq>? ORDER BY candidate_seq DESC LIMIT 1`).get(threadId,turn,steer.candidate_seq) as {candidate:string;candidate_seq:number}|undefined;
+    if (steer && last) {
+     db.prepare(`UPDATE items SET answer=?,answer_seq=?,answer_source='turn',answered_at=?,updated_at=? WHERE id=?`).run(last.candidate,last.candidate_seq,e.createdAt ?? now,now,steer.id);
+     db.prepare(`UPDATE items SET candidate=?,candidate_seq=? WHERE thread_id=? AND turn_id=? AND kind='mine' AND status IN ('waiting','deferred') AND resolve_turn_id IS NULL AND candidate_seq>?`).run(steer.candidate,steer.candidate_seq,threadId,turn,steer.candidate_seq);
+    }
     db.prepare(`UPDATE items SET status='answered',answer=candidate,answer_seq=candidate_seq,answer_source='agent',failed_at=NULL,wait_children=NULL,answered_at=?,notify_state=?,read_at=NULL,updated_at=? WHERE thread_id=? AND resolve_turn_id=? AND length(trim(candidate))>0`).run(e.createdAt ?? now,Number(live),now,threadId,turn);
     db.prepare(`UPDATE items SET status='answered',answer=candidate,answer_seq=candidate_seq,answer_source='turn',failed_at=NULL,answered_at=?,notify_state=?,read_at=NULL,updated_at=? WHERE thread_id=? AND turn_id=? AND status='waiting' AND resolve_turn_id IS NULL AND length(trim(candidate))>0`).run(e.createdAt ?? now,Number(live),now,threadId,turn);
     for (const item of db.prepare("SELECT id,answer FROM items WHERE thread_id=? AND turn_id=? AND status='answered' AND answer_source='turn' AND answer_seq=candidate_seq").all(threadId,turn) as {id:string;answer:string}[]) db.prepare('UPDATE items SET likely_interim=? WHERE id=?').run(Number(INTERIM_RE.test(item.answer.slice(-600))),item.id);
     db.prepare(`UPDATE items SET interim=candidate,interim_seq=candidate_seq,updated_at=? WHERE thread_id=? AND turn_id=? AND status='deferred' AND resolve_turn_id IS NULL AND length(trim(candidate))>0`).run(now,threadId,turn);
-    // A steer the agent answered keeps that reply, read, under the message it answers.
-    db.prepare(`UPDATE items SET answer=candidate,answer_seq=candidate_seq,answer_source='turn',answered_at=?,updated_at=? WHERE thread_id=? AND turn_id=? AND kind='update' AND request_id IS NOT NULL AND length(trim(candidate))>0`).run(e.createdAt ?? now,now,threadId,turn);
+
     db.prepare(`UPDATE items SET read_at=? WHERE thread_id=? AND (turn_id=? OR resolve_turn_id=?) AND kind='mine' AND status='answered' AND read_at IS NULL AND ${QUIET_SQL}`).run(now,threadId,turn,turn);
    } else if (d.status === 'failed' || d.status === 'interrupted') {
     db.prepare(`UPDATE items SET interim=candidate,interim_seq=candidate_seq,updated_at=? WHERE thread_id=? AND (turn_id=? OR resolve_turn_id=?) AND kind!='update' AND length(trim(candidate))>0`).run(now,threadId,turn,turn);
