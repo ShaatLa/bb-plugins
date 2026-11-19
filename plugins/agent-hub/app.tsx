@@ -174,11 +174,11 @@ function notice(text: string, sender: string) {
   const rest = (line.toLowerCase().startsWith(sender.toLowerCase()) ? line.slice(sender.length) : line.replace(/^\[[^\]]*\]\s*/, '')).replace(/^[\s·:—-]+/, '');
   return rest ? ` · ${rest}` : '';
 }
-// The text under the caption: without bb's [bb message from …] header or the plugin's own [id] / [name] tag.
-function unlabel(text: string, plugin: { id: string; name: string } | null) {
-  const rest = text.replace(/^\[bb message from [^\]]*\]\s*/, '');
-  const names = plugin ? [plugin.id, plugin.name, ...(plugin.id === 'agent-hub' ? ['answers'] : [])].map(n => n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')) : [];
-  return names.length ? rest.replace(new RegExp(`^\\[(?:${names.join('|')})\\]\\s*`, 'i'), '') : rest;
+// The text under the caption, without bb's [bb message from …] header or the sender's own leading [tag] (its name or role, which the
+// caption already says); a tag that starts with a task key is content and stays, as do links and checkboxes.
+export function unlabel(text: string) {
+  const rest = text.replace(/^\[bb message from [^\]]*\]\s*/, ''), tag = /^\[([^\]\n]{2,40})\](?![(:])\s+/.exec(rest);
+  return tag && !/^[A-Z][A-Z0-9]*-\d+/.test(tag[1]!) ? rest.slice(tag[0].length) : rest;
 }
 function UpdateCaption({ item, time }: { item: Item; time: ReactNode }) {
   const { threads } = experimental_useSidebarThreads(), trigger = item.trigger, source = trigger?.sourceId ?? null, brand = usePluginBrand(trigger?.kind === 'plugin' ? source : null);
@@ -247,7 +247,7 @@ export function UpdateGroup({ items, reveal, children }: { items: Item[]; reveal
 // A question asked without choices still gets a one-tap yes and no, in the language it was asked in.
 export const defaultChoices = (question: string) => /[А-Яа-яЁё]/.test(question) ? ['Да', 'Нет'] : ['Yes', 'No'];
 export function ItemCard({ item, members, late, live = true, chat = false, markable = !chat, autoRead = false, replyToOwn = true, part, onJump, compact = false, open }: { item: Item; members?: Item[]; late?: Item[]; live?: boolean; chat?: boolean; markable?: boolean; autoRead?: boolean; replyToOwn?: boolean; part?: 'question' | 'answer'; onJump?: (id: string) => void; compact?: boolean; open?: { href: string; label: string; onClick?: () => void } }) {
-  const rpc = useRpc<AgentHubRpcContract>(), sender = usePluginBrand(chat && item.kind === 'update' && item.trigger?.kind === 'plugin' ? item.trigger.sourceId ?? null : null);
+  const rpc = useRpc<AgentHubRpcContract>();
   // Agent Hub's own writes refresh through the server's realtime invalidation; a reply goes to bb's thread, so it refreshes here.
   const { refresh } = experimental_useRpcRefresh();
   const editSent = useContext(EditSentContext);
@@ -356,7 +356,7 @@ export function ItemCard({ item, members, late, live = true, chat = false, marka
       <div ref={question} className={expanded ? '' : 'line-clamp-6'}>{agentBody(item.question, item.questionSeq)}</div>
     </div> : item.kind === 'update' ? <><UpdateCaption item={item} time={chat ? time : null} />
       {/* Another thread's or a plugin's message is quoted under "Message from …"; its [bb message from …] header and a plugin's own leading [tag] are already the caption. */}
-      {chat && (item.trigger?.kind === 'agent' || item.trigger?.kind === 'plugin') && item.question && <div data-agent-message className="ml-8 mr-2 border-l-2 border-border-seam pl-3 text-sm text-muted-foreground"><div ref={question} className={`break-words [&_p]:my-0 ${expanded ? '' : 'line-clamp-3'}`}><Markdown content={unlabel(item.question, sender)} /></div></div>}
+      {chat && (item.trigger?.kind === 'agent' || item.trigger?.kind === 'plugin') && item.question && <div data-agent-message className="ml-8 mr-2 border-l-2 border-border-seam pl-3 text-sm text-muted-foreground"><div ref={question} className={`break-words ${expanded ? '' : '[&_p]:my-0 line-clamp-3'}`}><AgentMarkdown content={unlabel(item.question)} threadId={item.threadId} /></div></div>}
     </> : part === 'answer' ? <div className="ml-auto flex w-fit min-w-0 max-w-[70%] flex-col items-end gap-1">{group.map(echo)}</div> : <div className="ml-auto flex w-fit max-w-[70%] flex-col items-end gap-1">
       {late?.map(echo)}
       {group.map(member => <div key={member.id} className={userBubble}>{member.question && <div ref={member === item ? question : undefined} className={`whitespace-pre-wrap break-words ${expanded ? '' : 'line-clamp-6'}`}><InlineCommentText threadId={member.threadId} text={member.question} prefixes={workBoard?.projects.map(p => p.prefix)} /></div>}{member.attachments.length > 0 && <ItemAttachments attachments={member.attachments} projectId={member.projectId} />}</div>)}

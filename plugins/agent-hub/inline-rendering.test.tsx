@@ -2,7 +2,7 @@
 import { afterEach, expect, it } from 'vitest';
 import { cleanup, fireEvent, waitFor } from '@testing-library/react';
 import { renderSlot } from '@get-bb/plugin-sdk/testing/app';
-import { ItemCard, InlineCommentText, UpdateGroup, UserText } from './app';
+import { ItemCard, InlineCommentText, UpdateGroup, UserText, unlabel } from './app';
 import { Inbox } from './inbox';
 import { PendingInteractions, QuestionForm } from './interactions';
 import { ComposerThread } from './rich-editor';
@@ -93,6 +93,22 @@ it('keeps the card end in place when the group closes from its bottom bar, and t
   expect(toggle.getAttribute('aria-expanded')).toBe('false'); expect(box.scrollTop).toBe(600);
   fireEvent.click(toggle); box.scrollTop = 1000; fireEvent.click(toggle);
   expect(box.scrollTop).toBe(1000);
+});
+it('renders a quoted plugin or thread message through the agent text\'s Markdown, without bb\'s header', async () => {
+  const question = '[bb message from plugin:example-plugin]\n\n## Title\n\n**bold** and `code`\n\n| a | b |\n| - | - |\n| 1 | 2 |';
+  const update = { ...item, id:'ans_fmt', kind:'update' as const, status:'answered' as const, question, questionSeq:null, answer:'Done', trigger:{ kind:'plugin' as const, sourceId:'example-plugin', sourceTitle:null } } as any;
+  const slot = renderSlot({ component:ItemCard }, { item:update, chat:true }, { sdk } as any);
+  // The test host draws Markdown as its source; the quote and the agent's reply share one renderer.
+  const quote = await waitFor(() => { const node = slot.container.querySelector('[data-agent-message] [data-testid="bb-markdown"]'); expect(node).toBeTruthy(); return node!; });
+  expect(quote.textContent).toBe(question.replace('[bb message from plugin:example-plugin]\n\n', ''));
+  expect(slot.container.querySelector('[data-agent-body] [data-testid="bb-markdown"]')?.parentElement?.className).toBe(quote.parentElement?.className);
+});
+it('drops a sender\'s own leading [tag] from the quote but keeps task keys, links and checkboxes', () => {
+  expect(unlabel('[bb message from thread:thr_example]\n\n[Agent Hub] A request')).toBe('A request');
+  expect(unlabel('[example-plugin] Done')).toBe('Done');
+  expect(unlabel('[EXA-1] landed')).toBe('[EXA-1] landed');
+  expect(unlabel('[EXA-1](/plugins/work-board/work-board/task/EXA-1) ready')).toBe('[EXA-1](/plugins/work-board/work-board/task/EXA-1) ready');
+  expect(unlabel('[x] done')).toBe('[x] done');
 });
 it('gives an open background updates group the side inset the chat list has, for quotes and bled-out tables alike', () => {
   const plugin = { ...item, id:'ans_plugin', kind:'update' as const, status:'answered' as const, question:'**EXA-1 · READY** from a lead', trigger:{ kind:'plugin' as const, sourceId:'work-board', label:null } } as any;
