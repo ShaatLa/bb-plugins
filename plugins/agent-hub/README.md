@@ -70,7 +70,7 @@ By default, **Inbox** opens: threads with unread replies and questions directed 
 
 In the thread's **My questions** tab, view options are selected via the top-left menu: **Unread** shows new replies in this thread, **Awaiting answer** lists your unanswered questions, **Saved** displays starred and saved replies, and **History** shows all messages with search capability. **Mark all read** is available in Inbox and Unread.
 
-Card actions only appear where they change the status: **Mark read** for unread items; **Stop waiting** for your unanswered questions (removes them from Awaiting answer); **Won’t reply** for agent questions (removes them from the Questions section and Inbox); **Remove from Saved** for saved messages. All cleared items remain in History.
+Card actions only appear where they change the status: **Mark read** for unread items; **Stop waiting** for your unanswered questions (removes them from Awaiting answer); **Won’t reply**, a quiet button beside an agent question's choices (removes it from the Questions section and Inbox); **Remove from Saved** for saved messages. All cleared items remain in History.
 
 Short messages without a question mark (up to 60 characters) that receive a short agent reply (up to 160 characters) are automatically marked as read and don’t appear in the Inbox. Messages containing a “?” are tagged as “Question”.
 

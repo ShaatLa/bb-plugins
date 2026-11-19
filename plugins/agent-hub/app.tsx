@@ -340,6 +340,8 @@ export function ItemCard({ item, members, late, live = true, chat = false, marka
     // A question filed from the agent's plain text may be rhetorical: the owner dismisses it as not a question.
     : item.kind === 'for_me' && item.status === 'open' ? [item.chatAsked ? 'Not a question' : 'Won’t reply', 'X']
     : item.kind === 'saved' ? ['Remove from Saved', 'Trash2'] : null;
+  // Closing an open question without an answer sits with its choices, quiet, so it is not mistaken for one of them.
+  const decline = item.kind === 'for_me' && item.status === 'open' && dismiss && <Button size="sm" variant="ghost" className="h-auto min-h-8 py-1 text-muted-foreground" disabled={pending} onClick={() => void act(async () => { for (const member of group) await rpc.call('setDismissed', { id: member.id, dismissed: true }); })}>{dismiss[0]}</Button>;
   // In the chat the robot stands for a pending answer (waiting, or deferred with an interim) and carries Stop waiting.
   // Only the chat's last card carries a robot (live = false further up); a pending card above keeps Stop waiting in More.
   const interimShown = part !== 'answer' && !!item.interim, answeredHere = interimShown && part !== 'question' && !!item.answer;
@@ -422,9 +424,9 @@ export function ItemCard({ item, members, late, live = true, chat = false, marka
       </div>
       {item.kind !== 'for_me' && replyButton}
     </div>{readMark && <span className="ml-auto flex items-center px-2 text-muted-foreground">{readMark}</span>}</div>}
-    {item.kind === 'for_me' && item.status === 'open' && !item.questions && <div className="flex flex-wrap gap-1 px-2">{(item.options ?? defaultChoices(item.question)).map(option => <Button key={option} size="sm" variant={option === item.recommended ? 'default' : 'outline'} className="h-auto min-h-8 whitespace-normal py-1 text-left" disabled={pending} onClick={() => void reply(undefined, option)}>{option}{option === item.recommended && <>{' '}<span className="sr-only">(recommended)</span></>}</Button>)}
+    {item.kind === 'for_me' && item.status === 'open' && !item.questions && <div className="flex flex-wrap gap-1 px-2">{(item.options ?? defaultChoices(item.question)).map(option => <Button key={option} size="sm" variant={option === item.recommended ? 'default' : 'outline'} className="h-auto min-h-8 whitespace-normal py-1 text-left" disabled={pending} onClick={() => void reply(undefined, option)}>{option}{option === item.recommended && <>{' '}<span className="sr-only">(recommended)</span></>}</Button>)}{decline}
       {item.recommendReason && <p className="w-full pt-1 text-xs text-muted-foreground">{item.recommendReason}</p>}</div>}
-    {item.kind === 'for_me' && item.status === 'open' && item.questions && <div className="px-2"><QuestionForm threadId={item.threadId} requireAny questions={item.questions} hidePrompt={item.questions.length === 1} onSubmit={answers => reply(undefined, answerText(item.questions!, answers))} />
+    {item.kind === 'for_me' && item.status === 'open' && item.questions && <div className="px-2"><QuestionForm threadId={item.threadId} requireAny questions={item.questions} hidePrompt={item.questions.length === 1} onSubmit={answers => reply(undefined, answerText(item.questions!, answers))} />{decline && <div className="pt-1">{decline}</div>}
       {item.recommendReason && <p className="pt-1 text-xs text-muted-foreground">{item.recommendReason}</p>}</div>}
     {replying && <ComposerThread.Provider value={item.threadId}><div ref={replyBox}><Composer label="Reply text" sendLabel="Send reply" autoFocus value={text} onChange={setText} attachments={files} onAttachments={update => setFiles(update)} projectId={item.projectId} pending={pending} sendDisabled={!text.trim() && !files.length} onSend={options => void reply(options)} /></div></ComposerThread.Provider>}
     {feedback && <p role="status">{feedback}</p>}</>}{error && <p role="alert" className="text-sm text-destructive">{error}</p>}

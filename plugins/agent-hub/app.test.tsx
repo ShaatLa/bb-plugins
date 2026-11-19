@@ -47,13 +47,14 @@ describe('Answers app', () => {
     expect(slot.queryByText(/resolved by plugin/)).toBeNull();
   });
 
-  it('a question card in the chat has no link out to the chat it is in, and its More menu has no dismiss entry', async () => {
+  it('a question card in the chat has no link out to the chat it is in, and its More menu has no dismiss entry, which sits with the choices', async () => {
     const { ItemCard } = await import('./app');
     const ask = { ...item, id: 'ans_ask', kind: 'for_me' as const, status: 'open' as const, question: 'Choose?', answer: null };
     const slot = renderSlot({ component: () => <ul><ItemCard item={ask} chat compact /></ul> }, {}, {} as any);
     expect(slot.queryByRole('link', { name: 'Open in chat' })).toBeNull();
     fireEvent.click(slot.getByRole('button', { name: 'More' }));
     expect(slot.queryByRole('menuitem', { name: 'Won’t reply' })).toBeNull();
+    expect(slot.getByRole('button', { name: 'Won’t reply' })).toBeTruthy();
   });
 
   it('offers yes and no in the question\'s language when the agent gave no choices', async () => {
@@ -491,12 +492,15 @@ it('offers quick replies on agent questions in the Questions section', async () 
   fireEvent.click(slot.getByRole('button', { name: 'Yes (recommended)' }));
   await waitFor(() => expect(reply).toHaveBeenCalledWith({ id: 'ans_ask', text: 'Yes' }));
 });
-it('marks a question filed from the agent\'s reply text as asked in chat, without a dismiss entry', async () => {
-  const slot = await questionsSetup({}, { chatAsked: true });
+it('marks a question filed from the agent\'s reply text as asked in chat, closed as not a question from beside its choices', async () => {
+  const setDismissed = vi.fn(() => ({ ok: true }));
+  const slot = await questionsSetup({ setDismissed }, { chatAsked: true });
   expect(slot.getByText('Asked in chat')).toBeTruthy();
   fireEvent.click(slot.getByRole('button', { name: 'More' }));
   await slot.findByRole('menuitem', { name: 'Save' });
   expect(slot.queryByRole('menuitem', { name: 'Not a question' })).toBeNull();
+  fireEvent.click(slot.getByRole('button', { name: 'Not a question' }));
+  await waitFor(() => expect(setDismissed).toHaveBeenCalledWith({ id: 'ans_ask', dismissed: true }));
 });
 it('answers a composite question with checkboxes in one reply', async () => {
   const reply = vi.fn(() => ({ delivery: 'sent' }));
