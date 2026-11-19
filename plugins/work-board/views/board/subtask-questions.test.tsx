@@ -402,3 +402,14 @@ it.each([["kanban", "manual"], ["list", "manual"], ["kanban", "priority"], ["lis
     expect(slot.container.querySelector(`[data-task-key="${newer.key}"]`)?.className).toContain("border-l-warning");
   });
 });
+
+it.each(["project", "all"])("lists a sub-task waiting on the owner under Waiting on me in the %s list", async (scope) => {
+  const { project, child, rpc, sdk } = await setup();
+  const slot = renderSlot(app.navPanels[0]!, { subPath: scope === "project" ? `${project.id}?view=list` : "all" }, { rpc, sdk });
+  await slot.findByText("Parent task");
+  expect(slot.queryByText(child.title)).toBeNull();
+  fireEvent.click(slot.getByRole("button", { name: "Waiting on me" }));
+  await slot.findByText(child.title);
+  await waitFor(() => expect(slot.queryByText("Parent task")).toBeNull());
+  expect(slot.queryByText("Unrelated task")).toBeNull();
+});
