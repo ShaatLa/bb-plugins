@@ -81,7 +81,11 @@ it("uses configured status IDs and distinguishes unavailable and closed PR snaps
   expect(store.tasks.staleStatusFlags([review.id]).get(review.id)).toEqual(["pr_state_unavailable"]);
   db.prepare<[string, string, string]>("INSERT INTO git_pr_snapshots(project_id,identity,payload) VALUES (?, ?, ?)").run(project.id, "pr", JSON.stringify({ state: "closed" }));
   expect(store.tasks.staleStatusFlags([review.id]).get(review.id)).toEqual(["no_open_pr", "closed_unmerged_pr"]);
-  db.prepare<[string, string, string]>("UPDATE git_pr_snapshots SET payload=? WHERE project_id=? AND identity=?").run(JSON.stringify({ state: "draft" }), project.id, "pr");
+  db.prepare<[string, string, string]>("UPDATE git_pr_snapshots SET payload=?, error='sync unavailable' WHERE project_id=? AND identity=?").run(JSON.stringify({ state: "merged" }), project.id, "pr");
+  expect(store.tasks.staleStatusFlags([review.id]).get(review.id)).toEqual(["no_open_pr"]);
+  db.prepare<[string, string, string]>("UPDATE git_pr_snapshots SET payload=?, error='sync unavailable' WHERE project_id=? AND identity=?").run(JSON.stringify({ state: "closed" }), project.id, "pr");
+  expect(store.tasks.staleStatusFlags([review.id]).get(review.id)).toEqual(["pr_state_unavailable", "closed_unmerged_pr"]);
+  db.prepare<[string, string, string]>("UPDATE git_pr_snapshots SET payload=?, error=NULL WHERE project_id=? AND identity=?").run(JSON.stringify({ state: "draft" }), project.id, "pr");
   expect(store.tasks.staleStatusFlags([review.id]).has(review.id)).toBe(false);
   const done = store.tasks.createTask({ projectId: project.id, title: "Merged", status: "done" });
   store.tasks.createComment({ taskId: done.id, kind: "agent", authorName: "Agent", body: "Merged", evidence: { kind: "merge", pr: 1, head: "a".repeat(40), merge: "b".repeat(40) } });

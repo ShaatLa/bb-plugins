@@ -1019,7 +1019,8 @@ export function createTasksStore(db: PluginDatabase) {
         EXISTS(SELECT 1 FROM comments c WHERE c.task_id=t.id AND json_extract(c.evidence,'$.kind')='merge') AS merge_evidence,
         EXISTS(SELECT 1 FROM comments c WHERE c.task_id=t.id AND json_extract(c.evidence,'$.kind')='outcome') AS outcome,
         EXISTS(SELECT 1 FROM legacy_done_tasks d JOIN comments c ON c.task_id=d.task_id WHERE d.task_id=t.id AND c.kind != 'system') AS legacy_outcome,
-        EXISTS(SELECT 1 FROM task_pr_links l LEFT JOIN git_pr_snapshots s ON s.project_id=t.project_id AND s.identity=l.identity WHERE l.task_id=t.id AND COALESCE(json_extract(l.payload,'$.excluded'),0)=0 AND (s.payload IS NULL OR s.error IS NOT NULL)) AS unknown_pr
+        -- Merged is final, so a failed refresh of a merged PR leaves its state known.
+        EXISTS(SELECT 1 FROM task_pr_links l LEFT JOIN git_pr_snapshots s ON s.project_id=t.project_id AND s.identity=l.identity WHERE l.task_id=t.id AND COALESCE(json_extract(l.payload,'$.excluded'),0)=0 AND (s.payload IS NULL OR (s.error IS NOT NULL AND COALESCE(json_extract(s.payload,'$.state'),'') <> 'merged'))) AS unknown_pr
         , EXISTS(SELECT 1 FROM task_pr_links l JOIN git_pr_snapshots s ON s.project_id=t.project_id AND s.identity=l.identity
           WHERE l.task_id=t.id AND COALESCE(json_extract(l.payload,'$.excluded'),0)=0 AND json_extract(s.payload,'$.state')='closed') AS closed_pr
       FROM tasks t WHERE (? IS NULL OR t.project_id=?) AND (? IS NULL OR t.id IN (SELECT value FROM json_each(?))) ORDER BY t.id`).all(projectId ?? null, projectId ?? null, taskIds ? JSON.stringify(taskIds) : null, taskIds ? JSON.stringify(taskIds) : null);
