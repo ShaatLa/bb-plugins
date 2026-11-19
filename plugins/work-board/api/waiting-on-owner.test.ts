@@ -1,3 +1,4 @@
+import { registerGlobalSettings } from "../global-settings";
 import { afterEach, expect, it } from "vitest";
 import { createFakePluginHost } from "@get-bb/plugin-sdk/testing";
 import { createStore, registerTasksApi } from ".";
@@ -63,9 +64,21 @@ it("filters waiting tasks before pagination, orders questions first and respects
 it.each([false, true])("upgrades badge settings once (saved=%s), preserving later removal", async saved => {
   const f = setup();
   if (saved) await f.bb.storage.kv.set("navigation-badge:criteria", ["owner"]);
+  await registerGlobalSettings(f.bb, () => {});
   expect(await f.harness.callRpc("getNavigationBadgeCriteria", null)).toEqual({ criteria: saved ? ["waiting_on_owner"] : ["open", "waiting_on_owner"] });
   await f.harness.callRpc("setNavigationBadgeCriteria", { criteria: ["waiting_on_owner"] });
   expect(await f.harness.callRpc("getNavigationBadgeCriteria", null)).toEqual({ criteria: ["waiting_on_owner"] });
+});
+it("moves a stored openThreadsIn of answers to agent-hub at load", async () => {
+  const host = createFakePluginHost({ pluginId: "work-board", settings: { openThreadsIn: "answers" } });
+  hosts.push(host);
+  await registerGlobalSettings(host.bb, () => {});
+  let stored: unknown;
+  const replacement = await host.harness.lifecycle.reload(async (bb) => {
+    stored = (await bb.settings.define({ openThreadsIn: { type: "select", label: "Open thread links in", options: ["bb", "agent-hub", "answers"], default: "bb" } }).get()).openThreadsIn;
+  });
+  hosts.push(replacement);
+  expect(stored).toBe("agent-hub");
 });
 it.each(["text", "json"])("warns on question add in %s without preventing creation", async mode => {
   const f = setup();
@@ -80,15 +93,18 @@ it.each(["text", "json"])("warns on question add in %s without preventing creati
   }
 });
 
-it("warns on long or multi-link question prompts and still saves them", async () => {
+it("warns on long question prompts and still saves them, and refuses more than one link", async () => {
   const f = setup();
   const task = f.task("Acceptance", { status: "in_progress" });
-  for (const [prompt, warn] of [["Is http://a.test right?", false], ["x".repeat(301), true], ["Compare http://a.test and http://b.test?", true]] as const) {
+  for (const [prompt, warn] of [["Is http://a.test right?", false], ["x".repeat(301), true]] as const) {
     const result = await f.harness.runCli(["question", "add", task.key, "--kind", "check", "--prompt", prompt, "--json"]);
     expect(result.exitCode).toBe(0);
     expect(JSON.parse(result.stdout).warnings.join("\n").includes("one decision or one check")).toBe(warn);
   }
-  expect((await f.harness.callRpc("listQuestions", { taskId: task.id }) as any).questions).toHaveLength(3);
+  const refused = await f.harness.runCli(["question", "add", task.key, "--kind", "check", "--prompt", "Is http://a.test right?", "--step", "Then open http://b.test"]);
+  expect(refused.exitCode).not.toBe(0);
+  expect(refused.stderr + refused.stdout).toMatch(/at most one link/);
+  expect((await f.harness.callRpc("listQuestions", { taskId: task.id }) as any).questions).toHaveLength(2);
 });
 
 it("excludes tasks without questions", () => {

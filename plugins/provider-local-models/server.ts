@@ -1,5 +1,4 @@
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
-import { registerUsageSource } from "./usage-source.ts";
 import { z } from "zod";
 import { defineCli, cliCommand, PluginCliError } from "@get-bb/plugin-sdk";
 import { router } from "./router.ts";
@@ -89,7 +88,7 @@ export function createPlugin(bb: BbPluginApi, testing: Pick<Parameters<typeof sp
       expiredHint: "Start the local model server (llama serve) on this machine, then refresh.",
       installUrl: "https://github.com/ggml-org/llama.cpp",
     },
-    maintenance: { health: true, usage: true, installation: false },
+    maintenance: { health: true, usage: false, installation: false },
     capabilities: {
       supportsServiceTier: false, supportsNativeUserQuestion: false,
       supportsManualCompaction: false, supportsThreadArchive: false, supportsThreadRename: false,
@@ -114,7 +113,6 @@ export function createPlugin(bb: BbPluginApi, testing: Pick<Parameters<typeof sp
       ...(typeof defaultModel === "string" && defaultModel ? [{ name: "LM_DEFAULT_MODEL", value: defaultModel, reason: "Default model for new threads" }] : []),
     ];
   });
-  registerUsageSource(bb);
   const client = async () => {
     const value = await settings.get();
     await syncSplash(value);

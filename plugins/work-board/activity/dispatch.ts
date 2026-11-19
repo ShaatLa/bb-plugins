@@ -12,7 +12,8 @@ export function dispatchedTask(data: unknown, requestId: string): string | null 
   const ids = groups.map((group) => {
     const texts = group.map((item) => textInput.safeParse(item)).filter((item) => item.success).map((item) => item.data!.text).filter((text) => text.trim());
     if (texts.length !== 1) return null;
-    return texts[0]!.match(/^<!-- work-board-task:([0-9A-Z]{26}) -->\r?\n/)?.[1] ?? null;
+    // The dispatch marker follows bb's optional "[bb message from plugin:…]" origin line.
+    return texts[0]!.match(/^(?:\[bb message from plugin:[^\]\n]+\]\r?\n\r?\n)?<!-- work-board-task:([0-9A-Z]{26}) -->\r?\n/)?.[1] ?? null;
   });
   return ids.length > 0 && ids.every((id) => id !== null && id === ids[0]) ? ids[0]! : null;
 }

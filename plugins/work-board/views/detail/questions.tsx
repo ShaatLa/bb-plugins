@@ -167,6 +167,11 @@ function QuestionAnswer({
       <legend className="max-w-full px-1 text-sm font-medium break-words">
         <LinkedText text={question.prompt} /> <span className="text-xs text-muted-foreground">{question.kind === "check" ? "Check" : "Decision"}</span>
       </legend>
+      {question.steps.length ? (
+        <ol aria-label="How to check" className="list-decimal space-y-1 pl-6 text-sm">
+          {question.steps.map((step, index) => <li key={index} className="break-words"><LinkedText text={step} /></li>)}
+        </ol>
+      ) : null}
       <p className="text-xs text-muted-foreground">
         {question.mode === "single"
           ? "Choose one answer"
@@ -427,8 +432,9 @@ export function QuestionsSection({
           }}
         />
   );
+  // Open questions read in the order they were asked, like the Earlier list below.
   const open = (query.data ?? []).filter(isQuestionOpen)
-    .sort((a, b) => b.createdAt.localeCompare(a.createdAt) || b.id.localeCompare(a.id));
+    .sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id));
   const earlier = (query.data ?? []).filter(question => !isQuestionOpen(question))
     .sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id));
   if (!adding && !editing && !query.error && !query.data?.length) return null;

@@ -23,6 +23,11 @@ import {
   REPORT_KINDS,
   cardRole,
   reportToParent,
+  reportNeed,
+  REPORT_NEED_HINT,
+  REPORT_WAIT_HINT,
+  recentOwnQuestion,
+  ownQuestionRefusal,
   childrenCards,
   publishProjectsChanged,
   registerHandlers,
@@ -69,6 +74,7 @@ import { taskMarkdownLink } from "../shared/task-link";
 import { ACTIVITY_LABELS } from "../shared/task-activity.js";
 import { threadHealthJson } from "../shared/thread-health";
 import { scheduledCliCommands } from "../scheduled/cli";
+import { planCommands } from "./plan";
 
 const TASK_KEY_PATTERN = /^([A-Z][A-Z0-9]{0,9})-(\d+)$/;
 const BB_PROJECT_ID_PATTERN = /^proj_[A-Za-z0-9_-]+$/;
@@ -1037,6 +1043,41 @@ export function registerTasksCli(
           return input.options.json ? JSON.stringify(result) : `Released ${result.claim.rendered}`;
         }); } }),
         sync: cliCommand({ summary: "Refresh read-only GitHub PR, CI and merge state", options: { project: REQUIRED_PROJECT_OPTION, json: JSON_OPTION }, run(input, ctx) { return guard(async () => { const project = await requiredProject(domain, ctx, input.options.project); const result = await domain.syncGit({ projectId: project.id }); return input.options.json ? JSON.stringify(result) : `Checked ${result.checked} PRs${result.errors.length ? `\n${result.errors.join("\n")}` : ""}`; }); } }),
+        config: groupCommand("config", "Read or change one project setting at a time", [
+          ["get", "Show one project setting, or all of them"],
+          ["set", "Change one project setting"],
+        ]),
+        "config get": cliCommand({
+          summary: "Show one project setting, or all of them without a key",
+          positionals: [{ name: "key", description: "Setting key, e.g. staleIdleMinutes or git.requiredChecks" }],
+          options: { project: REQUIRED_PROJECT_OPTION, json: JSON_OPTION },
+          run(input, ctx) {
+            return guard(async () => {
+              const project = await requiredProject(domain, ctx, input.options.project);
+              const result = await domain["config.get"]({ projectId: project.id, key: input.positionals.key });
+              if (input.options.json) return JSON.stringify(result);
+              return Object.entries(result.values).map(([key, value]) => `${key}=${typeof value === "string" ? value : JSON.stringify(value)}`).join("\n");
+            });
+          },
+        }),
+        "config set": cliCommand({
+          summary: "Change one project setting; lists take JSON or a comma-separated value",
+          positionals: [
+            { name: "key", description: "Setting key; `config get` lists them", required: true },
+            { name: "value", description: "New value: JSON, or plain text", required: true },
+          ],
+          options: { project: REQUIRED_PROJECT_OPTION, json: JSON_OPTION },
+          run(input, ctx) {
+            return guard(async () => {
+              const project = await requiredProject(domain, ctx, input.options.project);
+              const raw = input.positionals.value;
+              let value: unknown = raw;
+              try { value = JSON.parse(raw); } catch { /* plain text stays a string */ }
+              const result = await domain["config.set"]({ projectId: project.id, key: input.positionals.key, value });
+              return input.options.json ? JSON.stringify(result) : `${result.key}=${typeof result.value === "string" ? result.value : JSON.stringify(result.value)}`;
+            });
+          },
+        }),
         "git-config": cliCommand({ summary: "Show or replace project Git/PR configuration from JSON", options: { project: REQUIRED_PROJECT_OPTION, file: { type: "string", description: "JSON configuration file on the invoking machine" }, machine: MACHINE_OPTION, json: JSON_OPTION }, run(input, ctx) { return guard(async () => { const project = await requiredProject(domain, ctx, input.options.project); if (input.options.file) { const hostId = await resolveClientHostId(bb, domain, input.options.machine, ctx); const text = await readTextOption(bb, ctx, hostId, undefined, input.options.file); return JSON.stringify(await domain.setGitSyncConfig(tasksRpcContract.setGitSyncConfig.input.parse({ projectId: project.id, config: JSON.parse(text ?? "") }))); } return JSON.stringify(await domain.getGitSyncConfig({ projectId: project.id })); }); } }),
         pr: groupCommand("pr", "Manage persistent task-to-PR links and wait for PR CI", [["link", "Link/confirm a PR"], ["list", "Show PR, CI and merge state"], ["unlink", "Exclude a PR from rediscovery"], ["wait --url URL", "Block until the PR head's required checks settle (exit 0 green, 1 red, 2 cancelled/superseded, 3 no verdict)"]]),
         "pr wait": cliCommand({
@@ -1109,6 +1150,7 @@ export function registerTasksCli(
         }),
         ...templateReadCommands,
         ...lockCommands(domain),
+        ...planCommands({ bb, domain, guard, resolveTask, resolveClientHostId, readTextOption, taskAuthor, keyPositional: KEY_POSITIONAL, jsonOption: JSON_OPTION, machineOption: MACHINE_OPTION }),
         template: groupCommand(
           "template",
           "Manage project description templates",
@@ -1203,7 +1245,7 @@ export function registerTasksCli(
           ],
         ),
         "question add": cliCommand({
-          summary: "Ask the owner one decision or one check (short, one link; details go in a comment)",
+          summary: "Ask the owner one decision or one check (short, one link; check steps in --step, evidence in a comment)",
           positionals: [KEY_POSITIONAL],
           options: {
             kind: { type: "enum", values: ["decision", "check"] as const, description: "Question type (default decision)" },
@@ -1212,10 +1254,15 @@ export function registerTasksCli(
               required: true,
               description: "One or two short sentences, at most one link; evidence and history go in a task comment",
             },
+            step: {
+              type: "string",
+              repeatable: true,
+              description: "One \"How to check\" step, shown as a numbered list under the question; repeat in order (at most 10). Steps say how to check this one thing; the prompt and all steps together carry at most one link, so separate states are separate --kind check questions",
+            },
             option: {
               type: "string",
               repeatable: true,
-              description: "Option text; repeat at least once",
+              description: "Option text; repeat for each option (required for a decision; a check defaults to Confirmed / Problem found)",
             },
             multiple: {
               type: "boolean",
@@ -1264,6 +1311,7 @@ export function registerTasksCli(
                   kind: input.options.kind ?? "decision",
                   askedByThread: ctx.threadId ?? process.env.BB_THREAD_ID ?? null,
                   prompt: input.options.prompt,
+                  steps: input.options.step,
                   options: optionLabels.map((label, index) =>
                     recommended.includes(index + 1)
                       ? {
@@ -1279,9 +1327,10 @@ export function registerTasksCli(
               );
               const warnings = [
                 ...(!task.progressNote && ["backlog", "todo"].includes(task.status)
-                  ? [`Task is in ${task.status} with no Current state; set it with ` + "`bb work-board update KEY --progress ...`" + " and move the status if the work stage changed, so the owner sees why it waits on them."] : []),
-                ...(input.options.prompt.length > 300 || (input.options.prompt.match(/https?:\/\//g)?.length ?? 0) > 1
-                  ? ["The question is long or has several links. Ask one decision or one check in one or two short sentences with at most one link; split a multi-part acceptance into several --kind check questions and put evidence in a task comment."] : []),
+                  ? [`Task is in ${task.status} with no Current state; set it with ` + `\`bb work-board update ${task.key} --progress ...\`` + " and move the status if the work stage changed, so the owner sees why it waits on them."] : []),
+                // More than one link is refused by the store; length stays a warning.
+                ...(input.options.prompt.length > 300
+                  ? ["The question is long. Ask one decision or one check in one or two short sentences; put what to do in --step, split a multi-part acceptance into several --kind check questions and put evidence in a task comment."] : []),
               ];
               return input.options.json
                 ? JSON.stringify({ ...result, warnings })
@@ -1413,6 +1462,11 @@ export function registerTasksCli(
               type: "string",
               description: "Replacement question text",
             },
+            step: {
+              type: "string",
+              repeatable: true,
+              description: "Replacement \"How to check\" steps; repeat in order (omit to keep the current steps). The prompt and all steps together carry at most one link",
+            },
             mode: {
               type: "enum",
               values: ["single", "multiple"],
@@ -1440,7 +1494,7 @@ export function registerTasksCli(
             reopen: {
               type: "boolean",
               description:
-                "Clear the existing answer and require a new decision",
+                "Clear the existing answer and ask the same thing again; the reopening thread becomes the asker. It cannot add steps or links the answered revision lacked: a new state is a new question",
             },
             machine: MACHINE_OPTION,
             json: JSON_OPTION,
@@ -1485,9 +1539,11 @@ export function registerTasksCli(
                 questionId: current.id,
                 revision: input.options.revision,
                 prompt: input.options.prompt ?? current.prompt,
+                ...(input.options.step.length ? { steps: input.options.step } : {}),
                 mode: input.options.mode ?? current.mode,
                 options,
                 reopen: input.options.reopen,
+                ...((ctx.threadId ?? process.env.BB_THREAD_ID) ? { askedByThread: ctx.threadId ?? process.env.BB_THREAD_ID } : {}),
                 authorName: taskAuthor(ctx),
               });
               const recommended = input.options.recommend;
@@ -2243,10 +2299,12 @@ export function registerTasksCli(
             "requester-thread": {
               type: "string",
               description: "Removed: ask the owner with a task question",
+              hidden: true,
             },
             executor: {
               type: "string",
               description: "Removed: ask the owner with a task question",
+              hidden: true,
             },
             type: {
               type: "enum",
@@ -2463,6 +2521,7 @@ export function registerTasksCli(
             executor: {
               type: "string",
               description: "Removed: ask the owner with a task question",
+              hidden: true,
             },
             type: {
               type: "enum",
@@ -2695,6 +2754,7 @@ export function registerTasksCli(
           options: {
             brief: { type: "boolean", description: "Leave out comments, evidence records, question history and per-check PR details; counts stay" },
             comments: { type: "integer", min: 0, max: COMMENTS_PAGE_MAX, description: "Include only the latest N comments (default: all, or none with --brief)" },
+            "with-plan": { type: "boolean", description: "Print the full task plan after the description (JSON: plan.body); without it show lists only the plan's version and state" },
             json: JSON_OPTION,
           },
           run(input) {
@@ -2771,6 +2831,8 @@ export function registerTasksCli(
                 ? allPrLinks.map((entry) => entry.snapshot ? { ...entry, snapshot: (({ checks: _checks, ...snapshot }) => snapshot)(entry.snapshot) } : entry)
                 : allPrLinks;
               const dependencies = await domain.listTaskDependencies({ taskId: task.id });
+              const taskPlan = (await domain.getTaskPlan({ taskId: task.id })).plan;
+              const withPlan = input.options["with-plan"] === true;
               const more: Record<string, string> = {};
               if (omittedComments) more.comments = `bb work-board comment list ${task.key} --kind user --kind agent --kind system`;
               if (brief && evidence.records.length) more.evidence = `bb work-board evidence ${task.key}`;
@@ -2782,6 +2844,7 @@ export function registerTasksCli(
                   overlaps,
                   task: { ...task, waitingOnOwner: waiting },
                   link: taskMarkdownLink(task.key),
+                  plan: taskPlan ? { version: taskPlan.version, state: taskPlan.state, noteCounts: taskPlan.noteCounts, updatedAt: taskPlan.updatedAt, updatedBy: taskPlan.updatedBy.name, ...(withPlan ? { body: taskPlan.requested.body } : {}) } : null,
                   project,
                   labels,
                   subtasks: task.type === "epic" ? [] : subtasks,
@@ -2833,6 +2896,7 @@ export function registerTasksCli(
                     "Labels",
                     labels.map((label) => label.name).join(", ") || "-",
                   ],
+                  ["Plan", taskPlan ? `v${taskPlan.version} · ${taskPlan.state}${taskPlan.noteCounts.open ? ` · ${taskPlan.noteCounts.open} open note${taskPlan.noteCounts.open === 1 ? "" : "s"}` : ""} · bb work-board plan show ${task.key}` : "-"],
                   ["Created", task.createdAt],
                   ["Updated", task.updatedAt],
                 ]),
@@ -2844,6 +2908,7 @@ ${activity.diagnostics?.inactiveSessions.map((session) => `@thread:${session.thr
                 ...(activity?.diagnostics?.hasWorked ? [`Activity reports\n${comments.filter((comment) => comment.kind === "agent" && comment.threadId).slice(-5).map((comment) => `${comment.createdAt} · @thread:${comment.threadId} · comment ${comment.id}`).join("\n") || "Previous work is recorded; historical execution details were not retained."}`] : []),
                 ...(waiting ? [`Waiting on you: ${newestQuestion?.prompt.split(/\r?\n/)[0] ?? "Question"}`] : []),
                 `Description\n${task.description || "(none)"}`,
+                ...(withPlan && taskPlan ? [`Plan v${taskPlan.version} (${taskPlan.state})\n${taskPlan.requested.body}`] : []),
                 task.progressNote ? `Current state (updated ${task.progressUpdatedAt} by ${task.progressUpdatedBy})\n${task.progressNote}` : "Current state\n(none)",
                 `${task.type === "epic" ? "Tasks in epic" : "Sub-tasks"}\n${table(
                   ["KEY", "STATUS", "PRIORITY", "TITLE"],
@@ -2904,10 +2969,12 @@ ${activity.diagnostics?.inactiveSessions.map((session) => `@thread:${session.thr
             "requester-thread": {
               type: "string",
               description: "Removed: ask the owner with a task question",
+              hidden: true,
             },
             executor: {
               type: "string",
               description: "Removed: ask the owner with a task question",
+              hidden: true,
             },
             type: {
               type: "enum",
@@ -2924,7 +2991,7 @@ ${activity.diagnostics?.inactiveSessions.map((session) => `@thread:${session.thr
               placeholder: "status-id",
               aliases: ["state"],
               description:
-                "New workflow status; in_review when implementation needs review, done when the criteria are met",
+                "Project workflow status id (project show --json lists them); the project's review status when implementation needs review, done when the criteria are met",
             },
             priority: {
               type: "enum",
@@ -3380,6 +3447,11 @@ ${activity.diagnostics?.inactiveSessions.map((session) => `@thread:${session.thr
               required: true,
               description: "ready, question or blocker; progress goes to `update --progress` and wakes nobody",
             },
+            need: {
+              type: "string",
+              placeholder: "text",
+              description: "Required for question and blocker: what the recipient must decide or do, in one or two sentences; shown first",
+            },
             body: {
               type: "string",
               placeholder: "markdown",
@@ -3403,7 +3475,12 @@ ${activity.diagnostics?.inactiveSessions.map((session) => `@thread:${session.thr
               const threadId = ctx.threadId ?? process.env.BB_THREAD_ID;
               if (!threadId)
                 throw new CliError("report must run inside a bb thread; its parent thread is the recipient", { code: "missing_thread" });
+              try { reportNeed(input.options.kind, input.options.need); } catch (error) {
+                throw new CliError(errorMessage(error), { code: "missing_need", hint: REPORT_NEED_HINT });
+              }
               const task = await resolveTask(domain, input.positionals["key-or-id"]);
+              if (input.options.kind !== "ready" && recentOwnQuestion(bb, task.id, threadId))
+                throw new CliError(ownQuestionRefusal(input.options.kind, task.key), { code: "owner_question_open", hint: REPORT_WAIT_HINT });
               const bodyFile = input.options["body-file"];
               const clientHostId = bodyFile !== undefined
                 ? await resolveClientHostId(bb, domain, input.options.machine, ctx)
@@ -3415,6 +3492,7 @@ ${activity.diagnostics?.inactiveSessions.map((session) => `@thread:${session.thr
                 threadId,
                 kind: input.options.kind,
                 body,
+                need: input.options.need,
               });
               const attach = await attachCardSession(task.id, threadId);
               if (!result.notified)
@@ -3921,7 +3999,7 @@ ${activity.diagnostics?.inactiveSessions.map((session) => `@thread:${session.thr
             instructions: {
               type: "string",
               placeholder: "text",
-              description: "Extra instructions prepended to every dispatch",
+              description: "Extra instructions added after the task context and report-back contract of every dispatch",
             },
             json: JSON_OPTION,
           },
@@ -4027,7 +4105,7 @@ ${activity.diagnostics?.inactiveSessions.map((session) => `@thread:${session.thr
             instructions: {
               type: "string",
               placeholder: "text",
-              description: "Extra instructions prepended to every dispatch",
+              description: "Extra instructions added after the task context and report-back contract of every dispatch",
             },
             json: JSON_OPTION,
           },

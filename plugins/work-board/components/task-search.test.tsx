@@ -74,7 +74,7 @@ describe("task search", () => {
     });
     const options = { rpc, sdk: { threads: { get: async () => makeThreadResponse({ id: "thr_search", projectId: "proj_example" }) } } };
     const slot = surface === "main"
-      ? renderSlot(app.navPanels[0]!, { subPath: project.id }, options)
+      ? renderSlot(app.navPanels[0]!, { subPath: `${project.id}?view=list` }, options)
       : renderSlot(taskTab(app), { threadId: "thr_search", environment: null }, options);
     const input = await slot.findByRole("combobox", { name: "Search tasks" });
     fireEvent.change(input, { target: { value: "8" } });
@@ -107,7 +107,7 @@ describe("task search", () => {
     const { project, rpc } = setup();
     const options = { rpc, sdk: { threads: { get: async () => makeThreadResponse({ id: "thr_search", projectId: "proj_example" }) } } };
     const slot = surface === "main"
-      ? renderSlot(app.navPanels[0]!, { subPath: project.id }, options)
+      ? renderSlot(app.navPanels[0]!, { subPath: `${project.id}?view=list` }, options)
       : renderSlot(taskTab(app), { threadId: "thr_search", environment: null }, options);
     const input = await slot.findByRole("combobox", { name: "Search tasks" });
     input.focus();
@@ -132,7 +132,7 @@ describe("task search", () => {
       }
       return get(input);
     };
-    const slot = renderSlot(app.navPanels[0]!, { subPath: project.id }, { rpc });
+    const slot = renderSlot(app.navPanels[0]!, { subPath: `${project.id}?view=list` }, { rpc });
     const input = await slot.findByRole("combobox", { name: "Search tasks" });
     fireEvent.change(input, { target: { value: "needle" } });
     await slot.findByRole("option", { name: /EXA-8/ });
@@ -157,7 +157,7 @@ describe("task search", () => {
   it("shows only 25 matches without a server request for each search", async () => {
     const { store, project, rpc } = setup();
     for (let index = 0; index < 30; index++) store.tasks.createTask({ projectId: project.id, title: `Broad match ${index}` });
-    const slot = renderSlot(app.navPanels[0]!, { subPath: project.id }, { rpc });
+    const slot = renderSlot(app.navPanels[0]!, { subPath: `${project.id}?view=list` }, { rpc });
     fireEvent.change(await slot.findByRole("combobox", { name: "Search tasks" }), { target: { value: "Broad match" } });
     await slot.findByText("Showing the first 25 matches. Refine your search to find more.");
     expect(slot.getAllByRole("option")).toHaveLength(25);
@@ -217,7 +217,7 @@ describe("task search", () => {
     });
     const slot = renderSlot(
       app.navPanels[0]!,
-      { subPath: project.id },
+      { subPath: `${project.id}?view=list` },
       { rpc },
     );
     const input = await slot.findByRole("combobox", { name: "Search tasks" });
@@ -262,7 +262,7 @@ describe("task search", () => {
     };
     const slot = renderSlot(
       app.navPanels[0]!,
-      { subPath: project.id },
+      { subPath: `${project.id}?view=list` },
       { rpc },
     );
     const input = await slot.findByRole("combobox", { name: "Search tasks" });

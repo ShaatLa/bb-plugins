@@ -13,7 +13,12 @@ import {
   taskThreadSchema,
   questionSchema,
   templateSchema,
+  planAuthorSchema,
+  planStateSchema,
+  planVersionSchema,
+  planNoteSchema,
 } from "../shared/contract";
+import { PLAN_FORMATS } from "../shared/plan";
 import { MAX_ATTACHMENT_SIZE_BYTES } from "../shared/attachments";
 import { scheduleRunSchema, scheduleSchema, scheduleSourceSchema } from "../shared/scheduled";
 
@@ -38,6 +43,8 @@ export const archiveProjectSchema = z
       z.literal(15),
       z.literal(16),
       z.literal(17),
+      z.literal(18),
+      z.literal(19),
     ]),
     project: projectSchema,
     gitSync: gitSyncConfigSchema.optional(),
@@ -52,6 +59,22 @@ export const archiveProjectSchema = z
   })
   .strict();
 
+/** v18: the current plan and every version with its full body. */
+export const archivePlanSchema = z
+  .object({
+    format: z.enum(PLAN_FORMATS),
+    version: z.number().int().min(1),
+    body: z.string(),
+    state: planStateSchema,
+    updatedAt: z.string(),
+    updatedBy: planAuthorSchema,
+    versions: z.array(planVersionSchema.extend({ body: z.string() }).strict()).min(1),
+  })
+  .strict();
+
+/** v19: an owner's note on the plan; the task record that holds it replaces `taskId`. */
+export const archivePlanNoteSchema = planNoteSchema.omit({ taskId: true });
+
 export const archiveTaskSchema = z
   .object({
     task: taskSchema,
@@ -62,6 +85,10 @@ export const archiveTaskSchema = z
     pullRequests: z.array(prLinkSchema).optional(),
     comments: z.array(commentSchema),
     questions: z.array(questionSchema).default([]),
+    /** v18: null when the task has no plan. */
+    plan: archivePlanSchema.nullable().optional(),
+    /** v19: the owner's notes on the plan, by number. */
+    planNotes: z.array(archivePlanNoteSchema).optional(),
     attachments: z.array(
       attachmentSchema
         .extend({
@@ -178,6 +205,25 @@ export function validateArchive(archive: ProjectArchive): void {
     if (manifest.version >= 15 && !record.related) throw new Error("Archive v15 requires related tasks");
     if (manifest.version < 15 && record.related?.length) throw new Error("Related tasks require archive v15");
     unique(record.related ?? [], "related task");
+    if (manifest.version >= 18 && record.plan === undefined) throw new Error("Archive v18 requires plan");
+    if (manifest.version < 18 && record.plan) throw new Error("Task plans require archive v18");
+    if (manifest.version >= 19 && record.planNotes === undefined) throw new Error("Archive v19 requires planNotes");
+    if (manifest.version < 19 && record.planNotes?.length) throw new Error("Plan notes require archive v19");
+    if (record.planNotes?.length) {
+      if (!record.plan) throw new Error(`Plan notes of ${record.task.id} need a plan`);
+      unique(record.planNotes.map((note) => String(note.number)), "plan note number");
+      unique(record.planNotes.map((note) => note.id), "plan note");
+      if (record.planNotes.some((note) => note.madeOnVersion > record.plan!.version || (note.sentInVersion ?? 0) > record.plan!.version))
+        throw new Error(`Plan notes of ${record.task.id} refer to a version the plan does not have`);
+    }
+    if (record.plan) {
+      const { versions } = record.plan;
+      if (versions.some((version, index) => version.version !== index + 1))
+        throw new Error(`Plan versions of ${record.task.id} must be numbered 1..${versions.length}`);
+      const last = versions.at(-1)!;
+      if (record.plan.version !== last.version || record.plan.body !== last.body)
+        throw new Error(`Plan of ${record.task.id} does not match its latest version`);
+    }
     for (const other of record.related ?? [])
       if (other <= record.task.id || !taskIds.has(other)) throw new Error("Invalid related task in archive");
     for (const blocker of record.dependencies ?? []) {

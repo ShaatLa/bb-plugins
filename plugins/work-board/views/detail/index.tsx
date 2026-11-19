@@ -1,4 +1,5 @@
 import { CurrentState } from "./current-state";
+import { PlanCard } from "../plan/card.js";
 import { useActivityPoll, useAdvisoryRecheck } from "../../shell/activity-poll.js";
 import { ActivityStatus } from "./activity-status.js";
 import { isActiveThread } from "./meta.js";
@@ -59,6 +60,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { ScheduledSourceBanner } from "../scheduled/source-banner.js";
+import { useOpenThread } from "../../components/open-thread";
 
 interface DetailViewProps {
   taskKey: string;
@@ -521,6 +523,7 @@ function TaskDetail({
 
   const mentionItems = useMentionItems();
   const navigate = useBbNavigate();
+  const openThread = useOpenThread();
 
   const draft = draftRef.current;
   const descriptionValue =
@@ -625,9 +628,11 @@ function TaskDetail({
             placeholder="Add a description… rich text: headings, lists, code, checkboxes, @mentions"
             onUploadImage={uploadForTask}
             mentionItems={mentionItems}
-            onOpenThread={(threadId) => navigate.toThread(threadId)}
+            onOpenThread={(threadId) => openThread(threadId)}
             onOpenUrl={(url) => navigate.openUrl(url)}
           />
+
+          <PlanCard key={`plan-${task.id}`} task={task} />
 
           <CurrentState key={task.id} task={task} />
 

@@ -4,9 +4,9 @@ A collection of independently installable [BB](https://getbb.app/) plugins maint
 
 | Plugin | What it adds | Collection entry / plugin ID | Documentation |
 | --- | --- | --- | --- |
-| **Agent Spawn Gate** | Project-specific one-use admissions for agent and CLI starts; enforcement off by default. | `agent-spawn-gate` | [README](plugins/agent-spawn-gate/README.md) |
+| **Spawn Gate** | Project-specific one-use admissions for agent and CLI starts; enforcement off by default. | `spawn-gate` | [README](plugins/spawn-gate/README.md) |
 | **Sweep** | Scheduled repository checks and durable delivery to a project manager. | `sweep` | [README](plugins/bb-plugin-sweep/README.md) |
-| **Answers** | A messenger-style inbox for your questions and the agents' answers, questions agents ask you, quote replies, reply pools and saved messages. | `answers` | [README](plugins/answers/README.md) |
+| **Agent Hub** | A messenger-style inbox for your questions and the agents' answers, questions agents ask you, quote replies, reply pools and saved messages. | `agent-hub` | [README](plugins/agent-hub/README.md) |
 | **Antigravity provider** | Google Gemini agents through your existing Antigravity CLI, with BB tools, live quotas and machine diagnostics. | `antigravity` | [README](plugins/provider-antigravity/README.md) |
 | **CI Dashboard** | GitHub Actions health, run timings, agent-readable CI metrics, and PR/deployment context with cached history. | `ci-dashboard` / `delivery-dashboard` | [README](plugins/ci-dashboard/README.md) |
 | **Idle Compact** | Compacts a Claude Code thread idle for 50 minutes with 100k+ tokens of context while its prompt cache is still warm, so waking it does not rewrite the whole context. | `idle-compact` | [README](plugins/idle-compact/README.md) |
@@ -37,7 +37,7 @@ BB supplies its own npm/Node tooling for Git installations. You do **not** need 
 Install the plugins you need:
 
 ```sh
-bb plugin install git:https://github.com/ShaatLa/bb-plugins.git@main --plugin answers
+bb plugin install git:https://github.com/ShaatLa/bb-plugins.git@main --plugin agent-hub
 bb plugin install git:https://github.com/ShaatLa/bb-plugins.git@main --plugin antigravity
 bb plugin install git:https://github.com/ShaatLa/bb-plugins.git@main --plugin ci-dashboard
 bb plugin install git:https://github.com/ShaatLa/bb-plugins.git@main --plugin idle-compact
@@ -69,7 +69,7 @@ An installation tracking `@main` receives branch changes when you apply an updat
 bb plugin outdated
 bb plugin update antigravity
 bb plugin update work-board
-bb plugin update delivery-dashboard
+bb plugin update ci-dashboard
 ```
 
 Replace `@main` in an installation URL with a full commit SHA to pin an exact revision. Local-path installations use the checkout on disk; published Git updates do not update them. Rebuild and reload a local installation after updating its checkout.
@@ -78,23 +78,23 @@ If a plugin is already installed, check its source before changing installation 
 
 ## Plugins
 
-### Answers
+### Agent Hub
 
-Open **Answers** in BB's navigation sidebar; its badge counts unread answers and open questions for you. The plugin pairs each message you send in a thread with the final answer of that turn, so answers do not get lost among agent output.
+Open **Agent Hub** in BB's navigation sidebar; its badge counts unread answers and open questions for you. The plugin pairs each message you send in a thread with the final answer of that turn, so answers do not get lost among agent output.
 
 - **Inbox**: conversations on the left, grouped by project (drag to reorder) with a resizable column, running-thread indicators and BB's thread context menu; the selected thread's history on the right opens at the first unread message.
 - A composer like BB's: voice input, attachments, scheduled sends, drafts, steering an active turn, and BB's queue card for queued messages (edit, reschedule, reorder, send now, delete). Project, branch and context usage sit under the composer.
 - **Awaiting answer**, **Asked of you**, **Saved** and **History** views with search, a project filter and **Mark all read** with undo.
-- Quote replies: select text in an answer to reply with a quote, or collect quotes from one thread in a **Reply pool** and send them together. BB's chat gains **Save to Answers**, **Add to reply pool** and **Comment** (send a quoted comment on the selected text).
-- Agent tools: `answers_defer` and `answers_list`/`answers_resolve` link a delayed answer to its question; `answers_ask` asks you a question, optionally with choices and a recommendation.
+- Quote replies: select text in an answer to reply with a quote, or collect quotes from one thread in a **Reply pool** and send them together. BB's chat gains **Save to Agent Hub**, **Add to reply pool** and **Comment** (send a quoted comment on the selected text).
+- Agent tools: `agent_hub_defer` and `agent_hub_list`/`agent_hub_resolve` link a delayed answer to its question; `agent_hub_ask` asks you a question, optionally with choices and a recommendation.
 - An optional provider usage summary under the conversation list, and notifications for questions asked of you (needs the Push Notifications plugin) with quiet hours.
 
 ```sh
-bb answers list --view waiting
-bb answers digest --since 24h
+bb agent-hub list --view waiting
+bb agent-hub digest --since 24h
 ```
 
-[Interface, limits and settings →](plugins/answers/README.md)
+[Interface, limits and settings →](plugins/agent-hub/README.md)
 
 ### Antigravity provider
 
@@ -191,7 +191,7 @@ Each plugin owns its dependencies, tests and build; there is no root install or 
 
 | Directory | Install development dependencies | Additional requirements/checks |
 | --- | --- | --- |
-| `plugins/answers` | `npm ci` | None; tests use an in-memory SQLite database. |
+| `plugins/agent-hub` | `npm ci` | None; tests use an in-memory SQLite database. |
 | `plugins/provider-antigravity` | `npm ci --include=dev` | Node with `--experimental-strip-types` support for its native tests; signed-in `agy` for live checks. |
 | `plugins/ci-dashboard` | `npm ci --include=dev` | GitHub access for live data checks. |
 | `plugins/idle-compact` | `npm ci` | None; `python3 scripts/measure.py` reads local Claude transcripts. |

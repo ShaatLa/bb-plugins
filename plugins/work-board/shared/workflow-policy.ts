@@ -8,7 +8,7 @@ export const workflowPolicySchema = z.object({
   reviewStatus: taskStatusSchema.nullable().default("in_review"),
   testingStatus: taskStatusSchema.nullable().default("in_testing"),
   earlyStatuses: z.array(taskStatusSchema).default(["todo", "in_progress"]),
-  ownerDecisionLabel: z.string().trim().min(1).max(100).nullable().default("решение владельца"),
+  ownerDecisionLabel: z.string().trim().min(1).max(100).nullable().default("owner decision"),
 }).strict();
 
 export type WorkflowPolicy = z.infer<typeof workflowPolicySchema>;

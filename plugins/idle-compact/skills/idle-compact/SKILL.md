@@ -19,7 +19,7 @@ failed compaction is not retried until the context changes.
 
 The Compact button in the open thread's header compacts that thread now, on any
 provider and regardless of the settings or keep; it is enabled only while the thread is
-idle or failed. Other plugins (Answers) can also queue a compaction during a turn: it runs
+idle or failed. Other plugins (Agent Hub) can also queue a compaction during a turn: it runs
 when the thread stops, before its next message. Agents compact a thread with `bb thread
 compact` instead.
 

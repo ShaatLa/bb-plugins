@@ -18,7 +18,8 @@ export function acceptedScheduledRuns(request: unknown, acceptedRequestId: strin
     for (const item of group) {
       const text = textSchema.safeParse(item);
       if (!text.success) continue;
-      const match = text.data.text.match(/^<!-- work-board-scheduled-run:([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}) -->\r?\n/i);
+      // The run marker follows bb's optional "[bb message from plugin:…]" origin line.
+      const match = text.data.text.match(/^(?:\[bb message from plugin:[^\]\n]+\]\r?\n\r?\n)?<!-- work-board-scheduled-run:([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}) -->\r?\n/i);
       if (match) runs.add(match[1]!);
     }
   }

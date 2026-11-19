@@ -8,6 +8,16 @@ export function taskMarkdownLink(key: string): string {
   return `[${key}](${taskHref(key)})`;
 }
 
+/** In-app route of a task's plan page. */
+export function taskPlanHref(key: string): string {
+  return `${taskHref(key)}/plan`;
+}
+
+/** Inline chat link for a task's plan, e.g. [EXA-12 plan](/plugins/work-board/work-board/task/EXA-12/plan). */
+export function taskPlanMarkdownLink(key: string): string {
+  return `[${key} plan](${taskPlanHref(key)})`;
+}
+
 /** Standing guidance for agents in bb projects linked to Work Board. */
 export const TASK_LINK_INSTRUCTIONS = `# Work Board task links
 
@@ -15,4 +25,4 @@ When a reply to the person mentions a Work Board task, write its key as an inlin
 
 Before starting a task, read its dependencies with \`bb work-board dependency list KEY --json\`. Only Done satisfies a predecessor; canceled or reopened tasks remain blockers. Links warn without disabling commands: respect the ordering and report blockers. Agents can add/remove links with \`bb work-board dependency add KEY --blocked-by OTHER\` and \`dependency remove KEY --blocked-by OTHER\`.
 
-When you need the owner, ask on the task with \`bb work-board question add KEY --kind decision|check\`. One question asks one decision or one check in one or two short plain sentences, with at most one link. Split a multi-part acceptance into several \`--kind check\` questions, each answerable on its own with its own link. Evidence, tables, quotes of earlier remarks, inventories and history go into a task comment, not the question. Acceptance material is a link to a local design server or the product, never screenshots.`;
+When you need the owner, ask on the task, not in chat, with \`bb work-board question add KEY --kind decision|check\`. One question asks one decision or one check in one or two short plain sentences, with at most one link. Put what the owner has to do in \`--step\` (repeat it; the steps show as a numbered list under the question), not in a comment. Split a multi-part acceptance into several \`--kind check\` questions, each answerable on its own with its own link. Evidence, tables, quotes of earlier remarks, inventories and history go into a task comment, not the question. Acceptance material is a link to a local design server or the product, never screenshots.`;

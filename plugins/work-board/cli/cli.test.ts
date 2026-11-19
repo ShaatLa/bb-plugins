@@ -171,6 +171,20 @@ describe("bb work-board CLI", () => {
     await harness.dispose();
   });
 
+  it("keeps a check's steps with the question and replaces them on update", async () => {
+    const { bb, harness } = createFakePluginHost({ pluginId: "work-board" });
+    await plugin(bb);
+    await harness.runCli(["project", "create", "--name", "Steps", "--prefix", "STP"]);
+    await harness.runCli(["create", "--project", "STP", "--title", "Steps"]);
+    const question = JSON.parse(stdout(await harness.runCli(["question", "add", "STP-1", "--kind", "check", "--prompt", "Does the form save?", "--step", "Open the form", "--step", "Press Save", "--json"]))).question;
+    expect(question.steps).toEqual(["Open the form", "Press Save"]);
+    const kept = JSON.parse(stdout(await harness.runCli(["question", "update", "STP-1", "--question", question.id, "--revision", String(question.revision), "--prompt", "Does the form save twice?", "--json"]))).question;
+    expect(kept.steps).toEqual(["Open the form", "Press Save"]);
+    const replaced = JSON.parse(stdout(await harness.runCli(["question", "update", "STP-1", "--question", question.id, "--revision", String(kept.revision), "--step", "Press Save twice", "--json"]))).question;
+    expect(replaced).toMatchObject({ prompt: "Does the form save twice?", steps: ["Press Save twice"] });
+    await harness.dispose();
+  });
+
   it("compacts answered questions and names the full history command", async () => {
     const { bb, harness } = createFakePluginHost({ pluginId: "work-board" });
     await plugin(bb);
@@ -245,7 +259,7 @@ describe("bb work-board CLI", () => {
       expect(harness.sdk.callsTo("threads.send")).toEqual([[expect.objectContaining({
         threadId: "thr_parent",
         mode: "queue-if-active",
-        input: [expect.objectContaining({ text: expect.stringMatching(/^\*\*REP-1 · READY\*\* from @thread:thr_child\n\nMerged as abc/) })],
+        input: [expect.objectContaining({ text: expect.stringMatching(/^\[bb message from plugin:work-board\]\n\n\*\*REP-1 · READY\*\* from @thread:thr_child\n\nMerged as abc/) })],
       })]]);
       expect(await card()).toMatchObject({ progressNote: "**READY**\n\nMerged as abc", progressUpdatedBy: "thr_child" });
       expect(await sessions()).toEqual(["thr_child"]);
@@ -253,13 +267,13 @@ describe("bb work-board CLI", () => {
       expect(await comments()).toEqual([]);
 
       // A helper of the attached session only wakes that session.
-      expect(stdout(await report("thr_helper", "--kind", "blocker", "--body", "Flaky test"))).toBe("Reported blocker on REP-1 to @thread:thr_child");
+      expect(stdout(await report("thr_helper", "--kind", "blocker", "--need", "Rerun CI.", "--body", "Flaky test"))).toBe("Reported blocker on REP-1 to @thread:thr_child");
       expect((await card()).progressNote).toBe("**READY**\n\nMerged as abc");
       expect(await sessions()).toEqual(["thr_child"]);
 
       for (const [thread, args, error] of [
-        ["thr_orphan", ["--kind", "blocker", "--body", "x"], "no parent thread"],
-        [undefined, ["--kind", "question", "--body", "x"], "inside a bb thread"],
+        ["thr_orphan", ["--kind", "blocker", "--need", "x", "--body", "x"], "no parent thread"],
+        [undefined, ["--kind", "question", "--need", "x", "--body", "x"], "inside a bb thread"],
         ["thr_child", ["--kind", "progress", "--body", "x"], ""],
       ] as const) {
         const failed = await report(thread, ...args);
@@ -268,23 +282,80 @@ describe("bb work-board CLI", () => {
       }
       expect(await comments()).toEqual([]);
 
-      const long = await report("thr_child", "--kind", "question", "--body", "é".repeat(3000));
+      // A question or blocker that asks nothing is refused before anything is delivered.
+      const sends = harness.sdk.callsTo("threads.send").length;
+      for (const need of [[], ["--need", "  "], ...["Nothing unless you want to look", "none", "No action needed.", "N/A", "-"].map((text) => ["--need", text])]) {
+        const refused = await report("thr_child", "--kind", "question", ...need, "--body", "Status update");
+        expect(refused.exitCode).not.toBe(0);
+        expect(refused.stderr).toMatch(/needs --need|must ask the recipient/);
+        expect(refused.stderr).toContain("update KEY --progress");
+      }
+      expect(harness.sdk.callsTo("threads.send")).toHaveLength(sends);
+      expect((await card()).progressNote).toBe("**READY**\n\nMerged as abc");
+
+      for (const need of ["Nonetheless pick A.", "- Pick A or B."])
+        expect((await report("thr_child", "--kind", "blocker", "--need", need, "--body", "x")).exitCode).toBe(0);
+      const asked = await report("thr_child", "--kind", "question", "--need", "Pick option A or B.", "--body", "Details");
+      expect(asked.exitCode).toBe(0);
+      expect((harness.sdk.callsTo("threads.send").at(-1)![0] as { input: { text: string }[] }).input[0]!.text).toMatch(/^\[bb message from plugin:work-board\]\n\n\*\*REP-1 · QUESTION\*\* from @thread:thr_child\n\nNeeded: Pick option A or B\.\n\nDetails/);
+      expect((await card()).progressNote).toBe("**QUESTION**\n\nNeeded: Pick option A or B.\n\nDetails");
+
+      const long = await report("thr_child", "--kind", "question", "--need", "Decide.", "--body", "é".repeat(3000));
       expect(long.exitCode).toBe(0);
       const note = (await card()).progressNote as string;
       expect(Buffer.byteLength(note)).toBeLessThanOrEqual(4096);
-      expect(note).toMatch(/^\*\*QUESTION\*\*\n\né+\n\n… \(cut; the full report went to @thread:thr_parent\)$/);
+      expect(note).toMatch(/^\*\*QUESTION\*\*\n\nNeeded: Decide\.\n\né+\n\n… \(cut; the full report went to @thread:thr_parent\)$/);
 
       harness.sdk.stub("threads.send", async () => { throw new Error("offline"); });
-      const unsent = await report("thr_child", "--kind", "blocker", "--body", "CI is red");
+      const unsent = await report("thr_child", "--kind", "blocker", "--need", "Fix the runner.", "--body", "CI is red");
       expect(unsent.exitCode).toBe(1);
       expect(unsent.stderr).toContain("Saved the blocker report as Current state of REP-1, but could not wake parent thr_parent");
-      expect((await card()).progressNote).toBe("**BLOCKER**\n\nCI is red");
+      expect((await card()).progressNote).toBe("**BLOCKER**\n\nNeeded: Fix the runner.\n\nCI is red");
 
       harness.sdk.stub("threads.send", async () => ({}) as never);
       await harness.runCli(["update", "REP-1", "--progress", "Working on it\nHandoff: /notes/example.md"], { threadId: "thr_child" });
       await report("thr_child", "--kind", "ready", "--body", "Done");
       expect((await card()).progressNote).toBe("Handoff: /notes/example.md\n\n**READY**\n\nDone");
     } finally { vi.unstubAllEnvs(); await harness.dispose(); }
+  });
+
+  it("refuses a question or blocker while the reporter's own owner question on the card is fresh and open", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-01-01T10:00:00Z"));
+    const { bb, harness } = createFakePluginHost({ pluginId: "work-board" });
+    await plugin(bb);
+    await harness.runCli(["project", "create", "--name", "Wait", "--prefix", "WAI"]);
+    await harness.runCli(["create", "--project", "WAI", "--title", "Card"]);
+    const parents: Record<string, string | null> = { thr_child: "thr_parent", thr_other: "thr_parent", thr_parent: null };
+    harness.sdk.stub("threads.get", async ({ threadId }: { threadId: string }) => ({ id: threadId, title: threadId, status: "active", parentThreadId: parents[threadId] ?? null, archivedAt: null, deletedAt: null }) as never);
+    harness.sdk.stub("threads.queuedMessages.list", async () => []);
+    harness.sdk.stub("threads.send", async () => ({}) as never);
+    const report = (thread: string, kind: string) => harness.runCli(["report", "WAI-1", "--kind", kind, "--need", "Decide.", "--body", "x"], { threadId: thread });
+    vi.stubEnv("BB_THREAD_ID", "");
+    try {
+      const question = JSON.parse(stdout(await harness.runCli(["question", "add", "WAI-1", "--prompt", "Ship it?", "--option", "Yes", "--option", "No", "--json"], { threadId: "thr_child" }))).question;
+      for (const kind of ["question", "blocker"]) {
+        const refused = await report("thr_child", kind);
+        expect(refused.exitCode).not.toBe(0);
+        expect(refused.stderr).toContain("own owner question");
+        expect(refused.stderr).toContain("update KEY --progress");
+      }
+      expect(harness.sdk.callsTo("threads.send")).toEqual([]);
+      // Ready, progress and other threads are unaffected.
+      expect((await report("thr_child", "ready")).exitCode).toBe(0);
+      expect((await harness.runCli(["update", "WAI-1", "--progress", "Waiting"], { threadId: "thr_child" })).exitCode).toBe(0);
+      expect((await report("thr_other", "blocker")).exitCode).toBe(0);
+      // After 30 minutes the wait no longer blocks a report.
+      vi.setSystemTime(new Date("2026-01-01T10:31:00Z"));
+      expect((await report("thr_child", "question")).exitCode).toBe(0);
+      // An answered question never blocks.
+      vi.setSystemTime(new Date("2026-01-01T11:00:00Z"));
+      const fresh = JSON.parse(stdout(await harness.runCli(["question", "add", "WAI-1", "--prompt", "Again?", "--option", "Yes", "--option", "No", "--json"], { threadId: "thr_child" }))).question;
+      expect((await report("thr_child", "blocker")).exitCode).not.toBe(0);
+      await harness.runCli(["question", "answer", "WAI-1", "--question", fresh.id, "--answer", fresh.options[0].id, "--revision", String(fresh.revision)]);
+      expect((await report("thr_child", "blocker")).exitCode).toBe(0);
+      expect(question.askedByThread).toBe("thr_child");
+    } finally { vi.unstubAllEnvs(); vi.useRealTimers(); await harness.dispose(); }
   });
 
   it("attaches an unattached child session that writes Current state, but not a helper or a top-level thread", async () => {
@@ -303,6 +374,27 @@ describe("bb work-board CLI", () => {
       expect(stdout(await update("thr_lead", "--progress", "Working"))).toBe("Updated ATT-1  Card; attached thr_lead");
       expect(JSON.parse(stdout(await update("thr_worker", "--progress", "Helping", "--json")))).not.toHaveProperty("attached");
       expect(await sessions()).toEqual(["thr_lead"]);
+    } finally { await harness.dispose(); }
+  });
+
+  it("reads and changes one project setting at a time", async () => {
+    const { bb, harness } = createFakePluginHost({ pluginId: "work-board" });
+    await plugin(bb);
+    await harness.runCli(["project", "create", "--name", "Config", "--prefix", "CFG"]);
+    const config = async (...args: string[]) => harness.runCli(["config", ...args, "--project", "CFG"]);
+    try {
+      expect(stdout(await config("get", "staleIdleMinutes"))).toBe("staleIdleMinutes=45");
+      expect(stdout(await config("set", "staleIdleMinutes", "60"))).toBe("staleIdleMinutes=60");
+      expect(stdout(await config("set", "git.prWaitIgnoredChecks", "example/ready-check, example/other"))).toBe('git.prWaitIgnoredChecks=["example/ready-check","example/other"]');
+      expect(stdout(await config("set", "git.pollMinutes", "10"))).toBe("git.pollMinutes=10");
+      const all = JSON.parse(stdout(await config("get", "--json"))).values;
+      expect(all).toMatchObject({ staleIdleMinutes: "60", autoArchiveAfterDays: "off", "git.pollMinutes": 10, "git.prWaitIgnoredChecks": ["example/ready-check", "example/other"], "git.enabled": false });
+      // Whole-object Git configuration keeps working beside single keys.
+      expect(JSON.parse(stdout(await harness.runCli(["git-config", "--project", "CFG"]))).config).toMatchObject({ pollMinutes: 10 });
+      for (const args of [["set", "staleIdleMinutes", "7"], ["set", "git.pollMinutes", "0"], ["get", "unknown"], ["set", "name", "x"]]) {
+        expect((await config(...args)).exitCode).toBe(1);
+      }
+      expect((await config("get", "unknown")).stderr).toContain("known: autoArchiveAfterDays");
     } finally { await harness.dispose(); }
   });
 

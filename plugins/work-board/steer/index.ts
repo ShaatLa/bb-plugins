@@ -22,20 +22,32 @@ function steerPrompt(
   replyHint = true,
 ): string {
   return (
-    "**Work Board** · `New comment`\n" +
+    "`New comment`\n" +
     `- Task: [${taskKey}](/plugins/work-board/work-board/task/${taskKey})\n` +
     `- From: ${authorName}\n\n${body}` +
     (replyHint
-      ? "\n\nTreat this as updated context for your work on this task; " +
-        `reply via \`bb work-board comment ${taskKey}\` when relevant.`
+      ? "\n\nTreat this as updated context for your work on this task. Reflect it in Current state " +
+        `(\`bb work-board update ${taskKey} --progress ...\`); comment only results or evidence, and ask the owner ` +
+        `on the task, not in chat, with \`bb work-board question add ${taskKey}\` when you need a decision.`
       : "")
   );
 }
 
+/**
+ * The thread a message about a task goes to when nothing names one: the first linked session, else the thread of the
+ * latest agent comment (other than `excludeCommentId`). Question answers and plan reviews use the same rule.
+ */
+export function defaultTaskThreadId(store: TasksStore, taskId: string, excludeCommentId = ""): string | undefined {
+  return store.listTaskThreads(taskId)[0]?.threadId ?? store.getLatestAgentComment(taskId, excludeCommentId)?.threadId;
+}
+
 export const QUEUED_NOTICE_SEPARATOR = "\n\n---\n\n";
 
+/** bb's origin line, so the receiving agent reads a Work Board message as the plugin's, not the owner's words. */
+export const withPluginHeader = (pluginId: string, text: string) => `[bb message from plugin:${pluginId}]\n\n${text}`;
+
 // Extend our own notice when it is still the last queued row, so a busy thread
-// gets one message instead of a stack of them. Any doubt falls back to send.
+// gets one message instead of a stack of them; that message already starts with the header. Any doubt falls back to send.
 async function appendToQueuedNotice(
   bb: BbPluginApi,
   threadId: string,
@@ -75,7 +87,7 @@ export async function notifyThread(
   await bb.sdk.threads.send({
     threadId,
     originPluginId: bb.pluginId,
-    input: [{ type: "text", text, mentions: [] }],
+    input: [{ type: "text", text: withPluginHeader(bb.pluginId, text), mentions: [] }],
     mode: "queue-if-active",
   });
 }
@@ -124,7 +136,7 @@ export async function deliverCommentToLatestAgent(
       await bb.sdk.threads.send({
         threadId,
         originPluginId: bb.pluginId,
-        input: [{ type: "text", text: prompt, mentions: [] }],
+        input: [{ type: "text", text: withPluginHeader(bb.pluginId, prompt), mentions: [] }],
         mode: input.mode ?? "steer-if-active",
       });
       return 1;

@@ -32,6 +32,8 @@ interface ListTaskFilters {
   statuses: readonly TaskStatus[];
   priorities: readonly TaskPriority[];
   labelIds: readonly string[] | null;
+  /** Keep sub-tasks as their own rows; "Waiting on me" needs them, since a question can sit on a sub-task. */
+  subtasks?: boolean;
 }
 
 function belongsToList(
@@ -39,7 +41,7 @@ function belongsToList(
   projectId: string | null,
   filters: ListTaskFilters,
 ): boolean {
-  if (task.parentTaskId !== null || task.archivedAt) return false;
+  if ((task.parentTaskId !== null && !filters.subtasks) || task.archivedAt) return false;
   if (filters.type !== undefined && task.type !== filters.type) return false;
   if (projectId !== null && task.projectId !== projectId) return false;
   if (filters.statuses.length > 0 && !filters.statuses.includes(task.status)) {
@@ -83,10 +85,10 @@ export function useListTasks(
 ) {
   const query = useTasksQuery<Task[]>(
     (rpc, publish) => activeOnly
-      ? listAllTasks(rpc, { ...(projectId ? { projectId } : {}), activeOnly: true, parentTaskId: null })
+      ? listAllTasks(rpc, { ...(projectId ? { projectId } : {}), activeOnly: true, ...(filters.subtasks ? {} : { parentTaskId: null }) })
       : loadTaskDataset(rpc, projectId, publish),
     activeOnly ? ["tasks:changed", "threads:changed"] : ["tasks:changed", "projects:changed"],
-    [projectId, activeOnly],
+    [projectId, activeOnly, activeOnly && filters.subtasks],
     activeOnly ? {} : {
       snapshot: taskDatasetSnapshot(projectId),
       applySignals: (rpc, current, signals) => signals.some((signal) => signal.channel === "projects:changed")
@@ -95,7 +97,7 @@ export function useListTasks(
     },
   );
   const data = useMemo(() => query.data?.filter((task) => belongsToList(task, projectId, filters)), [
-    query.data, projectId, filters.type, filters.statuses.join(), filters.priorities.join(), filters.labelIds?.join(),
+    query.data, projectId, filters.type, filters.statuses.join(), filters.priorities.join(), filters.labelIds?.join(), filters.subtasks,
   ]);
   return { ...query, data };
 }

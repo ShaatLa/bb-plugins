@@ -9,4 +9,7 @@ it("recognizes only exact dispatch headers on the accepted request", () => {
   expect(dispatchedTask({ requestId: "r", input: [text(a)], inputGroups: [[text(a)], [text(b)]] }, "r")).toBeNull();
   expect(dispatchedTask({ requestId: "r", input: [text(a)], inputGroups: [[text(a)], [{ type: "text", text: "Unrelated work" }]] }, "r")).toBeNull();
   expect(dispatchedTask({ requestId: "r", input: [text(a)], inputGroups: [[text(a)], [text(a)]] }, "r")).toBe(a);
+  // bb's origin line may precede the marker; nothing else may.
+  expect(dispatchedTask({ requestId: "r", input: [{ type: "text", text: `[bb message from plugin:work-board]\n\n${dispatchMarker(a)}\n# Work` }] }, "r")).toBe(a);
+  expect(dispatchedTask({ requestId: "r", input: [{ type: "text", text: `Note\n\n${dispatchMarker(a)}\n# Work` }] }, "r")).toBeNull();
 });

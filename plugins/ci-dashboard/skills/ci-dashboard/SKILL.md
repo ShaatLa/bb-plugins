@@ -5,7 +5,7 @@ description: Read GitHub Actions CI metrics, health signals and run timings for 
 
 # CI Dashboard
 
-Open **CI Dashboard** in the navigation sidebar (pipeline icon), route `/plugins/delivery-dashboard/dashboard`. It no longer appears on New thread.
+Open **CI Dashboard** in the navigation sidebar (pipeline icon), route `/plugins/ci-dashboard/dashboard`. It no longer appears on New thread.
 
 Configure in Settings → Plugins → CI Dashboard:
 - `repository`: additional GitHub `owner/repo` entries, comma-, whitespace-, or newline-separated. Existing single entries remain valid.
@@ -21,7 +21,7 @@ For private repositories use a fine-grained token scoped to the repository with 
 
 BB project discovery failures appear in the UI while manual repositories still load. Projects without a recorded remote need a manual entry. The same repository list appears on the dashboard page.
 
-No custom CLI is needed: native ci_dashboard_metrics and the discoverable read-only ci RPC provide agent access. Use `bb plugin config delivery-dashboard` for non-secret settings, and the settings UI for credentials. Build with `bb plugin build <plugin-path>` before install or release.
+No custom CLI is needed: native ci_dashboard_metrics and the discoverable read-only ci RPC provide agent access. Use `bb plugin config ci-dashboard` for non-secret settings, and the settings UI for credentials. Build with `bb plugin build <plugin-path>` before install or release.
 
 The 1-day preset means today from 00:00 UTC through refresh time for all historical cards. Its charts show six four-hour intervals starting at 00:00, 04:00, 08:00, 12:00, 16:00 and 20:00 UTC. Future intervals show “—” and are disabled; the current interval ends at refresh time. Today’s deployment frequency is the count since midnight. Custom single-day charts keep hourly buckets. The three-day preset uses 12-hour buckets starting at 00:00 and 12:00 UTC. Other charts show UTC calendar-day buckets up to two weeks, and about 14 larger whole-day buckets for longer ranges. Bars are labelled with their start date in UTC. The first and last buckets may be partial; hover details show their actual boundaries. Deployment counts and CI success percentages come from GitHub records. CI days without runs show “—”. Large CI histories are split into disjoint UTC time searches of at most 1,000 runs each. Failed pagination or inconsistent counts are unavailable; capped large-search counts never produce a precise summary.
 
@@ -120,7 +120,7 @@ Index views are compact and hand out *refs* (breadcrumbs); pull exactly the deta
 - Drill down: call the same tool with `ref=<ref>` (optional `repository`; `view`, `selection` and `refresh` are then ignored). The result is `{ref, kind, summary, facts, related[], next?}` built from memory and the local store only (no GitHub requests), with ids, names, classes and labels but never log text, annotations, signature matches or env values. Exception: `job:`/`queue:` refs of a `real` failure carry `failureMessages` (test name → the first failure message of a failed test (its assertion or error lines up to the stack, at most 200 characters, with env assignments, tokens, credentials and home paths redacted)). `related` lists up to 12 refs, newest first, then `+N more`; `next` suggests actions such as `ci_dashboard_manage action=take id=...`. Walk index view → ref → related ref.
 - Ref forms: `job:<jobId>`, `run:<runId>[:<attempt>]`, `queue:<runId>:<attempt>` (the observer's queue key; `confirmation` is confirmed, pending or rejected), `pool:<name>`, `pr:<number>`, `sha:<sha or 7+ hex chars>`, and problem or signal ids (`run:streak:<runId>`, `run:main:<runId>`, `runner_loss:<jobId>`, `flake:<jobId>`, `transient:<jobId>`, `timeout:<jobId>`, `rerun_failed:<runId>:<attempt>`, `pool_stall:<pool>`, `mass_cancel:<time>`). An unknown, malformed or ambiguous ref (for example a short sha matching two commits) returns an error that lists these forms. Only jobs that failed within the stored window (plus live jobs) are known by job ref.
 
-The read-only `ci` RPC is discoverable via `bb plugin rpc inspect delivery-dashboard ci`. It accepts the same JSON input and can be called by other plugins or agents with `bb plugin rpc call delivery-dashboard ci --input-file query.json --json`. No custom CLI is required. This interface does not dispatch deployments or expose authorization tokens, settings, raw commit history or unused API payloads. Existing UI RPC methods remain private to discovery.
+The read-only `ci` RPC is discoverable via `bb plugin rpc inspect ci-dashboard ci`. It accepts the same JSON input and can be called by other plugins or agents with `bb plugin rpc call ci-dashboard ci --input-file query.json --json`. No custom CLI is required. This interface does not dispatch deployments or expose authorization tokens, settings, raw commit history or unused API payloads. Existing UI RPC methods remain private to discovery.
 
 New native tools become available when BB next constructs the provider session; an existing agent can use the CLI/RPC immediately after reload.
 
@@ -167,9 +167,15 @@ Use the agent tool **ci_dashboard_manage** with a problem action (`id` is requir
 
 You do not have to clean up: a claim closes itself when the signal resolves, is dropped when its investigating thread is archived or deleted (`fix_pending` outlives its thread), and expires after `claimTimeoutHours` (default 24, `0` = never). Observers get `[CI Dashboard] Claim dropped · <title> · problem <id> · <reason>` for each automatic drop, never for changes made through the tool.
 
-## Rename compatibility
+## Migration from delivery-dashboard (0.6.0)
 
-The visible name, navigation label, documentation, skill and repository directory are CI Dashboard / ci-dashboard. The package name bb-plugin-delivery-dashboard and internal plugin ID delivery-dashboard intentionally stay stable because BB namespaces settings, secrets and SQLite data by that ID. Existing routes under /plugins/delivery-dashboard/dashboard and old collection installs continue to work. New installs use --plugin ci-dashboard; updates continue to use bb plugin update delivery-dashboard. The delivery-dashboard collection entry is a compatibility alias pointing to the same renamed package, not a second installed plugin.
+Disable delivery-dashboard, then install ci-dashboard. On first start it imports the old database, KV (including observer deduplication), and declared settings. Keep the old installation disabled until the import is verified and signed off. Secrets are not copied; set the token again if needed. An enabled old installation or initialized target state blocks migration; reload ci-dashboard after resolving the reported reason. The private staged backup is retained in the new plugin data directory.
+
+While migration is done and delivery-dashboard is still registered (enabled or disabled), ci-dashboard stays in verification mode. It polls GitHub, stores history and rebuildable caches, and serves read views, but sends no observer messages or push notifications and refuses claims, subscriptions, Investigate and other user mutations. Observer deduplication, subscriptions, incidents and handled state remain unchanged, including inactive-repository KV. Problems show migrated incidents plus fresh run analysis; incident tracking resumes at GO so pending pushes are not consumed. The metrics overview reports `cutover: "verifying"`; entering and leaving the mode each produces one log line. Native setting writes (`bb plugin config ci-dashboard set`, the Settings page) are not refused: the host saves them before the plugin sees them, and the plugin only suppresses their observer side effects. Do not change settings during verification; a rollback would not carry them back.
+
+After sign-off, remove the old installation with `bb plugin remove delivery-dashboard`. Its removal ends verification on the next signal-loop tick; pending events use the existing deduplication and are delivered once.
+
+To roll back during verification, disable ci-dashboard and enable delivery-dashboard. Nothing is lost: the old namespace has not diverged, except for rebuildable caches and history that the old plugin re-fetches. After GO, new claims, subscriptions and delivery state are not copied back.
 
 
 When the history charts are side by side, each header has an Expand button. Expansion simultaneously animates both grid columns and their gap over 300 ms: one card grows to the full row while the other shrinks and fades out. Restore reverses the same transition. Both charts stay mounted so scroll positions and data survive; collapsed content is inert and hidden from assistive technology. The minimum inner width prevents text wrapping from inflating height during collapse. Expansion is independent per repository and survives in-place refreshes and date changes while the component remains mounted. Reduced-motion preferences disable transitions. On narrow layouts charts normally stack and the Expand controls are hidden; an already-expanded chart keeps its Restore control if the pane is narrowed.
@@ -193,5 +199,5 @@ Deployment lines name the PR when known. `observeDeployments` accepts `all` (def
 The discoverable `manage` RPC takes the same input as the tool. Actions needing a thread require explicit `threadId` over RPC. Write `{ "action": "subscribe_pr", "number": 12, "threadId": "thr_a" }` to `f.json`, then run:
 
 ```sh
-bb plugin rpc call delivery-dashboard manage --input-file f.json --json
+bb plugin rpc call ci-dashboard manage --input-file f.json --json
 ```

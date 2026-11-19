@@ -30,13 +30,18 @@ describe("view preference storage", () => {
     expect(loadLastProjectId()).toBe(PROJECT_A);
     expect(loadViewMode(PROJECT_A)).toBe("list");
   });
-  it("falls back to the list before anything is stored", () => {
-    expect(loadViewMode(PROJECT_A)).toBe("list");
+  it("falls back to the board before anything is stored", () => {
+    expect(loadViewMode(PROJECT_A)).toBe("board");
+  });
+
+  it("drops choices saved before version 2, when the toggle drove the side panel", () => {
+    storage.setItem(VIEW_PREFERENCE_STORAGE_KEY, JSON.stringify({ version: 1, lastUsed: "list", projects: { [PROJECT_A]: "list" } }));
+    expect(loadViewMode(PROJECT_A)).toBe("board");
   });
 
   it("treats corrupt or partial documents as unset rather than throwing", () => {
     storage.setItem(VIEW_PREFERENCE_STORAGE_KEY, "{not json");
-    expect(loadViewMode(PROJECT_A)).toBe("list");
+    expect(loadViewMode(PROJECT_A)).toBe("board");
 
     storage.setItem(
       VIEW_PREFERENCE_STORAGE_KEY,
@@ -46,7 +51,7 @@ describe("view preference storage", () => {
         projects: { [PROJECT_A]: "gallery" },
       }),
     );
-    expect(loadViewMode(PROJECT_A)).toBe("list");
+    expect(loadViewMode(PROJECT_A)).toBe("board");
   });
 
   it("leaves a document written by a newer client untouched", () => {

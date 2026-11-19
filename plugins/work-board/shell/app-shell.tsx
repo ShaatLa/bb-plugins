@@ -2,7 +2,7 @@ import { ScheduledView } from "../views/scheduled/index.js";
 import { ArchiveView } from "../views/archive/index";
 import { TaskStatusesProvider } from "./task-statuses.js";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useKanbanPanel, projectForRoute } from "./kanban-view.js";
+import { projectForRoute } from "./kanban-view.js";
 import type { TaskViewMode } from "./routes.js";
 import type { PluginNavPanelProps } from "@get-bb/plugin-sdk/app";
 import { useProjects, useTasksQuery } from "./data.js";
@@ -19,7 +19,9 @@ import { loadLastProjectId, loadLastRoute, storeLastProjectId, storeLastRoute, l
 import { startupRoute } from "./startup-route.js";
 import { TasksTopbar } from "./topbar.js";
 import { ListView } from "../views/list/index.js";
+import { BoardView } from "../views/board/index.js";
 import { DetailView } from "../views/detail/index.js";
+import { PlanView } from "../views/plan/plan-view.js";
 import { useTaskScrollResume } from "../views/detail/scroll-resume.js";
 import { NewTaskDialog } from "../views/manage/new-task-dialog.js";
 import { NewProjectDialog } from "../views/manage/new-project-dialog.js";
@@ -67,9 +69,14 @@ function RouteOutlet({
       return <ScheduledView tab={route.tab} />;
     case "task":
       return <TaskRouteView taskKey={route.taskKey} onBack={onBack} />;
+    case "plan":
+      return <PlanView key={route.taskKey} taskKey={route.taskKey} surface="page" />;
     case "project":
-      // The board lives only in the native right panel (one BoardView).
-      return <ListView projectId={route.projectId} />;
+      return route.view === "board" ? (
+        <div className="h-full min-h-0"><BoardView projectId={route.projectId} /></div>
+      ) : (
+        <ListView projectId={route.projectId} />
+      );
   }
 }
 
@@ -153,56 +160,22 @@ function TasksAppShellContent({ subPath }: PluginNavPanelProps) {
   const [newTaskOpen, setNewTaskOpen] = useState(false);
   const [newProjectOpen, setNewProjectOpen] = useState(false);
 
-  // Native selectedKey+open decide "Board"; route/local preference is only intent.
-  const kanban = useKanbanPanel();
-  const viewProject = projectForRoute(route, projects.data);
-  const viewProjectId = viewProject?.id ?? null;
-  const appliedBoardIntent = useRef<string | null>(null);
-  const rememberView = (view: TaskViewMode) => {
-    if (viewProjectId === null) return;
-    storeViewMode(viewProjectId, view);
-    const explicit = parseTasksRoute(subPath);
-    if (explicit.kind === "project" && explicit.view !== null && explicit.view !== view) {
-      const next: TasksRoute = { kind: "project", projectId: explicit.projectId, view };
-      if (view === "board") appliedBoardIntent.current = tasksRouteToSubPath(next);
-      tasksNavigation.go(next, { replace: true });
-    }
+  // The List/Board toggle switches the main area; the native Kanban tab in the side panel is independent.
+  const viewProjectId = projectForRoute(route, projects.data)?.id ?? null;
+  const view: TaskViewMode = route.kind === "project" ? route.view : viewProjectId === null ? "list" : loadViewMode(viewProjectId);
+  const changeView = (next: TaskViewMode) => {
+    if (viewProjectId !== null) navigation.go({ kind: "project", projectId: viewProjectId, view: next }, { replace: route.kind === "project" });
   };
-  const changeView = (view: TaskViewMode) => {
-    if (view === "board" ? !kanban.active && !kanban.show() : kanban.active && !kanban.hide()) return;
-    rememberView(view);
-  };
-  // A board intent opens the native tab once per navigation; a later external
-  // close is never undone by the same (stale) route.
-  const boardIntent =
-    !isRoot && !opening && route.kind === "project" && route.view === "board" ? resolvedSubPath : null;
-  useEffect(() => {
-    if (boardIntent === null) {
-      appliedBoardIntent.current = null;
-      return;
-    }
-    if (appliedBoardIntent.current === boardIntent) return;
-    appliedBoardIntent.current = boardIntent;
-    if (!kanban.active) kanban.show();
-    // oxlint-disable-next-line react/exhaustive-deps
-  }, [boardIntent]);
-  // Closing/switching the native tab elsewhere demotes the remembered view.
-  const wasBoardActive = useRef(kanban.active);
-  useEffect(() => {
-    const was = wasBoardActive.current;
-    wasBoardActive.current = kanban.active;
-    if (was && !kanban.active) rememberView("list");
-    // oxlint-disable-next-line react/exhaustive-deps
-  }, [kanban.active]);
 
   const lastBrowseRouteRef = useRef<TasksRoute | null>(null);
   useEffect(() => {
-    if (!opening && route.kind !== "task") lastBrowseRouteRef.current = route;
+    if (!opening && route.kind !== "task" && route.kind !== "plan") lastBrowseRouteRef.current = route;
     // oxlint-disable-next-line react/exhaustive-deps
   }, [resolvedSubPath, opening]);
+  // Escape leaves a plan for its task, and a task for the list it was opened from.
   const backFromTask = () =>
-    navigation.go(lastBrowseRouteRef.current ?? { kind: "all" });
-  const onTaskRoute = route.kind === "task";
+    navigation.go(route.kind === "plan" ? { kind: "task", taskKey: route.taskKey } : (lastBrowseRouteRef.current ?? { kind: "all" }));
+  const onTaskRoute = route.kind === "task" || route.kind === "plan";
   const backRef = useRef(backFromTask);
   backRef.current = backFromTask;
   useEffect(() => {
@@ -250,13 +223,13 @@ function TasksAppShellContent({ subPath }: PluginNavPanelProps) {
                       : null,
                 }
           }
-          view={kanban.active ? "board" : "list"}
+          view={view}
           onViewChange={changeView}
           onNavigate={navigation.go}
           onNewTask={() => setNewTaskOpen(true)}
         />
         <div ref={contentRef} className="min-h-0 flex-1 overflow-auto">
-          {opening ? <p role="status" className="p-4 text-sm text-muted-foreground">Loading tasks…</p> : noProjects && route.kind !== "task" && route.kind !== "manage" ? (
+          {opening ? <p role="status" className="p-4 text-sm text-muted-foreground">Loading tasks…</p> : noProjects && route.kind !== "task" && route.kind !== "plan" && route.kind !== "manage" ? (
             <EmptyState
               icon="ListTodo"
               title="No projects yet"

@@ -10,7 +10,7 @@ import { projectForRoute } from "./kanban-view.js";
 import { ScheduledButton } from "./scheduled-button.js";
 import { Button } from "@/components/ui/button";
 import { Icon } from "@/components/ui/icon";
-import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { cn } from "@/lib/utils";
 import {
   Tooltip,
@@ -130,8 +130,8 @@ function ViewToggle({
   );
   return (
     <div className="flex items-center rounded-md bg-muted p-0.5">
-      {segment("list", "List")}
       {segment("board", "Board")}
+      {segment("list", "List")}
     </div>
   );
 }
@@ -193,16 +193,15 @@ export function TasksTopbar({
   const project = useMemo(() => projectForRoute(route, projects), [route, projects]);
   // The clock toggles: pressed again on Scheduled, it returns to the view it was opened from.
   const beforeScheduled = useRef<TasksRoute>({ kind: "all" });
+  // Manage has no sidebar entry, so its header carries the way back.
+  const beforeManage = useRef<TasksRoute>({ kind: "all" });
   useEffect(() => {
     if (route.kind !== "scheduled") beforeScheduled.current = route;
+    if (route.kind !== "manage") beforeManage.current = route;
   }, [route]);
 
   const breadcrumb = (() => {
     switch (route.kind) {
-      case "all":
-        return (
-          <span className="whitespace-nowrap font-semibold">All tasks</span>
-        );
       case "active":
         return (
           <span className="flex items-center gap-2">
@@ -226,28 +225,75 @@ export function TasksTopbar({
       case "manage":
         return (
           <span className="flex items-center gap-2">
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon"
+              aria-label="Back"
+              className="-ml-1.5 size-7 shrink-0 text-muted-foreground hover:text-foreground max-md:pointer-coarse:size-9"
+              onClick={() => onNavigate(beforeManage.current)}
+            >
+              <Icon name="ArrowLeft" className="size-4" />
+            </Button>
             <span className="whitespace-nowrap font-semibold">Manage</span>
             <span className="hidden text-xs font-normal text-muted-foreground @md:inline">
               projects, labels, presets, folders
             </span>
           </span>
         );
+      case "all":
       case "project":
         return (
-          <span className="flex min-w-0 items-center gap-2">
-            {project ? (
-              <span
-                aria-hidden
-                className="size-3 shrink-0 rounded-sm"
-                style={{ backgroundColor: project.color }}
-              />
-            ) : null}
-            <span className="truncate font-semibold">
-              {project?.name ?? "Project"}
-            </span>
-          </span>
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <button
+                type="button"
+                aria-label="Switch project"
+                className="flex min-w-0 max-w-full items-center gap-2 rounded-md px-1.5 py-0.5 hover:bg-state-hover"
+              >
+                {project ? (
+                  <span
+                    aria-hidden
+                    className="size-3 shrink-0 rounded-sm"
+                    style={{ backgroundColor: project.color }}
+                  />
+                ) : null}
+                <span className="truncate font-semibold">
+                  {route.kind === "all" ? "All tasks" : (project?.name ?? "Project")}
+                </span>
+                <Icon name="ChevronDown" className="size-3.5 shrink-0 text-muted-foreground" />
+              </button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="start" className="max-h-80 overflow-y-auto">
+              <DropdownMenuItem
+                disabled={route.kind === "all"}
+                onSelect={() => onNavigate({ kind: "all" })}
+              >
+                <Icon name="ListView" className="size-3.5 shrink-0 text-muted-foreground" />
+                All tasks
+              </DropdownMenuItem>
+              {(projects ?? []).length > 0 ? <DropdownMenuSeparator /> : null}
+              {(projects ?? []).map((item) => (
+                <DropdownMenuItem
+                  key={item.id}
+                  disabled={route.kind === "project" && item.id === project?.id}
+                  onSelect={() =>
+                    onNavigate({ kind: "project", projectId: item.id, view: null })
+                  }
+                >
+                  <span
+                    aria-hidden
+                    className="size-3 shrink-0 rounded-sm"
+                    style={{ backgroundColor: item.color }}
+                  />
+                  <span className="truncate">{item.name}</span>
+                </DropdownMenuItem>
+              ))}
+            </DropdownMenuContent>
+          </DropdownMenu>
         );
       case "task":
+      case "plan":
         return (
           <span className="flex min-w-0 items-center gap-1.5">
             {project ? (
@@ -277,7 +323,8 @@ export function TasksTopbar({
 
   return (
     <header className="flex h-11 shrink-0 items-center gap-2.5 border-b border-border-hairline bg-background px-3.5 text-sm max-md:pointer-coarse:h-12 max-md:pl-12 max-md:pointer-coarse:pl-14">
-      <div className="min-w-0 flex-1 overflow-hidden">{breadcrumb}</div>
+      {/* Room on the left so hover backgrounds pulled out with negative margins are not clipped. */}
+      <div className="-ml-2 min-w-0 flex-1 overflow-hidden pl-2">{breadcrumb}</div>
       {route.kind === "project" && project ? (
         <LockChips projectId={project.id} />
       ) : null}

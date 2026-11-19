@@ -593,7 +593,9 @@ it.each(["central", "thread"])("groups status, linked sessions and dispatch in t
   const dependencies = slot.getByRole("region", { name: "Task dependencies" });
   const attachmentControls = slot.getByRole("button", { name: "Add reaction" }).parentElement!;
   expect(attachmentControls.previousElementSibling).toBe(slot.getByRole("region", { name: "Current state" }));
-  expect(attachmentControls.previousElementSibling?.previousElementSibling?.querySelector(".tiptap")).not.toBeNull();
+  // Description, then the Plan card, then Current state.
+  expect(attachmentControls.previousElementSibling?.previousElementSibling).toBe(slot.getByRole("region", { name: "Plan" }));
+  expect(attachmentControls.previousElementSibling?.previousElementSibling?.previousElementSibling?.querySelector(".tiptap")).not.toBeNull();
   expect(attachmentControls.compareDocumentPosition(dependencies) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   expect(dependencies.className).toContain("border-t");
   expect(dependencies.className).not.toContain("rounded");

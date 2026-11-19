@@ -5,7 +5,12 @@ import { cn } from "../../lib/utils";
 import { usePortalScopeProps } from "../../lib/portal-scope";
 import { CONTROL_HOVER_TRANSITION } from "./motion.js";
 import { Icon } from "../../components/ui/icon.js";
-import { COARSE_POINTER_CHECK_SLOT_CLASS } from "./coarse-pointer-sizing.js";
+import {
+  COARSE_POINTER_CHECK_SLOT_CLASS,
+  COARSE_POINTER_COMPACT_ICON_SIZE_SHRINK_CLASS,
+  COARSE_POINTER_COMPACT_ROW_HEIGHT_CLASS,
+  COARSE_POINTER_TEXT_SM_CLASS,
+} from "./coarse-pointer-sizing.js";
 import {
   type ResponsiveOverlayContextValue,
   COMPACT_SHEET_CONTENT_STYLE,
@@ -215,7 +220,9 @@ const SelectTrigger = React.forwardRef<
       <SelectPrimitive.Trigger
         ref={anchorRef}
         className={cn(
-          `flex h-9 w-full items-center justify-between whitespace-nowrap rounded-md border border-input bg-transparent px-3 py-2 text-sm ${CONTROL_HOVER_TRANSITION} placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-ring disabled:cursor-not-allowed disabled:opacity-50 [&>span]:line-clamp-1`,
+          `flex w-full items-center justify-between gap-2 whitespace-nowrap rounded-md border border-border/60 bg-card px-2 font-medium ${CONTROL_HOVER_TRANSITION} placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-ring disabled:cursor-not-allowed disabled:opacity-50 [&>span]:line-clamp-1`,
+          COARSE_POINTER_COMPACT_ROW_HEIGHT_CLASS,
+          COARSE_POINTER_TEXT_SM_CLASS,
           className,
         )}
         {...props}
@@ -223,7 +230,7 @@ const SelectTrigger = React.forwardRef<
       >
         {children}
         <SelectPrimitive.Icon asChild>
-          <Icon name="ChevronDown" className="size-4 opacity-50" />
+          <Icon name="ChevronDown" className={cn(COARSE_POINTER_COMPACT_ICON_SIZE_SHRINK_CLASS, "text-muted-foreground")} />
         </SelectPrimitive.Icon>
       </SelectPrimitive.Trigger>
     );

@@ -70,7 +70,7 @@ interface Options {
 function renderList(tasks: Task[], options: Options = {}) {
   return renderSlot(
     app.navPanels[0]!,
-    { subPath: PROJECT_ID },
+    { subPath: `${PROJECT_ID}?view=list` },
     {
       rpc: {
         listProjects: () => ({ projects: options.projects ?? [project] }),

@@ -1,6 +1,8 @@
 Delegation presets are user-defined; Tasks ships with none. Before dispatching
 work, use `bb work-board preset list` and create a preset if the required one does
-not already exist. Dispatch requires an existing preset.
+not already exist. Dispatch takes exactly one of `--preset` (a new thread,
+parented to the invoking thread unless `--no-parent`; `--parent-notifications
+auto|stuck|off`) or `--thread` (an existing thread, no preset needed).
 
 Create or update the same execution selection exposed in the Tasks UI with
 `--provider`, `--model`, `--reasoning`, and optional

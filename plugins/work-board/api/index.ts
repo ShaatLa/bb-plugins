@@ -1,11 +1,19 @@
+import { UNANSWERED_QUESTION } from "../db/waiting-on-owner";
+import { getWorkflowPolicy } from "../shared/workflow-policy";
 import { observeStatusNotifications } from "../status-notifications";
 import { ordinaryTaskVisibilitySql } from "../scheduled/visibility";
 import { taskAdvisories } from "../advisories";
-import { BOARD_PREFERENCES_KEY, DEFAULT_BOARD_PREFERENCES, boardPreferencesSchema, idleThreshold } from "../shared/project-settings";
+import { idleThreshold } from "../shared/project-settings";
+import { getBadgeCriteria, getBoardPreferences, setBadgeCriteria, setBoardPreferences } from "../global-settings";
 import { activityService } from "../activity/index.js";
 import { createDependencyStore } from "../dependencies/store";
+import { createPlanStore, PlanError } from "../plans/store";
+import { createPlanNoteStore } from "../plans/notes";
+import { deliverPlanReview } from "../plans/delivery";
+import { buildApprovalMessage, buildFeedbackMessage, orderNotes } from "../shared/plan-notes";
 import { storageService } from "../storage";
 import { gitSyncService } from "../git-sync/service";
+import { projectConfigHandlers } from "../config";
 import { createLockHandlers } from "../locks/service";
 import { statusLabel } from "../shared/statuses.js";
 import type { BbPluginApi, PluginRpcHandlers } from "@get-bb/plugin-sdk";
@@ -34,7 +42,7 @@ import { BADGE_CRITERIA, DEFAULT_BADGE_CRITERIA } from "../shared/badge";
 import { errorMessage } from "../shared/errors";
 import { SecretDetectedError } from "../shared/secret-guard.js";
 import { createStructuredStore } from "../structured/store";
-import type { Evidence } from "../shared/contract";
+import type { Evidence, PlanNote } from "../shared/contract";
 import { isSideChatShapedThread } from "../shared/side-chat";
 import {
   tasksRpcContract,
@@ -511,6 +519,34 @@ export async function createComment(
 export const REPORT_KINDS = ["ready", "question", "blocker"] as const;
 export type ReportKind = (typeof REPORT_KINDS)[number];
 
+export const REPORT_NEED_HINT = 'Progress that asks nothing goes to bb work-board update KEY --progress "<text>", which wakes nobody.';
+
+/** A question or blocker must say what the recipient has to decide or do; ready needs nothing. */
+export function reportNeed(kind: ReportKind, need: string | undefined): string | null {
+  const text = need?.trim() ?? "";
+  if (kind !== "ready" && !text) throw new Error(`A ${kind} report needs --need "<what the recipient must decide or do>"`);
+  // A dash alone is a placeholder; "- Decide X" is a bullet that still asks for something.
+  if (kind !== "ready" && /^(?:nothing|none|no action|n\/a)(?![a-z])|^-+(?!\s*\w)/i.test(text))
+    throw new Error(`A ${kind} report's --need must ask the recipient to decide or do something, not "${text.slice(0, 40)}"`);
+  return text || null;
+}
+
+export const REPORT_WAIT_MINUTES = 30;
+export const REPORT_WAIT_HINT = 'Your parent already sees that wait on the card; post progress with bb work-board update KEY --progress "<text>", which wakes nobody.';
+
+/** The calling thread's own open owner question on the card, asked within the last 30 minutes. */
+export function recentOwnQuestion(bb: BbPluginApi, taskId: string, threadId: string): { id: string } | null {
+  const since = new Date(Date.now() - REPORT_WAIT_MINUTES * 60_000).toISOString();
+  return bb.storage.database().prepare<[string, string, string], { id: string }>(
+    `SELECT q.id FROM task_questions q WHERE q.task_id = ? AND json_extract(q.payload, '$.askedByThread') = ?
+      AND json_extract(q.payload, '$.createdAt') >= ? AND ${UNANSWERED_QUESTION} LIMIT 1`,
+  ).get(taskId, threadId, since) ?? null;
+}
+
+export function ownQuestionRefusal(kind: ReportKind, taskKey: string): string {
+  return `A ${kind} report on ${taskKey} is refused while your own owner question there, asked in the last ${REPORT_WAIT_MINUTES} minutes, is open`;
+}
+
 /** How a calling thread stands on a card: its own session, or a helper whose parent already holds the card. */
 export async function cardRole(bb: BbPluginApi, store: TasksApiStore, taskId: string, threadId: string) {
   const thread = await bb.sdk.threads.get({ threadId });
@@ -536,8 +572,12 @@ function fitState(text: string, overflow: string): string {
 export async function reportToParent(
   bb: BbPluginApi,
   store: TasksApiStore,
-  input: { taskId: string; threadId: string; kind: ReportKind; body: string },
+  input: { taskId: string; threadId: string; kind: ReportKind; body: string; need?: string },
 ): Promise<{ parentThreadId: string; notified: boolean; stateUpdated: boolean }> {
+  const need = reportNeed(input.kind, input.need);
+  const body = need ? `Needed: ${need}\n\n${input.body}` : input.body;
+  if (input.kind !== "ready" && recentOwnQuestion(bb, input.taskId, input.threadId))
+    throw new Error(ownQuestionRefusal(input.kind, store.tasks.getTask(input.taskId)!.key));
   const role = await cardRole(bb, store, input.taskId, input.threadId);
   const parentThreadId = role.parentThreadId;
   if (!parentThreadId) throw new Error(`Thread ${input.threadId} has no parent thread to report to`);
@@ -550,7 +590,7 @@ export async function reportToParent(
   if (stateUpdated) {
     // A "Handoff:" line points a compacted or successor session at its notes; a report must not drop it.
     const handoff = (task.progressNote ?? "").split("\n").filter((line) => line.startsWith("Handoff:"));
-    const progressNote = fitState([...handoff, `**${label}**\n\n${input.body}`].join("\n\n"), `\n\n… (cut; the full report went to @thread:${parentThreadId})`);
+    const progressNote = fitState([...handoff, `**${label}**\n\n${body}`].join("\n\n"), `\n\n… (cut; the full report went to @thread:${parentThreadId})`);
     store.transaction(() => store.tasks.updateTask(task.id, { progressNote, authorName: input.threadId }));
     publishTasksChanged(bb, task.id, task.projectId);
   }
@@ -559,7 +599,7 @@ export async function reportToParent(
     await notifyThread(
       bb,
       parentThreadId,
-      `**${task.key} · ${label}** from @thread:${input.threadId}\n\n${input.body}\n\n[Open ${task.key}](/plugins/work-board/work-board/task/${task.key})`,
+      `**${task.key} · ${label}** from @thread:${input.threadId}\n\n${body}\n\n[Open ${task.key}](/plugins/work-board/work-board/task/${task.key})`,
     );
     notified = true;
   } catch (error) {
@@ -688,21 +728,6 @@ async function listTaskPullRequests(
   };
 }
 
-const BADGE_CRITERIA_KEY = "navigation-badge:criteria";
-
-async function readBadgeCriteria(bb: BbPluginApi) {
-  const stored = await bb.storage.kv.get<unknown>(BADGE_CRITERIA_KEY);
-  const upgraded = await bb.storage.kv.get<boolean>("navigation-badge:waiting-on-owner-upgraded");
-  if (!upgraded) {
-    if (Array.isArray(stored) && !stored.includes("waiting_on_owner")) {
-      stored.push("waiting_on_owner");
-      await bb.storage.kv.set(BADGE_CRITERIA_KEY, stored);
-    }
-    await bb.storage.kv.set("navigation-badge:waiting-on-owner-upgraded", true);
-  }
-  if (!Array.isArray(stored)) return [...DEFAULT_BADGE_CRITERIA];
-  return BADGE_CRITERIA.filter((criterion) => stored.includes(criterion));
-}
 
 export function registerHandlers(
   bb: BbPluginApi,
@@ -710,6 +735,40 @@ export function registerHandlers(
 ): PluginRpcHandlers<typeof tasksRpcContract> {
   const structured = createStructuredStore(bb, store);
   const dependencies = createDependencyStore(bb.storage.database(), store.tasks);
+  const plans = createPlanStore(bb.storage.database(), store.tasks);
+  // Plan writes report refusals as results; every success logs a system comment, so both feeds refresh.
+  function planWrite<T extends { plan: { taskId: string } }>(write: () => T) {
+    try {
+      const result = store.transaction(write);
+      const task = store.tasks.getTask(result.plan.taskId)!;
+      publishTasksChanged(bb, task.id, task.projectId);
+      publishCommentsChanged(bb, task.id);
+      return { ok: true as const, ...result };
+    } catch (error) {
+      if (error instanceof PlanError) return { ok: false as const, error: { code: error.code, message: error.message } };
+      if (error instanceof SecretDetectedError) return { ok: false as const, error: { code: "secret_detected" as const, message: error.message } };
+      throw error;
+    }
+  }
+  const planNotes = createPlanNoteStore(bb.storage.database(), store.tasks, plans.head);
+  /** Runs a note write; refusals come back as results, and a success refreshes the task feeds. */
+  function noteWrite<T extends { taskId: string }>(write: () => T, options: { comments?: boolean } = {}) {
+    try {
+      const result = store.transaction(write);
+      const task = store.tasks.getTask(result.taskId)!;
+      publishTasksChanged(bb, task.id, task.projectId);
+      if (options.comments) publishCommentsChanged(bb, task.id);
+      return { ok: true as const, result };
+    } catch (error) {
+      if (error instanceof PlanError) return { ok: false as const, error: { code: error.code, message: error.message } };
+      if (error instanceof SecretDetectedError) return { ok: false as const, error: { code: "secret_detected" as const, message: error.message } };
+      throw error;
+    }
+  }
+  const noteResult = (write: () => PlanNote) => {
+    const outcome = noteWrite(write);
+    return outcome.ok ? { ok: true as const, note: outcome.result } : outcome;
+  };
   function changeDependency(input: { taskId: string; blockingTaskId: string; authorName: string }, add: boolean) {
     const changed = store.transaction(() => {
       const changed = add ? dependencies.add(input.taskId, input.blockingTaskId) : dependencies.remove(input.taskId, input.blockingTaskId);
@@ -743,6 +802,45 @@ export function registerHandlers(
     return { changed };
   }
   return {
+    getTaskPlan: ({ taskId, version }) => {
+      const plan = plans.get(taskId, version);
+      return { plan: plan && { ...plan, noteCounts: planNotes.counts(taskId) } };
+    },
+    listTaskPlanVersions: ({ taskId }) => ({ ...plans.listVersions(taskId), noteCounts: planNotes.counts(taskId) }),
+    listPlanNotes: ({ taskId }) => ({ notes: planNotes.list(taskId) }),
+    createPlanNote: (input) => noteResult(() => planNotes.create(input as Parameters<typeof planNotes.create>[0])),
+    updatePlanNote: ({ noteId, body }) => noteResult(() => planNotes.update(noteId, body)),
+    deletePlanNote: ({ noteId }) => {
+      const outcome = noteWrite(() => ({ taskId: planNotes.remove(noteId) }));
+      return outcome.ok ? { ok: true as const } : outcome;
+    },
+    setPlanNoteState: ({ noteId, state }) => noteResult(() => planNotes.setState(noteId, state)),
+    replyPlanNote: (input) => noteResult(() => planNotes.reply(input)),
+    sendPlanFeedback: async ({ taskId, author }) => {
+      const outcome = noteWrite(() => ({ taskId, ...planNotes.sendFeedback(taskId, author) }), { comments: true });
+      if (!outcome.ok) return outcome;
+      const { plan, version, body, taskKey, notes } = outcome.result;
+      // The feedback is saved above; delivery only wakes the agent, and its failure is reported, not undone.
+      const text = buildFeedbackMessage({ taskKey, version, notes: orderNotes(notes, body) });
+      const delivery = await deliverPlanReview(bb, store.tasks, { taskId, authorThread: plans.latestAgentThread(taskId), text });
+      return { ok: true as const, plan, ...delivery, notes: notes.length };
+    },
+    approvePlan: async ({ taskId, author, note }) => {
+      const outcome = noteWrite(() => ({ taskId, ...planNotes.approve(taskId, author, note) }), { comments: true });
+      if (!outcome.ok) return outcome;
+      const { plan, version, taskKey, note: given } = outcome.result;
+      const text = buildApprovalMessage({ taskKey, version, note: given });
+      const delivery = await deliverPlanReview(bb, store.tasks, { taskId, authorThread: plans.latestAgentThread(taskId), text });
+      return { ok: true as const, plan, ...delivery, notes: 0 };
+    },
+    diffTaskPlan: ({ taskId, from, to }) => plans.diff(taskId, from, to),
+    saveTaskPlan: (input) => planWrite(() => plans.save(input)),
+    submitTaskPlan: ({ taskId, author }) => planWrite(() => plans.submit(taskId, author)),
+    setTaskPlanState: ({ taskId, state, author }) => {
+      const result = planWrite(() => plans.setState(taskId, state, author));
+      // Drops the store's internal changed flag; a repeated state wrote no system comment.
+      return result.ok ? { ok: true as const, plan: result.plan, version: result.version } : result;
+    },
     listTaskDependencies: ({ taskId }) => dependencies.list(taskId),
     addTaskRelation: (input) => changeRelation(input, true),
     removeTaskRelation: (input) => changeRelation(input, false),
@@ -760,6 +858,7 @@ export function registerHandlers(
     listTaskClaims: (input) => ({ claims: store.tasks.listTaskClaims(input.taskId) }),
     ...structured.handlers,
     ...gitSyncService(bb, store).handlers,
+    ...projectConfigHandlers(bb, store),
     ...createLockHandlers(bb, store),
     createFolder(input) {
       const folder = store.tasks.createFolder(input);
@@ -788,11 +887,11 @@ export function registerHandlers(
     listFolders() {
       return { folders: store.tasks.listFolders() };
     },
-    async getBoardPreferences() {
-      return boardPreferencesSchema.parse(await bb.storage.kv.get(BOARD_PREFERENCES_KEY) ?? DEFAULT_BOARD_PREFERENCES);
+    getBoardPreferences() {
+      return getBoardPreferences(bb);
     },
     async setBoardPreferences(input) {
-      await bb.storage.kv.set(BOARD_PREFERENCES_KEY, input);
+      await setBoardPreferences(bb, input);
       publishProjectsChanged(bb, null);
       return input;
     },
@@ -1269,7 +1368,12 @@ export function registerHandlers(
       const scopedActivity = await activityService(bb, store).metadata(ids, discoveryComplete);
       const blockedBy = dependencies.blockers(ids);
       const advisories = taskAdvisories(bb, activity, blockedBy, scopedActivity, threads);
-      const thresholds = new Map(store.tasks.listProjects().map((project) => [project.id, idleThreshold(project)]));
+      const projects = store.tasks.listProjects();
+      const thresholds = new Map(projects.map((project) => [project.id, idleThreshold(project)]));
+      const waitingStatuses = new Map(projects.map((project) => [project.id, [getWorkflowPolicy(project).reviewStatus]]));
+      const waitingOnOwner = new Set(bb.storage.database().prepare<string[], { task_id: string }>(
+        `SELECT DISTINCT q.task_id FROM task_questions q WHERE q.task_id IN (${ids.map(() => "?").join(",")}) AND ${UNANSWERED_QUESTION}`,
+      ).all(...ids).map((row) => row.task_id));
       return { metadata: ids.map((taskId) => {
         const links = threads.get(taskId) ?? [];
         const task = activity.get(taskId);
@@ -1281,7 +1385,7 @@ export function registerHandlers(
           blockedBy: blockedBy.get(taskId) ?? [],
           advisories: advisories.get(taskId) ?? [],
           taskThreads: links.filter((link) => link.liveStatus === "starting" || link.liveStatus === "working"),
-          threadHealth: evaluateThreadHealth(task?.status ?? "", links, task?.lastActivityAt ?? "", task ? thresholds.get(task.projectId) ?? null : null),
+          threadHealth: evaluateThreadHealth(task?.status ?? "", links, task?.lastActivityAt ?? "", task ? thresholds.get(task.projectId) ?? null : null, task ? waitingStatuses.get(task.projectId) : undefined, waitingOnOwner.has(taskId)),
         };
       }) };
     },
@@ -1376,18 +1480,15 @@ export function registerHandlers(
       };
     },
     async getNavigationBadgeCriteria() {
-      return { criteria: await readBadgeCriteria(bb) };
+      return { criteria: await getBadgeCriteria(bb) };
     },
     async setNavigationBadgeCriteria({ criteria }) {
-      await readBadgeCriteria(bb);
-      // Store in a stable order and without repeats so the badge never counts a criterion twice.
-      const saved = BADGE_CRITERIA.filter((criterion) => criteria.includes(criterion));
-      await bb.storage.kv.set(BADGE_CRITERIA_KEY, saved);
+      const saved = await setBadgeCriteria(bb, criteria);
       bb.realtime.publish("badge:changed", {});
       return { criteria: saved };
     },
     async navigationBadge() {
-      const criteria = await readBadgeCriteria(bb);
+      const criteria = await getBadgeCriteria(bb);
       return {
         ...navigationBadgeCounts(bb, store, criteria, Date.now()),
         criteria,

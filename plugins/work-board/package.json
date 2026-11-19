@@ -1,6 +1,6 @@
 {
   "name": "bb-plugin-work-board",
-  "version": "0.43.3",
+  "version": "0.58.2",
   "description": "Project tracking for people and AI agents in BB: kanban, epics, questions, archives, GitHub PR/CI and portable project exports.",
   "private": true,
   "license": "MIT",
@@ -29,7 +29,7 @@
     "name": "Work Board",
     "description": "A project tracker for people and AI agents in BB. Plan projects with tasks, epics, subtasks, kanban boards and custom workflows. Delegate work to existing threads, collect decisions and validations through typed questions. Track GitHub pull requests and CI, keep completed work in a searchable archive, and export or import project history for versioned storage in Git.",
     "branding": {
-      "icon": "ListTodo"
+      "icon": "./assets/kanban.svg"
     },
     "server": "./server.ts",
     "app": "./app.tsx",
@@ -95,6 +95,7 @@
     "@tiptap/pm": "^2.27.2",
     "@tiptap/starter-kit": "^2.27.2",
     "@tiptap/suggestion": "^2.27.2",
+    "diff": "^9.0.0",
     "tiptap-markdown": "^0.8.10",
     "zod": "^4.3.6",
     "@radix-ui/react-slot": "^1.3.0",

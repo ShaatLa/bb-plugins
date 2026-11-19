@@ -266,7 +266,7 @@ function DashboardPage() {
 export default definePluginApp((app) => {
   app.contentScripts.register({ id: "draft-settings-disclosure", mount: ({ signal }) => mountDraftSettingsDisclosure(signal) });
   app.slots.navPanel({
-    id: "ci-dashboard", title: "CI Dashboard", icon: "delivery-dashboard/pipeline", path: "dashboard", component: DashboardPage,
+    id: "ci-dashboard", title: "CI Dashboard", icon: "ci-dashboard/pipeline", path: "dashboard", component: DashboardPage,
     ...{ experimental_useBadge: useSignalsBadge },
   });
 });

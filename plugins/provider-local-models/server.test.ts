@@ -3,25 +3,18 @@ import assert from 'node:assert/strict';
 import plugin, { createPlugin } from "./server.ts";
 import type { BbPluginApi } from '@get-bb/plugin-sdk';
 
-test('registers the provider and publishes a single usage row listing the models', async()=>{
+test('registers the provider without provider usage', async()=>{
   let declaration:any;const contracts:any={},handlers:any={};
-  const host={id:'machine-1',name:'Local',status:'connected'};
-  const usage={status:'ok',accountEmail:null,planLabel:'Local',windows:[{label:'gpt-oss-20b\u2063',usedPercent:0,resetsAt:null}]};
-  let env:any;const bb={log:{error:()=>{},info:()=>{}},onDispose:()=>{},agents:{registerTool:()=>{},configure:()=>{}},cli:{register:()=>{}},pluginId:'local-models',settings:{define:()=>({onChange:()=>{},get:async()=>({baseUrl:'',defaultModel:'m'})})},providers:{register:(value:any)=>{declaration=value;},experimental_contributeEnv:(id:string,resolve:any)=>{assert.equal(id,'local-models');env=resolve;}},rpc:{register:(c:any,h:any)=>{Object.assign(contracts,c);Object.assign(handlers,h);}},sdk:{hosts:{list:async()=>[host],get:async()=>host},providers:{list:async()=>[{id:'local-models',pluginId:'local-models'}]},system:{usageLimits:async()=>({'local-models':usage})}}} as unknown as BbPluginApi;
+  let env:any;const bb={log:{error:()=>{},info:()=>{}},onDispose:()=>{},agents:{registerTool:()=>{},configure:()=>{}},cli:{register:()=>{}},pluginId:'local-models',settings:{define:()=>({onChange:()=>{},get:async()=>({baseUrl:'',defaultModel:'m'})})},providers:{register:(value:any)=>{declaration=value;},experimental_contributeEnv:(id:string,resolve:any)=>{assert.equal(id,'local-models');env=resolve;}},rpc:{register:(c:any,h:any)=>{Object.assign(contracts,c);Object.assign(handlers,h);}}} as unknown as BbPluginApi;
   plugin(bb);
   assert.equal(declaration.id,'local-models');
-  assert.deepEqual(declaration.maintenance,{health:true,usage:true,installation:false});
+  assert.deepEqual(declaration.maintenance,{health:true,usage:false,installation:false});
   assert.deepEqual(declaration.deriveProviderOptions({settings:{baseUrl:'',defaultModel:'m'}}),{baseUrl:'http://127.0.0.1:9931/v1',splash:false,defaultModel:'m'});
   assert.equal(declaration.deriveProviderOptions({settings:{baseUrl:'http://llama/v1',splash:true,splashProxyPort:8123}}).baseUrl,'http://llama/v1, http://127.0.0.1:8123/v1');
   assert.deepEqual((await env({})).map((e:any)=>[e.name,e.value]),[['LM_SPLASH','0'],['LM_BASE_URL','http://127.0.0.1:9931/v1'],['LM_DEFAULT_MODEL','m']]);
   for(const name of ['splashStatus','splashDownload','splashCancel','splashDelete','setContext','doctor','installSplash'])assert.ok(contracts[name]);
   assert.equal(contracts.installSplash.input.safeParse({confirmed:false,command:'brew install incoai/tap/splash'}).success,false);
-  const list='provider-usage.v1.listResources',fetch='provider-usage.v1.getResource';
-  const inventory=contracts[list].output.parse(await handlers[list]({}));
-  assert.equal(inventory.resources[0].label,'Local models');
-  const value=contracts[fetch].output.parse(await handlers[fetch]({resourceId:inventory.resources[0].id,refresh:true}));
-  assert.equal(value.usage.windows[0].label,'gpt-oss-20b\u2063');
-  assert.equal(value.usage.windows[0].usedPercent,0);
+  assert.equal(contracts['provider-usage.v1.listResources'],undefined);
 });
 
 test('registers CLI and native tool, queries fake router and excludes self',async()=>{

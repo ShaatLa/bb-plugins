@@ -1,8 +1,9 @@
 import { defineRpcContract } from "@get-bb/plugin-sdk";
-import { experimental_useRpcQuery as useQuery, useBbNavigate } from "@get-bb/plugin-sdk/app";
+import { experimental_useRpcQuery as useQuery } from "@get-bb/plugin-sdk/app";
 import { useState } from "react";
 import { z } from "zod";
 import { useTasksQuery } from "../shell/data";
+import { useOpenThread } from "./open-thread";
 
 const compact = new Intl.NumberFormat("en", { notation: "compact", maximumFractionDigits: 1 });
 
@@ -177,7 +178,7 @@ function ModelPie({ slices, unit }: { slices: ModelSlice[]; unit: CostUnit }) {
 
 /** Spend of every thread that worked on the task or its epic members and subtasks, from the optional Tokenomos plugin. */
 export function TaskCostSection({ taskId, epic }: { taskId: string; epic: boolean }) {
-  const navigate = useBbNavigate();
+  const openThread = useOpenThread();
   const [unit, setUnit] = useState<CostUnit>("%");
   const spans = useTasksQuery(
     async (rpc) => rpc.call("getTaskCostSpans", { taskId }),
@@ -227,7 +228,7 @@ export function TaskCostSection({ taskId, epic }: { taskId: string; epic: boolea
                   type="button"
                   title={`${thread.title || thread.threadId} · ${thread.model}`}
                   className="min-w-0 flex-1 truncate text-left hover:underline focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-                  onClick={() => navigate.toThread(thread.threadId)}
+                  onClick={() => openThread(thread.threadId)}
                 >
                   {thread.title || thread.threadId}
                 </button>

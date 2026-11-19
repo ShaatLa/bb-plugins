@@ -76,7 +76,7 @@ it("serializes concurrent idempotent requests, persists and restores after a liv
 });
 it("archives release leases, cancel queues, and grant/warning notifications wake threads", async () => {
   const h = await setup(); const lease = await h.grant();
-  expect(h.send).toHaveBeenCalledWith(expect.objectContaining({ threadId: "a", mode: "queue-if-active", originPluginId: "slots", input: [expect.objectContaining({ text: expect.stringContaining("bb slots wrapper") })] }));
+  expect(h.send).toHaveBeenCalledWith(expect.objectContaining({ threadId: "a", mode: "queue-if-active", originPluginId: "slots", input: [expect.objectContaining({ text: expect.stringMatching(/^\[bb message from plugin:slots\]\n\n[\s\S]*bb slots wrapper/) })] }));
   h.advance(1200000);
   // The service heartbeats active holders only; idle holders get the warning.
   const service = h.harness.behavior.runService("sampler");
@@ -541,7 +541,7 @@ it("watcher initialization errors leave the loop running for recovery", async ()
 });
 
 it("formats structured notifications as short readable Markdown", () => {
-  expect(formatNotification({ title: "Idle heavy slot", lines: [{ value: "Tests" }, { label: "Lease", value: "`lease-199` · heavy slot 2" }, { label: "Holder", value: "`thr-a`" }], hint: "Run `bb slots release lease-199`." })).toBe("**Machine Slots** · `Idle heavy slot`\nTests\n- Lease: `lease-199` · heavy slot 2\n- Holder: `thr-a`\nRun `bb slots release lease-199`.");
+  expect(formatNotification({ title: "Idle heavy slot", lines: [{ value: "Tests" }, { label: "Lease", value: "`lease-199` · heavy slot 2" }, { label: "Holder", value: "`thr-a`" }], hint: "Run `bb slots release lease-199`." })).toBe("`Idle heavy slot`\nTests\n- Lease: `lease-199` · heavy slot 2\n- Holder: `thr-a`\nRun `bb slots release lease-199`.");
   expect(formatNotification({ title: "Slot granted", lines: [] })).not.toContain("[Slots]");
 });
 

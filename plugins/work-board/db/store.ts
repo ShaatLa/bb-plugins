@@ -1010,16 +1010,19 @@ export function createTasksStore(db: PluginDatabase) {
 
   function staleStatusFlags(taskIds?: readonly string[], projectId?: string): Map<string, string[]> {
     const policies = new Map(listProjects().map((project) => [project.id, getWorkflowPolicy(project)]));
-    const rows = db.prepare<[string | null, string | null, string | null, string | null], { id: string; project_id: string; status: string; active: number; held: number; open_pr: number; merge_evidence: number; outcome: number; unknown_pr: number; legacy_outcome: number; closed_pr: number }>(`
+    const rows = db.prepare<[string | null, string | null, string | null, string | null], { id: string; project_id: string; status: string; active: number; held: number; open_pr: number; merged_pr: number; merge_evidence: number; outcome: number; unknown_pr: number; legacy_outcome: number; closed_pr: number }>(`
       SELECT t.id, t.project_id, t.status,
         EXISTS(SELECT 1 FROM task_threads x WHERE x.task_id=t.id AND x.live_status IN ('starting','working')) AS active,
         EXISTS(SELECT 1 FROM task_dependencies d JOIN tasks b ON b.id=d.blocking_task_id WHERE d.task_id=t.id AND b.status <> 'done') AS held,
         EXISTS(SELECT 1 FROM task_pr_links l JOIN git_pr_snapshots s ON s.project_id=t.project_id AND s.identity=l.identity
           WHERE l.task_id=t.id AND COALESCE(json_extract(l.payload,'$.excluded'),0)=0 AND json_extract(s.payload,'$.state') IN ('open','draft')) AS open_pr,
+        EXISTS(SELECT 1 FROM task_pr_links l JOIN git_pr_snapshots s ON s.project_id=t.project_id AND s.identity=l.identity
+          WHERE l.task_id=t.id AND COALESCE(json_extract(l.payload,'$.excluded'),0)=0 AND json_extract(s.payload,'$.state')='merged') AS merged_pr,
         EXISTS(SELECT 1 FROM comments c WHERE c.task_id=t.id AND json_extract(c.evidence,'$.kind')='merge') AS merge_evidence,
         EXISTS(SELECT 1 FROM comments c WHERE c.task_id=t.id AND json_extract(c.evidence,'$.kind')='outcome') AS outcome,
         EXISTS(SELECT 1 FROM legacy_done_tasks d JOIN comments c ON c.task_id=d.task_id WHERE d.task_id=t.id AND c.kind != 'system') AS legacy_outcome,
-        EXISTS(SELECT 1 FROM task_pr_links l LEFT JOIN git_pr_snapshots s ON s.project_id=t.project_id AND s.identity=l.identity WHERE l.task_id=t.id AND COALESCE(json_extract(l.payload,'$.excluded'),0)=0 AND (s.payload IS NULL OR s.error IS NOT NULL)) AS unknown_pr
+        -- Merged is final, so a failed refresh of a merged PR leaves its state known.
+        EXISTS(SELECT 1 FROM task_pr_links l LEFT JOIN git_pr_snapshots s ON s.project_id=t.project_id AND s.identity=l.identity WHERE l.task_id=t.id AND COALESCE(json_extract(l.payload,'$.excluded'),0)=0 AND (s.payload IS NULL OR (s.error IS NOT NULL AND COALESCE(json_extract(s.payload,'$.state'),'') <> 'merged'))) AS unknown_pr
         , EXISTS(SELECT 1 FROM task_pr_links l JOIN git_pr_snapshots s ON s.project_id=t.project_id AND s.identity=l.identity
           WHERE l.task_id=t.id AND COALESCE(json_extract(l.payload,'$.excluded'),0)=0 AND json_extract(s.payload,'$.state')='closed') AS closed_pr
       FROM tasks t WHERE (? IS NULL OR t.project_id=?) AND (? IS NULL OR t.id IN (SELECT value FROM json_each(?))) ORDER BY t.id`).all(projectId ?? null, projectId ?? null, taskIds ? JSON.stringify(taskIds) : null, taskIds ? JSON.stringify(taskIds) : null);
@@ -1030,7 +1033,9 @@ export function createTasksStore(db: PluginDatabase) {
       const flags: string[] = [];
       // A card held behind an unfinished predecessor is waiting by rule, not abandoned.
       if (row.status === policy.inProgressStatus && !row.active && !row.held) flags.push("no_active_thread");
-      if ((row.status === policy.reviewStatus || row.status === policy.testingStatus) && !row.open_pr) flags.push(row.unknown_pr ? "pr_state_unavailable" : "no_open_pr");
+      // Testing after the merge (a check on a shared environment) is expected, so a merged PR satisfies it.
+      const prSettled = row.open_pr || (row.status === policy.testingStatus && row.merged_pr);
+      if ((row.status === policy.reviewStatus || row.status === policy.testingStatus) && !prSettled) flags.push(row.unknown_pr ? "pr_state_unavailable" : "no_open_pr");
       if (row.status === policy.doneStatus && !row.merge_evidence && !row.outcome && !row.legacy_outcome) flags.push("no_merge_or_outcome");
       if (row.closed_pr) flags.push("closed_unmerged_pr");
       if (flags.length) result.set(row.id, flags);

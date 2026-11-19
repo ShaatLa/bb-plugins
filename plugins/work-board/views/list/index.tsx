@@ -130,6 +130,7 @@ export function ListView({ projectId, activeOnly = false }: ListViewProps) {
     statuses: filters.statuses,
     priorities: filters.priorities,
     labelIds,
+    subtasks: filters.unansweredOnly,
   });
   const meta = useTaskListMeta(projectId, tasksQuery.data ?? []);
   const questionCounts = useQuestionCounts(tasksQuery.data ?? []);

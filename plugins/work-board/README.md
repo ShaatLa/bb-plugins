@@ -10,8 +10,58 @@ Daily cleanup removes orphan activity claims/queue markers and PR snapshots with
 
 **Optimize storage** also shares identical immutable blobs using filesystem hard links, preserving every attachment ID/path/URL and exact contents, then rebuilds SQLite and truncates its WAL when readers permit. The operation can take time on large boards. Unsupported hard links leave originals intact and report skips. Fresh databases use incremental vacuum; older databases enable it after the first explicit optimization. Later daily cleanups return up to 256 free pages per sweep. Retained WAL allocation is limited to 4 MiB when SQLite can reset it after checkpoints; active readers or a transaction may temporarily require more. Live data still consumes space as the board grows; this is not a retention policy that deletes accessible history.
 
-CLI: `bb work-board storage status --json`, `storage clean --json`, `storage optimize --json`. Actions return before/after usage, removed file/cache-row counts, shared duplicate count and warnings. Statistics count allocated blocks by unique inode; filesystem compression/clones can make these differ from device-wide free space. Current export format is v13. Maintenance only touches this plugin's database and managed blob directories, not external project exports, repository files, old installation releases, BB logs or backups.
+CLI: `bb work-board storage status --json`, `storage clean --json`, `storage optimize --json`. Actions return before/after usage, removed file/cache-row counts, shared duplicate count and warnings. Statistics count allocated blocks by unique inode; filesystem compression/clones can make these differ from device-wide free space. Current export format is v18. Maintenance only touches this plugin's database and managed blob directories, not external project exports, repository files, old installation releases, BB logs or backups.
 
+
+## Task plan (0.56.0)
+
+A task has one plan: a Markdown document with numbered versions, kept apart from comments. Agents put the implementation plan there instead of posting "Plan 1/6 … 6/6" comments, revise it in place, and the current text is always one command away.
+
+```sh
+bb work-board plan show ABC-12 [--section "Steps 1–4"] [--version N] [--json]
+bb work-board plan set ABC-12 --file plan.md --base-version 0 --summary "Initial plan"
+bb work-board plan edit ABC-12 --section "Steps 1–4" --file part.md --base-version 1 --summary "Narrow the steps"
+bb work-board plan edit ABC-12 --find-file old.md --replace-file new.md --base-version 2 --summary "Fix a number"
+bb work-board plan restore ABC-12 --version 1 --base-version 3 --summary "Back to v1"
+bb work-board plan log ABC-12          # versions: who, when, what, +/- lines
+bb work-board plan diff ABC-12 [--from N] [--to M]
+bb work-board plan submit ABC-12       # ready for the owner's review
+```
+
+- Every write passes `--base-version N`, the version you read. If the plan has changed, the command refuses, names the current version and asks you to re-read with `plan show`, so nobody's edit is overwritten. The first version uses `--base-version 0`. `--summary` (up to 300 characters) says what changed.
+- A section is a heading line plus its body up to the next heading of the same or a higher level (headings inside fenced code are ignored). Address it by the heading text, or by `Parent > Child` when the text repeats; a missing or ambiguous heading is refused with the list of headings. `plan edit --section` replaces the whole section including its heading, and an empty replacement deletes it. `--find-file` text must occur exactly once. A write that changes nothing is refused.
+- A plan is at most 256 KB of UTF-8 and goes through the secret guard. Every version keeps its full text. The plan of an archived task is read-only.
+- States: a new plan is `draft`; `plan submit` makes it `in_review`. The owner's approve and request-changes decisions arrive with the review UI; any new version returns an approved or changes-requested plan to `draft`.
+- Every version, submit and state change writes a system comment on the task, for example `Plan v4 by <author>: <summary> · section "Steps 1–4" · +12 −4 lines`.
+- `bb work-board show KEY` has a `Plan` line (`v4 · in_review · bb work-board plan show KEY`, or `-`); `show --with-plan` prints the plan after the description, and `show --json` has `plan` (`version`, `state`, `updatedAt`, `updatedBy`, plus `body` with `--with-plan`) or null.
+- RPC: `getTaskPlan`, `listTaskPlanVersions`, `saveTaskPlan`, `diffTaskPlan`, `submitTaskPlan`, `setTaskPlanState` (`in_review | approved | changes_requested` only); the review RPC of 0.58.0 are listed under **Plan review**.
+- Export **v18** stores the current plan and all its versions in the task record. Imports of v1–v17 work as before and leave local plans untouched; importing v18 over a different local plan needs `--overwrite`, which replaces the plan and its history.
+
+## Task plan in the UI (0.57.0, polished in 0.57.1)
+
+People read, compare and edit the plan without leaving the board.
+
+- **Plan card.** The task detail has a **Plan** section between the description and **Current state**. Without a plan it says "No plan yet" and that agents create one with `bb work-board plan set`; **Write plan** opens the editor. With a plan it is a bordered card: the title with the state (draft, in review, changes requested, approved) next to it, the version and a **Copy link** icon on the right, the summary of the last version (two lines at most) and "Updated by … · time". The whole card opens the plan. The plan text is not repeated in the detail. The card refreshes live.
+- **Plan tab.** **Open plan** opens a **Plan · ABC-12** tab in the side panel (in a thread and on the Work Board page; one tab per task). Without a side panel it opens the same view in the main area at `task/ABC-12/plan`.
+  - The header has the task (click to open it) with the state next to it; on the right a compact version selector and icon buttons **Edit**, **History**, **Compare with previous** and a menu with **Copy Markdown**, **Copy link** and **Open task**. A muted line under the header says who saved the version on screen and when.
+  - The plan is shown read-only with the same renderer as task descriptions, at a readable width. The table of contents lists the headings (not `#` lines inside code blocks), follows the reader while scrolling and jumps to a heading on click; it is a sticky rail to the right of the text in a wide panel and a collapsible list above the text in a narrow one.
+  - **History** lists every version with author, time, operation, summary and +/− lines. Opening an older one shows it with a "Viewing v2 of v5 · Back to current" banner.
+  - **Compare** shows a source diff of two versions (any pair, or a version and its previous): added and removed lines with changed words highlighted inside a revised line, and long unchanged runs folded.
+  - A new version arrives live. While you read the current version it replaces the text; while you view an older version or edit, a "v6 is available · Show" notice appears instead and nothing moves under you.
+- **Editing by a person.** **Edit** opens the exact Markdown source in a plain text area (no rich-text round trip, so diffs stay meaningful). A summary of the change is required (up to 300 characters). **Save** writes a new version with author "You" from the version you started on. If someone saved meanwhile, the editor says "The plan changed to vN while you were editing" and offers **Show the new version** (your text stays as a draft notice with **Copy my text** and **Continue editing**) or **Overwrite with mine**. Other refusals (no change, invalid, secret detected, archived task) are shown inline. An unsaved draft is kept per task while the app stays open. Archived tasks are read-only.
+- **Links.** **Copy link** puts `[ABC-12 plan](/plugins/work-board/work-board/task/ABC-12/plan)` on the clipboard; in bb chat it opens the plan tab. **Copy Markdown** copies the source of the version on screen.
+
+## Plan review: notes, feedback, approval (0.58.0)
+
+The owner reviews the current plan version in the Plan tab; the agent answers each note.
+
+- **Notes.** Select text in the plan: a small toolbar offers **Comment** (an inline popover with a text area, **Add note** / **Cancel**) and **Remove** (creates a "remove this" note at once; an optional reason is asked in the list). The header button **Add general note** writes a note about the whole plan. A note stores the selected text with about 32 characters of context on each side and the nearest heading path (`Parent > Child`); it is not tied to a position, so it follows the passage through later versions. Notes are numbered per task (N1, N2 …) and have a state: **Draft** (only the owner sees it; it can be edited and deleted), **Sent**, **Addressed** (the agent replied with `--addressed`, shown as "addressed in vN" with the reply) and **Resolved**. On an addressed note the owner can **Resolve** or **Reopen**; reopening makes it a draft again so it goes out with the next batch.
+- **Where they are.** Passages with an open note are highlighted in the text (CSS Custom Highlight API; the editor DOM is not changed, and engines without the API show no highlight but keep the list); clicking a note scrolls to its passage and flashes it. A note whose quote is no longer in the version on screen gets an **Unanchored** chip and keeps its original quote; nothing is highlighted in a wrong place. In a wide panel the right column has two tabs, **Contents** and **Notes (n)**; in a narrow one a collapsible **Notes (n)** section sits above the text, like Contents. Older versions and compare mode show notes read-only and offer no selection toolbar.
+- **Send feedback (N).** Sends every draft note to the agent in one message and moves the plan to **Changes requested** (the task log says `Plan v1: changes requested by You · 3 notes`). The message goes to the thread of the newest agent-written plan version, else to the thread a question answer would go to; it lists the notes in plan order (placed ones by position, then unanchored ones, then general ones), each with its section, quote and text, and tells the agent how to edit the plan and reply. If the agent cannot be reached the notes stay sent and the page says "Saved, but the agent could not be notified".
+- **Approve.** Opens a confirmation with an optional note and sets the plan to **Approved**; the agent gets "plan vN approved by the owner … start the work as planned". It is disabled while the plan is approved or draft notes are unsent (the tooltip says which). Any new plan version returns an approved plan to draft.
+- **Plan card.** Next to "Updated by …" the card counts "2 open notes" (sent, not yet answered), "1 draft" and "1 addressed".
+- **CLI for agents.** `bb work-board plan notes KEY [--all] [--json]` prints the sent, unanswered notes in the format of the message (`--all`: every note with state and reply); `plan reply KEY N1 --body TEXT [--addressed]` answers a note; `plan show` and `show` add `· 2 open notes`; `plan submit` lists notes that are still unanswered but does not refuse.
+- **Data.** Notes are kept across plan versions (each remembers the version it was made on) and are exported in format **v19**; imports of v1–v18 work and leave local notes untouched, and importing v19 over different local notes needs `--overwrite`. RPC: `listPlanNotes`, `createPlanNote`, `updatePlanNote`, `deletePlanNote`, `setPlanNoteState`, `replyPlanNote`, `sendPlanFeedback`, `approvePlan`.
 
 ## Task dependencies (0.22.0)
 
@@ -30,6 +80,14 @@ With the optional Tokenomos plugin installed, the task rail shows what agents sp
 ## Public RPC for other plugins (0.36.0)
 
 `threadTasks({threadId})` is discoverable (`bb plugin rpc list work-board`) and returns the tasks currently linked to a thread, newest link first: `key`, `title`, `status {id, name, icon?, color?, iconName, cssColor}`, `projectName`, `archived`, `linkName`, `linkedAt` and `url` (the in-app path that opens the task). Call it through `bb.sdk.plugins.callRpc({ pluginId: "work-board", method: "threadTasks", ... })`. `status.iconName` is a shared app icon (`work-board/status-<glyph>`, registered with `app.experimental_icons`, drawn in currentColor), so another plugin renders `<Icon name={status.iconName} />` inside `style={{ color: status.cssColor }}` and gets the same glyph and theme color as Work Board (0.37.0). The contract only grows with fields.
+
+Every message Work Board sends into a thread (comment and answer notices, reports to a parent, plan feedback, delegation briefs and scheduled runs) starts with bb's origin line `[bb message from plugin:work-board]`, so the receiving agent reads it as the plugin's message, not the owner's words. Text appended to a still-queued notice adds no second header (0.57.2).
+
+`threadBoard({threadId})` returns the board of the Work Board project linked to the thread's bb project, so another plugin can show it beside a chat: `project {id, name, url}` (null when no project is linked) and `columns` in workflow order, each with `status` (same shape as above), `total` active top-level tasks and up to 30 `cards {key, title, type, priority, mine, url}`. `mine` marks tasks linked to the thread, and those cards are always included even past the cap (0.52.0).
+
+The kanban board glyph is the shared app icon `work-board/kanban`, so a tab that shows the board can use `icon: "work-board/kanban"` (0.52.1).
+
+To show the full Work Board board inside another plugin's UI, render an empty `<div data-work-board-host="board" data-thread-id="thr_…">` and let React leave it empty. Work Board's app overlay finds the node and renders the thread's board there: the board of the project linked to the thread's bb project, with the thread's own cards outlined, and filters, drag and drop, and task opening. It keeps Work Board's own RPC, realtime and navigation, so nothing is bundled into the host plugin. Once rendered, Work Board sets `data-work-board-ready="true"` on the node. Give the node a height (for example `h-full min-h-0`). The native thread side panel tab outlines the thread's own cards the same way (0.53.0). A plain left click on a web link inside the hosted board dispatches a bubbling, cancelable `work-board:open-url` event with `detail: { url }` from inside the node; when the host calls `preventDefault()`, Work Board leaves the link to it, so the host can open it in its own surface (0.55.1).
 
 ## Scheduled tasks CLI
 
@@ -76,7 +134,9 @@ To create a new thread, continue using `--preset`; both flags cannot be passed t
 
 In the **Work Board → Open by default** settings, you can choose the startup screen: the last project's Kanban (default), the last project's task list, all tasks, or active tasks. The last selected project is remembered on this device. If the project is deleted, the first available project opens. Direct links continue to navigate to the screen specified in them.
 
-The **List / Board** toggle in the project (or task) header controls the right-side **Kanban** tab: **Board** opens it, while **List** switches to the Navigation tab without closing the Browser, Terminal, or the panel itself. The toggle's state is synced with the panel, so switching tabs or hiding the panel immediately updates it. The main area always displays the task list or an individual task, allowing you to review task details alongside the board. The board header includes a **Scheduled** button that opens the schedule in the main area. The board tracks the selected project, preserves card dragging, and updates in sync with the task list.
+Click the project name (or **All tasks**) in the header to switch to another project or to All tasks.
+
+The **Board / List** toggle in the project (or task) header switches the main area between the full-width board and the task list, and is remembered per project (0.54.0). A project opens as a board until you pick the list (0.55.0). The right-side **Kanban** tab is independent: open it from the panel's tab strip to keep a board beside the list or a task. The board header includes a **Scheduled** button that opens the schedule in the main area. The board tracks the selected project, preserves card dragging, and updates in sync with the task list.
 
 The **Work Board** tab in the thread's right panel defaults to the Work Board project linked to the thread's BB project. Board cards and new tasks open in the same tab; **Back to project board** returns you to the board. The task key and back button are located in the card header above the title. A copy button sits next to the key and copies only the key. The dedicated task bar at the top of the side panel is streamlined and doesn't take up extra space. Opening a specific task from a message persists across navigation. The header arrow opens the board or task in the main Work Board section. If the projects aren't linked, the panel displays **Manage projects** instead of automatically switching to the last viewed project.
 
@@ -87,7 +147,7 @@ The **Search tasks** field in both the list and board accepts input immediately 
 
 ## Migrating from Agent Board / Tasks Plus to Work Board (0.11.0)
 
-This is a plugin ID change, not the installation of a second, independent board. The new ID and collection folder are `work-board`, and the command is **`bb work-board …`**. There are no legacy CLI aliases. First, update your command consumers: automations, agent roles, and strict export validation. The `project.json.format` marker is now `bb-work-board`; exports use version **v13**. Imports also accept `bb-agent-board` and `bb-tasks-plus` (v1–v13).
+This is a plugin ID change, not the installation of a second, independent board. The new ID and collection folder are `work-board`, and the command is **`bb work-board …`**. There are no legacy CLI aliases. First, update your command consumers: automations, agent roles, and strict export validation. The `project.json.format` marker is now `bb-work-board`; exports then used version **v13** (now v17). Imports also accept `bb-agent-board` and `bb-tasks-plus` (v1–v13).
 
 Save your settings (`bb plugin config agent-board --json`) and back up the database using the SQLite backup API along with a copy of the `blobs` folder. Stop the old plugin before migration; the destination directory must not exist:
 
@@ -122,8 +182,8 @@ Attachment counters and active thread connections are read in batches of 500 IDs
 
 Task cards on the board (main and side panels) and list rows display passive markers; the detail view shows a failed thread outlined in red with a failure timestamp. Nothing is sent to threads or agents, and no server-side timers or notifications are used.
 
-- **Red marker** — an incomplete task (not `done`/`canceled`) has an attached thread in `failed` status (BB sends `thread.failed` for both crashed steps and interrupted runs: daemon restart, lost connection). Tooltip: "Thread <title> failed". The marker clears when the thread becomes active, detached, or archived. It is also shown for completed tasks.
-- **Amber marker** "Thread idle 52 min, task not updated" — the task is not `done`/`canceled`/`in_review`, there is an idle thread, no working/starting thread, and `now − max(idleSince, lastTaskActivityAt) ≥ threshold`. `idleSince` is `task_threads.updated_at` (time of the last status change, no migration required; if multiple idle threads exist, the most recent is used); `lastTaskActivityAt` is the maximum of `tasks.updated_at` (field and status updates) and non-system comments, including evidence. The threshold is configured per project: `staleIdleMinutes` (off | 30 | 45 | 60 | 120, default 45). Calculation runs on read (`listTaskCardMeta`), and the UI refreshes the timer once per minute.
+- **Red marker** — an incomplete task (not `done`/`canceled`) has an attached thread in `failed` status (BB sends `thread.failed` for both crashed steps and interrupted runs: daemon restart, lost connection). Tooltip: "Thread <title> failed". The marker clears when the thread becomes active, detached, or archived.
+- **Amber marker** "Thread idle 52 min, task not updated" — the task is not `done`/`canceled`, not in the project's review status (default `in_review`) and has no unanswered owner question, there is an idle thread, no working/starting thread, and `now − max(idleSince, lastTaskActivityAt) ≥ threshold`. `idleSince` is `task_threads.updated_at` (time of the last status change, no migration required; if multiple idle threads exist, the most recent is used); `lastTaskActivityAt` is the maximum of `tasks.updated_at` (field and status updates) and non-system comments, including evidence. The threshold is configured per project: `staleIdleMinutes` (off | 30 | 45 | 60 | 120, default 45). Calculation runs on read (`listTaskCardMeta`), and the UI refreshes the timer once per minute.
 - `show --json` and `list --json` include `threadHealth: {failed: [threadId…], staleIdle: {threadId, idleMinutes} | null}`.
 
 The data is not exported: it is derived state. The "needs attention" filter has not been added.
@@ -160,6 +220,11 @@ In a task or epic card, open **Add question** in the right bar (in narrow mode, 
 ```sh
 bb work-board question add EXA-8 --prompt 'Which size?' --option 'Small' --option 'Large' --json
 bb work-board question add EXA-8 --prompt 'Which platforms?' --option macOS --option Linux --multiple --json
+```
+
+One question asks one decision or one check: the prompt and all `--step` lines together carry at most one link (Markdown or bare URL), and `question add` and `question update` refuse more. A multi-part acceptance is several `--kind check` questions, each with its own link. `question update --reopen` asks the same thing again, makes the reopening thread the asker so the new answer reaches it, and refuses steps or links the answered revision did not have: a new state is a new question (0.58.2).
+
+```sh
 bb work-board question list EXA-8 --json
 bb work-board question answer EXA-8 --question <question-id> --answer <option-id> --revision 1
 bb work-board question answer EXA-8 --question <question-id> --clear --revision 2
@@ -268,7 +333,7 @@ bb work-board import --from .bb/tasks/<project-id> --overwrite
   attachments/<attachment-id>
 ```
 
-`project.json` contains the bb-work-board format marker, version 17, project metadata, folders, labels, task IDs and templates. Task files preserve Markdown, comments/evidence, questions, worker links, aliases, dependencies and attachment hashes. Attachments use immutable IDs. Export contains no storage paths. Imports support v1–v16; see the v17 field changes below.
+`project.json` contains the bb-work-board format marker, version 18, project metadata, folders, labels, task IDs and templates. Task files preserve Markdown, comments/evidence, questions, worker links, aliases, dependencies and attachment hashes. Attachments use immutable IDs. Export contains no storage paths. Imports support v1–v16; see the v17 field changes below.
 
 The export is first assembled in a temporary directory, then replaces the existing copy. On write or replacement failure, the original copy is preserved. Unrelated files are not allowed in the export directory; repository sources must be kept outside it.
 
@@ -349,7 +414,7 @@ bb work-board create \
 bb work-board list --project PROD
 bb work-board show PROD-1
 bb work-board preset list
-bb work-board delegate PROD-1 --preset "GPT-5.6 · high"
+bb work-board dispatch PROD-1 --preset "GPT-5.6 · high"
 ```
 
 When the CLI runs inside a linked bb project, `create` and `list` infer the
@@ -402,15 +467,19 @@ machine; pass `--machine <id-or-name>` to target another enrolled machine.
 | `bb work-board comment <key-or-id>`                 | Add a Markdown comment from inline text or a file; optionally notify the latest responding task agent.                                     |
 | `bb work-board attachment add\|get\|list\|remove`   | Add, fetch, list, or remove attachments. Referenced attachments require `remove --remove-references`.                                      |
 | `bb work-board preset list\|create\|update\|delete` | Manage reusable agent execution presets.                                                                                                   |
-| `bb work-board delegate <key>`                      | Start and attach a new agent thread using a preset.                                                                                        |
+| `bb work-board dispatch <key>`                      | Start and attach a new agent thread with `--preset`, or send the task to an existing thread with `--thread`.                              |
+| `bb work-board report <key>`                        | From a child thread: wake the parent with `--kind ready\|question\|blocker`; the report becomes Current state.                           |
+| `bb work-board children <key>`                      | From a parent thread: list its child threads with their tasks.                                                                             |
+| `bb work-board question add\|list\|answer\|update\|delete` | Ask the owner one decision or check on the task; `--step` lists how to check.                                                    |
+| `bb work-board config get\|set`                     | Read or change one project setting (`--project`).                                                                                           |
 | `bb work-board attach <key-or-id>`                  | Attach the current bb thread to a task when it was not delegated from Work Board.                                                               |
 | `bb work-board detach <key-or-id>`                  | Detach the current bb thread (or `--thread <id>`) from a task, for example a dead predecessor after a respawn.                             |
 | `bb work-board threads <key>`                       | List the bb threads attached to a task: live threads first, newest first.                                                                  |
 | `bb work-board label create\|list\|delete`          | Manage project-scoped labels.                                                                                                              |
 | `bb work-board seed-demo --yes`                     | Create sample folders, projects, labels, tasks, and comments for evaluation.                                                               |
 
-Statuses are `backlog`, `todo`, `in_progress`, `in_review`, `done`, and
-`canceled`. Priorities are `urgent`, `high`, `medium`, `low`, and `none`.
+Status ids are per project (`project show --json`); the system ids `backlog`,
+`todo`, `in_progress`, `in_review`, `done` and `canceled` always exist. Priorities are `urgent`, `high`, `medium`, `low`, and `none`.
 
 Task lists default to 100 rows and accept `--limit 1-500`. JSON output is
 `{ tasks, nextCursor, limit }`; human output prints the continuation option
@@ -429,11 +498,14 @@ mode, and reusable instructions. Presets are user-defined, so create the worker 
 uses repeatedly before dispatching work.
 
 Delegation creates a worker thread in the linked bb project, attaches that
-thread to the task, and advances a `backlog` or `todo` task to `in_progress`.
+thread to the task, and advances a `backlog` or `todo` task to the project's
+in-progress status (default `in_progress`).
 The worker receives the task description, subtasks, attachments, recent
 comments, preset instructions, and a report-back contract. Its installed Work Board
-skill tells it to inspect the task, leave substantive milestone comments,
-attach artifacts, and move completed work to `in_review`.
+skill tells it to keep Current state up to date, post results and evidence as
+comments, ask the owner with task questions, and move finished work to the
+project's review status. A child thread also reports to its parent with
+`bb work-board report`.
 
 If work begins outside the Delegate action, the agent can associate its current
 thread with `bb work-board attach KEY`. The inverse is `bb work-board detach KEY
@@ -475,12 +547,14 @@ Use a decision when you cannot proceed without a choice, or a check when you kno
 
 ```sh
 bb work-board question add ABC-12 --kind decision --prompt 'Which approach?' --option 'Use the existing service'
-bb work-board question add ABC-12 --kind check --prompt 'Validate the result before I continue'
+bb work-board question add ABC-12 --kind check --prompt 'Does the form save?' --step 'Open the form' --step 'Press Save'
 ```
+
+Repeat `--step` to give a check its "How to check" steps: the card lists them, numbered, between the question and the answers, so the owner does not look for them in comments. `question update --step …` replaces the steps; without `--step` it keeps them.
 
 Both types use options and always-available free text. Decisions require at least one option. Checks default to Confirmed and Problem found when no options are supplied; explicit options replace those defaults. Multiple choice permits several options. Type is a label, not a different answer workflow. The answer is delivered to the asking agent thread (queue-if-active), falling back to an attached thread or the latest agent commenter for older questions.
 
-Waiting on me means a live unfinished task with at least one unanswered question of either type. Cards use an orange border and question type badges. Open questions appear newest first; answered questions are under Earlier in timeline order.
+Waiting on me means a live unfinished task with at least one unanswered question of either type. Cards use an orange border and question type badges. Open questions appear in the order they were asked, oldest first; answered questions are under Earlier in timeline order.
 
 Archive v17 removes the task execution and requester fields. Question records add kind (decision/check) and askedByThread (thread ID or null), including history snapshots. Imports v1–v16 discard the old task fields and default questions to decision with no asking thread. No questions are created by the database migration.
 
@@ -501,7 +575,7 @@ The flag can be repeated. Exclusions are subtracted from `--status`, or from all
 The copy button next to the card key copies both the key and the current title as `ABC-12 · Task Title`. It works on the main screen and the side panel; a checkmark indicates a successful copy, while an error shows a message.
 
 
-Sub-task questions are visible on both boards and in the Kanban tab via the parent card. The top counter sums questions from the parent and its sub-tasks; the tooltip shows the breakdown. Click the counter to expand sub-tasks, or use **Sub-tasks · completed/total**. The expanded list shows the key, title, status, and question count; tasks with questions appear first. Clicking an item opens the sub-task in the current panel. The **Waiting on me** filter keeps the parent visible when questions exist within sub-tasks, and automatically expands only sub-tasks waiting for a response, excluding completed and canceled ones. The counter and filter update after a response is submitted. Sub-tasks do not become independent cards/columns and are not involved in board drag-and-drop.
+Sub-task questions are visible on both boards and in the Kanban tab via the parent card. The top counter sums questions from the parent and its sub-tasks; the tooltip shows the breakdown. Click the counter to expand sub-tasks, or use **Sub-tasks · completed/total**. The expanded list shows the key, title, status, and question count; tasks with questions appear first. Clicking an item opens the sub-task in the current panel. The **Waiting on me** filter keeps the parent visible when questions exist within sub-tasks, and automatically expands only sub-tasks waiting for a response, excluding completed and canceled ones. The counter and filter update after a response is submitted. Sub-tasks do not become independent cards/columns and are not involved in board drag-and-drop. In the list, **Waiting on me** shows a waiting sub-task as its own row, since the list has no parent cards to expand (0.55.1).
 
 
 ### Archived worker threads (0.7.2)
@@ -513,7 +587,7 @@ New and replacement workers should run `bb work-board attach KEY`; this preserve
 
 ### Task archive (0.8.0)
 
-The **Archive** section keeps completed cards off working lists and both boards. Archiving is manual: open a Done/Canceled card and click **Archive task**, or select a project in **Archive** and click **Archive completed**. A family with unfinished children stays on the board. Archiving a task or epic archives its completed children too; restoring it restores the family. Individually archived sub-tasks whose parent is archived require restoring that parent first. Status, IDs, descriptions, questions, evidence, comments, attachments and worker history are preserved. Completing a card does not immediately archive it. In plugin settings, **Automatically archive completed tasks** offers Off (default), 7, 14 or 30 days. The hourly check requires the whole active family to be Done/Canceled and inactive for that period. Task edits, comments, attachments and question changes restart the inactivity period. Unanswered questions and working agents prevent automatic archival. A restored card gets a fresh inactivity period.
+The **Archive** section keeps completed cards off working lists and both boards. Archiving is manual: open a Done/Canceled card and click **Archive task**, or select a project in **Archive** and click **Archive completed**. A family with unfinished children stays on the board. Archiving a task or epic archives its completed children too; restoring it restores the family. Individually archived sub-tasks whose parent is archived require restoring that parent first. Status, IDs, descriptions, questions, evidence, comments, attachments and worker history are preserved. Completing a card does not immediately archive it. In plugin settings, **Automatically archive completed tasks** offers Off (default), 3, 7, 14 or 30 days. The hourly check requires the whole active family to be Done/Canceled and inactive for that period. Task edits, comments, attachments and question changes restart the inactivity period. Unanswered questions and working agents prevent automatic archival. A restored card gets a fresh inactivity period.
 
 The archive has project filtering, search, card links and **Restore**. Archived cards remain directly accessible by key. Agents use `bb work-board archive KEY`, `bb work-board restore KEY`, `bb work-board archive-completed --project PREFIX`, and `bb work-board list --project PREFIX --archived [--search TEXT] --json`. `--include-archived` lists both scopes; the two flags are mutually exclusive. `bb work-board show KEY` also works for archived cards. Dispatch requires restoring the card first.
 
@@ -536,7 +610,7 @@ bb work-board list --project EXA --archived --date-field created --on 2026-10-01
 
 `--latest N` selects newest order and the page size (1–500); a `nextCursor` permits continuing with the same filters. `--sort newest` also works with `--limit`. Dates are `YYYY-MM-DD`, inclusive in UTC. With `--archived`, the default date field is archived; otherwise it is created. `--date-field updated` selects last task-record modification (including archival/restoration), not the last comment. `--on` cannot be combined with `--from`/`--to`. Exact key/ID lookup is `show`, which reads either archive scope. The RPC uses `dateField`, `dateFrom`, `dateTo`, `sort: "newest"` and the existing `limit`/`cursor`.
 
-Automatic retention is a device/plugin setting, applies to all tracker projects, and is disabled until enabled. It runs while BB has the plugin loaded; missed checks are caught by the next hourly sweep. It preserves the existing manual and bulk actions. Export stays v7, includes all records, and carries no device settings.
+Automatic retention is a per-project setting (`project update --auto-archive` or `config set autoArchiveAfterDays`) and is off until enabled. It runs while BB has the plugin loaded; missed checks are caught by the next hourly sweep. It preserves the existing manual and bulk actions. Export stays v7, includes all records, and carries no device settings.
 
 
 ### Waiting for PR CI (0.30.0)
@@ -557,7 +631,7 @@ The compact **Pull requests** list appears below the task properties in the righ
 
 Cards in the list, central board and side board show a compact PR/CI summary. Task details on both surfaces show every linked PR, current head SHA, check states, required/optional/unknown requirements, review decision, merge state/queue, unresolved-thread count when available, freshness and errors. CI uses the current PR head, latest check IDs and latest commit statuses; failed, pending, skipped, neutral and cancelled checks stay distinct. Green CI is not a merge approval. These checks describe the PR head; test-merge/merge-group check evaluation and complete signing/ruleset diagnostics are not claimed. GitHub's reported merge blockers are displayed separately.
 
-Task statuses remain owner/agent controlled, including after merge. Notifications, automatic merge evidence and automatic workflow transitions are not implemented in this observation release. No generic definition of “task complete” is inferred from discovered PRs or their roles.
+Task statuses stay owner/agent controlled with one exception: when a confirmed `delivers` PR is open or draft, a linked task in one of the project's `earlyStatuses` (default `todo`, `in_progress`) moves to the project's `reviewStatus` (default `in_review`). Set `earlyStatuses` to `[]` or `reviewStatus` to `null` to turn this off. Notifications, automatic merge evidence and other workflow transitions are not implemented. No generic definition of “task complete” is inferred from discovered PRs or their roles.
 
 ```sh
 bb work-board git-config --project ABC --json
@@ -570,6 +644,14 @@ bb work-board show ABC-12 --json
 ```
 
 A configuration file accepts `enabled`, `repositories`, `pollMinutes` (1–60, default 5), `lookbackDays` (1–365, default 30), `titleDiscovery` (default true), `requiredChecks` (up to 50 unique names, empty reads available GitHub requirements), `prWaitIgnoredChecks` (up to 50 required check names that `pr wait` does not judge), `postMergeWorkflows` (up to 10 unique names or workflow ID strings) and `postMergeDays` (1–90, default 7). Omitted settings use their defaults. `git-config --file` replaces the whole configuration, not a partial patch. CLI file paths use the invoking machine or `--machine`; credentials belong on the BB server. `pr list --json` includes snapshots and errors; `show --json` exposes the same data as `prLinks` in addition to legacy environment PR checks. The public RPC contract exposes get/setGitSyncConfig, linkPr, unlinkPr, listPrLinks, prSummaries and syncGit.
+
+### Settings one key at a time
+
+Every per-project setting can be read and changed on its own: `bb work-board config get [KEY] --project PREFIX [--json]` lists all keys or shows one, and `bb work-board config set KEY VALUE --project PREFIX` validates and saves only that key, printing `KEY=value`. Keys: `autoArchiveAfterDays`, `staleIdleMinutes`, `statusNotifications`, and every Git/PR field with a `git.` prefix (`git.enabled`, `git.repositories`, `git.requiredChecks`, `git.prWaitIgnoredChecks`, `git.pollMinutes` and so on). VALUE is JSON or plain text; list keys also take a comma-separated value (`config set git.requiredChecks "CI, Lint" --project EXA`). The same calls are RPC `config.get {projectId, key?}` and `config.set {projectId, key, value}`. `git-config --file` and `project update` keep working.
+
+Global preferences are native plugin settings: `bb plugin config work-board` lists them, and `bb plugin config work-board set startScreen active` or `set badgeInReview true` changes one. Fields: `startScreen` and one boolean per navigation badge criterion (`badgeOpen`, `badgeWaitingOnOwner`, `badgeInReview`, `badgeNeedsAnswer`, `badgeFailedThread`, `badgeStaleIdle`). Values saved before 0.44.0 move there once on upgrade.
+
+`openThreadsIn` (`bb` by default) chooses where Work Board's own thread links open: session rows, comment authors, thread mentions in descriptions and the open-session buttons. With `agent-hub` they open the conversation in the Agent Hub plugin (or in Answers, its former id, while only that is installed); when neither is installed and enabled they keep opening bb chat. A stored `answers` value is still accepted and becomes `agent-hub` when Work Board loads. Thread mentions inside rendered comment Markdown are routed by bb and always open bb chat.
 
 Periodic scans share repository discovery, revalidate current checks independently of PR updatedAt, retain last good snapshots on errors, use conditional authenticated REST requests and rate-limit backoff, and stop writes after disposal/configuration changes. All open PRs and recent closed/merged PRs are discoverable, within bounded pages (100/page, up to 20). Linked PRs are fetched directly. Old merged PRs stop background fetching after the post-merge window; old unmerged closed links are rechecked hourly to catch reopening. Manual Sync bypasses these observation intervals. A large repository/window can exceed the bounded discovery limit; narrow the lookback or explicitly link a PR. Failed discovery never removes an established link. Snapshots indicate stale state rather than treating an unavailable API as success/closure.
 
@@ -595,13 +677,13 @@ PRs from worker environments are read via the built-in GitHub PR Status plugin (
 
 ## Work Board Badge Counter (0.15.1)
 
-In Work Board settings (Settings → Plugins → Work Board or the gear icon on the Work Board page), the **Navigation badge** section lets you choose what the Work Board navigation badge counts: open tasks (default), tasks in review, tasks with unanswered questions, tasks with failed threads, and tasks with idle threads that lack updates (threshold controlled by the Flag idle threads without task updates setting). You can select multiple criteria: the badge shows the number of unique tasks matching at least one criterion, counting each task only once. The tooltip provides a breakdown, for example, "3 tasks: 2 with unanswered questions, 1 in review". If no criteria are selected, the badge is hidden. Only non-archived tasks are counted; `done` and `canceled` statuses are excluded everywhere. Settings are saved in the plugin's server-side data and shared across all devices; RPC: `getNavigationBadgeCriteria`, `setNavigationBadgeCriteria`, `navigationBadge`. The badge updates on task and thread events, when criteria change, and additionally once per minute when thread idle monitoring is enabled.
+In Work Board settings (Settings → Plugins → Work Board or the gear icon on the Work Board page), the **Navigation badge** section lets you choose what the Work Board navigation badge counts: open tasks (default), tasks in review, tasks with unanswered questions, tasks with failed threads, and tasks with idle threads that lack updates (threshold controlled by the Flag idle threads without task updates setting). You can select multiple criteria: the badge shows the number of unique tasks matching at least one criterion, counting each task only once. The tooltip provides a breakdown, for example, "3 tasks: 2 with unanswered questions, 1 in review". If no criteria are selected, the badge is hidden. Only non-archived tasks are counted; `done` and `canceled` statuses are excluded everywhere. Settings are native plugin fields (`bb plugin config work-board`) shared across all devices; RPC: `getNavigationBadgeCriteria`, `setNavigationBadgeCriteria`, `navigationBadge`. The badge updates on task and thread events, when criteria change, and additionally once per minute when thread idle monitoring is enabled.
 
 ### Upgrade and rollback (0.16.0)
 
 Export v9 preserves optional workflow status icons and colors. Imports accept v1–v9, including v8 archives that already contain this metadata. Update strict archive consumers before upgrading. Before rolling back, keep a v9 backup: older releases may reject v9 archives or status metadata; do not remove icons or colors from live data to make a rollback work.
 
-Each project can configure workflow rules with `bb work-board project update PREFIX --workflow-policy-file policy.json` (also accepts `--machine`). RPC clients can set `updateProject({projectId, workflowPolicy})`. The JSON object accepts `bugfixStatus`, `doneStatus`, `inProgressStatus`, `reviewStatus`, `testingStatus`, `earlyStatuses`, and `ownerDecisionLabel`; omitted fields use defaults. Set a status or label to `null` to disable rules that depend on it, or use an empty array for `earlyStatuses`. The default bugfix-to-done transition is rejected because review or testing failed; other exits remain available. Policy travels with project exports.
+Each project can configure workflow rules with `bb work-board project update PREFIX --workflow-policy-file policy.json` (also accepts `--machine`). RPC clients can set `updateProject({projectId, workflowPolicy})`. The JSON object accepts `bugfixStatus`, `doneStatus`, `inProgressStatus`, `reviewStatus`, `testingStatus`, `earlyStatuses`, and `ownerDecisionLabel`; omitted fields use defaults. `earlyStatuses` are the statuses an open delivering PR moves to `reviewStatus`. While a task has an open question, Work Board adds the label named by `ownerDecisionLabel` (default `owner decision`; projects created before 0.47.0 keep `решение владельца`), creating it if missing. Set a status or label to `null` to disable rules that depend on it, or use an empty array for `earlyStatuses`. The default bugfix-to-done transition is rejected because review or testing failed; other exits remain available. Policy travels with project exports.
 
 ### Upgrade and rollback (0.28.0)
 
@@ -611,7 +693,7 @@ Export v14 includes optional per-project workflow policy, outcome evidence and d
 
 The Dependencies section has one Add button (pick Blocked by, Blocks or Related, then a task) and lists every link on its own line. Related is for tasks that share context without blocking each other. The link is symmetric, stays within one project and never affects Blocked badges or advisories. CLI: `dependency add KEY --relates-to KEY` and `dependency remove KEY --relates-to KEY`; `dependency list` and `show --json` include `related`. Export v15 carries related links; imports accept v1–v14.
 Question creation, answer changes, revisions and deletion reconcile the configured owner decision label with open questions. Manual task label edits, label renames/deletion, policy changes and archive imports do not reconcile existing questions; the next question change does. A null ownerDecisionLabel disables this reconciliation.
-`bb work-board list --stale-status` filters diagnostic flags before pagination. List and show JSON expose `staleStatusFlags`; list RPC returns flags separately from task records. These diagnostics use the last recorded thread statuses and PR snapshots, not a live remote check. An unavailable PR snapshot is reported as `pr_state_unavailable`; recorded active thread status may be out of date. Nonexcluded closed PRs produce `closed_unmerged_pr`. A done task clears `no_merge_or_outcome` with structured merge evidence or `bb work-board comment KEY --kind outcome --body '…'`. Existing done tasks with a non-system comment are grandfathered until they change status. Diagnostics never move tasks.
+`bb work-board list --stale-status` filters diagnostic flags before pagination. List and show JSON expose `staleStatusFlags`; list RPC returns flags separately from task records. These diagnostics use the last recorded thread statuses and PR snapshots, not a live remote check. An unavailable PR snapshot is reported as `pr_state_unavailable`, except that a PR last seen merged stays merged when a later refresh fails (0.55.2); recorded active thread status may be out of date. A task in the review or testing status with no open PR gets `no_open_pr`; in the testing status a merged PR also counts, since testing after the merge is expected (0.55.3). Nonexcluded closed PRs produce `closed_unmerged_pr`. A done task clears `no_merge_or_outcome` with structured merge evidence or `bb work-board comment KEY --kind outcome --body '…'`. Existing done tasks with a non-system comment are grandfathered until they change status. Diagnostics never move tasks.
 ## Card activity (0.18.0)
 
 Card activity is separate from task workflow status. An attached session with both thread and runtime status active makes the card Working; idle or host-waiting sessions stay Attached. This applies to every card linked to that session, including parent links. Unattached sessions never imply card work. Accepted request markers and manual activity start/stop claims are diagnostic context only; they cannot hide or fabricate live execution. Pending owner interactions produce Waiting for owner, and queued card dispatches produce Queued when the session is not executing. A failure to read extra event/request metadata does not suppress verified live runtime activity. Missing thread/runtime data is treated as unknown. Observed execution or agent comments records work history; with no remaining sessions it gives Abandoned, except on done/canceled cards. Active work on terminal cards is warned about. Archive v10 preserves work history, not live claims or queue identities; imports v1–v9 remain accepted.
@@ -643,7 +725,7 @@ The card header includes a **Copy task link** button next to the key, which copi
 
 ### Reports to the parent thread (0.40.0)
 
-`bb work-board report KEY --kind ready|question|blocker (--body <markdown> | --body-file <path>)` is how a child session tells its parent what the parent must act on. It must run inside a bb thread. The report does not go to the card log; the log keeps evidence, owner decisions and system records. The caller's own `parentThreadId` is woken with `queue-if-active`, and the message starts with `KEY · KIND`. If the parent is busy and its last queued message is a Work Board notice, the report is appended to it instead of queued separately. When the caller is the card's session, the report (led by **READY**, **QUESTION** or **BLOCKER**) also replaces the card's Current state; a line starting with `Handoff:` in the previous Current state is kept above the report, and a report over 4 KB is cut there and ends with a pointer to the parent thread. A helper, meaning a thread whose parent is already attached to the card, only wakes that parent and leaves Current state alone. A thread without a parent, or with an archived parent, gets an error and nothing is saved. If waking fails, Current state stays replaced and the command exits 1 with a hint to tell the parent manually. Progress is not a report kind: `update KEY --progress` replaces the card's state note and wakes nobody.
+`bb work-board report KEY --kind ready|question|blocker [--need <text>] (--body <markdown> | --body-file <path>)` is how a child session tells its parent what the parent must act on. It must run inside a bb thread. A question or blocker requires `--need`, one or two sentences on what the recipient must decide or do; without it, with a blank one, or with one that asks nothing (starting with `nothing`, `none`, `no action` or `n/a` in any case, or a lone `-`), the command exits non-zero, delivers nothing, and points progress to `update KEY --progress`. The need leads the report on its own line as `Needed: …`. A question or blocker is also refused while the reporting thread has its own open owner question on the same card asked within the last 30 minutes; the parent already sees that wait on the card, so the hint points to `update KEY --progress`. `--kind ready` and `--progress` are not affected. The report does not go to the card log; the log keeps evidence, owner decisions and system records. The caller's own `parentThreadId` is woken with `queue-if-active`, and the message starts with `KEY · KIND`. If the parent is busy and its last queued message is a Work Board notice, the report is appended to it instead of queued separately. When the caller is the card's session, the report (led by **READY**, **QUESTION** or **BLOCKER**) also replaces the card's Current state; a line starting with `Handoff:` in the previous Current state is kept above the report, and a report over 4 KB is cut there and ends with a pointer to the parent thread. A helper, meaning a thread whose parent is already attached to the card, only wakes that parent and leaves Current state alone. A thread without a parent, or with an archived parent, gets an error and nothing is saved. If waking fails, Current state stays replaced and the command exits 1 with a hint to tell the parent manually. Progress is not a report kind: `update KEY --progress` replaces the card's state note and wakes nobody.
 
 A session that took its card by message is not attached by the title scan. Its first `report`, or its first `update --progress`, attaches it to the card when the thread has a parent, is not attached yet and is not a helper. Top-level threads such as a manager and helpers are never attached this way; other updates never attach.
 

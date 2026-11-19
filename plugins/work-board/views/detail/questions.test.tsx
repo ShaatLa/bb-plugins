@@ -209,6 +209,15 @@ describe("question and evidence UI", () => {
     expect(slot.navigateCalls).toContainEqual(expect.objectContaining({ method: "openUrl", url: "http://127.0.0.1:8796/Example%20Avatar.html?lang=ru&theme=dark" }));
   });
 
+  it("lists a check's steps between the question and its answers", async () => {
+    const { task, rpc, structured } = setup();
+    await structured.handlers.createQuestion({ kind: "check", askedByThread: null, taskId: task.id, prompt: "Does the form save?", steps: ["Open the form", "Press Save"], mode: "single", options: [] });
+    const slot = renderSlot(app.navPanels[0]!, { subPath: `task/${task.key}` }, { rpc });
+    const group = await slot.findByRole("group", { name: "Does the form save?" });
+    const steps = within(group).getByRole("list", { name: "How to check" });
+    expect(within(steps).getAllByRole("listitem").map((item) => item.textContent)).toEqual(["Open the form", "Press Save"]);
+  });
+
   it("requires explicit confirmation to revise an answered question and displays the old decision", async () => {
     const { task, rpc, structured } = setup();
     const { question } = await structured.handlers.createQuestion({ kind: "decision", askedByThread: null,
@@ -545,7 +554,7 @@ it("omits the redundant waiting banner", async () => {
   expect(slot.queryByRole("button", { name: /Waiting on you/ })).toBeNull();
 });
 
-it("orders open questions newest first and moves a check under Earlier after answering", async () => {
+it("orders open questions oldest first and moves a check under Earlier after answering", async () => {
   const { task, rpc, structured, bb } = setup();
   const add = async (prompt: string, kind: "decision" | "check", createdAt: string) => {
     const { question } = await structured.handlers.createQuestion({ taskId: task.id, kind, askedByThread: null, prompt, options: ["Proceed"], mode: "single" });
@@ -560,7 +569,7 @@ it("orders open questions newest first and moves a check under Earlier after ans
   const newestGroup = await slot.findByRole("group", { name: newest.prompt });
   const section = newestGroup.closest('section[aria-label="Questions"]')!;
   const groups = [...section.querySelectorAll("fieldset")];
-  expect(groups.map(group => group.getAttribute("aria-label"))).toEqual(["Newest check", "Older open", "Old answer"]);
+  expect(groups.map(group => group.getAttribute("aria-label"))).toEqual(["Older open", "Newest check", "Old answer"]);
   expect(slot.getByText("Earlier (1)").closest("details")?.open).toBe(false);
   expect(within(newestGroup).getByText("Check")).toBeTruthy();
   expect(within(newestGroup).getByRole("textbox", { name: "Your answer" })).toBeTruthy();

@@ -1,6 +1,6 @@
 {
-  "name": "bb-plugin-delivery-dashboard",
-  "version": "0.5.29",
+  "name": "bb-plugin-ci-dashboard",
+  "version": "0.6.1",
   "type": "module",
   "engines": {
     "bb": ">=0.46",

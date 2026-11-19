@@ -7,11 +7,11 @@ import {
   experimental_defineProviderBridge, createBridgeIo, providerMaintenanceParamsSchema,
   modelListParamsSchema, threadStartParamsSchema, threadResumeParamsSchema, turnStartParamsSchema, turnSteerParamsSchema,
   initializeParamsSchema, PROVIDER_BRIDGE_PROTOCOL_VERSION, THREAD_DELTA_GRAMMAR_V3,
-  bridgeRequestEnvelopeSchema, type ProviderUsage,
+  bridgeRequestEnvelopeSchema,
 } from "@get-bb/plugin-sdk/provider-bridge";
 import { experimental_acpProviderBridge as acp } from "@get-bb/plugin-sdk/provider-bridge/acp";
 import { shimSource } from "./shim.ts";
-import { DEFAULT_BASE_URL, effectiveBaseUrl, readModels, usageFor } from "./models.ts";
+import { DEFAULT_BASE_URL, effectiveBaseUrl, readModels } from "./models.ts";
 
 const io = createBridgeIo();
 const optionsSchema = z.object({ baseUrl: z.string().default(DEFAULT_BASE_URL).transform(value => value || DEFAULT_BASE_URL), defaultModel: z.string().default(""), splash: z.boolean().default(false), splashProxyPort: z.number().int().min(1).max(65535).default(8011) }).transform(options => ({ baseUrl: effectiveBaseUrl(options), defaultModel: options.defaultModel, splash: options.splash }));
@@ -46,11 +46,6 @@ async function pruneShims(dir: string, current: string) {
   }
 }
 
-async function readUsage(options: Options): Promise<ProviderUsage> {
-  try { return usageFor(await readModels(options.baseUrl, "", dataDir, options.splash)); }
-  catch { return { status: "error", accountEmail: null, planLabel: null, message: `No local model server answers at ${options.baseUrl}.` }; }
-}
-
 async function readHealth(options: Options) {
   const reachable = await readModels(options.baseUrl, "", dataDir, options.splash).then(() => true, () => false);
   return {
@@ -80,10 +75,11 @@ async function dispatch(request: { id: string | number; method: string; params?:
       const options = optionsSchema.parse({ baseUrl: env.LM_BASE_URL, splash: env.LM_SPLASH === "1", splashProxyPort: env.LM_SPLASH_PROXY_PORT ? Number(env.LM_SPLASH_PROXY_PORT) : undefined, defaultModel: env.LM_DEFAULT_MODEL, ...request.params?.providerOptions });
       return io.sendResult(id, { models: await readModels(options.baseUrl, options.defaultModel, dataDir, options.splash), selectedOnlyModels: [] });
     }
-    if (method === "provider/usage" || method === "provider/health") {
+    // Local models have no quota, so maintenance.usage is false and BB does not ask for usage.
+    if (method === "provider/usage") return io.sendResult(id, { supported: false });
+    if (method === "provider/health") {
       const params = providerMaintenanceParamsSchema.parse(request.params);
       const options = optionsSchema.parse(params.providerOptions ?? {});
-      if (method === "provider/usage") return io.sendResult(id, { supported: true, usage: await readUsage(options) });
       return io.sendResult(id, { supported: true, health: await readHealth(options) });
     }
     if (["thread/start", "thread/resume", "turn/start", "turn/steer"].includes(method)) {

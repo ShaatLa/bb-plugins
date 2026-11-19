@@ -9,6 +9,22 @@ import { loadLastProjectId } from "./view-preference.js";
 import { DialogScope } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { LockChips } from "../components/lock-chips.js";
+import { cn } from "@/lib/utils";
+
+/** Shared app icon of a kanban board: three column headers with cards stacked under them. */
+export const KANBAN_ICON = "work-board/kanban";
+export function KanbanGlyph({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden className={cn("size-4 shrink-0", className)}>
+      <path d="M3 3.75H7.5M9.75 3.75H14.25M16.5 3.75H21" />
+      <rect x="3" y="7" width="4.5" height="5" rx="1.25" />
+      <rect x="3" y="14.5" width="4.5" height="5" rx="1.25" />
+      <rect x="9.75" y="7" width="4.5" height="5" rx="1.25" />
+      <rect x="16.5" y="7" width="4.5" height="5" rx="1.25" />
+      <rect x="16.5" y="14.5" width="4.5" height="5" rx="1.25" />
+    </svg>
+  );
+}
 
 export const KANBAN_TAB = {
   id: "kanban",
@@ -22,7 +38,7 @@ function KanbanPanelContent({ subPath }: PluginNavPanelProps) {
   const route = parseTasksRoute(subPath);
   const project = projects.data?.find((project) =>
     route.kind === "project" ? project.id === route.projectId :
-    route.kind === "task" ? project.prefix === route.taskKey.split("-", 1)[0]?.toUpperCase() :
+    route.kind === "task" || route.kind === "plan" ? project.prefix === route.taskKey.split("-", 1)[0]?.toUpperCase() :
     project.id === loadLastProjectId(),
   ) ?? projects.data?.[0];
 

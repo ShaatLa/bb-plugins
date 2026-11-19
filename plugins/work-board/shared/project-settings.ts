@@ -7,6 +7,7 @@ export const boardPreferencesSchema = z.object({
   defaultScreen: z.enum(["last-project-board", "last-project-list", "all", "active"]),
 }).strict();
 
+export type BoardPreferences = z.infer<typeof boardPreferencesSchema>;
 export const DEFAULT_BOARD_PREFERENCES = boardPreferencesSchema.parse({ defaultScreen: "last-project-board" });
 export const BOARD_PREFERENCES_KEY = "board:preferences";
 

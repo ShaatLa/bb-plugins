@@ -1,0 +1,60 @@
+import type { createConfig } from './config';
+import { cliCommand, defineCli, type BbPluginApi } from '@get-bb/plugin-sdk';
+import { OWNER_ITEM_SQL } from './ingest';
+import { inputs, viewSchema, type ListInput, type ListResult } from './contract';
+import type { z } from 'zod';
+import type Database from 'better-sqlite3';
+type Api = {
+  config:ReturnType<typeof createConfig>;
+  list(input: ListInput): Promise<ListResult>;
+  markRead(input: z.infer<typeof inputs.markRead>): {ok:true;count?:number};
+  status(threadId?: string): unknown;
+  migrationStatus(): unknown;
+  db: Database.Database;
+};
+export function registerCli(bb: BbPluginApi, api: Api) {
+  const thread={type:'string',description:'Filter by thread'} as const;
+  bb.cli.register(defineCli({name:'agent-hub',summary:'Questions, answers and saved messages',commands:{
+    'migration status':cliCommand({summary:'Report first-start migration',options:{json:{type:'boolean',description:'Return JSON'}},run(){return {exitCode:0,stdout:JSON.stringify(api.migrationStatus())};}}),
+    config:cliCommand({summary:'Read or change one scoped setting',positionals:[{name:'action',description:'get or set',required:true},{name:'key',description:'Setting key',required:false},{name:'value',description:'Setting value',required:false}],options:{project:{type:'string',description:'Project id (omit for global preferences)'},json:{type:'boolean',description:'Return JSON'}},async run(i){
+      const {action,key,value}=i.positionals,projectId=i.options.project;
+      if (action!=='get' && action!=='set') throw new Error('Use config get [<key>] or config set <key> <value>');
+      if (action==='get' && value!==undefined) throw new Error('config get takes at most one key');
+      if (action==='set' && (key===undefined || value===undefined)) throw new Error('Use config set <key> <value>');
+      const result=action==='get' ? await api.config.get({projectId,key}) : await api.config.set({projectId,key:key!,value});
+      return {exitCode:0,stdout:i.options.json || typeof result!=='string' ? JSON.stringify(result) : result};
+    }}),
+    list:cliCommand({summary:'List one page of items (20 by default, up to 50)',options:{view:{type:'enum',values:viewSchema.options,description:'Items view'},thread,project:{type:'string',description:'Filter by project'},query:{type:'string',description:'Text in the question or answer'},limit:{type:'string',description:'Page size, 1-50 (default 20)'},cursor:{type:'string',description:'Next page cursor from the previous page'},json:{type:'boolean',description:'Return JSON'}},async run(i){
+      const limit=i.options.limit===undefined ? 20 : Number(i.options.limit);
+      const result=await api.list(inputs.list.parse({view:i.options.view ?? 'unread',threadId:i.options.thread,projectId:i.options.project,query:i.options.query,cursor:i.options.cursor,limit}));
+      const lines=result.items.map(r=>`${r.id} ${r.status} ${r.threadTitle ?? r.threadId} ${r.question.replace(/\s+/g,' ').slice(0,160)}`).join('\n') || 'No items.';
+      return {exitCode:0,stdout:i.options.json ? JSON.stringify(result) : lines+(result.nextCursor ? `\nMore: --cursor ${result.nextCursor}` : '')};
+    }}),
+    get:cliCommand({summary:'Show one item in full',positionals:[{name:'id',description:'Item id',required:true}],options:{json:{type:'boolean',description:'Return JSON'}},run(i){
+      const r=api.db.prepare('SELECT id,kind,status,thread_id AS threadId,project_id AS projectId,question,answer,note,created_at AS createdAt,answered_at AS answeredAt FROM items WHERE id=?').get(i.positionals.id) as {id:string;kind:string;status:string;threadId:string;question:string;answer:string|null;note:string|null}|undefined;
+      if (!r) throw new Error(`No item ${i.positionals.id}`);
+      return {exitCode:0,stdout:i.options.json ? JSON.stringify(r) : [`${r.id} ${r.kind} ${r.status} ${r.threadId}`,r.question,...(r.answer ? ['--- answer',r.answer] : []),...(r.note ? ['--- note',r.note] : [])].join('\n')};
+    }}),
+    read:cliCommand({summary:'Mark items read',positionals:[{name:'ids',description:'Item ids',variadic:true}],options:{all:{type:'boolean',description:'Mark all answers read'},thread},run(i){
+      if (i.options.all && i.positionals.ids.length) throw new Error('Choose ids or --all');
+      if (!i.options.all && i.options.thread) throw new Error('--thread requires --all');
+      const result=api.markRead(inputs.markRead.parse(i.options.all ? {all:true,threadId:i.options.thread} : {ids:i.positionals.ids})); return {exitCode:0,stdout:i.options.all ? `Marked ${result.count ?? 0} read.` : 'Marked read.'};
+    }}),
+    digest:cliCommand({summary:'Summarize answers and open questions',options:{since:{type:'string',description:'24h, 7d, or ISO date/time'},json:{type:'boolean',description:'Return JSON'}},async run(i){
+      const raw=i.options.since ?? '24h', since=raw==='24h' ? Date.now()-86400000 : raw==='7d' ? Date.now()-7*86400000 : Date.parse(raw);
+      if (!Number.isFinite(since) || (raw!=='24h' && raw!=='7d' && !/^\d{4}-\d{2}-\d{2}(?:T|$)/.test(raw))) throw new Error('Use --since 24h, 7d, or an ISO timestamp');
+      type DigestRow={thread_id:string;question:string;answer:string|null;created_at:number;answered_at:number|null;failed_at:number|null};
+      const section=(where:string,order:string,params:(number|string)[]=[])=>({total:(api.db.prepare(`SELECT count(*) AS n FROM items WHERE dismissed_at IS NULL AND thread_deleted=0 AND ${OWNER_ITEM_SQL} AND ${where}`).get(...params) as {n:number}).n,items:api.db.prepare(`SELECT thread_id,question,answer,created_at,answered_at,failed_at FROM items WHERE dismissed_at IS NULL AND thread_deleted=0 AND ${OWNER_ITEM_SQL} AND ${where} ORDER BY ${order} LIMIT 20`).all(...params) as DigestRow[]});
+      const newAnswers=section("kind='mine' AND status='answered' AND answered_at>=?",'read_at IS NOT NULL,answered_at DESC,id DESC',[since]);
+      const waiting=section("kind='mine' AND status IN ('waiting','deferred')",'failed_at IS NULL,created_at DESC,id DESC');
+      const askedOfYou=section("kind='for_me' AND status='open'",'created_at DESC,id DESC');
+      const data={newAnswers,waiting,askedOfYou};
+      if(i.options.json)return {exitCode:0,stdout:JSON.stringify(data)};
+      const ids=[...new Set(Object.values(data).flatMap(part=>part.items.map(r=>r.thread_id)))];
+      const titles=new Map((ids.length ? await bb.sdk.threads.list({threadIds:ids,includeHidden:true,limit:200}) : []).map(t=>[t.id,t.title ?? t.id]));
+      const age=(at:number)=>{const ms=Math.max(0,Date.now()-at);return ms<3600000 ? `${Math.floor(ms/60000)}m` : ms<86400000 ? `${Math.floor(ms/3600000)}h` : `${Math.floor(ms/86400000)}d`;};
+      return {exitCode:0,stdout:Object.entries(data).map(([name,part])=>`${{newAnswers:'New answers',waiting:'Still waiting',askedOfYou:'Asked of you'}[name as keyof typeof data]} (${part.total})\n${part.items.map(r=>`${titles.get(r.thread_id) ?? r.thread_id} — ${((name==='newAnswers' ? r.answer : r.question) ?? '').replace(/\s+/g,' ').slice(0,160)} (${age(name==='newAnswers' ? r.answered_at! : r.created_at)})`).join('\n')}${part.total>20 ? `\n+${part.total-20} more` : ''}`).join('\n\n')};
+    }}),
+    status:cliCommand({summary:'Show counts, tracked threads and the latest ingestion errors',options:{thread:{type:'string',description:'Show one thread only'}},run(i){return {exitCode:0,stdout:JSON.stringify(api.status(i.options.thread))};}}),
+  }}));
+}

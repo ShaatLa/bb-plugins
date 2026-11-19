@@ -1,0 +1,8 @@
+@media (pointer: coarse) {
+  .answers-hit, [data-composer-voice] button {
+    min-width: 40px;
+    min-height: 40px;
+    flex-shrink: 0;
+  }
+  [data-composer-voice] { min-width: 40px; min-height: 40px; }
+}

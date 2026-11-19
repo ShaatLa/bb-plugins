@@ -2,7 +2,8 @@ import { migrateBrowserPreferences } from "./migrate-preferences.js";
 import type { TaskViewMode } from "./routes.js";
 
 export const VIEW_PREFERENCE_STORAGE_KEY = "bb-work-board:view-preferences";
-export const VIEW_PREFERENCE_VERSION = 1 as const;
+// 2: the board became the default view, and choices saved while the toggle drove the side panel (before 0.54.0) are dropped.
+export const VIEW_PREFERENCE_VERSION = 2 as const;
 const LAST_PROJECT_STORAGE_KEY = "bb-work-board:last-project";
 
 export function loadLastProjectId(): string | null {
@@ -38,9 +39,9 @@ export function storeLastRoute(subPath: string): void {
   } catch {}
 }
 
-const DEFAULT_VIEW_MODE: TaskViewMode = "list";
+const DEFAULT_VIEW_MODE: TaskViewMode = "board";
 
-interface StoredDocumentV1 {
+interface StoredDocument {
   version: typeof VIEW_PREFERENCE_VERSION;
   lastUsed: TaskViewMode;
   projects: Record<string, TaskViewMode>;
@@ -112,7 +113,7 @@ export function storeViewMode(projectId: string, view: TaskViewMode): void {
       if (mode !== null) projects[id] = mode;
     }
     projects[projectId] = view;
-    const document: StoredDocumentV1 = {
+    const document: StoredDocument = {
       version: VIEW_PREFERENCE_VERSION,
       lastUsed: view,
       projects,

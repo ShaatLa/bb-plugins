@@ -4,29 +4,52 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { dirname } from 'node:path';
 import { createHash } from 'node:crypto';
 import { deliveryStore } from './delivery.ts';
+import { sweepHistory } from './history.ts';
 import { formatNotification } from './notification.ts';
-import { execute } from './runner.ts';
+import { managerTag, overviewContract, projectId, projectInput as input, projectsTag, statsInput, statsTag } from './overview-contract.ts';
+import { reportContents } from './reports.ts';
+import { CheckoutRefreshError, execute } from './runner.ts';
 
-const projectId = z.string().regex(/^proj_[a-z0-9]+$/);
-export const configSchema = z.object({ enabled: z.boolean().default(false), remote: z.string().min(1).max(2000).refine(s => !s.startsWith('-')), branch: z.string().min(1).max(200).regex(/^[A-Za-z0-9_][A-Za-z0-9_./-]*$/), script: z.string().min(1).max(1000).refine(s => !s.startsWith('/') && !s.split('/').includes('..')), args: z.array(z.string().max(10000)).max(100).default([]), manager: z.string().regex(/^(thr_[a-z0-9]+)?$/).default(''), intervalMinutes: z.number().int().min(1).max(1440).default(10), timeoutSeconds: z.number().int().min(1).max(300).default(300), snapshots: z.boolean().default(false) }).strict();
+const repositoryUrl = z.string().min(1).max(2000).refine(s => !s.startsWith('-'));
+export const configSchema = z.object({ enabled: z.boolean().default(false), branch: z.string().min(1).max(200).regex(/^[A-Za-z0-9_][A-Za-z0-9_./-]*$/), script: z.string().min(1).max(1000).refine(s => !s.startsWith('/') && !s.split('/').includes('..')), args: z.array(z.string().max(10000)).max(100).default([]), manager: z.string().regex(/^(thr_[a-z0-9]+)?$/).default(''), intervalMinutes: z.number().int().min(1).max(1440).default(10), timeoutSeconds: z.number().int().min(1).max(300).default(300), snapshots: z.boolean().default(false) });
 export type Config = z.infer<typeof configSchema>;
-const projectsSchema = z.record(projectId, configSchema);
-const input = z.object({ projectId }).strict();
+const projectDraft = configSchema.partial().refine(config => !config.enabled || configSchema.safeParse(config).success, 'Complete the checkout settings before enabling Sweep');
+const projectsSchema = z.record(projectId, projectDraft);
+const configKey = configSchema.keyof();
+const configGetInput = input.extend({ key: configKey.optional() });
+const configSetInput = input.extend({ key: configKey, value: z.union([z.string(), z.number(), z.boolean(), z.array(z.string())]) });
 export const contract = defineRpcContract({
-  'settings.read': { input: z.null(), output: z.object({ projects: z.array(z.object({ id: z.string(), name: z.string(), config: configSchema.nullable() })), threads: z.array(z.object({ id: z.string(), title: z.string(), projectId: z.string() })), environment: z.object({ bbCli: z.string(), runtimePath: z.string() }) }) },
+  ...overviewContract,
+  'settings.read': { input: z.null(), output: z.object({ projects: z.array(z.object({ id: z.string(), name: z.string(), hasRepository: z.boolean(), config: configSchema.nullable() })), threads: z.array(z.object({ id: z.string(), title: z.string(), projectId: z.string() })), environment: z.object({ bbCli: z.string(), runtimePath: z.string() }) }) },
   'environment.write': { input: z.object({ bbCli: z.string(), runtimePath: z.string() }).strict(), output: z.unknown() },
-  configure: { input: z.object({ projectId, config: configSchema }).strict(), output: z.unknown() },
+  configure: { input: z.object({ projectId, config: configSchema.extend({ remote: z.string().optional() }).strict().transform(config => configSchema.parse(config)) }).strict(), output: z.unknown() },
+  'config.get': { input: configGetInput, output: z.unknown() },
+  'config.set': { input: configSetInput, output: z.unknown() },
   'seed-state': { input: z.object({ projectId, snapshot: z.string().min(1).max(1000000).refine(s => { try { JSON.parse(s); return true; } catch { return false; } }, 'Snapshot must be JSON') }).strict(), output: z.object({ seeded: z.literal(true) }) },
-  manager: { input, output: z.object({ manager: z.string().nullable() }) },
   status: { input, output: z.unknown() },
   run: { input, output: z.unknown() },
 });
-type State = { tickId?: string; deliveredTickId?: string; deliveredTo?: string; deliveredNoticeId?: string; fallbackReason?: string; lastRun?: number; exitCode?: number | null; delivered?: string; deliveredAt?: number; heartbeatAt?: number; error?: string | null; managerError?: string | null; alertError?: string | null; nextRun?: number };
+type ReportReceipt = { fingerprint: string; manager?: string };
+type State = { tickId?: string; deliveredTickId?: string; deliveredTo?: string; deliveredNoticeId?: string; fallbackReason?: string; lastRun?: number; exitCode?: number | null; delivered?: string; deliveredAt?: number; error?: string | null; managerError?: string | null; alertError?: string | null; nextRun?: number; refreshFailures?: number; refreshRetryAt?: number; lastFailure?: ReportReceipt; lastReport?: ReportReceipt & { at: number; changes?: ReturnType<typeof reportContents>['changes'] } };
 const noticeReceipt = z.object({ id: z.string().min(1), created: z.boolean() });
+const maxRefreshBackoffMs = 3600000;
+const reportHeader = /^\[sweep\] (alive|exit (\d+))(?: tick=(\S+))?\n/;
 export default async function plugin(bb: BbPluginApi) {
   const settings = bb.settings.define({ runtimePath: { type: 'string', label: 'Script PATH (empty inherits server)', default: '' }, bbCli: { type: 'string', label: 'BB CLI absolute path', default: '' }, projects: { type: 'string', label: 'Project sweeps (JSON)', experimental_multiline: true, default: '{}', experimental_schema: z.string().refine(s => { try { return projectsSchema.safeParse(JSON.parse(s)).success; } catch { return false; } }, 'Expected project id → Sweep configuration JSON') } });
-  const configs = async () => projectsSchema.parse(JSON.parse((await settings.get()).projects));
+  settings.onChange((next, previous) => {
+    if (next.projects !== previous.projects) bb.rpc.experimental_invalidate([projectsTag, managerTag]);
+  });
+  const drafts = async () => projectsSchema.parse(JSON.parse((await settings.get()).projects));
+  const configs = async () => {
+    const configs: Record<string, Config> = {};
+    for (const [id, draft] of Object.entries(await drafts())) {
+      const parsed = configSchema.safeParse(draft);
+      if (parsed.success) configs[id] = parsed.data;
+    }
+    return configs;
+  };
   const db = bb.storage.database(), deliveries = deliveryStore(db);
+  const history = sweepHistory(db);
   db.exec('CREATE TABLE IF NOT EXISTS status (id TEXT PRIMARY KEY, value TEXT NOT NULL)');
   const state = (id: string): State => JSON.parse((db.prepare('SELECT value FROM status WHERE id = ?').get(id) as { value: string } | undefined)?.value ?? '{}');
   const save = (id: string, value: State) => db.prepare('INSERT INTO status VALUES (?, ?) ON CONFLICT(id) DO UPDATE SET value = excluded.value').run(id, JSON.stringify(value));
@@ -41,16 +64,18 @@ export default async function plugin(bb: BbPluginApi) {
     if (thread.runtime.displayStatus === 'waiting-for-host') throw new Error('Manager host unreachable');
     return manager;
   }
-  async function deliver(id: string, current: State) {
+  async function deliver(id: string, current: State, tickId: string) {
     const pending = deliveries.read(id)?.pending_message;
     if (!pending) return;
-    const header = /^\[sweep\] (alive|exit (\d+))(?: tick=(\S+))?\n/.exec(pending);
+    const header = reportHeader.exec(pending);
     const heartbeat = header?.[1] === 'alive';
-    const message = header ? formatNotification(heartbeat ? 'alive' : Number(header[2]), pending.slice(header[0].length)) : pending;
+    const code = Number(header?.[2]);
+    const output = header ? pending.slice(header[0].length) : pending;
+    const message = header ? formatNotification(heartbeat ? 'alive' : code, output) : pending;
     const manager = (await configs())[id]?.manager;
     try {
       const threadId = await managerFor(manager);
-      await bb.sdk.threads.send({ threadId, mode: 'queue-if-active', originPluginId: bb.pluginId, input: [{ type: 'text', text: message, mentions: [] }] });
+      await bb.sdk.threads.send({ threadId, mode: 'queue-if-active', originPluginId: bb.pluginId, input: [{ type: 'text', text: `[bb message from plugin:${bb.pluginId}]\n\n${message}`, mentions: [] }] });
       current.deliveredTo = threadId;
       current.deliveredNoticeId = undefined;
       current.fallbackReason = undefined;
@@ -60,48 +85,129 @@ export default async function plugin(bb: BbPluginApi) {
       current.managerError = String(error);
       // Older pending reports did not carry a tick ID. Derive a stable key for their retries.
       const tickId = header?.[3] ?? `${id}:legacy:${createHash('sha256').update(pending).digest('hex')}`;
-      const notice = await bb.sdk.plugins.callRpc({
-        pluginId: 'answers', method: 'notice', signal: controller.signal, outputSchema: noticeReceipt,
-        input: {
-          source: bb.pluginId, tickId, projectId: id, ...(manager ? { threadId: manager } : {}),
-          title: 'Sweep report · Manager unavailable',
-          markdown: Buffer.byteLength(message) <= 1024 * 1024 ? message : pending,
-        },
-      }).catch(cause => { throw new Error(`Answers fallback failed after ${current.managerError}: ${String(cause)}`, { cause }); });
-      current.deliveredTo = 'answers';
-      current.deliveredNoticeId = notice.id;
-      current.fallbackReason = current.managerError;
+      try {
+        const { plugins } = await bb.sdk.plugins.list({ signal: controller.signal });
+        const pluginId = ['agent-hub', 'answers'].find(id => plugins.some(plugin => plugin.id === id && plugin.enabled));
+        if (!pluginId) throw new Error('No enabled Agent Hub or Answers plugin');
+        const notice = await bb.sdk.plugins.callRpc({
+          pluginId, method: 'notice', signal: controller.signal, outputSchema: noticeReceipt,
+          input: {
+            source: bb.pluginId, tickId, projectId: id, ...(manager ? { threadId: manager } : {}),
+            title: 'Sweep report · Manager unavailable',
+            markdown: Buffer.byteLength(message) <= 1024 * 1024 ? message : pending,
+          },
+        });
+        current.deliveredTo = pluginId;
+        current.deliveredNoticeId = notice.id;
+        current.fallbackReason = current.managerError;
+      } catch (cause) {
+        if (!controller.signal.aborted) history.deliveryFailed(tickId);
+        throw new Error(`Notice fallback failed after ${current.managerError}: ${String(cause)}`, { cause });
+      }
     }
     current.deliveredTickId = header?.[3];
     current.delivered = pending; current.deliveredAt = Date.now();
-    if (heartbeat) current.heartbeatAt = Date.now();
-    db.transaction(() => { deliveries.acknowledge(id); save(id, current); })();
+    current.error = code >= 2 ? output : null;
+    current.alertError = null;
+    if (header && !heartbeat) {
+      const { fingerprint, changes } = reportContents(code, output);
+      if (code >= 2) current.lastFailure = { fingerprint, manager };
+      else current.lastReport = { fingerprint, changes, at: current.deliveredAt, manager };
+    }
+    db.transaction(() => {
+      deliveries.acknowledge(id);
+      history.delivered(tickId, current.deliveredNoticeId !== undefined);
+      save(id, current);
+    })();
   }
   async function tick(id: string, manual = false) {
     if (busy.has(id)) throw new Error('Sweep already running');
     busy.add(id);
     const current = state(id);
     let config: Config | undefined;
+    let historyChanged = false;
     try {
       config = (await configs())[id]; if (!config) throw new Error('Project not configured');
+      const now = Date.now(), interval = config.intervalMinutes * 60000;
+      const timestamp = Math.max(now, (Number(current.tickId?.split(':')[1]) || 0) + 1);
+      const tickId = `${id}:${timestamp}`;
       if (!manual) {
-        current.tickId = `${id}:${Date.now()}`;
-        current.lastRun = Date.now(); current.exitCode = null; current.nextRun = Date.now() + config.intervalMinutes * 60000;
-        save(id, current);
-        await deliver(id, current);
+        if (current.lastReport && !current.lastReport.changes && current.delivered) {
+          const previous = reportHeader.exec(current.delivered);
+          if (previous?.[2] !== undefined) {
+            const code = Number(previous[2]);
+            if (code >= 2) {
+              const { fingerprint, manager } = current.lastReport;
+              current.lastFailure ??= { fingerprint, manager };
+              current.lastReport = undefined;
+            } else {
+              current.lastReport.changes = reportContents(code, current.delivered.slice(previous[0].length)).changes;
+            }
+          }
+        }
+        current.tickId = tickId;
+        current.lastRun = now;
+        current.nextRun = now + interval;
+        db.transaction(() => { history.start(id, tickId, now); save(id, current); })();
+        historyChanged = true;
+        await deliver(id, current, tickId);
+        if (current.refreshRetryAt && current.refreshRetryAt > Date.now()) {
+          current.nextRun = current.refreshRetryAt;
+          save(id, current);
+          return status(id);
+        }
       }
+      const committed = deliveries.read(id)?.committed ?? null;
       let result;
-      try { result = await execute(dirname(db.name), id, config, deliveries.read(id)?.committed ?? null, controller.signal, (await settings.get()).bbCli, (await settings.get()).runtimePath); }
-      catch (e) { if (controller.signal.aborted) throw e; result = { code: 2, output: `ERROR ${String(e)}`, snapshot: null }; }
+      let refreshFailed = false;
+      try {
+        const project = await bb.sdk.projects.get({ projectId: id }).catch(cause => {
+          throw new CheckoutRefreshError('Could not read the bb project repository settings', { cause });
+        });
+        const remote = repositoryUrl.safeParse(project?.gitRemoteUrl);
+        if (!remote.success) throw new CheckoutRefreshError('Set a valid Git remote URL in the bb project settings');
+        const { bbCli, runtimePath } = await settings.get();
+        result = await execute(dirname(db.name), id, { ...config, remote: remote.data }, committed, controller.signal, bbCli, runtimePath);
+      }
+      catch (e) {
+        if (controller.signal.aborted) throw e;
+        refreshFailed = e instanceof CheckoutRefreshError;
+        result = { code: 2, output: `ERROR ${String(e)}`, snapshot: null };
+      }
       if (manual) return { exitCode: result.code, output: result.output, manual: true };
       current.exitCode = result.code;
-      const heartbeat = !current.heartbeatAt || Date.now() - current.heartbeatAt >= 3600000;
-      // Every candidate is delivered in full before promotion, including exit-zero candidates.
-      if (result.code || result.snapshot || heartbeat) {
-        const message = result.code || result.snapshot ? `[sweep] exit ${result.code} tick=${current.tickId}\n${result.output}` : `[sweep] alive tick=${current.tickId}\n${result.output.split('\n').find(s => s.startsWith('sweep:')) ?? ''}`;
-        deliveries.stage(id, message, result.snapshot);
-        await deliver(id, current);
-      }
+      current.refreshFailures = refreshFailed ? (current.refreshFailures ?? 0) + 1 : 0;
+      current.refreshRetryAt = refreshFailed
+        ? Date.now() + Math.min(interval * 2 ** Math.min(current.refreshFailures - 1, 6), Math.max(interval, maxRefreshBackoffMs))
+        : undefined;
+      const report = reportContents(result.code, result.output);
+      history.result(id, tickId, now, report.items, refreshFailed ? 'refresh' : result.code >= 2 ? 'script' : undefined);
+      const candidateChanged = result.snapshot !== null && (!committed || !result.snapshot.equals(committed));
+      const answerWithoutCandidate = config.snapshots && result.snapshot === null && [...report.items.values()].includes('ANSWER');
+      const lastReport = current.lastReport?.manager === config.manager ? current.lastReport : undefined;
+      const previous = lastReport?.changes;
+      const sameLegacyReport = !previous && lastReport?.fingerprint === report.fingerprint;
+      const waitingChanged = result.code < 2 && !sameLegacyReport &&
+        report.changes.waiting !== (previous?.waiting ?? '');
+      const knownItems = new Set(previous?.noteworthy);
+      const newItem = !sameLegacyReport && report.changes.noteworthy.some(id => !knownItems.has(id));
+      const lastFailure = current.lastFailure;
+      const changedFailure = lastFailure?.manager !== config.manager || lastFailure?.fingerprint !== report.fingerprint;
+      const changedDiagnostic = result.code === 1 && !report.items.size && lastReport?.fingerprint !== report.fingerprint;
+      const notify = result.code >= 2 ? changedFailure :
+        waitingChanged || newItem || candidateChanged || answerWithoutCandidate || changedDiagnostic;
+      if (result.code < 2) current.lastFailure = undefined;
+      if (notify) {
+        const output = waitingChanged && !report.changes.waiting
+          ? `${result.output.trimEnd()}\nSTATE Waiting list is clear.\n` : result.output;
+        const message = `[sweep] exit ${result.code} tick=${tickId}\n${output}`;
+        db.transaction(() => {
+          deliveries.stage(id, message, result.snapshot);
+          save(id, current);
+        })();
+        await deliver(id, current, tickId);
+      } else if (result.code !== 0 || report.changes.waiting || result.snapshot !== null) history.suppress(tickId);
+      if (current.refreshRetryAt) current.nextRun = current.refreshRetryAt;
       current.error = result.code >= 2 ? result.output : null;
       current.alertError = null;
       save(id, current);
@@ -113,14 +219,56 @@ export default async function plugin(bb: BbPluginApi) {
         catch (alert) { current.alertError = String(alert); save(id, current); bb.log.error(`Sweep push failed: ${String(alert)}`); }
       }
       throw e;
-    } finally { busy.delete(id); }
+    } finally {
+      busy.delete(id);
+      if (historyChanged) bb.rpc.experimental_invalidate([statsTag(id)]);
+    }
   }
   let writes = Promise.resolve();
+  async function writeConfig(id: string, edit: (config: Partial<Config> | undefined) => Partial<Config>) {
+    const operation = writes.then(async () => {
+      if (!(await bb.sdk.projects.list()).some(p => p.id === id)) throw new Error('Unknown project');
+      const projects = await drafts();
+      const previous = projects[id];
+      const config = edit(previous);
+      projects[id] = config;
+      await settings.experimental_set({ projects: JSON.stringify(projects) });
+      if (!busy.has(id)) {
+        const current = state(id);
+        if (previous?.branch !== config.branch) {
+          current.refreshFailures = 0;
+          current.refreshRetryAt = undefined;
+        }
+        save(id, { ...current, nextRun: Date.now() });
+      }
+      return config;
+    });
+    writes = operation.then(() => {}, () => {});
+    return operation;
+  }
   const configure = async ({ projectId, config }: { projectId: string; config: Config }) => {
-    const operation = writes.then(async () => { if (!(await bb.sdk.projects.list()).some(p => p.id === projectId)) throw new Error('Unknown project'); const projects = await configs(); projects[projectId] = config; await settings.experimental_set({ projects: JSON.stringify(projects) }); });
-    writes = operation.catch(() => {}); await operation; if (!busy.has(projectId)) save(projectId, { ...state(projectId), nextRun: Date.now() }); return status(projectId);
+    await writeConfig(projectId, () => config);
+    return status(projectId);
   };
-  bb.rpc.register(contract, { 'settings.read': async () => { const values = await settings.get(), projects = await configs(); return { projects: (await bb.sdk.projects.list()).map(p => ({ id: p.id, name: p.name, config: projects[p.id] ?? null })), threads: (await bb.sdk.threads.list({ limit: 100, archived: false })).map(t => ({ id: t.id, title: t.title || t.id, projectId: t.projectId })), environment: { bbCli: values.bbCli, runtimePath: values.runtimePath } }; }, 'environment.write': async values => settings.experimental_set(values), configure, 'seed-state': async ({ projectId, snapshot }) => { if (busy.has(projectId)) throw new Error('Sweep already running'); const config = (await configs())[projectId]; if (!config) throw new Error('Project not configured'); if (config.enabled) throw new Error('Disable project before seeding'); if (busy.has(projectId)) throw new Error('Sweep already running'); deliveries.seed(projectId, Buffer.from(snapshot)); return { seeded: true as const }; }, manager: async ({ projectId }) => ({ manager: (await configs())[projectId]?.manager || null }), status: ({ projectId }) => status(projectId), run: ({ projectId }) => tick(projectId, true) });
+  const configGet = async ({ projectId, key }: z.infer<typeof configGetInput>) => {
+    const config = (await drafts())[projectId];
+    return key ? { [key]: config?.[key] ?? null } : config ?? null;
+  };
+  const configSet = async ({ projectId, key, value }: z.infer<typeof configSetInput>) => {
+    const parsed = configSchema.shape[key].safeParse(value);
+    if (!parsed.success) throw new Error(`Invalid ${key}: ${parsed.error.issues[0].message}`);
+    const config = await writeConfig(projectId, current => {
+      const next = { ...current, [key]: parsed.data };
+      return next.enabled ? configSchema.parse(next) : next;
+    });
+    return { [key]: config[key] };
+  };
+  bb.rpc.register(contract, {
+    'overview.projects': async () => {
+      const projects = await configs();
+      return (await bb.sdk.projects.list()).flatMap(({ id, name }) => projects[id] ? [{ id, name, enabled: projects[id].enabled }] : []);
+    },
+    'settings.read': async () => { const values = await settings.get(), projects = await configs(); return { projects: (await bb.sdk.projects.list()).map(p => ({ id: p.id, name: p.name, hasRepository: repositoryUrl.safeParse(p.gitRemoteUrl).success, config: projects[p.id] ?? null })), threads: (await bb.sdk.threads.list({ limit: 100, archived: false })).map(t => ({ id: t.id, title: t.title || t.id, projectId: t.projectId })), environment: { bbCli: values.bbCli, runtimePath: values.runtimePath } }; }, 'environment.write': async values => settings.experimental_set(values), configure, 'config.get': configGet, 'config.set': configSet, stats: ({ projectId, days }) => history.stats(projectId, days), 'seed-state': async ({ projectId, snapshot }) => { if (busy.has(projectId)) throw new Error('Sweep already running'); const config = (await configs())[projectId]; if (!config) throw new Error('Project not configured'); if (config.enabled) throw new Error('Disable project before seeding'); if (busy.has(projectId)) throw new Error('Sweep already running'); deliveries.seed(projectId, Buffer.from(snapshot)); return { seeded: true as const }; }, manager: async ({ projectId }) => ({ manager: (await configs())[projectId]?.manager || null }), status: ({ projectId }) => status(projectId), run: ({ projectId }) => tick(projectId, true) });
   const runDue = async () => { for (const [id, config] of Object.entries(await configs())) if (config.enabled && !busy.has(id) && (state(id).nextRun ?? 0) <= Date.now()) await tick(id).catch(e => bb.log.error(String(e))); };
   bb.background.schedule('sweep', '* * * * *', runDue);
   // Recover due ticks if the host cron dispatcher stalls; nextRun and busy prevent repeats.
@@ -135,13 +283,45 @@ export default async function plugin(bb: BbPluginApi) {
       }
     } finally { signal.removeEventListener('abort', abort); }
   } });
-  bb.cli.register({ name: 'sweep', summary: 'Read Sweep status, manager or run without advancing state', async run(argv, ctx) {
+  bb.cli.register({ name: 'sweep', summary: 'Read Sweep status, configure a project, report stats, or run manually', async run(argv, ctx) {
     try {
-      if (!argv.length || argv.includes('--help')) return { exitCode: 0, stdout: 'bb sweep status|manager|run [--project <id>] [--json]. Configure in Settings → Sweep, or RPC configure.' };
+      if (!argv.length || argv.includes('--help')) return { exitCode: 0, stdout: 'bb sweep status|manager|run [--project <id>] [--json]\nbb sweep config get [<key>] | config set <key> <value> [--project <id>]\nbb sweep stats [--days <1-30>] [--project <id>]' };
       let id = ctx.projectId;
-      for (let i = 1; i < argv.length; i++) { if (argv[i] === '--project') id = argv[++i]; else if (argv[i] !== '--json' && argv[i] !== '--dry-run') throw new Error(`Unknown option ${argv[i]}`); }
+      const [command, ...args] = argv;
+      const positional: string[] = [];
+      let days: number | undefined;
+      for (let i = 0; i < args.length; i++) {
+        const arg = args[i];
+        if (arg === '--project') id = args[++i];
+        else if (arg === '--days' && command === 'stats') days = Number(args[++i]);
+        else if (arg === '--json' || arg === '--dry-run') continue;
+        else if (command === 'config') positional.push(arg);
+        else throw new Error(`Unknown option ${arg}`);
+      }
       if (!id) throw new Error('Supply --project <id>'); projectId.parse(id);
-      const result = argv[0] === 'status' ? await status(id) : argv[0] === 'manager' ? { manager: (await configs())[id]?.manager || null } : argv[0] === 'run' ? await tick(id, true) : (() => { throw new Error('Use status, manager or run'); })();
+      let result;
+      switch (command) {
+        case 'status': result = await status(id); break;
+        case 'manager': result = { manager: (await configs())[id]?.manager || null }; break;
+        case 'run': result = await tick(id, true); break;
+        case 'stats': result = history.stats(id, statsInput.parse({ projectId: id, days }).days); break;
+        case 'config': {
+          const [operation, field, raw] = positional;
+          if (operation === 'get' && positional.length <= 2) {
+            result = await configGet(configGetInput.parse({ projectId: id, key: field }));
+            break;
+          }
+          if (operation !== 'set' || positional.length !== 3) throw new Error('Use config get [<key>] or config set <key> <value>');
+          const key = configKey.parse(field);
+          let value: unknown = raw;
+          if (!configSchema.shape[key].safeParse(raw).success) {
+            try { value = JSON.parse(raw); } catch { /* Validation will name the field. */ }
+          }
+          result = await configSet(configSetInput.parse({ projectId: id, key, value }));
+          break;
+        }
+        default: throw new Error('Use status, manager, run, config or stats');
+      }
       return { exitCode: 0, stdout: JSON.stringify(result) };
     } catch (e) { return { exitCode: 1, stderr: String(e) }; }
   } });

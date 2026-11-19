@@ -1,5 +1,4 @@
 import type { PluginProviderFallbackModel } from "@get-bb/plugin-sdk";
-import type { ProviderUsage } from "@get-bb/plugin-sdk/provider-bridge";
 import { z } from "zod";
 
 export const DEFAULT_BASE_URL = "http://127.0.0.1:9931/v1";
@@ -60,22 +59,4 @@ export async function readModels(baseUrl: string, defaultModel = "", dataDir = "
   if (!lists.some(list => list.status === "fulfilled")) throw (lists[0] as PromiseRejectedResult).reason;
   const data = lists.flatMap(list => list.status === "fulfilled" ? list.value : []).filter((entry, index, all) => all.findIndex(other => other.id === entry.id) === index);
   return parseModels({ data: preferSplash(data, splash) }, defaultModel.startsWith("splash/") ? defaultModel : splash && data.some(m => m.id === "splash/" + defaultModel) ? "splash/" + defaultModel : defaultModel, readCaps(dataDir));
-}
-
-// Local models have no quota: one usage row listing all installed models.
-// The label ends with an invisible separator (U+2063) so CSS can target this row.
-export function usageFor(models: { displayName: string }[]): ProviderUsage {
-  const shortName = (name: string) => name.split(" ")[0];
-  const names = models.map(m => shortName(m.displayName)).filter(Boolean);
-  const label = names.join(", ")+"\u2063";
-  return {
-    status: "ok",
-    accountEmail: null,
-    planLabel: "Local",
-    windows: [{
-      label,
-      usedPercent: 0,
-      resetsAt: null,
-    }],
-  };
 }

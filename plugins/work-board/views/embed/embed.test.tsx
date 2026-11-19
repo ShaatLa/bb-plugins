@@ -520,6 +520,48 @@ describe("Task embed panel", () => {
 });
 
 
+describe("Board hosts in other plugins' UI", () => {
+  it("renders the thread's board into a host node, outlines the thread's own cards and marks the host ready", async () => {
+    const host = document.createElement("div");
+    host.setAttribute("data-work-board-host", "board");
+    host.setAttribute("data-thread-id", "thr_1");
+    document.body.appendChild(host);
+    try {
+      const overlay = app.appOverlays.find((registration) => registration.id === "board-hosts")!;
+      renderSlot(overlay, {}, {
+        sdk: { threads: { get: async () => makeThreadResponse({ id: "thr_1", projectId: "proj_thread" }) } },
+        rpc: {
+          ...boardRpc(),
+          threadTasks: () => ({ tasks: [{
+            key: task.key, title: task.title, projectName: "Linked project board", archived: false, linkName: "Attached", linkedAt: task.createdAt,
+            url: `/plugins/work-board/work-board/task/${task.key}`,
+            status: { id: "in_progress", name: "In Progress", iconName: "work-board/status-in_progress", cssColor: "var(--attention)" },
+          }] }),
+        },
+      });
+      await waitFor(() => expect(host.getAttribute("data-work-board-ready")).toBe("true"));
+      expect(host.querySelector('[data-bb-plugin="work-board"]')).not.toBeNull();
+      await waitFor(() => expect(host.querySelector(`[data-task-key="${task.key}"]`)?.className).toContain("ring-1"));
+      expect(host.textContent).toContain("Linked project board");
+
+      // A web link click goes to the host's surface when the host takes it, and stays a plain click otherwise.
+      const root = host.querySelector<HTMLElement>('[data-bb-plugin="work-board"]')!;
+      const link = root.appendChild(Object.assign(document.createElement("a"), { href: "https://example.com/doc", textContent: "Doc" }));
+      const opened: string[] = [];
+      const take = (event: Event) => { opened.push((event as CustomEvent<{ url: string }>).detail.url); event.preventDefault(); };
+      host.addEventListener("work-board:open-url", take);
+      expect(fireEvent.click(link)).toBe(false);
+      expect(opened).toEqual(["https://example.com/doc"]);
+      host.removeEventListener("work-board:open-url", take);
+      expect(fireEvent.click(link)).toBe(true);
+      expect(fireEvent.click(link, { metaKey: true })).toBe(true);
+      expect(opened).toHaveLength(1);
+    } finally {
+      host.remove();
+    }
+  });
+});
+
 function boardRpc() {
   const project = {
     id: PROJECT_ID, name: "Linked project board", prefix: "TSK", nextTaskNumber: 5,

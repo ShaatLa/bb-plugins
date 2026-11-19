@@ -54,6 +54,7 @@ const sliceRow = repositorySignalsSchema.pick({ repository: true, updatedAt: tru
     moreProblems: z.number().optional(), moreSignals: z.number().optional(), moreFailures: z.number().optional(), moreReruns: z.number().optional() })
   .extend(repositorySignalsSchema.pick({ live: true, runnerLosses: true, failureCounts: true, failureCountsByEvent: true, poolTimings: true, poolTimingsByEvent: true }).partial().shape);
 export const ciReportSchema = z.object({
+  cutover: z.literal("verifying").optional(),
   source: z.enum(["cache", "collection"]), discoveryError: z.string().nullable(),
   repositories: z.array(z.union([summaryRow, sliceRow])),
 });

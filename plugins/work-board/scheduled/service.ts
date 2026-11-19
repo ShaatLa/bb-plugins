@@ -1,3 +1,4 @@
+import { withPluginHeader } from "../steer";
 import { threadLiveStatus } from "../lifecycle/thread-links";
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import { z } from "zod";
@@ -10,6 +11,7 @@ import type { ScheduleRun } from "../shared/scheduled";
 import { createScheduledStore } from "./store";
 import { isWithinGrace, localSlotKey, nextOccurrence } from "./recurrence";
 import { acceptedScheduledRuns, scheduledRunMarker } from "./acceptance";
+import { getWorkflowPolicy } from "../shared/workflow-policy";
 
 type Thread=Awaited<ReturnType<BbPluginApi["sdk"]["threads"]["get"]>>;
 type QueueEntry=Awaited<ReturnType<BbPluginApi["sdk"]["threads"]["queuedMessages"]["list"]>>[number];
@@ -286,7 +288,7 @@ function createService(bb:BbPluginApi,store:TasksApiStore) {
    const prompt=`${scheduledRunMarker(id)}\n${buildSeedPrompt({task:seedTask,project,subtasks:[],attachments:attachments.slice(0,20),recentComments:[],blockedBy:createDependencyStore(db,store.tasks).blockers([task.id]).get(task.id),presetInstructions:preset?.instructions??"",extraInstructions:`Scheduled occurrence: ${r.scheduledFor}. Use the task workflow; completing a turn is not Done.`})}`;
    try {
     if(thread) {
-     const delivery=await bb.sdk.threads.send({threadId:thread.id,mode:"queue-if-active",input:[{type:"text",text:prompt,mentions:[]}]});
+     const delivery=await bb.sdk.threads.send({threadId:thread.id,mode:"queue-if-active",input:[{type:"text",text:withPluginHeader(bb.pluginId,prompt),mentions:[]}]});
      alive();r=data.run(id);
      if(!r.startedAt&&!terminalStates.has(r.state)&&r.state!=="cancel_pending") {
       if(delivery.delivery==="queued"&&!(r.lastQueueId===delivery.queuedMessage.id&&r.queueId===null)) {data.updateRun(id,{state:"queued",queueId:delivery.queuedMessage.id});refreshStarting(thread.id);await processQueue(delivery.queuedMessage);}
@@ -403,10 +405,11 @@ function createService(bb:BbPluginApi,store:TasksApiStore) {
   return tickFlight;
  }
  function observe(threadId:string) {void reconcileThread(threadId);}
+ function inProgress(taskId:string) {const task=store.tasks.getTask(taskId),project=task&&store.tasks.getProject(task.projectId);return !!task&&!!project&&task.status===getWorkflowPolicy(project).inProgressStatus;}
  function observeLifecycle(thread:Thread) {
   if(thread.archivedAt!==null||thread.deletedAt!==null) {
-   for(const r of data.pending(thread.id,500).filter(r=>r.startedAt&&r.state==="running"&&r.taskId&&store.tasks.getTask(r.taskId)?.status==="in_progress"))
-    void incident(r.id,"failed","Session became unavailable before the task reached Done");
+   for(const r of data.pending(thread.id,500).filter(r=>r.startedAt&&r.state==="running"&&r.taskId&&inProgress(r.taskId)))
+    void incident(r.id,"failed","Session became unavailable while the task was still in progress");
   }
   return reconcileThread(thread.id,true).finally(()=>{
    if(thread.status!=="active"&&thread.status!=="starting")nativeRetries.delete(thread.id);

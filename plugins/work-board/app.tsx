@@ -3,8 +3,11 @@ import { TasksSettings } from "./views/settings.js";
 import { TasksAppShell } from "./shell/app-shell.js";
 import { useOpenTasksBadge } from "./shell/open-tasks-badge.js";
 import { TasksNavigationPanel } from "./shell/navigation-panel.js";
-import { KanbanPanel, KANBAN_TAB } from "./shell/kanban-panel.js";
+import { KanbanGlyph, KanbanPanel, KANBAN_ICON, KANBAN_TAB } from "./shell/kanban-panel.js";
+import { PLAN_NAV_TAB, PLAN_THREAD_TAB } from "./views/plan/open.js";
+import { PlanTabPanel } from "./views/plan/tab.js";
 import { TASK_TAB, TaskDirectiveCard, TaskEmbedPanel } from "./views/embed/index.js";
+import { WorkBoardHosts } from "./views/embed/hosts.js";
 import { useTaskLinkInterception } from "./components/task-link-interceptor.js";
 import { StatusGlyph } from "./components/status-icon.js";
 import { STATUS_ICONS, STATUS_ICON_NAME_PREFIX } from "./shared/statuses.js";
@@ -13,6 +16,7 @@ export default definePluginApp((app) => {
   // Other plugins draw status glyphs by name; threadTasks returns the name and color.
   for (const { id } of STATUS_ICONS)
     app.experimental_icons.register({ name: STATUS_ICON_NAME_PREFIX + id, component: ({ className }) => <StatusGlyph glyph={id} className={className} /> });
+  app.experimental_icons.register({ name: KANBAN_ICON, component: KanbanGlyph });
   app.slots.settingsSection({
     id: "settings",
     title: "Work Board",
@@ -22,7 +26,7 @@ export default definePluginApp((app) => {
   app.slots.navPanel({
     id: "work-board",
     title: "Work Board",
-    icon: "ListTodo",
+    icon: KANBAN_ICON,
     path: "work-board",
     component: TasksAppShell,
     experimental_useBadge: useOpenTasksBadge,
@@ -40,17 +44,20 @@ export default definePluginApp((app) => {
   app.slots.experimental_tab({
     ...KANBAN_TAB,
     title: "Kanban",
-    icon: "Columns2",
+    icon: KANBAN_ICON,
     component: KanbanPanel,
     layout: "flush",
   });
   app.slots.experimental_tab({
     ...TASK_TAB,
     title: "Work Board",
-    icon: "ListTodo",
+    icon: KANBAN_ICON,
     component: TaskEmbedPanel,
     layout: "flush",
   });
+  // One Plan tab per task (params.taskKey), in a thread's side panel and in the Work Board page's.
+  for (const tab of [PLAN_THREAD_TAB, PLAN_NAV_TAB])
+    app.slots.experimental_tab({ ...tab, title: "Plan", icon: "FileText", component: PlanTabPanel, layout: "flush" });
   // Never shown: its useVisible hook hosts the chat task-link click handler inside each thread.
   app.slots.experimental_threadContextSegment({
     id: "task-links",
@@ -60,4 +67,5 @@ export default definePluginApp((app) => {
     useVisible: useTaskLinkInterception,
   });
   app.slots.messageDirective({ id: "task", component: TaskDirectiveCard });
+  app.slots.experimental_appOverlay({ id: "board-hosts", component: WorkBoardHosts });
 });

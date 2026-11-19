@@ -1,3 +1,4 @@
+import { getWorkflowPolicy } from "./shared/workflow-policy";
 import { createHash } from "node:crypto";
 import { createFakePluginHost } from "@get-bb/plugin-sdk/testing";
 import { describe, expect, it } from "vitest";
@@ -77,9 +78,12 @@ describe("tasks storage", () => {
             "SELECT COUNT(*) AS count FROM schema_version",
           )
           .get()?.count,
-      ).toBe(32);
+      ).toBe(35);
       const columns = db.prepare<[], { name: string }>("PRAGMA table_info(tasks)").all().map(column => column.name);
       expect(columns).toEqual(expect.arrayContaining(["progress_note", "progress_updated_at", "progress_updated_by"]));
+      const planColumns = (table: string) => db.prepare<[], { name: string }>(`PRAGMA table_info(${table})`).all().map(column => column.name);
+      expect(planColumns("task_plans")).toEqual(expect.arrayContaining(["task_id", "format", "version", "body", "state", "updated_at", "author_kind", "author_thread", "author_name"]));
+      expect(planColumns("task_plan_versions")).toEqual(expect.arrayContaining(["task_id", "version", "body", "base_version", "op", "target", "summary", "author_kind", "author_thread", "author_name", "created_at"]));
     } finally {
       await harness.dispose();
     }
@@ -121,6 +125,24 @@ describe("tasks storage", () => {
       db.exec(sql.replace("project_id=NEW.project_id AND json_extract(payload,'$.taskId')=NEW.id AND ", ""));
       createTasksStore(db);
       expect(db.prepare<[], { sql: string }>("SELECT sql FROM sqlite_master WHERE name='task_scheduled_status'").get()!.sql).toContain("project_id=NEW.project_id AND json_extract(payload,'$.taskId')=NEW.id");
+    } finally {
+      await harness.dispose();
+    }
+  });
+
+  it("keeps the former owner-decision label for projects that existed before its default changed", async () => {
+    const { db, harness } = setup();
+    try {
+      const store = createTasksStore(db);
+      const before = store.createProject({ name: "Before", prefix: "BEF", color: "blue" });
+      const custom = store.createProject({ name: "Custom", prefix: "CUS", color: "blue" });
+      db.prepare("UPDATE projects SET workflow_policy = NULL WHERE id = ?").run(before.id);
+      db.prepare(`UPDATE projects SET workflow_policy = '{"ownerDecisionLabel":"needs owner"}' WHERE id = ?`).run(custom.id);
+      db.exec("DELETE FROM schema_version WHERE version=33;");
+      const migrated = createTasksStore(db);
+      expect(getWorkflowPolicy(migrated.getProject(before.id)!).ownerDecisionLabel).toBe("решение владельца");
+      expect(getWorkflowPolicy(migrated.getProject(custom.id)!).ownerDecisionLabel).toBe("needs owner");
+      expect(getWorkflowPolicy(migrated.createProject({ name: "After", prefix: "AFT", color: "blue" })).ownerDecisionLabel).toBe("owner decision");
     } finally {
       await harness.dispose();
     }

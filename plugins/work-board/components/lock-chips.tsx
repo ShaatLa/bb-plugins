@@ -1,5 +1,4 @@
 import { useState } from "react";
-import { useBbNavigate } from "@get-bb/plugin-sdk/app";
 import { useTasksQuery, useTasksRpc } from "../shell/data.js";
 import type { Lock } from "../shared/locks.js";
 import { errorMessage } from "../shared/errors.js";
@@ -11,6 +10,7 @@ import {
   PopoverTrigger,
 } from "@/components/ui/popover";
 import { cn } from "@/lib/utils";
+import { useOpenThread } from "./open-thread";
 
 const STALE_LABEL: Record<NonNullable<Lock["stale"]>, string> = {
   expired: "its time-to-live ran out",
@@ -46,7 +46,7 @@ function LockChip({
   onReleased: () => void;
 }) {
   const rpc = useTasksRpc();
-  const navigate = useBbNavigate();
+  const openThread = useOpenThread();
   const [reason, setReason] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -106,7 +106,7 @@ function LockChip({
               <button
                 type="button"
                 className="underline"
-                onClick={() => navigate.toThread(lock.holderThreadId!)}
+                onClick={() => openThread(lock.holderThreadId!)}
               >
                 {holderName(lock)}
               </button>

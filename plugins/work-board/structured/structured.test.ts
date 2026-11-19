@@ -105,6 +105,23 @@ describe("task questions", () => {
     expect(store.tasks.listAttachmentsForComment(result.commentId)).toHaveLength(2);
   });
 
+  it("allows one link across prompt and steps, keeps a reopen to the same scope and hands the reopened question to the reopener", async () => {
+    const { structured, task } = setup();
+    const ask = (prompt: string, steps: string[]) => structured.handlers.createQuestion({ kind: "check", askedByThread: "thr_example", taskId: task.id, prompt, steps, mode: "single", options: [] });
+    expect(() => ask("Does [the page](https://example.com/a) look right?", ["Open [state B](https://example.com/b)"])).toThrow(/at most one link.*has 2.*several --kind check questions/);
+    expect(() => ask("See https://example.com/a and https://example.com/b", [])).toThrow(/has 2/);
+    expect(() => ask("Open [the board](/plugins/work-board/work-board/task/EXA-1)", ["Then [the plan](/plugins/work-board/work-board/task/EXA-1/plan)"])).toThrow(/has 2/);
+    // The same link twice is one link.
+    const { question } = await ask("Does [the page](https://example.com/a) look right?", ["Open https://example.com/a", "Press Save"]);
+    const answered = (await structured.handlers.answerQuestion({ questionId: question.id, revision: question.revision, selectedOptionIds: [question.options[0]!.id], authorName: "Owner" })).question;
+    const reopen = (steps: string[], askedByThread?: string) => structured.handlers.updateQuestion({ questionId: question.id, revision: answered.revision, prompt: answered.prompt, steps, mode: answered.mode, options: answered.options, reopen: true, authorName: "Agent", ...(askedByThread ? { askedByThread } : {}) });
+    expect(() => reopen([...(answered.steps ?? []), "Dismiss the notice"])).toThrow(/cannot add steps.*new question/);
+    expect(() => reopen(["Open https://example.com/c", "Press Save"])).toThrow(/at most one link|cannot add links/);
+    const reopened = (await reopen(["Open https://example.com/a", "Press Save and reload"], "thr_reopener")).question;
+    expect(reopened.askedByThread).toBe("thr_reopener");
+    expect(reopened.steps).toEqual(["Open https://example.com/a", "Press Save and reload"]);
+  });
+
   it("keeps the decision label until the last open question is answered or deleted", async () => {
     const { structured, store, project, task } = setup();
     const keep = store.tasks.createLabel({ projectId: project.id, name: "Keep", color: "blue" });
@@ -113,15 +130,15 @@ describe("task questions", () => {
     const first = await create();
     const second = await create();
     const names = () => store.tasks.listLabelsForTask(task.id).map((label) => label.name).sort();
-    expect(names()).toEqual(["Keep", "решение владельца"]);
+    expect(names()).toEqual(["Keep", "owner decision"]);
     const answered = (await structured.handlers.answerQuestion({ questionId: first.id, revision: first.revision, selectedOptionIds: [first.options[0]!.id], authorName: "Owner" })).question;
-    expect(names()).toContain("решение владельца");
+    expect(names()).toContain("owner decision");
     await structured.handlers.deleteQuestion({ questionId: second.id, revision: second.revision });
     expect(names()).toEqual(["Keep"]);
     const reopened = (await structured.handlers.updateQuestion({ questionId: first.id, revision: answered.revision, prompt: answered.prompt, mode: answered.mode, options: answered.options, reopen: true, authorName: "Owner" })).question;
-    expect(names()).toContain("решение владельца");
+    expect(names()).toContain("owner decision");
     await structured.handlers.answerQuestion({ questionId: first.id, revision: reopened.revision, selectedOptionIds: [], answerText: null, authorName: "Owner" });
-    expect(names()).toContain("решение владельца");
+    expect(names()).toContain("owner decision");
     await structured.handlers.deleteQuestion({ questionId: first.id, revision: reopened.revision });
     expect(names()).toEqual(["Keep"]);
   });

@@ -28,8 +28,8 @@
       "source": "./plugins/slots"
     },
     {
-      "name": "answers",
-      "source": "./plugins/answers"
+      "name": "agent-hub",
+      "source": "./plugins/agent-hub"
     },
     {
       "name": "idle-compact",
@@ -40,8 +40,12 @@
       "source": "./plugins/tokenomos"
     },
     {
+      "name": "spawn-gate",
+      "source": "./plugins/spawn-gate"
+    },
+    {
       "name": "agent-spawn-gate",
-      "source": "./plugins/agent-spawn-gate"
+      "source": "./plugins/spawn-gate"
     },
     {
       "name": "sweep",

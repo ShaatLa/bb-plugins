@@ -12,6 +12,7 @@ import {
 } from "../db";
 import { displayName } from "../shared/display-name";
 import { taskMarkdownLink } from "../shared/task-link";
+import { DEFAULT_TASK_STATUSES, statusLabel } from "../shared/statuses.js";
 
 const SEARCH_LIMIT = 10;
 const RECENT_COMMENT_LIMIT = 5;
@@ -159,7 +160,7 @@ function buildTaskContext(
 
 ## Task details
 
-- Status: ${displayName(task.status)}
+- Status: ${statusLabel(task.status, project.statuses)}
 - Priority: ${displayName(task.priority)}
 - Labels: ${labels.length > 0 ? labels.map((label) => label.name).join(", ") : "None"}
 - Due: ${task.dueDate ?? "None"}
@@ -168,6 +169,10 @@ function buildTaskContext(
 ## Description
 
 ${task.description.trim() || "No description provided."}
+
+## Current state
+
+${task.progressNote?.trim() || "None."}
 
 ## Sub-tasks
 
@@ -201,7 +206,7 @@ ${JSON.stringify(
 ## Action contract
 
 When you mention this task in a reply to the person, write ${taskMarkdownLink(task.key)} so bb renders a link.
-You can act on this task with the bb work-board CLI. If you begin working on it, first run: bb work-board attach ${task.key} (attaches THIS thread so the task shows you as working). Comment substantive updates via bb work-board comment ${task.key} --body ... and set status via bb work-board update ${task.key} --status ...
+You can act on this task with the bb work-board CLI. If you begin working on it, first run: bb work-board attach ${task.key} (attaches THIS thread so the task shows you as working). Keep Current state up to date with bb work-board update ${task.key} --progress "..." (done, next, waiting for). Post results and evidence as comments (bb work-board comment ${task.key} --body ...). When you need the owner, ask on the task, not in chat, with bb work-board question add ${task.key} --kind decision|check (steps in --step), not in a comment. Set status with bb work-board update ${task.key} --status <id> (ids: ${(project.statuses?.length ? project.statuses : DEFAULT_TASK_STATUSES).map((status) => status.id).join(", ")}).
 `;
 }
 

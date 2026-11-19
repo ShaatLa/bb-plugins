@@ -6,7 +6,9 @@ Manager commands (`prioritize`, `revoke`, `grant`, `capacity`) are not access-ch
 
 ## Sidebar (0.4.0)
 
-Version 0.5.3 tightens agent rules: each agent tool has its own description; refusals name the fix; `release` without an ID is refused when the thread has several leases or requests (pass the ID or `--all`); inside a thread, `--thread` must be the caller's own; manager commands are documented as manager-only.
+Version 0.5.4 tightens agent rules: each agent tool has its own description; refusals name the fix; `release` without an ID is refused when the thread has several leases or requests (pass the ID or `--all`); inside a thread, `--thread` must be the caller's own; manager commands are documented as manager-only.
+
+Version 0.5.3 starts every message Slots sends into a thread with a `[bb message from plugin:slots]` header line, so the agent does not read it as the owner's, and drops the "Machine Slots" name from the message title.
 
 Version 0.5.2 makes configuration granular: `bb slots config get <key>` and the `slots_config` tool with a key read one setting, and `set`/`unset` return only the changed key as `{key, value, default, max?, set}`. `show` without a key and `settingsWrite` still return the whole view.
 
@@ -190,6 +192,8 @@ Memory uses macOS `memory_pressure` (fixed argv, 2s timeout) or Linux MemAvailab
 MemTotal. A probe failure closes the gate and logs an error. Only the local host
 is sampled: every gateIntervalMs with queued work, otherwise every 60s; ticks run
 every 15s. Observer notifications are optional and never fatal on send failure.
+
+Every message it sends into a thread starts with a `[bb message from plugin:slots]` header line and a blank line, so the receiving agent can tell it from the owner's own words.
 
 `observer` shows the current observer ID, title and filter. `--self`, `--thread`
 and `--clear` persist the selection in plugin settings; `--events` can accompany

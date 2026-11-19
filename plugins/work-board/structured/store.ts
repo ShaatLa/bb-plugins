@@ -1,10 +1,10 @@
-import { isQuestionOpen } from "../shared/questions";
+import { assertQuestionShape, assertReopenKeepsScope, isQuestionOpen } from "../shared/questions";
 import { UNANSWERED_QUESTION, WAITING_ON_OWNER, NEWEST_UNANSWERED } from "../db/waiting-on-owner";
 import type { BbPluginApi, PluginRpcHandlers } from "@get-bb/plugin-sdk";
 import type { TasksApiStore } from "../api";
 import { createUlid } from "../db/store";
 import { getWorkflowPolicy } from "../shared/workflow-policy";
-import { deliverCommentToLatestAgent } from "../steer";
+import { defaultTaskThreadId, deliverCommentToLatestAgent } from "../steer";
 import {
   questionSchema,
   templateSchema,
@@ -155,6 +155,7 @@ export function createStructuredStore(bb: BbPluginApi, store: TasksApiStore) {
     }),
     createQuestion(input) {
       requireTask(input.taskId);
+      assertQuestionShape(input.prompt, input.steps ?? []);
       const now = new Date().toISOString();
       const question = questionSchema.parse({
         id: createUlid(),
@@ -162,6 +163,7 @@ export function createStructuredStore(bb: BbPluginApi, store: TasksApiStore) {
         kind: input.kind ?? "decision",
         askedByThread: input.askedByThread ?? null,
         prompt: input.prompt,
+        steps: input.steps ?? [],
         mode: input.mode,
         allowOther: true,
         options: (input.kind === "check" && !input.options.length ? ["Confirmed", "Problem found"] : input.options).map((option) => ({
@@ -256,10 +258,7 @@ export function createStructuredStore(bb: BbPluginApi, store: TasksApiStore) {
       changed(question.taskId);
       if (!comment) return { ...result, question, notification: "unchanged" as const };
       bb.realtime.publish("comments:changed", { taskId: question.taskId });
-      const threadId = question.askedByThread ??
-        store.tasks.listTaskThreads(question.taskId)[0]?.threadId ??
-        store.tasks.getLatestAgentComment(question.taskId, comment.id)
-          ?.threadId;
+      const threadId = question.askedByThread ?? defaultTaskThreadId(store.tasks, question.taskId, comment.id);
       if (!threadId) return { ...result, question, notification: "none" as const };
       const notifiedCount = await deliverCommentToLatestAgent(bb, store.tasks, {
         taskId: question.taskId,
@@ -305,6 +304,7 @@ export function createStructuredStore(bb: BbPluginApi, store: TasksApiStore) {
         }));
         const content = {
           prompt: input.prompt.trim(),
+          steps: input.steps?.map((step) => step.trim()) ?? current.steps,
           mode: input.mode,
           options,
           allowOther: true,
@@ -319,10 +319,14 @@ export function createStructuredStore(bb: BbPluginApi, store: TasksApiStore) {
           throw new Error(
             "Question has an answer; confirm reopen to clear it and request a new decision",
           );
+        assertQuestionShape(content.prompt, content.steps);
+        if (current.answeredBy) assertReopenKeepsScope(current, content);
         const { id, taskId, createdAt, history, ...snapshot } = current;
         const next = questionSchema.parse({
           ...current,
           ...content,
+          // Whoever reopens an answered question asks it now, so the new answer goes to them.
+          ...(current.answeredBy && input.askedByThread ? { askedByThread: input.askedByThread } : {}),
           selectedOptionIds: [],
           answerText: null,
           answeredBy: null,

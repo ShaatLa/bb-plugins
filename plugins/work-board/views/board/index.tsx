@@ -89,6 +89,7 @@ interface DragState {
 }
 
 interface TaskCardProps {
+  highlighted?: boolean;
   expanded?: boolean;
   onExpandedChange?: (taskId: string, expanded: boolean) => void;
   prSummary?: PrSummary;
@@ -112,6 +113,7 @@ interface TaskCardProps {
 }
 
 function TaskCard({
+  highlighted = false,
   expanded = false,
   onExpandedChange,
   prSummary,
@@ -177,6 +179,7 @@ function TaskCard({
         "shrink-0 rounded-lg border border-border bg-card px-2.5 py-2 shadow-2xs select-none",
         ghost ? "rotate-2 shadow-md" : "cursor-pointer hover:border-input",
         dragging && "opacity-40",
+        highlighted && "ring-1 ring-primary/60",
         waitingOnOwner(task, questionCounts?.get(task.id) ?? 0) && "border-l-[3px] border-l-warning",
       )}
     >
@@ -330,9 +333,11 @@ function BoardSkeleton() {
 
 interface BoardViewProps {
   projectId: string;
+  /** Keys of cards to outline, e.g. the tasks linked to the thread beside the board. */
+  highlightKeys?: ReadonlySet<string>;
 }
 
-export function BoardView({ projectId }: BoardViewProps) {
+export function BoardView({ projectId, highlightKeys }: BoardViewProps) {
   const { ids: statusIds, label: statusLabel } = useTaskStatuses(projectId);
   const rpc = useTasksRpc();
   const { toasts, push, dismiss } = useDetailToasts();
@@ -676,6 +681,7 @@ export function BoardView({ projectId }: BoardViewProps) {
         <TaskCard
           key={task.id}
           task={task}
+          highlighted={highlightKeys?.has(task.key) ?? false}
           expanded={expandedCards.has(task.id)}
           onExpandedChange={setExpanded}
           statusLabel={statusLabel}

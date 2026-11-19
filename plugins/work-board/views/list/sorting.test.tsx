@@ -73,7 +73,7 @@ const tasks = [
 function renderList() {
   return renderSlot(
     app.navPanels[0]!,
-    { subPath: PROJECT_ID },
+    { subPath: `${PROJECT_ID}?view=list` },
     {
       rpc: {
         listProjects: () => ({ projects: [project] }),
