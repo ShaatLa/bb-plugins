@@ -90,7 +90,7 @@ describe("episodes", () => {
     expect(f.episodes(task.id).map((episode) => episode.ended_at !== null)).toEqual([true, false]);
   });
 
-  it("follows a status change, a type change, archiving and unarchiving", () => {
+  it("follows a status change and a type change, and ignores archiving", () => {
     const f = setupDebt();
     const task = f.card("Debt");
     f.require();
@@ -105,12 +105,30 @@ describe("episodes", () => {
     expect(f.open(task.id)).toBeNull();
     f.store.tasks.updateTask(task.id, { type: "task" });
     expect(f.open(task.id)).not.toBeNull();
+    // Only a closed card can be archived, and a closed card never has debt: archiving and restoring change nothing.
     f.store.tasks.updatePosition(task.id, { status: "done" });
-    f.store.tasks.setTaskArchived(task.id, true);
     expect(f.open(task.id)).toBeNull();
+    f.store.tasks.setTaskArchived(task.id, true);
     f.store.tasks.setTaskArchived(task.id, false);
-    expect(f.open(task.id)).not.toBeNull();
-    expect(f.episodes(task.id).map((episode) => episode.ended_at !== null)).toEqual([true, true, true, false]);
+    expect(f.open(task.id)).toBeNull();
+    expect(f.episodes(task.id).map((episode) => episode.ended_at !== null)).toEqual([true, true, true]);
+  });
+
+  it("is never held by a closed card: Done is in the marked zone, yet closes the episode and is not backfilled", () => {
+    const f = setupDebt();
+    const done = f.card("Shipped", "done"), debt = f.card("Debt");
+    f.withPlan(done.id, "draft");
+    f.require();
+    expect(f.store.tasks.getProject(f.tracker.id)!.statuses!.find((status) => status.id === "done")!.requiresApprovedPlan).toBe(true);
+    expect(f.open(done.id)).toBeNull();
+    expect(f.open(debt.id)).not.toBeNull();
+    f.store.tasks.updatePosition(debt.id, { status: "done" });
+    expect(f.open(debt.id)).toBeNull();
+    expect(f.episodes(debt.id)).toMatchObject([{ ended_at: expect.any(String) }]);
+    const version = f.db.prepare<[], { version: number }>("SELECT MAX(version) AS version FROM schema_version").get()!.version;
+    f.db.exec(`DROP TABLE plan_debt_notices; DROP TABLE plan_debt_events; DROP TABLE plan_debt_episodes; DELETE FROM schema_version WHERE version = ${version};`);
+    initializeTasksSchema(f.db);
+    expect(f.db.prepare("SELECT COUNT(*) AS n FROM plan_debt_episodes").get()).toEqual({ n: 0 });
   });
 
   it("follows the project's planning and its status flags", () => {

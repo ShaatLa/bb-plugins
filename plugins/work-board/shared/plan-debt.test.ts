@@ -21,6 +21,14 @@ describe("the plan-debt definition", () => {
     expect(hasPlanDebt({ planning: "required", statuses: null }, card, null)).toBe(false);
   });
 
+  it("never holds for a closed card, even in a marked closed status", () => {
+    expect(hasPlanDebt(project, { ...card, status: "done" }, "draft")).toBe(false);
+    expect(hasPlanDebt(project, { ...card, status: "canceled" }, null)).toBe(false);
+    const custom = { ...project, workflowPolicy: { doneStatus: "shipped" }, statuses: [...flagged, { id: "shipped", requiresApprovedPlan: true }] };
+    expect(hasPlanDebt(custom, { ...card, status: "shipped" }, null)).toBe(false);
+    expect(hasPlanDebt(custom, card, null)).toBe(true);
+  });
+
   it("words the advisory and the reminders from the plan as it is now", () => {
     expect(planDebtText("EXA-1", { since: "2026-01-01T00:00:00.000Z", planVersion: 2, planState: "in_review" })).toBe("Plan debt since 2026-01-01T00:00:00.000Z: plan v2 is in review. Submit it for review: bb work-board plan submit EXA-1 --reviewer …");
     expect(planDebtText("EXA-1", { since: "s", planVersion: null, planState: null })).toContain(": no plan.");

@@ -777,12 +777,12 @@ const MIGRATIONS = [
      );`);
     const now = new Date().toISOString();
     const open = db.prepare("INSERT INTO plan_debt_episodes (task_id, since) VALUES (?, ?)");
-    const cards = db.prepare<[], { id: string; type: string; status: string; archived_at: string | null; planning: string | null; statuses: string | null; plan_state: PlanState | null }>(
-      `SELECT t.id, t.type, t.status, t.archived_at, p.planning, p.statuses, pl.state AS plan_state FROM tasks t JOIN projects p ON p.id = t.project_id
+    const cards = db.prepare<[], { id: string; type: string; status: string; archived_at: string | null; planning: string | null; statuses: string | null; workflow_policy: string | null; plan_state: PlanState | null }>(
+      `SELECT t.id, t.type, t.status, t.archived_at, p.planning, p.statuses, p.workflow_policy, pl.state AS plan_state FROM tasks t JOIN projects p ON p.id = t.project_id
        LEFT JOIN task_plans pl ON pl.task_id = t.id WHERE p.planning = 'required'`,
     ).all();
     for (const card of cards)
-      if (hasPlanDebt({ planning: card.planning, statuses: card.statuses ? JSON.parse(card.statuses) : null }, { type: card.type, status: card.status, archivedAt: card.archived_at }, card.plan_state)) open.run(card.id, now);
+      if (hasPlanDebt({ planning: card.planning, workflowPolicy: card.workflow_policy ? JSON.parse(card.workflow_policy) : null, statuses: card.statuses ? JSON.parse(card.statuses) : null }, { type: card.type, status: card.status, archivedAt: card.archived_at }, card.plan_state)) open.run(card.id, now);
   },
 ] as const;
 

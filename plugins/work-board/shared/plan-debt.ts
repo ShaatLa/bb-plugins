@@ -1,16 +1,16 @@
 import type { PlanState } from "./plan";
 import { planningRequired } from "./project-settings";
-import { inWorkZone } from "./workflow-policy";
+import { inWorkZone, isClosedStatus, type WorkflowPolicy } from "./workflow-policy";
 
 /** How long a card may stay in the work zone with debt before its executors, and the manager, are reminded. */
 export const PLAN_DEBT_REMINDER_MS = 24 * 3_600_000;
 
-type DebtProject = { planning?: string | null; statuses?: ReadonlyArray<{ id: string; requiresApprovedPlan?: boolean }> | null };
+type DebtProject = { planning?: string | null; workflowPolicy?: Partial<WorkflowPolicy> | null; statuses?: ReadonlyArray<{ id: string; requiresApprovedPlan?: boolean }> | null };
 type DebtTask = { type: string; status: string; archivedAt?: string | null };
 
-/** Plan debt: a card in the work zone of a required-planning project whose plan is missing or not approved. Every surface and trigger asks this. */
+/** Plan debt: an open (not Done, configured-done or canceled) card in the work zone of a required-planning project whose plan is missing or not approved. Every surface and trigger asks this. */
 export function hasPlanDebt(project: DebtProject, task: DebtTask, planState: PlanState | null): boolean {
-  return planningRequired(project) && task.type !== "epic" && !task.archivedAt && inWorkZone(project, task.status) && planState !== "approved";
+  return planningRequired(project) && task.type !== "epic" && !task.archivedAt && !isClosedStatus(project, task.status) && inWorkZone(project, task.status) && planState !== "approved";
 }
 
 export interface PlanDebtInfo { since: string; planVersion: number | null; planState: PlanState | null }

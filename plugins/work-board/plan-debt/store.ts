@@ -12,9 +12,9 @@ export interface NoticeRow {
 }
 export interface PendingEvent { episodeId: number; trigger: string; taskId: string; projectId: string }
 
-const CARD = `SELECT t.id, t.project_id, t.type, t.status, t.archived_at, p.planning, p.statuses, pl.state AS plan_state
+const CARD = `SELECT t.id, t.project_id, t.type, t.status, t.archived_at, p.planning, p.statuses, p.workflow_policy, pl.state AS plan_state
   FROM tasks t JOIN projects p ON p.id = t.project_id LEFT JOIN task_plans pl ON pl.task_id = t.id`;
-type CardRow = { id: string; project_id: string; type: string; status: string; archived_at: string | null; planning: string | null; statuses: string | null; plan_state: PlanState | null };
+type CardRow = { id: string; project_id: string; type: string; status: string; archived_at: string | null; planning: string | null; statuses: string | null; workflow_policy: string | null; plan_state: PlanState | null };
 
 /**
  * Applies the plan-debt definition to one card and opens or closes its episode. It is called inside the transaction of every
@@ -23,7 +23,7 @@ type CardRow = { id: string; project_id: string; type: string; status: string; a
 export function syncPlanDebt(db: Database, taskId: string): void {
   const card = db.prepare<[string], CardRow>(`${CARD} WHERE t.id = ?`).get(taskId);
   if (!card) return;
-  const debt = hasPlanDebt({ planning: card.planning, statuses: card.statuses ? JSON.parse(card.statuses) : null }, { type: card.type, status: card.status, archivedAt: card.archived_at }, card.plan_state);
+  const debt = hasPlanDebt({ planning: card.planning, workflowPolicy: card.workflow_policy ? JSON.parse(card.workflow_policy) : null, statuses: card.statuses ? JSON.parse(card.statuses) : null }, { type: card.type, status: card.status, archivedAt: card.archived_at }, card.plan_state);
   const open = db.prepare<[string], { id: number }>("SELECT id FROM plan_debt_episodes WHERE task_id = ? AND ended_at IS NULL").get(taskId);
   if (debt && !open) db.prepare("INSERT INTO plan_debt_episodes (task_id, since) VALUES (?, ?)").run(taskId, new Date().toISOString());
   else if (!debt && open) db.prepare("UPDATE plan_debt_episodes SET ended_at = ? WHERE id = ?").run(new Date().toISOString(), open.id);
