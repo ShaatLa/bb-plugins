@@ -92,9 +92,10 @@ export function ThreadCostLabel({ cost, className = '' }: { cost: ThreadCost | n
   useEffect(() => setOpen(false), [id]);
   if (!cost) return null;
   const subs = cost.descendantCount, own = money(cost.own), total = money(cost.total);
-  const title = `This session: ${own} (${compact(tokens(cost.own))} tokens)${subs ? `\nWith ${subs} sub-session${subs === 1 ? '' : 's'}: ${total} (${compact(tokens(cost.total))} tokens)` : ''}\nAPI-equivalent cost, by Tokenomos. Click for details`;
+  // The chip shows the whole tree's cost, so the title leads with it and breaks out this session after.
+  const title = `${subs ? `Total with ${subs} sub-session${subs === 1 ? '' : 's'}: ${total} (${compact(tokens(cost.total))} tokens)\n` : ''}This session: ${own} (${compact(tokens(cost.own))} tokens)\nAPI-equivalent cost, by Tokenomos. Click for details`;
   // A click toggles the details; shift- or cmd-click is left alone.
   return <><button ref={setAnchor} type="button" title={title} aria-label={title.replaceAll('\n', '. ')} aria-haspopup="dialog" aria-expanded={open} onClick={event => { if (event.metaKey || event.ctrlKey || event.shiftKey) return; setOpen(o => !o); }} className={`flex h-6 min-w-0 cursor-pointer items-center gap-1 truncate rounded-md px-1.5 text-xs tabular-nums text-muted-foreground hover:bg-state-hover hover:text-foreground ${className}`}>
-    {brand && <PluginIcon pluginId={brand.id} icon={brand.icon} className="size-3.5 shrink-0" />}<RollingText text={own} />
+    {brand && <PluginIcon pluginId={brand.id} icon={brand.icon} className="size-3.5 shrink-0" />}<RollingText text={total} />
   </button>{open && anchor && <CostDetails anchor={anchor} cost={cost} onClose={() => setOpen(false)} />}</>;
 }

@@ -19,9 +19,9 @@ async function open(rpc: unknown) {
   const slot = renderSlot({ component: () => <ThreadCostLabel cost={own} /> }, { threadId: 'thr_a' }, { rpc: { threadCostDetails: rpc } } as never);
   return slot;
 }
-it('shows only the own cost on the chip and toggles the details dialog on click, leaving modified clicks alone', async () => {
-  const rpc = vi.fn(() => details), slot = await open(rpc), chip = slot.getByRole('button', { name: /This session: \$0\.80/ });
-  expect(chip.textContent).toBe('$0.80'); expect(chip.getAttribute('aria-haspopup')).toBe('dialog'); expect(chip.getAttribute('aria-expanded')).toBe('false');
+it('shows the total with sub-sessions on the chip and toggles the details dialog on click, leaving modified clicks alone', async () => {
+  const rpc = vi.fn(() => details), slot = await open(rpc), chip = slot.getByRole('button', { name: /^Total with 3 sub-sessions: \$1\.24 .*\. This session: \$0\.80/ });
+  expect(chip.textContent).toBe('$1.24'); expect(chip.getAttribute('aria-haspopup')).toBe('dialog'); expect(chip.getAttribute('aria-expanded')).toBe('false');
   fireEvent.click(chip, { metaKey: true }); expect(slot.queryByRole('dialog')).toBeNull();
   fireEvent.click(chip);
   const dialog = slot.getByRole('dialog', { name: 'Cost details' }), text = () => dialog.textContent ?? '';
