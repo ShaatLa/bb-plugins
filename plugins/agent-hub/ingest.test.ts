@@ -1,7 +1,7 @@
 import { afterEach, describe, it, expect } from 'vitest';
 import Database from 'better-sqlite3';
 import { migrations } from './schema';
-import { applyEvents, asksOwner, cap, chatQuestion, failRequest, type Event } from './ingest';
+import { applyEvents, asksOwner, cap, chatQuestion, failRequest, RELEVANT, type Event } from './ingest';
 const databases: Database.Database[] = [];
 const setup = () => { const db = new Database(':memory:'); migrations.forEach(m => db.exec(m)); databases.push(db); return db; };
 afterEach(() => databases.splice(0).forEach(db => db.close()));
@@ -147,6 +147,40 @@ describe('updates',()=>{
   // One message after an unseen steer is still the owner's answer: the steer is read by the next turn or never.
   const one=setup(); applyEvents(one,'t',[req(1),start(),accept(),tool(4),req(5,'s',{initiator:'agent',senderThreadId:'thr_s',input:text('[bb message from thread:thr_s] released')}),accept(6,'s'),message(7,long),done(8)],'p',100,true,true);
   expect(rows(one).find(r=>r.kind==='mine')).toMatchObject({answer:long}); expect(updates(one)[0]).toMatchObject({answer:null});
+ });
+ describe('inputs echoed by the provider',()=>{
+  const echo=(seq:number,content:unknown='input',extra:object={})=>ev(seq,'provider/unhandled','x',{rawType:'sdk/user',rawEvent:{params:{message:{type:'user',message:{role:'user',content},parent_tool_use_id:null,...extra}}}});
+  const tool=(seq:number)=>ev(seq,'item/completed','x',{item:{type:'commandExecution',command:'ls'}});
+  const agent=(seq:number)=>req(seq,'s',{initiator:'agent',senderThreadId:'thr_s',input:text('[bb message from thread:thr_s] released')});
+  const long='Full answer. '.repeat(40), mine=(db:Database.Database)=>rows(db).filter(r=>r.kind==='mine');
+  it('keeps the owner\'s full reply as the answer of the message it answered when their own steer was read after it, and gives the steer the next message',()=>{
+   const db=setup(); applyEvents(db,'t',[req(1),start(),accept(),echo(4),tool(5),req(6,'s'),accept(7,'s'),message(8,long),echo(9),message(10,'steer reply'),done(11)],'p',100,true,true);
+   expect(mine(db).map(r=>[r.status,r.answer_seq,r.answer])).toEqual([['answered',8,long],['answered',10,'steer reply']]);
+   // Much work after the steer was read: one reply answers both, as before.
+   const busy=setup(); applyEvents(busy,'t',[req(1),start(),accept(),echo(4),tool(5),req(6,'s'),accept(7,'s'),message(8,long),echo(9),tool(10),tool(11),tool(12),tool(13),message(14,'final'),done(15)],'p',100,true,true);
+   expect(mine(busy).map(r=>r.answer)).toEqual(['final','final']);
+   // A steer no echo followed was not read by this turn: it stays for the next one.
+   const unread=setup(); applyEvents(unread,'t',[req(1),start(),accept(),echo(4),tool(5),req(6,'s'),accept(7,'s'),message(8,long),done(9)],'p',100,true,true);
+   expect(mine(unread).map(r=>[r.status,r.answer])).toEqual([['answered',long],['waiting',null]]);
+  });
+  it('does not split a reply written in two messages before an input was read between the owner and an update steer',()=>{
+   const db=setup(), part=(n:number)=>`Part ${n}. `.repeat(60);
+   applyEvents(db,'t',[req(1),start(),accept(),echo(4),tool(5),agent(6),accept(7,'s'),message(8,part(1)),message(9,part(2)),echo(10),done(11)],'p',100,true,true);
+   expect(mine(db)[0]).toMatchObject({status:'answered',answer_seq:9}); expect(updates(db)[0]).toMatchObject({answer:null});
+  });
+  it('pairs the k-th echo with the k-th input, so an earlier input\'s late echo does not read a steer early',()=>{
+   const db=setup(); applyEvents(db,'t',[req(1),start(),accept(),tool(4),agent(5),accept(6,'s'),echo(7),message(8,long),echo(9),message(10,'steer reply'),done(11)],'p',100,true,true);
+   expect(mine(db)[0]).toMatchObject({answer_seq:8}); expect(updates(db)[0]).toMatchObject({answer:'steer reply'});
+  });
+  it('counts attachments and a slash command, not its output, a tool result or an echo another producer made',()=>{
+   const db=setup(); applyEvents(db,'t',[req(1),start(),accept(),echo(4,[{type:'text',text:'x'},{type:'image'}]),echo(5,'<local-command-stdout>ok</local-command-stdout>'),echo(6,[{type:'tool_result'}]),echo(7,'note',{origin:{kind:'task-notification'}}),echo(8,'note',{isSynthetic:true}),tool(9),agent(10),accept(11,'s'),message(12,long),echo(13),message(14,'steer reply')],'p',100,true,true);
+   expect(db.prepare('SELECT accepted,echoes,echoing FROM turn_updates').get()).toEqual({accepted:2,echoes:2,echoing:1});
+   applyEvents(db,'t',[done(15)],'p',100,true,true);
+   expect(mine(db)[0]).toMatchObject({answer_seq:12}); expect(updates(db)[0]).toMatchObject({answer:'steer reply'});
+   const slash=setup(); applyEvents(slash,'t',[req(1),start(),accept(),echo(4,'<command-name>/x</command-name>'),tool(5),agent(6),accept(7,'s'),message(8,long),message(9,'part 2'),done(10)],'p',100,true,true);
+   expect(mine(slash)[0]).toMatchObject({answer_seq:9}); expect(updates(slash)[0]).toMatchObject({answer:null});
+  });
+  it('is fetched by the driver: provider/unhandled is a relevant event type',()=>{ expect(RELEVANT).toContain('provider/unhandled'); });
  });
  it('keeps the turn\'s last message as the owner\'s answer when only a progress note came before the steer, or much work followed',()=>{
   const tool=(seq:number)=>ev(seq,'item/completed','x',{item:{type:'commandExecution',command:'ls'}}), steer=[req(5,'s',{initiator:'agent',senderThreadId:'thr_s',input:text('[bb message from thread:thr_s] addendum')}),accept(6,'s')];

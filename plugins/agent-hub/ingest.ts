@@ -50,7 +50,7 @@ export function failRequest(db: Database.Database, threadId:string, requestId:st
 }
 // A leading [tag] (a letter, 3–60 chars, then whitespace) marks a script's message; '[EXA-12](link)' and '[x]' do not match.
 export const SCRIPT_TAG = /^\[([A-Za-z][^\]\n]{2,59})\]\s/;
-export const RELEVANT = ['client/turn/rejected','client/turn/requested','turn/started','turn/input/accepted','item/completed','turn/completed','system/operation'] as const;
+export const RELEVANT = ['client/turn/rejected','client/turn/requested','turn/started','turn/input/accepted','item/completed','turn/completed','system/operation','provider/unhandled'] as const;
 // Read only while catching up (not on first sight, whose 1,500-event window it would crowd): it tells the open chat to
 // reread its context ring, and ingest ignores it.
 export const CONTEXT_EVENT = 'thread/contextWindowUsage/updated' as const, COMPACTED_EVENT = 'thread/compacted' as const;
@@ -64,6 +64,8 @@ export type Event = { seq: number; type: string; scope?: { kind?: string; turnId
 // One message from another thread or a plugin per turn: the chat item shown when the turn took it.
 // shortcut: a length and work-count heuristic for "the owner's answer came before the steer"; replace it if agents get a way to say which message answers whom.
 const STEER_ANSWER_MIN = 400, STEER_TOOLS_MAX = 3;
+// The owner's latest pending message of the turn the outer items row belongs to, optionally only one written after the row's steer.
+const owner = (col: string, after = '') => `(SELECT ${col} FROM items m WHERE m.thread_id=items.thread_id AND m.turn_id=items.turn_id AND m.kind='mine' AND m.status IN ('waiting','deferred') AND length(trim(coalesce(m.candidate,'')))>0${after} ORDER BY m.candidate_seq DESC LIMIT 1)`;
 const turnUpdateId = (threadId: string, turn: string) => 'ans_'+createHash('sha256').update(threadId+'|turn-update|'+turn).digest('hex');
 export function applyEvents(db: Database.Database, threadId: string, events: Event[], projectId: string | null = null, now = 0, trackQuestions = true, live = false, onWarning?: (text: string, at: number, turn: string, seq: number) => void, channelCommands: string[] = projectSchema.parse({}).channelCommands): boolean {
  // Writes that only move bookkeeping (pending candidate text, turn links, the cursor) are not worth a UI refetch.
@@ -120,6 +122,8 @@ export function applyEvents(db: Database.Database, threadId: string, events: Eve
   }
   else if (e.type === 'turn/input/accepted' && turn && active === turn && d.clientRequestId) {
    db.prepare(`UPDATE items SET failed_at=NULL WHERE thread_id=? AND failed_at IS NOT NULL AND (request_id=? OR id IN (SELECT item_id FROM request_aliases WHERE thread_id=? AND alias_request_id=?))`).run(threadId,d.clientRequestId,threadId,d.clientRequestId);
+   hidden += db.prepare('UPDATE turn_updates SET accepted=accepted+1 WHERE thread_id=? AND turn_id=?').run(threadId,turn).changes;
+   const nth = (db.prepare('SELECT accepted FROM turn_updates WHERE thread_id=? AND turn_id=?').get(threadId,turn) as {accepted:number}|undefined)?.accepted ?? 0;
    hidden += db.prepare(`UPDATE items SET attempt_request_id=?,candidate=CASE WHEN turn_id=? THEN candidate ELSE NULL END,candidate_seq=CASE WHEN turn_id=? THEN candidate_seq ELSE NULL END,turn_id=?,updated_at=? WHERE thread_id=? AND (request_id=? OR id IN (SELECT item_id FROM request_aliases WHERE thread_id=? AND alias_request_id=?))`).run(d.clientRequestId,turn,turn,turn,now,threadId,d.clientRequestId,threadId,d.clientRequestId).changes;
    // The turn's trigger is the first input it accepted; an owner message has no trigger row and counts as 'other'.
    const trigger = db.prepare('SELECT kind,source_id,text FROM request_triggers WHERE thread_id=? AND request_id=?').get(threadId,d.clientRequestId) as {kind:string;source_id:string|null;text:string}|undefined;
@@ -133,11 +137,11 @@ export function applyEvents(db: Database.Database, threadId: string, events: Eve
    // can place it by the owner's message that turn answers. A steer taken mid-turn keeps its request and an unseen mark: once the agent sees
    // it (its next tool result), what the agent writes is its reply, not the owner's answer.
    else if (shows) { const steer = !!(db.prepare('SELECT busy FROM turn_updates WHERE thread_id=? AND turn_id=?').get(threadId,turn) as {busy:number}|undefined)?.busy;
-    hidden += db.prepare(`INSERT OR IGNORE INTO items(id,kind,thread_id,project_id,status,question,answered_at,read_at,trigger_kind,trigger_source,turn_id,request_id,steer_seq,created_at,updated_at) VALUES (?,'update',?,?,'answered',?,?,?,?,?,?,?,?,?,?)`).run('ans_'+createHash('sha256').update(threadId+'|joined|'+d.clientRequestId).digest('hex'),threadId,projectId,trigger.text,e.createdAt ?? now,e.createdAt ?? now,trigger.kind,trigger.source_id,turn,steer ? d.clientRequestId : null,steer ? e.seq : null,e.createdAt ?? now,now).changes; }
+    hidden += db.prepare(`INSERT OR IGNORE INTO items(id,kind,thread_id,project_id,status,question,answered_at,read_at,trigger_kind,trigger_source,turn_id,request_id,steer_seq,steer_n,created_at,updated_at) VALUES (?,'update',?,?,'answered',?,?,?,?,?,?,?,?,?,?,?)`).run('ans_'+createHash('sha256').update(threadId+'|joined|'+d.clientRequestId).digest('hex'),threadId,projectId,trigger.text,e.createdAt ?? now,e.createdAt ?? now,trigger.kind,trigger.source_id,turn,steer ? d.clientRequestId : null,steer ? e.seq : null,steer ? nth : null,e.createdAt ?? now,now).changes; }
    hidden += db.prepare('DELETE FROM request_triggers WHERE thread_id=? AND request_id=?').run(threadId,d.clientRequestId).changes;
    // Accepted while the turn was already producing items: a steer, unseen until the agent's next tool result.
    if ((db.prepare('SELECT busy FROM turn_updates WHERE thread_id=? AND turn_id=?').get(threadId,turn) as {busy:number}|undefined)?.busy)
-    hidden += db.prepare(`UPDATE items SET steer_seq=? WHERE thread_id=? AND kind='mine' AND (request_id=? OR id IN (SELECT item_id FROM request_aliases WHERE thread_id=? AND alias_request_id=?))`).run(e.seq,threadId,d.clientRequestId,threadId,d.clientRequestId).changes;
+    hidden += db.prepare(`UPDATE items SET steer_seq=?,steer_n=? WHERE thread_id=? AND kind='mine' AND (request_id=? OR id IN (SELECT item_id FROM request_aliases WHERE thread_id=? AND alias_request_id=?))`).run(e.seq,nth,threadId,d.clientRequestId,threadId,d.clientRequestId).changes;
   } else if (e.type === 'item/completed' && turn && d.item && !d.item.parentToolCallId && d.item.type !== 'agentMessage') {
    // Any other top-level item: the turn is busy, and a tool result after a steer means the agent's next step sees it.
    hidden += db.prepare('UPDATE turn_updates SET busy=1 WHERE thread_id=? AND turn_id=? AND busy=0').run(threadId,turn).changes;
@@ -145,17 +149,29 @@ export function applyEvents(db: Database.Database, threadId: string, events: Eve
    if (['agent_hub_ask','answers_ask',...channelCommands].some(fragment => (`${d.item.tool ?? ''} ${d.item.name ?? ''} ${d.item.command ?? ''}`).includes(fragment))) hidden += db.prepare('UPDATE turn_updates SET asked=1 WHERE thread_id=? AND turn_id=? AND asked=0').run(threadId,turn).changes;
    if (d.item.type !== 'reasoning') {
     // A steer from another thread or a plugin, seen now: remember what the agent had written for the owner, and count the work after it.
-    const mine = `SELECT candidate FROM items m WHERE m.thread_id=items.thread_id AND m.turn_id=items.turn_id AND m.kind='mine' AND m.status IN ('waiting','deferred') AND length(trim(coalesce(m.candidate,'')))>0 ORDER BY m.candidate_seq DESC LIMIT 1`;
-    db.prepare(`UPDATE items SET steer_tools=steer_tools+1 WHERE thread_id=? AND turn_id=? AND kind='update' AND request_id IS NOT NULL AND steer_seq IS NULL`).run(threadId,turn);
-    db.prepare(`UPDATE items SET candidate=(${mine}),candidate_seq=(${mine.replace('SELECT candidate','SELECT candidate_seq')}),steer_tools=1 WHERE thread_id=? AND turn_id=? AND kind='update' AND request_id IS NOT NULL AND steer_seq IS NOT NULL AND steer_seq<?`).run(threadId,turn,e.seq);
+    db.prepare(`UPDATE items SET steer_tools=steer_tools+1 WHERE thread_id=? AND turn_id=? AND ((kind='update' AND request_id IS NOT NULL) OR snap_seq IS NOT NULL) AND steer_seq IS NULL`).run(threadId,turn);
+    db.prepare(`UPDATE items SET candidate=${owner('m.candidate')},candidate_seq=${owner('m.candidate_seq')},steer_tools=1 WHERE thread_id=? AND turn_id=? AND kind='update' AND request_id IS NOT NULL AND steer_seq IS NOT NULL AND steer_seq<?`).run(threadId,turn,e.seq);
     hidden += db.prepare('UPDATE items SET steer_seq=NULL WHERE thread_id=? AND turn_id=? AND steer_seq IS NOT NULL AND steer_seq<?').run(threadId,turn,e.seq).changes;
    }
   } else if (e.type === 'item/completed' && turn && d.item?.type === 'agentMessage' && !d.item.parentToolCallId && typeof d.item.text === 'string') {
    // A steer no tool result followed is read when the reply being written ends, so a message coming after an earlier one written since the steer answers the steer.
-   const earlier = (col: string) => `SELECT ${col} FROM items m WHERE m.thread_id=items.thread_id AND m.turn_id=items.turn_id AND m.kind='mine' AND m.status IN ('waiting','deferred') AND length(trim(coalesce(m.candidate,'')))>0 AND m.candidate_seq>items.steer_seq ORDER BY m.candidate_seq DESC LIMIT 1`;
-   hidden += db.prepare(`UPDATE items SET candidate=(${earlier('m.candidate')}),candidate_seq=(${earlier('m.candidate_seq')}),steer_tools=0,steer_seq=NULL WHERE thread_id=? AND turn_id=? AND kind='update' AND request_id IS NOT NULL AND steer_seq IS NOT NULL AND EXISTS(${earlier('1')})`).run(threadId,turn).changes;
+   // shortcut: a provider that does not echo its inputs gives no signal, so a split reply there looks like reply + steer answer; replace it if one appears.
+   const since = ' AND m.candidate_seq>items.steer_seq';
+   hidden += db.prepare(`UPDATE items SET candidate=${owner('m.candidate',since)},candidate_seq=${owner('m.candidate_seq',since)},steer_tools=0,steer_seq=NULL WHERE thread_id=? AND turn_id=? AND kind='update' AND request_id IS NOT NULL AND steer_seq IS NOT NULL AND NOT EXISTS(SELECT 1 FROM turn_updates u WHERE u.thread_id=items.thread_id AND u.turn_id=items.turn_id AND u.echoing=1) AND ${owner('1',since)} IS NOT NULL`).run(threadId,turn).changes;
    hidden += db.prepare(`UPDATE items SET candidate=?,candidate_seq=?,updated_at=? WHERE thread_id=? AND ((turn_id=? AND status IN ('waiting','deferred') AND question_seq<? AND steer_seq IS NULL) OR resolve_turn_id=?)`).run(cap(d.item.text,20000),e.seq,now,threadId,turn,e.seq,turn).changes;
    hidden += db.prepare('UPDATE turn_updates SET answer=?,answer_seq=?,busy=1 WHERE thread_id=? AND turn_id=?').run(cap(d.item.text,20000),e.seq,threadId,turn).changes;
+  } else if (e.type === 'provider/unhandled' && turn && d.rawType === 'sdk/user' && !d.parentToolCallId) {
+   // Claude Code echoes each input it hands the model, in order: a steer is read at the echo matching its ordinal, whatever the agent wrote before it.
+   const m = d.rawEvent?.params?.message, c = m?.message?.content;
+   hidden += db.prepare('UPDATE turn_updates SET echoing=1 WHERE thread_id=? AND turn_id=? AND echoing=0').run(threadId,turn).changes;
+   // A slash command's output and a tool result are not inputs; an attachment arrives as an array.
+   if (m && !m.isSynthetic && !m.origin && m.parent_tool_use_id == null && (typeof c === 'string' ? !c.startsWith('<local-command') : Array.isArray(c) && !c.some((x:any) => x?.type === 'tool_result'))) {
+    hidden += db.prepare('UPDATE turn_updates SET echoes=echoes+1 WHERE thread_id=? AND turn_id=?').run(threadId,turn).changes;
+    const echoes = (db.prepare('SELECT echoes FROM turn_updates WHERE thread_id=? AND turn_id=?').get(threadId,turn) as {echoes:number}|undefined)?.echoes ?? 0;
+    const seen = `thread_id=? AND turn_id=? AND steer_seq IS NOT NULL AND steer_n<=?`;
+    hidden += db.prepare(`UPDATE items SET candidate=${owner('m.candidate')},candidate_seq=${owner('m.candidate_seq')},steer_tools=0,steer_seq=NULL WHERE ${seen} AND kind='update' AND request_id IS NOT NULL`).run(threadId,turn,echoes).changes;
+    hidden += db.prepare(`UPDATE items SET snap=${owner('m.candidate')},snap_seq=${owner('m.candidate_seq')},steer_tools=0,steer_seq=NULL WHERE ${seen} AND kind='mine'`).run(threadId,turn,echoes).changes;
+   }
   } else if (e.type === 'turn/completed' && turn) {
    if (d.status === 'completed') {
     // A turn that answered nothing of the owner's (a child finished, another thread or plugin wrote) still reports to them.
@@ -184,6 +200,9 @@ export function applyEvents(db: Database.Database, threadId: string, events: Eve
      db.prepare(`UPDATE items SET answer=?,answer_seq=?,answer_source='turn',answered_at=?,updated_at=? WHERE id=?`).run(last.candidate,last.candidate_seq,e.createdAt ?? now,now,steer.id);
      db.prepare(`UPDATE items SET candidate=?,candidate_seq=? WHERE thread_id=? AND turn_id=? AND kind='mine' AND status IN ('waiting','deferred') AND resolve_turn_id IS NULL AND candidate_seq>?`).run(steer.candidate,steer.candidate_seq,threadId,turn,steer.candidate_seq);
     }
+    // The same for an owner's steer read right after the owner's full earlier reply: that reply stays the answer of the message it answered.
+    const read = db.prepare(`SELECT id,snap,snap_seq FROM items WHERE thread_id=? AND turn_id=? AND kind='mine' AND snap_seq IS NOT NULL AND candidate_seq>snap_seq AND length(trim(snap))>=${STEER_ANSWER_MIN} AND steer_tools<=${STEER_TOOLS_MAX} ORDER BY snap_seq DESC LIMIT 1`).get(threadId,turn) as {id:string;snap:string;snap_seq:number}|undefined;
+    if (read) db.prepare(`UPDATE items SET candidate=?,candidate_seq=? WHERE thread_id=? AND turn_id=? AND kind='mine' AND status IN ('waiting','deferred') AND resolve_turn_id IS NULL AND id<>? AND snap_seq IS NULL AND candidate_seq>?`).run(read.snap,read.snap_seq,threadId,turn,read.id,read.snap_seq);
     db.prepare(`UPDATE items SET status='answered',answer=candidate,answer_seq=candidate_seq,answer_source='agent',failed_at=NULL,wait_children=NULL,answered_at=?,notify_state=?,read_at=NULL,updated_at=? WHERE thread_id=? AND resolve_turn_id=? AND length(trim(candidate))>0`).run(e.createdAt ?? now,Number(live),now,threadId,turn);
     db.prepare(`UPDATE items SET status='answered',answer=candidate,answer_seq=candidate_seq,answer_source='turn',failed_at=NULL,answered_at=?,notify_state=?,read_at=NULL,updated_at=? WHERE thread_id=? AND turn_id=? AND status='waiting' AND resolve_turn_id IS NULL AND length(trim(candidate))>0`).run(e.createdAt ?? now,Number(live),now,threadId,turn);
     for (const item of db.prepare("SELECT id,answer FROM items WHERE thread_id=? AND turn_id=? AND status='answered' AND answer_source='turn' AND answer_seq=candidate_seq").all(threadId,turn) as {id:string;answer:string}[]) db.prepare('UPDATE items SET likely_interim=? WHERE id=?').run(Number(INTERIM_RE.test(item.answer.slice(-600))),item.id);
