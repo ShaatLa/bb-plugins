@@ -3,7 +3,7 @@ import { createTasksStore } from "../db/store";
 import { registerTasksCli } from "../cli";
 import { createGitSyncStore } from "../git-sync/store";
 import { prIdentity, prSnapshotSchema } from "../shared/git-sync";
-import { receiptPolling } from "../steer";
+import { HISTORY_PASS_PAGES, receiptPolling } from "../steer";
 import { attentionMarker } from "./service";
 import { accept, BB_PROJECT, goLive, MANAGER, setup } from "./fixtures";
 
@@ -82,9 +82,13 @@ describe("C1.5 a failed refresh is not a known answer", () => {
     openPr.fail();
     f.store.tasks.updateTask(open.id, { status: "in_review" });
     expect(f.occurrences().filter((o) => o.task_id === open.id).map((o) => o.signal)).toEqual(["pr_state_unavailable"]);
+    // C2.3: the board's flags, which Sweep also reads, use the same known-PR rule as the ledger.
+    expect(f.store.tasks.staleStatusFlags([open.id]).get(open.id)).toEqual(["pr_state_unavailable"]);
+    expect(f.store.tasks.staleStatusFlags([closed.id]).get(closed.id)).toEqual(["pr_state_unavailable"]);
     // Once the refresh succeeds again the open PR is a known answer.
     openPr.save("open");
     expect(f.occurrences().filter((o) => o.task_id === open.id)).toHaveLength(0);
+    expect(f.store.tasks.staleStatusFlags([open.id]).has(open.id)).toBe(false);
   });
 });
 
@@ -165,6 +169,23 @@ describe("C1.9 receipt search depth", () => {
   });
 });
 
+describe("C2.2 receipt search across passes", () => {
+  it("reaches an acceptance buried under more than one pass of newer requests, without calling the attempt unknown meanwhile", async () => {
+    const f = await make("live");
+    f.card("Very busy");
+    unknownAttempt(f, "deep", new Date(Date.now() - 3_600_000).toISOString(), "sending");
+    f.db.prepare("INSERT INTO attention_attempt_items(attempt_id, occurrence_id) VALUES ('deep', ?)").run(f.occurrences()[0].id);
+    f.threads.dispatch(`notice ${attentionMarker("batch-deep")}`);
+    for (let index = 0; index < 2100; index++) f.threads.dispatch(`unrelated ${index}`);
+    await f.service.recover(f.tracker.id);
+    expect(f.attempts()[0].outcome).toBe("sending");
+    expect(f.attempts()[0].recovery_cursor).toBeTruthy();
+    expect(f.threads.listCalls).toBeLessThanOrEqual(HISTORY_PASS_PAGES + 2);
+    for (let pass = 0; pass < 3 && f.attempts()[0].outcome === "sending"; pass++) await f.service.recover(f.tracker.id);
+    expect(f.attempts()[0]).toMatchObject({ outcome: "inline", inline_event_ref: expect.any(String) });
+  });
+});
+
 describe("C1.10 monotonic receipts", () => {
   it("does not let a stale empty search overwrite an acceptance another search recorded", async () => {
     const f = await make("live");
@@ -223,6 +244,23 @@ describe("C1.13 task keys", () => {
     await f.setMode("shadow");
     const handback = (await modes(f)).transition.handback;
     expect(handback.map((entry: { taskKey: string }) => entry.taskKey)).toEqual([f.store.tasks.getTask(task.id)!.key]);
+  });
+});
+
+describe("C2.1 a published handback", () => {
+  it("keeps the keys it was published with when a prefix changes before the ack, while live reads follow the rename", async () => {
+    const f = await make("live");
+    const task = f.card("Renamed after ready");
+    await f.setMode("shadow");
+    const before = await modes(f);
+    const published = before.transition.handback.map((entry: { taskKey: string }) => entry.taskKey);
+    f.store.tasks.updateProject(f.tracker.id, { prefix: "REN" });
+    const after = await modes(f);
+    expect(after.transition).toEqual(before.transition);
+    expect(after.transition.handback.map((entry: { taskKey: string }) => entry.taskKey)).toEqual(published);
+    const ledger = await f.sweep("attention.ledger", { projectId: BB_PROJECT, kind: "stale-status" });
+    expect(ledger.occurrences[0].taskKey).toBe(f.store.tasks.getTask(task.id)!.key);
+    expect(ledger.occurrences[0].taskKey).not.toBe(published[0]);
   });
 });
 

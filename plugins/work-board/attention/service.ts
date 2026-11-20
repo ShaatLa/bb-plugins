@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import { z } from "zod";
-import { deliverWithReceipt, findAttentionMarker, type Receipt } from "../steer";
+import { deliverWithReceipt, searchAttentionMarker, type HistoryCursor, type Receipt } from "../steer";
 import { errorMessage } from "../shared/errors";
 import { SWEEP_PLUGIN_ID } from "../shared/attention";
 import { isSideChatShapedThread } from "../shared/side-chat";
@@ -40,6 +40,7 @@ interface AttemptRow {
   transport_started_at: string | null;
   outcome: string;
   disposition: string | null;
+  recovery_cursor: string | null;
 }
 
 const instances = new WeakMap<BbPluginApi, ReturnType<typeof createService>>();
@@ -68,6 +69,14 @@ function createService(bb: BbPluginApi) {
 
   const updateAttempt = (attemptId: string, trackerId: string, assignments: string, ...values: unknown[]) =>
     db.prepare(`UPDATE attention_attempts SET ${assignments}, rev=? WHERE attempt_id=?`).run(...values, bumpRev(db, trackerId), attemptId);
+
+  /** One bounded pass of the history search for an attempt's marker, resumed from its stored cursor. */
+  async function search(attempt: AttemptRow) {
+    const cursor = attempt.recovery_cursor ? (JSON.parse(attempt.recovery_cursor) as HistoryCursor) : {};
+    const result = await searchAttentionMarker(bb, attempt.recipient_thread_id, attentionMarker(attempt.batch_id), attempt.started_at, cursor);
+    db.prepare<[string, string]>("UPDATE attention_attempts SET recovery_cursor=? WHERE attempt_id=?").run(JSON.stringify(result.cursor), attempt.attempt_id);
+    return result;
+  }
 
   /** A receipt only moves an attempt forward: acceptance is final, and an empty search never overwrites it. */
   const advanceAttempt = (attempt: Pick<AttemptRow, "attempt_id" | "tracker_id">, from: readonly string[], assignments: string, ...values: unknown[]): boolean => {
@@ -185,9 +194,10 @@ function createService(bb: BbPluginApi) {
         advanceAttempt(attempt, ["claimed"], "outcome='failed', error='Interrupted before sending'");
         continue;
       }
-      const found = await findAttentionMarker(bb, attempt.recipient_thread_id, attentionMarker(attempt.batch_id), attempt.started_at);
+      const { receipt: found, complete } = await search(attempt);
       if (found) recordReceipt(attempt, found);
-      else if (!pendingInline.has(attempt.attempt_id) || Date.now() - pendingInline.get(attempt.attempt_id)! > PENDING_INLINE_MS) recordReceipt(attempt, { outcome: "unknown", error: "No evidence of acceptance after a restart or timeout" });
+      // No evidence is a conclusion only once the whole history back to the attempt's start has been read.
+      else if (complete && (!pendingInline.has(attempt.attempt_id) || Date.now() - pendingInline.get(attempt.attempt_id)! > PENDING_INLINE_MS)) recordReceipt(attempt, { outcome: "unknown", error: "No evidence of acceptance after a restart or timeout" });
     }
     await recoverLate(trackerId, throttleLate);
   }
@@ -203,7 +213,7 @@ function createService(bb: BbPluginApi) {
       .slice(0, LATE_SEARCH_BATCH);
     for (const attempt of due) {
       lateSearchedAt.set(attempt.attempt_id, Date.now());
-      const found = await findAttentionMarker(bb, attempt.recipient_thread_id, attentionMarker(attempt.batch_id), attempt.started_at);
+      const { receipt: found } = await search(attempt);
       if (found) recordReceipt(attempt, found);
     }
   }

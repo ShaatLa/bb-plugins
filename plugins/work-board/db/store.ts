@@ -1095,10 +1095,10 @@ export function createTasksStore(db: PluginDatabase) {
       // A card held behind an unfinished predecessor is waiting by rule, not abandoned.
       if (row.status === policy.inProgressStatus && !row.active && !row.held) flags.push("no_active_thread");
       // Testing after the merge (a check on a shared environment) is expected, so a merged PR satisfies it.
-      const prSettled = row.open_pr || (row.status === policy.testingStatus && row.merged_pr);
+      const prSettled = row.open_known || (row.status === policy.testingStatus && row.merged_pr);
       if ((row.status === policy.reviewStatus || row.status === policy.testingStatus) && !prSettled) flags.push(row.unknown_pr ? "pr_state_unavailable" : "no_open_pr");
       if (row.status === policy.doneStatus && !row.merge_evidence && !row.outcome && !row.legacy_outcome) flags.push("no_merge_or_outcome");
-      if (row.closed_pr) flags.push("closed_unmerged_pr");
+      if (row.closed_known) flags.push("closed_unmerged_pr");
       if (flags.length) result.set(row.id, flags);
     }
     return result;

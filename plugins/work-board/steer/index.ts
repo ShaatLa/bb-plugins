@@ -210,45 +210,88 @@ type QueueRow = Awaited<ReturnType<BbPluginApi["sdk"]["threads"]["queuedMessages
 const rowText = (row: QueueRow) => row.content.map((part) => (part.type === "text" ? part.text : "")).join("\n");
 
 const HISTORY_PAGE = 50;
-const HISTORY_MAX_PAGES = 40;
+/** Pages of history one search pass may read; a longer history takes several passes, resumed from the cursor. */
+export const HISTORY_PASS_PAGES = 40;
+
+/**
+ * Where a history search got to, so the next pass continues instead of rereading the newest pages: `high` is the newest request seen
+ * (events above it are new), each gap is a stretch of history not yet read, and `hit` is a matching request whose acceptance is
+ * still being looked for.
+ */
+export interface HistoryCursor {
+  high?: number;
+  gaps?: { from?: number; to?: number }[];
+  hit?: { requestIds: string[]; after: number };
+}
+export interface MarkerSearch { receipt: Receipt | null; cursor: HistoryCursor; /** False while history older than this pass's budget is still unread. */ complete: boolean }
 
 /**
  * A marker is evidence only in the recipient's own queue or in its accepted-input history, never in a send response. The history is
- * paged back to `since` (default five minutes ago), so a busy thread cannot push a real acceptance out of view after downtime.
+ * read back to `since` (default five minutes ago), at most `HISTORY_PASS_PAGES` pages per pass, continuing from `cursor`.
  */
-export async function findAttentionMarker(bb: BbPluginApi, threadId: string, marker: string, since?: string): Promise<Receipt | null> {
+export async function searchAttentionMarker(bb: BbPluginApi, threadId: string, marker: string, since?: string, cursor: HistoryCursor = {}): Promise<MarkerSearch> {
   try {
     for (const row of await bb.sdk.threads.queuedMessages.list({ threadId })) {
       const text = rowText(row);
       const at = text.indexOf(marker);
-      if (at >= 0) return { outcome: text.slice(0, at).includes(QUEUED_NOTICE_SEPARATOR) ? "appended" : "queued", queuedMessageId: row.id };
+      if (at >= 0) return { receipt: { outcome: text.slice(0, at).includes(QUEUED_NOTICE_SEPARATOR) ? "appended" : "queued", queuedMessageId: row.id }, cursor, complete: true };
     }
   } catch { /* An unreadable queue is no evidence either way. */ }
+  const floor = since ? Date.parse(since) : Date.now() - 5 * 60_000;
+  const next: HistoryCursor = { ...cursor, gaps: (cursor.gaps ?? []).map((gap) => ({ ...gap })) };
+  let budget = HISTORY_PASS_PAGES;
   try {
-    const floor = since ? Date.parse(since) : Date.now() - 5 * 60_000;
-    const hits: { requestId: string | undefined; seq: number }[] = [];
-    let before: string | undefined;
-    for (let page = 0; page < HISTORY_MAX_PAGES; page++) {
-      const events = await bb.sdk.threads.events.list({ threadId, types: ["client/turn/requested"], order: "desc", limit: String(HISTORY_PAGE), ...(before ? { beforeSeq: before } : {}), signal: AbortSignal.timeout(5000) });
-      for (const event of events)
-        if (event.type === "client/turn/requested" && JSON.stringify(event.data).includes(marker)) hits.push({ requestId: (event.data as { requestId?: string }).requestId, seq: event.seq });
-      if (hits.length || events.length < HISTORY_PAGE || events.at(-1)!.createdAt < floor) break;
-      before = String(events.at(-1)!.seq);
+    // Requests newer than the last pass, then the stretches left unread, newest first.
+    const gaps: { from?: number; to?: number }[] = cursor.high !== undefined ? [{ to: cursor.high }, ...next.gaps!] : next.gaps!.length ? next.gaps! : [{}];
+    const requestIds = new Set(next.hit?.requestIds ?? []);
+    let hitSeq = next.hit?.after;
+    let high = cursor.high;
+    const remaining: { from?: number; to?: number }[] = [];
+    for (const gap of gaps) {
+      let before = gap.from;
+      let reachedEnd = false;
+      let first = gap.from === undefined;
+      while (!reachedEnd) {
+        if (budget <= 0) { remaining.push({ from: before, to: gap.to }); break; }
+        budget--;
+        const events = await bb.sdk.threads.events.list({ threadId, types: ["client/turn/requested"], order: "desc", limit: String(HISTORY_PAGE), ...(before !== undefined ? { beforeSeq: String(before) } : {}), signal: AbortSignal.timeout(5000) });
+        for (const event of events) {
+          if (gap.to !== undefined && event.seq <= gap.to) { reachedEnd = true; break; }
+          if (first) { high = Math.max(high ?? 0, event.seq); first = false; }
+          if (event.type === "client/turn/requested" && JSON.stringify(event.data).includes(marker)) {
+            const requestId = (event.data as { requestId?: string }).requestId;
+            if (requestId) requestIds.add(requestId);
+            hitSeq = Math.min(hitSeq ?? event.seq, event.seq);
+          }
+          before = event.seq;
+        }
+        if (events.length < HISTORY_PAGE || (events.at(-1)?.createdAt ?? Infinity) < floor) reachedEnd = true;
+      }
     }
-    if (!hits.length) return null;
-    // The acceptance follows its request, so page forward from the earliest matching request.
-    let after = String(Math.min(...hits.map((hit) => hit.seq)));
-    for (let page = 0; page < HISTORY_MAX_PAGES; page++) {
-      const accepted = await bb.sdk.threads.events.list({ threadId, types: ["turn/input/accepted"], order: "asc", limit: String(HISTORY_PAGE), afterSeq: after, signal: AbortSignal.timeout(5000) });
-      const hit = accepted.find((event) => event.type === "turn/input/accepted" && hits.some((request) => request.requestId === (event.data as { clientRequestId?: string }).clientRequestId));
-      if (hit) return { outcome: "inline", inlineEventRef: `${threadId}:${hit.seq}` };
-      if (accepted.length < HISTORY_PAGE) return null;
-      after = String(accepted.at(-1)!.seq);
+    next.high = high;
+    next.gaps = remaining;
+    if (requestIds.size && hitSeq !== undefined) {
+      // The acceptance follows its request, so page forward from the earliest matching request.
+      let after = hitSeq;
+      next.hit = { requestIds: [...requestIds], after };
+      while (budget > 0) {
+        budget--;
+        const accepted = await bb.sdk.threads.events.list({ threadId, types: ["turn/input/accepted"], order: "asc", limit: String(HISTORY_PAGE), afterSeq: String(after), signal: AbortSignal.timeout(5000) });
+        const hit = accepted.find((event) => event.type === "turn/input/accepted" && requestIds.has((event.data as { clientRequestId?: string }).clientRequestId ?? ""));
+        if (hit) return { receipt: { outcome: "inline", inlineEventRef: `${threadId}:${hit.seq}` }, cursor: next, complete: true };
+        if (accepted.length < HISTORY_PAGE) { next.hit = { requestIds: [...requestIds], after }; break; }
+        after = accepted.at(-1)!.seq;
+        next.hit = { requestIds: [...requestIds], after };
+      }
     }
-    return null;
+    return { receipt: null, cursor: next, complete: remaining.length === 0 && (budget > 0 || !next.hit) };
   } catch {
-    return null;
+    return { receipt: null, cursor, complete: false };
   }
+}
+
+export async function findAttentionMarker(bb: BbPluginApi, threadId: string, marker: string, since?: string): Promise<Receipt | null> {
+  return (await searchAttentionMarker(bb, threadId, marker, since)).receipt;
 }
 
 type AppendResult = { kind: "none" } | { kind: "done"; receipt: Receipt };

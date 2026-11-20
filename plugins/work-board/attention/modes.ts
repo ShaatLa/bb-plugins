@@ -60,7 +60,7 @@ export function getModeRow(db: Database, trackerId: string, kind = ATTENTION_KIN
 
 export function handbackOf(db: Database, trackerId: string, kind: string, generation: number): HandbackEntry[] {
   return db.prepare<[string, string, number], { occurrenceId: string; taskId: string; taskKey: string; signal: string; firstSeenAt: string; eligibleAt: string }>(
-    `SELECT o.id AS occurrenceId, o.task_id AS taskId, ${CURRENT_KEY_SQL} AS taskKey, o.signal, o.first_seen_at AS firstSeenAt, o.eligible_at AS eligibleAt
+    `SELECT o.id AS occurrenceId, o.task_id AS taskId, COALESCE(h.task_key, ${CURRENT_KEY_SQL}) AS taskKey, o.signal, o.first_seen_at AS firstSeenAt, o.eligible_at AS eligibleAt
      FROM attention_handback h JOIN manager_attention o ON o.id=h.occurrence_id
      WHERE h.tracker_id=? AND h.kind=? AND h.generation=? ORDER BY o.created_rev`,
   ).all(trackerId, kind, generation);
@@ -169,8 +169,8 @@ export function finishToShadow(db: Database, trackerId: string, kind = ATTENTION
     const generation = row.requested_generation!;
     // Open, unbaselined occurrences with no accepted attempt go back to Sweep; a waived loss is still unaccepted.
     db.prepare<[string, string, number, string, string]>(
-      `INSERT OR IGNORE INTO attention_handback(tracker_id, kind, generation, occurrence_id)
-       SELECT ?, ?, ?, o.id FROM manager_attention o WHERE o.tracker_id=? AND o.kind=? AND o.cleared_at IS NULL AND o.sweep_baselined_generation IS NULL
+      `INSERT OR IGNORE INTO attention_handback(tracker_id, kind, generation, occurrence_id, task_key)
+       SELECT ?, ?, ?, o.id, ${CURRENT_KEY_SQL} FROM manager_attention o WHERE o.tracker_id=? AND o.kind=? AND o.cleared_at IS NULL AND o.sweep_baselined_generation IS NULL
        AND o.signal IN (${PILOT_SIGNALS.map((signal) => `'${signal}'`).join(", ")})
        AND NOT EXISTS (SELECT 1 FROM attention_attempt_items i JOIN attention_attempts a ON a.attempt_id=i.attempt_id WHERE i.occurrence_id=o.id AND a.outcome IN (${ACCEPTED_OUTCOMES.map((o) => `'${o}'`).join(", ")}))`,
     ).run(trackerId, kind, generation, trackerId, kind);

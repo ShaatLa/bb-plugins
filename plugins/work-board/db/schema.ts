@@ -659,6 +659,9 @@ const MIGRATIONS = [
      tracker_id TEXT PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
      manager TEXT, changed_at TEXT, previous TEXT
    );`,
+  // 0.61.0: a published handback keeps the key each card had when it became ready, and an attempt keeps its history-search cursor.
+  `ALTER TABLE attention_handback ADD COLUMN task_key TEXT;
+   ALTER TABLE attention_attempts ADD COLUMN recovery_cursor TEXT;`,
 ] as const;
 
 export function initializeTasksSchema(db: PluginDatabase): void {

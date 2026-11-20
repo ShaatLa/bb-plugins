@@ -23,14 +23,12 @@ export interface StaleRow {
   ongoing: number;
   active: number;
   held: number;
-  open_pr: number;
   merged_pr: number;
   merge_evidence: number;
   outcome: number;
   unknown_pr: number;
   legacy_outcome: number;
-  closed_pr: number;
-  /** Open/closed as of a refresh that succeeded; a failed refresh keeps the old payload, which is no longer a known answer. */
+  /** Open/closed as of a refresh that succeeded; a failed refresh keeps the old payload, which is no longer a known answer. The flags and the ledger both use these. */
   open_known: number;
   closed_known: number;
 }
@@ -46,16 +44,12 @@ export function staleRows(db: Database, taskIds?: readonly string[], projectId?:
         EXISTS(SELECT 1 FROM task_threads x WHERE x.task_id=t.id AND x.live_status IN ('starting','working')) AS active,
         EXISTS(SELECT 1 FROM task_dependencies d JOIN tasks b ON b.id=d.blocking_task_id WHERE d.task_id=t.id AND b.status <> 'done') AS held,
         EXISTS(SELECT 1 FROM task_pr_links l JOIN git_pr_snapshots s ON s.project_id=t.project_id AND s.identity=l.identity
-          WHERE l.task_id=t.id AND COALESCE(json_extract(l.payload,'$.excluded'),0)=0 AND json_extract(s.payload,'$.state') IN ('open','draft')) AS open_pr,
-        EXISTS(SELECT 1 FROM task_pr_links l JOIN git_pr_snapshots s ON s.project_id=t.project_id AND s.identity=l.identity
           WHERE l.task_id=t.id AND COALESCE(json_extract(l.payload,'$.excluded'),0)=0 AND json_extract(s.payload,'$.state')='merged') AS merged_pr,
         EXISTS(SELECT 1 FROM comments c WHERE c.task_id=t.id AND json_extract(c.evidence,'$.kind')='merge') AS merge_evidence,
         EXISTS(SELECT 1 FROM comments c WHERE c.task_id=t.id AND json_extract(c.evidence,'$.kind')='outcome') AS outcome,
         EXISTS(SELECT 1 FROM legacy_done_tasks d JOIN comments c ON c.task_id=d.task_id WHERE d.task_id=t.id AND c.kind != 'system') AS legacy_outcome,
         -- Merged is final, so a failed refresh of a merged PR leaves its state known.
         EXISTS(SELECT 1 FROM task_pr_links l LEFT JOIN git_pr_snapshots s ON s.project_id=t.project_id AND s.identity=l.identity WHERE l.task_id=t.id AND COALESCE(json_extract(l.payload,'$.excluded'),0)=0 AND (s.payload IS NULL OR (s.error IS NOT NULL AND COALESCE(json_extract(s.payload,'$.state'),'') <> 'merged'))) AS unknown_pr
-        , EXISTS(SELECT 1 FROM task_pr_links l JOIN git_pr_snapshots s ON s.project_id=t.project_id AND s.identity=l.identity
-          WHERE l.task_id=t.id AND COALESCE(json_extract(l.payload,'$.excluded'),0)=0 AND json_extract(s.payload,'$.state')='closed') AS closed_pr
         , EXISTS(SELECT 1 FROM task_pr_links l JOIN git_pr_snapshots s ON s.project_id=t.project_id AND s.identity=l.identity
           WHERE l.task_id=t.id AND COALESCE(json_extract(l.payload,'$.excluded'),0)=0 AND s.error IS NULL AND json_extract(s.payload,'$.state') IN ('open','draft')) AS open_known
         , EXISTS(SELECT 1 FROM task_pr_links l JOIN git_pr_snapshots s ON s.project_id=t.project_id AND s.identity=l.identity

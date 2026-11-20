@@ -92,7 +92,8 @@ it("uses configured status IDs and distinguishes unavailable and closed PR snaps
   db.prepare<[string, string, string]>("INSERT INTO task_pr_links VALUES (?, ?, ?)").run(testing.id, "pr", JSON.stringify({ excluded: false }));
   expect(store.tasks.staleStatusFlags([testing.id]).has(testing.id)).toBe(false);
   db.prepare<[string, string, string]>("UPDATE git_pr_snapshots SET payload=?, error='sync unavailable' WHERE project_id=? AND identity=?").run(JSON.stringify({ state: "closed" }), project.id, "pr");
-  expect(store.tasks.staleStatusFlags([review.id]).get(review.id)).toEqual(["pr_state_unavailable", "closed_unmerged_pr"]);
+  // A refresh that failed leaves its cached payload behind, but that is no longer a known answer: the board reads it as unavailable, like the ledger.
+  expect(store.tasks.staleStatusFlags([review.id]).get(review.id)).toEqual(["pr_state_unavailable"]);
   db.prepare<[string, string, string]>("UPDATE git_pr_snapshots SET payload=?, error=NULL WHERE project_id=? AND identity=?").run(JSON.stringify({ state: "draft" }), project.id, "pr");
   expect(store.tasks.staleStatusFlags([review.id]).has(review.id)).toBe(false);
   const done = store.tasks.createTask({ projectId: project.id, title: "Merged", status: "done" });
