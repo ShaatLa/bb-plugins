@@ -33,9 +33,9 @@ describe("the plan-debt definition", () => {
     expect(planDebtText("EXA-1", { since: "2026-01-01T00:00:00.000Z", planVersion: 2, planState: "in_review" })).toBe("Plan debt since 2026-01-01T00:00:00.000Z: plan v2 is in review. Submit it for review: bb work-board plan submit EXA-1 --reviewer …");
     expect(planDebtText("EXA-1", { since: "s", planVersion: null, planState: null })).toContain(": no plan.");
     const debt = { since: "s", planVersion: 1, planState: "draft" as const };
-    expect(planDebtNotice("EXA-1", debt, "24h", false)).toContain("it has been in work for 24 h");
-    expect(planDebtNotice("EXA-1", debt, "answer:q:2", false)).toContain("a decision was answered on it");
-    expect(planDebtNotice("EXA-1", debt, "pr:owner/repo#1", false)).toContain("a PR was linked to it");
-    expect(planDebtNotice("EXA-1", debt, "24h", true)).toContain("The plan is still outstanding");
+    expect(planDebtNotice("EXA-1", debt, "24h")).toContain("it has been in work for 24 h");
+    expect(planDebtNotice("EXA-1", debt, "24h")).toContain("bb work-board plan submit EXA-1 --reviewer");
+    expect(planDebtNotice("EXA-1", debt, "answer:q:2")).toContain("a decision was answered on it");
+    expect(planDebtNotice("EXA-1", debt, "pr:owner/repo#1")).toContain("a PR was linked to it");
   });
 });

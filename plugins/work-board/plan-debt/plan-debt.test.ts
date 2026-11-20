@@ -197,7 +197,8 @@ describe("the 24 h reminder", () => {
     expect(f.reminders("thr_worker")).toHaveLength(1);
     expect(f.reminders(MANAGER)).toHaveLength(1);
     expect(f.reminders("thr_worker")[0]).toContain("bb work-board plan submit ATT-1");
-    expect(f.reminders(MANAGER)[0]).toContain("The plan is still outstanding");
+    // The same message for every role: the debt and the command to clear it.
+    expect(f.reminders(MANAGER)[0]).toContain("bb work-board plan submit ATT-1");
     expect(f.reminders(MANAGER)[0]).not.toContain("reminded");
     expect(f.notices().map((row) => row.state)).toEqual(["sent", "sent"]);
   });
@@ -226,6 +227,36 @@ describe("the 24 h reminder", () => {
     await f.service.scan();
     expect(f.reminders(MANAGER)).toHaveLength(1);
     expect(f.reminders(MANAGER)[0]).toContain("Submit the plan for review");
+  });
+
+  it("leaves one notice and no pending lookup when the manager is a linked thread whose lookup fails", async () => {
+    const f = setupDebt();
+    const task = f.card("Debt");
+    f.executor(task.id, MANAGER);
+    f.require();
+    f.age(25);
+    const get = f.threads.sdk.threads.get;
+    f.harness.sdk.stub("threads.get", async (args: { threadId: string }) => { if (args.threadId === MANAGER) throw new Error("host unreachable"); return get(args as never); });
+    await f.service.scan();
+    await f.service.scan();
+    expect(f.reminders(MANAGER)).toHaveLength(1);
+    expect(f.notices()).toMatchObject([{ destination: MANAGER, state: "sent" }]);
+    expect((await f.cli("show", task.key, "--json")).planDebt.pendingLookups).toEqual([]);
+  });
+
+  it("keeps the wording of a retry when the link of its executor is gone, and does not change it for an idle linked manager", async () => {
+    const f = setupDebt();
+    const task = f.card("Debt");
+    f.executor(task.id);
+    f.require();
+    f.age(25);
+    const failing = f.failSendsTo("thr_worker", 400);
+    await f.service.scan();
+    f.db.prepare("DELETE FROM task_threads WHERE thread_id = 'thr_worker'").run();
+    failing.restore();
+    await f.service.scan();
+    expect(f.reminders("thr_worker")).toHaveLength(1);
+    expect(f.reminders("thr_worker")[0]).toBe(f.reminders(MANAGER)[0]!.replace(/<!-- .* -->/, f.reminders("thr_worker")[0]!.match(/<!-- .* -->/)![0]));
   });
 
   it("tells only the executors when no manager is set", async () => {

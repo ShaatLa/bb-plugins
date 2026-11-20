@@ -49,8 +49,10 @@ function createService(bb: BbPluginApi, tasks: TasksStore) {
         else if (state === "unknown") pending.push(threadId);
       }
       if (manager) destinations.add(manager);
-      if (pending.length) bb.log.warn(`Plan debt ${event.trigger} reminder of ${event.taskId}: could not read ${pending.join(", ")}; it will be retried`);
-      expandEvent(db, event.episodeId, event.trigger, [...destinations], pending);
+      // A thread already chosen for delivery (a linked manager whose lookup failed) is not also an outstanding lookup.
+      const outstanding = pending.filter((threadId) => !destinations.has(threadId));
+      if (outstanding.length) bb.log.warn(`Plan debt ${event.trigger} reminder of ${event.taskId}: could not read ${outstanding.join(", ")}; it will be retried`);
+      expandEvent(db, event.episodeId, event.trigger, [...destinations], outstanding);
     }
   }
 
@@ -58,9 +60,7 @@ function createService(bb: BbPluginApi, tasks: TasksStore) {
     // The notice's own episode: a later episode of the same card never lends its details to an older row.
     const task = tasks.getTask(notice.taskId), debt = openEpisodeDebt(db, notice.episodeId);
     if (!task || !debt) return null;
-    // A manager that is also an executor of the card gets the executor's text.
-    const executor = tasks.listTaskThreads(task.id).some((link) => link.threadId === notice.destination);
-    return planDebtNotice(task.key, debt, notice.trigger, notice.trigger === "24h" && !executor);
+    return planDebtNotice(task.key, debt, notice.trigger);
   };
 
   /** A row that may already have been written is never resent: it is searched for, and only a definite `failed` receipt is retried. */

@@ -22,10 +22,8 @@ export function planDebtText(key: string, debt: PlanDebtInfo): string {
   return `Plan debt since ${debt.since}: ${planPhrase(debt)}. Submit it for review: bb work-board plan submit ${key} --reviewer …`;
 }
 
-/** The reminder an executor (or, for `24h`, the manager) receives. `trigger` is the stored trigger key. */
-export function planDebtNotice(key: string, debt: PlanDebtInfo, trigger: string, forManager: boolean): string {
+/** The reminder, the same for every recipient and role: it states the debt and the command to clear it. `trigger` is the stored trigger key. */
+export function planDebtNotice(key: string, debt: PlanDebtInfo, trigger: string): string {
   const why = trigger === "24h" ? "it has been in work for 24 h" : trigger.startsWith("answer:") ? "a decision was answered on it" : "a PR was linked to it";
-  return forManager
-    ? `Plan debt: ${key} has been in work without an approved plan since ${debt.since} (${planPhrase(debt)}). The plan is still outstanding.`
-    : `Plan debt: ${key} is in work without an approved plan (${planPhrase(debt)}), and ${why}. Submit the plan for review: bb work-board plan submit ${key} --reviewer …`;
+  return `Plan debt: ${key} is in work without an approved plan (${planPhrase(debt)}), and ${why}. Submit the plan for review: bb work-board plan submit ${key} --reviewer …`;
 }
