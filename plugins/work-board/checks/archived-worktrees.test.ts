@@ -345,7 +345,10 @@ describe("tick", () => {
     expect(f.sent()).toContain("EXA-2");
     // Once the stalled call settles, the next tick scans again.
     scanTuning.deadlineMs = 60_000; stall.release(); stall.path = null;
-    await vi.waitFor(async () => { f.output("ACTION idle-thread EXA-3", 1); await f.tick(); expect(f.worktrees.scan.calls).toBe(2); });
+    await vi.waitFor(() => expect(scansRunning(f.bb)).toBe(0));
+    f.output("ACTION idle-thread EXA-3", 1);
+    await f.tick();
+    expect(f.worktrees.scan.calls).toBe(2);
     expect(reported(f)).toEqual([path]);
   });
 
