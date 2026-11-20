@@ -131,7 +131,16 @@ export function createFakeThreads() {
     state.rows.splice(state.rows.indexOf(row), 1);
     dispatch(text(row));
   }
-  return Object.assign(state, { sdk, text, dispatch, dispatchRow, addRow });
+  /** A request whose acceptance is recorded separately, later. */
+  function requestOnly(body: string): string {
+    const requestId = `req_${++seq}`;
+    state.requests.push({ seq: ++seq, requestId, text: body, at: Date.now() });
+    return requestId;
+  }
+  function acceptRequest(requestId: string) {
+    state.accepted.push({ seq: ++seq, clientRequestId: requestId, at: Date.now() });
+  }
+  return Object.assign(state, { sdk, text, dispatch, dispatchRow, addRow, requestOnly, acceptRequest });
 }
 
 export function setup(threads = createFakeThreads()) {

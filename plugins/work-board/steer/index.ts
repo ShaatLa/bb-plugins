@@ -217,7 +217,8 @@ export const HISTORY_PASS_PAGES = 40;
 const ACCEPTANCE_PAGES = 10;
 const HEAD_SHARE = HISTORY_PASS_PAGES / 2;
 
-type Gap = { from?: number; to?: number };
+/** `late` marks traffic that arrived after the decision window was fixed: it is searched as late evidence and never delays the decision. */
+type Gap = { from?: number; to?: number; late?: boolean };
 /**
  * Where a history search got to, so the next pass continues instead of rereading the newest pages: `high` is the newest request seen
  * (events above it are new), each gap is a stretch of history not yet read, `hit` is a matching request whose acceptance is still
@@ -258,10 +259,13 @@ export async function searchAttentionMarker(bb: BbPluginApi, threadId: string, m
   let hitAfter = cursor.hit?.after;
   let high = cursor.high;
   let fresh = false;
+  // Whether the acceptance scan for a found request has reached the end of the accepted-input history; until then "no match" is not a conclusion.
+  let acceptanceEnded = false;
 
   // The acceptance follows its request, so page forward from the earliest matching request.
   const scanAcceptance = async (cap: number): Promise<Receipt | null> => {
     fresh = false;
+    acceptanceEnded = false;
     let after = hitAfter!;
     next.hit = { requestIds: [...requestIds], after };
     for (let page = 0; page < cap && budget > 0; page++) {
@@ -269,7 +273,7 @@ export async function searchAttentionMarker(bb: BbPluginApi, threadId: string, m
       const accepted = await bb.sdk.threads.events.list({ threadId, types: ["turn/input/accepted"], order: "asc", limit: String(HISTORY_PAGE), afterSeq: String(after), signal: AbortSignal.timeout(5000) });
       const hit = accepted.find((event) => event.type === "turn/input/accepted" && requestIds.has((event.data as { clientRequestId?: string }).clientRequestId ?? ""));
       if (hit) return { outcome: "inline", inlineEventRef: `${threadId}:${hit.seq}` };
-      if (accepted.length < HISTORY_PAGE) return null;
+      if (accepted.length < HISTORY_PAGE) { acceptanceEnded = true; return null; }
       after = hitAfter = accepted.at(-1)!.seq;
       next.hit = { requestIds: [...requestIds], after };
     }
@@ -311,11 +315,11 @@ export async function searchAttentionMarker(bb: BbPluginApi, threadId: string, m
     if (cursor.high !== undefined) {
       const spent = HISTORY_PASS_PAGES - budget;
       const head = await scanRequests({ to: cursor.high }, saved.length ? Math.max(0, HEAD_SHARE - spent) : budget);
-      if (head) remaining.push(head);
+      if (head) remaining.push({ ...head, late: true });
     }
     for (const gap of saved) {
       const left = await scanRequests(gap, budget);
-      if (left) remaining.push(left);
+      if (left) remaining.push({ ...left, ...(gap.late ? { late: true } : {}) });
     }
     next.high = high;
     next.gaps = remaining;
@@ -327,7 +331,8 @@ export async function searchAttentionMarker(bb: BbPluginApi, threadId: string, m
         if (found) return { receipt: found, cursor: next, complete: true };
       }
     }
-    return { receipt: null, cursor: next, complete: remaining.length === 0 && !fresh };
+    // Decided only when the window fixed on the first pass is read through and any found request's acceptance scan has ended.
+    return { receipt: null, cursor: next, complete: remaining.every((gap) => gap.late) && (!next.hit || acceptanceEnded) };
   } catch (error) {
     // A failed read is not unfinished pagination: the cursor stays as it was and the caller decides when to give up.
     return { receipt: null, cursor, complete: false, error: error instanceof Error ? error.message : String(error) };

@@ -255,6 +255,60 @@ describe("C3.2 fresh traffic between passes", () => {
   });
 });
 
+describe("C4.1 the end of the acceptance history", () => {
+  it("stays sending when the page budget ends on a full page of other acceptances, then goes straight to inline", async () => {
+    const f = await make("live");
+    f.card("Acceptance on the next page");
+    unknownAttempt(f, "edge", new Date(Date.now() - 3_600_000).toISOString(), "sending");
+    f.db.prepare("INSERT INTO attention_attempt_items(attempt_id, occurrence_id) VALUES ('edge', ?)").run(f.occurrences()[0].id);
+    // The request is the oldest of 1911, so its page is the 39th and one page is left for the acceptance scan,
+    // which meets 50 unrelated acceptances before the matching one.
+    const request = f.threads.requestOnly(`notice ${attentionMarker("batch-edge")}`);
+    for (let index = 0; index < 60; index++) f.threads.dispatch(`other ${index}`);
+    f.threads.acceptRequest(request);
+    for (let index = 0; index < 1850; index++) f.threads.dispatch(`newer ${index}`);
+    await f.service.recover(f.tracker.id);
+    expect(f.attempts()[0].outcome).toBe("sending");
+    await f.service.recover(f.tracker.id);
+    expect(f.attempts()[0]).toMatchObject({ outcome: "inline", inline_event_ref: expect.any(String) });
+  });
+});
+
+describe("C4.2 a fixed decision window", () => {
+  it("decides unknown for an absent marker although new requests arrive before every pass, then lets the owner resolve it", async () => {
+    const f = await make("live");
+    f.card("Never sent");
+    unknownAttempt(f, "absent", new Date(Date.now() - 3_600_000).toISOString(), "sending");
+    f.db.prepare("INSERT INTO attention_attempt_items(attempt_id, occurrence_id) VALUES ('absent', ?)").run(f.occurrences()[0].id);
+    for (let index = 0; index < 2100; index++) f.threads.dispatch(`backlog ${index}`);
+    await f.setMode("shadow");
+    let passes = 0;
+    while (f.attempts()[0].outcome === "sending" && passes < 8) {
+      for (let index = 0; index < 2100; index++) f.threads.dispatch(`fresh ${passes}-${index}`);
+      await f.service.recover(f.tracker.id);
+      passes++;
+    }
+    expect(f.attempts()[0]).toMatchObject({ outcome: "unknown", error: expect.stringContaining("No evidence") });
+    expect(passes).toBeLessThanOrEqual(4);
+    expect((await modes(f)).transition.state).toBe("preparing");
+    await f.call("resolveAttentionAttempt", { attemptId: "absent", disposition: "waived_loss" });
+    expect((await modes(f)).transition.state).toBe("ready");
+  });
+
+  it("still records a receipt from a request that arrives after the decision", async () => {
+    const f = await make("live");
+    f.card("Late request");
+    unknownAttempt(f, "later", new Date(Date.now() - 3_600_000).toISOString(), "sending");
+    f.db.prepare("INSERT INTO attention_attempt_items(attempt_id, occurrence_id) VALUES ('later', ?)").run(f.occurrences()[0].id);
+    f.threads.dispatch("something else");
+    await f.service.recover(f.tracker.id);
+    expect(f.attempts()[0].outcome).toBe("unknown");
+    f.threads.dispatch(`queued notice dispatched at last ${attentionMarker("batch-later")}`);
+    await f.service.recoverLate(f.tracker.id);
+    expect(f.attempts()[0].outcome).toBe("inline");
+  });
+});
+
 describe("C1.10 monotonic receipts", () => {
   it("does not let a stale empty search overwrite an acceptance another search recorded", async () => {
     const f = await make("live");
