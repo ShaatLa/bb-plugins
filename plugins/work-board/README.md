@@ -266,7 +266,7 @@ One question asks one decision or one check: the prompt and all `--step` lines t
 
 A plan is not approved through a question: `question add` and `question update` refuse a question that links a task plan, and, on a task that has a plan, one that asks to accept or approve a plan. The agent runs `plan submit KEY --reviewer …` and the reviewer approves or sends notes (0.58.3; reviewer threads 0.59.0). With planning off for the project this guard does not apply.
 
-Each `--step` is one action or one observation in one sentence, shown as its own numbered line: `--step 'Press Retry' --step 'Close the message' --step 'Check that the list appears'`, not one step that does all three. A step with several sentences is refused; a step that chains actions with "then", "and" or a comma before another action gets a warning that names the step and the fix (0.58.4).
+Each `--step` is one action or one observation in one sentence, shown as its own numbered line: `--step 'Press Retry' --step 'Close the message' --step 'Check that the list appears'`, not one step that does all three. A step with several sentences is refused; a step that chains actions with "then", "and" or a comma before another action is refused too, naming the step and the fix, and nothing is saved (0.66.0). Moving a card to Done or Canceled from an agent session (`update --status`, `boardMove`/`updateTask` with `agentThreadId`) is refused while an owner question is open, listing each question; the owner, in the UI, may still close the card.
 
 ```sh
 bb work-board question list EXA-8 --json

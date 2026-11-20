@@ -82,10 +82,9 @@ const ACTION = String.raw`(?:press|click|tap|open|close|select|choose|type|enter
 // Actions chained inside one sentence: "then", or a comma or "and" followed by another action verb.
 const CHAINED = new RegExp(String.raw`\b(?:then|after that|afterwards)\b|затем|потом|после чего|,\s*(?:and\s+|и\s+)?${ACTION}|\s(?:and|и)\s+${ACTION}`, "iu");
 
-/** Steps that look like several actions joined into one; a warning, since wording alone cannot prove it. */
-export function compoundStepWarnings(steps: readonly string[]): string[] {
-  const numbers = steps.flatMap((step, index) => (CHAINED.test(step) ? [index + 1] : []));
-  return numbers.length
-    ? [`Step${numbers.length > 1 ? "s" : ""} ${numbers.join(", ")} may join several actions ("then", or a comma or "and" before another action). ${STEP_SPLIT_HINT}`]
-    : [];
+/** Each new or changed step is one action: a step that chains actions ("then", or a comma or "and" before another verb) is refused. Steps in `kept` are not checked. */
+export function assertStepsSingleAction(steps: readonly string[], kept: readonly string[] = []): void {
+  const numbers = steps.flatMap((step, index) => (!kept.includes(step) && CHAINED.test(step) ? [index + 1] : []));
+  if (numbers.length)
+    throw new Error(`Step${numbers.length > 1 ? "s" : ""} ${numbers.join(", ")} may join several actions ("then", or a comma or "and" before another action). Nothing was saved. ${STEP_SPLIT_HINT}`);
 }

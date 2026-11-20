@@ -1,5 +1,5 @@
 import { UNANSWERED_QUESTION } from "../db/waiting-on-owner";
-import { getWorkflowPolicy } from "../shared/workflow-policy";
+import { getWorkflowPolicy, isClosedStatus } from "../shared/workflow-policy";
 import { observeStatusNotifications } from "../status-notifications";
 import { ordinaryTaskVisibilitySql } from "../scheduled/visibility";
 import { taskAdvisories } from "../advisories";
@@ -356,6 +356,27 @@ function labelChangeBody(
   return names.length === 0
     ? `Labels cleared by ${authorName}`
     : `Labels changed to ${names.join(", ")} by ${authorName}`;
+}
+
+/** An agent may not close a card while a question to the owner is open; the owner and automatic moves are not checked. */
+function assertNoOpenOwnerQuestions(
+  bb: BbPluginApi,
+  store: TasksApiStore,
+  task: StoredTask,
+  targetStatus: string | undefined,
+  agentThreadId: string | null | undefined,
+): void {
+  const project = store.tasks.getProject(task.projectId);
+  if (!agentThreadId || !targetStatus || !project || !isClosedStatus(project, targetStatus) || isClosedStatus(project, task.status)) return;
+  const open = bb.storage.database().prepare<[string], { payload: string }>(
+    `SELECT q.payload FROM task_questions q WHERE q.task_id = ? AND ${UNANSWERED_QUESTION} ORDER BY q.id`,
+  ).all(task.id).map((row) => JSON.parse(row.payload) as { id: string; revision: number; kind?: string; prompt: string });
+  if (!open.length) return;
+  const list = open.map((q) => `${q.id} rev ${q.revision} (${q.kind ?? "decision"}) "${q.prompt.length > 60 ? `${q.prompt.slice(0, 60)}…` : q.prompt}"`).join("; ");
+  throw new Error(
+    `${task.key} cannot move to ${statusLabel(targetStatus, project.statuses)}: ${open.length} owner question${open.length > 1 ? "s are" : " is"} still open: ${list}. ` +
+    `Wait for the answers, or withdraw a question that is no longer needed with \`bb work-board question delete ${task.key} --question ${open[0]!.id} --revision ${open[0]!.revision}\`, then move the card.`,
+  );
 }
 
 function writeSystemComments(
@@ -1156,6 +1177,7 @@ export function registerHandlers(
           const before = store.tasks.getTask(current.id);
           if (!before) throw new Error(`Task not found: ${input.taskId}`);
           // The caller's own session is attached first, so the closure snapshot below includes it.
+          assertNoOpenOwnerQuestions(bb, store, before, input.status, input.agentThreadId);
           const attached = attachment && !before.archivedAt && canTakeWorkerLink(bb, current.id)
             ? attachManualLink(store.tasks, current.id, attachment) : undefined;
           const updated = store.tasks.updateTask(current.id, {
@@ -1302,6 +1324,9 @@ export function registerHandlers(
       if (!current) throw new Error(`Task not found: ${input.taskId}`);
       const closureBefore = store.tasks.closures.currentId(current.id);
       const result = store.transaction(() => {
+        const before = store.tasks.getTask(current.id);
+        if (!before) throw new Error(`Task not found: ${input.taskId}`);
+        assertNoOpenOwnerQuestions(bb, store, before, input.status, input.agentThreadId);
         const moved = store.tasks.updatePosition(current.id, {
           closerThreadId: input.agentThreadId ?? null,
           status: input.status,
