@@ -1253,6 +1253,34 @@ describe("archive v20: reviewers, review history and planning", () => {
     plans.submit(source.task.id, authorA, "thr_reviewer_b");
     return { ...source, db, plans, notes };
   }
+  /** Rewrites an exported v20 snapshot as a v19 one: no planning, reviewers, review history or note authors; legacy notes are resolved. */
+  async function toV19(out: string) {
+  const manifestPath = join(out, "project.json");
+  const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
+  manifest.version = 19;
+  delete manifest.project.planning;
+  await writeFile(manifestPath, jsonText(manifest));
+  for (const id of manifest.taskIds) {
+    const path = join(out, "tasks", `${id}.json`);
+    const record = JSON.parse(await readFile(path, "utf8"));
+    delete record.planReviews;
+    if (record.plan) {
+      delete record.plan.reviewer;
+      delete record.plan.reviewVersion;
+      record.plan.state = "in_review";
+    }
+    for (const note of record.planNotes ?? []) {
+      delete note.authorKind;
+      delete note.authorThread;
+      // An old owner's draft would block the owner's approval; the legacy note here is already resolved.
+      note.state = "resolved";
+      note.sentInVersion = 1;
+      note.sentAt = note.createdAt;
+    }
+    await writeFile(path, jsonText(record));
+  }
+  }
+
   const exported = async (source: Awaited<ReturnType<typeof seed>>, name: string) => {
     const out = join(await directory(), name);
     await exportProject(source.bb, source.store, source.project.id, out);
@@ -1300,33 +1328,28 @@ describe("archive v20: reviewers, review history and planning", () => {
     expect(target.store.tasks.getProject(source.project.id)).toMatchObject({ planning: "required", planningPrevious: "off", planningChangedAt: local.planningChangedAt });
   });
 
+  it("refuses, before writing anything, a v19 overwrite that would rewind a plan below its local review history, and a v20 round trip still works", async () => {
+    const source = await reviewed();
+    const out = await exported(source, "v19-rewind");
+    await toV19(out);
+    // Locally the plan moved on to v2 and was submitted again.
+    source.plans.save({ taskId: source.task.id, op: "replace", baseVersion: 1, body: "# Plan\n\n## Steps\n- one\n- two\n", summary: "Second", author: authorA });
+    source.plans.submit(source.task.id, authorA, "thr_reviewer_b");
+    const history = source.plans.captureReviews(source.task.id);
+    expect(history.map((review) => review.version)).toEqual([1, 1, 2]);
+    await expect(importProject(source.bb, source.store, out, true)).rejects.toThrow(/would be rewound to v1.*review history refers to v2/);
+    expect(source.plans.head(source.task.id)?.version).toBe(2);
+    expect(source.plans.captureReviews(source.task.id)).toEqual(history);
+    const again = await exported(source, "v20-after-refusal");
+    const target = setup();
+    await importProject(target.bb, target.store, again, false);
+    expect(createPlanStore(target.bb.storage.database(), target.store.tasks).captureReviews(source.task.id)).toEqual(history);
+  });
+
   it("reads a v19 snapshot as the owner's, infers optional for a fresh project with a plan, and keeps local review history", async () => {
     const source = await reviewed();
     const out = await exported(source, "v19-legacy");
-    const manifestPath = join(out, "project.json");
-    const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
-    manifest.version = 19;
-    delete manifest.project.planning;
-    await writeFile(manifestPath, jsonText(manifest));
-    for (const id of manifest.taskIds) {
-      const path = join(out, "tasks", `${id}.json`);
-      const record = JSON.parse(await readFile(path, "utf8"));
-      delete record.planReviews;
-      if (record.plan) {
-        delete record.plan.reviewer;
-        delete record.plan.reviewVersion;
-        record.plan.state = "in_review";
-      }
-      for (const note of record.planNotes ?? []) {
-        delete note.authorKind;
-        delete note.authorThread;
-        // An old owner's draft would block the owner's approval; the legacy note here is already resolved.
-        note.state = "resolved";
-        note.sentInVersion = 1;
-        note.sentAt = note.createdAt;
-      }
-      await writeFile(path, jsonText(record));
-    }
+    await toV19(out);
     // A fresh project comes up optional because the snapshot has a plan; the plan is reviewable by the owner at once.
     const fresh = setup();
     await importProject(fresh.bb, fresh.store, out, false);

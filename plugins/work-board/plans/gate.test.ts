@@ -20,12 +20,12 @@ const WITH_TESTING = [...DEFAULT_TASK_STATUSES.slice(0, 4), { id: "in_testing", 
 
 type SentCall = [{ threadId: string; input: Array<{ text: string }> }];
 
-function setup(planning: "off" | "optional" | "required" = "required", options: { onSend?: () => void; onSpawn?: () => void } = {}) {
+function setup(planning: "off" | "optional" | "required" = "required", options: { onSend?: () => void; onSpawn?: () => void; threads?: Record<string, Partial<ReturnType<typeof makeThreadResponse>>> } = {}) {
   const host = createFakePluginHost({
     pluginId: "work-board",
     sdk: {
       threads: {
-        get: async ({ threadId }: { threadId: string }) => makeThreadResponse({ id: threadId, status: "active" }),
+        get: async ({ threadId }: { threadId: string }) => makeThreadResponse({ id: threadId, status: "active", ...options.threads?.[threadId] }),
         send: async () => {
           options.onSend?.();
           return {};
@@ -178,6 +178,40 @@ describe("status gate in the other planning modes", () => {
   });
 });
 
+describe("conversion and cancellation races", () => {
+  it("gates a combined type and status update on the resulting type, in both directions", async () => {
+    const { card, call, store } = setup();
+    const epic = card("Epic", { type: "epic" });
+    await expect(call("updateTask", { taskId: epic.id, type: "task", status: "done", authorName: "You" })).rejects.toThrow(/has no plan; with planning required a card enters Done/);
+    expect(store.tasks.getTask(epic.id)).toMatchObject({ type: "epic", status: "todo" });
+    const plain = card("Plain");
+    expect(await call("updateTask", { taskId: plain.id, type: "epic", status: "in_progress", authorName: "You" })).toMatchObject({ ok: true });
+    expect(store.tasks.getTask(plain.id)).toMatchObject({ type: "epic", status: "in_progress" });
+  });
+
+  it("keeps a card canceled during an existing-thread send canceled while the accepted thread stays linked", async () => {
+    let cancel = () => {};
+    const f = setup("required", { onSend: () => cancel() });
+    const task = f.card("Work");
+    f.withPlan(task.id, "approved");
+    cancel = () => void f.store.tasks.updateTask(task.id, { status: "canceled" });
+    await f.call("delegateToThread", { taskId: task.id, threadId: "thr_existing" });
+    expect(f.status(task.id)).toBe("canceled");
+    expect(f.store.tasks.listTaskThreads(task.id)).toEqual([expect.objectContaining({ threadId: "thr_existing" })]);
+  });
+
+  it("keeps a card canceled during a preset spawn canceled, with no Status changed comment", async () => {
+    let cancel = () => {};
+    const f = setup("optional", { onSpawn: () => cancel() });
+    const task = f.card("Work");
+    cancel = () => void f.store.tasks.updateTask(task.id, { status: "canceled" });
+    await f.call("delegate", { taskId: task.id, presetId: f.preset.id });
+    expect(f.status(task.id)).toBe("canceled");
+    expect(f.store.tasks.listTaskThreads(task.id)).toEqual([expect.objectContaining({ threadId: "thr_spawned" })]);
+    expect(f.store.tasks.listComments(task.id).some((comment) => comment.body.includes("Status changed"))).toBe(false);
+  });
+});
+
 describe("automatic moves", () => {
   it("dispatch to an existing thread in a required project keeps the status, carries the advisory and keeps the attachment", async () => {
     const { card, withPlan, call, status, sent, store } = setup();
@@ -286,7 +320,7 @@ describe("notice to executors", () => {
   }
 
   it("fires on a new version, owner feedback and setTaskPlanState out of approved, once per executor and never for the changing actor", async () => {
-    const f = setup("optional");
+    const f = setup("optional", { threads: { thr_done: { status: "idle" } } });
     const task = f.card("Work", { status: "in_progress" });
     executors(f, task.id);
     f.withPlan(task.id, "approved");
@@ -307,6 +341,17 @@ describe("notice to executors", () => {
     const sentBefore = f.sent().length;
     await f.call("setTaskPlanState", { taskId: task.id, state: "changes_requested", author: owner });
     expect(f.sent().slice(sentBefore).map((entry) => entry[0].threadId)).toEqual(["thr_author", "thr_executor"]);
+  });
+
+  it("reads who is active from the live thread: an idle linked session is not woken, and an executing Parent-thread link is told", async () => {
+    const f = setup("optional", { threads: { thr_idle: { status: "idle" }, thr_parent: { status: "active" }, thr_gone: { deletedAt: 1 } } });
+    const task = f.card("Work", { status: "in_progress" });
+    f.store.tasks.upsertTaskThread({ taskId: task.id, threadId: "thr_idle", presetName: "Default", title: "Idle", liveStatus: "working" });
+    f.store.tasks.upsertTaskThread({ taskId: task.id, threadId: "thr_parent", presetName: "Parent thread", title: "Parent", liveStatus: "idle" });
+    f.store.tasks.upsertTaskThread({ taskId: task.id, threadId: "thr_gone", presetName: "Default", title: "Gone", liveStatus: "working" });
+    f.withPlan(task.id, "approved");
+    await f.call("saveTaskPlan", { taskId: task.id, summary: "More", author, op: "replace", baseVersion: 1, body: `${PLAN}More.\n` });
+    expect(f.sent().map((entry) => entry[0].threadId)).toEqual(["thr_parent"]);
   });
 
   it("gives an executor that is also the attempt's submitter exactly one message when the owner requests changes", async () => {

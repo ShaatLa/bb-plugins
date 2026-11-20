@@ -263,9 +263,20 @@ describe("general notes, Send feedback and Approve", () => {
       return undefined;
     });
     fireEvent.click(await slot.findByRole("button", { name: "Send feedback (1)" }));
-    await slot.findByText("Feedback saved, but not delivered to thr_example; tell them yourself");
+    await slot.findByText("Feedback saved, but not delivered: tell thr_example yourself that EXA-1 plan v1 needs changes. They read it with bb work-board plan show EXA-1 and bb work-board plan notes EXA-1 --all");
     expect((harness.sdk.callsTo("threads.send") as Array<[{ threadId: string }]>).map((entry) => entry[0].threadId)).toEqual(["thr_submitter", "thr_example"]);
     expect(list(slot).getByText("Sent")).toBeTruthy();
+  });
+
+  it("names the recipient, version, verdict and handoff commands when an approval reaches nobody", async () => {
+    const { slot, harness } = await open();
+    harness.sdk.stub("threads.send", async () => {
+      throw new Error("gone");
+    });
+    fireEvent.click(await slot.findByRole("button", { name: "Approve" }));
+    await slot.findByText("Approve plan v1?");
+    fireEvent.click(slot.getByRole("button", { name: "Approve plan" }));
+    await slot.findByText("Approval saved, but not delivered: tell thr_example yourself that EXA-1 plan v1 is approved. They read it with bb work-board plan show EXA-1 and bb work-board plan notes EXA-1 --all");
   });
 
   it("keeps the notes sent and says so when the agent could not be notified", async () => {
@@ -275,7 +286,7 @@ describe("general notes, Send feedback and Approve", () => {
       throw new Error("gone");
     });
     fireEvent.click(await slot.findByRole("button", { name: "Send feedback (1)" }));
-    await slot.findByText("Saved, but the agent could not be notified");
+    await slot.findByText("Feedback saved, but not delivered: tell thr_example yourself that EXA-1 plan v1 needs changes. They read it with bb work-board plan show EXA-1 and bb work-board plan notes EXA-1 --all");
     expect(list(slot).getByText("Sent")).toBeTruthy();
   });
 

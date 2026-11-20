@@ -170,6 +170,16 @@ export function buildPlanAdvisoryNotice(taskKey: string, advisory: string): stri
   return `${taskKey} · ${advisory}.\n\nThe card was not moved to In progress. Wait for the approval or ask the plan author before going on. Plan: ${taskPlanMarkdownLink(taskKey)}`;
 }
 
+/** The message for an owner's request for changes that came without notes (a state change, not a feedback batch). */
+export function buildStateChangeMessage(input: { taskKey: string; version: number; reviewer: string }): string {
+  return [
+    `${input.taskKey} · plan v${input.version}: changes requested by the owner`,
+    "",
+    `No notes were attached. Ask the owner what to change, revise the plan, then: ${resubmitCommand(input.taskKey, input.reviewer)}`,
+    `Plan: ${taskPlanMarkdownLink(input.taskKey)}`,
+  ].join("\n");
+}
+
 /** The informational copy of a result (feedback or approval) for the thread that does not act on it. */
 export function buildResultCopyMessage(input: { taskKey: string; headline: string; actor: string | null }): string {
   return [input.headline, "", `For information${input.actor ? `; ${input.actor} acts on it` : ""}. Do not act on it yourself.`, `Plan: ${taskPlanMarkdownLink(input.taskKey)}`].join("\n");

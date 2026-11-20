@@ -33,7 +33,7 @@ export interface PlanDeliveryEntry {
   threadId: string | null;
 }
 export interface PlanDeliveryResult {
-  /** `failed` when any recipient was not reached, else the actor's outcome (`sent`, or `no_thread` when nobody can act). */
+  /** `sent` when every recipient was reached, `failed` when a send failed, `no_thread` when one could not be reached at all. */
   delivered: PlanDelivery;
   /** The actor's thread. */
   threadId: string | null;
@@ -52,12 +52,14 @@ export async function deliverPlanReview(
 ): Promise<PlanDeliveryResult> {
   const actor = await planReviewThread(bb, input.recipients.actor);
   const copy = await planReviewThread(bb, input.recipients.copy);
-  const targets: Array<{ role: "actor" | "copy"; threadId: string | null; text: string }> = [{ role: "actor", threadId: actor, text: input.text }];
-  if (copy && copy !== actor) targets.push({ role: "copy", threadId: copy, text: input.copyText(actor ?? input.recipients.actor) });
+  // An intended recipient that cannot be reached keeps its own outcome and its original id.
+  const unreachableCopy = input.recipients.copy !== null && copy === null;
+  const targets: Array<{ role: "actor" | "copy"; threadId: string | null; original: string | null; text: string }> = [{ role: "actor", threadId: actor, original: input.recipients.actor, text: input.text }];
+  if ((copy && copy !== actor) || unreachableCopy) targets.push({ role: "copy", threadId: copy, original: input.recipients.copy, text: input.copyText(actor ?? input.recipients.actor) });
   const deliveries: PlanDeliveryEntry[] = [];
   for (const target of targets) {
     if (!target.threadId) {
-      deliveries.push({ role: target.role, delivered: "no_thread", threadId: null });
+      deliveries.push({ role: target.role, delivered: "no_thread", threadId: target.original });
       continue;
     }
     try {
@@ -68,7 +70,8 @@ export async function deliverPlanReview(
       deliveries.push({ role: target.role, delivered: "failed", threadId: target.threadId });
     }
   }
-  return { delivered: deliveries.some((entry) => entry.delivered === "failed") ? "failed" : deliveries[0]!.delivered, threadId: deliveries[0]!.threadId, deliveries };
+  const all = (outcome: PlanDelivery) => deliveries.every((entry) => entry.delivered === outcome);
+  return { delivered: all("sent") ? "sent" : deliveries.some((entry) => entry.delivered === "failed") ? "failed" : "no_thread", threadId: deliveries[0]!.threadId, deliveries };
 }
 
 /**

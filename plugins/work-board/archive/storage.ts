@@ -291,6 +291,18 @@ export function restoreProject(
       if (planKey(local && archivePlanSchema.parse(local)) !== planKey(imported))
         throw new Error(`Import conflict: plan ${record.task.key}; use --overwrite`);
     }
+    // Archives before v20 leave the local review history alone, so they must not rewind a plan below a version it still
+    // refers to: the project would then fail the validation of its own export. Checked before anything is written.
+    if (manifest.version < 20)
+      for (const record of records) {
+        const imported = planOf(record);
+        if (imported === undefined || !localTaskIds.has(record.task.id)) continue;
+        const local = plans.capture(record.task.id);
+        if (planKey(local && archivePlanSchema.parse(local)) === planKey(imported)) continue;
+        const newest = Math.max(0, ...plans.captureReviews(record.task.id).map((review) => review.version));
+        if (newest > (imported?.version ?? 0))
+          throw new Error(`Import conflict: plan ${record.task.key} would be rewound to v${imported?.version ?? 0}, but its local review history refers to v${newest}; import a v20 snapshot, or remove the review history first`);
+      }
     // Archives before v19 cannot carry plan notes either, so they leave local notes untouched.
     const planNotes = createPlanNoteStore(db, store.tasks, plans.head);
     const notesOf = (record: (typeof records)[number]) => (manifest.version >= 19 ? record.planNotes ?? [] : undefined);

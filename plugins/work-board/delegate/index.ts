@@ -423,10 +423,12 @@ export function handlers(
           ),
           liveStatus: taskThreadLiveStatus(thread),
         });
+        // The send above took time: the card and the project are read again here, so a card canceled meanwhile stays canceled.
         // A card whose plan is not approved stays where it is; the seed prompt carries the plan warning.
-        const target = effectiveInProgressStatus(project);
-        if ((task.status === "backlog" || task.status === "todo") && target) {
-          if (store.tasks.planGate(task, target)) skippedMove = true;
+        const current = store.tasks.getTask(task.id) ?? task;
+        const target = effectiveInProgressStatus(store.tasks.getProject(task.projectId) ?? project);
+        if ((current.status === "backlog" || current.status === "todo") && target) {
+          if (store.tasks.planGate(current, target)) skippedMove = true;
           else store.tasks.updateTask(task.id, { status: target });
         }
         createSystemComment(store.tasks, {
@@ -515,15 +517,18 @@ export function handlers(
           liveStatus: "starting",
         });
 
-        const inProgress = effectiveInProgressStatus(project);
-        if ((task.status === "backlog" || task.status === "todo") && inProgress && store.tasks.planGate(task, inProgress)) skippedMove = true;
-        else if ((task.status === "backlog" || task.status === "todo") && inProgress) {
+        // The spawn above took time: the card and the project are read again here, so a card canceled meanwhile stays canceled.
+        const current = store.tasks.getTask(task.id) ?? task;
+        const freshProject = store.tasks.getProject(task.projectId) ?? project;
+        const inProgress = effectiveInProgressStatus(freshProject);
+        if ((current.status === "backlog" || current.status === "todo") && inProgress && store.tasks.planGate(current, inProgress)) skippedMove = true;
+        else if ((current.status === "backlog" || current.status === "todo") && inProgress) {
           store.tasks.updateTask(task.id, { status: inProgress });
           createSystemComment(store.tasks, {
             taskId: task.id,
             presetName: preset.name,
             threadId: thread.id,
-            body: `Status changed to ${statusLabel(inProgress, project.statuses)} · dispatched to ${preset.name}`,
+            body: `Status changed to ${statusLabel(inProgress, freshProject.statuses)} · dispatched to ${preset.name}`,
           });
         }
 

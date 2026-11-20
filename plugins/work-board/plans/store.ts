@@ -282,9 +282,15 @@ export function createPlanStore(db: Database, tasks: TasksStore) {
    * changes nothing (`resent`: the caller only wakes the reviewer again); another reviewer takes the review over.
    * `unusable` says why the reviewer thread cannot be used (archived, deleted); it refuses a new or reassigned review.
    */
-  const submit = db.transaction((taskId: string, by: PlanAuthor, reviewerThread: string | null, unusable: string | null = null) => {
+  const submit = db.transaction((taskId: string, by: PlanAuthor, reviewerThread: string | null, unusable: string | null = null, defaultedFrom: { kind: "owner" | "thread"; threadId: string | null } | null = null) => {
     const task = requireEditable(taskId);
     const row = planRow(taskId);
+    // A bare resubmit chose the latest attempt's reviewer before an asynchronous lookup; that choice must still hold now.
+    if (defaultedFrom) {
+      const now = db.prepare<[string], ReviewRow>("SELECT * FROM task_plan_reviews WHERE task_id = ? ORDER BY id DESC LIMIT 1").get(taskId);
+      if (now?.reviewer_kind !== defaultedFrom.kind || (now?.reviewer_thread ?? null) !== defaultedFrom.threadId)
+        throw new PlanError("plan_conflict", `The reviewer of ${task.key} changed while you resubmitted; run \`plan submit\` again to send it to the current reviewer`);
+    }
     if (!row) throw new PlanError("plan_invalid", `${task.key} has no plan to submit; create it with \`bb work-board plan set ${task.key} --base-version 0\``);
     if (row.state === "approved") throw new PlanError("plan_state", `Plan v${row.version} is already approved; a new version returns it to draft`);
     if (row.state === "changes_requested")
@@ -343,14 +349,15 @@ export function createPlanStore(db: Database, tasks: TasksStore) {
   }
 
   /**
-   * The threads a review result of `version` goes to. The actor is the session that submitted the current attempt, or the
+   * The threads a review result of `version` goes to. The actor is the session that submitted that version's latest attempt, or the
    * agent that wrote the version when there is no attempt or it was submitted without a thread; the copy is the other
    * one, for information. Never the task's worker thread.
    */
   function resultRecipients(taskId: string, version: number): { actor: string | null; copy: string | null } {
     const written = versionRow(taskId, version);
     const author = written?.author_kind === "agent" ? written.author_thread : null;
-    const latest = db.prepare<[string], { submitted_by_thread: string | null }>("SELECT submitted_by_thread FROM task_plan_reviews WHERE task_id = ? ORDER BY id DESC LIMIT 1").get(taskId);
+    // The attempt of the decided version only: a later draft that was never submitted has no submitter yet.
+    const latest = db.prepare<[string, number], { submitted_by_thread: string | null }>("SELECT submitted_by_thread FROM task_plan_reviews WHERE task_id = ? AND version = ? ORDER BY id DESC LIMIT 1").get(taskId, version);
     const submitter = latest?.submitted_by_thread ?? null;
     return submitter ? { actor: submitter, copy: author !== submitter ? author : null } : { actor: author, copy: null };
   }

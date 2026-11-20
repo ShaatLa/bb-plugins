@@ -7,7 +7,7 @@ import { inWorkZone } from "../shared/workflow-policy";
 import { notifyThread } from "../steer";
 
 /**
- * A plan left `approved` while its card is in the In progress status: the active threads linked to the card hear about
+ * A plan left `approved` while its card is in the work zone: the linked threads that are executing now hear about
  * it once, for information. The thread that made the change and `exclude` (the threads that already get the decision
  * message for this change) are left out. A failed delivery is only logged: the change is saved.
  */
@@ -20,12 +20,17 @@ export async function noticeLeftApproved(
   const project = task && tasks.getProject(task.projectId);
   if (!task || !project || !inWorkZone(project, task.status)) return;
   const skip = new Set([input.changedBy, ...(input.exclude ?? [])]);
-  const threads = new Set(
-    tasks
-      .listTaskThreads(task.id)
-      .filter((link) => link.presetName !== "Parent thread" && link.liveStatus !== "completed" && link.liveStatus !== "failed" && !skip.has(link.threadId))
-      .map((link) => link.threadId),
-  );
+  // "Active" is read from the live thread, not from the link: a link's name or stored state says nothing about whether it is running.
+  const threads: string[] = [];
+  for (const threadId of new Set(tasks.listTaskThreads(task.id).map((link) => link.threadId))) {
+    if (skip.has(threadId)) continue;
+    try {
+      const thread = await bb.sdk.threads.get({ threadId });
+      if (thread.archivedAt == null && thread.deletedAt == null && (thread.status === "active" || thread.status === "starting")) threads.push(threadId);
+    } catch {
+      // A thread that cannot be read cannot be told either.
+    }
+  }
   const text = buildLeftApprovedNotice({ taskKey: task.key, version: input.version, state: input.state, reason: input.reason });
   for (const threadId of threads) {
     try {

@@ -63,13 +63,17 @@ export function usePlanReviewActions(taskId: string | null, refresh: () => void)
 type DeliveryResult = { delivered: "sent" | "failed" | "no_thread"; deliveries: ReadonlyArray<{ delivered: "sent" | "failed" | "no_thread"; threadId: string | null }> };
 
 /**
- * What the owner is told after sending feedback or approving: the decision is saved either way, and every thread that
- * was not reached is named, so the owner can hand the result over by hand.
+ * What the owner is told after sending feedback or approving: the decision is saved either way. Every thread that was not
+ * reached is named with the version and the verdict, and the commands it reads them with, so the owner can hand the
+ * result over by hand.
  */
-export function deliveryNotice(result: DeliveryResult, what: string): { tone: "ok" | "warn"; text: string } {
+export function deliveryNotice(result: DeliveryResult, what: string, handoff: { key: string; version: number; verdict: string }): { tone: "ok" | "warn"; text: string } {
   const missed = result.deliveries.filter((entry) => entry.delivered !== "sent");
   if (missed.length === 0) return { tone: "ok", text: `${what} sent to the agent` };
-  if (result.deliveries.length === 1 && missed[0]!.delivered === "no_thread") return { tone: "warn", text: "Saved, but there is no agent thread to notify" };
-  if (result.deliveries.length === 1) return { tone: "warn", text: "Saved, but the agent could not be notified" };
-  return { tone: "warn", text: `${what} saved, but not delivered to ${missed.map((entry) => entry.threadId ?? "any thread").join(", ")}; tell them yourself` };
+  const who = missed.map((entry) => entry.threadId ?? "the plan author").join(", ");
+  const why = missed.every((entry) => entry.delivered === "no_thread") ? "there is no thread to notify" : "not delivered";
+  return {
+    tone: "warn",
+    text: `${what} saved, but ${why}: tell ${who} yourself that ${handoff.key} plan v${handoff.version} ${handoff.verdict}. They read it with bb work-board plan show ${handoff.key} and bb work-board plan notes ${handoff.key} --all`,
+  };
 }

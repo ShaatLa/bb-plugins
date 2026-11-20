@@ -3,7 +3,7 @@ import type { TasksStore } from "../db";
 import { createUlid } from "../db/store";
 import type { CreatePlanNoteInput, PlanAuthor, PlanNote, PlanNoteCounts, TaskPlanHead } from "../shared/contract";
 import type { PlanNoteKind, PlanNoteState } from "../shared/plan-notes";
-import { noteLabel, PLAN_NOTE_BODY_MAX, PLAN_NOTE_QUOTE_MAX } from "../shared/plan-notes";
+import { noteLabel, PLAN_NOTE_BODY_MAX, PLAN_NOTE_HEADING_MAX, PLAN_NOTE_QUOTE_MAX } from "../shared/plan-notes";
 import { buildAnchor, fold, markdownPlainText, resolveAnchor } from "../shared/plan-anchor";
 import { findSection, getSection } from "../shared/plan";
 import { assertNoSecrets } from "../shared/secret-guard.js";
@@ -180,7 +180,8 @@ export function createPlanNoteStore(db: Database, tasks: TasksStore, head: (task
       db.prepare("UPDATE task_plan_notes SET state = 'resolved', updated_at = ? WHERE id = ?").run(now, noteId);
     } else {
       if (row.state === "sent") throw new PlanError("plan_state", `${label} is waiting for the agent's answer`);
-      db.prepare("UPDATE task_plan_notes SET state = 'draft', sent_in_version = NULL, sent_at = NULL, addressed_in_version = NULL, updated_at = ? WHERE id = ?").run(now, noteId);
+      // A reopened note keeps when it was first sent, which tells it from a draft that never went out.
+      db.prepare("UPDATE task_plan_notes SET state = 'draft', addressed_in_version = NULL, updated_at = ? WHERE id = ?").run(now, noteId);
     }
     return fresh(noteId);
   });
@@ -321,6 +322,8 @@ export function createPlanNoteStore(db: Database, tasks: TasksStore, head: (task
         const span = resolveAnchor(text, { exact: input.quote, prefix: "", suffix: "" })!;
         const built = buildAnchor(plain, base + span.start, base + span.end);
         if (!built || built.exact.length > PLAN_NOTE_QUOTE_MAX) throw new PlanError("plan_invalid", `The quote must be 1–${PLAN_NOTE_QUOTE_MAX} characters`);
+        // The stored path must pass the output limit, or the note could never be listed or exported.
+        if (headingPath !== null && headingPath.length > PLAN_NOTE_HEADING_MAX) throw new PlanError("plan_invalid", `The section path is longer than ${PLAN_NOTE_HEADING_MAX} characters; quote without --section`);
         anchor = { ...built, headingPath };
       }
       return create({
@@ -342,7 +345,11 @@ export function createPlanNoteStore(db: Database, tasks: TasksStore, head: (task
   const dismissByReviewer = db.transaction((taskId: string, by: PlanAuthor, version: number, numbers: readonly number[]) => {
     requireReviewer(taskId, by.threadId, version);
     const rows = reviewerNotes(taskId, numbers);
-    for (const row of rows) if (row.state !== "draft") throw new PlanError("plan_state", `${noteLabel(row.number)} was already sent; resolve it instead of dismissing it`);
+    for (const row of rows) {
+      if (row.state !== "draft") throw new PlanError("plan_state", `${noteLabel(row.number)} was already sent; resolve it instead of dismissing it`);
+      // A reopened note is a draft again, but it was sent once and holds the author's reply: it is feedback, not a withdrawn finding.
+      if (row.sent_at !== null) throw new PlanError("plan_state", `${noteLabel(row.number)} was sent before and reopened; send it again or resolve it, dismissing would delete its history`);
+    }
     for (const row of rows) db.prepare("DELETE FROM task_plan_notes WHERE id = ?").run(row.id);
     return { taskId, removed: [...numbers] };
   });

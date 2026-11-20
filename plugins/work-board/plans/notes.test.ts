@@ -91,7 +91,7 @@ describe("plan notes", () => {
 
     expect(await call("setPlanNoteState", { noteId: one.id, state: "resolved" })).toMatchObject({ ok: true, note: { state: "resolved" } });
     expect(await call("replyPlanNote", { taskId: one.taskId, number: 1, body: "x", author: agent })).toMatchObject({ ok: false, error: { code: "plan_state" } });
-    expect(await call("setPlanNoteState", { noteId: one.id, state: "draft" })).toMatchObject({ ok: true, note: { state: "draft", sentInVersion: null, sentAt: null, addressedInVersion: null, reply: "Done in v2." } });
+    expect(await call("setPlanNoteState", { noteId: one.id, state: "draft" })).toMatchObject({ ok: true, note: { state: "draft", sentInVersion: expect.any(Number), sentAt: expect.any(String), addressedInVersion: null, reply: "Done in v2." } });
     expect(await call("sendPlanFeedback", { taskId: one.taskId, author: owner })).toMatchObject({ ok: true, notes: 1 });
     expect(await states()).toEqual(["1:sent"]);
   });

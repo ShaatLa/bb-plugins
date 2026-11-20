@@ -585,3 +585,108 @@ describe("upgrade", () => {
     expect(await call("approvePlan", { taskId: task.id, author: owner })).toMatchObject({ ok: true, plan: { state: "approved" } });
   });
 });
+
+describe("fixes found in review", () => {
+  const submitter: PlanAuthor = { kind: "agent", threadId: "thr_submitter", name: "agent (thr_submitter)" };
+  const writer: PlanAuthor = { kind: "agent", threadId: "thr_writer", name: "agent (thr_writer)" };
+
+  it("routes a decision on a later, never submitted version to that version's author, not to the earlier submitter", async () => {
+    const { save, submit, call, task, sentTo } = setup({ thr_writer: {} });
+    await save(BODY, 0);
+    await submit("thr_reviewer_a", submitter);
+    await save(`${BODY}Second.\n`, 1, writer);
+    expect(await call("approvePlan", { taskId: task.id, author: owner })).toMatchObject({ ok: true, plan: { version: 2 }, deliveries: [{ role: "actor", threadId: "thr_writer" }] });
+    expect(sentTo("thr_writer")).toHaveLength(1);
+    expect(sentTo("thr_writer")[0]).toContain("plan v2 approved by the owner");
+    expect(sentTo("thr_submitter")).toEqual([]);
+  });
+
+  it("delivers an owner's state change through the shared path, returns the outcome and sends nothing for a repeated state", async () => {
+    const { save, submit, call, task, sentTo, sent } = setup();
+    await save(BODY, 0);
+    await submit("thr_reviewer_a", submitter);
+    const approved = await call("setTaskPlanState", { taskId: task.id, state: "approved", author: owner });
+    expect(approved).toMatchObject({ ok: true, plan: { state: "approved" }, deliveries: [{ role: "actor", delivered: "sent", threadId: "thr_submitter" }, { role: "copy", delivered: "sent", threadId: "thr_author" }] });
+    expect(sentTo("thr_submitter").at(-1)).toContain("EXA-1 · plan v1 approved by the owner");
+    expect(sentTo("thr_author").at(-1)).toContain("For information; thr_submitter acts on it.");
+    const count = sent().length;
+    expect(await call("setTaskPlanState", { taskId: task.id, state: "approved", author: owner })).toMatchObject({ ok: true, deliveries: [] });
+    expect(sent()).toHaveLength(count);
+    const changes = await call("setTaskPlanState", { taskId: task.id, state: "changes_requested", author: owner });
+    expect(changes).toMatchObject({ ok: true, plan: { state: "changes_requested" }, deliveries: [{ role: "actor", threadId: "thr_submitter" }, { role: "copy" }] });
+    expect(sentTo("thr_submitter").at(-1)).toContain("changes requested by the owner");
+    expect(sentTo("thr_submitter").at(-1)).toContain("plan submit EXA-1 --reviewer thr_reviewer_a");
+    // Setting in_review sends nothing.
+    const before = sent().length;
+    await call("setTaskPlanState", { taskId: task.id, state: "in_review", author: owner });
+    expect(sent()).toHaveLength(before);
+  });
+
+  it("keeps a sent note, its reply and its number when it is reopened and then dismissed", async () => {
+    const { save, submit, flow, call, task, note, notes } = setup();
+    await save(BODY, 0);
+    await submit("thr_reviewer_a");
+    await note(reviewerA, 1, { body: "Sent once." });
+    await flow.sendFeedback(task.id, reviewerA, 1);
+    await save(`${BODY}Revised.\n`, 1);
+    await call("replyPlanNote", { taskId: task.id, number: 1, body: "Handled.", addressed: true, author });
+    await submit("thr_reviewer_a");
+    await flow.setState(task.id, reviewerA, 2, [1], "resolved");
+    await flow.setState(task.id, reviewerA, 2, [1], "draft");
+    expect(await flow.dismiss(task.id, reviewerA, 2, [1])).toMatchObject({ ok: false, error: { message: expect.stringContaining("sent before and reopened") } });
+    expect(await notes()).toEqual([expect.objectContaining({ number: 1, state: "draft", reply: "Handled.", sentInVersion: 1 })]);
+    // The next note does not reuse the number; a never-sent draft is still dismissible.
+    expect(await note(reviewerA, 2, { body: "Fresh." })).toMatchObject({ ok: true, note: { number: 2 } });
+    expect(await flow.dismiss(task.id, reviewerA, 2, [2])).toMatchObject({ ok: true });
+  });
+
+  it("keeps an unreachable copy recipient in the results with its own outcome and original id", async () => {
+    const { save, submit, flow, task, note, sentTo } = setup({ thr_gone: { archivedAt: 1 } });
+    await save(BODY, 0, { kind: "agent", threadId: "thr_gone", name: "agent (thr_gone)" });
+    await submit("thr_reviewer_a", submitter);
+    await note(reviewerA, 1);
+    const result = await flow.sendFeedback(task.id, reviewerA, 1);
+    expect(result).toMatchObject({ ok: true, delivered: "no_thread" });
+    expect((result as { deliveries: unknown[] }).deliveries).toEqual([{ role: "actor", delivered: "sent", threadId: "thr_submitter" }, { role: "copy", delivered: "no_thread", threadId: "thr_gone" }]);
+    expect(sentTo("thr_submitter")).toHaveLength(1);
+  });
+
+  it("does not let a bare resubmit that overlaps an explicit reassignment send the plan back to the old reviewer", async () => {
+    const { save, submit, harness, plans, task, sentTo, reviews, known } = setup();
+    await save(BODY, 0);
+    await submit("thr_reviewer_a");
+    expect(sentTo("thr_reviewer_a")).toHaveLength(1);
+    // The lookup of the old reviewer hangs until the reassignment has committed.
+    let release!: () => void;
+    const hang = new Promise<void>((resolve) => (release = resolve));
+    harness.sdk.stub("threads.get", async ({ threadId }: { threadId: string }) => {
+      if (threadId === "thr_reviewer_a") await hang;
+      return makeThreadResponse({ id: threadId, status: "active", ...known[threadId] });
+    });
+    const bare = submit();
+    await Promise.resolve();
+    expect(await submit("thr_reviewer_b")).toMatchObject({ ok: true, outcome: "reassigned" });
+    release();
+    expect(await bare).toMatchObject({ ok: false, error: { code: "plan_conflict", message: expect.stringContaining("changed while you resubmitted") } });
+    expect(plans.head(task.id)?.reviewer.threadId).toBe("thr_reviewer_b");
+    expect(sentTo("thr_reviewer_a")).toHaveLength(1);
+    expect(reviews().map((row) => [row.reviewer.threadId, row.outcome])).toEqual([["thr_reviewer_a", "reassigned"], ["thr_reviewer_b", "pending"]]);
+  });
+
+  it("refuses a section path longer than the note limit and leaves the task readable and exportable", async () => {
+    const { save, submit, note, notes, store, project, host } = setupLong();
+    await save(`# ${"A".repeat(200)}\n\n## ${"B".repeat(200)}\n\n### ${"C".repeat(200)}\nText to quote here.\n`, 0);
+    await submit("thr_reviewer_a");
+    expect(await note(reviewerA, 1, { quote: "Text to quote here.", section: "C".repeat(200) })).toMatchObject({ ok: false, error: { message: expect.stringContaining("longer than 500 characters") } });
+    expect(await notes()).toEqual([]);
+    expect(await note(reviewerA, 1, { quote: "Text to quote here." })).toMatchObject({ ok: true });
+    expect(await notes()).toHaveLength(1);
+    const { captureProject } = await import("../archive/storage");
+    expect(() => captureProject(host.bb, store, project.id)).not.toThrow();
+  });
+});
+
+function setupLong() {
+  const base = setup();
+  return { ...base, host: base };
+}

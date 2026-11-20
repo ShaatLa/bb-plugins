@@ -1411,13 +1411,14 @@ export function createTasksStore(db: PluginDatabase) {
       if (current.scheduledRole === "template" && (input.status !== undefined || input.type !== undefined || input.parentTaskId !== undefined || input.epicId !== undefined))
         throw new Error("Use Scheduled settings to manage a schedule; its template is not a work instance");
       const status = input.status ?? current.status;
+      const type = input.type ?? current.type;
       validateTaskStatus(current.projectId, status);
-      validateWorkflowTransition(current, status);
+      // The gate reads the resulting type: converting an epic and moving it in one update is judged as the task it becomes.
+      validateWorkflowTransition({ ...current, type }, status);
       const parentTaskId =
         input.parentTaskId === undefined
           ? current.parentTaskId
           : input.parentTaskId;
-      const type = input.type ?? current.type;
       const epicId = input.epicId === undefined ? current.epicId : input.epicId;
       validateTaskEpic(current.projectId, type, epicId, parentTaskId, id);
       validateTaskParent(current.projectId, parentTaskId, id);

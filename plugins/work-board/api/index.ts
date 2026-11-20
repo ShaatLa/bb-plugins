@@ -11,7 +11,7 @@ import { createPlanStore, PlanError } from "../plans/store";
 import { createPlanNoteStore } from "../plans/notes";
 import { deliverPlanReview, reviewerProblem, wakeReviewer } from "../plans/delivery";
 import { noticeLeftApproved } from "../plans/notice";
-import { actorLabel, buildApprovalMessage, buildFeedbackMessage, buildResultCopyMessage, buildReviewRequestMessage, orderNotes, type PlanNoteKind } from "../shared/plan-notes";
+import { actorLabel, buildApprovalMessage, buildFeedbackMessage, buildResultCopyMessage, buildStateChangeMessage, buildReviewRequestMessage, orderNotes, type PlanNoteKind } from "../shared/plan-notes";
 import { storageService } from "../storage";
 import { gitSyncService } from "../git-sync/service";
 import { projectConfigHandlers } from "../config";
@@ -904,7 +904,7 @@ export function registerHandlers(
       if (!chosen) return { ok: false as const, error: { code: "plan_invalid" as const, message: "This plan was never submitted with a reviewer: pass --reviewer owner (only when the user asked to approve the plan) or --reviewer <thread id>" } };
       const thread = chosen === "owner" ? null : chosen;
       const problem = thread ? await reviewerProblem(bb, thread, task?.key ?? taskId) : null;
-      const result = planWrite(() => plans.submit(taskId, author, thread, problem));
+      const result = planWrite(() => plans.submit(taskId, author, thread, problem, reviewer === undefined ? (latest ?? null) : null));
       if (!result.ok) return result;
       if (!thread) return { ...result, delivered: null, deliveryHint: null };
       const text = buildReviewRequestMessage({
@@ -919,10 +919,22 @@ export function registerHandlers(
     setTaskPlanState: async ({ taskId, state, author }) => {
       const before = plans.head(taskId)?.state;
       const result = planWrite(() => plans.setState(taskId, state, author));
-      if (result.ok && before === "approved" && state !== "approved")
-        await noticeLeftApproved(bb, store.tasks, { taskId, version: result.plan.version, state, reason: "the owner changed its state", changedBy: author.threadId });
-      // Drops the store's internal changed flag; a repeated state wrote no system comment.
-      return result.ok ? { ok: true as const, plan: result.plan, version: result.version } : result;
+      if (!result.ok) return result;
+      // A repeated state changed nothing and sends nothing. An approval or a request for changes reaches the waiting
+      // author like the dedicated owner commands do, and the outcome is returned.
+      let deliveries: Awaited<ReturnType<typeof deliverPlanReview>>["deliveries"] = [];
+      if (result.changed && (state === "approved" || state === "changes_requested")) {
+        const task = store.tasks.getTask(taskId)!;
+        const { version } = result.plan;
+        const text = state === "approved"
+          ? buildApprovalMessage({ taskKey: task.key, version, by: "the owner" })
+          : buildStateChangeMessage({ taskKey: task.key, version, reviewer: result.plan.reviewer.kind === "thread" && result.plan.reviewer.threadId ? result.plan.reviewer.threadId : "owner" });
+        const recipients = plans.resultRecipients(taskId, version);
+        deliveries = (await deliverPlanReview(bb, { taskId, recipients, text, copyText: (actor) => buildResultCopyMessage({ taskKey: task.key, headline: text.split("\n")[0]!, actor }) })).deliveries;
+      }
+      if (before === "approved" && state !== "approved")
+        await noticeLeftApproved(bb, store.tasks, { taskId, version: result.plan.version, state, reason: "the owner changed its state", changedBy: author.threadId, exclude: deliveries.map((entry) => entry.threadId) });
+      return { ok: true as const, plan: result.plan, version: result.version, deliveries };
     },
     listTaskDependencies: ({ taskId }) => dependencies.list(taskId),
     addTaskRelation: (input) => changeRelation(input, true),

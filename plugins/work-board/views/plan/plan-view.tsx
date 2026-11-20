@@ -281,12 +281,12 @@ function PlanViewBody({ taskKey, surface }: { taskKey: string; surface: "panel" 
     setSending(true);
     const result = await actions.send();
     setSending(false);
-    setReview(result.ok ? deliveryNotice(result, "Feedback") : { tone: "warn", text: result.message });
+    setReview(result.ok ? deliveryNotice(result, "Feedback", { key: taskKey, version: headVersion, verdict: "needs changes" }) : { tone: "warn", text: result.message });
   };
   const approve = async (note: string) => {
     const result = await actions.approve(note);
     if (!result.ok) return result.message;
-    setReview(deliveryNotice(result, "Approval"));
+    setReview(deliveryNotice(result, "Approval", { key: taskKey, version: headVersion, verdict: "is approved" }));
     return null;
   };
 

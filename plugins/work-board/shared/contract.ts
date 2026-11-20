@@ -754,6 +754,19 @@ const planSubmitResultSchema = z.discriminatedUnion("ok", [
     .strict(),
   z.object({ ok: z.literal(false), error: planErrorSchema }).strict(),
 ]);
+const planDeliverySchema = z.enum(["sent", "failed", "no_thread"]);
+/** An owner's state change; `deliveries` lists who was told about an approval or a request for changes (empty when nothing was sent). */
+const planStateResultSchema = z.discriminatedUnion("ok", [
+  z
+    .object({
+      ok: z.literal(true),
+      plan: taskPlanHeadSchema,
+      version: planVersionSchema.nullable(),
+      deliveries: z.array(z.object({ role: z.enum(["actor", "copy"]), delivered: planDeliverySchema, threadId: z.string().nullable() }).strict()).default([]),
+    })
+    .strict(),
+  z.object({ ok: z.literal(false), error: planErrorSchema }).strict(),
+]);
 const planWriteBase = { taskId: idSchema, baseVersion: z.number().int().min(0), summary: z.string(), author: planAuthorSchema };
 const savePlanInputSchema = z.discriminatedUnion("op", [
   z.object({ ...planWriteBase, op: z.literal("replace"), body: z.string() }).strict(),
@@ -818,7 +831,6 @@ const createPlanNoteInputSchema = z
     authorName: nonBlankStringSchema.default("You"),
   })
   .strict();
-const planDeliverySchema = z.enum(["sent", "failed", "no_thread"]);
 const planReviewResultSchema = z.discriminatedUnion("ok", [
   z
     .object({
@@ -1169,7 +1181,7 @@ export const tasksRpcContract = {
   },
   setTaskPlanState: {
     input: z.object({ taskId: idSchema, state: z.enum(SETTABLE_PLAN_STATES), author: planAuthorSchema }).strict(),
-    output: planMutationResultSchema,
+    output: planStateResultSchema,
   },
   listTasks: {
     input: z
