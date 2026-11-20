@@ -1,4 +1,5 @@
 import { BbLink } from "./bb-link";
+import { DisclosureSummary } from "./disclosure";
 import { createContext, useContext, useState, type ReactNode } from "react";
 import { useTasksQuery, useTasksRpc } from "../shell/data";
 import { Button } from "@/components/ui/button";
@@ -174,9 +175,9 @@ export function PullRequestsSection({
             </p>
             {snapshot.checks.length ? (
               <details>
-                <summary className="cursor-pointer">
+                <DisclosureSummary>
                   Checks ({snapshot.checks.length})
-                </summary>
+                </DisclosureSummary>
                 <ul className="space-y-1 pt-1">
                   {snapshot.checks.map((check, index) => (
                     <li key={index}>
@@ -319,9 +320,9 @@ export function PullRequestsSection({
         {links.filter((value) => !value.link.excluded).map(render)}
         {links.some((value) => value.link.excluded) ? (
           <details>
-            <summary className="cursor-pointer text-xs text-muted-foreground">
+            <DisclosureSummary className="text-xs text-muted-foreground">
               Excluded links
-            </summary>
+            </DisclosureSummary>
             {links.filter((value) => value.link.excluded).map(render)}
           </details>
         ) : null}

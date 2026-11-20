@@ -1,4 +1,5 @@
 import { GitSyncSettings } from "./git-sync-settings";
+import { DisclosureSummary } from "../components/disclosure";
 import { formatRelativeTime } from "./activity/time.js";
 import { StorageSettings } from "./storage-settings";
 import { NavigationBadgeSettings } from "./navigation-badge-settings";
@@ -550,7 +551,7 @@ function GeneralSettings() {
   const [error, setError] = useState<string | null>(null);
   return (
     <details className="rounded-md border border-border text-sm">
-      <summary className="cursor-pointer px-3 py-2.5 font-medium">General</summary>
+      <DisclosureSummary className="px-3 py-2.5 font-medium">General</DisclosureSummary>
       <div className="space-y-3 border-t border-border p-3">
         <p className="text-xs text-muted-foreground">Applies to all projects.</p>
         <label className="flex flex-wrap items-center justify-between gap-2">

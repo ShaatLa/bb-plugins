@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { DisclosureSummary } from "../components/disclosure";
 import { useTasksQuery, useTasksRpc } from "../shell/data";
 import { errorMessage } from "../shared/errors";
 import { Button } from "@/components/ui/button";
@@ -20,7 +21,7 @@ export function StorageSettings() {
     finally { setBusy(false); }
   }
   return <details className="rounded-md border border-border text-sm" onToggle={event => setOpen(event.currentTarget.open)}>
-    <summary className="cursor-pointer px-3 py-2.5 font-medium">Storage</summary>
+    <DisclosureSummary className="px-3 py-2.5 font-medium">Storage</DisclosureSummary>
     <div className="space-y-3 border-t border-border p-3">
       <p className="text-xs text-muted-foreground">Shared by all projects. Daily cleanup removes unreachable cache rows and unreferenced blobs older than 24 hours. Active uploads, imports, archived tasks and accessible history are preserved.</p>
       {current ? <dl className="grid grid-cols-[1fr_auto] gap-x-3 gap-y-1 text-xs">
