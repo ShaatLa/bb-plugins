@@ -19,8 +19,18 @@ export function createFakeThreads() {
     rows: [] as Row[],
     sends: 0,
     updates: 0,
-    requests: [] as { seq: number; requestId: string; text: string; at: number }[],
+    requests: [] as { seq: number; requestId: string; text: string; at: number; extra?: Record<string, unknown>; grouped?: boolean }[],
     listCalls: 0,
+    acceptedCalls: 0,
+    queueCalls: 0,
+    /** Queue reads reject, as in a queue-only outage. */
+    queueFail: false,
+    /** Queue reads never answer until their signal aborts. */
+    queueHang: false,
+    /** Decides per history read whether it fails; the first matching read of a pass is the failing page. */
+    eventsFailWhen: undefined as ((args: { types: string[]; beforeSeq?: string }) => boolean) | undefined,
+    /** The next history read waits for this, then rejects. */
+    eventsGateOnce: undefined as Promise<void> | undefined,
     /** Every history read fails, as when the recipient's history is inaccessible. */
     eventsFail: false,
     accepted: [] as { seq: number; clientRequestId: string; at: number }[],
@@ -56,7 +66,10 @@ export function createFakeThreads() {
         return makeThreadResponse({ id: threadId, status: (info.status ?? "idle") as never, ...(info.archived ? { archivedAt: 1 } : {}), ...(info.parent ? { parentThreadId: info.parent } : {}) } as never);
       },
       queuedMessages: {
-        list: async ({ threadId }: { threadId: string }) => {
+        list: async ({ threadId, signal }: { threadId: string; signal?: AbortSignal }) => {
+          state.queueCalls++;
+          if (state.queueFail) throw fault("queue unavailable");
+          if (state.queueHang) await new Promise((_, reject) => signal?.addEventListener("abort", () => reject(fault("queue timed out"))));
           if (state.listGateOnce) { const gate = state.listGateOnce; state.listGateOnce = undefined; await gate; return []; }
           return state.rows.filter((row) => row.threadId === threadId);
         },
@@ -90,7 +103,9 @@ export function createFakeThreads() {
         // Honors the paging the real list has: type filter, order, limit and the seq bounds. Both arrays grow in seq order.
         list: async ({ types, order = "desc", limit = "50", beforeSeq, afterSeq }: { types: string[]; order?: string; limit?: string; beforeSeq?: string; afterSeq?: string }) => {
           state.listCalls++;
-          if (state.eventsFail) throw fault("history unavailable");
+          if (types.includes("turn/input/accepted")) state.acceptedCalls++;
+          if (state.eventsGateOnce) { const gate = state.eventsGateOnce; state.eventsGateOnce = undefined; await gate; throw fault("history unavailable"); }
+          if (state.eventsFail || state.eventsFailWhen?.({ types, beforeSeq })) throw fault("history unavailable");
           const requests = types.includes("client/turn/requested");
           const source = requests ? state.requests : state.accepted;
           const wanted = Number(limit);
@@ -100,7 +115,7 @@ export function createFakeThreads() {
             const event = source[index]!;
             if ((beforeSeq !== undefined && event.seq >= Number(beforeSeq)) || (afterSeq !== undefined && event.seq <= Number(afterSeq))) continue;
             out.push(requests
-              ? { seq: event.seq, type: "client/turn/requested", createdAt: event.at, data: { requestId: (event as { requestId: string }).requestId, input: [{ type: "text", text: (event as { text: string }).text }] } }
+              ? { seq: event.seq, type: "client/turn/requested", createdAt: event.at, data: { requestId: (event as { requestId: string }).requestId, ...((event as { grouped?: boolean }).grouped ? { inputGroups: [[{ type: "text", text: (event as { text: string }).text }]] } : { input: [{ type: "text", text: (event as { text: string }).text }] }), ...((event as { extra?: Record<string, unknown> }).extra ?? {}) } }
               : { seq: event.seq, type: "turn/input/accepted", createdAt: event.at, data: { clientRequestId: (event as { clientRequestId: string }).clientRequestId } });
             if (out.length >= wanted) break;
           }
@@ -115,8 +130,8 @@ export function createFakeThreads() {
       },
     },
   };
-  function addRow(threadId: string, body: string): Row {
-    const row: Row = { id: `qm_${++seq}`, threadId, state: "queued", editable: true, originPluginId: "work-board", updatedAt: `u${++seq}`, content: [{ type: "text", text: body, mentions: [] }], payload: { kind: "message" } };
+  function addRow(threadId: string, body: string, originPluginId = "work-board"): Row {
+    const row: Row = { id: `qm_${++seq}`, threadId, state: "queued", editable: true, originPluginId, updatedAt: `u${++seq}`, content: [{ type: "text", text: body, mentions: [] }], payload: { kind: "message" } };
     state.rows.push(row);
     return row;
   }
@@ -132,9 +147,9 @@ export function createFakeThreads() {
     dispatch(text(row));
   }
   /** A request whose acceptance is recorded separately, later. */
-  function requestOnly(body: string): string {
+  function requestOnly(body: string, options: { extra?: Record<string, unknown>; grouped?: boolean } = {}): string {
     const requestId = `req_${++seq}`;
-    state.requests.push({ seq: ++seq, requestId, text: body, at: Date.now() });
+    state.requests.push({ seq: ++seq, requestId, text: body, at: Date.now(), ...options });
     return requestId;
   }
   function acceptRequest(requestId: string) {

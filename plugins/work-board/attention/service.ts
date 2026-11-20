@@ -79,18 +79,31 @@ function createService(bb: BbPluginApi) {
    * evidence can still record the receipt.
    */
   async function search(attempt: AttemptRow) {
-    const cursor = attempt.recovery_cursor ? (JSON.parse(attempt.recovery_cursor) as HistoryCursor) : {};
+    const read = attempt.recovery_cursor;
+    const cursor = read ? (JSON.parse(read) as HistoryCursor) : {};
     const result = await searchAttentionMarker(bb, attempt.recipient_thread_id, attentionMarker(attempt.batch_id), attempt.started_at, cursor);
     let saved = result.cursor;
     let unreadable = false;
     if (result.error !== undefined) {
       const errors = cursor.errors ?? { count: 0, since: nowIso(), last: "" };
-      saved = { ...cursor, errors: { count: errors.count + 1, since: errors.since, last: result.error } };
+      saved = { ...result.cursor, errors: { count: errors.count + 1, since: errors.since, last: result.error } };
       unreadable = saved.errors!.count >= HISTORY_ERROR_PASSES && Date.now() - Date.parse(saved.errors!.since) >= HISTORY_ERROR_SPAN_MS;
     }
-    db.prepare<[string, string]>("UPDATE attention_attempts SET recovery_cursor=? WHERE attempt_id=?").run(JSON.stringify(saved), attempt.attempt_id);
-    return { ...result, unreadable, error: saved.errors?.last };
+    // Written only if nobody moved the cursor since it was read (a second process); then this pass decides nothing negative.
+    const written = db.prepare<[string, string, string | null]>("UPDATE attention_attempts SET recovery_cursor=? WHERE attempt_id=? AND recovery_cursor IS ?").run(JSON.stringify(saved), attempt.attempt_id, read).changes > 0;
+    return { ...result, unreadable: written && unreadable, stale: !written, complete: written && result.complete, error: saved.errors?.last };
   }
+
+  // Recovery of one attempt runs one pass at a time: an overlapping drain and rollback would otherwise race on its cursor.
+  const attemptLocks = new Map<string, Promise<unknown>>();
+  function withAttemptLock<T>(attemptId: string, job: () => Promise<T>): Promise<T> {
+    const run = (attemptLocks.get(attemptId) ?? Promise.resolve()).then(job);
+    const tail = run.then(() => undefined, () => undefined);
+    attemptLocks.set(attemptId, tail);
+    void tail.then(() => { if (attemptLocks.get(attemptId) === tail) attemptLocks.delete(attemptId); });
+    return run;
+  }
+  const reload = (attemptId: string) => db.prepare<[string], AttemptRow>("SELECT * FROM attention_attempts WHERE attempt_id=?").get(attemptId);
 
   /** A receipt only moves an attempt forward: acceptance is final, and an empty search never overwrites it. */
   const advanceAttempt = (attempt: Pick<AttemptRow, "attempt_id" | "tracker_id">, from: readonly string[], assignments: string, ...values: unknown[]): boolean => {
@@ -200,21 +213,27 @@ function createService(bb: BbPluginApi) {
     db.prepare<[string], AttemptRow>(`SELECT * FROM attention_attempts WHERE tracker_id=? AND ${condition} ORDER BY started_at`).all(trackerId);
 
   /** Settle attempts nothing is currently driving, from evidence in the recipient's queue and accepted-input history. */
-  async function recover(trackerId: string, throttleLate = false): Promise<void> {
-    for (const attempt of attemptsWhere(trackerId, "outcome IN ('claimed', 'sending') ")) {
-      if (inflight.has(attempt.attempt_id)) continue;
-      if (attempt.outcome === "claimed") {
-        // Nothing was sent: the occurrences are claimable again.
-        advanceAttempt(attempt, ["claimed"], "outcome='failed', error='Interrupted before sending'");
-        continue;
-      }
-      const { receipt: found, complete, unreadable, error } = await search(attempt);
-      if (found) recordReceipt(attempt, found);
-      else if (unreadable) recordReceipt(attempt, { outcome: "unknown", error: `History unreadable: ${error}` });
-      // No evidence is a conclusion only once the whole history back to the attempt's start has been read.
-      else if (complete && (!pendingInline.has(attempt.attempt_id) || Date.now() - pendingInline.get(attempt.attempt_id)! > PENDING_INLINE_MS)) recordReceipt(attempt, { outcome: "unknown", error: "No evidence of acceptance after a restart or timeout" });
+  async function recover(trackerId: string, throttleLate = false, withLate = true): Promise<void> {
+    for (const listed of attemptsWhere(trackerId, "outcome IN ('claimed', 'sending') ")) {
+      if (inflight.has(listed.attempt_id)) continue;
+      await withAttemptLock(listed.attempt_id, async () => {
+        // Another pass may have decided it while this one waited.
+        const attempt = reload(listed.attempt_id);
+        if (!attempt || inflight.has(attempt.attempt_id)) return;
+        if (attempt.outcome === "claimed") {
+          // Nothing was sent: the occurrences are claimable again.
+          advanceAttempt(attempt, ["claimed"], "outcome='failed', error='Interrupted before sending'");
+          return;
+        }
+        if (attempt.outcome !== "sending") return;
+        const { receipt: found, complete, unreadable, error } = await search(attempt);
+        if (found) recordReceipt(attempt, found);
+        else if (unreadable) recordReceipt(attempt, { outcome: "unknown", error: `History unreadable: ${error}` });
+        // No evidence is a conclusion only once the whole history back to the attempt's start has been read.
+        else if (complete && (!pendingInline.has(attempt.attempt_id) || Date.now() - pendingInline.get(attempt.attempt_id)! > PENDING_INLINE_MS)) recordReceipt(attempt, { outcome: "unknown", error: "No evidence of acceptance after a restart or timeout" });
+      });
     }
-    await recoverLate(trackerId, throttleLate);
+    if (withLate) await recoverLate(trackerId, throttleLate);
   }
 
   /**
@@ -226,10 +245,14 @@ function createService(bb: BbPluginApi) {
       .filter((attempt) => !throttle || Date.now() - (lateSearchedAt.get(attempt.attempt_id) ?? 0) >= LATE_SEARCH_MS)
       .sort((a, b) => (lateSearchedAt.get(a.attempt_id) ?? 0) - (lateSearchedAt.get(b.attempt_id) ?? 0))
       .slice(0, LATE_SEARCH_BATCH);
-    for (const attempt of due) {
-      lateSearchedAt.set(attempt.attempt_id, Date.now());
-      const { receipt: found } = await search(attempt);
-      if (found) recordReceipt(attempt, found);
+    for (const listed of due) {
+      lateSearchedAt.set(listed.attempt_id, Date.now());
+      await withAttemptLock(listed.attempt_id, async () => {
+        const attempt = reload(listed.attempt_id);
+        if (!attempt || attempt.outcome !== "unknown") return;
+        const { receipt: found } = await search(attempt);
+        if (found) recordReceipt(attempt, found);
+      });
     }
   }
 

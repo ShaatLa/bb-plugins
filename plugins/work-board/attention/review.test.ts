@@ -261,14 +261,16 @@ describe("C4.1 the end of the acceptance history", () => {
     f.card("Acceptance on the next page");
     unknownAttempt(f, "edge", new Date(Date.now() - 3_600_000).toISOString(), "sending");
     f.db.prepare("INSERT INTO attention_attempt_items(attempt_id, occurrence_id) VALUES ('edge', ?)").run(f.occurrences()[0].id);
-    // The request is the oldest of 1911, so its page is the 39th and one page is left for the acceptance scan,
-    // which meets 50 unrelated acceptances before the matching one.
+    // The request is the oldest of 1861: the pass spends one page on the acceptance watermark and 38 on requests, so exactly
+    // one page is left for the acceptance scan, which meets 50 unrelated acceptances before the matching one.
     const request = f.threads.requestOnly(`notice ${attentionMarker("batch-edge")}`);
     for (let index = 0; index < 60; index++) f.threads.dispatch(`other ${index}`);
     f.threads.acceptRequest(request);
-    for (let index = 0; index < 1850; index++) f.threads.dispatch(`newer ${index}`);
-    await f.service.recover(f.tracker.id);
+    for (let index = 0; index < 1800; index++) f.threads.dispatch(`newer ${index}`);
+    await f.service.recover(f.tracker.id, false, false);
     expect(f.attempts()[0].outcome).toBe("sending");
+    // The watermark read and one full page of acceptances: the boundary is crossed inside the first pass.
+    expect(f.threads.acceptedCalls).toBe(2);
     await f.service.recover(f.tracker.id);
     expect(f.attempts()[0]).toMatchObject({ outcome: "inline", inline_event_ref: expect.any(String) });
   });
@@ -415,7 +417,8 @@ describe("C5 property: the recovery state machine under random arrival order", (
         if (pass === lateRequestDue) { request = f.threads.requestOnly(marker); f.threads.acceptRequest(request); }
         if (pass === lateAcceptanceDue) f.threads.acceptRequest(request!);
       }
-      await f.service.recover(f.tracker.id);
+      // Decision phase only: late recovery would hide a sending -> unknown -> inline transition inside one call.
+      await f.service.recover(f.tracker.id, false, false);
       outcomes.push(f.attempts()[0].outcome);
       pass++;
     }
@@ -423,6 +426,9 @@ describe("C5 property: the recovery state machine under random arrival order", (
     expect(decided, `seed ${seed} ${kind}: ${outcomes.join(",")}`).not.toBe("sending");
     if (kind === "window" || kind === "resent") expect(outcomes, `seed ${seed}`).not.toContain("unknown");
     if (kind === "window" || kind === "resent") expect(decided).toBe("inline");
+    // Nothing was ever delivered inside the window: the only acceptable decision is unknown, never a receipt.
+    if (kind === "absent" || kind === "unaccepted") expect(decided, `seed ${seed} ${kind}: ${outcomes.join(",")}`).toBe("unknown");
+    expect(["inline", "unknown"]).toContain(decided);
     // A receipt that arrived after the window is still recorded as late evidence.
     if (kind === "lateAcceptance" || kind === "lateRequest") {
       for (let extra = 0; extra < 40 && f.attempts()[0].outcome === "unknown"; extra++) {
@@ -435,23 +441,133 @@ describe("C5 property: the recovery state machine under random arrival order", (
   });
 });
 
+describe("C6 the recovery machine", () => {
+  const timeout = historyLimits.readTimeoutMs;
+  afterEach(() => { historyLimits.readTimeoutMs = timeout; });
+  const attemptFor = (f: Awaited<ReturnType<typeof make>>, id: string) => {
+    unknownAttempt(f, id, new Date(Date.now() - 3_600_000).toISOString(), "sending");
+    f.db.prepare("INSERT INTO attention_attempt_items(attempt_id, occurrence_id) VALUES (?, ?)").run(id, f.occurrences()[0].id);
+  };
+  const cursor = (f: Awaited<ReturnType<typeof make>>, id: string) => JSON.parse((f.db.prepare("SELECT recovery_cursor FROM attention_attempts WHERE attempt_id=?").get(id) as { recovery_cursor: string }).recovery_cursor);
+
+  it("C6.1: a queue-only outage is a failed read, never an absence, and a stalled queue read times out", async () => {
+    const f = await make("live");
+    f.card("Queued marker");
+    attemptFor(f, "queue");
+    f.threads.addRow(MANAGER, `notice ${attentionMarker("batch-queue")}`);
+    f.threads.queueFail = true;
+    await f.service.recover(f.tracker.id, false, false);
+    expect(f.attempts()[0].outcome).toBe("sending");
+    expect(cursor(f, "queue").errors).toMatchObject({ count: 1, last: expect.stringContaining("Queue unreadable") });
+    // Positive history evidence still wins during the outage.
+    f.threads.queueFail = false;
+    await f.service.recover(f.tracker.id, false, false);
+    expect(f.attempts()[0]).toMatchObject({ outcome: "queued" });
+    // A stalled read ends at its timeout instead of blocking the pass.
+    const g = await make("live");
+    g.card("Stalled queue");
+    attemptFor(g, "stall");
+    historyLimits.readTimeoutMs = 20;
+    g.threads.queueHang = true;
+    const started = Date.now();
+    await g.service.recover(g.tracker.id, false, false);
+    expect(Date.now() - started).toBeLessThan(2000);
+    expect(g.attempts()[0].outcome).toBe("sending");
+    expect(cursor(g, "stall").errors.count).toBe(1);
+  });
+
+  it("C6.2: keeps the pages and candidates already read when a later page fails", async () => {
+    const f = await make("live");
+    f.card("Failing old page");
+    attemptFor(f, "partial");
+    for (let index = 0; index < 120; index++) f.threads.dispatch(`old ${index}`);
+    const request = f.threads.requestOnly(`notice ${attentionMarker("batch-partial")}`);
+    f.threads.acceptRequest(request);
+    for (let index = 0; index < 10; index++) f.threads.dispatch(`new ${index}`);
+    // Every request page below the marked request fails, repeatedly; the marked request and its acceptance stay readable.
+    const failBelow = f.threads.requests.find((entry) => entry.requestId === request)!.seq;
+    f.threads.eventsFailWhen = ({ types, beforeSeq }) => types.includes("client/turn/requested") && beforeSeq !== undefined && Number(beforeSeq) < failBelow;
+    await f.service.recover(f.tracker.id, false, false);
+    expect(f.attempts()[0].outcome).toBe("sending");
+    expect(cursor(f, "partial").hit.requestIds).toEqual([request]);
+    await f.service.recover(f.tracker.id, false, false);
+    expect(f.attempts()[0]).toMatchObject({ outcome: "inline" });
+  });
+
+  it("C6.3: recovery of one attempt runs one pass at a time", async () => {
+    const f = await make("live");
+    f.card("Overlapping passes");
+    attemptFor(f, "serial");
+    let release!: () => void;
+    f.threads.listGateOnce = new Promise<void>((resolve) => { release = resolve; });
+    const first = f.service.recover(f.tracker.id, false, false);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    const second = f.service.recover(f.tracker.id, false, false);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    // The second pass has not read anything while the first holds the attempt.
+    expect(f.threads.queueCalls).toBe(1);
+    release();
+    await Promise.all([first, second]);
+    expect(f.threads.queueCalls).toBeGreaterThanOrEqual(1);
+  });
+
+  it("C6.3: a failed pass does not overwrite a cursor another process moved, nor decide on its stale error count", async () => {
+    const f = await make("live");
+    f.card("Stale fifth failure");
+    attemptFor(f, "stale");
+    f.threads.eventsFail = true;
+    await f.service.recover(f.tracker.id, false, false);
+    f.threads.eventsFail = false;
+    f.db.prepare("UPDATE attention_attempts SET recovery_cursor=? WHERE attempt_id='stale'").run(JSON.stringify({ ...cursor(f, "stale"), errors: { count: 4, since: new Date(Date.now() - 3_600_000).toISOString(), last: "x" } }));
+    let release!: () => void;
+    f.threads.eventsGateOnce = new Promise<void>((resolve) => { release = resolve; });
+    const stale = f.service.recover(f.tracker.id, false, false);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    // Another process finished a good pass: the cursor moved on and the errors are gone.
+    const moved = JSON.stringify({ high: 999, gaps: [{ from: 500, to: 10 }], accBound: 7 });
+    f.db.prepare("UPDATE attention_attempts SET recovery_cursor=? WHERE attempt_id='stale'").run(moved);
+    release();
+    await stale;
+    expect(f.attempts()[0].outcome).toBe("sending");
+    expect(f.attempts()[0].recovery_cursor).toBe(moved);
+  });
+
+  it("C6.4: matches the marker only in delivered text blocks of our own, and still finds the genuine notice", async () => {
+    const f = await make("live");
+    f.card("Look-alikes");
+    attemptFor(f, "meta");
+    attemptFor(f, "foreign");
+    attemptFor(f, "grouped");
+    attemptFor(f, "genuine");
+    // Metadata-only request (params), accepted: no receipt.
+    f.threads.acceptRequest(f.threads.requestOnly("an unrelated notice", { extra: { params: { note: attentionMarker("batch-meta") } } }));
+    // A request from another plugin carrying the marker in its text: no receipt either.
+    f.threads.acceptRequest(f.threads.requestOnly(`foreign ${attentionMarker("batch-foreign")}`, { extra: { originPluginId: "other-plugin" } }));
+    // A foreign queue row carrying the marker is not our notice.
+    f.threads.addRow(MANAGER, `foreign row ${attentionMarker("batch-foreign")}`, "other-plugin");
+    // The genuine ones: a grouped input accepted, and an appended notice in our own queue row.
+    f.threads.acceptRequest(f.threads.requestOnly(`grouped ${attentionMarker("batch-grouped")}`, { grouped: true }));
+    f.threads.addRow(MANAGER, `first part\n\n---\n\nsecond ${attentionMarker("batch-genuine")}`);
+    await f.service.recover(f.tracker.id, false, false);
+    const outcomes = Object.fromEntries(f.attempts().map((a) => [a.attempt_id, a.outcome]));
+    expect(outcomes).toEqual({ meta: "unknown", foreign: "unknown", grouped: "inline", genuine: "appended" });
+  });
+});
+
 describe("C1.10 monotonic receipts", () => {
-  it("does not let a stale empty search overwrite an acceptance another search recorded", async () => {
+  it("does not let a stale empty search overwrite an acceptance another process recorded", async () => {
     const f = await make("live");
     f.card("Racing recovery");
     unknownAttempt(f, "race", new Date().toISOString(), "sending");
-    f.threads.addRow(MANAGER, `notice ${attentionMarker("batch-race")}`);
     let release!: () => void;
     f.threads.listGateOnce = new Promise<void>((resolve) => { release = resolve; });
-    const stale = f.service.recover(f.tracker.id);
+    const stale = f.service.recover(f.tracker.id, false, false);
     await new Promise((resolve) => setTimeout(resolve, 10));
-    await f.service.recover(f.tracker.id);
-    expect(f.attempts()[0].outcome).toBe("queued");
+    // Another process settles the attempt while this search is still reading an empty queue.
+    f.db.prepare("UPDATE attention_attempts SET outcome='queued', queued_message_id='qm_other', accepted_at=? WHERE attempt_id='race'").run(new Date().toISOString());
     release();
     await stale;
-    // The empty search's own write would leave its error text even if a later search restored the outcome.
-    expect(f.attempts()[0].error).toBeNull();
-    expect(f.attempts()[0].outcome).toBe("queued");
+    expect(f.attempts()[0]).toMatchObject({ outcome: "queued", error: null });
   });
 });
 
