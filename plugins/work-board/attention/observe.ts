@@ -30,6 +30,9 @@ export interface StaleRow {
   unknown_pr: number;
   legacy_outcome: number;
   closed_pr: number;
+  /** Open/closed as of a refresh that succeeded; a failed refresh keeps the old payload, which is no longer a known answer. */
+  open_known: number;
+  closed_known: number;
 }
 
 /** The raw per-card facts behind the stale-status flags; one query for a task list or a whole project. */
@@ -53,6 +56,10 @@ export function staleRows(db: Database, taskIds?: readonly string[], projectId?:
         EXISTS(SELECT 1 FROM task_pr_links l LEFT JOIN git_pr_snapshots s ON s.project_id=t.project_id AND s.identity=l.identity WHERE l.task_id=t.id AND COALESCE(json_extract(l.payload,'$.excluded'),0)=0 AND (s.payload IS NULL OR (s.error IS NOT NULL AND COALESCE(json_extract(s.payload,'$.state'),'') <> 'merged'))) AS unknown_pr
         , EXISTS(SELECT 1 FROM task_pr_links l JOIN git_pr_snapshots s ON s.project_id=t.project_id AND s.identity=l.identity
           WHERE l.task_id=t.id AND COALESCE(json_extract(l.payload,'$.excluded'),0)=0 AND json_extract(s.payload,'$.state')='closed') AS closed_pr
+        , EXISTS(SELECT 1 FROM task_pr_links l JOIN git_pr_snapshots s ON s.project_id=t.project_id AND s.identity=l.identity
+          WHERE l.task_id=t.id AND COALESCE(json_extract(l.payload,'$.excluded'),0)=0 AND s.error IS NULL AND json_extract(s.payload,'$.state') IN ('open','draft')) AS open_known
+        , EXISTS(SELECT 1 FROM task_pr_links l JOIN git_pr_snapshots s ON s.project_id=t.project_id AND s.identity=l.identity
+          WHERE l.task_id=t.id AND COALESCE(json_extract(l.payload,'$.excluded'),0)=0 AND s.error IS NULL AND json_extract(s.payload,'$.state')='closed') AS closed_known
       FROM tasks t JOIN projects p ON p.id=t.project_id
       WHERE (? IS NULL OR t.project_id=?) AND (? IS NULL OR t.id IN (SELECT value FROM json_each(?))) ORDER BY t.id`)
     .all(projectId ?? null, projectId ?? null, ids, ids);
@@ -88,7 +95,7 @@ export function staleStatusObservations(db: Database, taskIds?: readonly string[
     if (!policy) continue;
     const valid = (present: boolean) => ({ present, validity: "valid" as const });
     const reviewOrTesting = row.status === policy.reviewStatus || row.status === policy.testingStatus;
-    const prSettled = Boolean(row.open_pr) || (row.status === policy.testingStatus && Boolean(row.merged_pr));
+    const prSettled = Boolean(row.open_known) || (row.status === policy.testingStatus && Boolean(row.merged_pr));
     const prUnresolved = reviewOrTesting && !prSettled;
     const unknownPr = Boolean(row.unknown_pr);
     result.push({
@@ -102,7 +109,7 @@ export function staleStatusObservations(db: Database, taskIds?: readonly string[
         no_active_thread: valid(row.status === policy.inProgressStatus && !row.active && !row.held),
         no_open_pr: prUnresolved && unknownPr ? { present: false, validity: "unknown" } : valid(prUnresolved),
         pr_state_unavailable: valid(prUnresolved && unknownPr),
-        closed_unmerged_pr: Boolean(row.closed_pr) ? valid(true) : unknownPr ? { present: false, validity: "unknown" } : valid(false),
+        closed_unmerged_pr: Boolean(row.closed_known) ? valid(true) : unknownPr ? { present: false, validity: "unknown" } : valid(false),
         no_merge_or_outcome: valid(row.status === policy.doneStatus && !row.merge_evidence && !row.outcome && !row.legacy_outcome),
       },
     });

@@ -171,7 +171,7 @@ describe("requests", () => {
     expect((await modes(f)).effective).toEqual({ mode: "off", generation: 0 });
     expect((f.db.prepare("SELECT COUNT(*) AS n FROM attention_modes").get() as { n: number }).n).toBe(before.n);
     await expect(f.call("config.set", { projectId: f.tracker.id, key: "attentionMode", value: "live" })).rejects.toThrow(/owner/);
-    await expect(f.call("config.set", { projectId: f.tracker.id, key: "attentionManager", value: "thr_x" })).rejects.toThrow(/owner/);
+    await expect(f.call("config.set", { projectId: f.tracker.id, key: "manager", value: "thr_x" })).rejects.toThrow(/owner/);
     expect((await f.call("config.get", { projectId: f.tracker.id, key: "attentionMode" })).values).toEqual({ attentionMode: "off" });
   });
 });

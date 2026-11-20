@@ -4,7 +4,8 @@ import { z } from "zod";
 import { deliverWithReceipt, findAttentionMarker, type Receipt } from "../steer";
 import { errorMessage } from "../shared/errors";
 import { SWEEP_PLUGIN_ID } from "../shared/attention";
-import { bumpRev, onAttentionChanged, onTrackerDirty, scanTracker } from "./ledger";
+import { isSideChatShapedThread } from "../shared/side-chat";
+import { bumpRev, CURRENT_KEY_SQL, onAttentionChanged, onTrackerDirty, scanTracker } from "./ledger";
 import { finishToShadow, getModeRow, kindState, requestMode, type AttentionMode, type KindState } from "./modes";
 import { ATTENTION_KIND, PILOT_SIGNALS } from "./observe";
 
@@ -18,6 +19,7 @@ const FAILURE_BACKOFF_CAP_MS = 30 * 60_000;
 /** An inline send whose accepted-input event never arrives stops being "sending" and becomes unknown. */
 const PENDING_INLINE_MS = 10 * 60_000;
 const LATE_SEARCH_MS = 10 * 60_000;
+const LATE_SEARCH_BATCH = 20;
 
 const SIGNAL_TEXT: Record<string, string> = {
   no_active_thread: "in progress with no active thread",
@@ -67,6 +69,14 @@ function createService(bb: BbPluginApi) {
   const updateAttempt = (attemptId: string, trackerId: string, assignments: string, ...values: unknown[]) =>
     db.prepare(`UPDATE attention_attempts SET ${assignments}, rev=? WHERE attempt_id=?`).run(...values, bumpRev(db, trackerId), attemptId);
 
+  /** A receipt only moves an attempt forward: acceptance is final, and an empty search never overwrites it. */
+  const advanceAttempt = (attempt: Pick<AttemptRow, "attempt_id" | "tracker_id">, from: readonly string[], assignments: string, ...values: unknown[]): boolean => {
+    const current = db.prepare<[string], { outcome: string }>("SELECT outcome FROM attention_attempts WHERE attempt_id=?").get(attempt.attempt_id)?.outcome;
+    if (!current || !from.includes(current)) return false;
+    updateAttempt(attempt.attempt_id, attempt.tracker_id, assignments, ...values);
+    return true;
+  };
+
   /** The recipient: the Work Board manager setting, else Sweep's, with an archived or deleted target replaced by its eligible parent. */
   async function resolveRecipient(trackerId: string): Promise<{ threadId: string; source: "manager" | "sweep_fallback" | "parent" } | null> {
     const own = db.prepare<[string], { manager: string | null }>("SELECT manager FROM attention_manager WHERE tracker_id=?").get(trackerId)?.manager || null;
@@ -85,7 +95,11 @@ function createService(bb: BbPluginApi) {
       try {
         const thread = await bb.sdk.threads.get({ threadId: target });
         if (!thread) return null;
-        if (thread.archivedAt == null && thread.deletedAt == null) return { threadId: target, source };
+        if (thread.archivedAt == null && thread.deletedAt == null) {
+          // The same eligibility as comment delivery: a side chat or a stopping thread is not a manager.
+          if (isSideChatShapedThread(thread) || thread.status === "stopping") return null;
+          return { threadId: target, source };
+        }
         target = thread.parentThreadId ?? null;
         source = "parent";
       } catch { return null; }
@@ -94,15 +108,15 @@ function createService(bb: BbPluginApi) {
   }
 
   /** Occurrences a drain may claim now: open, unbaselined, valid, past grace and with no blocking attempt or recent failure. */
-  function claimable(trackerId: string, at: number): { id: string; task_key: string; signal: string }[] {
-    const rows = db.prepare<[string, string, string], { id: string; task_key: string; signal: string }>(
-      `SELECT o.id, o.task_key, o.signal FROM manager_attention o
-       WHERE o.tracker_id=? AND o.kind=? AND o.cleared_at IS NULL AND o.sweep_baselined_generation IS NULL AND o.eligible_at<=?
+  function claimable(trackerId: string, at: number, upcoming = false): { id: string; task_key: string; signal: string; eligible_at: string }[] {
+    const rows = db.prepare<[string, string, string], { id: string; task_key: string; signal: string; eligible_at: string }>(
+      `SELECT o.id, ${CURRENT_KEY_SQL} AS task_key, o.signal, o.eligible_at FROM manager_attention o
+       WHERE o.tracker_id=? AND o.kind=? AND o.cleared_at IS NULL AND o.sweep_baselined_generation IS NULL AND o.eligible_at${upcoming ? ">" : "<="}?
        AND o.signal IN (${PILOT_SIGNALS.map((signal) => `'${signal}'`).join(", ")})
        AND NOT EXISTS (SELECT 1 FROM attention_unknown u WHERE u.tracker_id=o.tracker_id AND u.kind=o.kind AND u.task_id=o.task_id AND u.signal=o.signal)
        AND NOT EXISTS (SELECT 1 FROM attention_attempt_items i JOIN attention_attempts a ON a.attempt_id=i.attempt_id WHERE i.occurrence_id=o.id
          AND (a.outcome IN ('claimed', 'sending', 'appended', 'queued', 'inline') OR (a.outcome='unknown' AND COALESCE(a.disposition, '')<>'retry')))
-       ORDER BY o.created_rev`,
+       ORDER BY ${upcoming ? "o.eligible_at" : "o.created_rev"}`,
     ).all(trackerId, ATTENTION_KIND, new Date(at).toISOString());
     return rows.filter((row) => {
       const failures = db.prepare<[string], { n: number; last: string }>("SELECT COUNT(*) AS n, MAX(a.started_at) AS last FROM attention_attempt_items i JOIN attention_attempts a ON a.attempt_id=i.attempt_id WHERE i.occurrence_id=? AND a.outcome='failed'").get(row.id);
@@ -130,12 +144,13 @@ function createService(bb: BbPluginApi) {
 
   function recordReceipt(attempt: Pick<AttemptRow, "attempt_id" | "tracker_id">, receipt: Receipt): void {
     const at = nowIso();
+    const accepting = ["claimed", "sending", "unknown"];
+    if (receipt.outcome === "appended" || receipt.outcome === "queued") advanceAttempt(attempt, accepting, "outcome=?, queued_message_id=?, accepted_at=COALESCE(accepted_at, ?)", receipt.outcome, receipt.queuedMessageId, at);
+    else if (receipt.outcome === "inline") advanceAttempt(attempt, accepting, "outcome='inline', inline_event_ref=?, accepted_at=COALESCE(accepted_at, ?)", receipt.inlineEventRef, at);
+    else if (receipt.outcome === "failed") advanceAttempt(attempt, ["sending"], "outcome='failed', error=?", receipt.error);
+    else if (receipt.outcome === "unknown") advanceAttempt(attempt, ["sending"], "outcome='unknown', error=?", receipt.error);
+    else { pendingInline.set(attempt.attempt_id, Date.now()); return; }
     pendingInline.delete(attempt.attempt_id);
-    if (receipt.outcome === "appended" || receipt.outcome === "queued") updateAttempt(attempt.attempt_id, attempt.tracker_id, "outcome=?, queued_message_id=?, accepted_at=COALESCE(accepted_at, ?)", receipt.outcome, receipt.queuedMessageId, at);
-    else if (receipt.outcome === "inline") updateAttempt(attempt.attempt_id, attempt.tracker_id, "outcome='inline', inline_event_ref=?, accepted_at=COALESCE(accepted_at, ?)", receipt.inlineEventRef, at);
-    else if (receipt.outcome === "failed") updateAttempt(attempt.attempt_id, attempt.tracker_id, "outcome='failed', error=?", receipt.error);
-    else if (receipt.outcome === "unknown") updateAttempt(attempt.attempt_id, attempt.tracker_id, "outcome='unknown', error=?", receipt.error);
-    else pendingInline.set(attempt.attempt_id, Date.now());
   }
 
   function messageText(ids: { task_key: string; signal: string }[]): string {
@@ -167,19 +182,28 @@ function createService(bb: BbPluginApi) {
       if (inflight.has(attempt.attempt_id)) continue;
       if (attempt.outcome === "claimed") {
         // Nothing was sent: the occurrences are claimable again.
-        updateAttempt(attempt.attempt_id, trackerId, "outcome='failed', error='Interrupted before sending'");
+        advanceAttempt(attempt, ["claimed"], "outcome='failed', error='Interrupted before sending'");
         continue;
       }
-      const found = await findAttentionMarker(bb, attempt.recipient_thread_id, attentionMarker(attempt.batch_id));
+      const found = await findAttentionMarker(bb, attempt.recipient_thread_id, attentionMarker(attempt.batch_id), attempt.started_at);
       if (found) recordReceipt(attempt, found);
       else if (!pendingInline.has(attempt.attempt_id) || Date.now() - pendingInline.get(attempt.attempt_id)! > PENDING_INLINE_MS) recordReceipt(attempt, { outcome: "unknown", error: "No evidence of acceptance after a restart or timeout" });
     }
-    // Evidence that arrives late, even after an owner resolution, is still the attempt's receipt.
-    for (const attempt of attemptsWhere(trackerId, "outcome='unknown' ").slice(-20)) {
-      // A routine drain looks again at most every ten minutes; an explicit reconcile always looks.
-      if (throttleLate && Date.now() - (lateSearchedAt.get(attempt.attempt_id) ?? 0) < LATE_SEARCH_MS) continue;
+    await recoverLate(trackerId, throttleLate);
+  }
+
+  /**
+   * Evidence that arrives late, even after an owner resolution or a rollback, is still the attempt's receipt. Each pass looks at
+   * the attempts searched longest ago first, so no unknown attempt starves behind newer ones.
+   */
+  async function recoverLate(trackerId: string, throttle = false): Promise<void> {
+    const due = attemptsWhere(trackerId, "outcome='unknown' ")
+      .filter((attempt) => !throttle || Date.now() - (lateSearchedAt.get(attempt.attempt_id) ?? 0) >= LATE_SEARCH_MS)
+      .sort((a, b) => (lateSearchedAt.get(a.attempt_id) ?? 0) - (lateSearchedAt.get(b.attempt_id) ?? 0))
+      .slice(0, LATE_SEARCH_BATCH);
+    for (const attempt of due) {
       lateSearchedAt.set(attempt.attempt_id, Date.now());
-      const found = await findAttentionMarker(bb, attempt.recipient_thread_id, attentionMarker(attempt.batch_id));
+      const found = await findAttentionMarker(bb, attempt.recipient_thread_id, attentionMarker(attempt.batch_id), attempt.started_at);
       if (found) recordReceipt(attempt, found);
     }
   }
@@ -227,13 +251,24 @@ function createService(bb: BbPluginApi) {
     drainTimer = setTimeout(() => { drainTimer = undefined; void drain().catch(warn); }, delay);
     drainTimer.unref?.();
   }
+  /** Milliseconds until the next occurrence that could actually be claimed comes due; accepted, blocked and unknown ones never count. */
+  function nextEligibleDelay(): number | null {
+    let soonest: number | null = null;
+    for (const trackerId of activeTrackerIds()) {
+      const row = getModeRow(db, trackerId);
+      if (row.effective_mode !== "live" || row.requested_mode !== null) continue;
+      const next = claimable(trackerId, Date.now(), true)[0];
+      if (next && (soonest === null || Date.parse(next.eligible_at) < soonest)) soonest = Date.parse(next.eligible_at);
+    }
+    return soonest === null ? null : Math.min(Math.max(soonest - Date.now() + 1000, 1000), 10 * 60_000);
+  }
   // Grace is a time threshold, not a write, so the next occurrence to come due schedules its own drain.
   function scheduleEligible() {
     if (closed) return;
     clearTimeout(eligibleTimer);
-    const next = db.prepare<[string], { at: string | null }>("SELECT MIN(o.eligible_at) AS at FROM manager_attention o JOIN attention_modes m ON m.tracker_id=o.tracker_id AND m.kind=o.kind AND m.effective_mode='live' WHERE o.kind=? AND o.cleared_at IS NULL AND o.sweep_baselined_generation IS NULL").get(ATTENTION_KIND)?.at;
-    if (!next) return;
-    eligibleTimer = setTimeout(() => scheduleDrain(0), Math.min(Math.max(Date.parse(next) - Date.now() + 1000, 1000), 10 * 60_000));
+    const delay = nextEligibleDelay();
+    if (delay === null) return;
+    eligibleTimer = setTimeout(() => scheduleDrain(0), delay);
     eligibleTimer.unref?.();
   }
 
@@ -254,6 +289,10 @@ function createService(bb: BbPluginApi) {
     for (const trackerId of activeTrackerIds()) {
       try { db.transaction(() => scanTracker(db, trackerId))(); } catch (error) { warn(error); }
     }
+    // Late receipts for unknown attempts are looked for whatever the mode, so a rollback or a switch off never strands them;
+    // this pass is the periodic one, so it is not throttled.
+    for (const { tracker_id } of db.prepare<[], { tracker_id: string }>("SELECT DISTINCT tracker_id FROM attention_attempts WHERE outcome='unknown'").all())
+      await recoverLate(tracker_id).catch(warn);
     await drain();
   }
 
@@ -292,5 +331,5 @@ function createService(bb: BbPluginApi) {
     void reconcileAll().catch(warn);
   }
 
-  return { register, drain, drainTracker, reconcileAll, reconcileFence, setMode, resolveAttempt, scheduleDrain, recover, resolveRecipient };
+  return { register, drain, drainTracker, nextEligibleDelay, recoverLate, reconcileAll, reconcileFence, setMode, resolveAttempt, scheduleDrain, recover, resolveRecipient };
 }

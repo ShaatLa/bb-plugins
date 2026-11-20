@@ -26,6 +26,9 @@ it("shows the mode with its gate, starts shadow, saves the manager and lets the 
     const settings = renderSlot(app.settingsSections[0]!, {}, { rpc: Object.fromEntries(Object.keys(tasksRpcContract).map((method) => [method, (input: unknown) => harness.callRpc(method, input)])) });
     const section = await settings.findByRole("region", { name: "Manager attention" });
     await within(section).findByText("off");
+    // The write RPC cannot tell the owner from an agent, so the copy must not promise that agents are kept out.
+    expect(section.textContent).toMatch(/owner-only convention/);
+    expect(section.textContent).not.toMatch(/agents cannot/i);
     fireEvent.click(within(section).getByRole("button", { name: "Start shadow" }));
     await waitFor(() => expect(within(section).getByTestId("attention-mode").textContent, within(section).queryByRole("alert")?.textContent).toContain("shadow"));
     expect(within(section).getByTestId("attention-gate").textContent).toMatch(/48 hours/);

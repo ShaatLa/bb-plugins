@@ -530,7 +530,7 @@ The reviewer (the owner in the Plan tab, or the reviewer thread you named) write
 
 ## Manager attention (0.61.0)
 
-Work Board can send the manager a batched stale-status notice (mode `off` → `shadow` → `live`, changed only by the owner in the project settings; agents cannot change it or the manager setting). If you receive a `Stale status` notice, check each listed card: move it, ask the owner on the task, or comment the reason. An occurrence clears by itself when the flag is gone. Read the mode and manager with `bb work-board config get attentionMode --project KEY` (and `attentionManager`). Sweep's four `attention.*` RPCs are not for agents.
+Work Board can send the manager a batched stale-status notice (mode `off` → `shadow` → `live`, changed by the owner in the project settings; by convention agents never change it or the manager setting, and every change is recorded). If you receive a `Stale status` notice, check each listed card: move it, ask the owner on the task, or comment the reason. An occurrence clears by itself when the flag is gone. Read the mode and manager with `bb work-board config get attentionMode --project KEY` (and `manager`). Sweep's four `attention.*` RPCs are not for agents.
 
 ## Dependencies (0.22.0)
 

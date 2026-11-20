@@ -22,7 +22,7 @@ const PROJECT_KEYS = {
 type ProjectKey = keyof typeof PROJECT_KEYS;
 const GIT_KEYS = Object.keys(gitSyncConfigSchema.shape) as (keyof z.infer<typeof gitSyncConfigSchema>)[];
 // Manager attention is the owner's to change in the project settings; the keys are readable here and refused by `config.set`.
-const ATTENTION_KEYS = ["attentionMode", "attentionManager"];
+const ATTENTION_KEYS = ["attentionMode", "manager"];
 export const PROJECT_CONFIG_KEYS = [...Object.keys(PROJECT_KEYS), ...ATTENTION_KEYS, ...GIT_KEYS.map((key) => `git.${key}`)];
 
 function requireKey(key: string) {
@@ -42,7 +42,7 @@ export function projectConfigHandlers(bb: BbPluginApi, store: TasksApiStore) {
       ...Object.fromEntries((Object.keys(PROJECT_KEYS) as ProjectKey[]).map((key) => [key, project[key]])),
       ...Object.fromEntries(GIT_KEYS.map((key) => [`git.${key}`, git[key] ?? null])),
       attentionMode: getModeRow(bb.storage.database(), projectId).effective_mode,
-      attentionManager: bb.storage.database().prepare<[string], { manager: string | null }>("SELECT manager FROM attention_manager WHERE tracker_id=?").get(projectId)?.manager ?? null,
+      manager: bb.storage.database().prepare<[string], { manager: string | null }>("SELECT manager FROM attention_manager WHERE tracker_id=?").get(projectId)?.manager ?? null,
     };
   };
   return {

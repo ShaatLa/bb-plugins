@@ -41,7 +41,7 @@ describe("recipient", () => {
     await f.call("updateAttentionManager", { projectId: f.tracker.id, manager: "thr_next" });
     const settings = await f.call("getAttentionSettings", { projectId: f.tracker.id });
     expect(settings).toMatchObject({ manager: "thr_next", managerPrevious: MANAGER, managerChangedAt: expect.any(String) });
-    expect((await f.call("config.get", { projectId: f.tracker.id, key: "attentionManager" })).values).toEqual({ attentionManager: "thr_next" });
+    expect((await f.call("config.get", { projectId: f.tracker.id, key: "manager" })).values).toEqual({ manager: "thr_next" });
   });
 });
 

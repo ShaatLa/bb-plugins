@@ -1,7 +1,7 @@
 import { createHash, randomBytes } from "node:crypto";
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
-import { bumpRev, currentRev, invalidateAttentionCache, retireOpenOccurrences, scanTracker, ACCEPTED_OUTCOMES } from "./ledger";
-import { ATTENTION_KIND } from "./observe";
+import { bumpRev, CURRENT_KEY_SQL, currentRev, invalidateAttentionCache, retireOpenOccurrences, scanTracker, ACCEPTED_OUTCOMES } from "./ledger";
+import { ATTENTION_KIND, PILOT_SIGNALS } from "./observe";
 
 type Database = ReturnType<BbPluginApi["storage"]["database"]>;
 
@@ -60,7 +60,7 @@ export function getModeRow(db: Database, trackerId: string, kind = ATTENTION_KIN
 
 export function handbackOf(db: Database, trackerId: string, kind: string, generation: number): HandbackEntry[] {
   return db.prepare<[string, string, number], { occurrenceId: string; taskId: string; taskKey: string; signal: string; firstSeenAt: string; eligibleAt: string }>(
-    `SELECT o.id AS occurrenceId, o.task_id AS taskId, o.task_key AS taskKey, o.signal, o.first_seen_at AS firstSeenAt, o.eligible_at AS eligibleAt
+    `SELECT o.id AS occurrenceId, o.task_id AS taskId, ${CURRENT_KEY_SQL} AS taskKey, o.signal, o.first_seen_at AS firstSeenAt, o.eligible_at AS eligibleAt
      FROM attention_handback h JOIN manager_attention o ON o.id=h.occurrence_id
      WHERE h.tracker_id=? AND h.kind=? AND h.generation=? ORDER BY o.created_rev`,
   ).all(trackerId, kind, generation);
@@ -124,6 +124,9 @@ export function requestMode(db: Database, input: RequestInput): KindState {
       db.prepare(`UPDATE attention_modes SET ${extra}, changed_at=?, previous_mode=? WHERE tracker_id=? AND kind=?`).run(...values, at, row.effective_mode, tracker.id, kind);
     if (row.effective_mode === "off" && input.mode === "shadow") {
       if (!tracker.linked) throw new Error("Link this project to a BB project before switching attention on");
+      // Sweep reaches the tracker through the BB project, so a second tracker on the same link would make every call ambiguous.
+      if (db.prepare<[string], { n: number }>("SELECT COUNT(*) AS n FROM projects WHERE linked_bb_project_id=?").get(tracker.linked)!.n !== 1)
+        throw new Error("Another tracker project is linked to the same BB project; only one can use manager attention");
       const holder = boundTrackerOf(db, tracker.linked, kind);
       if (holder && holder !== tracker.id) throw new Error("Another tracker project is already bound to that BB project's manager attention");
       // A fresh observation: whatever was open before the off interval is not trusted.
@@ -168,6 +171,7 @@ export function finishToShadow(db: Database, trackerId: string, kind = ATTENTION
     db.prepare<[string, string, number, string, string]>(
       `INSERT OR IGNORE INTO attention_handback(tracker_id, kind, generation, occurrence_id)
        SELECT ?, ?, ?, o.id FROM manager_attention o WHERE o.tracker_id=? AND o.kind=? AND o.cleared_at IS NULL AND o.sweep_baselined_generation IS NULL
+       AND o.signal IN (${PILOT_SIGNALS.map((signal) => `'${signal}'`).join(", ")})
        AND NOT EXISTS (SELECT 1 FROM attention_attempt_items i JOIN attention_attempts a ON a.attempt_id=i.attempt_id WHERE i.occurrence_id=o.id AND a.outcome IN (${ACCEPTED_OUTCOMES.map((o) => `'${o}'`).join(", ")}))`,
     ).run(trackerId, kind, generation, trackerId, kind);
     db.prepare<[string, number, string, string]>("UPDATE attention_modes SET transition_state='ready', ready_at=?, ready_rev=? WHERE tracker_id=? AND kind=?").run(nowIso(), currentRev(db, trackerId), trackerId, kind);

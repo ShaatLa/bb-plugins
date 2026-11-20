@@ -871,6 +871,9 @@ export function createTasksStore(db: PluginDatabase) {
   }
 
   function deleteProject(id: string): boolean {
+    // Deleting would cascade through the mode, ledger and attempts while Sweep may still hold its fence.
+    if (db.prepare("SELECT 1 FROM attention_modes WHERE tracker_id=? AND (bound_tracker_id IS NOT NULL OR requested_mode IS NOT NULL OR effective_mode<>'off')").get(id))
+      throw new Error("Switch manager attention off in the project settings before deleting this project");
     return (
       db.prepare<[string]>("DELETE FROM projects WHERE id = ?").run(id)
         .changes > 0
@@ -2530,7 +2533,7 @@ export function createTasksStore(db: PluginDatabase) {
     };
   const createTaskHooked = touching(createTask, (task) => [task.id]);
   const updateTaskHooked = touching(updateTask, (task) => [task.id]);
-  const moveTaskToProjectHooked = touching(moveTaskToProject, (_result, id) => [id]);
+  const moveTaskToProjectHooked = touching(moveTaskToProject, (result, id) => [id, ...result.moved.map((entry) => entry.task.id)]);
   const updatePositionHooked = touching(updatePosition, (task) => [task.id]);
   const setTaskArchivedHooked = touching(setTaskArchived, (tasks) => tasks.map((task) => task.id));
   const archiveCompletedTasksHooked = touching(archiveCompletedTasks, (tasks) => tasks.map((task) => task.id));

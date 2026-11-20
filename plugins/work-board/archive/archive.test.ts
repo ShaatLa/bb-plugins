@@ -1693,3 +1693,28 @@ it("never exports manager-attention state, and an import, --overwrite included, 
   expect(state()).toBe(before);
   expect(source.store.tasks.getProject(source.project.id)?.linkedBbProjectId).toBe("proj_original");
 });
+
+it("C1.1: a restore cannot relink a bound tracker or add a second tracker to a bound BB project", async () => {
+  const source = await seed();
+  const { requestMode } = await import("../attention/modes");
+  const out = join(await directory(), "snapshot");
+  await exportProject(source.bb, source.store, source.project.id, out);
+  const relink = async (link: string) => {
+    const path = join(out, "project.json");
+    const manifest = JSON.parse(await readFile(path, "utf8"));
+    manifest.project.linkedBbProjectId = link;
+    await writeFile(path, jsonText(manifest));
+  };
+  // An overwrite whose snapshot names another BB project must not relink a bound tracker.
+  requestMode(source.bb.storage.database(), { trackerId: source.project.id, mode: "shadow" });
+  await relink("proj_elsewhere");
+  await expect(importProject(source.bb, source.store, out, true)).rejects.toThrow(/not off/);
+  expect(source.store.tasks.getProject(source.project.id)?.linkedBbProjectId).toBe("proj_original");
+  // A new import that carries the link of a bound BB project is a second tracker on it.
+  await relink("proj_original");
+  const target = setup();
+  const bound = target.store.tasks.createProject({ name: "Bound", prefix: "BND", color: "blue", linkedBbProjectId: "proj_original" });
+  requestMode(target.bb.storage.database(), { trackerId: bound.id, mode: "shadow" });
+  await expect(importProject(target.bb, target.store, out, false)).rejects.toThrow(/bound/);
+  expect(target.store.tasks.getProject(source.project.id)).toBeUndefined();
+});

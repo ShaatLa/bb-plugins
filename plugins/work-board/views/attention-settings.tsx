@@ -39,7 +39,7 @@ export function AttentionSettings({ projectId }: { projectId: string }) {
   return (
     <section aria-label="Manager attention" className="space-y-3 border-t border-border pt-4">
       <h3 className="text-sm font-medium">Manager attention</h3>
-      <p className="text-xs text-muted-foreground">Stale-status notices to the manager thread. Only you change this; agents cannot.</p>
+      <p className="text-xs text-muted-foreground">Stale-status notices to the manager thread. This is an owner-only convention: the platform cannot tell you from an agent, so every change is recorded (time and previous value) and logged.</p>
       {query.error && !settings ? <p className="text-xs text-destructive" data-testid="attention-load-error">{query.error}</p> : null}
       {settings ? (
         <>

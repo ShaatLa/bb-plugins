@@ -209,8 +209,14 @@ const isDefiniteSendFailure = (error: unknown) => [400, 401, 403, 404, 409, 412,
 type QueueRow = Awaited<ReturnType<BbPluginApi["sdk"]["threads"]["queuedMessages"]["list"]>>[number];
 const rowText = (row: QueueRow) => row.content.map((part) => (part.type === "text" ? part.text : "")).join("\n");
 
-/** A marker is evidence only in the recipient's own queue or in its accepted-input history, never in a send response. */
-export async function findAttentionMarker(bb: BbPluginApi, threadId: string, marker: string): Promise<Receipt | null> {
+const HISTORY_PAGE = 50;
+const HISTORY_MAX_PAGES = 40;
+
+/**
+ * A marker is evidence only in the recipient's own queue or in its accepted-input history, never in a send response. The history is
+ * paged back to `since` (default five minutes ago), so a busy thread cannot push a real acceptance out of view after downtime.
+ */
+export async function findAttentionMarker(bb: BbPluginApi, threadId: string, marker: string, since?: string): Promise<Receipt | null> {
   try {
     for (const row of await bb.sdk.threads.queuedMessages.list({ threadId })) {
       const text = rowText(row);
@@ -219,12 +225,27 @@ export async function findAttentionMarker(bb: BbPluginApi, threadId: string, mar
     }
   } catch { /* An unreadable queue is no evidence either way. */ }
   try {
-    const requests = await bb.sdk.threads.events.list({ threadId, types: ["client/turn/requested"], order: "desc", limit: "50", signal: AbortSignal.timeout(5000) });
-    const requestIds = requests.filter((event) => event.type === "client/turn/requested" && JSON.stringify(event.data).includes(marker)).map((event) => (event.data as { requestId?: string }).requestId);
-    if (!requestIds.length) return null;
-    const accepted = await bb.sdk.threads.events.list({ threadId, types: ["turn/input/accepted"], order: "desc", limit: "50", signal: AbortSignal.timeout(5000) });
-    const hit = accepted.find((event) => event.type === "turn/input/accepted" && requestIds.includes((event.data as { clientRequestId?: string }).clientRequestId));
-    return hit ? { outcome: "inline", inlineEventRef: `${threadId}:${hit.seq}` } : null;
+    const floor = since ? Date.parse(since) : Date.now() - 5 * 60_000;
+    const hits: { requestId: string | undefined; seq: number }[] = [];
+    let before: string | undefined;
+    for (let page = 0; page < HISTORY_MAX_PAGES; page++) {
+      const events = await bb.sdk.threads.events.list({ threadId, types: ["client/turn/requested"], order: "desc", limit: String(HISTORY_PAGE), ...(before ? { beforeSeq: before } : {}), signal: AbortSignal.timeout(5000) });
+      for (const event of events)
+        if (event.type === "client/turn/requested" && JSON.stringify(event.data).includes(marker)) hits.push({ requestId: (event.data as { requestId?: string }).requestId, seq: event.seq });
+      if (hits.length || events.length < HISTORY_PAGE || events.at(-1)!.createdAt < floor) break;
+      before = String(events.at(-1)!.seq);
+    }
+    if (!hits.length) return null;
+    // The acceptance follows its request, so page forward from the earliest matching request.
+    let after = String(Math.min(...hits.map((hit) => hit.seq)));
+    for (let page = 0; page < HISTORY_MAX_PAGES; page++) {
+      const accepted = await bb.sdk.threads.events.list({ threadId, types: ["turn/input/accepted"], order: "asc", limit: String(HISTORY_PAGE), afterSeq: after, signal: AbortSignal.timeout(5000) });
+      const hit = accepted.find((event) => event.type === "turn/input/accepted" && hits.some((request) => request.requestId === (event.data as { clientRequestId?: string }).clientRequestId));
+      if (hit) return { outcome: "inline", inlineEventRef: `${threadId}:${hit.seq}` };
+      if (accepted.length < HISTORY_PAGE) return null;
+      after = String(accepted.at(-1)!.seq);
+    }
+    return null;
   } catch {
     return null;
   }

@@ -27,6 +27,9 @@ export interface OccurrenceRow {
 
 const nowIso = () => new Date().toISOString();
 
+/** The card's key now, for an occurrence `o`: a prefix rename or a move changes it, while the occurrence keeps the creation-time key as a fallback. */
+export const CURRENT_KEY_SQL = "COALESCE((SELECT p.prefix || '-' || t.number FROM tasks t JOIN projects p ON p.id=t.project_id WHERE t.id=o.task_id), o.task_key)";
+
 // Listeners learn which tracker's ledger moved, so the delivery service can schedule a drain; they must not touch the database.
 const listeners = new Set<(trackerId: string) => void>();
 export function onAttentionChanged(listener: (trackerId: string) => void): () => void {
@@ -73,12 +76,23 @@ export function closeTaskOccurrences(db: Database, taskId: string, reason: strin
   db.prepare<[string]>("DELETE FROM attention_unknown WHERE task_id=?").run(taskId);
 }
 
+function observe(db: Database, trackerId: string, kind: string, taskId: string, signal: AttentionSignal, validity: "valid" | "unknown"): void {
+  db.prepare<[string, string, string, string, string, string, number]>("INSERT INTO attention_observations(tracker_id, kind, at, task_id, signal, validity, rev) VALUES (?, ?, ?, ?, ?, ?, ?)")
+    .run(trackerId, kind, nowIso(), taskId, signal, validity, bumpRev(db, trackerId));
+}
+
+/** Every recompute that sees an invalid source is journalled, so Sweep can tell how long reads were invalid. */
 function recordUnknown(db: Database, trackerId: string, kind: string, taskId: string, signal: AttentionSignal): boolean {
-  const added = db.prepare<[string, string, string, string]>("INSERT OR IGNORE INTO attention_unknown(tracker_id, kind, task_id, signal) VALUES (?, ?, ?, ?)").run(trackerId, kind, taskId, signal).changes > 0;
-  // One observation per unknown spell, not one per recompute that sees it again.
-  if (added) db.prepare<[string, string, string, string, string, number]>("INSERT INTO attention_observations(tracker_id, kind, at, task_id, signal, validity, rev) VALUES (?, ?, ?, ?, ?, 'unknown', ?)")
-    .run(trackerId, kind, nowIso(), taskId, signal, bumpRev(db, trackerId));
-  return added;
+  db.prepare<[string, string, string, string]>("INSERT OR IGNORE INTO attention_unknown(tracker_id, kind, task_id, signal) VALUES (?, ?, ?, ?)").run(trackerId, kind, taskId, signal);
+  observe(db, trackerId, kind, taskId, signal, "unknown");
+  return true;
+}
+
+/** The end of an unknown interval is journalled too: the first valid reading after it. */
+function clearUnknown(db: Database, trackerId: string, kind: string, taskId: string, signal: AttentionSignal): boolean {
+  if (db.prepare<[string, string, string, string]>("DELETE FROM attention_unknown WHERE tracker_id=? AND kind=? AND task_id=? AND signal=?").run(trackerId, kind, taskId, signal).changes === 0) return false;
+  observe(db, trackerId, kind, taskId, signal, "valid");
+  return true;
 }
 
 /** Apply one card's observation to its occurrences; returns whether the ledger changed. */
@@ -96,7 +110,7 @@ function applyCard(db: Database, trackerId: string, kind: string, card: CardObse
     }
     // An unknown signal neither creates nor clears: the previous state stays and the observation is journalled.
     if (observed.validity === "unknown") { changed = recordUnknown(db, trackerId, kind, card.taskId, signal) || changed; continue; }
-    db.prepare<[string, string, string, string]>("DELETE FROM attention_unknown WHERE tracker_id=? AND kind=? AND task_id=? AND signal=?").run(trackerId, kind, card.taskId, signal);
+    changed = clearUnknown(db, trackerId, kind, card.taskId, signal) || changed;
     if (observed.present && !occurrence) {
       const rev = bumpRev(db, trackerId);
       db.prepare<[string, string, string, string, string, string, string, string, number, number]>(
@@ -111,19 +125,18 @@ function applyCard(db: Database, trackerId: string, kind: string, card: CardObse
   return changed;
 }
 
-// Most writes happen with every mode off; remembering that for a moment spares them a query. A mode change on this handle
-// clears it, and the short lifetime covers a change made through another handle.
-const quietSince = new WeakMap<object, number>();
-const QUIET_MS = 2000;
-export function invalidateAttentionCache(db: Database): void {
-  quietSince.delete(db);
+// Most writes happen with every mode off; remembering that spares them a query. Handles of one process share the epoch,
+// so a mode change through any handle invalidates every other handle's "all off" answer at once.
+let modeEpoch = 0;
+const quietAt = new WeakMap<object, number>();
+export function invalidateAttentionCache(_db?: Database): void {
+  modeEpoch++;
 }
 function anyAttentionActive(db: Database): boolean {
-  const quiet = quietSince.get(db);
-  if (quiet !== undefined && Date.now() - quiet < QUIET_MS) return false;
+  if (quietAt.get(db) === modeEpoch) return false;
   const active = Boolean(db.prepare("SELECT 1 FROM attention_modes WHERE effective_mode<>'off' LIMIT 1").get());
-  if (active) quietSince.delete(db);
-  else quietSince.set(db, Date.now());
+  if (active) quietAt.delete(db);
+  else quietAt.set(db, modeEpoch);
   return active;
 }
 

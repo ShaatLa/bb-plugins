@@ -1,23 +1,12 @@
-import { randomUUID } from "node:crypto";
 import { afterEach, describe, expect, it } from "vitest";
 import { createDependencyStore } from "../dependencies/store";
-import { BB_PROJECT, goLive, setup } from "./fixtures";
+import { accept, BB_PROJECT, goLive, setup } from "./fixtures";
 
 const fixtures: ReturnType<typeof setup>[] = [];
 const make = async () => { const f = setup(); fixtures.push(f); await f.setMode("shadow"); return f; };
 afterEach(async () => { await Promise.all(fixtures.splice(0).map((f) => f.dispose())); });
 
 const ledger = (f: ReturnType<typeof setup>, sinceRev?: number) => f.sweep("attention.ledger", { projectId: BB_PROJECT, kind: "stale-status", ...(sinceRev === undefined ? {} : { sinceRev }) });
-/** Record an accepted attempt for an occurrence, as a delivered batch would. */
-function accept(f: ReturnType<typeof setup>, occurrenceId: string, outcome: "appended" | "queued" | "inline" = "queued", queuedMessageId = "qm_1") {
-  const attempt = randomUUID();
-  const rev = (f.db.prepare("UPDATE attention_rev SET rev = rev + 1 WHERE tracker_id=? RETURNING rev").get(f.tracker.id) as { rev: number }).rev;
-  f.db.prepare("INSERT INTO attention_attempts(attempt_id, tracker_id, kind, generation, batch_id, recipient_thread_id, recipient_source, started_at, transport_started_at, outcome, queued_message_id, accepted_at, rev) VALUES (?, ?, 'stale-status', 1, ?, 'thr_manager', 'manager', ?, ?, ?, ?, ?, ?)")
-    .run(attempt, f.tracker.id, randomUUID(), new Date().toISOString(), new Date().toISOString(), outcome, queuedMessageId, new Date().toISOString(), rev);
-  f.db.prepare("INSERT INTO attention_attempt_items(attempt_id, occurrence_id) VALUES (?, ?)").run(attempt, occurrenceId);
-  return attempt;
-}
-
 describe("ledger", () => {
   it("lists two acceptances of one occurrence as two attempts and two batches appended to one message as two attempts with one queuedMessageId", async () => {
     const f = await make();
@@ -55,13 +44,16 @@ describe("ledger", () => {
     expect(rest.occurrences.length + 1).toBe((await ledger(f)).occurrences.length);
   });
 
-  it("records an unknown observation once per unknown spell, and resolves keys with aliases", async () => {
+  it("journals every recompute that sees an unknown signal and the valid reading that ends it, and resolves keys with aliases", async () => {
     const f = await make();
     const task = f.card("Review", "in_review");
     f.linkPr(task.id, 1, "failed");
     f.linkPr(task.id, 1, "failed");
+    f.linkPr(task.id, 1, "open");
     const result = await ledger(f);
-    expect(result.observations.map((o: { signal: string; validity: string }) => [o.signal, o.validity])).toEqual([["no_open_pr", "unknown"], ["closed_unmerged_pr", "unknown"]]);
+    expect(result.observations.map((o: { signal: string; validity: string }) => [o.signal, o.validity])).toEqual([
+      ["no_open_pr", "unknown"], ["closed_unmerged_pr", "unknown"], ["no_open_pr", "unknown"], ["closed_unmerged_pr", "unknown"], ["no_open_pr", "valid"], ["closed_unmerged_pr", "valid"],
+    ]);
     expect(f.store.tasks.getTaskByKey(task.key)?.id).toBe(task.id);
     expect(await f.sweep("attention.resolveKeys", { projectId: BB_PROJECT, keys: [task.key, "ATT-999", "BAD"] })).toEqual({ resolved: { [task.key]: task.id }, unknown: ["ATT-999", "BAD"] });
   });

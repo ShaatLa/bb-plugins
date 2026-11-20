@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { createFakePluginHost, makeThreadResponse } from "@get-bb/plugin-sdk/testing";
 import { createStore, registerTasksApi } from "../api";
 import { touchAttention } from "./ledger";
@@ -18,8 +19,9 @@ export function createFakeThreads() {
     rows: [] as Row[],
     sends: 0,
     updates: 0,
-    requests: [] as { seq: number; requestId: string; text: string }[],
-    accepted: [] as { seq: number; clientRequestId: string }[],
+    requests: [] as { seq: number; requestId: string; text: string; at: number }[],
+    listCalls: 0,
+    accepted: [] as { seq: number; clientRequestId: string; at: number }[],
     /** queue: a queued row; inline: dispatched at once; throw: the send fails with `sendError`. */
     sendMode: "queue" as "queue" | "inline" | "throw",
     /** Whether an inline send also records its accepted-input event. */
@@ -38,7 +40,9 @@ export function createFakeThreads() {
     lastBody: "",
     /** Holds every send until released, so a test can interleave a transition. */
     sendGate: undefined as Promise<void> | undefined,
-    threads: new Map<string, { archived?: boolean; parent?: string }>(),
+    threads: new Map<string, { archived?: boolean; parent?: string; status?: string }>(),
+    /** The next queue read waits for this and then sees an empty queue: a search that was slow and stale. */
+    listGateOnce: undefined as Promise<void> | undefined,
     sweepManager: null as string | null,
   };
   let seq = 0;
@@ -47,10 +51,13 @@ export function createFakeThreads() {
     threads: {
       get: async ({ threadId }: { threadId: string }) => {
         const info = state.threads.get(threadId) ?? {};
-        return makeThreadResponse({ id: threadId, status: "idle", ...(info.archived ? { archivedAt: 1 } : {}), ...(info.parent ? { parentThreadId: info.parent } : {}) } as never);
+        return makeThreadResponse({ id: threadId, status: (info.status ?? "idle") as never, ...(info.archived ? { archivedAt: 1 } : {}), ...(info.parent ? { parentThreadId: info.parent } : {}) } as never);
       },
       queuedMessages: {
-        list: async ({ threadId }: { threadId: string }) => state.rows.filter((row) => row.threadId === threadId),
+        list: async ({ threadId }: { threadId: string }) => {
+          if (state.listGateOnce) { const gate = state.listGateOnce; state.listGateOnce = undefined; await gate; return []; }
+          return state.rows.filter((row) => row.threadId === threadId);
+        },
         update: async ({ queuedMessageId, input, expectedUpdatedAt }: { queuedMessageId: string; input: { text: string }[]; expectedUpdatedAt: string }) => {
           state.updates++;
           if (state.updateRejection) throw state.updateRejection;
@@ -78,9 +85,16 @@ export function createFakeThreads() {
         return { ok: true, delivery: "sent" };
       },
       events: {
-        list: async ({ types }: { types: string[] }) => {
-          if (types.includes("client/turn/requested")) return state.requests.map((request) => ({ seq: request.seq, type: "client/turn/requested", createdAt: "2026-11-20T00:00:00.000Z", data: { requestId: request.requestId, input: [{ type: "text", text: request.text }] } })).reverse();
-          return state.accepted.map((event) => ({ seq: event.seq, type: "turn/input/accepted", createdAt: "2026-11-20T00:00:00.000Z", data: { clientRequestId: event.clientRequestId } })).reverse();
+        // Honors the paging the real list has: type filter, order, limit and the seq bounds.
+        list: async ({ types, order = "desc", limit = "50", beforeSeq, afterSeq }: { types: string[]; order?: string; limit?: string; beforeSeq?: string; afterSeq?: string }) => {
+          state.listCalls++;
+          const all = [
+            ...state.requests.map((request) => ({ seq: request.seq, type: "client/turn/requested", createdAt: request.at, data: { requestId: request.requestId, input: [{ type: "text", text: request.text }] } })),
+            ...state.accepted.map((event) => ({ seq: event.seq, type: "turn/input/accepted", createdAt: event.at, data: { clientRequestId: event.clientRequestId } })),
+          ]
+            .filter((event) => types.includes(event.type) && (beforeSeq === undefined || event.seq < Number(beforeSeq)) && (afterSeq === undefined || event.seq > Number(afterSeq)))
+            .sort((a, b) => (order === "asc" ? a.seq - b.seq : b.seq - a.seq));
+          return all.slice(0, Number(limit));
         },
       },
     },
@@ -99,8 +113,8 @@ export function createFakeThreads() {
   /** Record an accepted-input pair for `body`, as an idle thread does for an inline message. */
   function dispatch(body: string) {
     const requestId = `req_${++seq}`;
-    state.requests.push({ seq: ++seq, requestId, text: body });
-    state.accepted.push({ seq: ++seq, clientRequestId: requestId });
+    state.requests.push({ seq: ++seq, requestId, text: body, at: Date.now() });
+    state.accepted.push({ seq: ++seq, clientRequestId: requestId, at: Date.now() });
   }
   /** A queued row leaves the queue and dispatches with its text. */
   function dispatchRow(row: Row) {
@@ -151,4 +165,14 @@ export async function goLive(f: ReturnType<typeof setup>, accepted: string[] = [
   const transition = state.transition;
   const ack = await f.sweep("attention.ack", { projectId: BB_PROJECT, trackerId: f.tracker.id, kind: "stale-status", token: transition.token, generation: transition.generation, direction: "to_live", fenceId: "fence-live", acceptedOccurrenceIds: accepted });
   return { transition, ack };
+}
+
+/** Record an accepted attempt for an occurrence, as a delivered batch would. */
+export function accept(f: ReturnType<typeof setup>, occurrenceId: string, outcome: "appended" | "queued" | "inline" = "queued", queuedMessageId = "qm_1") {
+  const attempt = randomUUID();
+  const rev = (f.db.prepare("UPDATE attention_rev SET rev = rev + 1 WHERE tracker_id=? RETURNING rev").get(f.tracker.id) as { rev: number }).rev;
+  f.db.prepare("INSERT INTO attention_attempts(attempt_id, tracker_id, kind, generation, batch_id, recipient_thread_id, recipient_source, started_at, transport_started_at, outcome, queued_message_id, accepted_at, rev) VALUES (?, ?, 'stale-status', 1, ?, 'thr_manager', 'manager', ?, ?, ?, ?, ?, ?)")
+    .run(attempt, f.tracker.id, randomUUID(), new Date().toISOString(), new Date().toISOString(), outcome, queuedMessageId, new Date().toISOString(), rev);
+  f.db.prepare("INSERT INTO attention_attempt_items(attempt_id, occurrence_id) VALUES (?, ?)").run(attempt, occurrenceId);
+  return attempt;
 }

@@ -3,7 +3,7 @@ import type { TasksApiStore } from "../api";
 import { publishProjectsChanged } from "../api";
 import { attentionRpcContract, SWEEP_PLUGIN_ID } from "../shared/attention";
 import type { tasksRpcContract } from "../shared/contract";
-import { currentRev } from "./ledger";
+import { CURRENT_KEY_SQL, currentRev } from "./ledger";
 import { ackTransition, boundTrackerOf, getModeRow, kindState, SHADOW_GATE_MS } from "./modes";
 import { ATTENTION_KIND } from "./observe";
 import { attentionService } from "./service";
@@ -62,7 +62,7 @@ export function registerAttention(bb: BbPluginApi, store: TasksApiStore): void {
       if (!found.ok) return found;
       const trackerId = found.trackerId;
       const occurrences = db.prepare<[string, string, number, number], Record<string, string | number | null>>(
-        "SELECT * FROM manager_attention WHERE tracker_id=? AND kind=? AND rev>? ORDER BY rev LIMIT ?",
+        `SELECT o.*, ${CURRENT_KEY_SQL} AS current_key FROM manager_attention o WHERE o.tracker_id=? AND o.kind=? AND o.rev>? ORDER BY o.rev LIMIT ?`,
       ).all(trackerId, kind, sinceRev, limit);
       const attempts = db.prepare<[string, string, number, number], AttemptRow>("SELECT * FROM attention_attempts WHERE tracker_id=? AND kind=? AND rev>? ORDER BY rev LIMIT ?").all(trackerId, kind, sinceRev, limit);
       const observations = db.prepare<[string, string, number, number], { at: string; task_id: string; signal: string; validity: "valid" | "unknown"; rev: number }>("SELECT at, task_id, signal, validity, rev FROM attention_observations WHERE tracker_id=? AND kind=? AND rev>? ORDER BY rev LIMIT ?").all(trackerId, kind, sinceRev, limit);
@@ -70,7 +70,7 @@ export function registerAttention(bb: BbPluginApi, store: TasksApiStore): void {
       const taken = [...occurrences.map((row) => ({ t: "o" as const, rev: row.rev as number, row })), ...attempts.map((row) => ({ t: "a" as const, rev: row.rev, row })), ...observations.map((row) => ({ t: "b" as const, rev: row.rev, row }))].sort((a, b) => a.rev - b.rev).slice(0, limit);
       return {
         occurrences: taken.filter((entry) => entry.t === "o").map(({ row }) => ({
-          occurrenceId: row.id as string, taskId: row.task_id as string, taskKey: row.task_key as string, signal: row.signal as string, firstSeenAt: row.first_seen_at as string, eligibleAt: row.eligible_at as string,
+          occurrenceId: row.id as string, taskId: row.task_id as string, taskKey: row.current_key as string, signal: row.signal as string, firstSeenAt: row.first_seen_at as string, eligibleAt: row.eligible_at as string,
           clearedAt: row.cleared_at as string | null, retiredReason: row.retired_reason as string | null, sweepBaselinedGeneration: row.sweep_baselined_generation as number | null, createdRev: row.created_rev as number, rev: row.rev as number,
         })),
         attempts: taken.filter((entry) => entry.t === "a").map(({ row }) => attemptWire(db, row as AttemptRow)),

@@ -3,7 +3,7 @@ import { z } from "zod";
 
 /** The plugin id Sweep runs under; only it may acknowledge a transition. */
 export const SWEEP_PLUGIN_ID = "sweep";
-export const ATTENTION_OWNER_ONLY = "The manager-attention mode and manager are changed by the owner in the project settings; no command or setting call proves the caller is the owner.";
+export const ATTENTION_OWNER_ONLY = "The manager-attention mode and manager are changed by the owner in the project settings; this is an owner-only convention, and no command or setting call proves the caller is the owner.";
 
 const modeSchema = z.enum(["off", "shadow", "live"]);
 const bbProjectId = z.string().regex(/^proj_[A-Za-z0-9_-]+$/);

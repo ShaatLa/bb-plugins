@@ -1,4 +1,5 @@
 import { markTrackerDirty } from "../attention/ledger";
+import { assertLinkChangeAllowed } from "../attention/modes";
 import { createGitSyncStore } from "../git-sync/store";
 import { prIdentity } from "../shared/git-sync";
 import { DEFAULT_TASK_STATUSES } from "../shared/statuses.js";
@@ -387,6 +388,8 @@ export function restoreProject(
     };
     for (const folder of manifest.folders) plan("folders", dbRow(folder));
     const currentProject = store.tasks.getProject(projectId);
+    // The snapshot carries the BB project link; a restore may not relink a bound tracker or add a second tracker to a bound BB project.
+    assertLinkChangeAllowed(db, projectId, currentProject?.linkedBbProjectId ?? null, manifest.project.linkedBbProjectId ?? null);
     const maxNumber = [
       ...store.tasks.listTasks({ projectId }),
       ...records.map((r) => r.task),
