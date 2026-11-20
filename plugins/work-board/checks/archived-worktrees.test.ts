@@ -10,10 +10,10 @@ import { checksTuning } from "./service";
 import { binDir, BB_PROJECT, cleanTempDirs, MANAGER, setup, tempDir, type Fixture } from "./fixtures";
 
 // A filesystem call that never settles, for the one path a test names.
-const stall = vi.hoisted(() => ({ path: null as string | null }));
+const stall = vi.hoisted(() => ({ path: null as string | null, calls: 0, release: () => {} }));
 vi.mock("node:fs/promises", async (original) => {
   const actual = await original<typeof import("node:fs/promises")>();
-  return { ...actual, realpath: Object.assign((path: string, ...rest: unknown[]) => (path === stall.path ? new Promise<string>(() => {}) : (actual.realpath as (...args: unknown[]) => Promise<string>)(path, ...rest)), actual.realpath) };
+  return { ...actual, realpath: Object.assign((path: string, ...rest: unknown[]) => (path === stall.path ? new Promise<string>((resolve) => { stall.calls++; stall.release = () => resolve(path); }) : (actual.realpath as (...args: unknown[]) => Promise<string>)(path, ...rest)), actual.realpath) };
 });
 
 const fixtures: Fixture[] = [];
@@ -21,7 +21,7 @@ const make = async (script = "", code = 0) => {
   const f = await setup(); fixtures.push(f); f.standard(); f.output(script, code); f.enable(); f.worktrees.enable(); return f;
 };
 beforeEach(() => { receiptPolling.tries = 1; receiptPolling.delayMs = 0; checksTuning.lateSearchMs = 0; });
-afterEach(async () => { vi.unstubAllEnvs(); scanTuning.measurementMs = 30_000; scanTuning.deadlineMs = 60_000; stall.path = null; await Promise.all(fixtures.splice(0).map((f) => f.dispose())); cleanTempDirs(); });
+afterEach(async () => { vi.unstubAllEnvs(); scanTuning.measurementMs = 30_000; scanTuning.deadlineMs = 60_000; stall.path = null; stall.calls = 0; stall.release(); await Promise.all(fixtures.splice(0).map((f) => f.dispose())); cleanTempDirs(); });
 
 /** A definite rejection keeps the staged report pending, so its raw body can be read. */
 const hold = (f: Fixture) => { f.threads.sendMode = "throw"; f.threads.sendError = Object.assign(new Error("forbidden"), { status: 403 }); };
@@ -319,7 +319,7 @@ describe("tick", () => {
 
   it("stops waiting for a scan that stalls on the filesystem and delivers the script's result", async () => {
     const f = await make("ACTION idle-thread EXA-1", 1);
-    f.worktrees.add("thr_example");
+    const path = f.worktrees.add("thr_example");
     scanTuning.deadlineMs = 300;
     stall.path = f.worktrees.scan.storage;
     await f.tick();
@@ -327,6 +327,20 @@ describe("tick", () => {
     expect(f.sent()).toContain("idle thread");
     expect(f.sent()).not.toContain("archived worktree");
     expect(reported(f)).toEqual([]);
+    expect(stall.calls).toBe(1);
+    // The stalled lookup is still in flight: the next tick skips the scan, warns once and delivers its own script result.
+    const warn = vi.spyOn(f.bb.log, "warn");
+    f.output("ACTION idle-thread EXA-2", 1);
+    await f.tick();
+    expect(stall.calls).toBe(1);
+    expect(f.worktrees.scan.calls).toBe(1);
+    expect(warn.mock.calls.filter(([message]) => String(message).includes("previous archived-worktree scan still running"))).toHaveLength(1);
+    expect(accepted(f)).toBe(2);
+    expect(f.sent()).toContain("EXA-2");
+    // Once the stalled call settles, the next tick scans again.
+    stall.release(); stall.path = null;
+    await vi.waitFor(async () => { f.output("ACTION idle-thread EXA-3", 1); await f.tick(); expect(f.worktrees.scan.calls).toBe(2); });
+    expect(reported(f)).toEqual([path]);
   });
 
   it("drains an already staged report without scanning, and never scans on a manual run", async () => {

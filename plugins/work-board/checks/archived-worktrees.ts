@@ -38,8 +38,20 @@ function untilAborted<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
  * Finds worktrees an archived thread left under the thread storage root, measures the ones not reported yet and describes them
  * as `ACTION archived-worktree` lines. Nothing is modified. Returns null when this tick cannot scan (no host, no storage, no readable repository).
  */
+/** The bb projects with a scan still in flight: an abandoned scan may be stuck in a filesystem call, and another one would only add to it. */
+const inFlight = new WeakMap<BbPluginApi, Set<string>>();
+
 export function scanArchivedWorktrees(bb: BbPluginApi, project: ScanProject, reported: string[], afterPath: string | undefined, signal: AbortSignal) {
-  return untilAborted(scan(bb, project, reported, afterPath, signal), signal);
+  const running = inFlight.get(bb) ?? inFlight.set(bb, new Set()).get(bb)!;
+  if (running.has(project.id)) {
+    bb.log.warn("previous archived-worktree scan still running");
+    return Promise.resolve(null);
+  }
+  running.add(project.id);
+  const scanning = scan(bb, project, reported, afterPath, signal);
+  const done = () => { running.delete(project.id); };
+  scanning.then(done, done);
+  return untilAborted(scanning, signal);
 }
 
 async function scan(bb: BbPluginApi, project: ScanProject, reported: string[], afterPath: string | undefined, signal: AbortSignal) {
