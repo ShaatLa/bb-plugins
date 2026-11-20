@@ -54,7 +54,8 @@ const quietUpdate = (entry: Entry) => !entry.part && entry.group.length === 1 &&
 // split question older than the oldest loaded item waits there (orphans, carried to the earlier page; carried: from a newer one).
 // showLast: the chat is the newest page and has gone quiet (it and its sub-sessions idle), so its last message is final.
 // keep: an update already shown in full that way stays so while it is the last (a turn starting must not fold it back).
-export function conversation(groups: Item[][], more: boolean, carried: Item[][] = [], showLast = true, keep: string | null = null, groupUpdates = true) {
+// from: the first unread; it starts its own run of updates, so older read updates joining later never move the New divider's row.
+export function conversation(groups: Item[][], more: boolean, carried: Item[][] = [], showLast = true, keep: string | null = null, groupUpdates = true, from: string | null = null) {
   // A message that joined the turn answering the owner (a child's completion, another thread's or a plugin's message) stands
   // above the owner's message, so the question and its answer stay together.
   const asked = new Map(groups.filter(group => group[0].kind === 'mine' && group[0].turnId).map(group => [group[0].turnId!, group[0].createdAt] as const));
@@ -85,7 +86,7 @@ export function conversation(groups: Item[][], more: boolean, carried: Item[][] 
     if (home) { home[1].late = [...(home[1].late ?? []), ...entry.group]; placed.splice(i, 1); }
   }
   const entries: Entry[] = [];
-  for (const [, entry] of placed.sort((a, b) => a[0] - b[0] || rank(a[1].group) - rank(b[1].group))) { const prev = entries.at(-1); if (groupUpdates && prev && quietUpdate(entry) && (prev.updates || quietUpdate(prev))) entries[entries.length - 1] = { group: [...prev.group, ...entry.group], updates: true }; else entries.push(entry); }
+  for (const [, entry] of placed.sort((a, b) => a[0] - b[0] || rank(a[1].group) - rank(b[1].group))) { const prev = entries.at(-1); if (groupUpdates && prev && quietUpdate(entry) && (prev.updates || quietUpdate(prev)) && !entry.group.some(item => item.id === from)) entries[entries.length - 1] = { group: [...prev.group, ...entry.group], updates: true }; else entries.push(entry); }
   // Once the chat has gone quiet its latest message does not hide in a collapsed group: a final report after a run of updates
   // stays in full view. While work goes on, the updates still flying in stay collapsed.
   const tail = entries.at(-1);
@@ -130,6 +131,9 @@ function interactionTitle(row: Interaction) {
 const AT_BOTTOM = 2;
 // Left at the end, for reopening: a reader a few lines short of the very bottom (a quarter of the view) still saw the newest
 // messages, so the chat reopens at the newest, not at the card that happened to be on top then.
+// The row a pin or an anchor means: the element itself while it is in the page, else the one now carrying the same id (a rebuilt row's old node has no box).
+const live = (node: HTMLElement, el: HTMLElement | null, selector: string) => el?.isConnected ? el : node.querySelector<HTMLElement>(selector);
+const rowOf = (id: string) => `[aria-label=History] [data-history-ids~="${CSS.escape(id)}"]`;
 export const atEnd = (node: HTMLElement) => node.scrollHeight - node.scrollTop - node.clientHeight <= Math.max(AT_BOTTOM, node.clientHeight / 4);
 // Following new content stops before it carries away what the reader saw at the bottom: a big arrival (a long reply) halts
 // with its start under the header (covered: the header, the composer and a margin), and the chat stops following there.
@@ -505,7 +509,7 @@ function InboxChat({ onBulkRead, bbChat = false, search: searchProp, onSearch, t
   // First unread message when the conversation opened; it keeps its divider after the thread is marked read.
   const mark = useRef<string | null>(null);
   // Where the open landed (the New divider, or null for the newest); held while messages above finish rendering and grow.
-  const pin = useRef<{ target: HTMLElement | null; until: number; offset?: number } | null>(null);
+  const pin = useRef<{ target: HTMLElement | null; selector?: string; until: number; offset?: number } | null>(null);
   // Reads count only once the open position settled: while messages above grow, the list briefly jumps past unread ones.
   const [settled, setSettled] = useState(false), settle = useRef<ReturnType<typeof setTimeout>>(undefined);
   const release = () => { clearTimeout(settle.current); pin.current = null; setSettled(true); };
@@ -719,7 +723,7 @@ function InboxChat({ onBulkRead, bbChat = false, search: searchProp, onSearch, t
       const divider = anchor ? null : node.querySelector<HTMLElement>('[data-new]'), header = node.querySelector<HTMLElement>('.sticky')?.offsetHeight ?? 0;
       node.scrollTop = divider ? divider.offsetTop - header : anchor ? node.scrollTop + anchor.getBoundingClientRect().top - node.getBoundingClientRect().top - (keep!.offset ?? 0) : keep ? keep.top : node.scrollHeight; restore.current = null;
       // Hold the place while the conversation finishes rendering: the New divider, the remembered message, or the newest.
-      pin.current = divider || !keep ? { target: divider, until: Date.now() + 3000 } : anchor ? { target: anchor, offset: keep!.offset ?? 0, until: Date.now() + 3000 } : null;
+      pin.current = divider || !keep ? { target: divider, ...(divider ? { selector: '[aria-label=History] [data-new]' } : {}), until: Date.now() + 3000 } : anchor ? { target: anchor, selector: rowOf(keep!.anchor!), offset: keep!.offset ?? 0, until: Date.now() + 3000 } : null;
       clearTimeout(settle.current); settle.current = setTimeout(release, pin.current ? 3000 : 0);
     } else if (old.prepend) node.scrollTop = old.top + node.scrollHeight - old.height;
     // While a quote popup is open (anchored in the chat) nothing follows new messages: the owner is writing about this spot.
@@ -732,7 +736,9 @@ function InboxChat({ onBulkRead, bbChat = false, search: searchProp, onSearch, t
     const hold = () => {
       const held = pin.current; if (!held || Date.now() > held.until) { if (held) release(); return; }
       const header = node.querySelector<HTMLElement>('.sticky')?.offsetHeight ?? 0;
-      node.scrollTop = held.target ? node.scrollTop + held.target.getBoundingClientRect().top - node.getBoundingClientRect().top - (held.offset ?? header) : node.scrollHeight;
+      const target = held.selector ? live(node, held.target, held.selector) : null;
+      if (held.selector && !target) return;
+      node.scrollTop = target ? node.scrollTop + target.getBoundingClientRect().top - node.getBoundingClientRect().top - (held.offset ?? header) : node.scrollHeight;
     };
     const events = ['wheel', 'touchstart', 'pointerdown', 'keydown'] as const;
     const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(hold); observer?.observe(list);
@@ -788,7 +794,7 @@ function InboxChat({ onBulkRead, bbChat = false, search: searchProp, onSearch, t
     // Kept by its first id too: a card re-rendered under the same id (an answer split from its question) is found again.
     let anchor: { el: HTMLElement; id: string; offset: number } | null = null;
     const remember = () => { const view = node.getBoundingClientRect().top, el = Array.from(node.querySelectorAll<HTMLElement>('[aria-label=History] [data-history-ids]')).find(row => row.getBoundingClientRect().bottom > view + 1); anchor = el ? { el, id: el.dataset.historyIds!.split(' ')[0]!, offset: el.getBoundingClientRect().top - view } : null; };
-    const anchored = () => anchor && (anchor.el.isConnected ? anchor.el : node.querySelector<HTMLElement>(`[aria-label=History] [data-history-ids~="${CSS.escape(anchor.id)}"]`));
+    const anchored = () => anchor && live(node, anchor.el, rowOf(anchor.id));
     let anchorFrame = 0;
     const track = () => { if (!node.clientHeight || Date.now() - resizedAt.current < 500) return; if (node.clientHeight === height) gap = node.scrollHeight - node.scrollTop - node.clientHeight; content = node.scrollHeight; if (!anchorFrame) anchorFrame = requestAnimationFrame(() => { anchorFrame = 0; remember(); }); };
     // The conversation also grows at its end after a send (the bubble, the robot, the actions render a moment later):
@@ -935,7 +941,8 @@ function InboxChat({ onBulkRead, bbChat = false, search: searchProp, onSearch, t
   // Folding a long last update back when a turn starts (a queued message sent) would cut the chat's end under a reader
   // near it and drop them to the bottom, so the one shown in full stays so until a newer message takes its place.
   const fullTail = useRef<string | null>(null);
-  const historyGroups = useMemo(() => { const entries = conversation(groupItems(chatItems), !!shown.at(-1)?.nextCursor, [], !working, fullTail.current, preferences?.groupBackgroundUpdates !== false).entries, last = entries.at(-1); fullTail.current = last && !last.updates && !last.part && last.group.length === 1 && last.group[0]!.kind === 'update' ? last.group[0]!.id : null; return entries; }, [chatItems, pages, loadedPages, depth, working, preferences?.groupBackgroundUpdates]);
+  if (position.current.fresh && pages.length) mark.current = items.find(isUnread)?.id ?? null;
+  const historyGroups = useMemo(() => { const entries = conversation(groupItems(chatItems), !!shown.at(-1)?.nextCursor, [], !working, fullTail.current, preferences?.groupBackgroundUpdates !== false, mark.current).entries, last = entries.at(-1); fullTail.current = last && !last.updates && !last.part && last.group.length === 1 && last.group[0]!.kind === 'update' ? last.group[0]!.id : null; return entries; }, [chatItems, pages, loadedPages, depth, working, preferences?.groupBackgroundUpdates, mark.current]);
   // The robot walks at the end of the chat unless the last card is itself a pending owner message (its robot is the one);
   // cards further up carry none (ItemCard's live).
   const lastPending = (() => { const entry = historyGroups.at(-1); return !!entry && entry.part !== 'answer' && entry.group.some(item => item.dismissedAt === null && ((item.kind === 'mine' && (item.status === 'waiting' || item.status === 'deferred')) || (item.kind === 'update' && item.status === 'waiting'))); })();
@@ -943,7 +950,6 @@ function InboxChat({ onBulkRead, bbChat = false, search: searchProp, onSearch, t
   // A loaded window of only quiet updates collapses to a single row; reach back (up to 5 pages) to the last real exchange.
   useEffect(() => { if (selected && shown.length === depth && depth < 5 && shown.at(-1)?.nextCursor && !historyGroups.some(entry => !entry.updates && !quietUpdate(entry))) setDepth(d => d + 1); }, [historyGroups]);
   useEffect(() => { if (!selected || !pages.length) return; const questions = [...pages.flatMap(page => page.items)].filter(item => item.threadId === selected); setOptimistic(old => { const remaining = [...questions], matched = new Set<number>(); for (const b of [...old].reverse()) { if (b.threadId !== selected) continue; const index = remaining.findIndex(item => !b.seenIds.includes(item.id) && item.question.trim() === b.text); if (index >= 0) { remaining.splice(index, 1); matched.add(b.id); } } return matched.size ? old.filter(b => !matched.has(b.id)) : old; }); }, [selected, pages]);
-  if (position.current.fresh && pages.length) mark.current = items.find(isUnread)?.id ?? null;
   const openUnread = current?.unread ?? 0;
   // bb's chat has no per-message read marks, so an open conversation counts as read.
   useEffect(() => { if (bbChat && selected && openUnread) void rpc.call('markThreadRead', { threadId: selected }).catch(() => {}); }, [bbChat, selected, openUnread]);

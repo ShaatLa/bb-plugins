@@ -1433,3 +1433,101 @@ it('keeps expanded updates and the full transcript across cached chat switches',
  fireEvent.click(recipients.getByRole('option',{name:/One/}));expect(slot.getByRole('region',{name:'Full transcript'})).toBe(transcript);
  fireEvent.click(slot.getByRole('button',{name:'Back to Agent Hub'}));expect(slot.getByRole('button',{name:/3 background updates/})).toBe(toggle);expect(toggle.getAttribute('aria-expanded')).toBe('true');
 });
+it('keeps a chat of background updates at its New divider, right above the first unread, when an older read page arrives', async () => {
+  const observers: (() => void)[] = [];
+  vi.stubGlobal('ResizeObserver', class { constructor(private callback: () => void) { observers.push(() => this.callback()); } observe() {} disconnect() {} });
+  const tops = new WeakMap<Element, number>(); const divider = 700;
+  // A detached element has no box, as in a browser: its rect reads all zeros.
+  const spies = [
+    vi.spyOn(HTMLElement.prototype, 'clientHeight', 'get').mockReturnValue(500),
+    vi.spyOn(HTMLElement.prototype, 'clientWidth', 'get').mockReturnValue(400),
+    vi.spyOn(HTMLElement.prototype, 'scrollHeight', 'get').mockReturnValue(3000),
+    vi.spyOn(HTMLElement.prototype, 'scrollTop', 'get').mockImplementation(function (this: HTMLElement) { return tops.get(this) ?? 0; }),
+    vi.spyOn(HTMLElement.prototype, 'scrollTop', 'set').mockImplementation(function (this: HTMLElement, value: number) { tops.set(this, value); }),
+    vi.spyOn(HTMLElement.prototype, 'offsetTop', 'get').mockImplementation(function (this: HTMLElement) { return this.hasAttribute('data-new') ? divider : 0; }),
+    vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (this: HTMLElement) {
+      const top = !this.isConnected ? 0 : this.hasAttribute('data-new') ? divider - (tops.get(this.closest('.overflow-auto')!) ?? 0) + 50 : this.classList.contains('overflow-auto') ? 50 : 0;
+      return { top, bottom: 0, left:0, right:0, width:0, height:0 } as DOMRect;
+    }),
+  ];
+  try {
+    const update = (n: number, readAt: number | null) => ({ ...between, id:`ans_u${n}`, answer:`Report ${n}`, readAt, createdAt:asked + n * minute, answeredAt:asked + n * minute });
+    const { slot, recipients } = setup({ list: (input: any) => input.cursor ? { items:[update(1, 1), update(0, 1)], nextCursor:null } : { items:[5, 4, 3, 2].map(n => update(n, null)), nextCursor:'1|ans_u2' } });
+    fireEvent.click(await recipients.findByRole('option')); await slot.findByRole('list', { name:'History' });
+    const first = await waitFor(() => { const node = document.querySelector('[data-new]'); expect(node).not.toBeNull(); return node!; });
+    const scroller = document.querySelector('[aria-label=History]')!.closest('.overflow-auto')!;
+    await waitFor(() => expect(tops.get(scroller)).toBe(divider));
+    const ids = () => Array.from(document.querySelectorAll('[data-new], [data-history-ids]')).flatMap(node => node.hasAttribute('data-new') ? ['new'] : node.getAttribute('data-history-ids')!.split(' '));
+    await waitFor(() => expect(ids()).toContain('ans_u0')); // the older read page joined the chat
+    expect(first.isConnected).toBe(true); expect(ids().indexOf('new')).toBe(ids().indexOf('ans_u2') - 1); expect(ids().indexOf('ans_u1')).toBeLessThan(ids().indexOf('new'));
+    observers.forEach(observe => observe());
+    expect(tops.get(scroller)).toBe(divider);
+  } finally { spies.forEach(spy => spy.mockRestore()); vi.unstubAllGlobals(); }
+});
+it('keeps the reader at their place when an older page arrives above after the open position was released', async () => {
+  const observers: (() => void)[] = [];
+  vi.stubGlobal('ResizeObserver', class { constructor(private callback: () => void) { observers.push(() => this.callback()); } observe() {} disconnect() {} });
+  const tops = new WeakMap<Element, number>(); let shift = 0;
+  const spies = [
+    vi.spyOn(HTMLElement.prototype, 'clientHeight', 'get').mockReturnValue(500),
+    vi.spyOn(HTMLElement.prototype, 'clientWidth', 'get').mockReturnValue(400),
+    vi.spyOn(HTMLElement.prototype, 'scrollHeight', 'get').mockReturnValue(3000),
+    vi.spyOn(HTMLElement.prototype, 'scrollTop', 'get').mockImplementation(function (this: HTMLElement) { return tops.get(this) ?? 0; }),
+    vi.spyOn(HTMLElement.prototype, 'scrollTop', 'set').mockImplementation(function (this: HTMLElement, value: number) { tops.set(this, value); }),
+    vi.spyOn(HTMLElement.prototype, 'offsetTop', 'get').mockImplementation(function (this: HTMLElement) { return this.hasAttribute('data-new') ? 700 + shift : 0; }),
+    vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (this: HTMLElement) {
+      if (!this.isConnected) return { top:0, bottom:0, left:0, right:0, width:0, height:0 } as DOMRect;
+      const off = this.hasAttribute('data-new') ? 700 + shift : this.hasAttribute('data-history-ids') ? 710 + shift : null, top = off === null ? (this.classList.contains('overflow-auto') ? 50 : 0) : off - (tops.get(document.querySelector('.overflow-auto')!) ?? 0) + 50;
+      return { top, bottom: off === null ? 0 : top + 100, left:0, right:0, width:0, height:0 } as DOMRect;
+    }),
+  ];
+  try {
+    const update = (n: number, readAt: number | null) => ({ ...between, id:`ans_u${n}`, answer:`Report ${n}`, readAt, createdAt:asked + n * minute, answeredAt:asked + n * minute });
+    let release!: (value: object) => void;
+    const { slot, recipients } = setup({ list: (input: any) => input.cursor ? new Promise(r => { release = r; }) : { items:[5, 4, 3, 2].map(n => update(n, null)), nextCursor:'1|ans_u2' } });
+    fireEvent.click(await recipients.findByRole('option')); await slot.findByRole('list', { name:'History' });
+    const scroller = document.querySelector('[aria-label=History]')!.closest('.overflow-auto')!;
+    await waitFor(() => expect(tops.get(scroller)).toBe(700));
+    fireEvent.scroll(scroller); await new Promise(r => requestAnimationFrame(() => r(0))); fireEvent.wheel(scroller); // the reader acts: the hold ends
+    await waitFor(() => expect(release).toBeTypeOf('function'));
+    shift = 400; await act(async () => { release({ items:[update(1, 1), update(0, 1)], nextCursor:null }); }); await new Promise(r => setTimeout(r, 50));
+    observers.forEach(observe => observe());
+    expect(tops.get(scroller)).toBe(1100);
+  } finally { spies.forEach(spy => spy.mockRestore()); vi.unstubAllGlobals(); }
+});
+it('keeps the remembered message in place when an older page joins its run of updates and the row is rebuilt', async () => {
+  localStorage.setItem('bb-plugin-answers:page:scroll', JSON.stringify({ thr_one: { top:5, depth:1, anchor:'ans_u3', offset:0 } }));
+  const observers: (() => void)[] = [];
+  vi.stubGlobal('ResizeObserver', class { constructor(private callback: () => void) { observers.push(() => this.callback()); } observe() {} disconnect() {} });
+  const tops = new WeakMap<Element, number>();
+  // A detached element has no box, as in a browser: its rect reads all zeros.
+  const spies = [
+    vi.spyOn(HTMLElement.prototype, 'clientHeight', 'get').mockReturnValue(500),
+    vi.spyOn(HTMLElement.prototype, 'clientWidth', 'get').mockReturnValue(400),
+    vi.spyOn(HTMLElement.prototype, 'scrollHeight', 'get').mockReturnValue(3000),
+    vi.spyOn(HTMLElement.prototype, 'scrollTop', 'get').mockImplementation(function (this: HTMLElement) { return tops.get(this) ?? 0; }),
+    vi.spyOn(HTMLElement.prototype, 'scrollTop', 'set').mockImplementation(function (this: HTMLElement, value: number) { tops.set(this, value); }),
+    vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (this: HTMLElement) {
+      const row = this.hasAttribute('data-history-ids'), top = !this.isConnected ? 0 : row ? 710 - (tops.get(this.closest('.overflow-auto')!) ?? 0) + 50 : this.classList.contains('overflow-auto') ? 50 : 0;
+      return { top, bottom: row && this.isConnected ? top + 100 : 0, left:0, right:0, width:0, height:0 } as DOMRect;
+    }),
+  ];
+  try {
+    const update = (n: number) => ({ ...between, id:`ans_u${n}`, answer:`Report ${n}`, readAt:1, createdAt:asked + n * minute, answeredAt:asked + n * minute });
+    const { slot, recipients } = setup({ list: (input: any) => input.cursor ? { items:[update(1), update(0)], nextCursor:null } : { items:[5, 4, 3, 2].map(update), nextCursor:'1|ans_u2' } });
+    fireEvent.click(await recipients.findByRole('option')); await slot.findByRole('list', { name:'History' });
+    const scroller = document.querySelector('[aria-label=History]')!.closest('.overflow-auto')!;
+    await waitFor(() => expect(tops.get(scroller)).toBe(710));
+    await waitFor(() => expect(document.querySelector('[data-history-ids~="ans_u0"]')).not.toBeNull()); // the older page joined the run
+    observers.forEach(observe => observe());
+    expect(tops.get(scroller)).toBe(710);
+  } finally { spies.forEach(spy => spy.mockRestore()); vi.unstubAllGlobals(); localStorage.removeItem('bb-plugin-answers:page:scroll'); }
+});
+it('starts a run of updates at the first unread, so older read updates stay above it', async () => {
+  const { conversation } = await import('./inbox');
+  const update = (n: number, readAt: number | null) => [{ ...between, id:`ans_u${n}`, answer:`Report ${n}`, readAt, createdAt:asked + n * minute, answeredAt:asked + n * minute }];
+  const ids = (entries: any[]) => entries.map(e => e.group.map((i: any) => i.id).join('+'));
+  const groups = [update(0, 1), update(1, 1), update(2, null), update(3, null), update(4, null)];
+  expect(ids(conversation(groups as any, false, [], false, null, true, 'ans_u2').entries)).toEqual(['ans_u0+ans_u1', 'ans_u2+ans_u3+ans_u4']);
+  expect(ids(conversation(groups as any, false, [], false, null, true).entries)).toEqual(['ans_u0+ans_u1+ans_u2+ans_u3+ans_u4']);
+});
