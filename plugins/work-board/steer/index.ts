@@ -421,15 +421,16 @@ async function appendMarked(bb: BbPluginApi, threadId: string, text: string, mar
     } catch (error) {
       if (isPreconditionRejection(error)) continue;
       const message = errorMessage(error);
+      // An explicit 4xx response is a definite rejection whatever the readback says; only a missing or lost response is ambiguous.
+      const definite = isDefiniteSendFailure(error);
       let again: QueueRow | undefined;
       try {
         again = (await bb.sdk.threads.queuedMessages.list({ threadId, signal: AbortSignal.timeout(historyLimits.readTimeoutMs) })).find((row) => row.id === last.id);
       } catch {
-        return { kind: "done", receipt: { outcome: "unknown", error: message } };
+        return { kind: "done", receipt: definite ? { outcome: "failed", error: message } : { outcome: "unknown", error: message } };
       }
       if (again && rowText(again).includes(marker)) return { kind: "done", receipt: { outcome: "appended", queuedMessageId: again.id } };
-      // A known rejection (a definite 4xx) with the row read back untouched proves the update never committed.
-      if (again && again.updatedAt === last.updatedAt && isDefiniteSendFailure(error)) return { kind: "done", receipt: { outcome: "failed", error: message } };
+      if (definite) return { kind: "done", receipt: { outcome: "failed", error: message } };
       // A row that left the queue may have dispatched with our text, so the accepted-input history decides; otherwise nothing more is written.
       const found = again ? null : await findAttentionMarker(bb, threadId, marker);
       return { kind: "done", receipt: found ?? { outcome: "unknown", error: message } };

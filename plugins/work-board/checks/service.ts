@@ -139,8 +139,13 @@ function createService(bb: BbPluginApi) {
   }
 
   async function markUnknown(attempt: AttemptRow, reason: string, state: State, link: string) {
-    if (!store.advance(attempt.attempt_id, ["sending"], "outcome='unknown', error=?", reason)) return;
-    history.deliveryUnknown(attempt.tick_id);
+    // The outcome and its count commit together: a failure between them leaves neither.
+    const marked = db.transaction(() => {
+      if (!store.advance(attempt.attempt_id, ["sending"], "outcome='unknown', error=?", reason)) return false;
+      history.deliveryUnknown(attempt.tick_id);
+      return true;
+    })();
+    if (!marked) return;
     state.deliveryError = `Delivery outcome unknown (${reason}). Choose Retry in the repository checks settings to send the report again; it may duplicate.`;
     await push(link, state, new Error(state.deliveryError));
   }
@@ -297,6 +302,8 @@ function createService(bb: BbPluginApi) {
       state.refreshFailures = refreshFailed ? (state.refreshFailures ?? 0) + 1 : 0;
       state.refreshRetryAt = refreshFailed ? Date.now() + Math.min(interval * 2 ** Math.min(state.refreshFailures - 1, 6), Math.max(interval, MAX_REFRESH_BACKOFF_MS)) : undefined;
       state.failureStage = refreshFailed ? "refresh" : code >= 2 ? "script" : null;
+      // The execution diagnostic is part of the state the staging transaction saves, so a restart shows the right one.
+      state.error = code >= 2 ? result.output : null;
       const report = reportContents(code, result.output);
       history.result(trackerId, link, tickId, now, report.items, refreshFailed ? "refresh" : code >= 2 ? "script" : undefined);
 
@@ -324,12 +331,12 @@ function createService(bb: BbPluginApi) {
       } else if (code !== 0 || report.changes.waiting || result.snapshot !== null) history.suppress(tickId);
       // A report still pending is retried at the normal cadence, whatever the refresh deadline says.
       if (state.refreshRetryAt && !store.delivery(trackerId)?.report_id) state.nextRun = state.refreshRetryAt;
-      state.error = code >= 2 ? result.output : null;
       if (delivery.status === "blocked") state.deliveryError = delivery.error ?? state.deliveryError ?? null;
       store.save(trackerId, state);
     } catch (error) {
       if (!controller.signal.aborted) {
-        state.error = String(error);
+        // An error with a report pending is that report's delivery error, cleared by its acceptance; otherwise it is the run's.
+        if (store.delivery(trackerId)?.report_id) state.deliveryError = String(error); else state.error = String(error);
         store.save(trackerId, state);
         await push(link, state, error);
         store.save(trackerId, state);

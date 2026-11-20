@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { deliverWithReceipt, receiptPolling } from "../steer";
+import { deliverWithReceipt, historyLimits, receiptPolling } from "../steer";
 import { attentionMarker } from "./service";
 import { BB_PROJECT, goLive, MANAGER, setup } from "./fixtures";
 
@@ -222,6 +222,21 @@ describe("deliverWithReceipt", () => {
     f.threads.updateRejection = Object.assign(new Error("changed"), { status: 409 });
     expect(await deliverWithReceipt(f.bb, MANAGER, "text", marker)).toMatchObject({ outcome: "queued" });
     expect(f.threads.sends).toBe(1);
+  });
+
+  it("reports a definite rejection of the append as failed even when the readback fails, while a lost response stays unknown", async () => {
+    const f = await seed();
+    const limits = historyLimits.readTimeoutMs;
+    historyLimits.readTimeoutMs = 50;
+    try {
+      f.threads.updateRejection = Object.assign(new Error("forbidden"), { status: 403 });
+      f.threads.queueHangOnCall = f.threads.queueCalls + 2; // the readback after the rejected update never answers
+      expect(await deliverWithReceipt(f.bb, MANAGER, "text", marker)).toMatchObject({ outcome: "failed", error: "forbidden" });
+      f.threads.updateRejection = Object.assign(new Error("socket closed"), {});
+      f.threads.queueHangOnCall = f.threads.queueCalls + 2;
+      expect(await deliverWithReceipt(f.bb, MANAGER, "text", marker)).toMatchObject({ outcome: "unknown" });
+    } finally { historyLimits.readTimeoutMs = limits; }
+    expect(f.threads.sends).toBe(0);
   });
 
   it("reports a definite rejection of the append, with the row read back unchanged, as failed and writes nothing", async () => {

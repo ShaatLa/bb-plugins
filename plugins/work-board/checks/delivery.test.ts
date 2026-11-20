@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { receiptPolling } from "../steer";
 import { QUEUED_NOTICE_SEPARATOR } from "../steer";
 import { checksTuning } from "./service";
@@ -109,11 +109,15 @@ describe("definite failure and uncertainty", () => {
     expect(f.attempts()).toMatchObject([{ outcome: "sending" }]);
     expect(f.state().lastReport).toBeUndefined();
     expect(f.state().deliveredAt).toBeUndefined();
+    expect(f.service.status(f.tracker.id)).toMatchObject({ error: null, deliveryError: expect.stringContaining("disk full"), failureStage: "delivery" });
+    // Disabled, the runner still drains the accepted report; the commit error it left goes with the acceptance.
+    f.service.setEnabled(f.tracker.id, false);
     f.db.exec("DROP TRIGGER fail_promote");
     await f.tick();
     expect(f.threads.sends).toBe(1);
     expect(accepted(f)).toHaveLength(1);
     expect(f.state().lastReport).toMatchObject({ manager: MANAGER });
+    expect(f.service.status(f.tracker.id)).toMatchObject({ pending: null, error: null, deliveryError: null, failureStage: null });
   });
 
   it("clears the delivery error and stage an acceptance resolves, on a disabled drain and under refresh backoff, and keeps an independent failure", async () => {
@@ -147,6 +151,35 @@ describe("definite failure and uncertainty", () => {
     const stagedTick = f.delivery()!.pending_tick;
     expect(f.db.prepare("SELECT delivery_unknown FROM checks_ticks WHERE tick=?").get(stagedTick)).toEqual({ delivery_unknown: 1 });
     expect((await f.harness.runCli(["checks", "status", "--project", "CHK"])).stdout).toContain("blocked: delivery unknown, Retry needed");
+  });
+
+  it("marks an attempt unknown and counts it in one transaction, so a failure between them leaves neither", async () => {
+    const f = await make();
+    unknownSend(f);
+    await f.tick();
+    const stagedTick = f.delivery()!.pending_tick;
+    f.db.exec("CREATE TRIGGER fail_count BEFORE UPDATE OF delivery_unknown ON checks_ticks BEGIN SELECT RAISE(ABORT, 'disk full'); END");
+    await expect(f.tick()).rejects.toThrow(/disk full/);
+    expect(f.attempts()[0]).toMatchObject({ outcome: "sending" });
+    expect(f.db.prepare("SELECT delivery_unknown FROM checks_ticks WHERE tick=?").get(stagedTick)).toEqual({ delivery_unknown: 0 });
+    f.db.exec("DROP TRIGGER fail_count");
+    await f.tick();
+    expect(f.attempts()[0]).toMatchObject({ outcome: "unknown" });
+    expect(f.service.stats(f.tracker.id, 1).deliveryUnknown).toBe(1);
+  });
+
+  it("persists the execution diagnostic and stage with the staged report, before any delivery step", async () => {
+    const f = await make();
+    f.output("boom", 2);
+    let release!: () => void;
+    f.threads.getGateOnce = new Promise((resolve) => { release = resolve; });
+    const running = f.tick();
+    await vi.waitFor(() => expect(f.delivery()?.report_id).toBeTruthy());
+    // Held at the manager lookup: what a restart here would read.
+    expect(f.state()).toMatchObject({ exitCode: 2, failureStage: "script", error: "boom\n" });
+    release();
+    await running;
+    expect(f.state()).toMatchObject({ failureStage: "script", error: "boom\n" });
   });
 
   it("enters recovery on the stored thread after a lost write response, even after a manager change, and starts no second attempt", async () => {
