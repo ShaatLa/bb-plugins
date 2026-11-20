@@ -27,6 +27,7 @@ export async function closureFixture(options: { projectSettings?: Record<string,
     failGet: false,
     getGate: null as Promise<void> | null,
     archiveGate: null as Promise<void> | null,
+    childGate: null as Promise<void> | null,
   };
   const host = createFakePluginHost({ pluginId: "work-board" });
   const { bb, harness } = host;
@@ -45,7 +46,7 @@ export async function closureFixture(options: { projectSettings?: Record<string,
   });
   harness.sdk.stub("threads.unarchive", async ({ threadId }: { threadId: string }) => { world.unarchived.push(threadId); return { ok: true }; });
   harness.sdk.stub("threads.queue.list", async ({ threadId }: { threadId: string }) => Array.from({ length: world.queue.get(threadId) ?? 0 }, () => ({})));
-  harness.sdk.stub("threads.childSummary", async ({ threadId }: { threadId: string }) => ({ nonDeletedChildCount: 0, unarchivedDescendantCount: world.children.get(threadId) ?? 0 }));
+  harness.sdk.stub("threads.childSummary", async ({ threadId }: { threadId: string }) => { if (world.childGate) await world.childGate; return { nonDeletedChildCount: 0, unarchivedDescendantCount: world.children.get(threadId) ?? 0 }; });
   harness.sdk.stub("threads.queuedMessages.list", async () => []);
   harness.sdk.stub("threads.send", async ({ threadId, input }: { threadId: string; input: Array<{ text: string }> }) => {
     if (world.failSend.has(threadId)) throw new Error("send failed");

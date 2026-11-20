@@ -16,6 +16,9 @@ export interface ClosureThread {
   taskId: string;
   threadId: string;
   linkId: string | null;
+  /** The link as it was at the snapshot: a link that changed since is not the one this row was made for. */
+  linkOrigin: string | null;
+  linkCreated: boolean;
   liveStatus: string;
   action: ClosureAction;
   reason: string | null;
@@ -32,6 +35,8 @@ interface ClosureThreadRow {
   task_id: string;
   thread_id: string;
   link_id: string | null;
+  link_origin: string | null;
+  link_created: number;
   live_status: string;
   action: ClosureAction;
   reason: string | null;
@@ -54,6 +59,8 @@ function fromRow(row: ClosureThreadRow): ClosureThread {
     taskId: row.task_id,
     threadId: row.thread_id,
     linkId: row.link_id,
+    linkOrigin: row.link_origin,
+    linkCreated: row.link_created === 1,
     liveStatus: row.live_status,
     action: row.action,
     reason: row.reason,
@@ -77,7 +84,7 @@ export const REASON = {
 
 export function createClosureStore(db: Database) {
   const insertStatement = db.prepare(
-    `INSERT INTO closure_threads (closure_id, thread_id, link_id, live_status, action, reason) VALUES (?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO closure_threads (closure_id, thread_id, link_id, live_status, link_origin, link_created, action, reason) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
   );
   // Threads that have a closure row, and reviewers with a pending archive intent: a lifecycle event of any other
   // thread costs no query here. Loaded once; a rolled-back insert only leaves a harmless extra entry.
@@ -87,8 +94,8 @@ export function createClosureStore(db: Database) {
     watched ??= new Set(db.prepare<[], { thread_id: string }>("SELECT DISTINCT thread_id FROM closure_threads").all().map((entry) => entry.thread_id));
     return watched.has(threadId);
   };
-  const insertRow = (closureId: string, threadId: string, linkId: string | null, liveStatus: string, action: ClosureAction, reason: string | null) => {
-    insertStatement.run(closureId, threadId, linkId, liveStatus, action, reason);
+  const insertRow = (closureId: string, threadId: string, link: { id: string; liveStatus: string; origin: string | null; created: boolean }, action: ClosureAction, reason: string | null) => {
+    insertStatement.run(closureId, threadId, link.id, link.liveStatus, link.origin, link.created ? 1 : 0, action, reason);
     watching(threadId);
     watched!.add(threadId);
   };
@@ -100,12 +107,12 @@ export function createClosureStore(db: Database) {
   function open(taskId: string, closerThreadId: string | null, archiveOn: boolean): string {
     const id = randomUUID();
     db.prepare("INSERT INTO task_closures (id, task_id, closed_at, closed_by_thread) VALUES (?, ?, ?, ?)").run(id, taskId, new Date().toISOString(), closerThreadId);
-    const links = db.prepare<[string], { id: string; thread_id: string; live_status: string; created_for_task: number }>(
-      "SELECT id, thread_id, live_status, created_for_task FROM task_threads WHERE task_id = ?",
+    const links = db.prepare<[string], { id: string; thread_id: string; live_status: string; created_for_task: number; link_origin: string | null }>(
+      "SELECT id, thread_id, live_status, created_for_task, link_origin FROM task_threads WHERE task_id = ?",
     ).all(taskId);
     for (const link of links) {
       const candidate = link.created_for_task === 1 && archiveOn;
-      insertRow(id, link.thread_id, link.id, link.live_status, candidate ? "candidate" : "kept", candidate ? null : archiveOn ? REASON.notCreated : REASON.off);
+      insertRow(id, link.thread_id, { id: link.id, liveStatus: link.live_status, origin: link.link_origin, created: link.created_for_task === 1 }, candidate ? "candidate" : "kept", candidate ? null : archiveOn ? REASON.notCreated : REASON.off);
     }
     return id;
   }
@@ -141,14 +148,15 @@ export function createClosureStore(db: Database) {
    * A link written after the close: it gets its own snapshot row under the current closure. An authoritative spawn
    * link upgrades a row title discovery already wrote as kept, instead of adding a second one.
    */
-  function addLate(taskId: string, link: { id: string; threadId: string; liveStatus: string; spawned: boolean }, archiveOn: boolean): string | null {
+  function addLate(taskId: string, link: { id: string; threadId: string; liveStatus: string; spawned: boolean; origin: string | null }, archiveOn: boolean): string | null {
     const closureId = currentId(taskId);
     if (!closureId) return null;
     const candidate = link.spawned && archiveOn;
     const existing = row(closureId, link.threadId);
-    if (!existing) insertRow(closureId, link.threadId, link.id, link.liveStatus, candidate ? "candidate" : "kept", candidate ? null : archiveOn ? REASON.notCreated : REASON.off);
+    const snapshot = { id: link.id, liveStatus: link.liveStatus, origin: link.origin, created: link.spawned };
+    if (!existing) insertRow(closureId, link.threadId, snapshot, candidate ? "candidate" : "kept", candidate ? null : archiveOn ? REASON.notCreated : REASON.off);
     else if (existing.action === "kept" && candidate)
-      db.prepare("UPDATE closure_threads SET action = 'candidate', reason = NULL, link_id = ?, live_status = ? WHERE closure_id = ? AND thread_id = ?").run(link.id, link.liveStatus, closureId, link.threadId);
+      db.prepare("UPDATE closure_threads SET action = 'candidate', reason = NULL, link_id = ?, live_status = ?, link_origin = ?, link_created = 1 WHERE closure_id = ? AND thread_id = ?").run(link.id, link.liveStatus, link.origin, closureId, link.threadId);
     return closureId;
   }
 
@@ -165,12 +173,12 @@ export function createClosureStore(db: Database) {
    * bound to `on_idle` is retired, and the rows that may still notify the thread are returned.
    */
   function markActive(threadId: string): ClosureThread[] {
-    if (reviewers.has(threadId)) db.prepare("UPDATE task_plan_reviews SET archive_seen_active = 1 WHERE reviewer_thread = ? AND archive_state = 'pending'").run(threadId);
+    if (reviewers.has(threadId)) db.prepare("UPDATE task_plan_reviews SET archive_seen_active = 1 WHERE reviewer_thread = ? AND archive_state IN ('pending', 'archiving')").run(threadId);
     if (!watching(threadId)) return [];
     const found = db.prepare<[string], ClosureThreadRow>(
       `UPDATE closure_threads SET seen_active = 1,
-         reason = CASE WHEN action = 'on_idle' THEN '${REASON.newTurn}' ELSE reason END,
-         action = CASE WHEN action = 'on_idle' THEN 'kept' ELSE action END
+         reason = CASE WHEN action IN ('on_idle', 'candidate', 'evaluating') THEN '${REASON.newTurn}' ELSE reason END,
+         action = CASE WHEN action IN ('on_idle', 'candidate', 'evaluating') THEN 'kept' ELSE action END
        WHERE thread_id = ? AND action NOT IN ('archiving', 'archived')
          AND closure_id IN (SELECT c.id FROM task_closures c WHERE ${CURRENT_CLOSURE})
        RETURNING *, (SELECT task_id FROM task_closures WHERE id = closure_id) AS task_id`,
@@ -183,7 +191,9 @@ export function createClosureStore(db: Database) {
     if (!watching(threadId)) return [];
     return db.prepare<[string], { closure_id: string }>(
       `UPDATE closure_threads SET action = 'evaluating'
-       WHERE thread_id = ? AND action = 'on_idle' AND seen_active = 0
+       WHERE thread_id = ? AND seen_active = 0
+         AND (action = 'on_idle' OR (action = 'candidate' AND (live_status IN ('working', 'starting')
+           OR closure_id IN (SELECT id FROM task_closures WHERE closed_by_thread = closure_threads.thread_id))))
          AND closure_id IN (SELECT c.id FROM task_closures c WHERE ${CURRENT_CLOSURE})
        RETURNING closure_id`,
     ).all(threadId).map((entry) => entry.closure_id);
@@ -197,12 +207,12 @@ export function createClosureStore(db: Database) {
     ).get(taskId, threadId) !== undefined;
   }
 
-  /** An archive this plugin started or finished for the card's current closure. */
-  function ownArchive(taskId: string, threadId: string): boolean {
-    return db.prepare<[string, string], { one: number }>(
-      `SELECT 1 AS one FROM closure_threads ct JOIN task_closures c ON c.id = ct.closure_id
+  /** The link of an archive this plugin started or finished for the card's current closure (null: none). */
+  function ownArchiveLink(taskId: string, threadId: string): string | null {
+    return db.prepare<[string, string], { link_id: string | null }>(
+      `SELECT ct.link_id FROM closure_threads ct JOIN task_closures c ON c.id = ct.closure_id
        WHERE c.task_id = ? AND ct.thread_id = ? AND ct.action IN ('archiving', 'archived') AND ${CURRENT_CLOSURE} LIMIT 1`,
-    ).get(taskId, threadId) !== undefined;
+    ).get(taskId, threadId)?.link_id ?? null;
   }
 
   /** `thread.unarchived` clears the match of an archive that was ours: a later archive is the owner's. */
@@ -210,11 +220,18 @@ export function createClosureStore(db: Database) {
     db.prepare("UPDATE closure_threads SET action = 'kept', reason = 'unarchived' WHERE thread_id = ? AND action = 'archived'").run(threadId);
   }
 
-  /** The link the row was snapshotted from, still there and still marked as spawned by Work Board. */
-  function linkIsSpawned(linkId: string | null, taskId: string, threadId: string): boolean {
-    return linkId !== null && db.prepare<[string, string, string], { one: number }>(
-      "SELECT 1 AS one FROM task_threads WHERE id = ? AND task_id = ? AND thread_id = ? AND created_for_task = 1",
-    ).get(linkId, taskId, threadId) !== undefined;
+  /** The link the row was snapshotted from: same id, thread, origin and provenance (a reattach or a manual upsert changes them). */
+  function linkUnchanged(entry: ClosureThread): boolean {
+    return entry.linkId !== null && db.prepare<[string, string, string, number, string | null], { one: number }>(
+      "SELECT 1 AS one FROM task_threads WHERE id = ? AND task_id = ? AND thread_id = ? AND created_for_task = ? AND link_origin IS ?",
+    ).get(entry.linkId, entry.taskId, entry.threadId, entry.linkCreated ? 1 : 0, entry.linkOrigin) !== undefined;
+  }
+
+  /** A thread an enabled schedule dispatches to between its occurrences. */
+  function scheduleTarget(threadId: string): boolean {
+    return db.prepare<[string], { one: number }>(
+      "SELECT 1 AS one FROM task_schedules WHERE enabled = 1 AND json_extract(target, '$.kind') = 'thread' AND json_extract(target, '$.threadId') = ? LIMIT 1",
+    ).get(threadId) !== undefined;
   }
 
   /** The other cards a thread is linked to, with their status and policy, for the "other open work" check. */
@@ -231,16 +248,25 @@ export function createClosureStore(db: Database) {
 
   /** A reviewer's idle: a pending intent that saw a new turn is retired, the others are claimed for the archive check. */
   function claimReviewerIdle(threadId: string): Array<{ id: number; taskId: string; claimed: boolean }> {
-    if (!reviewers.delete(threadId)) return [];
-    return db.prepare<[string], { id: number; task_id: string; archive_state: string }>(
+    if (!reviewers.has(threadId)) return [];
+    // The reviewer stays watched until its final claim: a turn that starts during the checks must still be seen.
+    const claimed = db.prepare<[string], { id: number; task_id: string; archive_state: string }>(
       `UPDATE task_plan_reviews SET archive_state = CASE WHEN archive_seen_active = 1 THEN 'kept' ELSE 'archiving' END
        WHERE reviewer_thread = ? AND archive_state = 'pending' RETURNING id, task_id, archive_state`,
-    ).all(threadId).map((review) => ({ id: review.id, taskId: review.task_id, claimed: review.archive_state === "archiving" }));
+    ).all(threadId);
+    if (claimed.length && !claimed.some((review) => review.archive_state === "archiving")) reviewers.delete(threadId);
+    return claimed.map((review) => ({ id: review.id, taskId: review.task_id, claimed: review.archive_state === "archiving" }));
   }
 
   function setReviewerState(id: number, from: "archiving", to: "archived" | "kept"): boolean {
-    return db.prepare("UPDATE task_plan_reviews SET archive_state = ? WHERE id = ? AND archive_state = ?").run(to, id, from).changes > 0;
+    const changed = db.prepare("UPDATE task_plan_reviews SET archive_state = ? WHERE id = ? AND archive_state = ?").run(to, id, from).changes > 0;
+    const thread = db.prepare<[number], { reviewer_thread: string | null }>("SELECT reviewer_thread FROM task_plan_reviews WHERE id = ?").get(id)?.reviewer_thread;
+    if (thread && !db.prepare<[string], { one: number }>("SELECT 1 AS one FROM task_plan_reviews WHERE reviewer_thread = ? AND archive_state IN ('pending', 'archiving') LIMIT 1").get(thread)) reviewers.delete(thread);
+    return changed;
   }
+
+  const reviewerSeenActive = (id: number): boolean =>
+    db.prepare<[number], { seen: number }>("SELECT archive_seen_active AS seen FROM task_plan_reviews WHERE id = ?").get(id)?.seen === 1;
 
   const latestReviewId = (taskId: string): number | null =>
     db.prepare<[string], { id: number | null }>("SELECT MAX(id) AS id FROM task_plan_reviews WHERE task_id = ?").get(taskId)?.id ?? null;
@@ -297,7 +323,7 @@ export function createClosureStore(db: Database) {
     return { unknownNotices: unknown };
   }
 
-  return { open, reopen, currentId, isCurrent, closedBy, rows, row, addLate, claim, markActive, claimIdle, linkIsSpawned, claimReviewerIdle, setReviewerState, latestReviewId, reviewPending, holdsLink, ownArchive, clearArchived, otherLinks, reviewsOpenFor, claimNotice, finishNotice, reviewerIntent, recoverOnStartup };
+  return { open, reopen, currentId, isCurrent, closedBy, rows, row, addLate, claim, markActive, claimIdle, linkUnchanged, scheduleTarget, claimReviewerIdle, setReviewerState, latestReviewId, reviewPending, reviewerSeenActive, holdsLink, ownArchiveLink, clearArchived, otherLinks, reviewsOpenFor, claimNotice, finishNotice, reviewerIntent, recoverOnStartup };
 }
 
 export type ClosureStore = ReturnType<typeof createClosureStore>;

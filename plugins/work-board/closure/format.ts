@@ -5,7 +5,7 @@ import type { ClosedThread } from "../shared/contract";
  * lives here, in the tool output, and only for sessions that are or will be archived: a kept session may own other work.
  */
 export function closedThreadsBlock(key: string, threads: readonly ClosedThread[]): string {
-  if (!threads.length) return "";
+  if (!threads.length) return `${key} closed. No linked sessions.`;
   const archived = threads.filter((entry) => entry.action === "archived").map((entry) => entry.threadId);
   const later = threads.filter((entry) => entry.action === "on_idle").map((entry) => entry.threadId);
   const kept = threads.filter((entry) => entry.action === "kept");

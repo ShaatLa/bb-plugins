@@ -439,7 +439,7 @@ export function handlers(
           threadId: thread.id,
           body: `Dispatched to existing thread ${thread.title ?? thread.titleFallback ?? thread.id}`,
         });
-        lateClosure = snapshotLateLink(store.tasks, task.id, link, false);
+        lateClosure = snapshotLateLink(store.tasks, task.id, link, false, "delegate_existing");
       });
       await store.closures.lateLink(lateClosure, thread.id);
       if (skippedMove && !planWarning) await noticeSkippedMove(bb, store.tasks, store.tasks.getTask(task.id) ?? task, thread.id);
@@ -547,7 +547,7 @@ export function handlers(
           threadId: thread.id,
           body: `Dispatched to ${preset.name}`,
         });
-        lateClosure = snapshotLateLink(store.tasks, task.id, attached, true);
+        lateClosure = snapshotLateLink(store.tasks, task.id, attached, true, "delegate_spawn");
         return attached;
       });
       await store.closures.lateLink(lateClosure, thread.id);

@@ -219,7 +219,8 @@ export async function registerLifecycle(
   bb.events.on("thread.archived", async ({ thread }) => {
     for (const link of store.tasks.listTaskThreadsByThreadId(thread.id)) {
       // An archive this plugin made for the card: only that link goes, with no fallback parent and no second line.
-      if (store.tasks.closures.ownArchive(link.taskId, thread.id)) {
+      // Only the link the archive was decided for goes; a reattached pair is reconciled like any other.
+      if (store.tasks.closures.ownArchiveLink(link.taskId, thread.id) === link.id) {
         store.tasks.deleteTaskThread(link.id);
         publishThreadsChanged(bb, link.taskId);
         continue;

@@ -590,11 +590,15 @@ export function restoreProject(
     }
     db.pragma("defer_foreign_keys = ON");
     for (const { table, row, keys } of changes) {
+      // An overwrite that gives a link id to another thread must not keep the local authority to archive it.
+      const previousThread = table === "task_threads" ? db.prepare<[SqlValue], { thread_id: string }>("SELECT thread_id FROM task_threads WHERE id = ?").get(row.id!)?.thread_id : undefined;
+      const replacedLink = previousThread !== undefined && previousThread !== row.thread_id;
       const columns = Object.keys(row);
       const updates = columns.filter((key) => !keys.includes(key));
       db.prepare<SqlValue[]>(
         `INSERT INTO ${table} (${columns.join(", ")}) VALUES (${columns.map(() => "?").join(", ")}) ON CONFLICT (${keys.join(", ")}) DO UPDATE SET ${updates.map((key) => `${key} = excluded.${key}`).join(", ")}`,
       ).run(...columns.map((key) => row[key]!));
+      if (replacedLink) db.prepare<[SqlValue]>("UPDATE task_threads SET created_for_task = 0, link_origin = NULL WHERE id = ?").run(row.id!);
     }
     for (const record of records)
       if (record.activityHistory)

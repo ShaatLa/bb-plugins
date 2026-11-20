@@ -513,8 +513,9 @@ const taskMutationResultSchema = z.discriminatedUnion("ok", [
       task: taskSchema,
       /** Only when the change closed the card: the fate of every linked session. */
       closedThreads: z.array(closedThreadSchema).optional(),
-      /** Only when the call asked to attach its own thread: whether that link was made. */
+      /** Only when the call asked to attach its own thread: whether that link was made, and why not. */
       attached: z.boolean().optional(),
+      attachWarning: z.string().optional(),
     })
     .strict(),
   z.object({ ok: z.literal(false), error: tasksDomainErrorSchema }).strict(),
@@ -570,8 +571,8 @@ const updateTaskInputSchema = z
     epicId: idSchema.nullable().optional(),
     labelIds: taskLabelsSchema.optional(),
     agentThreadId: evidenceThreadSchema.nullable().optional(),
-    /** The caller's own session, attached to the card in the same write (`update --progress` from an unattached card session). */
-    attachThread: z.object({ threadId: z.string().startsWith("thr_"), title: nonBlankStringSchema, liveStatus: z.enum(["starting", "working", "idle", "completed", "failed"]) }).strict().optional(),
+    /** Attach the calling thread (`agentThreadId`) to the card in the same write; only with a progress note, as `update --progress` does. */
+    attachCaller: z.boolean().optional(),
     authorName: nonBlankStringSchema.default("You"),
   })
   .strict()

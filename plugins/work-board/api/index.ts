@@ -26,6 +26,7 @@ import {
   type Attachment as StoredAttachment,
   type Comment as StoredComment,
   type Task as StoredTask,
+  type TaskThreadLiveStatus,
   type TasksStore,
 } from "../db";
 import {
@@ -35,7 +36,8 @@ import {
 } from "../attachments";
 import { deliverCommentToLatestAgent, notifyThread } from "../steer";
 import { getTaskCostSpans } from "../costs";
-import { reconcileTaskThreads } from "../lifecycle/thread-links";
+import { reconcileTaskThreads, threadLiveStatus } from "../lifecycle/thread-links";
+import { truncateToWidth } from "../shared/text-measure";
 import { discoverRunningTaskThreads } from "../lifecycle/discovery";
 import { displayName } from "../shared/display-name";
 import { evaluateThreadHealth } from "../shared/thread-health";
@@ -1123,14 +1125,32 @@ export function registerHandlers(
           validateTaskLabels(store, current.projectId, input.labelIds);
         }
 
+        // The SDK reads that attaching the caller needs come first; the transaction below re-checks the local conditions.
+        let attachment: { threadId: string; parentThreadId: string | null; title: string; liveStatus: TaskThreadLiveStatus } | undefined;
+        let attachWarning: string | undefined;
+        if (input.attachCaller) {
+          const caller = input.agentThreadId;
+          try {
+            if (!caller || input.progressNote == null) throw new Error("it needs the calling thread and a progress note");
+            const role = await cardRole(bb, store, current.id, caller);
+            if (role.parentThreadId && !role.attached && !role.helper) {
+              const thread = await bb.sdk.threads.get({ threadId: caller });
+              if (thread.archivedAt != null || thread.deletedAt != null || thread.status === "stopping")
+                throw new Error("Choose a thread that is not archived, deleted, or stopping");
+              attachment = { threadId: caller, parentThreadId: role.parentThreadId, title: truncateToWidth(thread.title ?? thread.titleFallback ?? current.key, 120), liveStatus: threadLiveStatus(thread) };
+            }
+          } catch (error) {
+            attachWarning = `Could not attach ${caller ?? "the caller"} to the card: ${errorMessage(error)}; run bb work-board attach KEY`;
+          }
+        }
         const closureBefore = store.tasks.closures.currentId(current.id);
         const result = store.transaction(() => {
           const beforeLabelIds = store.tasks
             .listTaskLabels(current.id)
             .map((link) => link.labelId);
           // The caller's own session is attached first, so the closure snapshot below includes it.
-          const attached = input.attachThread !== undefined && !current.archivedAt && canTakeWorkerLink(bb, current.id)
-            ? attachManualLink(store.tasks, current.id, input.attachThread) : undefined;
+          const attached = attachment && !current.archivedAt && canTakeWorkerLink(bb, current.id)
+            ? attachManualLink(store.tasks, current.id, attachment) : undefined;
           const updated = store.tasks.updateTask(current.id, {
             closerThreadId: input.agentThreadId ?? null,
             title: input.title,
@@ -1200,7 +1220,7 @@ export function registerHandlers(
         if (result.attached) bb.realtime.publish("threads:changed", { taskId: result.task.id });
         const closureAfter = store.tasks.closures.currentId(current.id);
         const closedThreads = closureAfter && closureAfter !== closureBefore ? await store.closures.onClosed(closureAfter) : undefined;
-        return { ok: true, task: result.task, ...(closedThreads ? { closedThreads } : {}), ...(result.attached === undefined ? {} : { attached: result.attached }) };
+        return { ok: true, task: result.task, ...(closedThreads ? { closedThreads } : {}), ...(result.attached === undefined ? {} : { attached: result.attached }), ...(attachWarning ? { attachWarning } : {}) };
       } catch (error) {
         if (error instanceof SecretDetectedError) {
           return {

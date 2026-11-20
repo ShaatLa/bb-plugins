@@ -151,7 +151,7 @@ export function createScheduledStore(bb:BbPluginApi,store:TasksApiStore) {
    // The run's stored execution target tells a fresh spawn from a reused session; only a spawn is Work Board's to archive.
    const spawned=r.execution!==null&&r.execution.targetThreadId===undefined;
    const link=store.tasks.upsertTaskThread({taskId:r.taskId,threadId:input.threadId,title:input.title,presetName:input.presetName,liveStatus:input.liveStatus??"working",linkOrigin:spawned?"scheduled_spawn":"scheduled_existing",createdForTask:spawned});
-   snapshotLateLink(store.tasks,r.taskId,link,spawned);
+   snapshotLateLink(store.tasks,r.taskId,link,spawned,spawned?"scheduled_spawn":"scheduled_existing");
    return updateRun(runId,{state:task.status==="done"?"completed":task.status==="canceled"?"canceled":"running",threadId:input.threadId,requestId:input.requestId,startedAt:now.toISOString(),resolvedAt:null,finishedAt:["done","canceled"].includes(task.status)?now.toISOString():null,reason:null},now);
   });
  }

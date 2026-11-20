@@ -31,19 +31,30 @@ export function createClosureService(bb: BbPluginApi, tasks: TasksStore) {
     return { task, project };
   }
 
-  /** The synchronous part of every archive decision; it runs before the SDK reads and again right before the call. */
-  function guard(entry: ClosureThread): string | null {
+  /** What the thread's other work says about archiving it; shared by closure rows and plan reviewers. */
+  function otherWork(threadId: string, exceptTaskId: string): string | null {
+    const open = closures.otherLinks(threadId, exceptTaskId).find((link) => link.open);
+    if (open) return `linked to ${open.key}`;
+    if (closures.reviewsOpenFor(threadId)) return "reviewer of an open plan";
+    if (closures.scheduleTarget(threadId)) return "scheduled executor";
+    return null;
+  }
+
+  /** The disqualifiers that do not depend on the turn: known at the close, and again just before the archive. */
+  function eligibility(entry: ClosureThread): string | null {
     const card = closedCard(entry.closureId, entry.taskId);
     if (!card) return "card reopened";
     if (card.project.archiveThreadsOnClose === "off") return REASON.off;
+    if (!entry.linkCreated || !closures.linkUnchanged(entry)) return "link changed";
+    return otherWork(entry.threadId, entry.taskId);
+  }
+
+  /** The synchronous part of the decision of a claimed row; it runs before the SDK reads and again right before the call. */
+  function guard(entry: ClosureThread): string | null {
     const current = closures.row(entry.closureId, entry.threadId);
     if (!current || current.action !== "evaluating") return "decided elsewhere";
     if (current.seenActive) return REASON.newTurn;
-    if (!closures.linkIsSpawned(current.linkId, entry.taskId, entry.threadId)) return "link changed";
-    const open = closures.otherLinks(entry.threadId, entry.taskId).find((link) => link.open);
-    if (open) return `linked to ${open.key}`;
-    if (closures.reviewsOpenFor(entry.threadId)) return "reviewer of an open plan";
-    return null;
+    return eligibility(current);
   }
 
   /** The reads every archive needs, for a closure row or a reviewer; any doubt keeps the thread. */
@@ -62,6 +73,17 @@ export function createClosureService(bb: BbPluginApi, tasks: TasksStore) {
     }
   }
 
+  /** A pinned, archived or deleted thread is kept; a failed read is not a reason yet, the idle decision reads again. */
+  async function pinned(threadId: string): Promise<string | null> {
+    try {
+      const thread = await bb.sdk.threads.get({ threadId });
+      if (thread.archivedAt != null || thread.deletedAt != null) return "already archived or deleted";
+      return thread.pinnedAt != null ? "pinned" : null;
+    } catch {
+      return null;
+    }
+  }
+
   /** Calls the archive; true only when the SDK reports the thread archived. */
   async function archive(threadId: string): Promise<boolean> {
     try {
@@ -76,12 +98,12 @@ export function createClosureService(bb: BbPluginApi, tasks: TasksStore) {
    * Writes a closed card's line and releases its link once. A link that was detached or replaced meanwhile is left
    * alone and, for a plain release, gets no line; `always` writes the line even when the archive event removed the link first.
    */
-  function release(taskId: string, linkId: string | null, threadId: string, text: string, always = false): void {
-    const linked = linkId !== null && tasks.getTaskThread(linkId) !== undefined;
+  function release(entry: ClosureThread, text: string, always = false): void {
+    const linked = closures.linkUnchanged(entry);
     if (!linked && !always) return;
-    if (linked) tasks.deleteTaskThread(linkId!);
-    tasks.createComment({ taskId, threadId, kind: "system", authorName: "Work Board", body: text });
-    publish(taskId, "threads:changed", "comments:changed");
+    if (linked) tasks.deleteTaskThread(entry.linkId!);
+    tasks.createComment({ taskId: entry.taskId, threadId: entry.threadId, kind: "system", authorName: "Work Board", body: text });
+    publish(entry.taskId, "threads:changed", "comments:changed");
   }
 
   /**
@@ -91,8 +113,9 @@ export function createClosureService(bb: BbPluginApi, tasks: TasksStore) {
   async function decide(entry: ClosureThread, afterTurn: boolean): Promise<void> {
     const key = tasks.getTask(entry.taskId)?.key ?? entry.taskId;
     const keep = (reason: string, from: "evaluating" | "archiving") => {
-      if (closures.claim(entry.closureId, entry.threadId, [from], "kept", { reason }) && afterTurn)
-        release(entry.taskId, entry.linkId, entry.threadId, `Thread detached (automatic): @thread:${entry.threadId} finished its turn after ${key} was closed`);
+      // The 0.59.3 release is only for the link this row was made for, on a card that is still closed.
+      if (closures.claim(entry.closureId, entry.threadId, [from], "kept", { reason }) && afterTurn && closedCard(entry.closureId, entry.taskId))
+        release(entry, `Thread detached (automatic): @thread:${entry.threadId} finished its turn after ${key} was closed`);
     };
     let reason = guard(entry);
     if (!reason) reason = await threadReason(entry.threadId);
@@ -103,7 +126,7 @@ export function createClosureService(bb: BbPluginApi, tasks: TasksStore) {
     if (!(await archive(entry.threadId))) return keep(REASON.failed, "archiving");
     // The archived event may have come first; the row is ours either way, and the line is written once.
     if (closures.claim(entry.closureId, entry.threadId, ["archiving"], "archived")) {
-      release(entry.taskId, entry.linkId, entry.threadId, `Thread archived (automatic): @thread:${entry.threadId} — ${key} was closed`, true);
+      release(entry, `Thread archived (automatic): @thread:${entry.threadId} — ${key} was closed`, true);
       bb.log.info(`Archived ${entry.threadId}: ${key} was closed (closure ${entry.closureId}, attempt ${attemptId})`);
     }
   }
@@ -114,7 +137,12 @@ export function createClosureService(bb: BbPluginApi, tasks: TasksStore) {
     if (!entry || entry.action !== "candidate") return;
     const closer = closures.closedBy(closureId);
     if (closer === threadId || entry.liveStatus === "working" || entry.liveStatus === "starting") {
-      if (entry.seenActive) closures.claim(closureId, threadId, ["candidate"], "kept", { reason: REASON.newTurn });
+      // What is known now (other work, a pin) is said now, not after the agent was told to start fresh.
+      const reason = eligibility(entry) ?? (await pinned(threadId));
+      const fresh = closures.row(closureId, threadId);
+      if (!fresh || fresh.action !== "candidate") return;
+      if (reason) closures.claim(closureId, threadId, ["candidate"], "kept", { reason });
+      else if (fresh.seenActive) closures.claim(closureId, threadId, ["candidate"], "kept", { reason: REASON.newTurn });
       else closures.claim(closureId, threadId, ["candidate"], "on_idle");
     } else if (entry.liveStatus === "idle") {
       if (closures.claim(closureId, threadId, ["candidate"], "evaluating")) await decide({ ...entry, action: "evaluating" }, false);
@@ -173,7 +201,9 @@ export function createClosureService(bb: BbPluginApi, tasks: TasksStore) {
         const latest = closures.latestReviewId(review.taskId);
         if (latest !== review.id) return "a newer review attempt exists";
         if (closures.reviewPending(threadId)) return "reviewer of another pending review";
+        if (closures.reviewerSeenActive(review.id)) return "new turn after approval";
         if (closures.reviewsOpenFor(threadId)) return "reviewer of an open plan";
+        if (closures.scheduleTarget(threadId)) return "scheduled executor";
         const own = closures.otherLinks(threadId, "").filter((link) => link.open);
         // One review-only link to the reviewed card is the reviewer's own; any other open link is card work.
         const work = own.filter((link) => !(link.task_id === review.taskId && link.link_origin === "discovery" && link.created_for_task === 0));
@@ -222,6 +252,8 @@ export function createClosureService(bb: BbPluginApi, tasks: TasksStore) {
         try {
           const to = await target();
           if (!to) throw new Error("no recipient");
+          // The card may have been reopened while the recipient was being resolved or the previous send was pending.
+          if (!closedCard(entry.closureId, entry.taskId)) return closures.finishNotice(entry.closureId, thread.id, who, "failed");
           await notifyThread(bb, to, text(to));
           closures.finishNotice(entry.closureId, thread.id, who, "sent");
         } catch (error) {

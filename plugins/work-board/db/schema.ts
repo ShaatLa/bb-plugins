@@ -554,6 +554,8 @@ const MIGRATIONS = [
      thread_id TEXT NOT NULL,
      link_id TEXT,
      live_status TEXT NOT NULL,
+     link_origin TEXT,
+     link_created INTEGER NOT NULL DEFAULT 0,
      action TEXT NOT NULL CHECK (action IN ('candidate', 'on_idle', 'evaluating', 'archiving', 'archived', 'kept')),
      reason TEXT,
      attempt_id TEXT,

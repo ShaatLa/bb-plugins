@@ -47,7 +47,7 @@ describe("the closing command tells the agent what happened to the threads", () 
     expect(result.stdout).toContain("Kept: thr_a (not created by Work Board).");
     expect(result.stdout).not.toContain("Do not reuse");
     expect(closedThreadsBlock("EXA-1", [{ threadId: "thr_x", action: "kept", reason: "pinned" }])).toBe("EXA-1 closed.\nKept: thr_x (pinned).");
-    expect(closedThreadsBlock("EXA-1", [])).toBe("");
+    expect(closedThreadsBlock("EXA-1", [])).toBe("EXA-1 closed. No linked sessions.");
   });
 
   it("prints nothing extra when the change does not close the card", async () => {
@@ -94,5 +94,15 @@ describe("the closing command tells the agent what happened to the threads", () 
     expect(await get("archiveReviewerOnApproval")).toEqual({ archiveReviewerOnApproval: "off" });
     expect((await f.harness.runCli(["config", "set", "archiveThreadsOnClose", "maybe", "--project", "EXA"])).exitCode).not.toBe(0);
     expect(f.store.tasks.getProject(f.project.id)).toMatchObject({ archiveThreadsOnClose: "off", archiveReviewerOnApproval: "off" });
+  });
+});
+
+describe("a close with no links", () => {
+  it("says so in one line", async () => {
+    const f = await setup();
+    f.card("Closed work");
+    const result = await f.harness.runCli(["update", "EXA-1", "--status", "done"]);
+    expect(result.stdout).toBe("Updated EXA-1  Closed work\nEXA-1 closed. No linked sessions.");
+    expect(JSON.parse((await f.harness.runCli(["update", "EXA-1", "--status", "in_progress", "--json"])).stdout).closedThreads).toBeUndefined();
   });
 });

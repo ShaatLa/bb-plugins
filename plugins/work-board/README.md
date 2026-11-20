@@ -542,7 +542,7 @@ fallback, a scheduled run in an existing thread, and links from before 0.60.0 or
 from an import. An idle session is archived at once; one that is still working
 (including the session that closed the card) is archived on the first idle of the
 turn that was running, and a new turn cancels that. Before every archive Work
-Board re-checks the card, the link, other open cards, an open plan review, pinned
+Board re-checks the card, the link, other open cards, an open plan review, an enabled schedule's target, pinned
 state, queued input and live children, and any doubt or SDK error keeps the thread.
 A restart cancels pending archives. The result is listed in the card's activity log
 and in the output of `bb work-board update KEY --status …` (and the board drag

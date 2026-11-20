@@ -1658,4 +1658,16 @@ describe("archive v21: thread-archive settings and links", () => {
     expect(db.prepare("SELECT COUNT(*) AS n FROM task_closures").get()).toEqual({ n: 0 });
     expect(target.harness.sdk.callsTo("threads.archive")).toEqual([]);
   });
+
+  it("C1.3: an overwrite that gives a link id to another thread drops the local authority to archive it", async () => {
+    const source = await seed();
+    const link = source.store.tasks.upsertTaskThread({ taskId: source.task.id, threadId: "thr_one", presetName: "Preset", title: "Worker", liveStatus: "idle" });
+    const target = setup();
+    await importProject(target.bb, target.store, await exportOf(source, "link-one"), false);
+    const targetDb = target.bb.storage.database();
+    targetDb.prepare("UPDATE task_threads SET created_for_task = 1, link_origin = 'delegate_spawn' WHERE id = ?").run(link.id);
+    source.bb.storage.database().prepare("UPDATE task_threads SET thread_id = 'thr_two' WHERE id = ?").run(link.id);
+    await importProject(target.bb, target.store, await exportOf(source, "link-two"), true);
+    expect(targetDb.prepare("SELECT thread_id, created_for_task, link_origin FROM task_threads WHERE id = ?").get(link.id)).toEqual({ thread_id: "thr_two", created_for_task: 0, link_origin: null });
+  });
 });

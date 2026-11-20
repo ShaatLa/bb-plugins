@@ -42,8 +42,6 @@ import {
 import { delegationRpcContract } from "../delegate/contract";
 import { handlers as delegationHandlers } from "../delegate";
 import { closedThreadsBlock } from "../closure/format";
-import { threadLiveStatus } from "../lifecycle/thread-links";
-import { truncateToWidth } from "../shared/text-measure";
 import {
   presetReasoningLevelSchema,
   tasksRpcContract,
@@ -896,19 +894,6 @@ export function registerTasksCli(
       return { attached: true, warnings: [] };
     } catch (error) {
       return { attached: false, warnings: [`Could not attach ${threadId} to the card: ${errorMessage(error)}; run bb work-board attach KEY`] };
-    }
-  };
-  // The reads that attaching the caller needs run before the update; the write itself is part of the update's transaction.
-  const prepareCardSessionAttach = async (task: { id: string; key: string }, threadId: string) => {
-    try {
-      const role = await cardRole(bb, store, task.id, threadId);
-      if (!role.parentThreadId || role.attached || role.helper) return { warnings: [] as string[] };
-      const thread = await bb.sdk.threads.get({ threadId });
-      if (thread.archivedAt != null || thread.deletedAt != null || thread.status === "stopping")
-        throw new Error("Choose a thread that is not archived, deleted, or stopping");
-      return { attach: { threadId, title: truncateToWidth(thread.title ?? thread.titleFallback ?? task.key, 120), liveStatus: threadLiveStatus(thread) }, warnings: [] as string[] };
-    } catch (error) {
-      return { warnings: [`Could not attach ${threadId} to the card: ${errorMessage(error)}; run bb work-board attach KEY`] };
     }
   };
   const templateReadCommands = Object.fromEntries(
@@ -3175,13 +3160,12 @@ ${activity.diagnostics?.inactiveSessions.map((session) => `@thread:${session.thr
                   code: "no_changes",
                 });
               }
-              const prepared = progressNote != null && ctx.threadId ? await prepareCardSessionAttach(task, ctx.threadId) : { warnings: [] as string[] };
               const result = tasksRpcContract.updateTask.output.parse(
                 await domain.updateTask(
                   tasksRpcContract.updateTask.input.parse({
                     taskId: task.id,
                     agentThreadId: ctx.threadId ?? null,
-                    attachThread: "attach" in prepared ? prepared.attach : undefined,
+                    attachCaller: progressNote != null && ctx.threadId ? true : undefined,
                     type: input.options.type,
                     epicId: input.options["no-epic"]
                       ? null
@@ -3207,11 +3191,7 @@ ${activity.diagnostics?.inactiveSessions.map((session) => `@thread:${session.thr
               const closedThreads = result.ok ? result.closedThreads : undefined;
               const attach = {
                 attached: result.ok && result.attached === true,
-                warnings: [
-                  ...prepared.warnings,
-                  ...("attach" in prepared && prepared.attach && result.ok && result.attached === undefined
-                    ? [`Could not attach ${ctx.threadId} to the card: it cannot take a worker link now; run bb work-board attach ${updated.key}`] : []),
-                ],
+                warnings: result.ok && result.attachWarning ? [result.attachWarning.replace("attach KEY", `attach ${updated.key}`)] : [],
               };
               const closedBlock = closedThreads ? closedThreadsBlock(updated.key, closedThreads) : "";
               return input.options.json
