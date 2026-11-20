@@ -1485,6 +1485,30 @@ describe("archive v20: reviewers, review history and planning", () => {
       expect(texts.filter((text) => /plan v\d/.test(text))).toEqual([]);
     });
 
+    it("reads the submitter of the resume copy from the bound attempt, not from a same-version row of another reviewer", async () => {
+      const source = await reviewed();
+      await createStructuredStore(source.bb, source.store).handlers.createQuestion({ taskId: source.task.id, kind: "decision", askedByThread: null, prompt: "Which one?", steps: [], options: ["A", "B"], mode: "single" });
+      const out = await exported(source, "same-version-rows");
+      const path = join(out, "tasks", `${source.task.id}.json`);
+      const record = JSON.parse(await readFile(path, "utf8"));
+      const pending = record.planReviews.filter((review: { outcome: string }) => review.outcome === "pending").at(-1);
+      // The bound attempt was submitted by a thread other than the version's author; a later pending row of another reviewer was not.
+      pending.submittedByThread = "thr_submitter";
+      record.planReviews.push({ ...pending, reviewer: { kind: "thread", threadId: "thr_other" }, submittedByThread: "thr_other_submitter" });
+      await writeFile(path, jsonText(record));
+      const target = setup();
+      await importProject(target.bb, target.store, out, false);
+      target.harness.sdk.stub("threads.get", async ({ threadId }: { threadId: string }) => makeThreadResponse({ id: threadId, status: "active" }));
+      target.harness.sdk.stub("threads.send", async () => undefined);
+      const handlers = createStructuredStore(target.bb, target.store).handlers;
+      const [question] = (await handlers.listQuestions({ taskId: source.task.id })).questions;
+      const settled = await handlers.answerQuestion({ questionId: question!.id, revision: question!.revision, selectedOptionIds: [question!.options[0]!.id], authorName: "Owner" });
+      expect(settled.planWake).toMatchObject({ event: "resumed", delivered: "sent" });
+      const told = (target.harness.sdk.callsTo("threads.send") as Array<[{ threadId: string; input: Array<{ text: string }> }]>).filter((call) => /plan v\d/.test(call[0].input[0]!.text)).map((call) => call[0].threadId);
+      // The reviewer of the bound attempt, its submitter and the version's author; nobody of the other row.
+      expect(told.sort()).toEqual(["thr_example", "thr_reviewer_b", "thr_submitter"]);
+    });
+
     it("enables and imports a board whose Done is named Planning, with the id planning free, and keeps its statuses unchanged", async () => {
       const source = await seed();
       const statuses = DEFAULT_TASK_STATUSES.map((status) => (status.id === "done" ? { ...status, name: "Planning" } : { ...status }));

@@ -211,6 +211,75 @@ describe("stale resume wakes", () => {
   });
 });
 
+describe("stale notices around thread lookups", () => {
+  /** Holds the first `threads.get` of one thread until released; later lookups go through. */
+  function holdFirstLookup(ctx: ReturnType<typeof setup>, threadId: string, then: "answer" | "throw") {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    let held = false;
+    let reached = false;
+    ctx.harness.sdk.stub("threads.get", async ({ threadId: asked }: { threadId: string }) => {
+      if (asked === threadId && !held) {
+        held = true;
+        reached = true;
+        await gate;
+        if (then === "throw") throw new Error("gone");
+      }
+      return makeThreadResponse({ id: asked, status: "active" });
+    });
+    return { release, reached: () => reached };
+  }
+
+  it("never lets a delayed pause arrive after its own resume", async () => {
+    const ctx = setup();
+    await ctx.inReview();
+    const hold = holdFirstLookup(ctx, "thr_reviewer_a", "answer");
+    const asking = ctx.ask();
+    await vi.waitFor(() => expect(hold.reached()).toBe(true));
+    const [question] = (await ctx.call<{ questions: TaskQuestion[] }>("listQuestions", { taskId: ctx.task.id })).questions;
+    expect((await ctx.answer(question!)).planWake).toMatchObject({ event: "resumed", delivered: "sent" });
+    hold.release();
+    expect((await asking).planWake).toBeUndefined();
+    expect(ctx.sentTo("thr_reviewer_a").map((text) => (resumedText.test(text) ? "resume" : pausedText.test(text) ? "pause" : "other"))).toEqual(["resume"]);
+  });
+
+  it("gives no handoff warning when the notice went stale during the lookup, but still reports a current unreachable recipient", async () => {
+    // The owner reviews; the author lookup is pending while the owner approves, then the lookup finds nobody.
+    const stale = setup();
+    await stale.save(BODY, 0);
+    await stale.submit("owner");
+    const opened = await stale.ask();
+    const hold = holdFirstLookup(stale, "thr_author", "throw");
+    const settling = stale.answer(opened.question);
+    await vi.waitFor(() => expect(hold.reached()).toBe(true));
+    stale.plans.setState(stale.task.id, "approved", owner);
+    hold.release();
+    expect((await settling).planWake).toBeUndefined();
+    // The same lookup failure while the notice is still needed is a handoff.
+    const current = setup();
+    await current.save(BODY, 0);
+    await current.submit("owner");
+    const second = await current.ask();
+    const live = holdFirstLookup(current, "thr_author", "throw");
+    const settled = current.answer(second.question);
+    await vi.waitFor(() => expect(live.reached()).toBe(true));
+    live.release();
+    expect((await settled).planWake).toMatchObject({ event: "resumed", delivered: "failed", failed: ["thr_author"] });
+  });
+
+  it("gives no handoff warning when the reviewer lookup fails after the review ended", async () => {
+    const ctx = setup();
+    await ctx.inReview();
+    const opened = await ctx.ask();
+    const hold = holdFirstLookup(ctx, "thr_reviewer_a", "throw");
+    const settling = ctx.answer(opened.question);
+    await vi.waitFor(() => expect(hold.reached()).toBe(true));
+    ctx.plans.setState(ctx.task.id, "approved", owner);
+    hold.release();
+    expect((await settling).planWake).toBeUndefined();
+  });
+});
+
 describe("reports of an unreachable author", () => {
   it("reports a named author that cannot be reached as a failure, through the command line", async () => {
     const host = createFakePluginHost({

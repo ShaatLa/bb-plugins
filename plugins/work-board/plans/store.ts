@@ -381,11 +381,14 @@ export function createPlanStore(db: Database, tasks: TasksStore) {
    * agent that wrote the version when there is no attempt or it was submitted without a thread; the copy is the other
    * one, for information. Never the task's worker thread.
    */
-  function resultRecipients(taskId: string, version: number): { actor: string | null; copy: string | null } {
+  function resultRecipients(taskId: string, version: number, attemptId?: number): { actor: string | null; copy: string | null } {
     const written = versionRow(taskId, version);
     const author = written?.author_kind === "agent" ? written.author_thread : null;
     // The attempt of the decided version only: a later draft that was never submitted has no submitter yet.
-    const latest = db.prepare<[string, number], { submitted_by_thread: string | null }>("SELECT submitted_by_thread FROM task_plan_reviews WHERE task_id = ? AND version = ? ORDER BY id DESC LIMIT 1").get(taskId, version);
+    // With `attemptId` the submitter is read from that very attempt, so a same-version row of another reviewer cannot take it over.
+    const latest = attemptId === undefined
+      ? db.prepare<[string, number], { submitted_by_thread: string | null }>("SELECT submitted_by_thread FROM task_plan_reviews WHERE task_id = ? AND version = ? ORDER BY id DESC LIMIT 1").get(taskId, version)
+      : db.prepare<[string, number], { submitted_by_thread: string | null }>("SELECT submitted_by_thread FROM task_plan_reviews WHERE task_id = ? AND id = ?").get(taskId, attemptId);
     const submitter = latest?.submitted_by_thread ?? null;
     return submitter ? { actor: submitter, copy: author !== submitter ? author : null } : { actor: author, copy: null };
   }

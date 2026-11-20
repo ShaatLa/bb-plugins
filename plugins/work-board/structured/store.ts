@@ -50,7 +50,7 @@ export function createStructuredStore(bb: BbPluginApi, store: TasksApiStore) {
     const after = openDecisionIds(db, taskId).length;
     if ((before === 0) === (after === 0)) return null;
     const binding = reviewBinding(db, taskId);
-    return binding ? { event: after > 0 ? "paused" : "resumed", taskId, binding, recipients: plans.resultRecipients(taskId, binding.version) } : null;
+    return binding ? { event: after > 0 ? "paused" : "resumed", taskId, binding, recipients: plans.resultRecipients(taskId, binding.version, binding.attemptId) } : null;
   };
   /** Sends the wake after the commit. A delivery failure never undoes the question; it comes back for the command to print. */
   async function announce(wake: Wake): Promise<PlanWake | undefined> {
@@ -60,9 +60,10 @@ export function createStructuredStore(bb: BbPluginApi, store: TasksApiStore) {
     if (!wake || !task || !project || !planningOn(project)) return undefined;
     const { reviewerThread, version, attemptId } = wake.binding;
     if (!reviewerThread && wake.event === "paused") return undefined;
-    // Read again right before each append or send: after an override, a reassignment, a newer draft (and for a resume, a
-    // decision that was reopened) a notice that went stale is dropped, however long the thread lookup or queue read took.
-    const wanted = () => reviewBinding(db, task.id)?.attemptId === attemptId && (wake.event === "paused" || openDecisionIds(db, task.id).length === 0);
+    // Read again right before each append or send, and once more before a failure is reported: after an override, a
+    // reassignment, a newer draft or a decision that changed again, a notice that went stale is dropped.
+    // The live count must still match the event, in both directions: a delayed pause never follows its own resume.
+    const wanted = () => reviewBinding(db, task.id)?.attemptId === attemptId && (openDecisionIds(db, task.id).length > 0) === (wake.event === "paused");
     if (!wanted()) return undefined;
     const failed: string[] = [];
     let hint: string | null = null;
@@ -98,8 +99,10 @@ export function createStructuredStore(bb: BbPluginApi, store: TasksApiStore) {
         }
       }
     }
+    // Lookups and sends take time: a handoff warning is only for a notice that is still needed once they are done.
+    if (failed.length && !wanted()) failed.length = 0;
     if (!failed.length && !sentAny) return undefined;
-    return { event: wake.event, delivered: failed.length ? "failed" : "sent", failed, hint };
+    return { event: wake.event, delivered: failed.length ? "failed" : "sent", failed, hint: failed.length ? hint : null };
   }
   const getQuestion = (id: string) => {
     const row = db
