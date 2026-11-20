@@ -133,3 +133,19 @@ it("suppresses CLI owner status changes and sends CLI agent status changes", asy
   expect(agent.exitCode, agent.stderr).toBe(0);
   await vi.waitFor(() => expect(f.send).toHaveBeenCalledTimes(1));
 });
+
+it("pushes for the started child only: the epic's automatic move sends nothing, and notifyStatus false still silences the child", async () => {
+  const f = await fixture();
+  const epic = f.store.tasks.createTask({ projectId: f.project.id, title: "Epic", type: "epic" });
+  const child = f.store.tasks.createTask({ projectId: f.project.id, title: "Child", status: "todo", epicId: epic.id });
+  const quiet = f.store.tasks.createTask({ projectId: f.project.id, title: "Quiet", status: "todo", epicId: f.store.tasks.createTask({ projectId: f.project.id, title: "Other epic", type: "epic" }).id });
+  f.store.tasks.updateTask(child.id, { status: "in_progress" });
+  await vi.waitFor(() => expect(f.send).toHaveBeenCalledTimes(1));
+  await new Promise(resolve => setTimeout(resolve, 10));
+  expect(f.store.tasks.getTask(epic.id)?.status).toBe("in_progress");
+  expect(f.send).toHaveBeenCalledTimes(1);
+  expect(f.send.mock.calls[0]?.[0]).toMatchObject({ input: { title: `${child.key} · In Progress` } });
+  f.store.tasks.updateTask(quiet.id, { status: "in_progress", notifyStatus: false });
+  await new Promise(resolve => setTimeout(resolve, 10));
+  expect(f.send).toHaveBeenCalledTimes(1);
+});

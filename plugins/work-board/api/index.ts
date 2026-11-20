@@ -105,6 +105,8 @@ export function createStore(bb: BbPluginApi): TasksApiStore {
   const closures = createClosureService(bb, tasks);
   // A closure is evaluated once, after the commit that wrote it; the RPC and CLI paths ask the same evaluation.
   tasks.onClosure((closureId) => void closures.onClosed(closureId));
+  // An epic the store moved automatically is published after the commit, whichever path wrote the child.
+  tasks.onEpicMoved(({ epicId, projectId }) => { publishTasksChanged(bb, epicId, projectId); publishCommentsChanged(bb, epicId); });
 
   return {
     tasks,

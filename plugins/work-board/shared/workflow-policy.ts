@@ -34,6 +34,19 @@ export function effectiveInProgressStatus(project: { workflowPolicy?: Partial<Wo
   return (project.statuses?.length ? project.statuses : DEFAULT_TASK_STATUSES).some((status) => status.id === "in_progress") ? "in_progress" : null;
 }
 
+/**
+ * Where a card in `fromStatus` moves when work on it (or on a child of it) starts: the effective In progress status, only
+ * when it is listed, neither closed nor Backlog/Todo, and strictly after a listed, open `fromStatus` in the status order.
+ * Null otherwise, so an unusable mapping is skipped instead of failing anything.
+ */
+export function usableStartTarget(project: { workflowPolicy?: Partial<WorkflowPolicy> | null; statuses?: ReadonlyArray<{ id: string }> | null }, fromStatus: string): string | null {
+  const target = effectiveInProgressStatus(project);
+  if (!target || target === "backlog" || target === "todo" || isClosedStatus(project, target) || isClosedStatus(project, fromStatus)) return null;
+  const order = (project.statuses?.length ? project.statuses : DEFAULT_TASK_STATUSES).map((status) => status.id);
+  const from = order.indexOf(fromStatus);
+  return from >= 0 && order.indexOf(target) > from ? target : null;
+}
+
 type ZoneProject = { workflowPolicy?: Partial<WorkflowPolicy> | null; statuses?: ReadonlyArray<{ id: string; requiresApprovedPlan?: boolean }> | null };
 
 /**

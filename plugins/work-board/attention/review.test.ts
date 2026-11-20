@@ -99,7 +99,8 @@ describe("C1.6 moving a family", () => {
     await f.call("updateAttentionMode", { projectId: other.id, mode: "shadow" });
     const epic = f.card("Epic", "todo", { type: "epic" });
     const member = f.card("Member", "in_progress", { epicId: epic.id });
-    expect(f.occurrences().map((o) => o.task_id)).toEqual([member.id]);
+    // The started member moved its epic to In progress, so both cards are tracked.
+    expect(f.occurrences().map((o) => o.task_id).sort()).toEqual([epic.id, member.id].sort());
     const moved = f.store.tasks.moveTaskToProject(epic.id, other.id);
     expect(moved.moved.map((entry) => entry.task.id)).toContain(member.id);
     expect(f.occurrences()).toHaveLength(0);

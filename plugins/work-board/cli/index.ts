@@ -80,6 +80,7 @@ import { checksCliCommands } from "../checks/cli";
 import { LITERAL_TEXT_FIELDS } from "../checks/config";
 import { planCommands } from "./plan";
 import { planAdvisory } from "../shared/plan";
+import { startHint } from "../shared/start-hint";
 import { planningOn, planningRequired, PLANNING_OWNER_ONLY } from "../shared/project-settings";
 import { planGatedStatuses } from "../shared/workflow-policy";
 import { createPlanStore } from "../plans/store";
@@ -2868,6 +2869,10 @@ export function registerTasksCli(
               const planning = project.planning ?? "off";
               const taskPlan = planningOn(project) ? (await domain.getTaskPlan({ taskId: task.id })).plan : null;
               const withPlan = input.options["with-plan"] === true;
+              // A sub-task has no epic of its own: its parent's counts.
+              const epicId = task.epicId ?? (task.parentTaskId ? (await resolveTask(domain, task.parentTaskId)).epicId : null);
+              const epic = epicId ? await resolveTask(domain, epicId) : null;
+              const hint = startHint(project, task, taskPlan, epic);
               const more: Record<string, string> = {};
               if (omittedComments) more.comments = `bb work-board comment list ${task.key} --kind user --kind agent --kind system`;
               if (brief && evidence.records.length) more.evidence = `bb work-board evidence ${task.key}`;
@@ -2879,6 +2884,7 @@ export function registerTasksCli(
                   overlaps,
                   task: { ...task, waitingOnOwner: waiting },
                   link: taskMarkdownLink(task.key),
+                  startHint: hint,
                   planning,
                   ...(planning !== "off" ? { planWarning: planAdvisory(taskPlan, planningRequired(project) && task.type !== "epic") } : {}),
                   plan: taskPlan ? { version: taskPlan.version, state: taskPlan.state, reviewer: taskPlan.reviewer, review: { paused: taskPlan.paused }, noteCounts: taskPlan.noteCounts, updatedAt: taskPlan.updatedAt, updatedBy: taskPlan.updatedBy.name, ...(withPlan ? { body: taskPlan.requested.body } : {}) } : null,
@@ -2995,6 +3001,7 @@ ${activity.diagnostics?.inactiveSessions.map((session) => `@thread:${session.thr
                 brief ? `Evidence: ${evidence.records.length} record(s); \`bb work-board evidence ${task.key}\` lists them` : `Evidence\n${evidenceText(evidence)}`,
                 `Comments\nLatest comment: ${latestCommentId ?? "(none)"}\n${commentsTable(shownComments)}${omittedComments ? `\n${omittedComments} of ${comments.length} comment(s) not shown; read them with \`bb work-board comment list ${task.key} --kind user --kind agent --kind system\`` : ""}`,
                 ...Object.entries(more).filter(([part]) => part !== "comments").map(([part, command]) => `${part} omitted; read with \`${command}\``),
+                ...(hint ? [`Next step\n${hint}`] : []),
               ].join("\n\n");
             });
           },

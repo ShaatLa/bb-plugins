@@ -1,5 +1,5 @@
 import { WAITING_ON_OWNER, NEWEST_UNANSWERED } from "./waiting-on-owner";
-import { ensurePlanningStatus, getWorkflowPolicy, inWorkZone, isClosedStatus, planningStatusOf, settlePlanFlags, withPlanningStatus, workflowPolicySchema } from "../shared/workflow-policy.js";
+import { ensurePlanningStatus, getWorkflowPolicy, inWorkZone, isClosedStatus, planningStatusOf, settlePlanFlags, usableStartTarget, withPlanningStatus, workflowPolicySchema } from "../shared/workflow-policy.js";
 import { createClosureStore } from "../closure/store";
 import { ordinaryTaskVisibilitySql } from "../scheduled/visibility";
 import { projectPolicies, staleRows, staleStatusObservations as observeStaleStatus } from "../attention/observe";
@@ -593,6 +593,18 @@ export function createTasksStore(db: PluginDatabase, log: (message: string) => v
       else if (closureScopes === 0 && pendingClosures.length) { if (defer) queueMicrotask(drainClosures); else drainClosures(); }
     }
   }
+  // Epic moves written by the current writes; like closures they are published after the outermost commit, and a
+  // record whose comment row a rollback took away is dropped.
+  type EpicMove = { epicId: string; commentId: string; projectId: string };
+  const pendingEpicMoves: EpicMove[] = [];
+  let epicMoveListener: ((move: EpicMove) => void) | null = null;
+  function flushEpicMoves(): void {
+    if (db.inTransaction) { setTimeout(flushEpicMoves, 0); return; }
+    for (const move of pendingEpicMoves.splice(0)) {
+      if (!db.prepare("SELECT 1 FROM comments WHERE id=?").get(move.commentId)) continue;
+      try { epicMoveListener?.(move); } catch { /* the listener reports its own failures */ }
+    }
+  }
   /** The write moved a card between open and closed: closing records a closure, reopening ends the current one. */
   function trackClosure(task: Task, status: string, closerThreadId: string | null | undefined): void {
     if (status === task.status) return;
@@ -1003,6 +1015,53 @@ export function createTasksStore(db: PluginDatabase, log: (message: string) => v
     }
   }
 
+  /** A card is started once it left Backlog and Todo and is not closed; Planning counts (unlike the plan gate's work zone). */
+  function isStarted(project: Project, status: string): boolean {
+    return status !== "backlog" && status !== "todo" && !isClosedStatus(project, status);
+  }
+
+  /** The epic a card belongs to: its own, or for a sub-task (which has none) its parent's. */
+  function effectiveEpicId(task: Task): string | null {
+    return task.epicId ?? (task.parentTaskId ? getTask(task.parentTaskId)?.epicId ?? null : null);
+  }
+
+  /** Moves the epic of a started card from Backlog or Todo to In progress, with one system comment; skips anything unusable. */
+  function startEpicOf(task: Task, project: Project): void {
+    const epicId = effectiveEpicId(task);
+    const epic = epicId ? getTask(epicId) : undefined;
+    if (!epic || epic.type !== "epic" || epic.archivedAt || (epic.status !== "backlog" && epic.status !== "todo")) return;
+    const target = usableStartTarget(project, epic.status);
+    if (!target) return;
+    try {
+      // A savepoint: a refusal inside leaves the epic and the child's write untouched.
+      db.transaction(() => {
+        updateTaskTransaction(epic.id, { status: target });
+        const comment = createComment({
+          taskId: epic.id, kind: "system", authorName: "Work Board",
+          body: `Status changed to ${statusLabel(target, project.statuses)} automatically: ${task.key} started (${statusLabel(task.status, project.statuses)})`,
+        });
+        pendingEpicMoves.push({ epicId: epic.id, commentId: comment.id, projectId: project.id });
+      })();
+    } catch { return; }
+    touchAttention(db, [epic.id]);
+    queueMicrotask(flushEpicMoves);
+  }
+
+  /**
+   * Called at the end of a write of `task`; `before` is the card before it (null for a new card). Only a change from not
+   * started to started, or a changed epic of a started card, moves the epic, so one the owner moved back stays put.
+   */
+  function advanceEpicFor(task: Task, before: Task | null): void {
+    if (task.type === "epic") return;
+    const project = requireProject(task.projectId);
+    const epicChanged = before !== null && (before.epicId !== task.epicId || before.parentTaskId !== task.parentTaskId);
+    const startedNow = before === null || !isStarted(project, before.status);
+    if (isStarted(project, task.status) && (startedNow || epicChanged)) startEpicOf(task, project);
+    // Sub-tasks inherit the epic: a task joining one brings its started sub-tasks with it.
+    if (epicChanged && task.type === "task" && before?.epicId !== task.epicId)
+      for (const subtask of listSubtasks(task.id)) if (isStarted(project, subtask.status)) startEpicOf(subtask, project);
+  }
+
   const createTaskTransaction = db.transaction(
     (input: CreateTaskInput): Task => {
       const project = requireProject(input.projectId);
@@ -1083,7 +1142,9 @@ export function createTasksStore(db: PluginDatabase, log: (message: string) => v
         createdAt,
         createdAt,
       );
-      return requireTask(id);
+      const created = requireTask(id);
+      advanceEpicFor(created, null);
+      return created;
     },
   );
 
@@ -1553,7 +1614,9 @@ export function createTasksStore(db: PluginDatabase, log: (message: string) => v
         db.prepare("UPDATE tasks SET progress_note=?, progress_updated_at=?, progress_updated_by=? WHERE id=?")
           .run(input.progressNote, input.progressNote === null ? null : nowIso(), input.progressNote === null ? null : input.authorName ?? "You", id);
       }
-      return requireTask(id);
+      const updated = requireTask(id);
+      advanceEpicFor(updated, current);
+      return updated;
     },
   );
 
@@ -1774,7 +1837,9 @@ export function createTasksStore(db: PluginDatabase, log: (message: string) => v
         UPDATE tasks SET status = ?, position = ?, updated_at = ? WHERE id = ?
       `,
       ).run(input.status, position, nowIso(), id);
-      return requireTask(id);
+      const moved = requireTask(id);
+      advanceEpicFor(moved, task);
+      return moved;
     },
   );
 
@@ -2602,6 +2667,7 @@ export function createTasksStore(db: PluginDatabase, log: (message: string) => v
     closures,
     closureScope,
     onClosure: (listener: (closureId: string) => void) => { closureListener = listener; },
+    onEpicMoved: (listener: (move: { epicId: string; commentId: string; projectId: string }) => void) => { epicMoveListener = listener; },
     planGate,
     scheduledStatus,
     moveTaskToProject: moveTaskToProjectHooked,

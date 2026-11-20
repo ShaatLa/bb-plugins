@@ -19,7 +19,7 @@ Use `bb work-board list --type epic` to discover epics and `bb work-board list -
 Use `--no-epic` on update to remove membership. Tasks and epics share project keys and workflow statuses.
 
 An epic groups regular tasks in the same project; those tasks can still have one level of sub-tasks.
-Sub-tasks inherit epic context from their parent. Epics cannot nest. Progress counts completed member tasks; epic status is manual.
+Sub-tasks inherit epic context from their parent. Epics cannot nest. Progress counts completed member tasks; an epic moves from Backlog or Todo to In progress automatically when its first task or subtask starts; otherwise its status is manual, and it never moves back or closes automatically. `show` ends with a `Next step` line when a Backlog or Todo task can be taken: move it as it says before you start.
 Moving an epic moves its members and their sub-tasks; moving a member alone clears its epic link.
 Deleting an epic preserves its tasks. Type conversion requires clearing incompatible links and children first.
 Read the epic description when working on a member task; `task.epicId` identifies it in JSON.
