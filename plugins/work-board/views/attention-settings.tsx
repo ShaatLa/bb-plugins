@@ -43,7 +43,7 @@ export function AttentionSettings({ projectId }: { projectId: string }) {
       {query.error && !settings ? <p className="text-xs text-destructive" data-testid="attention-load-error">{query.error}</p> : null}
       {settings ? (
         <>
-          <p className="text-sm" data-testid="attention-mode">Mode: <strong>{mode}</strong> <span className="text-xs text-muted-foreground">(generation {settings.state.effective.generation})</span></p>
+          <p className="text-sm" data-testid="attention-mode">Mode: <strong>{mode}</strong></p>
           <p className="text-xs text-muted-foreground">{MODE_NOTE[mode]}</p>
           {settings.changedAt ? (
             <p className="text-xs text-muted-foreground" data-testid="attention-changed">
