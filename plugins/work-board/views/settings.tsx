@@ -404,8 +404,6 @@ function ProjectAutomationSettings({ project, onSaved }: { project: Project; onS
     autoArchiveAfterDays?: z.infer<typeof autoArchiveAfterDaysSchema>;
     staleIdleMinutes?: z.infer<typeof staleIdleThresholdSchema>;
     statusNotifications?: z.infer<typeof statusNotificationsSchema>;
-    planning?: z.infer<typeof planningSchema>;
-    statuses?: TaskStatusDefinition[];
   }) => {
     setBusy(true);
     setError(null);
@@ -418,10 +416,6 @@ function ProjectAutomationSettings({ project, onSaved }: { project: Project; onS
       setBusy(false);
     }
   };
-  const statuses: TaskStatusDefinition[] = project.statuses ?? DEFAULT_TASK_STATUSES;
-  const marked = statuses.filter((status) => status.requiresApprovedPlan === true && status.id !== "canceled");
-  const unmarked = statuses.filter((status) => status.requiresApprovedPlan !== true);
-  const setFlag = (id: string, on: boolean) => void save({ statuses: statuses.map((status) => (status.id === id ? { ...status, requiresApprovedPlan: on } : status)) });
   return (
     <section aria-label="Project automation" className="space-y-4 border-t border-border pt-4">
       <h3 className="text-sm font-medium">Archiving and activity</h3>
@@ -468,6 +462,35 @@ function ProjectAutomationSettings({ project, onSaved }: { project: Project; onS
         </Select>
       </label>
       <p className="text-xs text-muted-foreground">Applies only to this project. Uses the enabled channels in BB Push notifications.</p>
+      {error ? <p role="alert" className="text-xs text-destructive">{error}</p> : null}
+    </section>
+  );
+}
+
+function ProjectPlanningSettings({ project, onSaved }: { project: Project; onSaved: () => void }) {
+  const rpc = useTasksRpc();
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const save = async (changes: { planning?: z.infer<typeof planningSchema>; statuses?: TaskStatusDefinition[] }) => {
+    setBusy(true);
+    setError(null);
+    try {
+      await rpc.call("updateProject", { projectId: project.id, ...changes });
+      onSaved();
+    } catch (error) {
+      setError(errorMessage(error));
+    } finally {
+      setBusy(false);
+    }
+  };
+  const statuses: TaskStatusDefinition[] = project.statuses ?? DEFAULT_TASK_STATUSES;
+  const marked = statuses.filter((status) => status.requiresApprovedPlan === true && status.id !== "canceled");
+  const unmarked = statuses.filter((status) => status.requiresApprovedPlan !== true);
+  const setFlag = (id: string, on: boolean) => void save({ statuses: statuses.map((status) => (status.id === id ? { ...status, requiresApprovedPlan: on } : status)) });
+  return (
+    <section aria-label="Project planning" className="space-y-3 border-t border-border pt-4">
+      <h3 className="text-sm font-medium">Planning</h3>
+      <p className="text-xs text-muted-foreground">Plans and their approval for this project. Only you change this; agents cannot.</p>
       <label className="flex flex-wrap items-center justify-between gap-2 text-sm">
         Planning
         <Select value={project.planning ?? "off"} disabled={busy}
@@ -480,7 +503,7 @@ function ProjectAutomationSettings({ project, onSaved }: { project: Project; onS
           </SelectContent>
         </Select>
       </label>
-      <p className="text-xs text-muted-foreground">Off hides plans for this project (existing plans are kept). Optional turns on plans and their review. Required keeps a card out of the statuses below until its plan is approved; epics are exempt. Only you change this; agents cannot.</p>
+      <p className="text-xs text-muted-foreground">Off hides plans for this project (existing plans are kept). Optional turns on plans and their review. Required keeps a card out of the statuses below until its plan is approved; epics are exempt.</p>
       {project.planningChangedAt ? (
         <p className="text-xs text-muted-foreground" data-testid="planning-changed">
           Changed <time dateTime={project.planningChangedAt} title={project.planningChangedAt}>{formatRelativeTime(project.planningChangedAt, Date.now())}</time>, was {project.planningPrevious ?? "off"}
@@ -588,6 +611,7 @@ function TasksSettingsContent() {
         onCreated={(created) => { setProjectId(created.id); projects.refresh(); }} /> : null}
       {project ? <>
         <ProjectAutomationSettings key={`automation:${project.id}`} project={project} onSaved={projects.refresh} />
+        <ProjectPlanningSettings key={`planning:${project.id}`} project={project} onSaved={projects.refresh} />
         <section aria-label="Project task statuses" className="space-y-3 border-t border-border pt-4">
           <h3 className="text-sm font-medium">Task statuses</h3>
           <ProjectStatuses key={`${project.id}:${JSON.stringify(project.statuses)}`} project={project} />

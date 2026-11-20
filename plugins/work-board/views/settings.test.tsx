@@ -473,8 +473,21 @@ it("lets the owner pick each planning mode for the selected project, and the cho
     registerTasksApi(bb, store);
     const rpc = Object.fromEntries(Object.keys(tasksRpcContract).map(method => [method, (input: unknown) => harness.callRpc(method, input)]));
     const settings = renderSlot(app.settingsSections[0]!, {}, { rpc });
-    const mode = () => settings.getByRole("combobox", { name: "Planning" });
+    const region = () => within(settings.getByRole("region", { name: "Project planning" }));
+    const mode = () => region().getByRole("combobox", { name: "Planning" });
     await settings.findByRole("combobox", { name: "Planning" });
+    // Planning is its own section, between automation and task statuses, and no longer part of automation.
+    const regions = settings.getAllByRole("region").map(node => node.getAttribute("aria-label"));
+    expect(regions.indexOf("Project planning")).toBe(regions.indexOf("Project automation") + 1);
+    expect(regions.indexOf("Project task statuses")).toBe(regions.indexOf("Project planning") + 1);
+    expect(region().getByRole("heading", { name: "Planning" })).toBeTruthy();
+    expect(region().getByText("Plans and their approval for this project. Only you change this; agents cannot.")).toBeTruthy();
+    expect(region().queryByText(/agents cannot\./, { selector: "p" })).not.toBeNull();
+    const automation = within(settings.getByRole("region", { name: "Project automation" }));
+    expect(automation.queryByRole("combobox", { name: "Planning" })).toBeNull();
+    expect(automation.queryByText(/^Off hides plans/)).toBeNull();
+    expect(automation.getAllByRole("combobox").map(box => box.getAttribute("aria-label"))).toEqual(["Automatically archive completed tasks", "Flag idle threads without task updates", "Task status notifications"]);
+    expect(region().getByText(/^Off hides plans/).textContent).not.toContain("agents cannot");
     expect(mode().textContent).toContain("Off");
     for (const [label, value] of [["Optional", "optional"], ["Required", "required"], ["Off", "off"], ["Required", "required"]] as const) {
       fireEvent.click(mode());
@@ -483,7 +496,7 @@ it("lets the owner pick each planning mode for the selected project, and the cho
     }
     expect(store.tasks.getProject(beta.id)?.planning).toBe("off");
     // The control shows when planning last changed and what it was before.
-    const changed = await settings.findByTestId("planning-changed");
+    const changed = await region().findByTestId("planning-changed");
     expect(changed.textContent).toMatch(/^Changed .*, was off$/);
     expect(changed.querySelector("time")!.getAttribute("datetime")).toBe(store.tasks.getProject(alpha.id)!.planningChangedAt);
     // A fresh render (a reload) reads the saved mode back.
@@ -501,7 +514,7 @@ it("shows the plan-gated statuses only when planning is required, and the status
     registerTasksApi(bb, store);
     const settings = renderSlot(app.settingsSections[0]!, {}, { rpc: Object.fromEntries(Object.keys(tasksRpcContract).map(method => [method, (input: unknown) => harness.callRpc(method, input)])) });
     await settings.findByRole("combobox", { name: "Planning" });
-    const block = () => settings.queryByTestId("plan-gated-statuses");
+    const block = () => within(settings.getByRole("region", { name: "Project planning" })).queryByTestId("plan-gated-statuses");
     expect(block()).toBeNull();
     expect(settings.queryByText(/Changes save automatically/)).toBeNull();
     expect(settings.queryByText(/System statuses stay; statuses used by tasks cannot be deleted\./)).not.toBeNull();
@@ -527,7 +540,8 @@ it("edits the plan-gated statuses as chips: add and remove save the flag, cancel
     const flag = (id: string) => store.tasks.getProject(alpha.id)?.statuses?.find(status => status.id === id)?.requiresApprovedPlan === true;
     const chips = () => within(settings.getByTestId("plan-gated-statuses")).queryAllByRole("button", { name: /^Remove / }).map(button => button.getAttribute("aria-label"));
     const free = () => settings.getByTestId("plan-free-statuses").textContent;
-    await settings.findByTestId("plan-gated-statuses");
+    await within(await settings.findByRole("region", { name: "Project planning" })).findByTestId("plan-gated-statuses");
+    expect(within(settings.getByRole("region", { name: "Project automation" })).queryByTestId("plan-gated-statuses")).toBeNull();
     // The first switch to required marked In progress and every later status; chips follow the project status order.
     expect(settings.getByRole("heading", { name: "Statuses that need an approved plan" })).toBeTruthy();
     expect(chips()).toEqual(["Remove In Progress", "Remove In Review", "Remove Done"]);
