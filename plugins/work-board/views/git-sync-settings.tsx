@@ -7,6 +7,7 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Switch } from "@/components/ui/switch";
 import { Icon } from "@/components/ui/icon";
+import { TagInput } from "../components/tag-input";
 import * as Checkbox from "@radix-ui/react-checkbox";
 
 const lines = (value: string) =>
@@ -345,16 +346,14 @@ export function GitSyncSettings({ projectId }: { projectId: string }) {
                 Required checks
               </label>
               <p id={`${id}-checks-help`} className="text-muted-foreground">
-                One name per line. Leave empty to use available GitHub rules.
+                Press Enter to add each name. Leave empty to use available GitHub rules.
               </p>
-              <Textarea
+              <TagInput
                 id={`${id}-checks`}
-                aria-label="Required GitHub checks"
-                aria-describedby={`${id}-checks-help`}
-                rows={2}
-                className="min-h-14 px-2 py-1.5 text-xs"
-                value={checks}
-                onChange={(event) => setChecks(event.target.value)}
+                label="Required GitHub checks"
+                describedBy={`${id}-checks-help`}
+                values={lines(checks)}
+                onChange={(values) => setChecks(values.join("\n"))}
               />
             </div>
             <div className="space-y-1.5">
@@ -362,16 +361,14 @@ export function GitSyncSettings({ projectId }: { projectId: string }) {
                 Checks outside CI
               </label>
               <p id={`${id}-ignored-help`} className="text-muted-foreground">
-                Required checks a gate posts after CI, one per line. PR wait reports them but does not wait for them.
+                Required checks a gate posts after CI. PR wait reports them but does not wait for them.
               </p>
-              <Textarea
+              <TagInput
                 id={`${id}-ignored`}
-                aria-label="Checks outside CI"
-                aria-describedby={`${id}-ignored-help`}
-                rows={2}
-                className="min-h-14 px-2 py-1.5 text-xs"
-                value={ignored}
-                onChange={(event) => setIgnored(event.target.value)}
+                label="Checks outside CI"
+                describedBy={`${id}-ignored-help`}
+                values={lines(ignored)}
+                onChange={(values) => setIgnored(values.join("\n"))}
               />
             </div>
             <div className="space-y-1.5">
@@ -379,16 +376,14 @@ export function GitSyncSettings({ projectId }: { projectId: string }) {
                 Post-merge workflows
               </label>
               <p id={`${id}-workflows-help`} className="text-muted-foreground">
-                Push workflow names or numeric IDs, one per line.
+                Push workflow names or numeric IDs.
               </p>
-              <Textarea
+              <TagInput
                 id={`${id}-workflows`}
-                aria-label="Post-merge workflows"
-                aria-describedby={`${id}-workflows-help`}
-                rows={2}
-                className="min-h-14 px-2 py-1.5 text-xs"
-                value={workflows}
-                onChange={(event) => setWorkflows(event.target.value)}
+                label="Post-merge workflows"
+                describedBy={`${id}-workflows-help`}
+                values={lines(workflows)}
+                onChange={(values) => setWorkflows(values.join("\n"))}
               />
             </div>
             <div className="space-y-1.5"><label htmlFor={`${id}-overlap`} className="font-medium">Overlap rules (JSON)</label><Textarea id={`${id}-overlap`} aria-label="Overlap rules" rows={3} value={overlapRules} onChange={event => setOverlapRules(event.target.value)} /><p className="text-muted-foreground">Array of pattern and match (added or changed), up to 50 rules.</p></div>

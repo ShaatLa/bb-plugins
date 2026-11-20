@@ -172,10 +172,12 @@ it("configures repositories and enables background sync from compact project set
     slot.getByRole("spinbutton", { name: "Discovery lookback (days)" }),
     { target: { value: "45" } },
   );
-  fireEvent.change(
-    slot.getByRole("textbox", { name: "Required GitHub checks" }),
-    { target: { value: "build\ntest" } },
-  );
+  const checks = slot.getByRole("textbox", { name: "Required GitHub checks" });
+  fireEvent.change(checks, { target: { value: "build" } });
+  fireEvent.keyDown(checks, { key: "Enter" });
+  // An unfinished name is kept when the field loses focus.
+  fireEvent.change(checks, { target: { value: "test" } });
+  fireEvent.blur(checks);
   fireEvent.click(
     slot.getByRole("switch", { name: "Enable periodic synchronization" }),
   );
