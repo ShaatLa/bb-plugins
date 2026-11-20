@@ -4,11 +4,13 @@ import { gitSyncConfigSchema, type GitSyncConfig } from "../shared/git-sync";
 import { errorMessage } from "../shared/errors";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Textarea } from "@/components/ui/textarea";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { Icon } from "@/components/ui/icon";
 import { TagInput } from "../components/tag-input";
 import * as Checkbox from "@radix-ui/react-checkbox";
+
+type OverlapRule = NonNullable<GitSyncConfig["overlapRules"]>[number];
 
 const lines = (value: string) =>
   value
@@ -32,7 +34,8 @@ export function GitSyncSettings({ projectId }: { projectId: string }) {
   const [checks, setChecks] = useState("");
   const [workflows, setWorkflows] = useState("");
   const [ignored, setIgnored] = useState("");
-  const [overlapRules, setOverlapRules] = useState("[]");
+  const [overlapRules, setOverlapRules] = useState<OverlapRule[]>([]);
+  const [overlapOn, setOverlapOn] = useState(false);
   const [busy, setBusy] = useState(false);
   const [syncing, setSyncing] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -47,7 +50,8 @@ export function GitSyncSettings({ projectId }: { projectId: string }) {
       setChecks(query.data.config.requiredChecks.join("\n"));
       setWorkflows(query.data.config.postMergeWorkflows.join("\n"));
       setIgnored(query.data.config.prWaitIgnoredChecks.join("\n"));
-      setOverlapRules(JSON.stringify(query.data.config.overlapRules ?? [], null, 2));
+      setOverlapRules(query.data.config.overlapRules ?? []);
+      setOverlapOn((query.data.config.overlapRules ?? []).length > 0);
     }
   }, [query.data]);
   const act = async (save: boolean) => {
@@ -65,7 +69,8 @@ export function GitSyncSettings({ projectId }: { projectId: string }) {
             requiredChecks: lines(checks),
             postMergeWorkflows: lines(workflows),
             prWaitIgnoredChecks: lines(ignored),
-            overlapRules: JSON.parse(overlapRules),
+            // Turned off means no rules; rows without a pattern are not rules yet.
+            overlapRules: overlapOn ? overlapRules.filter((rule) => rule.pattern.trim()) : [],
           }),
         });
         setMessage("Git/PR settings saved.");
@@ -386,7 +391,71 @@ export function GitSyncSettings({ projectId }: { projectId: string }) {
                 onChange={(values) => setWorkflows(values.join("\n"))}
               />
             </div>
-            <div className="space-y-1.5"><label htmlFor={`${id}-overlap`} className="font-medium">Overlap rules (JSON)</label><Textarea id={`${id}-overlap`} aria-label="Overlap rules" rows={3} value={overlapRules} onChange={event => setOverlapRules(event.target.value)} /><p className="text-muted-foreground">Array of pattern and match (added or changed), up to 50 rules.</p></div>
+            <div className="space-y-1.5">
+              <div className="flex items-center justify-between gap-3">
+                <label htmlFor={`${id}-overlap`} className="font-medium">
+                  Highlight shared files
+                </label>
+                <Switch
+                  id={`${id}-overlap`}
+                  aria-label="Highlight shared files between PRs"
+                  aria-describedby={`${id}-overlap-help`}
+                  checked={overlapOn}
+                  onCheckedChange={(on) => {
+                    setOverlapOn(on);
+                    if (on && !overlapRules.length) setOverlapRules([{ pattern: "", match: "changed" }]);
+                  }}
+                />
+              </div>
+              <p id={`${id}-overlap-help`} className="text-muted-foreground">
+                Mark files that open PRs of different tasks both touch. A pattern supports *, ** and ?; Changed matches the same path, Added matches new files even with different names. Turning it off removes the rules on save.
+              </p>
+              {overlapOn ? (
+                <ul aria-label="Overlap rules" className="space-y-1.5">
+                  {overlapRules.map((rule, index) => (
+                    <li key={index} className="flex items-center gap-2">
+                      <Input
+                        aria-label={`Rule ${index + 1} pattern`}
+                        placeholder="migrations/**"
+                        className="h-7 min-w-0 flex-1 px-2 font-mono text-xs"
+                        value={rule.pattern}
+                        onChange={(event) => setOverlapRules(overlapRules.map((entry, at) => (at === index ? { ...entry, pattern: event.target.value } : entry)))}
+                      />
+                      <Select
+                        value={rule.match}
+                        onValueChange={(match) => setOverlapRules(overlapRules.map((entry, at) => (at === index ? { ...entry, match: match as OverlapRule["match"] } : entry)))}
+                      >
+                        <SelectTrigger aria-label={`Rule ${index + 1} match`} className="h-7 w-28 text-xs"><SelectValue /></SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="changed">Changed</SelectItem>
+                          <SelectItem value="added">Added</SelectItem>
+                        </SelectContent>
+                      </Select>
+                      <Button
+                        size="icon"
+                        variant="ghost"
+                        className="size-6 shrink-0 text-muted-foreground"
+                        aria-label={`Remove rule ${index + 1}`}
+                        onClick={() => setOverlapRules(overlapRules.filter((_, at) => at !== index))}
+                      >
+                        <Icon name="Trash2" className="size-3.5" />
+                      </Button>
+                    </li>
+                  ))}
+                  <li>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="h-7 px-2.5"
+                      disabled={overlapRules.length >= 50}
+                      onClick={() => setOverlapRules([...overlapRules, { pattern: "", match: "changed" }])}
+                    >
+                      Add rule
+                    </Button>
+                  </li>
+                </ul>
+              ) : null}
+            </div>
             <p className="text-muted-foreground">
               Authentication uses GH_TOKEN, GITHUB_TOKEN or gh on the BB server.
             </p>

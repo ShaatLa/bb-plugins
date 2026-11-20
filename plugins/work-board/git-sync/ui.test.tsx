@@ -178,11 +178,26 @@ it("configures repositories and enables background sync from compact project set
   // An unfinished name is kept when the field loses focus.
   fireEvent.change(checks, { target: { value: "test" } });
   fireEvent.blur(checks);
+  expect(slot.queryByRole("list", { name: "Overlap rules" })).toBeNull();
+  fireEvent.click(slot.getByRole("switch", { name: "Highlight shared files between PRs" }));
+  fireEvent.change(slot.getByRole("textbox", { name: "Rule 1 pattern" }), { target: { value: "migrations/**" } });
+  fireEvent.click(slot.getByRole("button", { name: "Add rule" }));
+  fireEvent.click(slot.getByRole("button", { name: "Add rule" }));
+  fireEvent.change(slot.getByRole("textbox", { name: "Rule 3 pattern" }), { target: { value: "docs/*.json" } });
+  // An empty row is not a rule and is dropped on save.
   fireEvent.click(
     slot.getByRole("switch", { name: "Enable periodic synchronization" }),
   );
   fireEvent.click(slot.getByRole("button", { name: "Save Git/PR settings" }));
   await slot.findByText("Git/PR settings saved.");
+  expect(createGitSyncStore(f.bb.storage.database()).config(f.project.id).overlapRules).toEqual([
+    { pattern: "migrations/**", match: "changed" },
+    { pattern: "docs/*.json", match: "changed" },
+  ]);
+  fireEvent.click(slot.getByRole("switch", { name: "Highlight shared files between PRs" }));
+  expect(slot.queryByRole("list", { name: "Overlap rules" })).toBeNull();
+  fireEvent.click(slot.getByRole("button", { name: "Save Git/PR settings" }));
+  await waitFor(() => expect(createGitSyncStore(f.bb.storage.database()).config(f.project.id).overlapRules).toEqual([]));
   expect(
     createGitSyncStore(f.bb.storage.database()).config(f.project.id),
   ).toMatchObject({
