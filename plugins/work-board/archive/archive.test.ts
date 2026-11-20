@@ -1346,6 +1346,99 @@ describe("archive v20: reviewers, review history and planning", () => {
     expect(createPlanStore(target.bb.storage.database(), target.store.tasks).captureReviews(source.task.id)).toEqual(history);
   });
 
+  describe("status flags", () => {
+    const flagged = (project: { statuses?: Array<{ id: string; requiresApprovedPlan?: boolean }> }) => (project.statuses ?? []).filter((status) => status.requiresApprovedPlan).map((status) => status.id);
+    const unmark = (store: Awaited<ReturnType<typeof seed>>["store"], projectId: string, id: string) =>
+      store.tasks.updateProject(projectId, { statuses: store.tasks.getProject(projectId)!.statuses!.map((status) => (status.id === id ? { ...status, requiresApprovedPlan: false } : status)) });
+    const editSnapshot = async (out: string, edit: (project: Record<string, any>) => void) => {
+      const path = join(out, "project.json");
+      const manifest = JSON.parse(await readFile(path, "utf8"));
+      edit(manifest.project);
+      await writeFile(path, jsonText(manifest));
+    };
+
+    it("carries flags and their marker in the export, and a fresh import takes them", async () => {
+      const source = await reviewed();
+      source.store.tasks.updateProject(source.project.id, { planning: "required" });
+      unmark(source.store, source.project.id, "done");
+      const out = await exported(source, "flags-roundtrip");
+      const snapshot = JSON.parse(await readFile(join(out, "project.json"), "utf8")).project;
+      expect(flagged(snapshot)).toEqual(["in_progress", "in_review"]);
+      expect(snapshot.planFlagsInitialized).toBe(true);
+      const target = setup();
+      await importProject(target.bb, target.store, out, false);
+      expect(target.store.tasks.getProject(source.project.id)).toMatchObject({ planning: "required", planFlagsInitialized: true });
+      expect(flagged(target.store.tasks.getProject(source.project.id)!)).toEqual(["in_progress", "in_review"]);
+    });
+
+    it("keeps an existing project's flags and marker: a flag-only difference is no conflict and no write, with or without --overwrite", async () => {
+      const source = await reviewed();
+      source.store.tasks.updateProject(source.project.id, { planning: "required" });
+      const out = await exported(source, "flags-keep");
+      const target = setup();
+      await importProject(target.bb, target.store, out, false);
+      // The owner changes the flags locally; the snapshot still has the old ones.
+      unmark(target.store, source.project.id, "in_review");
+      target.store.tasks.updateProject(source.project.id, { statuses: target.store.tasks.getProject(source.project.id)!.statuses!.map((status) => (status.id === "backlog" ? { ...status, requiresApprovedPlan: true } : status)) });
+      const local = target.store.tasks.getProject(source.project.id)!;
+      for (const overwrite of [false, true]) {
+        await importProject(target.bb, target.store, out, overwrite);
+        expect(flagged(target.store.tasks.getProject(source.project.id)!)).toEqual(["backlog", "in_progress", "done"]);
+        expect(target.store.tasks.getProject(source.project.id)!.planFlagsInitialized).toBe(local.planFlagsInitialized);
+      }
+    });
+
+    it("gives a status that is new to the project the default, and forces a marked canceled to false", async () => {
+      const source = await reviewed();
+      source.store.tasks.updateProject(source.project.id, { planning: "required" });
+      const out = await exported(source, "flags-new");
+      const target = setup();
+      await importProject(target.bb, target.store, out, false);
+      // The snapshot adds a status after Done that it marks false, and marks canceled; the local project is required.
+      await editSnapshot(out, (project) => {
+        project.statuses.splice(5, 0, { id: "after_done", name: "After done", requiresApprovedPlan: false });
+        for (const status of project.statuses) if (status.id === "canceled") status.requiresApprovedPlan = true;
+      });
+      // A genuinely new status is a real difference, so this import needs --overwrite; the flags are merged either way.
+      await importProject(target.bb, target.store, out, true);
+      const merged = target.store.tasks.getProject(source.project.id)!;
+      expect(flagged(merged)).toEqual(["in_progress", "in_review", "done", "after_done"]);
+      expect(merged.statuses!.find((status) => status.id === "canceled")).not.toHaveProperty("requiresApprovedPlan");
+      // A fresh import also forces canceled to false.
+      const fresh = setup();
+      await importProject(fresh.bb, fresh.store, out, false);
+      expect(fresh.store.tasks.getProject(source.project.id)!.statuses!.find((status) => status.id === "canceled")).not.toHaveProperty("requiresApprovedPlan");
+    });
+
+    it("starts a legacy fresh import uninitialized, so its prefill happens at the first activation", async () => {
+      const source = await reviewed();
+      const out = await exported(source, "flags-legacy");
+      await editSnapshot(out, (project) => {
+        delete project.planFlagsInitialized;
+        delete project.planning;
+        for (const status of project.statuses) delete status.requiresApprovedPlan;
+      });
+      const fresh = setup();
+      await importProject(fresh.bb, fresh.store, out, false);
+      expect(fresh.store.tasks.getProject(source.project.id)).toMatchObject({ planning: "optional", planFlagsInitialized: false });
+      expect(flagged(fresh.store.tasks.getProject(source.project.id)!)).toEqual([]);
+      fresh.store.tasks.updateProject(source.project.id, { planning: "required" });
+      expect(flagged(fresh.store.tasks.getProject(source.project.id)!)).toEqual(["in_progress", "in_review", "done"]);
+    });
+
+    it("does not bring a flag back after clearing all of them, switching to optional, an export, a restore and a second required", async () => {
+      const source = await reviewed();
+      source.store.tasks.updateProject(source.project.id, { planning: "required" });
+      for (const id of ["in_progress", "in_review", "done"]) unmark(source.store, source.project.id, id);
+      source.store.tasks.updateProject(source.project.id, { planning: "optional" });
+      const out = await exported(source, "flags-cleared");
+      const target = setup();
+      await importProject(target.bb, target.store, out, false);
+      target.store.tasks.updateProject(source.project.id, { planning: "required" });
+      expect(flagged(target.store.tasks.getProject(source.project.id)!)).toEqual([]);
+    });
+  });
+
   it("reads a v19 snapshot as the owner's, infers optional for a fresh project with a plan, and keeps local review history", async () => {
     const source = await reviewed();
     const out = await exported(source, "v19-legacy");
@@ -1390,6 +1483,7 @@ it("lets the migration turn planning on only for projects that already have a pl
     ALTER TABLE task_plans DROP COLUMN review_version;
     ALTER TABLE task_plan_notes DROP COLUMN author_kind;
     ALTER TABLE task_plan_notes DROP COLUMN author_thread;
+    ALTER TABLE projects DROP COLUMN plan_flags_initialized;
     ALTER TABLE projects DROP COLUMN planning_changed_at;
     ALTER TABLE projects DROP COLUMN planning_previous;
     ALTER TABLE projects DROP COLUMN planning;

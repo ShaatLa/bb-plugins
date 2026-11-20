@@ -78,6 +78,7 @@ import { scheduledCliCommands } from "../scheduled/cli";
 import { planCommands } from "./plan";
 import { planAdvisory } from "../shared/plan";
 import { planningOn, planningRequired, PLANNING_OWNER_ONLY } from "../shared/project-settings";
+import { planGatedStatuses } from "../shared/workflow-policy";
 import { createPlanStore } from "../plans/store";
 
 const TASK_KEY_PATTERN = /^([A-Z][A-Z0-9]{0,9})-(\d+)$/;
@@ -1935,6 +1936,7 @@ export function registerTasksCli(
                 ["Auto archive (days)", project.autoArchiveAfterDays ?? "off"],
                 ["Idle warning (minutes)", project.staleIdleMinutes ?? "45"],
                 ["Planning", project.planning ?? "off"],
+                ["Plan-gated statuses", planGatedStatuses(project).join(", ") || "-"],
                 ["Planning changed", project.planningChangedAt ? `${project.planningChangedAt}, was ${project.planningPrevious ?? "off"}` : "-"],
                 ["Next task", `${project.prefix}-${project.nextTaskNumber}`],
                 ["Created", project.createdAt],
@@ -2009,7 +2011,10 @@ export function registerTasksCli(
               if (input.options["statuses-file"]) {
                 const hostId = await resolveClientHostId(bb, domain, input.options.machine, ctx);
                 const text = await readTextOption(bb, ctx, hostId, undefined, input.options["statuses-file"]);
-                try { statuses = taskStatusesSchema.parse(JSON.parse(text!)); }
+                try {
+                  // A flag is the owner's: a file never changes one (an existing status keeps its flag, a new one gets the default).
+                  statuses = taskStatusesSchema.parse(JSON.parse(text!)).map(({ requiresApprovedPlan: _flag, ...status }) => status);
+                }
                 catch { throw new CliError("Invalid statuses file: expected unique [{id,name}] definitions retaining the six system IDs"); }
               } else if (input.options.machine && !input.options["workflow-policy-file"]) throw new CliError("--machine requires a file option");
               let workflowPolicy;

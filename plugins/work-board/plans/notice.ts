@@ -3,7 +3,7 @@ import type { TasksStore } from "../db";
 import { errorMessage } from "../shared/errors";
 import type { PlanState } from "../shared/plan";
 import { buildLeftApprovedNotice } from "../shared/plan-notes";
-import { inWorkZone } from "../shared/workflow-policy";
+import { inWorkNow } from "../shared/workflow-policy";
 import { notifyThread } from "../steer";
 
 /**
@@ -18,7 +18,7 @@ export async function noticeLeftApproved(
 ): Promise<void> {
   const task = tasks.getTask(input.taskId);
   const project = task && tasks.getProject(task.projectId);
-  if (!task || !project || !inWorkZone(project, task.status)) return;
+  if (!task || !project || !inWorkNow(project, task.status)) return;
   const skip = new Set([input.changedBy, ...(input.exclude ?? [])]);
   // "Active" is read from the live thread, not from the link: a link's name or stored state says nothing about whether it is running.
   const threads: string[] = [];

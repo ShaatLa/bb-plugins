@@ -314,6 +314,8 @@ export const projectSchema = z
     staleIdleMinutes: staleIdleThresholdSchema.optional(),
     statusNotifications: statusNotificationsSchema.optional(),
     planning: planningSchema.optional(),
+    /** False until the "only with an approved plan" flags were set up (by the owner, or by the first switch to required). */
+    planFlagsInitialized: z.boolean().optional(),
     /** When planning last changed and what it was before; null until the first change. */
     planningChangedAt: z.string().nullable().optional(),
     planningPrevious: planningSchema.nullable().optional(),

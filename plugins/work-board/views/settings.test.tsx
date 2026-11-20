@@ -493,6 +493,27 @@ it("lets the owner pick each planning mode for the selected project, and the cho
   } finally { cleanup(); await harness.dispose(); }
 });
 
+it("lets the owner mark which statuses need an approved plan, never canceled, and keeps the choice", async () => {
+  const { bb, harness } = createFakePluginHost({ pluginId: "work-board" });
+  try {
+    const store = createStore(bb);
+    const alpha = store.tasks.createProject({ name: "Alpha", prefix: "A", color: "blue" });
+    registerTasksApi(bb, store);
+    const settings = renderSlot(app.settingsSections[0]!, {}, { rpc: Object.fromEntries(Object.keys(tasksRpcContract).map(method => [method, (input: unknown) => harness.callRpc(method, input)])) });
+    const box = (name: string) => settings.getByRole("checkbox", { name: `Only with an approved plan: ${name}` }) as HTMLInputElement;
+    await settings.findByRole("checkbox", { name: "Only with an approved plan: Todo" });
+    expect(box("Canceled").disabled).toBe(true);
+    expect(box("Todo").checked).toBe(false);
+    fireEvent.click(box("Todo"));
+    await waitFor(() => expect(store.tasks.getProject(alpha.id)?.statuses?.find(status => status.id === "todo")?.requiresApprovedPlan).toBe(true));
+    // The first manual edit initializes the flags, in any mode.
+    expect(store.tasks.getProject(alpha.id)).toMatchObject({ planning: "off", planFlagsInitialized: true });
+    await waitFor(() => expect(box("Todo").checked).toBe(true));
+    fireEvent.click(box("Todo"));
+    await waitFor(() => expect(store.tasks.getProject(alpha.id)?.statuses?.find(status => status.id === "todo")).not.toHaveProperty("requiresApprovedPlan"));
+  } finally { cleanup(); await harness.dispose(); }
+});
+
 it("saves notification modes independently for each selected project", async () => {
   const { bb, harness } = createFakePluginHost({ pluginId: "work-board" });
   try {

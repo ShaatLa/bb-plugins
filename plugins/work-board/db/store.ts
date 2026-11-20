@@ -1,5 +1,5 @@
 import { WAITING_ON_OWNER, NEWEST_UNANSWERED } from "./waiting-on-owner";
-import { getWorkflowPolicy, inWorkZone, workflowPolicySchema } from "../shared/workflow-policy.js";
+import { getWorkflowPolicy, inWorkZone, settlePlanFlags, workflowPolicySchema } from "../shared/workflow-policy.js";
 import { ordinaryTaskVisibilitySql } from "../scheduled/visibility";
 import { autoArchiveAfterDaysSchema, planningSchema, staleIdleThresholdSchema, statusNotificationsSchema } from "../shared/project-settings";
 import { taskDateFiltersSchema } from "../shared/task-dates.js";
@@ -85,6 +85,7 @@ interface ProjectRow {
   stale_idle_minutes: string | null;
   status_notifications: string | null;
   planning: string | null;
+  plan_flags_initialized: number;
   planning_changed_at: string | null;
   planning_previous: string | null;
   statuses: string | null;
@@ -395,6 +396,7 @@ function projectFromRow(row: ProjectRow): Project {
     staleIdleMinutes: staleIdleThresholdSchema.parse(row.stale_idle_minutes ?? "45"),
     statusNotifications: statusNotificationsSchema.parse(row.status_notifications ?? "off"),
     planning: planningSchema.parse(row.planning ?? "off"),
+    planFlagsInitialized: row.plan_flags_initialized === 1,
     planningChangedAt: row.planning_changed_at,
     planningPrevious: row.planning_previous === null ? null : planningSchema.parse(row.planning_previous),
     statuses:
@@ -760,11 +762,13 @@ export function createTasksStore(db: PluginDatabase) {
   function updateProject(id: string, input: UpdateProjectInput): Project {
     return db.transaction(() => {
       const current = requireProject(id);
-      const statuses = taskStatusesSchema.parse(
+      const requested = taskStatusesSchema.parse(
         input.statuses ?? current.statuses ?? DEFAULT_TASK_STATUSES,
       );
-      assertNoSecretsInValue(statuses, "statuses");
       const policy = input.workflowPolicy === undefined ? current.workflowPolicy : workflowPolicySchema.parse(input.workflowPolicy);
+      const settled = settlePlanFlags({ statuses: requested, previous: current.statuses, planning: planningSchema.parse(input.planning ?? current.planning ?? "off"), initialized: current.planFlagsInitialized === true, workflowPolicy: policy });
+      const statuses = settled.statuses;
+      assertNoSecretsInValue(statuses, "statuses");
       assertNoSecretsInValue(policy, "workflowPolicy");
       const ids = new Set(statuses.map((status) => status.id));
       if (listTasks({ projectId: id }).some((task) => !ids.has(task.status)))
@@ -778,12 +782,12 @@ export function createTasksStore(db: PluginDatabase) {
       const nextPlanning = planningSchema.parse(input.planning ?? current.planning ?? "off");
       const planningChanged = nextPlanning !== (current.planning ?? "off");
       db.prepare<
-        [string, string, string, string | null, string | null, string, string | null, string, string, string, string, string | null, string | null, string]
+        [string, string, string, string | null, string | null, string, string | null, string, string, string, string, number, string | null, string | null, string]
       >(
         `
       UPDATE projects
       SET name = ?, prefix = ?, color = ?, folder_id = ?, linked_bb_project_id = ?, statuses = ?, workflow_policy = ?,
-          auto_archive_after_days = ?, stale_idle_minutes = ?, status_notifications = ?, planning = ?, planning_changed_at = ?, planning_previous = ?
+          auto_archive_after_days = ?, stale_idle_minutes = ?, status_notifications = ?, planning = ?, plan_flags_initialized = ?, planning_changed_at = ?, planning_previous = ?
       WHERE id = ?
     `,
       ).run(
@@ -806,6 +810,7 @@ export function createTasksStore(db: PluginDatabase) {
         staleIdleThresholdSchema.parse(input.staleIdleMinutes ?? current.staleIdleMinutes ?? "45"),
         statusNotificationsSchema.parse(input.statusNotifications ?? current.statusNotifications ?? "off"),
         nextPlanning,
+        settled.initialized ? 1 : 0,
         planningChanged ? nowIso() : (current.planningChangedAt ?? null),
         planningChanged ? (current.planning ?? "off") : (current.planningPrevious ?? null),
         id,

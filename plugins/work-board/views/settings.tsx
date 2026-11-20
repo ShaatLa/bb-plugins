@@ -315,6 +315,16 @@ function ProjectStatuses({ project }: { project: Project }) {
                 }
               }}
             />
+            <label className="flex shrink-0 items-center gap-1 text-2xs text-muted-foreground" title="With planning required, a card enters this status only after its plan is approved">
+              <input
+                type="checkbox"
+                aria-label={`Only with an approved plan: ${status.name}`}
+                checked={status.requiresApprovedPlan === true}
+                disabled={status.id === "canceled" || saving}
+                onChange={(event) => void save(statuses.map((entry) => (entry.id === status.id ? { ...entry, requiresApprovedPlan: event.target.checked } : entry)))}
+              />
+              Plan
+            </label>
             {(TASK_STATUSES as readonly string[]).includes(status.id) ? (
               <span className="size-7 shrink-0" />
             ) : (

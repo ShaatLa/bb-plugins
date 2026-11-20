@@ -59,6 +59,8 @@ export const taskStatusesSchema = z
         name: z.string().trim().min(1).max(80),
         icon: statusIconSchema.optional(),
         color: statusColorSchema.optional(),
+        /** "Only with an approved plan": with planning required, a card enters this status only after its plan is approved. Set by the owner; omitted when false. */
+        requiresApprovedPlan: z.boolean().optional(),
       })
       .strict(),
   )

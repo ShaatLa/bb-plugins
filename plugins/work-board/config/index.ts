@@ -1,6 +1,7 @@
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import type { z } from "zod";
 import type { TasksApiStore } from "../api";
+import { planGatedStatuses } from "../shared/workflow-policy";
 import { publishProjectsChanged } from "../api";
 import { gitSyncService } from "../git-sync/service";
 import { createGitSyncStore } from "../git-sync/store";
@@ -41,7 +42,7 @@ export function projectConfigHandlers(bb: BbPluginApi, store: TasksApiStore) {
       const all = values(projectId);
       const project = requireProject(projectId);
       // Planning shows when it last changed and what it was before.
-      const planningHistory = { planningChangedAt: project.planningChangedAt ?? null, planningPrevious: project.planningPrevious ?? null };
+      const planningHistory = { planningChangedAt: project.planningChangedAt ?? null, planningPrevious: project.planningPrevious ?? null, planGatedStatuses: planGatedStatuses(project) };
       if (key === undefined) return { projectId, values: { ...all, ...planningHistory } };
       requireKey(key);
       return { projectId, values: { [key]: all[key] ?? null, ...(key === "planning" ? planningHistory : {}) } };

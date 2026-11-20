@@ -35,6 +35,7 @@ export interface Project {
   staleIdleMinutes?: ProjectContract["staleIdleMinutes"];
   statusNotifications?: ProjectContract["statusNotifications"];
   planning?: ProjectContract["planning"];
+  planFlagsInitialized?: boolean;
   planningChangedAt?: ProjectContract["planningChangedAt"];
   planningPrevious?: ProjectContract["planningPrevious"];
   id: string;

@@ -532,6 +532,7 @@ const MIGRATIONS = [
    );
    CREATE INDEX idx_task_plan_reviews_task ON task_plan_reviews(task_id, id);
    ALTER TABLE projects ADD COLUMN planning TEXT CHECK (planning IN ('off', 'optional', 'required'));
+   ALTER TABLE projects ADD COLUMN plan_flags_initialized INTEGER NOT NULL DEFAULT 0 CHECK (plan_flags_initialized IN (0, 1));
    ALTER TABLE projects ADD COLUMN planning_changed_at TEXT;
    ALTER TABLE projects ADD COLUMN planning_previous TEXT CHECK (planning_previous IS NULL OR planning_previous IN ('off', 'optional', 'required'));
    UPDATE projects SET planning = 'optional' WHERE id IN (SELECT t.project_id FROM tasks t JOIN task_plans p ON p.task_id = t.id);`,

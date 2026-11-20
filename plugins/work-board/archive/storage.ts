@@ -12,6 +12,7 @@ import {
 import { createStructuredStore } from "../structured/store";
 import { createPlanStore } from "../plans/store";
 import { createPlanNoteStore } from "../plans/notes";
+import { settlePlanFlags } from "../shared/workflow-policy";
 import { scheduleRunSchema, scheduleSchema, scheduleSourceSchema, type ScheduleRun } from "../shared/scheduled";
 import {
   archiveProjectSchema,
@@ -374,11 +375,18 @@ export function restoreProject(
       throw new Error("Task number exceeds the supported range");
     // Planning is the owner's setting: an import never changes an existing project's. A project the import creates takes
     // the snapshot's value; a snapshot from before v20 has none, so it is inferred from its plans.
-    const { planning: snapshotPlanning, planningChangedAt, planningPrevious, ...manifestProject } = manifest.project;
+    const { planning: snapshotPlanning, planningChangedAt, planningPrevious, planFlagsInitialized, ...manifestProject } = manifest.project;
+    // The flags and their marker are the owner's too. They are merged by status id before the lists are compared: an
+    // existing project keeps the local flag of every status it has (a new id gets the default), a project the import
+    // creates takes the snapshot's flags, and `canceled` is never marked. A flag-only difference is never a conflict or a write.
+    const incomingStatuses: Array<{ id: string; name: string; requiresApprovedPlan?: boolean }> = manifest.project.statuses ?? DEFAULT_TASK_STATUSES;
+    const settledStatuses = currentProject
+      ? settlePlanFlags({ statuses: incomingStatuses.map(({ requiresApprovedPlan: _flag, ...status }) => status), previous: currentProject.statuses, planning: currentProject.planning ?? "off", initialized: true, workflowPolicy: manifest.project.workflowPolicy }).statuses
+      : settlePlanFlags({ statuses: incomingStatuses, previous: null, planning: "off", initialized: true }).statuses;
     const project = {
       ...manifestProject,
-      ...(currentProject ? {} : { planning: snapshotPlanning ?? (records.some((record) => record.plan) ? "optional" : "off"), ...(planningChangedAt === undefined ? {} : { planningChangedAt, planningPrevious }) }),
-      statuses: manifest.project.statuses ?? DEFAULT_TASK_STATUSES,
+      ...(currentProject ? {} : { planning: snapshotPlanning ?? (records.some((record) => record.plan) ? "optional" : "off"), ...(planningChangedAt === undefined ? {} : { planningChangedAt, planningPrevious }), planFlagsInitialized: planFlagsInitialized ?? false }),
+      statuses: settledStatuses,
       nextTaskNumber: Math.max(
         manifest.project.nextTaskNumber,
         currentProject?.nextTaskNumber ?? 1,

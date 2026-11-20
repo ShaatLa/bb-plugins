@@ -5,7 +5,7 @@ import { registerTasksCli } from "../cli";
 import { registerDelegation } from "../delegate";
 import type { PlanAuthor } from "../shared/contract";
 import { DEFAULT_TASK_STATUSES } from "../shared/statuses";
-import { effectiveInProgressStatus, inWorkZone } from "../shared/workflow-policy";
+import { effectiveInProgressStatus, inPositionZone, inWorkNow, inWorkZone } from "../shared/workflow-policy";
 import { createPlanStore } from "./store";
 
 const hosts: ReturnType<typeof createFakePluginHost>[] = [];
@@ -171,10 +171,17 @@ describe("status gate in the other planning modes", () => {
     // null falls back to in_progress when the project has it, and to none when it does not.
     expect(effectiveInProgressStatus({ workflowPolicy: { inProgressStatus: null } })).toBe("in_progress");
     expect(effectiveInProgressStatus({ workflowPolicy: { inProgressStatus: null }, statuses: [{ id: "todo" }, { id: "done" }] })).toBeNull();
-    const project = { statuses: WITH_TESTING };
-    expect(["backlog", "todo", "in_progress", "in_review", "in_testing", "done", "canceled"].map((status) => inWorkZone(project, status))).toEqual([false, false, true, true, true, true, false]);
-    expect(inWorkZone({ workflowPolicy: { inProgressStatus: "in_review" }, statuses: WITH_TESTING }, "in_progress")).toBe(false);
-    expect(inWorkZone({ workflowPolicy: { inProgressStatus: null }, statuses: [{ id: "todo" }, { id: "done" }] }, "done")).toBe(false);
+    const names = ["backlog", "todo", "in_progress", "in_review", "in_testing", "done", "canceled"];
+    // The work zone is the marked statuses, whatever their order; canceled is never in it.
+    const flagged = { statuses: WITH_TESTING.map((status) => ({ ...status, requiresApprovedPlan: ["in_progress", "in_testing"].includes(status.id) || status.id === "canceled" })) };
+    expect(names.map((status) => inWorkZone(flagged, status))).toEqual([false, false, true, false, true, false, false]);
+    expect(names.map((status) => inWorkZone({ statuses: WITH_TESTING }, status))).toEqual([false, false, false, false, false, false, false]);
+    // The position rule only prefills and drives the notices of a project whose flags were never set up.
+    expect(names.map((status) => inPositionZone({ statuses: WITH_TESTING }, status))).toEqual([false, false, true, true, true, true, false]);
+    expect(inPositionZone({ workflowPolicy: { inProgressStatus: "in_review" }, statuses: WITH_TESTING }, "in_progress")).toBe(false);
+    expect(inPositionZone({ workflowPolicy: { inProgressStatus: null }, statuses: [{ id: "todo" }, { id: "done" }] }, "done")).toBe(false);
+    expect(names.map((status) => inWorkNow({ planFlagsInitialized: false, statuses: WITH_TESTING }, status))).toEqual([false, false, true, true, true, true, false]);
+    expect(names.map((status) => inWorkNow({ planFlagsInitialized: true, ...flagged }, status))).toEqual([false, false, true, false, true, false, false]);
   });
 });
 
@@ -441,7 +448,7 @@ describe("planning setting", () => {
     expect(get).toContain("planning=required");
     expect(get).toContain(`planningChangedAt=${when}`);
     expect(get).toContain("planningPrevious=optional");
-    expect(JSON.parse((await f.cli("config", "get", "planning", "--project", "EXA", "--json")).stdout).values).toEqual({ planning: "required", planningChangedAt: when, planningPrevious: "optional" });
+    expect(JSON.parse((await f.cli("config", "get", "planning", "--project", "EXA", "--json")).stdout).values).toEqual({ planning: "required", planningChangedAt: when, planningPrevious: "optional", planGatedStatuses: ["in_progress", "in_review", "done"] });
   });
 
   it("is changed by the owner only: project update and config set refuse it, with and without a thread id", async () => {
