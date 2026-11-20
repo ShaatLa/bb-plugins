@@ -76,6 +76,7 @@ import { taskMarkdownLink } from "../shared/task-link";
 import { ACTIVITY_LABELS } from "../shared/task-activity.js";
 import { threadHealthJson } from "../shared/thread-health";
 import { scheduledCliCommands } from "../scheduled/cli";
+import { checksCliCommands } from "../checks/cli";
 import { planCommands } from "./plan";
 import { planAdvisory } from "../shared/plan";
 import { planningOn, planningRequired, PLANNING_OWNER_ONLY } from "../shared/project-settings";
@@ -975,6 +976,7 @@ export function registerTasksCli(
           preset: async (address) => resolvePreset(await listPresets(domain), address),
           readText: async (ctx, machine, path) => (await readTextOption(bb, ctx, await resolveClientHostId(bb, domain, machine, ctx), undefined, path)) ?? "",
         }),
+        ...checksCliCommands(bb, { group: groupCommand, guard, project: (ctx, address) => requiredProject(domain, ctx, address) }),
         storage: groupCommand("storage", "Inspect and maintain plugin-owned storage", [["status", "Show disk usage and unreachable files"], ["clean", "Remove orphan files older than 24h and unreachable cache rows"], ["optimize", "Also share identical blobs and compact SQLite (may take time)"]]),
         ...Object.fromEntries((["status", "clean", "optimize"] as const).map(action => [`storage ${action}`, cliCommand({
           summary: `${action} storage across all projects; preserve accessible task history`,

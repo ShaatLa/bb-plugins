@@ -10,6 +10,7 @@ import { z } from "zod";
 import { createStore, publishProjectsChanged, registerTasksApi } from "./api";
 import { registerAttachments } from "./attachments";
 import { registerAttention } from "./attention/rpc";
+import { registerChecks } from "./checks/rpc";
 import { registerTasksCli } from "./cli";
 import { registerDelegation } from "./delegate";
 import { registerLifecycle } from "./lifecycle";
@@ -18,7 +19,7 @@ import { registerMentions } from "./mentions";
 import { autoArchiveTasks } from "./lifecycle/task-archive";
 
 const WORK_BOARD_PLUGIN_NAME = "Work Board";
-export const WORK_BOARD_PLUGIN_VERSION = "0.63.0";
+export const WORK_BOARD_PLUGIN_VERSION = "0.64.0";
 
 const tasksRpcContract = defineRpcContract({
   ping: {
@@ -42,6 +43,7 @@ export default async function plugin(bb: BbPluginApi) {
   });
   registerTasksApi(bb, store);
   registerAttention(bb, store);
+  registerChecks(bb);
   registerAttachments(bb, store.tasks);
   registerTasksCli(bb, store, statusPayload());
   registerDelegation(bb, store);

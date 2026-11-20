@@ -2,6 +2,7 @@ import { createHash, randomBytes } from "node:crypto";
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import { bumpRev, CURRENT_KEY_SQL, currentRev, invalidateAttentionCache, retireOpenOccurrences, scanTracker, ACCEPTED_OUTCOMES } from "./ledger";
 import { ATTENTION_KIND, PILOT_SIGNALS } from "./observe";
+import { assertChecksLinkChangeAllowed } from "../checks/ownership";
 
 type Database = ReturnType<BbPluginApi["storage"]["database"]>;
 
@@ -96,6 +97,7 @@ export function boundTrackerOf(db: Database, bbProjectId: string, kind = ATTENTI
 /** A relink is refused while the tracker is bound or a transition is pending, and so is a second link to a bound bb project. */
 export function assertLinkChangeAllowed(db: Database, trackerId: string, currentLink: string | null, nextLink: string | null): void {
   if (currentLink === nextLink) return;
+  assertChecksLinkChangeAllowed(db, trackerId, currentLink);
   const mine = db.prepare<[string], { found: number }>("SELECT 1 AS found FROM attention_modes WHERE tracker_id=? AND (bound_tracker_id IS NOT NULL OR requested_mode IS NOT NULL) LIMIT 1").get(trackerId);
   if (mine) throw new Error("This project's manager attention is not off: switch it off in the project settings before changing the BB project link");
   const other = nextLink ? boundTrackerOf(db, nextLink) : null;

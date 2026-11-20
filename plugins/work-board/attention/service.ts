@@ -17,12 +17,12 @@ const RECONCILE_CRON = "*/10 * * * *";
 const FAILURE_BACKOFF_MS = 60_000;
 const FAILURE_BACKOFF_CAP_MS = 30 * 60_000;
 /** An inline send whose accepted-input event never arrives stops being "sending" and becomes unknown. */
-const PENDING_INLINE_MS = 10 * 60_000;
-const LATE_SEARCH_MS = 10 * 60_000;
+export const PENDING_INLINE_MS = 10 * 60_000;
+export const LATE_SEARCH_MS = 10 * 60_000;
 const LATE_SEARCH_BATCH = 20;
 /** An unreadable history gives an attempt up as unknown after this many failed passes spread over at least this long. */
-const HISTORY_ERROR_PASSES = 5;
-const HISTORY_ERROR_SPAN_MS = 30 * 60_000;
+export const HISTORY_ERROR_PASSES = 5;
+export const HISTORY_ERROR_SPAN_MS = 30 * 60_000;
 
 const SIGNAL_TEXT: Record<string, string> = {
   no_active_thread: "in progress with no active thread",

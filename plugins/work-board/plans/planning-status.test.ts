@@ -156,9 +156,8 @@ describe("planning status migration", () => {
     const off = f.store.tasks.createProject({ name: "Off", prefix: "OFF", color: "blue" });
     f.db.prepare("UPDATE projects SET planning = 'optional' WHERE id IN (?, ?)").run(good.id, bad.id);
     f.db.prepare("UPDATE projects SET statuses = 'not json' WHERE id = ?").run(bad.id);
-    // Run the last migration again, as an upgrade from the previous version would.
-    const last = f.db.prepare<[], { version: number }>("SELECT MAX(version) AS version FROM schema_version").get()!.version;
-    f.db.prepare("DELETE FROM schema_version WHERE version = ?").run(last);
+    // Run the planning migration (version 39, the one before the repository-check tables) again, as an upgrade from 0.61 would.
+    f.db.prepare("DELETE FROM schema_version WHERE version = 39").run();
     initializeTasksSchema(f.db, (message) => messages.push(message));
     const read = (id: string) => f.db.prepare<[string], { statuses: string | null; workflow_policy: string | null }>("SELECT statuses, workflow_policy FROM projects WHERE id = ?").get(id)!;
     expect(ids(JSON.parse(read(good.id).statuses!))).toEqual(["backlog", "todo", "planning", "in_progress", "in_review", "done", "canceled"]);

@@ -689,6 +689,62 @@ const MIGRATIONS = [
    );`,
   // 0.62.0: a project that already plans gets a Planning status (see settlePlanningStatuses). The log is bound per run.
   (db: PluginDatabase, log: Log) => settlePlanningStatuses(db, log),
+  // 0.64.0: the repository-check runner (checks/). Local state only (never exported), keyed by tracker. Every staged report and
+  // committed snapshot records the bb project it belongs to, so a relink never applies state recorded for another project.
+  `CREATE TABLE IF NOT EXISTS checks_config (
+     tracker_id TEXT PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
+     enabled INTEGER NOT NULL DEFAULT 0 CHECK (enabled IN (0, 1)),
+     enabled_changed_at TEXT,
+     enabled_previous INTEGER,
+     branch TEXT, script TEXT, args TEXT, interval_minutes INTEGER, timeout_seconds INTEGER, snapshots INTEGER
+   );
+   CREATE TABLE IF NOT EXISTS checks_state (
+     tracker_id TEXT PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
+     value TEXT NOT NULL
+   );
+   CREATE TABLE IF NOT EXISTS checks_delivery (
+     tracker_id TEXT PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
+     committed BLOB,
+     committed_project TEXT,
+     report_id TEXT,
+     pending_project TEXT,
+     pending_exit INTEGER,
+     pending_tick TEXT,
+     pending_body TEXT,
+     pending_snapshot BLOB,
+     pending_at TEXT
+   );
+   CREATE TABLE IF NOT EXISTS checks_attempts (
+     attempt_id TEXT PRIMARY KEY,
+     tracker_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+     report_id TEXT NOT NULL,
+     tick_id TEXT NOT NULL,
+     bb_project_id TEXT NOT NULL,
+     manager_thread_id TEXT NOT NULL,
+     marker TEXT NOT NULL UNIQUE,
+     started_at TEXT NOT NULL,
+     transport_started_at TEXT,
+     pending_since TEXT,
+     outcome TEXT NOT NULL CHECK (outcome IN ('sending', 'appended', 'queued', 'inline', 'failed', 'unknown', 'superseded')),
+     queued_message_id TEXT,
+     inline_event_ref TEXT,
+     accepted_at TEXT,
+     error TEXT,
+     recovery_cursor TEXT
+   );
+   CREATE INDEX IF NOT EXISTS idx_checks_attempts_report ON checks_attempts(tracker_id, report_id, started_at);
+   CREATE TABLE IF NOT EXISTS checks_ticks (
+     tick TEXT PRIMARY KEY, tracker_id TEXT NOT NULL, at INTEGER NOT NULL,
+     executed INTEGER NOT NULL DEFAULT 0, delivered INTEGER NOT NULL DEFAULT 0, repeated INTEGER NOT NULL DEFAULT 0,
+     suppressed INTEGER NOT NULL DEFAULT 0, refresh_failed INTEGER NOT NULL DEFAULT 0, script_failed INTEGER NOT NULL DEFAULT 0,
+     delivery_failed INTEGER NOT NULL DEFAULT 0
+   );
+   CREATE INDEX IF NOT EXISTS idx_checks_ticks_tracker_at ON checks_ticks(tracker_id, at);
+   CREATE TABLE IF NOT EXISTS checks_items (
+     tracker_id TEXT NOT NULL, fingerprint TEXT NOT NULL, kind TEXT NOT NULL, first_at INTEGER NOT NULL, last_at INTEGER NOT NULL,
+     PRIMARY KEY (tracker_id, fingerprint)
+   );
+   CREATE INDEX IF NOT EXISTS idx_checks_items_tracker_first ON checks_items(tracker_id, first_at);`,
 ] as const;
 
 export function initializeTasksSchema(db: PluginDatabase, log: Log = () => {}): void {
