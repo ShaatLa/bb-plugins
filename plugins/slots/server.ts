@@ -1,5 +1,6 @@
 import type { BbPluginApi, PluginSettingDescriptor } from "@get-bb/plugin-sdk";
 import * as os from "node:os";
+import { sendOrAppend } from "./queued-notice";
 import { dirname } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { z } from "zod";
@@ -137,8 +138,10 @@ export async function register(bb: BbPluginApi, overrides: Partial<Runtime> = {}
   }
   async function sendNotification(effect: Extract<Effect, { type: "notify" }>) {
     try {
-      await deadline(bb.sdk.threads.send({ threadId: effect.threadId, mode: effect.queue ? "queue-if-active" : "auto", originPluginId: bb.pluginId,
-        input: [{ type: "text", text: `[bb message from plugin:${bb.pluginId}]\n\n${formatNotification(effect)}`, mentions: [] }] }));
+      const text = formatNotification(effect);
+      if (effect.queue) await sendOrAppend(bb, { threadId: effect.threadId, text, guard: deadline });
+      else await deadline(bb.sdk.threads.send({ threadId: effect.threadId, mode: "auto", originPluginId: bb.pluginId,
+        input: [{ type: "text", text: `[bb message from plugin:${bb.pluginId}]\n\n${text}`, mentions: [] }] }));
     } catch (error) { bb.log.warn(`Slots notify ${effect.threadId} failed: ${String(error)}`); }
   }
   async function transition(input: Input, manualSample = false, verified = new Set<string>(), pending: Extract<Effect, { type: "notify" }>[] = []) {
