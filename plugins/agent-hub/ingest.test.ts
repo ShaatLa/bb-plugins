@@ -1,7 +1,7 @@
 import { afterEach, describe, it, expect } from 'vitest';
 import Database from 'better-sqlite3';
 import { migrations } from './schema';
-import { applyEvents, asksOwner, cap, chatQuestion, failRequest, RELEVANT, type Event } from './ingest';
+import { applyEvents, asksOwner, cap, chatQuestion, failRequest, type Event } from './ingest';
 const databases: Database.Database[] = [];
 const setup = () => { const db = new Database(':memory:'); migrations.forEach(m => db.exec(m)); databases.push(db); return db; };
 afterEach(() => databases.splice(0).forEach(db => db.close()));
@@ -122,9 +122,33 @@ describe('updates',()=>{
   [{originPluginId:'delivery-dashboard',input:text('**CI Dashboard** Deploy')},'plugin','delivery-dashboard'],
   [{input:text('[merge-queue watcher] Merge queue changed: empty')},'other','merge-queue watcher'],
  ] as const)('records the final message of a %j turn',(extra,kind,source)=>{
-  const db=setup(); applyEvents(db,'t',[req(1,'r',extra),start(),accept(),message(4,'first'),message(5,'report'),{...done(6),createdAt:77}],'p',100,true,true);
-  expect(updates(db)).toEqual([expect.objectContaining({status:'answered',question:extra.input[0].text,answer:'report',answer_seq:5,answer_source:'turn',answered_at:77,created_at:kind==='other' ? 77 : 100,read_at:77,asks:0,notify_state:0,trigger_kind:kind,trigger_source:source,project_id:'p'})]);
+  const db=setup(); applyEvents(db,'t',[req(1,'r',extra),start(),accept(),message(4,'first'),ev(5,'item/completed','x',{item:{type:'commandExecution'}}),message(6,'report'),{...done(7),createdAt:77}],'p',100,true,true);
+  expect(updates(db)).toEqual([expect.objectContaining({status:'answered',question:extra.input[0].text,answer:'report',answer_seq:6,answer_source:'turn',answered_at:77,created_at:kind==='other' ? 77 : 100,read_at:77,asks:0,notify_state:0,trigger_kind:kind,trigger_source:source,project_id:'p'})]);
   expect([count(db,'request_triggers'),count(db,'turn_updates')]).toEqual([0,0]);
+ });
+ describe('messages written in a row',()=>{
+  const step=(seq:number,type='commandExecution')=>ev(seq,'item/completed','x',{item:{type}});
+  const long='Full answer. '.repeat(40), mine=(db:Database.Database)=>rows(db).filter(r=>r.kind==='mine');
+  it('is one reply: a long answer followed by a short message with no step between keeps both, the last message\'s seq',()=>{
+   const db=setup(); applyEvents(db,'t',[req(1),start(),accept(),step(4),message(5,long),message(6,'And one more thing.'),done(7)],'p',100,true,true);
+   expect(mine(db)[0]).toMatchObject({status:'answered',answer:`${long}\n\nAnd one more thing.`,answer_seq:6});
+  });
+  it('is one reply when a provider splits it in parts, and also for a turn that answers no message of the owner',()=>{
+   const db=setup(); applyEvents(db,'t',[req(1),start(),accept(),message(4,'Part 1'),message(5,'Part 2'),message(6,'Part 3'),done(7)]);
+   expect(mine(db)[0]).toMatchObject({answer:'Part 1\n\nPart 2\n\nPart 3',answer_seq:6});
+   const wake=setup(); applyEvents(wake,'t',[req(1,'r',{initiator:'system',input:text('[bb system] @thread:thr_child-1 completed: done')}),start(),accept(),message(4,'Part 1'),message(5,'Part 2'),done(6)],'p',100,true,true);
+   expect(updates(wake)[0]).toMatchObject({answer:'Part 1\n\nPart 2',answer_seq:5});
+  });
+  it('folds a message followed by a tool step or reasoning into the log: only the last run is the reply',()=>{
+   const db=setup(); applyEvents(db,'t',[req(1),start(),accept(),message(4,'Looking.'),step(5),message(6,'Found it.'),message(7,'Done.'),done(8)]);
+   expect(mine(db)[0]).toMatchObject({answer:'Found it.\n\nDone.',answer_seq:7});
+   const reasoning=setup(); applyEvents(reasoning,'t',[req(1),start(),accept(),message(4,'First.'),step(5,'reasoning'),message(6,'Second.'),done(7)]);
+   expect(mine(reasoning)[0]).toMatchObject({answer:'Second.',answer_seq:6});
+  });
+  it('does not join a message that starts a new item for another owner message',()=>{
+   const db=setup(); applyEvents(db,'t',[req(1),start(),accept(),message(4,'Reply to the first.'),req(5,'s'),accept(6,'s'),step(7),message(8,'Reply to both.'),done(9)]);
+   expect(mine(db).map(r=>r.answer)).toEqual(['Reply to both.','Reply to both.']);
+  });
  });
  it('shows another thread\'s or a plugin\'s message that joins a turn already under way, read, while the owner\'s message keeps the reply',()=>{
   const db=setup(); const tool=(seq:number)=>ev(seq,'item/completed','x',{item:{type:'commandExecution',command:'ls'}});
@@ -138,49 +162,6 @@ describe('updates',()=>{
   applyEvents(db,'t',[req(1),start(),accept(),tool(4),req(5,'s',{initiator:'agent',senderThreadId:'thr_s',input:text('[bb message from thread:thr_s] released')}),accept(6,'s'),message(7,long),tool(8),message(9,'steer reply'),done(10)],'p',100,true,true);
   expect(rows(db).find(r=>r.kind==='mine')).toMatchObject({status:'answered',answer:long,answer_seq:7});
   expect(updates(db)).toEqual([expect.objectContaining({trigger_kind:'agent',answer:'steer reply',read_at:100,turn_id:'x'})]);
- });
- it('gives a steer\'s reply to the steer when the agent read it between two messages, with no tool result after it',()=>{
-  const db=setup(), long='Full answer. '.repeat(40); const tool=(seq:number)=>ev(seq,'item/completed','x',{item:{type:'commandExecution',command:'ls'}});
-  applyEvents(db,'t',[req(1),start(),accept(),tool(4),req(5,'s',{initiator:'agent',senderThreadId:'thr_s',input:text('[bb message from thread:thr_s] released')}),accept(6,'s'),message(7,long),message(8,'steer reply'),done(9)],'p',100,true,true);
-  expect(rows(db).find(r=>r.kind==='mine')).toMatchObject({status:'answered',answer:long,answer_seq:7});
-  expect(updates(db)).toEqual([expect.objectContaining({trigger_kind:'agent',answer:'steer reply',read_at:100,turn_id:'x'})]);
-  // One message after an unseen steer is still the owner's answer: the steer is read by the next turn or never.
-  const one=setup(); applyEvents(one,'t',[req(1),start(),accept(),tool(4),req(5,'s',{initiator:'agent',senderThreadId:'thr_s',input:text('[bb message from thread:thr_s] released')}),accept(6,'s'),message(7,long),done(8)],'p',100,true,true);
-  expect(rows(one).find(r=>r.kind==='mine')).toMatchObject({answer:long}); expect(updates(one)[0]).toMatchObject({answer:null});
- });
- describe('inputs echoed by the provider',()=>{
-  const echo=(seq:number,content:unknown='input',extra:object={})=>ev(seq,'provider/unhandled','x',{rawType:'sdk/user',rawEvent:{params:{message:{type:'user',message:{role:'user',content},parent_tool_use_id:null,...extra}}}});
-  const tool=(seq:number)=>ev(seq,'item/completed','x',{item:{type:'commandExecution',command:'ls'}});
-  const agent=(seq:number)=>req(seq,'s',{initiator:'agent',senderThreadId:'thr_s',input:text('[bb message from thread:thr_s] released')});
-  const long='Full answer. '.repeat(40), mine=(db:Database.Database)=>rows(db).filter(r=>r.kind==='mine');
-  it('keeps the owner\'s full reply as the answer of the message it answered when their own steer was read after it, and gives the steer the next message',()=>{
-   const db=setup(); applyEvents(db,'t',[req(1),start(),accept(),echo(4),tool(5),req(6,'s'),accept(7,'s'),message(8,long),echo(9),message(10,'steer reply'),done(11)],'p',100,true,true);
-   expect(mine(db).map(r=>[r.status,r.answer_seq,r.answer])).toEqual([['answered',8,long],['answered',10,'steer reply']]);
-   // Much work after the steer was read: one reply answers both, as before.
-   const busy=setup(); applyEvents(busy,'t',[req(1),start(),accept(),echo(4),tool(5),req(6,'s'),accept(7,'s'),message(8,long),echo(9),tool(10),tool(11),tool(12),tool(13),message(14,'final'),done(15)],'p',100,true,true);
-   expect(mine(busy).map(r=>r.answer)).toEqual(['final','final']);
-   // A steer no echo followed was not read by this turn: it stays for the next one.
-   const unread=setup(); applyEvents(unread,'t',[req(1),start(),accept(),echo(4),tool(5),req(6,'s'),accept(7,'s'),message(8,long),done(9)],'p',100,true,true);
-   expect(mine(unread).map(r=>[r.status,r.answer])).toEqual([['answered',long],['waiting',null]]);
-  });
-  it('does not split a reply written in two messages before an input was read between the owner and an update steer',()=>{
-   const db=setup(), part=(n:number)=>`Part ${n}. `.repeat(60);
-   applyEvents(db,'t',[req(1),start(),accept(),echo(4),tool(5),agent(6),accept(7,'s'),message(8,part(1)),message(9,part(2)),echo(10),done(11)],'p',100,true,true);
-   expect(mine(db)[0]).toMatchObject({status:'answered',answer_seq:9}); expect(updates(db)[0]).toMatchObject({answer:null});
-  });
-  it('pairs the k-th echo with the k-th input, so an earlier input\'s late echo does not read a steer early',()=>{
-   const db=setup(); applyEvents(db,'t',[req(1),start(),accept(),tool(4),agent(5),accept(6,'s'),echo(7),message(8,long),echo(9),message(10,'steer reply'),done(11)],'p',100,true,true);
-   expect(mine(db)[0]).toMatchObject({answer_seq:8}); expect(updates(db)[0]).toMatchObject({answer:'steer reply'});
-  });
-  it('counts attachments and a slash command, not its output, a tool result or an echo another producer made',()=>{
-   const db=setup(); applyEvents(db,'t',[req(1),start(),accept(),echo(4,[{type:'text',text:'x'},{type:'image'}]),echo(5,'<local-command-stdout>ok</local-command-stdout>'),echo(6,[{type:'tool_result'}]),echo(7,'note',{origin:{kind:'task-notification'}}),echo(8,'note',{isSynthetic:true}),tool(9),agent(10),accept(11,'s'),message(12,long),echo(13),message(14,'steer reply')],'p',100,true,true);
-   expect(db.prepare('SELECT accepted,echoes,echoing FROM turn_updates').get()).toEqual({accepted:2,echoes:2,echoing:1});
-   applyEvents(db,'t',[done(15)],'p',100,true,true);
-   expect(mine(db)[0]).toMatchObject({answer_seq:12}); expect(updates(db)[0]).toMatchObject({answer:'steer reply'});
-   const slash=setup(); applyEvents(slash,'t',[req(1),start(),accept(),echo(4,'<command-name>/x</command-name>'),tool(5),agent(6),accept(7,'s'),message(8,long),message(9,'part 2'),done(10)],'p',100,true,true);
-   expect(mine(slash)[0]).toMatchObject({answer_seq:9}); expect(updates(slash)[0]).toMatchObject({answer:null});
-  });
-  it('is fetched by the driver: provider/unhandled is a relevant event type',()=>{ expect(RELEVANT).toContain('provider/unhandled'); });
  });
  it('keeps the turn\'s last message as the owner\'s answer when only a progress note came before the steer, or much work followed',()=>{
   const tool=(seq:number)=>ev(seq,'item/completed','x',{item:{type:'commandExecution',command:'ls'}}), steer=[req(5,'s',{initiator:'agent',senderThreadId:'thr_s',input:text('[bb message from thread:thr_s] addendum')}),accept(6,'s')];

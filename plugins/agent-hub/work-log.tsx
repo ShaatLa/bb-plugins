@@ -18,15 +18,20 @@ export function duration(ms: number) {
 const count = (n: number, noun: string, plural = `${noun}s`) => `${n} ${n === 1 ? noun : plural}`;
 
 // Preserve conversation boundaries, including across nested turn rows.
-export function groupRows(rows: Row[], answerSeq?: number | null): (Work[] | Extract<Row, { kind: 'conversation' }>)[] {
-  const groups: ReturnType<typeof groupRows> = [];
-  const visit = (rows: Row[]) => { for (const row of rows) {
-    if (row.kind === 'turn') { visit(row.children ?? []); continue; }
+export function groupRows(rows: Row[], answerSeq?: number | null, answer?: string | null): (Work[] | Extract<Row, { kind: 'conversation' }>)[] {
+  const groups: ReturnType<typeof groupRows> = [], flat: Row[] = [];
+  const flatten = (rows: Row[]) => { for (const row of rows) row.kind === 'turn' ? flatten(row.children ?? []) : flat.push(row); };
+  flatten(rows);
+  // Like bb's chat, the messages written in a row just before the answer are its reply, shown below the log; one is hidden only if its text is in the answer.
+  const isAssistant = (row?: Row): row is Extract<Row, { kind: 'conversation' }> => row?.kind === 'conversation' && row.role === 'assistant';
+  const hidden = new Set<Row>(), end = flat.findIndex(row => isAssistant(row) && row.messageSeq === answerSeq);
+  if (end >= 0) { hidden.add(flat[end]!); for (let i = end - 1; answer && isAssistant(flat[i]) && answer.includes((flat[i] as { text: string }).text); i--) hidden.add(flat[i]!); }
+  for (const row of flat) {
     if (row.kind === 'work' && !('presentation' in row && row.presentation?.suppress)) {
       const last = groups.at(-1); if (Array.isArray(last)) last.push(row); else groups.push([row]);
-    } else if (row.kind === 'conversation' && row.role === 'assistant' && row.messageSeq !== answerSeq) groups.push(row);
-  } };
-  visit(rows); return groups;
+    } else if (isAssistant(row) && !hidden.has(row)) groups.push(row);
+  }
+  return groups;
 }
 
 export function summarize(rows: Work[]) {
@@ -130,7 +135,7 @@ export function ThreadPlan({ threadId }: { threadId: string }) {
   return todos?.items.length ? <ul aria-label="Agent plan" className="px-6 py-2 text-xs text-muted-foreground">{todos.items.map(item => <li key={item.id} className="flex items-center gap-2 py-0.5"><Icon name={item.status === 'completed' ? 'Check' : item.status === 'in_progress' ? 'CircleDot' : 'Circle'} aria-hidden className="size-3 shrink-0" /><span className={item.status === 'completed' ? 'line-through' : ''}>{item.text}</span><span className="sr-only">{item.status}</span></li>)}</ul> : null;
 }
 
-type Props = { threadId: string; turnId?: string | null; sourceSeqStart?: number | null; sourceSeqEnd?: number | null; startedAt?: number; completedAt?: number | null; answerSeq?: number | null; live?: boolean; children?: ReactNode };
+type Props = { threadId: string; turnId?: string | null; sourceSeqStart?: number | null; sourceSeqEnd?: number | null; startedAt?: number; completedAt?: number | null; answerSeq?: number | null; answer?: string | null; live?: boolean; children?: ReactNode };
 // shortcut: an autonomous turn is timed from mount until expanded; use a shared turn clock when the SDK exposes one without fetching.
 export function WorkLog(props: Props) {
   const [open, setOpen] = useState(false), [mountedAt] = useState(Date.now);
@@ -139,7 +144,7 @@ export function WorkLog(props: Props) {
     {props.children && <div className="float-left mr-2 flex">{props.children}</div>}
     {/* The figure fills the lower part of the robot's 32 px box (head at 9 px, feet at its bottom), so the line centres on the figure, not the box. */}
     <ElapsedToggle props={props} startedAt={log.startedAt} mountedAt={mountedAt} open={open} onToggle={() => setOpen(!open)} />
-    {open && <LogDetails {...log} threadId={props.threadId} answerSeq={props.answerSeq} />}
+    {open && <LogDetails {...log} threadId={props.threadId} answerSeq={props.answerSeq} answer={props.answer} />}
   </div>;
 }
 function ElapsedToggle({ props, startedAt, mountedAt, open, onToggle }: { props: Props; startedAt?: number; mountedAt: number; open: boolean; onToggle: () => void }) {
@@ -200,11 +205,11 @@ function useTurnLog({ threadId, turnId, sourceSeqStart, sourceSeqEnd, live }: Pr
   };
   return { page, error, loading, earlier, startedAt };
 }
-function LogDetails({ page, error, loading, earlier, threadId, answerSeq }: ReturnType<typeof useTurnLog> & { threadId: string; answerSeq?: number | null }) {
+function LogDetails({ page, error, loading, earlier, threadId, answerSeq, answer }: ReturnType<typeof useTurnLog> & { threadId: string; answerSeq?: number | null; answer?: string | null }) {
   return <div className="ml-1 space-y-2 border-l border-border-seam pl-3">
     {!page && !error && <div aria-label="Loading work log" className="space-y-2 py-1"><div className="h-2 w-36 rounded bg-muted" /><div className="h-2 w-24 rounded bg-muted" /></div>}
     {page?.olderCursor && <button type="button" className="text-xs text-muted-foreground" disabled={loading} onClick={() => void earlier()}>Earlier</button>}
-    {page && groupRows(page.rows, answerSeq).map(group => Array.isArray(group) ? <WorkGroup key={group[0]!.id} rows={group} threadId={threadId} /> : <div key={group.id} className="text-sm leading-relaxed"><AgentMarkdown content={group.text} threadId={threadId} /></div>)}
+    {page && groupRows(page.rows, answerSeq, answer).map(group => Array.isArray(group) ? <WorkGroup key={group[0]!.id} rows={group} threadId={threadId} /> : <div key={group.id} className="text-sm leading-relaxed"><AgentMarkdown content={group.text} threadId={threadId} /></div>)}
     {error && <p role="alert" className="text-xs text-muted-foreground">{error}</p>}
   </div>;
 }

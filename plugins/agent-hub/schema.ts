@@ -134,12 +134,8 @@ END;`,
 ALTER TABLE items ADD COLUMN interrupted_at INTEGER;`,
   // A steer from another thread or a plugin seen mid-turn: candidate holds what the agent had written for the owner by then, steer_tools the tool results since.
   `ALTER TABLE items ADD COLUMN steer_tools INTEGER NOT NULL DEFAULT 0;`,
-  // Claude Code echoes each input it hands the model (sdk/user): turn_updates.accepted counts inputs, echoes the plain echoes, echoing marks a turn that
-  // shows any; items.steer_n is a steer's input ordinal (read at echo number steer_n); snap/snap_seq: the earlier owner reply an owner steer was read after.
-  `ALTER TABLE turn_updates ADD COLUMN accepted INTEGER NOT NULL DEFAULT 0;
-ALTER TABLE turn_updates ADD COLUMN echoes INTEGER NOT NULL DEFAULT 0;
-ALTER TABLE turn_updates ADD COLUMN echoing INTEGER NOT NULL DEFAULT 0;
-ALTER TABLE items ADD COLUMN steer_n INTEGER;
-ALTER TABLE items ADD COLUMN snap TEXT;
-ALTER TABLE items ADD COLUMN snap_seq INTEGER;`,
+  // Kept as a no-op slot: installed databases already ran an echo-pairing migration here, and the array must never shrink or reorder.
+  `SELECT 1;`,
+  // turn_updates.tail: the last top-level item of the turn was an assistant message, so the next one continues the reply as one run.
+  `ALTER TABLE turn_updates ADD COLUMN tail INTEGER NOT NULL DEFAULT 0;`,
 ];
