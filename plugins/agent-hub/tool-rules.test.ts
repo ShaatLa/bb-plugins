@@ -29,9 +29,16 @@ it.each([
  ['one part', {questions: [{question: 'A'}]}, /questions needs 2–10 parts; for one question pass question instead/],
  ['part without question', {questions: [{header: 'A'}, {question: 'B'}]}, /questions\.0\.question: each part needs a question/],
  ['part recommended not in options', {questions: [{question: 'A', options: pair, recommended: 'Maybe'}, {question: 'B'}]}, /questions\.0\.recommended: recommended must equal one of this part’s options exactly/],
+ ['a numbered list in one paragraph', {question: 'Which to file? 1) Plan debt: a reminder. 2) Re-check: a command.'}, /question: question lists numbered items inside one paragraph; .*each item on its own line as a Markdown list/],
+ ['a part with a numbered list in one paragraph', {questions: [{question: 'Which? (1) Plan debt (2) Re-check'}, {question: 'B'}]}, /questions\.0\.question: this part lists numbered items inside one paragraph/],
  ['unknown field', {question: 'Pick', title: 'x'}, /unknown field "title"; agent_hub_ask accepts urgency, deadlineMinutes, question/],
 ])('agent_hub_ask refuses %s and names the fix', async (_name, input, message) => {
  const {call} = setup(); await expect(call('agent_hub_ask', input)).rejects.toThrow(message);
+});
+it('agent_hub_ask takes a numbered list written one item per line, and numbers inside a sentence', async () => {
+ const {call} = setup();
+ await expect(call('agent_hub_ask', {question: 'Which to file?\n\n1. Plan debt: a reminder.\n2. Re-check: a command.', options: pair})).resolves.toMatch(/^ans_/);
+ await expect(call('agent_hub_ask', {question: 'Ship v1. 2 tests fail; retry?'}, 'u')).resolves.toMatch(/^ans_/);
 });
 it('agent_hub_ask takes questions without a top-level question and uses question only as the form title', async () => {
  const {call, db} = setup();
