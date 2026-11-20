@@ -154,6 +154,29 @@ try {
   assert.equal((await harness.behavior.callRpc('stats',{projectId,days:1})).answers,noticesBeforeRename+1);
 }finally{await fallbackHost.harness.lifecycle.dispose();}
 
+// A report for a busy manager extends this plugin's queued row; another sender's row is left alone and a new message is queued.
+for (const [origin, merges] of [['sweep', true], ['someone-else', false]]) {
+  const row={id:'q1',content:[{type:'text',text:'Earlier notice',mentions:[]}],originPluginId:origin,state:'queued',editable:true,updatedAt:42};
+  const sentRequests=[], updates=[];
+  const mergeHost=createFakePluginHost({pluginId:'sweep',sdk:{projects:projectSettings(),threads:{
+    get:async()=>makeThreadResponse(),
+    send:async request=>{sentRequests.push(request);},
+    queuedMessages:{list:async()=>[row],update:async request=>{updates.push(request);return row;}},
+  }}});
+  try {
+    await plugin(mergeHost.bb);
+    await mergeHost.harness.behavior.callRpc('configure',{projectId,config:{...config,script:'repeat.py',args:['5','EXA-1','none']}});
+    await mergeHost.harness.behavior.runSchedule('sweep');
+    assert.equal(sentRequests.length, merges ? 0 : 1);
+    assert.equal(updates.length, merges ? 1 : 0);
+    if (merges) {
+      assert.equal(updates[0].queuedMessageId,'q1');assert.equal(updates[0].expectedUpdatedAt,42);
+      assert.match(updates[0].input[0].text,/^Earlier notice\n\n---\n\n/);
+      assert.doesNotMatch(updates[0].input[0].text,/\[bb message from plugin/);
+    } else assert.match(sentRequests[0].input[0].text,/^\[bb message from plugin:sweep\]/);
+  } finally { await mergeHost.harness.lifecycle.dispose(); }
+}
+
 const reports=[];
 let projectRemote=repo;
 const repeatHost=createFakePluginHost({pluginId:'sweep',sdk:{

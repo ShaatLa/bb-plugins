@@ -4,6 +4,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { dirname, isAbsolute } from 'node:path';
 import { createHash } from 'node:crypto';
 import { deliveryStore } from './delivery.ts';
+import { sendOrAppend } from './queued-notice.ts';
 import { sweepHistory } from './history.ts';
 import { formatNotification } from './notification.ts';
 import { managerTag, overviewContract, projectId, projectInput as input, projectsTag, statsInput, statsTag } from './overview-contract.ts';
@@ -84,7 +85,7 @@ export default async function plugin(bb: BbPluginApi) {
     const manager = (await configs())[id]?.manager;
     try {
       const threadId = await managerFor(manager);
-      await bb.sdk.threads.send({ threadId, mode: 'queue-if-active', originPluginId: bb.pluginId, input: [{ type: 'text', text: `[bb message from plugin:${bb.pluginId}]\n\n${message}`, mentions: [] }] });
+      await sendOrAppend(bb, { threadId, text: message });
       current.deliveredTo = threadId;
       current.deliveredNoticeId = undefined;
       current.fallbackReason = undefined;
