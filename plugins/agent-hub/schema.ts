@@ -134,8 +134,13 @@ END;`,
 ALTER TABLE items ADD COLUMN interrupted_at INTEGER;`,
   // A steer from another thread or a plugin seen mid-turn: candidate holds what the agent had written for the owner by then, steer_tools the tool results since.
   `ALTER TABLE items ADD COLUMN steer_tools INTEGER NOT NULL DEFAULT 0;`,
-  // Kept as a no-op slot: installed databases already ran an echo-pairing migration here, and the array must never shrink or reorder.
-  `SELECT 1;`,
+  // Unused since the echo pairing was dropped; bb checks a ran migration's text, so this statement must stay byte for byte.
+  `ALTER TABLE turn_updates ADD COLUMN accepted INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE turn_updates ADD COLUMN echoes INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE turn_updates ADD COLUMN echoing INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE items ADD COLUMN steer_n INTEGER;
+ALTER TABLE items ADD COLUMN snap TEXT;
+ALTER TABLE items ADD COLUMN snap_seq INTEGER;`,
   // turn_updates.tail: the last top-level item of the turn was an assistant message, so the next one continues the reply as one run.
   `ALTER TABLE turn_updates ADD COLUMN tail INTEGER NOT NULL DEFAULT 0;`,
 ];
