@@ -4,6 +4,7 @@ import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import { z } from "zod";
 import { buildSeedPrompt, noticeSkippedMove, presetSpawnEnvironment } from "../delegate";
 import { createPlanStore } from "../plans/store";
+import { PlanningPlacementError } from "../db/store";
 import { effectiveInProgressStatus } from "../shared/workflow-policy";
 import { publishTasksChanged } from "../api";
 import type { TasksApiStore } from "../api";
@@ -291,7 +292,7 @@ function createService(bb:BbPluginApi,store:TasksApiStore) {
    }catch(error){alive();return incident(id,"skipped",`Cannot start: ${errorMessage(error)}`);}
    alive();if(removing.has(s.id))return incident(id,"skipped","Schedule is being deleted");
    // The flags may have changed since the schedule was enabled: a card with nowhere to start is recorded as skipped, with the reason, so recovery does not retry it.
-   let task;try{task=data.createRunTask(id);}catch(error){alive();return incident(id,"skipped",`Cannot start: ${errorMessage(error)}`);}
+   let task;try{task=data.createRunTask(id);}catch(error){if(!(error instanceof PlanningPlacementError))throw error;alive();return incident(id,"skipped",`Cannot start: ${errorMessage(error)}`);}
    const project=store.tasks.getProject(s.projectId)!;
    const execution=preset?{providerId:preset.providerId,model:preset.modelId,reasoningLevel:preset.reasoningLevel,serviceTier:preset.serviceTier,permissionMode:preset.permissionMode,environmentKind:preset.environmentKind,machineId:preset.machineId,baseBranch:preset.baseBranch}:{targetThreadId:thread!.id,providerId:thread!.providerId,...threadExecution};
    r=data.updateRun(id,{threadId:thread?.id??null,execution});if(thread){trackThread(thread.id);refreshStarting(thread.id);}

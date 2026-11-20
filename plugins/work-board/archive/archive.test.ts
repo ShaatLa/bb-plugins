@@ -1473,6 +1473,19 @@ describe("archive v20: reviewers, review history and planning", () => {
     expect(createPlanStore(target.bb.storage.database(), target.store.tasks).captureReviews(source.task.id)).toEqual(source.plans.captureReviews(source.task.id));
   });
 
+  it("refuses a same-text v19 import whose version history names the pending reviewer as an author, leaving the plan and attempt intact", async () => {
+    const { source, out } = await pendingV19("v19-reviewer-author", (record) => {
+      record.plan.versions[0].summary = "Rewritten summary";
+      record.plan.versions[0].author = { kind: "agent", threadId: "thr_reviewer_b", name: "agent (thr_reviewer_b)" };
+    });
+    const history = source.plans.captureReviews(source.task.id);
+    const before = source.plans.capture(source.task.id);
+    await expect(importProject(source.bb, source.store, out, true)).rejects.toThrow(/names as the author of a plan version/);
+    expect(source.plans.capture(source.task.id)).toEqual(before);
+    expect(source.plans.captureReviews(source.task.id)).toEqual(history);
+    expect(source.plans.head(source.task.id)).toMatchObject({ state: "in_review", reviewer: { threadId: "thr_reviewer_b" }, reviewVersion: 1 });
+  });
+
   it("keeps the review binding of a pending attempt when a v19 import replaces the head with the same text and version", async () => {
     // Same text and version, but the version record differs, so the head really is replaced.
     const { source, out } = await pendingV19("v19-same-text", (record) => {

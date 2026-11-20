@@ -226,6 +226,8 @@ const taskCursorSchema = z
 type TaskCursor = z.infer<typeof taskCursorSchema>;
 
 export class TaskEpicError extends Error {}
+/** A scheduled card has nowhere to start because the project's planning flags mark every viable status. */
+export class PlanningPlacementError extends Error {}
 
 export class TasksPageCursorError extends Error {
   constructor(
@@ -1405,9 +1407,11 @@ export function createTasksStore(db: PluginDatabase) {
     // Backlog when it exists and is not marked; else the first unmarked status that is not terminal (never Done or canceled:
     // a run card placed there would be recorded as completed the moment its worker starts).
     const statuses = project.statuses ?? DEFAULT_TASK_STATUSES;
-    const terminal = new Set(["canceled", getWorkflowPolicy(project).doneStatus ?? "done"]);
-    const found = statuses.find((status) => status.id === "backlog" && !inWorkZone(project, status.id)) ?? statuses.find((status) => !terminal.has(status.id) && !inWorkZone(project, status.id));
-    if (!found) throw new Error(`Every status that is not Done or canceled is marked "only with an approved plan" in ${project.prefix}, so a scheduled card has nowhere to start; unmark one status in the project's planning flags`);
+    // Both the built-in done and the configured done status are terminal, whatever the policy says.
+    const terminal = new Set(["canceled", "done", getWorkflowPolicy(project).doneStatus ?? "done"]);
+    const viable = statuses.filter((status) => !terminal.has(status.id) && !inWorkZone(project, status.id));
+    const found = viable.find((status) => status.id === "backlog") ?? viable[0];
+    if (!found) throw new PlanningPlacementError(`Every status that is not Done or canceled is marked "only with an approved plan" in ${project.prefix}, so a scheduled card has nowhere to start; unmark one status in the project's planning flags`);
     return found.id;
   }
   function planGate(task: Task, status: string): string | null {

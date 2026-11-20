@@ -87,6 +87,22 @@ describe('Scheduled execution',()=>{
    expect(again.id).toBe(r.id);expect(f.data.run(r.id).state).toBe('skipped');expect(f.harness.sdk.callsTo('threads.send')).toHaveLength(sends);
   }finally{await f.harness.dispose();}
  });
+ it('retries an occurrence after a one-time storage failure while creating its card, and dispatches exactly once',async()=>{
+  const f=fixture();try{
+   const s=f.create(),create=f.store.tasks.createTask;let failed=false;
+   f.store.tasks.createTask=((...args:Parameters<typeof create>)=>{if(!failed){failed=true;throw new Error('database is locked');}return create(...args);}) as typeof create;
+   await expect(f.service.runNow(s.id,'flaky')).rejects.toThrow('database is locked');
+   expect(f.harness.sdk.callsTo('threads.send')).toHaveLength(0);
+   // Not recorded as skipped: the next attempt for the same occurrence goes through and sends once.
+   const retry=await f.service.runNow(s.id,'flaky');
+   expect(retry.state).toBe('starting');
+   // Recovery picks the occurrence up, creates its card and sends exactly once.
+   await f.service.reconcileAll();
+   expect(f.data.run(retry.id)).toMatchObject({state:'queued'});expect(f.data.run(retry.id).taskId).not.toBeNull();
+   expect(f.harness.sdk.callsTo('threads.send')).toHaveLength(1);
+   await f.service.reconcileAll();expect(f.harness.sdk.callsTo('threads.send')).toHaveLength(1);
+  }finally{await f.harness.dispose();}
+ });
  it.each(['backlog','done'] as const)('requires cancellation evidence and preserves an existing %s result',async status=>{
   const f=fixture();try{
    const s=f.create(),r=await f.service.runNow(s.id,'cancel');if(status==='done')f.store.tasks.updateTask(r.taskId!,{status:'done'});

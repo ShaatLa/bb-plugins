@@ -311,6 +311,9 @@ export function restoreProject(
         const pending = reviews.find((review) => review.outcome === "pending");
         if (pending && !(imported && local && imported.version === local.version && imported.body === local.body))
           throw new Error(`Import conflict: plan ${record.task.key} has a pending review of v${pending.version} that this import would detach; finish or reassign the review first, or import a v20 snapshot`);
+        // Keeping the binding must not make the assigned reviewer the author of a version it reviews.
+        if (pending && imported?.versions.some((version) => version.author.threadId !== null && version.author.threadId === pending.reviewer.threadId))
+          throw new Error(`Import conflict: plan ${record.task.key} has a pending review by ${pending.reviewer.threadId}, which the snapshot names as the author of a plan version; finish or reassign the review first`);
       }
       if (manifest.version < 19) {
         const refs = createPlanNoteStore(db, store.tasks, plans.head).capture(record.task.id).flatMap((note) => [note.madeOnVersion, note.sentInVersion ?? 0, note.addressedInVersion ?? 0]);

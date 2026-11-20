@@ -98,4 +98,17 @@ describe('scheduled cards under planning flags',()=>{
   reorder(f,['backlog','todo','in_progress','in_review','done','canceled'],['backlog','todo','in_progress','in_review']);
   expect(()=>f.scheduled.create(f.input)).toThrow(/planning flags/);
  });
+ it('treats the configured done status and the built-in done as terminal, also for the preferred Backlog',()=>{
+  const f=fixture();
+  const all=f.store.tasks.getProject(f.project.id)!.statuses!;
+  const order=['done','backlog','shipped','todo','in_progress','in_review','canceled'];
+  const statuses=order.map(id=>id==='shipped'?{id,name:'Shipped',requiresApprovedPlan:false}:{...all.find(status=>status.id===id)!,requiresApprovedPlan:['backlog','in_progress','in_review'].includes(id)});
+  f.store.tasks.updateProject(f.project.id,{planning:'required',statuses,workflowPolicy:{bugfixStatus:null,doneStatus:'shipped',inProgressStatus:'in_progress',reviewStatus:null,testingStatus:null,earlyStatuses:['todo'],ownerDecisionLabel:null}});
+  const s=f.scheduled.create(f.input);
+  // Backlog is marked; done and the configured shipped are both terminal, so the card starts in todo and its run stays running.
+  expect(f.store.tasks.getTask(s.templateTaskId)!.status).toBe('todo');
+  const r=f.scheduled.reserve(s.id,'slot:one','2026-11-01T09:00:00.000Z');
+  expect(f.scheduled.createRunTask(r.run.id).status).toBe('todo');
+  expect(f.scheduled.markStarted(r.run.id,{threadId:'thr_worker',requestId:'r1',title:'Worker',presetName:'Existing thread'}).state).toBe('running');
+ });
 });
