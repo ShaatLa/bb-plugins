@@ -134,6 +134,22 @@ describe("stale reads", () => {
     expect(f.attempts()).toHaveLength(0);
   });
 
+  it("claims nothing when a settings read records the deletion while the drain's read of A is held", async () => {
+    const f = await make();
+    eligibleCard(f);
+    const held = gate();
+    f.threads.getGateOnce = held.promise;
+    const drain = f.service.drain();
+    while (f.threads.getGateOnce) await tick();
+    // The held read keeps its older usable snapshot; a settings load now sees the deletion.
+    f.threads.threads.set(MANAGER, { deleted: true });
+    expect((await settings(f)).managerLookup).toMatchObject({ status: "unusable", cause: "deleted" });
+    held.release();
+    await drain;
+    expect(f.attempts()).toHaveLength(0);
+    expect(f.threads.sends).toBe(0);
+  });
+
   it("records a deletion seen by a successful read like an event's, once, with its time", async () => {
     const f = await make("shadow");
     f.threads.threads.set(MANAGER, { deleted: true });

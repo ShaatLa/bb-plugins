@@ -120,6 +120,8 @@ function createService(bb: BbPluginApi) {
   // cannot be trusted, whichever thread it was about (a manager can be replaced and chosen again while a read is out).
   let epoch = 0;
   const invalidateLookups = () => { epoch++; };
+  /** The first record of a deletion also invalidates reads still outstanding, whichever path established it. */
+  const recordDeletion = (id: string) => { if (!deletedAt.has(id)) { deletedAt.set(id, nowIso()); invalidateLookups(); } };
 
   /**
    * The manager session as a recipient. `unusable` needs evidence (the setting is empty, a deletion event, or a successful read
@@ -144,7 +146,7 @@ function createService(bb: BbPluginApi) {
       if (!thread) return { status: "unavailable", error: "The thread read returned nothing" };
       if (thread.deletedAt != null) {
         // The deletion is recorded like an event's, once, so a later failed read keeps it and its time.
-        if (!deletedAt.has(manager)) deletedAt.set(manager, nowIso());
+        recordDeletion(manager);
         return unusable("deleted", deletedAt.get(manager));
       }
       if (thread.archivedAt != null) return unusable("archived");
@@ -411,7 +413,7 @@ function createService(bb: BbPluginApi) {
     for (const type of ["thread.archived", "thread.unarchived", "thread.deleted"] as const) {
       bb.events.on(type, ({ thread }) => {
         invalidateLookups();
-        if (type === "thread.deleted" && !deletedAt.has(thread.id)) deletedAt.set(thread.id, nowIso());
+        if (type === "thread.deleted") recordDeletion(thread.id);
         for (const { tracker_id } of db.prepare<[string], { tracker_id: string }>("SELECT tracker_id FROM attention_manager WHERE manager=?").all(thread.id)) publishProjectsChanged(bb, tracker_id);
       });
     }
