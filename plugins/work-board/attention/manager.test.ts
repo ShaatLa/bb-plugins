@@ -100,6 +100,51 @@ describe("stale reads", () => {
     expect(f.threads.sends).toBe(0);
   });
 
+  it("claims nothing when the manager goes A → B → A and A is archived, with the archive event arriving while B is selected (the setting written without a settings call)", async () => {
+    const f = await make();
+    eligibleCard(f);
+    f.threads.threads.set("thr_b", {});
+    const held = gate();
+    f.threads.getGateOnce = held.promise;
+    const drain = f.service.drain();
+    while (f.threads.getGateOnce) await tick();
+    f.db.prepare("UPDATE attention_manager SET manager=?").run("thr_b");
+    f.threads.threads.set(MANAGER, { archived: true });
+    await event(f, "thread.archived");
+    f.db.prepare("UPDATE attention_manager SET manager=?").run(MANAGER);
+    held.release();
+    await drain;
+    expect(f.attempts()).toHaveLength(0);
+    expect(f.threads.sends).toBe(0);
+  });
+
+  it("re-reads after the manager setting went A → B → A even with no event", async () => {
+    const f = await make();
+    eligibleCard(f);
+    f.threads.threads.set("thr_b", {});
+    const held = gate();
+    f.threads.getGateOnce = held.promise;
+    const drain = f.service.drain();
+    while (f.threads.getGateOnce) await tick();
+    await setManager(f, "thr_b");
+    f.threads.threads.set(MANAGER, { archived: true });
+    await setManager(f, MANAGER);
+    held.release();
+    await drain;
+    expect(f.attempts()).toHaveLength(0);
+  });
+
+  it("records a deletion seen by a successful read like an event's, once, with its time", async () => {
+    const f = await make("shadow");
+    f.threads.threads.set(MANAGER, { deleted: true });
+    const first = (await settings(f)).managerLookup;
+    expect(first).toMatchObject({ status: "unusable", cause: "deleted", detectedAt: expect.any(String) });
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    f.threads.threads.delete(MANAGER);
+    f.threads.getError = new Error("backend unavailable");
+    expect((await settings(f)).managerLookup).toEqual(first);
+  });
+
   it("keeps the time a deletion was established across settings reads", async () => {
     const f = await make("shadow");
     await event(f, "thread.deleted");
@@ -325,26 +370,15 @@ describe("settings refresh", () => {
     expect((await settings(f)).managerWarning).toBeNull();
   });
 
-  it("publishes from a reconciliation pass only when what the settings show changed", async () => {
+  it("publishes on every reconciliation pass, so a view that diverged from another view's load is corrected", async () => {
     const f = await make("shadow");
     await f.service.reconcileAll();
-    const before = signals(f);
+    const first = signals(f);
     await f.service.reconcileAll();
-    expect(signals(f)).toBe(before);
-    f.threads.threads.set(MANAGER, { archived: true });
+    const second = signals(f);
+    expect(second).toBeGreaterThan(first);
     await f.service.reconcileAll();
-    expect(signals(f)).toBeGreaterThan(before);
-  });
-
-  it("publishes the recovered result after a settings load saw a transient failure between two passes that both read a usable manager", async () => {
-    const f = await make("shadow");
-    await f.service.reconcileAll();
-    f.threads.getError = new Error("backend unavailable");
-    expect((await settings(f)).managerWarning).toBe("Could not verify the manager session");
-    f.threads.getError = undefined;
-    const before = signals(f);
-    await f.service.reconcileAll();
-    expect(signals(f)).toBeGreaterThan(before);
+    expect(signals(f)).toBeGreaterThan(second);
   });
 
   it("publishes nothing for a pass whose manager was replaced while its read was outstanding", async () => {
@@ -410,6 +444,26 @@ describe("transitions", () => {
     const result = await load;
     expect(result.manager).toBe("thr_b");
     expect(result.managerLookup).toMatchObject({ status: "unusable", cause: "archived" });
+  });
+
+  it("reports no manager when the setting is empty after the retry, not an unverified one", async () => {
+    const f = await make("shadow");
+    f.threads.threads.set("thr_b", {});
+    const first = gate();
+    f.threads.getGateOnce = first.promise;
+    const load = settings(f);
+    while (f.threads.getGateOnce) await tick();
+    f.db.prepare("UPDATE attention_manager SET manager='thr_b'").run();
+    const second = gate();
+    f.threads.getGateOnce = second.promise;
+    first.release();
+    while (f.threads.getGateOnce) await tick();
+    f.db.prepare("UPDATE attention_manager SET manager=NULL").run();
+    second.release();
+    const result = await load;
+    expect(result.manager).toBeNull();
+    expect(result.managerLookup).toMatchObject({ status: "unusable", cause: "none" });
+    expect(result.managerWarning).toBe("No manager chosen; choose one before going live");
   });
 
   it("runs an owner rollback unchanged while the manager is unusable", async () => {

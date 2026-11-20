@@ -116,9 +116,10 @@ function createService(bb: BbPluginApi) {
 
   // A deletion event is authoritative even when a later read of the thread fails; the time is kept with the evidence.
   const deletedAt = new Map<string, string>();
-  // Archive, unarchive and delete events of a manager move its epoch, so a read that started earlier cannot be trusted.
-  const epochs = new Map<string, number>();
-  const epochOf = (manager: string | null) => (manager ? epochs.get(manager) ?? 0 : 0);
+  // Any archive, unarchive or delete event, and any change of a manager setting, moves the epoch: a read that started earlier
+  // cannot be trusted, whichever thread it was about (a manager can be replaced and chosen again while a read is out).
+  let epoch = 0;
+  const invalidateLookups = () => { epoch++; };
 
   /**
    * The manager session as a recipient. `unusable` needs evidence (the setting is empty, a deletion event, or a successful read
@@ -127,9 +128,9 @@ function createService(bb: BbPluginApi) {
    */
   async function lookupManager(manager: string | null): Promise<ManagerLookup> {
     for (let attempt = 0; attempt < 3; attempt++) {
-      const epoch = epochOf(manager);
+      const started = epoch;
       const result = await readManager(manager);
-      if (epochOf(manager) === epoch) return result;
+      if (epoch === started) return result;
     }
     return { status: "unavailable", error: "The manager session kept changing while it was read" };
   }
@@ -141,7 +142,11 @@ function createService(bb: BbPluginApi) {
     try {
       const thread = await bb.sdk.threads.get({ threadId: manager });
       if (!thread) return { status: "unavailable", error: "The thread read returned nothing" };
-      if (thread.deletedAt != null) return unusable("deleted");
+      if (thread.deletedAt != null) {
+        // The deletion is recorded like an event's, once, so a later failed read keeps it and its time.
+        if (!deletedAt.has(manager)) deletedAt.set(manager, nowIso());
+        return unusable("deleted", deletedAt.get(manager));
+      }
       if (thread.archivedAt != null) return unusable("archived");
       // The same eligibility as comment delivery: a side chat or a stopping thread is not a manager.
       if (isSideChatShapedThread(thread)) return unusable("side_chat");
@@ -153,18 +158,12 @@ function createService(bb: BbPluginApi) {
     }
   }
 
-  // What the settings view last received for a tracker, from a publish or from its own load.
-  const shown = new Map<string, string>();
-  const statusKey = (manager: string | null, lookup: ManagerLookup) => `${manager}:${lookup.status}:${lookup.status === "unusable" ? lookup.cause : ""}`;
-  const noteShown = (trackerId: string, manager: string | null, lookup: ManagerLookup) => { shown.set(trackerId, statusKey(manager, lookup)); };
-  /** Re-read a tracker's manager and publish when the result differs from what the settings view last received. */
+  /** Re-read a tracker's manager and tell the settings view; every pass publishes, so no open view stays on an older answer. */
   async function refreshManagerStatus(trackerId: string): Promise<void> {
     const manager = configuredManager(db, trackerId);
-    const lookup = await lookupManager(manager);
+    await lookupManager(manager);
     // The setting may have moved while the read was outstanding: that read says nothing about the current manager.
     if (configuredManager(db, trackerId) !== manager) return;
-    if (shown.get(trackerId) === statusKey(manager, lookup)) return;
-    noteShown(trackerId, manager, lookup);
     publishProjectsChanged(bb, trackerId);
   }
 
@@ -411,11 +410,9 @@ function createService(bb: BbPluginApi) {
     // The settings follow the configured manager: an event for any other thread changes nothing.
     for (const type of ["thread.archived", "thread.unarchived", "thread.deleted"] as const) {
       bb.events.on(type, ({ thread }) => {
-        const trackers = db.prepare<[string], { tracker_id: string }>("SELECT tracker_id FROM attention_manager WHERE manager=?").all(thread.id);
-        if (!trackers.length) return;
-        epochs.set(thread.id, epochOf(thread.id) + 1);
+        invalidateLookups();
         if (type === "thread.deleted" && !deletedAt.has(thread.id)) deletedAt.set(thread.id, nowIso());
-        for (const { tracker_id } of trackers) { shown.delete(tracker_id); publishProjectsChanged(bb, tracker_id); }
+        for (const { tracker_id } of db.prepare<[string], { tracker_id: string }>("SELECT tracker_id FROM attention_manager WHERE manager=?").all(thread.id)) publishProjectsChanged(bb, tracker_id);
       });
     }
     bb.background.schedule("attention-reconcile", RECONCILE_CRON, () => reconcileAll());
@@ -429,5 +426,5 @@ function createService(bb: BbPluginApi) {
     void reconcileAll().catch(warn);
   }
 
-  return { register, drain, drainTracker, nextEligibleDelay, recoverLate, reconcileAll, reconcileFence, setMode, resolveAttempt, scheduleDrain, recover, lookupManager, noteShown };
+  return { register, drain, drainTracker, nextEligibleDelay, recoverLate, reconcileAll, reconcileFence, setMode, resolveAttempt, scheduleDrain, recover, lookupManager, invalidateLookups };
 }

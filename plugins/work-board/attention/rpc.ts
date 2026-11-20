@@ -113,8 +113,9 @@ export function attentionUiHandlers(bb: BbPluginApi, store: TasksApiStore): Pick
       let result = await read();
       if ((managerRow()?.manager || null) !== result.id) result = await read();
       const manager = managerRow();
-      const lookup: ManagerLookup = (manager?.manager || null) === result.id ? result.lookup : { status: "unavailable", error: "The manager changed while it was read" };
-      service.noteShown(projectId, manager?.manager || null, lookup);
+      // A second change leaves the read for another manager: an empty setting is "none", anything else is unverified for now.
+      const lookup: ManagerLookup = (manager?.manager || null) === result.id ? result.lookup
+        : !manager?.manager ? { status: "unusable", cause: "none", detectedAt: new Date().toISOString() } : { status: "unavailable", error: "The manager changed while it was read" };
       const row = getModeRow(db, projectId);
       const started = row.shadow_started_at ? Date.parse(row.shadow_started_at) : null;
       return {
@@ -140,6 +141,7 @@ export function attentionUiHandlers(bb: BbPluginApi, store: TasksApiStore): Pick
       ).run(projectId, manager, new Date().toISOString(), before);
       // The platform cannot tell the app from another caller, so a change is only made visible: a log entry.
       bb.log.info(`attention manager for ${projectId}: ${before ?? "none"} → ${manager ?? "none"}`);
+      service.invalidateLookups();
       publishProjectsChanged(bb, projectId);
       return { manager };
     },
