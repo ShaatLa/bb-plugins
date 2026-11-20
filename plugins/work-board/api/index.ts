@@ -1132,12 +1132,12 @@ export function registerHandlers(
           const caller = input.agentThreadId;
           try {
             if (!caller || input.progressNote == null) throw new Error("it needs the calling thread and a progress note");
-            const role = await cardRole(bb, store, current.id, caller);
-            if (role.parentThreadId && !role.attached && !role.helper) {
-              const thread = await bb.sdk.threads.get({ threadId: caller });
+            // One read: its parent id is the one the write checks, so the two cannot disagree.
+            const thread = await bb.sdk.threads.get({ threadId: caller });
+            if (thread.parentThreadId) {
               if (thread.archivedAt != null || thread.deletedAt != null || thread.status === "stopping")
                 throw new Error("Choose a thread that is not archived, deleted, or stopping");
-              attachment = { threadId: caller, parentThreadId: role.parentThreadId, title: truncateToWidth(thread.title ?? thread.titleFallback ?? current.key, 120), liveStatus: threadLiveStatus(thread) };
+              attachment = { threadId: caller, parentThreadId: thread.parentThreadId, title: truncateToWidth(thread.title ?? thread.titleFallback ?? current.key, 120), liveStatus: threadLiveStatus(thread) };
             }
           } catch (error) {
             attachWarning = `Could not attach ${caller ?? "the caller"} to the card: ${errorMessage(error)}; run bb work-board attach KEY`;
@@ -1148,8 +1148,11 @@ export function registerHandlers(
           const beforeLabelIds = store.tasks
             .listTaskLabels(current.id)
             .map((link) => link.labelId);
+          // The card as it is now, after the SDK reads: its archive state and the old values the history lines compare.
+          const before = store.tasks.getTask(current.id);
+          if (!before) throw new Error(`Task not found: ${input.taskId}`);
           // The caller's own session is attached first, so the closure snapshot below includes it.
-          const attached = attachment && !current.archivedAt && canTakeWorkerLink(bb, current.id)
+          const attached = attachment && !before.archivedAt && canTakeWorkerLink(bb, current.id)
             ? attachManualLink(store.tasks, current.id, attachment) : undefined;
           const updated = store.tasks.updateTask(current.id, {
             closerThreadId: input.agentThreadId ?? null,
@@ -1170,12 +1173,12 @@ export function registerHandlers(
           }
 
           const bodies: string[] = [];
-          if (updated.type !== current.type) {
+          if (updated.type !== before.type) {
             bodies.push(
               `Type changed to ${displayName(updated.type)} by ${input.authorName}`,
             );
           }
-          if (updated.epicId !== current.epicId) {
+          if (updated.epicId !== before.epicId) {
             const epic = updated.epicId
               ? store.tasks.getTask(updated.epicId)
               : null;
@@ -1185,17 +1188,17 @@ export function registerHandlers(
                 : `Removed from epic by ${input.authorName}`,
             );
           }
-          if (updated.status !== current.status) {
+          if (updated.status !== before.status) {
             bodies.push(
               `Status changed to ${statusLabel(updated.status, store.tasks.getProject(updated.projectId)?.statuses)} by ${input.authorName}`,
             );
           }
-          if (updated.priority !== current.priority) {
+          if (updated.priority !== before.priority) {
             bodies.push(
               `Priority changed to ${displayName(updated.priority)} by ${input.authorName}`,
             );
           }
-          if (updated.dueDate !== current.dueDate) {
+          if (updated.dueDate !== before.dueDate) {
             bodies.push(
               updated.dueDate === null
                 ? `Due date removed by ${input.authorName}`

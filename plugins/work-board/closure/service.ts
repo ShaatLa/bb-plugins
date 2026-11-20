@@ -5,6 +5,7 @@ import { errorMessage } from "../shared/errors";
 import { statusLabel } from "../shared/statuses";
 import { isClosedStatus } from "../shared/workflow-policy";
 import { notifyThread } from "../steer";
+import { PENDING } from "./format";
 import { REASON, type ClosureThread, type Recipient } from "./store";
 
 const MAX_PARENT_HOPS = 5;
@@ -17,6 +18,8 @@ const MAX_MEMO = 256;
 export function createClosureService(bb: BbPluginApi, tasks: TasksStore) {
   const closures = tasks.closures;
   const evaluations = new Map<string, Promise<ClosedThread[]>>();
+  // Archive decisions in flight, by closure and thread: the close evaluation joins one an idle started meanwhile.
+  const decisions = new Map<string, Promise<void>>();
 
   const publish = (taskId: string, ...channels: string[]) => {
     for (const channel of channels) bb.realtime.publish(channel, { taskId });
@@ -57,30 +60,22 @@ export function createClosureService(bb: BbPluginApi, tasks: TasksStore) {
     return eligibility(current);
   }
 
-  /** The reads every archive needs, for a closure row or a reviewer; any doubt keeps the thread. */
-  async function threadReason(threadId: string): Promise<string | null> {
+  /**
+   * The reads every archive needs, for a closure row or a reviewer; any doubt keeps the thread. At the close of a
+   * working session (`idle` false) the same disqualifiers apply except that it is, of course, not idle yet.
+   */
+  async function threadReason(threadId: string, idle = true): Promise<string | null> {
     try {
       const thread = await bb.sdk.threads.get({ threadId });
       if (thread.archivedAt != null || thread.deletedAt != null) return "already archived or deleted";
       if (thread.pinnedAt != null) return "pinned";
-      if (thread.status !== "idle" || thread.runtime.displayStatus !== "idle") return "not idle";
+      if (idle && (thread.status !== "idle" || thread.runtime.displayStatus !== "idle")) return "not idle";
       if ((await bb.sdk.threads.queue.list({ threadId })).length > 0) return "has queued input";
       if ((await bb.sdk.threads.childSummary({ threadId })).unarchivedDescendantCount > 0) return "has live child threads";
       return null;
     } catch (error) {
       bb.log.warn(`Could not check ${threadId} before archiving: ${errorMessage(error)}`);
-      return "could not check the thread";
-    }
-  }
-
-  /** A pinned, archived or deleted thread is kept; a failed read is not a reason yet, the idle decision reads again. */
-  async function pinned(threadId: string): Promise<string | null> {
-    try {
-      const thread = await bb.sdk.threads.get({ threadId });
-      if (thread.archivedAt != null || thread.deletedAt != null) return "already archived or deleted";
-      return thread.pinnedAt != null ? "pinned" : null;
-    } catch {
-      return null;
+      return "could not verify";
     }
   }
 
@@ -110,7 +105,14 @@ export function createClosureService(bb: BbPluginApi, tasks: TasksStore) {
    * Decides one claimed (`evaluating`) row. `afterTurn` is the first live idle of an `on_idle` row: the link was held
    * back from the 0.59.3 release, so it is released here, whether the thread was archived or kept.
    */
-  async function decide(entry: ClosureThread, afterTurn: boolean): Promise<void> {
+  function decide(entry: ClosureThread, afterTurn: boolean): Promise<void> {
+    const key = `${entry.closureId}/${entry.threadId}`;
+    const running: Promise<void> = decideNow(entry, afterTurn).finally(() => { if (decisions.get(key) === running) decisions.delete(key); });
+    decisions.set(key, running);
+    return running;
+  }
+
+  async function decideNow(entry: ClosureThread, afterTurn: boolean): Promise<void> {
     const key = tasks.getTask(entry.taskId)?.key ?? entry.taskId;
     const keep = (reason: string, from: "evaluating" | "archiving") => {
       // The 0.59.3 release is only for the link this row was made for, on a card that is still closed.
@@ -138,7 +140,10 @@ export function createClosureService(bb: BbPluginApi, tasks: TasksStore) {
     const closer = closures.closedBy(closureId);
     if (closer === threadId || entry.liveStatus === "working" || entry.liveStatus === "starting") {
       // What is known now (other work, a pin) is said now, not after the agent was told to start fresh.
-      const reason = eligibility(entry) ?? (await pinned(threadId));
+      // The local checks run again after the reads, which took time.
+      let reason = eligibility(entry);
+      if (!reason) reason = await threadReason(threadId, false);
+      if (!reason) reason = eligibility(entry);
       const fresh = closures.row(closureId, threadId);
       if (!fresh || fresh.action !== "candidate") return;
       if (reason) closures.claim(closureId, threadId, ["candidate"], "kept", { reason });
@@ -150,11 +155,12 @@ export function createClosureService(bb: BbPluginApi, tasks: TasksStore) {
   }
 
   function summarize(closureId: string): ClosedThread[] {
-    return closures.rows(closureId).map((entry) => ({
-      threadId: entry.threadId,
-      action: entry.action === "archived" ? "archived" : entry.action === "kept" ? "kept" : "on_idle",
-      reason: entry.action === "kept" ? entry.reason : null,
-    }));
+    return closures.rows(closureId).map((entry): ClosedThread => {
+      if (entry.action === "archived") return { threadId: entry.threadId, action: "archived", reason: null };
+      if (entry.action === "kept") return { threadId: entry.threadId, action: "kept", reason: entry.reason };
+      // A decision still running is not yet a promise: it is reported as pending and the agent is not told to start fresh.
+      return { threadId: entry.threadId, action: "on_idle", reason: entry.action === "on_idle" || entry.action === "candidate" ? null : PENDING };
+    });
   }
 
   /** The evaluation of one closure, made once however many paths ask (the post-commit hook, the CLI, the RPC). */
@@ -164,6 +170,8 @@ export function createClosureService(bb: BbPluginApi, tasks: TasksStore) {
       evaluation = (async () => {
         try {
           for (const entry of closures.rows(closureId)) await settle(closureId, entry.threadId);
+          // A decision an idle started meanwhile is part of this result.
+          await Promise.all([...decisions].filter(([key]) => key.startsWith(`${closureId}/`)).map(([, running]) => running.catch(() => undefined)));
         } catch (error) {
           bb.log.warn(`Could not evaluate the threads of a closed card: ${errorMessage(error)}`);
         }
@@ -253,9 +261,9 @@ export function createClosureService(bb: BbPluginApi, tasks: TasksStore) {
           const to = await target();
           if (!to) throw new Error("no recipient");
           // The card may have been reopened while the recipient was being resolved or the previous send was pending.
-          if (!closedCard(entry.closureId, entry.taskId)) return closures.finishNotice(entry.closureId, thread.id, who, "failed");
-          await notifyThread(bb, to, text(to));
-          closures.finishNotice(entry.closureId, thread.id, who, "sent");
+          // The card is checked again inside the serialized delivery, right before the transport call.
+          const delivered = await notifyThread(bb, to, text(to), () => closedCard(entry.closureId, entry.taskId) !== null);
+          closures.finishNotice(entry.closureId, thread.id, who, delivered ? "sent" : "failed");
         } catch (error) {
           closures.finishNotice(entry.closureId, thread.id, who, "failed");
           bb.log.warn(`Closed-card notice to the ${who} of ${thread.id} failed (attempt ${attempt}): ${errorMessage(error)}`);

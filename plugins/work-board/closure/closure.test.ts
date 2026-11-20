@@ -78,7 +78,7 @@ describe("pre-archive re-check keeps the thread on any doubt", () => {
     }],
     ["pinned", "pinned", (f) => { f.world.threads.set("thr_a", { pinnedAt: 1 }); }],
     ["another open card", "linked to EXA-2", (f) => { f.link(f.card("Second"), "thr_a", { spawned: false }); }],
-    ["an SDK read error", "could not check the thread", (f) => { f.world.failGet = true; }],
+    ["an SDK read error", "could not verify", (f) => { f.world.failGet = true; }],
   ];
   it.each(cases)("keeps a thread with %s", async (_name, reason, arrange) => {
     const f = await setup();

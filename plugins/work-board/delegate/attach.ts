@@ -24,8 +24,7 @@ export function attachManualLink(
 ): boolean {
   if (tasks.getTaskThreadByThreadId(taskId, thread.threadId)) return false;
   if (!thread.parentThreadId) return false;
-  const holders = tasks.listTaskThreads(taskId).filter((link) => link.presetName !== "Parent thread");
-  if (holders.some((link) => link.threadId === thread.parentThreadId)) return false;
+  if (tasks.closures.holders(taskId).includes(thread.parentThreadId)) return false;
   tasks.upsertTaskThread({ taskId, threadId: thread.threadId, presetName: MANUAL_PRESET_NAME, title: thread.title, liveStatus: thread.liveStatus, linkOrigin: "manual" });
   recordThreadLink(tasks, taskId, thread.threadId, `Thread attached: @thread:${thread.threadId}`);
   return true;

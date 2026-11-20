@@ -207,12 +207,19 @@ export function createClosureStore(db: Database) {
     ).get(taskId, threadId) !== undefined;
   }
 
-  /** The link of an archive this plugin started or finished for the card's current closure (null: none). */
-  function ownArchiveLink(taskId: string, threadId: string): string | null {
-    return db.prepare<[string, string], { link_id: string | null }>(
-      `SELECT ct.link_id FROM closure_threads ct JOIN task_closures c ON c.id = ct.closure_id
-       WHERE c.task_id = ? AND ct.thread_id = ? AND ct.action IN ('archiving', 'archived') AND ${CURRENT_CLOSURE} LIMIT 1`,
-    ).get(taskId, threadId)?.link_id ?? null;
+  /** The row of an archive this plugin started or finished for the card's current closure. */
+  function ownArchive(taskId: string, threadId: string): ClosureThread | undefined {
+    const found = db.prepare<[string, string], ClosureThreadRow>(
+      `${SELECT_ROWS} WHERE c.task_id = ? AND ct.thread_id = ? AND ct.action IN ('archiving', 'archived') AND ${CURRENT_CLOSURE} LIMIT 1`,
+    ).get(taskId, threadId);
+    return found && fromRow(found);
+  }
+
+  /** The sessions that hold a card: every link except a parent fallback (by recorded origin, or the legacy label of an old one). */
+  function holders(taskId: string): string[] {
+    return db.prepare<[string], { thread_id: string }>(
+      "SELECT thread_id FROM task_threads WHERE task_id = ? AND NOT (link_origin = 'parent' OR (link_origin IS NULL AND preset_name = 'Parent thread'))",
+    ).all(taskId).map((link) => link.thread_id);
   }
 
   /** `thread.unarchived` clears the match of an archive that was ours: a later archive is the owner's. */
@@ -298,12 +305,13 @@ export function createClosureStore(db: Database) {
 
   /** Reviewer archive intents (plan §5). */
   function reviewerIntent(taskId: string, reviewerThread: string): void {
-    reviewers.add(reviewerThread);
-    db.prepare(
+    const armed = db.prepare(
       `UPDATE task_plan_reviews SET archive_state = 'pending', archive_seen_active = 0
        WHERE id = (SELECT MAX(id) FROM task_plan_reviews WHERE task_id = ?) AND outcome = 'approved' AND dedicated_reviewer = 1 AND reviewer_thread = ?
          AND (SELECT archive_reviewer_on_approval FROM projects WHERE id = (SELECT project_id FROM tasks WHERE id = ?)) = 'on'`,
-    ).run(taskId, reviewerThread, taskId);
+    ).run(taskId, reviewerThread, taskId).changes > 0;
+    // Only a reviewer whose intent was really armed is watched; an ordinary review or a switched-off project costs nothing.
+    if (armed) reviewers.add(reviewerThread);
   }
 
   /** A restart cannot tell a missed idle from none: nothing pending survives it, and nothing is archived by it. */
@@ -323,7 +331,7 @@ export function createClosureStore(db: Database) {
     return { unknownNotices: unknown };
   }
 
-  return { open, reopen, currentId, isCurrent, closedBy, rows, row, addLate, claim, markActive, claimIdle, linkUnchanged, scheduleTarget, claimReviewerIdle, setReviewerState, latestReviewId, reviewPending, reviewerSeenActive, holdsLink, ownArchiveLink, clearArchived, otherLinks, reviewsOpenFor, claimNotice, finishNotice, reviewerIntent, recoverOnStartup };
+  return { open, reopen, currentId, isCurrent, closedBy, rows, row, addLate, claim, markActive, claimIdle, linkUnchanged, scheduleTarget, claimReviewerIdle, setReviewerState, latestReviewId, reviewPending, reviewerSeenActive, holdsLink, ownArchive, holders, clearArchived, otherLinks, reviewsOpenFor, claimNotice, finishNotice, reviewerIntent, recoverOnStartup };
 }
 
 export type ClosureStore = ReturnType<typeof createClosureStore>;

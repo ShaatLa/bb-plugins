@@ -52,6 +52,7 @@ async function appendToQueuedNotice(
   bb: BbPluginApi,
   threadId: string,
   text: string,
+  wanted?: () => boolean,
 ): Promise<boolean> {
   // A conflict means the row changed under us, so list once more before giving up.
   for (let attempt = 0; attempt < 2; attempt++) {
@@ -68,6 +69,8 @@ async function appendToQueuedNotice(
         !last.editable
       )
         return false;
+      // Dropped notices count as handled: the caller learns it from `wanted` having said no.
+      if (wanted && !wanted()) return true;
       await bb.sdk.threads.queuedMessages.update({
         threadId,
         queuedMessageId: last.id,
@@ -100,25 +103,35 @@ function appendOrSend(
   threadId: string,
   text: string,
   mode: "steer-if-active" | "queue-if-active",
-): Promise<void> {
+  wanted?: () => boolean,
+): Promise<boolean> {
   return serialPerThread(threadId, async () => {
-    if (await appendToQueuedNotice(bb, threadId, text)) return;
+    // The check runs inside the serialized job, right before each transport call, so a notice that went stale while it
+    // waited for its turn or for the queue read is dropped.
+    if (wanted && !wanted()) return false;
+    if (await appendToQueuedNotice(bb, threadId, text, wanted)) return !wanted || wanted();
+    if (wanted && !wanted()) return false;
     await bb.sdk.threads.send({
       threadId,
       originPluginId: bb.pluginId,
       input: [{ type: "text", text: withPluginHeader(bb.pluginId, text), mentions: [] }],
       mode,
     });
+    return true;
   });
 }
 
-/** Wake one known thread, merged into its queued Work Board notice when there is one. Throws on failure. */
+/**
+ * Wake one known thread, merged into its queued Work Board notice when there is one. Throws on failure. With `wanted`,
+ * the notice is dropped (false) when it says no right before the transport call.
+ */
 export function notifyThread(
   bb: BbPluginApi,
   threadId: string,
   text: string,
-): Promise<void> {
-  return appendOrSend(bb, threadId, text, "queue-if-active");
+  wanted?: () => boolean,
+): Promise<boolean> {
+  return appendOrSend(bb, threadId, text, "queue-if-active", wanted);
 }
 
 export async function deliverCommentToLatestAgent(
