@@ -3,7 +3,7 @@ import { createTasksStore } from "../db/store";
 import { registerTasksCli } from "../cli";
 import { createGitSyncStore } from "../git-sync/store";
 import { prIdentity, prSnapshotSchema } from "../shared/git-sync";
-import { HISTORY_PASS_PAGES, receiptPolling } from "../steer";
+import { historyLimits, receiptPolling } from "../steer";
 import { attentionMarker } from "./service";
 import { accept, BB_PROJECT, goLive, MANAGER, setup } from "./fixtures";
 
@@ -180,7 +180,7 @@ describe("C2.2 receipt search across passes", () => {
     await f.service.recover(f.tracker.id);
     expect(f.attempts()[0].outcome).toBe("sending");
     expect(f.attempts()[0].recovery_cursor).toBeTruthy();
-    expect(f.threads.listCalls).toBeLessThanOrEqual(HISTORY_PASS_PAGES + 2);
+    expect(f.threads.listCalls).toBeLessThanOrEqual(historyLimits.passPages + 2);
     for (let pass = 0; pass < 3 && f.attempts()[0].outcome === "sending"; pass++) await f.service.recover(f.tracker.id);
     expect(f.attempts()[0]).toMatchObject({ outcome: "inline", inline_event_ref: expect.any(String) });
   });
@@ -306,6 +306,132 @@ describe("C4.2 a fixed decision window", () => {
     f.threads.dispatch(`queued notice dispatched at last ${attentionMarker("batch-later")}`);
     await f.service.recoverLate(f.tracker.id);
     expect(f.attempts()[0].outcome).toBe("inline");
+  });
+});
+
+describe("C5 the acceptance window and the candidate set", () => {
+  const limits = { ...historyLimits };
+  afterEach(() => { Object.assign(historyLimits, limits); });
+  const attemptFor = (f: Awaited<ReturnType<typeof make>>, id: string) => {
+    unknownAttempt(f, id, new Date(Date.now() - 3_600_000).toISOString(), "sending");
+    f.db.prepare("INSERT INTO attention_attempt_items(attempt_id, occurrence_id) VALUES (?, ?)").run(id, f.occurrences()[0].id);
+  };
+
+  it("C5.1: decides an unaccepted marked request under continuing acceptance traffic, then records its late receipt", async () => {
+    const f = await make("live");
+    f.card("Unaccepted under traffic");
+    attemptFor(f, "traffic");
+    for (let index = 0; index < 100; index++) f.threads.dispatch(`before ${index}`);
+    const request = f.threads.requestOnly(`notice ${attentionMarker("batch-traffic")}`);
+    for (let index = 0; index < 2100; index++) f.threads.dispatch(`after ${index}`);
+    await f.setMode("shadow");
+    let passes = 1;
+    while (f.attempts()[0].outcome === "sending" && passes < 14) {
+      for (let index = 0; index < 500; index++) f.threads.dispatch(`more ${passes}-${index}`);
+      await f.service.recover(f.tracker.id);
+      passes++;
+    }
+    expect(f.attempts()[0].outcome).toBe("unknown");
+    expect(passes).toBeLessThanOrEqual(8);
+    await f.call("resolveAttentionAttempt", { attemptId: "traffic", disposition: "waived_loss" });
+    expect((await modes(f)).transition.state).toBe("ready");
+    // The acceptance arrives after the decision: late evidence, found without delaying anything.
+    f.threads.acceptRequest(request);
+    for (let pass = 0; pass < 40 && f.attempts()[0].outcome === "unknown"; pass++) await f.service.recoverLate(f.tracker.id);
+    expect(f.attempts()[0].outcome).toBe("inline");
+  });
+
+  it("C5.2: stays sending when the last request page adds a second candidate after the first scan ended, until the second receipt is read", async () => {
+    historyLimits.passPages = 4;
+    historyLimits.acceptancePages = 2;
+    const f = await make("live");
+    f.card("Two candidates");
+    attemptFor(f, "second");
+    const marker = `notice ${attentionMarker("batch-second")}`;
+    // Oldest to newest: R2 with its acceptance, 160 filler pairs, R1 (never accepted), 40 filler pairs.
+    const older = f.threads.requestOnly(marker);
+    f.threads.acceptRequest(older);
+    for (let index = 0; index < 160; index++) f.threads.dispatch(`filler ${index}`);
+    f.threads.requestOnly(marker);
+    for (let index = 0; index < 40; index++) f.threads.dispatch(`newer ${index}`);
+    await f.service.recover(f.tracker.id);
+    await f.service.recover(f.tracker.id);
+    // The second pass read the oldest request page and found the second candidate with no pages left.
+    expect(f.attempts()[0].outcome).toBe("sending");
+    await f.service.recover(f.tracker.id);
+    expect(f.attempts()[0]).toMatchObject({ outcome: "inline", inline_event_ref: expect.any(String) });
+  });
+});
+
+describe("C5 property: the recovery state machine under random arrival order", () => {
+  const limits = { ...historyLimits };
+  afterEach(() => { Object.assign(historyLimits, limits); });
+  // A small deterministic generator, so a failing seed reproduces.
+  const generator = (seed: number) => () => {
+    seed = (seed + 0x6d2b79f5) | 0;
+    let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+  const MAX_DECISION_PASSES = 14;
+
+  it.each(Array.from({ length: 80 }, (_, index) => index + 1))("seed %i: always decides within a bounded number of passes and never calls a windowed receipt unknown", async (seed) => {
+    historyLimits.passPages = 4;
+    historyLimits.acceptancePages = 2;
+    const random = generator(seed);
+    const pick = (n: number) => Math.floor(random() * n);
+    const f = await make("live");
+    f.card("Property");
+    unknownAttempt(f, "p", new Date(Date.now() - 3_600_000).toISOString(), "sending");
+    f.db.prepare("INSERT INTO attention_attempt_items(attempt_id, occurrence_id) VALUES ('p', ?)").run(f.occurrences()[0].id);
+    const marker = `notice ${attentionMarker("batch-p")}`;
+    const lone: string[] = [];
+    const noise = (count: number) => {
+      for (let index = 0; index < count; index++) {
+        const roll = pick(3);
+        if (roll === 0) f.threads.dispatch(`pair ${seed}-${index}`);
+        else if (roll === 1) lone.push(f.threads.requestOnly(`lone ${seed}-${index}`));
+        else if (lone.length) f.threads.acceptRequest(lone.splice(pick(lone.length), 1)[0]!);
+      }
+    };
+    // Kinds: the receipt is inside the first-pass window, absent, or arrives after the first pass (request, or only its acceptance).
+    const kind = (["window", "absent", "unaccepted", "lateAcceptance", "lateRequest", "resent"] as const)[pick(6)]!;
+    noise(pick(180));
+    let request: string | undefined;
+    if (kind !== "absent" && kind !== "lateRequest") request = f.threads.requestOnly(marker);
+    noise(pick(120));
+    if (kind === "window" || kind === "resent") f.threads.acceptRequest(request!);
+    noise(pick(160));
+    // A resend: a second request carrying the same marker, never accepted; the older one holds the receipt.
+    if (kind === "resent") f.threads.requestOnly(marker);
+    noise(pick(120));
+    let lateRequestDue = kind === "lateRequest" ? 1 + pick(3) : -1;
+    let lateAcceptanceDue = kind === "lateAcceptance" ? 1 + pick(3) : -1;
+    const outcomes: string[] = [];
+    let pass = 0;
+    while (pass < MAX_DECISION_PASSES && (pass === 0 || f.attempts()[0].outcome === "sending")) {
+      if (pass > 0) {
+        noise(pick(260));
+        if (pass === lateRequestDue) { request = f.threads.requestOnly(marker); f.threads.acceptRequest(request); }
+        if (pass === lateAcceptanceDue) f.threads.acceptRequest(request!);
+      }
+      await f.service.recover(f.tracker.id);
+      outcomes.push(f.attempts()[0].outcome);
+      pass++;
+    }
+    const decided = f.attempts()[0].outcome;
+    expect(decided, `seed ${seed} ${kind}: ${outcomes.join(",")}`).not.toBe("sending");
+    if (kind === "window" || kind === "resent") expect(outcomes, `seed ${seed}`).not.toContain("unknown");
+    if (kind === "window" || kind === "resent") expect(decided).toBe("inline");
+    // A receipt that arrived after the window is still recorded as late evidence.
+    if (kind === "lateAcceptance" || kind === "lateRequest") {
+      for (let extra = 0; extra < 40 && f.attempts()[0].outcome === "unknown"; extra++) {
+        if (lateRequestDue >= pass) { request = f.threads.requestOnly(marker); f.threads.acceptRequest(request); lateRequestDue = -1; }
+        if (lateAcceptanceDue >= pass) { f.threads.acceptRequest(request!); lateAcceptanceDue = -1; }
+        await f.service.recoverLate(f.tracker.id);
+      }
+      expect(f.attempts()[0].outcome, `seed ${seed} ${kind}`).toBe("inline");
+    }
   });
 });
 

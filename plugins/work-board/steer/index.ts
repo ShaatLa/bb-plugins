@@ -210,30 +210,46 @@ type QueueRow = Awaited<ReturnType<BbPluginApi["sdk"]["threads"]["queuedMessages
 const rowText = (row: QueueRow) => row.content.map((part) => (part.type === "text" ? part.text : "")).join("\n");
 
 const HISTORY_PAGE = 50;
-/** Pages of history one search pass may read; a longer history takes several passes, resumed from the cursor. */
-export const HISTORY_PASS_PAGES = 40;
-// Within a pass: a stored acceptance scan is served first (at most this many pages), newer traffic gets at most half of the pass
-// whenever older unread ranges are saved, and those ranges, oldest first, get the rest, so fresh traffic cannot starve them.
-const ACCEPTANCE_PAGES = 10;
-const HEAD_SHARE = HISTORY_PASS_PAGES / 2;
+/** Page budgets of one search pass; a longer history takes several passes, resumed from the cursor. Tests shrink them to make the bounds bite. */
+export const historyLimits = { passPages: 40, acceptancePages: 10 };
+
+/*
+ * Receipt recovery: the history search for one attempt's marker, one bounded pass at a time.
+ *
+ * Every wait is bounded by a value fixed on the FIRST pass and never moved afterwards, and every completion test is computed
+ * from the cursor, never remembered in a flag that outlives its inputs:
+ *
+ *   input / loop                         fixed bound (first pass)               done when (derived from the cursor)           later arrivals
+ *   -----------------------------------  -------------------------------------  --------------------------------------------  ------------------------------------
+ *   requests, newest to attempt start    `high` of pass 1 (gaps above it are    no saved gap that is not `late`               `late` gaps: searched, never block
+ *                                        marked `late`)
+ *   acceptances after a matching request `accBound`: newest acceptance present  `hit.after >= accBound` (the pointer has    acceptances above `accBound`: scanned
+ *                                        on pass 1                              passed every acceptance of the window)        as late evidence, never block
+ *   a new candidate request              (adds its id; the pointer rewinds to   the pointer is below `accBound` again, so   a candidate above `accBound` cannot
+ *                                        min(pointer, its seq))                 the decision waits for its acceptance         have an acceptance inside the window
+ *   history read errors                  5 failed passes over 30 minutes        the service records unknown, cursor kept      later success clears the count
+ *
+ * Decision: `complete` = every non-late request gap is read AND (no candidate OR the acceptance pointer reached `accBound`).
+ * A receipt found at any time, in or after the window, wins. Per pass the newest traffic takes at most half the budget while older
+ * gaps wait, a stored acceptance scan goes first, so no stream of new events can postpone the decision.
+ */
+const headShare = () => historyLimits.passPages / 2;
 
 /** `late` marks traffic that arrived after the decision window was fixed: it is searched as late evidence and never delays the decision. */
 type Gap = { from?: number; to?: number; late?: boolean };
-/**
- * Where a history search got to, so the next pass continues instead of rereading the newest pages: `high` is the newest request seen
- * (events above it are new), each gap is a stretch of history not yet read, `hit` is a matching request whose acceptance is still
- * being looked for, and `errors` counts consecutive passes whose history read failed.
- */
+/** The search cursor persisted per attempt; see the table above. */
 export interface HistoryCursor {
   high?: number;
   gaps?: Gap[];
+  /** Newest acceptance seq present on the first pass: the upper bound of the acceptance window. */
+  accBound?: number;
   hit?: { requestIds: string[]; after: number };
   errors?: { count: number; since: string; last: string };
 }
 export interface MarkerSearch {
   receipt: Receipt | null;
   cursor: HistoryCursor;
-  /** False while history older than this pass's budget is still unread, or when the read failed. */
+  /** The decision window is read: no receipt in it means none exists. False while it is unread, or when the read failed. */
   complete: boolean;
   /** Set when the history could not be read at all this pass; the cursor is unchanged. */
   error?: string;
@@ -241,7 +257,7 @@ export interface MarkerSearch {
 
 /**
  * A marker is evidence only in the recipient's own queue or in its accepted-input history, never in a send response. The history is
- * read back to `since` (default five minutes ago), at most `HISTORY_PASS_PAGES` pages per pass, continuing from `cursor`.
+ * read back to `since` (default five minutes ago), at most `historyLimits.passPages` pages per pass, continuing from `cursor`.
  */
 export async function searchAttentionMarker(bb: BbPluginApi, threadId: string, marker: string, since?: string, cursor: HistoryCursor = {}): Promise<MarkerSearch> {
   try {
@@ -254,18 +270,16 @@ export async function searchAttentionMarker(bb: BbPluginApi, threadId: string, m
   const floor = since ? Date.parse(since) : Date.now() - 5 * 60_000;
   const next: HistoryCursor = { ...cursor };
   delete next.errors;
-  let budget = HISTORY_PASS_PAGES;
+  let budget = historyLimits.passPages;
   const requestIds = new Set(cursor.hit?.requestIds ?? []);
   let hitAfter = cursor.hit?.after;
   let high = cursor.high;
   let fresh = false;
-  // Whether the acceptance scan for a found request has reached the end of the accepted-input history; until then "no match" is not a conclusion.
-  let acceptanceEnded = false;
 
-  // The acceptance follows its request, so page forward from the earliest matching request.
+  // The acceptance follows its request, so page forward from the earliest matching request; the pointer only moves forward, except
+  // that a newly found candidate rewinds it to its own seq.
   const scanAcceptance = async (cap: number): Promise<Receipt | null> => {
     fresh = false;
-    acceptanceEnded = false;
     let after = hitAfter!;
     next.hit = { requestIds: [...requestIds], after };
     for (let page = 0; page < cap && budget > 0; page++) {
@@ -273,9 +287,9 @@ export async function searchAttentionMarker(bb: BbPluginApi, threadId: string, m
       const accepted = await bb.sdk.threads.events.list({ threadId, types: ["turn/input/accepted"], order: "asc", limit: String(HISTORY_PAGE), afterSeq: String(after), signal: AbortSignal.timeout(5000) });
       const hit = accepted.find((event) => event.type === "turn/input/accepted" && requestIds.has((event.data as { clientRequestId?: string }).clientRequestId ?? ""));
       if (hit) return { outcome: "inline", inlineEventRef: `${threadId}:${hit.seq}` };
-      if (accepted.length < HISTORY_PAGE) { acceptanceEnded = true; return null; }
-      after = hitAfter = accepted.at(-1)!.seq;
+      if (accepted.length) after = hitAfter = accepted.at(-1)!.seq;
       next.hit = { requestIds: [...requestIds], after };
+      if (accepted.length < HISTORY_PAGE) return null;
     }
     return null;
   };
@@ -293,9 +307,12 @@ export async function searchAttentionMarker(bb: BbPluginApi, threadId: string, m
         if (first) { high = Math.max(high ?? 0, event.seq); first = false; }
         if (event.type === "client/turn/requested" && JSON.stringify(event.data).includes(marker)) {
           const requestId = (event.data as { requestId?: string }).requestId;
-          if (requestId) requestIds.add(requestId);
-          hitAfter = Math.min(hitAfter ?? event.seq, event.seq);
-          fresh = true;
+          if (requestId && !requestIds.has(requestId)) {
+            requestIds.add(requestId);
+            // A new candidate: its acceptance may lie anywhere after it, so the pointer rewinds to it.
+            hitAfter = Math.min(hitAfter ?? event.seq, event.seq);
+            fresh = true;
+          }
         }
         before = event.seq;
       }
@@ -304,8 +321,14 @@ export async function searchAttentionMarker(bb: BbPluginApi, threadId: string, m
   };
 
   try {
+    if (cursor.accBound === undefined) {
+      // Pass 1 fixes the acceptance window: whatever acceptances exist now. One page of the budget.
+      budget--;
+      const newest = await bb.sdk.threads.events.list({ threadId, types: ["turn/input/accepted"], order: "desc", limit: "1", signal: AbortSignal.timeout(5000) });
+      next.accBound = newest[0]?.seq ?? 0;
+    }
     if (cursor.hit) {
-      const found = await scanAcceptance(ACCEPTANCE_PAGES);
+      const found = await scanAcceptance(historyLimits.acceptancePages);
       if (found) return { receipt: found, cursor: next, complete: true };
     }
     const saved: Gap[] = [...(cursor.gaps ?? [])].sort((a, b) => (a.from ?? Infinity) - (b.from ?? Infinity));
@@ -313,8 +336,8 @@ export async function searchAttentionMarker(bb: BbPluginApi, threadId: string, m
     const remaining: Gap[] = [];
     // Requests newer than the last pass first, but only up to their share while older ranges wait.
     if (cursor.high !== undefined) {
-      const spent = HISTORY_PASS_PAGES - budget;
-      const head = await scanRequests({ to: cursor.high }, saved.length ? Math.max(0, HEAD_SHARE - spent) : budget);
+      const spent = historyLimits.passPages - budget;
+      const head = await scanRequests({ to: cursor.high }, saved.length ? Math.max(0, headShare() - spent) : budget);
       if (head) remaining.push({ ...head, late: true });
     }
     for (const gap of saved) {
@@ -331,8 +354,7 @@ export async function searchAttentionMarker(bb: BbPluginApi, threadId: string, m
         if (found) return { receipt: found, cursor: next, complete: true };
       }
     }
-    // Decided only when the window fixed on the first pass is read through and any found request's acceptance scan has ended.
-    return { receipt: null, cursor: next, complete: remaining.every((gap) => gap.late) && (!next.hit || acceptanceEnded) };
+    return { receipt: null, cursor: next, complete: remaining.every((gap) => gap.late) && (!next.hit || next.hit.after >= next.accBound!) };
   } catch (error) {
     // A failed read is not unfinished pagination: the cursor stays as it was and the caller decides when to give up.
     return { receipt: null, cursor, complete: false, error: error instanceof Error ? error.message : String(error) };
