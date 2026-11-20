@@ -2,7 +2,7 @@
 import { cleanup, fireEvent, waitFor, within } from "@testing-library/react";
 import { afterEach, expect, it } from "vitest";
 import { loadPluginApp, renderSlot } from "@get-bb/plugin-sdk/testing/app";
-import { createFakePluginHost } from "@get-bb/plugin-sdk/testing";
+import { createFakePluginHost, makeThreadResponse } from "@get-bb/plugin-sdk/testing";
 import { createStore, registerTasksApi } from "../api";
 import { registerAttention } from "../attention/rpc";
 import { tasksRpcContract } from "../shared/contract";
@@ -16,6 +16,17 @@ Element.prototype.setPointerCapture ??= () => {};
 const app = await loadPluginApp(() => import("../app"));
 afterEach(() => { cleanup(); window.localStorage.clear(); });
 
+function threadSummary(overrides: Parameters<typeof makeThreadResponse>[0]) {
+  return {
+    ...makeThreadResponse(overrides),
+    activity: { activeBackgroundAgentCount: 0, activeBackgroundCommandCount: 0, activePlanModeCount: 0, activeWorkflowCount: 0 },
+    environmentBranchName: null, environmentHostId: null, environmentIsWorktree: null,
+    environmentName: null, environmentPath: null, environmentProviderId: null,
+    environmentWorkspaceDisplayKind: "other" as const, hasPendingInteraction: false,
+    runtime: { displayStatus: "idle" as const }, pinSortKey: null, queuedWork: "none" as const,
+  };
+}
+
 it("shows the mode with its gate, starts shadow, saves the manager and lets the owner resolve an unknown notice", async () => {
   const { bb, harness } = createFakePluginHost({ pluginId: "work-board" });
   try {
@@ -23,7 +34,21 @@ it("shows the mode with its gate, starts shadow, saves the manager and lets the 
     registerTasksApi(bb, store);
     registerAttention(bb, store);
     const project = store.tasks.createProject({ name: "Alpha", prefix: "ALP", color: "blue", linkedBbProjectId: "proj_example" });
-    const settings = renderSlot(app.settingsSections[0]!, {}, { rpc: Object.fromEntries(Object.keys(tasksRpcContract).map((method) => [method, (input: unknown) => harness.callRpc(method, input)])) });
+    const manager = threadSummary({ id: "thr_example", title: "Release coordinator" });
+    const settings = renderSlot(app.settingsSections[0]!, {}, {
+      rpc: Object.fromEntries(Object.keys(tasksRpcContract).map((method) => [method, (input: unknown) => harness.callRpc(method, input)])),
+      sdk: {
+        threads: {
+          list: async (input) => {
+            if (input?.threadIds?.includes(manager.id)) return [manager];
+            if (input?.projectId !== "proj_example" || input.archived !== false) return [];
+            return input.offset === 0
+              ? Array.from({ length: 100 }, (_, index) => threadSummary({ id: `thr_example_${index}`, title: `Worker ${index}` }))
+              : [manager, threadSummary({ id: "thr_old", title: "Release coordinator (archived)", archivedAt: 1 })];
+          },
+        },
+      },
+    });
     const section = await settings.findByRole("region", { name: "Manager attention" });
     await within(section).findByText("off");
     // The write RPC cannot tell the owner from an agent, so the copy must not promise that agents are kept out.
@@ -33,7 +58,16 @@ it("shows the mode with its gate, starts shadow, saves the manager and lets the 
     await waitFor(() => expect(within(section).getByTestId("attention-mode").textContent, within(section).queryByRole("alert")?.textContent).toContain("shadow"));
     expect(within(section).getByTestId("attention-gate").textContent).toMatch(/48 hours/);
     expect(within(section).getByRole("button", { name: "Go live" })).toHaveProperty("disabled", true);
-    fireEvent.change(within(section).getByLabelText("Manager thread"), { target: { value: "thr_example" } });
+    const picker = within(section).getByRole("button", { name: /^Manager thread:/ });
+    expect(picker.textContent).toContain("Use Sweep's manager");
+    fireEvent.click(picker);
+    const menu = within(document.body);
+    fireEvent.change(await menu.findByPlaceholderText("Search by thread name"), { target: { value: "coordinator" } });
+    const match = await menu.findByRole("option", { name: "Release coordinator" });
+    expect(menu.queryByRole("option", { name: /archived/ })).toBeNull();
+    expect(menu.queryByRole("option", { name: "Worker 1" })).toBeNull();
+    fireEvent.click(match);
+    expect(picker.textContent).toContain("Release coordinator");
     fireEvent.click(within(section).getByRole("button", { name: "Save" }));
     await waitFor(() => expect(settings.rpcCalls).toContainEqual({ method: "updateAttentionManager", input: { projectId: project.id, manager: "thr_example" } }));
     const db = bb.storage.database();
@@ -47,5 +81,9 @@ it("shows the mode with its gate, starts shadow, saves the manager and lets the 
     await within(section).findByTestId("attention-unknown");
     fireEvent.click(within(section).getByRole("button", { name: "Accept the loss" }));
     await waitFor(() => expect(db.prepare("SELECT disposition FROM attention_attempts WHERE attempt_id='a1'").get()).toEqual({ disposition: "waived_loss" }));
+    fireEvent.click(picker);
+    fireEvent.click(await menu.findByRole("option", { name: "Use Sweep's manager" }));
+    fireEvent.click(within(section).getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(db.prepare("SELECT manager FROM attention_manager WHERE tracker_id=?").get(project.id)).toEqual({ manager: null }));
   } finally { cleanup(); await harness.dispose(); }
 });
