@@ -533,6 +533,12 @@ it('rereads the queue when the chat already recorded a queued row\'s message aft
   await waitFor(() => expect(list.mock.calls.length).toBeGreaterThanOrEqual(2));
   await waitFor(() => expect(slot.queryByRole('region', { name:'Queued messages' })).toBeNull());
 });
+it('hides a queued row as soon as the chat records its message, before the queue drops it; a repeat of the same text stays', async () => {
+  const row = (id: string, createdAt: number) => ({ id, threadId:'thr_one', content:[{ type:'text', text:'Sent meanwhile', mentions:[] }], createdAt, updatedAt:createdAt });
+  const { slot, recipients } = setup({ list: () => ({ items:[{ ...base, id:'ans_sent', question:'Sent meanwhile', questionSeq:9, createdAt:5 }], nextCursor:null }), queuedMessages: { list: () => Promise.resolve([row('q1', 1), row('q2', 2)]) } }); fireEvent.click(await recipients.findByRole('option'));
+  await waitFor(() => expect(slot.container.querySelector('[data-queue-row="q2"]')).toBeTruthy());
+  expect(slot.container.querySelector('[data-queue-row="q1"]')).toBeNull();
+});
 it('says why a queued message is held, as bb does', async () => {
   const row = { id:'q1', threadId:'thr_one', content:[{ type:'text', text:'Held text', mentions:[] }], updatedAt:1, waitingOn:{ kind:'plugin', pluginId:'concurrency-limit', reason:'14 of 14 running on host Mac' } };
   const { slot, recipients } = setup({ queuedMessages: { list: () => Promise.resolve([row]) }, plugins: { list: async () => ({ plugins:[{ id:'concurrency-limit', name:'Concurrency limit', icon:'Gauge' }] }) } }); fireEvent.click(await recipients.findByRole('option'));

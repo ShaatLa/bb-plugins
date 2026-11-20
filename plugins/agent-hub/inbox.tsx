@@ -910,7 +910,10 @@ function InboxChat({ onBulkRead, bbChat = false, search: searchProp, onSearch, t
     finally { setPending(false); }
   }
   const shown = pages === NO_PAGES ? loadedPages : pages.slice(0, depth);
-  const shownQueue = [...queue.filter(row => !sentNow.includes(row.id)), ...leaving.filter(entry => !queue.some(row => row.id === entry.row.id)).map(entry => entry.row)];
+  // The chat records a sent message before the queue reread drops its row, so the row leaves the card as the message
+  // lands. Each chat message hides one row, so a repeat of the same text still queued stays.
+  const landedRows = useMemo(() => { const mine = pages.flatMap(page => page.items).filter(item => item.kind === 'mine' && item.questionSeq !== null), used = new Set<string>(), hidden = new Set<string>(); for (const row of [...queue, ...leaving.map(entry => entry.row)]) { const hit = mine.find(item => !used.has(item.id) && item.threadId === row.threadId && item.createdAt >= row.createdAt && item.question.trim() === queueText(row).trim()); if (hit) { used.add(hit.id); hidden.add(row.id); } } return hidden; }, [pages, queue, leaving]);
+  const shownQueue = [...queue.filter(row => !sentNow.includes(row.id)), ...leaving.filter(entry => !queue.some(row => row.id === entry.row.id)).map(entry => entry.row)].filter(row => !landedRows.has(row.id));
   const held = leaving.filter(entry => entry.row.threadId === selected).map(leavingText);
   const items = useMemo(() => { const seen = new Set<string>(); return shown.flatMap(page => page.items).filter(item => (item.kind !== 'for_me' || item.status !== 'open') && !(item.kind === 'mine' && item.questionSeq === null && held.includes(item.question.trim())) && !seen.has(item.id) && !!seen.add(item.id)).reverse(); }, [pages, loadedPages, depth, held.join('\n')]);
   // A steer joins the running turn's card once ingested; placing it there at once keeps the bubble from jumping up later.
@@ -922,7 +925,7 @@ function InboxChat({ onBulkRead, bbChat = false, search: searchProp, onSearch, t
   // A queued row whose message the chat already recorded after it was queued may be a stale read (bb sent it between
   // reads, its event missed); reread the queue once for it rather than wait for the 30 s check.
   const recheckedRows = useRef(new Set<string>());
-  useEffect(() => { const list = pages.flatMap(page => page.items); const stale = queue.filter(row => !recheckedRows.current.has(row.id) && list.some(item => item.kind === 'mine' && item.threadId === row.threadId && item.questionSeq !== null && item.createdAt >= row.createdAt && item.question.trim() === queueText(row).trim())); if (!stale.length) return; stale.forEach(row => recheckedRows.current.add(row.id)); setQueueVersion(n => n + 1); }, [pages, queue]);
+  useEffect(() => { const stale = queue.filter(row => !recheckedRows.current.has(row.id) && landedRows.has(row.id)); if (!stale.length) return; stale.forEach(row => recheckedRows.current.add(row.id)); setQueueVersion(n => n + 1); }, [landedRows, queue]);
   // Folding a long last update back when a turn starts (a queued message sent) would cut the chat's end under a reader
   // near it and drop them to the bottom, so the one shown in full stays so until a newer message takes its place.
   const fullTail = useRef<string | null>(null);
