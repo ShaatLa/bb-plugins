@@ -87,7 +87,7 @@ function ManagerPicker({ projectId, value, disabled, onChange }: {
         <Command label="Search threads" shouldFilter={false}>
           <CommandInput placeholder="Search by thread name" value={search} onValueChange={setSearch} />
           <CommandList>
-            {sweepManager.toLocaleLowerCase().includes(filter) ? <CommandItem value={sweepManager} onSelect={() => choose("")}>{sweepManager}</CommandItem> : null}
+            {!filter ? <CommandItem value={sweepManager} onSelect={() => choose("")}>{sweepManager}</CommandItem> : null}
             {(exactMatch ? [...matches, exactMatch] : matches).map((thread) => (
               <CommandItem key={thread.id} value={thread.id} onSelect={() => choose(thread.id)}>
                 <span className="truncate" title={threadTitle(thread)}>{threadTitle(thread)}</span>

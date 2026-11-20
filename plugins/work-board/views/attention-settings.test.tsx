@@ -67,6 +67,7 @@ it("shows the mode with its gate, starts shadow, saves the manager and lets the 
     expect(menu.queryByRole("option", { name: /archived/ })).toBeNull();
     expect(menu.queryByRole("option", { name: /Coordination round/ })).toBeNull();
     expect(menu.queryByRole("option", { name: "Worker 1" })).toBeNull();
+    expect(menu.queryByRole("option", { name: "Use Sweep's manager" })).toBeNull();
     fireEvent.click(match);
     expect(picker.textContent).toContain("Release coordinator");
     fireEvent.click(within(section).getByRole("button", { name: "Save" }));
