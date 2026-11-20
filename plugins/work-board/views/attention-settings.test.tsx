@@ -56,10 +56,14 @@ it("shows the mode with its gate, starts shadow, saves the manager and lets the 
     expect(section.textContent).not.toMatch(/agents cannot/i);
     fireEvent.click(within(section).getByRole("button", { name: "Start shadow" }));
     await waitFor(() => expect(within(section).getByTestId("attention-mode").textContent, within(section).queryByRole("alert")?.textContent).toContain("shadow"));
+    // The mode has no "Changed … from …" line, and a missing manager is a warning that names the cause.
+    expect(within(section).queryByTestId("attention-changed")).toBeNull();
+    expect(section.textContent).not.toMatch(/Changed[^.]*from (off|shadow|live)/);
+    expect((await within(section).findByTestId("attention-manager-warning")).textContent).toBe("No manager chosen; choose one before going live");
     expect(within(section).getByTestId("attention-gate").textContent).toMatch(/48 hours/);
     expect(within(section).getByRole("button", { name: "Go live" })).toHaveProperty("disabled", true);
     const picker = within(section).getByRole("button", { name: /^Manager thread:/ });
-    expect(picker.textContent).toContain("Use Sweep's manager");
+    expect(picker.textContent).toContain("No manager");
     fireEvent.click(picker);
     const menu = within(document.body);
     fireEvent.change(await menu.findByPlaceholderText("Search by thread name"), { target: { value: "coordinator" } });
@@ -67,13 +71,14 @@ it("shows the mode with its gate, starts shadow, saves the manager and lets the 
     expect(menu.queryByRole("option", { name: /archived/ })).toBeNull();
     expect(menu.queryByRole("option", { name: /Coordination round/ })).toBeNull();
     expect(menu.queryByRole("option", { name: "Worker 1" })).toBeNull();
-    expect(menu.queryByRole("option", { name: "Use Sweep's manager" })).toBeNull();
+    expect(menu.queryByRole("option", { name: "No manager" })).toBeNull();
     fireEvent.click(match);
     expect(picker.textContent).toContain("Release coordinator");
     fireEvent.click(within(section).getByRole("button", { name: "Save" }));
     await waitFor(() => expect(settings.rpcCalls).toContainEqual({ method: "updateAttentionManager", input: { projectId: project.id, manager: "thr_example" } }));
     const db = bb.storage.database();
     expect(db.prepare("SELECT manager FROM attention_manager WHERE tracker_id=?").get(project.id)).toEqual({ manager: "thr_example" });
+    await waitFor(() => expect(section.textContent).toContain("from no manager"));
     db.prepare("INSERT INTO attention_attempts(attempt_id, tracker_id, kind, generation, batch_id, recipient_thread_id, recipient_source, started_at, outcome, rev) VALUES ('a1', ?, 'stale-status', 1, 'b1', 'thr_example', 'manager', ?, 'unknown', 1)").run(project.id, new Date().toISOString());
     db.prepare("INSERT INTO attention_attempt_items(attempt_id, occurrence_id) VALUES ('a1', 'o1')").run();
     fireEvent.click(within(section).getByRole("button", { name: "Switch off" }));
@@ -84,8 +89,11 @@ it("shows the mode with its gate, starts shadow, saves the manager and lets the 
     fireEvent.click(within(section).getByRole("button", { name: "Accept the loss" }));
     await waitFor(() => expect(db.prepare("SELECT disposition FROM attention_attempts WHERE attempt_id='a1'").get()).toEqual({ disposition: "waived_loss" }));
     fireEvent.click(picker);
-    fireEvent.click(await menu.findByRole("option", { name: "Use Sweep's manager" }));
+    fireEvent.click(await menu.findByRole("option", { name: "No manager" }));
     fireEvent.click(within(section).getByRole("button", { name: "Save" }));
     await waitFor(() => expect(db.prepare("SELECT manager FROM attention_manager WHERE tracker_id=?").get(project.id)).toEqual({ manager: null }));
+    // Clearing the picker saved no manager, and the empty selection displays as "No manager" again.
+    await waitFor(() => expect(within(section).getByRole("button", { name: /^Manager thread:/ }).textContent).toContain("No manager"));
+    expect((await within(section).findByTestId("attention-manager-warning")).textContent).toContain("No manager chosen");
   } finally { cleanup(); await harness.dispose(); }
 });

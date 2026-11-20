@@ -11,29 +11,28 @@ beforeEach(() => { receiptPolling.tries = 1; receiptPolling.delayMs = 0; });
 afterEach(async () => { await Promise.all(fixtures.splice(0).map((f) => f.dispose())); });
 
 describe("recipient", () => {
-  it("resolves the Work Board manager, then Sweep's, then an eligible parent, and claims nothing without one", async () => {
+  it("sends only to the Work Board manager: Sweep's setting is never read, an archived manager gets no parent fallback, and no manager means no claim", async () => {
     const f = await live();
     f.card("One");
     f.makeEligible();
     await f.service.drain();
     expect(f.attempts().at(-1)).toMatchObject({ recipient_thread_id: MANAGER, recipient_source: "manager" });
-    f.db.prepare("UPDATE attention_manager SET manager=NULL").run();
-    f.threads.sweepManager = "thr_sweep";
+    // Sweep has a manager and the manager's parent exists, yet neither is consulted.
+    f.threads.threads.set(MANAGER, { archived: true, parent: "thr_parent" });
     f.card("Two");
     f.makeEligible();
+    const count = f.attempts().length;
     await f.service.drain();
-    expect(f.attempts().at(-1)).toMatchObject({ recipient_thread_id: "thr_sweep", recipient_source: "sweep_fallback" });
-    f.threads.threads.set("thr_sweep", { archived: true, parent: "thr_parent" });
+    expect(f.attempts()).toHaveLength(count);
+    expect(f.threads.sweepCalls).toBe(0);
+    // Nothing is sent to the parent or Sweep's manager either after the setting is cleared.
+    f.db.prepare("UPDATE attention_manager SET manager=NULL").run();
     f.card("Three");
     f.makeEligible();
     await f.service.drain();
-    expect(f.attempts().at(-1)).toMatchObject({ recipient_thread_id: "thr_parent", recipient_source: "parent" });
-    f.threads.sweepManager = null;
-    const count = f.attempts().length;
-    f.card("Four");
-    f.makeEligible();
-    await f.service.drain();
     expect(f.attempts()).toHaveLength(count);
+    expect(f.threads.sends).toBe(1);
+    expect(f.threads.sweepCalls).toBe(0);
   });
 
   it("records the manager setting with its time and previous value and shows it through config get", async () => {

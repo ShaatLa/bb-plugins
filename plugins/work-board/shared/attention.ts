@@ -5,6 +5,34 @@ import { z } from "zod";
 export const SWEEP_PLUGIN_ID = "sweep";
 export const ATTENTION_OWNER_ONLY = "The manager-attention mode and manager are changed by the owner in the project settings; this is an owner-only convention, and no command or setting call proves the caller is the owner.";
 
+/** Why a manager session cannot receive notices; each cause has its own text and none is ever reported as another. */
+export const MANAGER_CAUSES = ["none", "deleted", "archived", "stopping", "side_chat", "not_found"] as const;
+export type ManagerCause = (typeof MANAGER_CAUSES)[number];
+export type ManagerLookup =
+  | { status: "usable"; threadId: string }
+  | { status: "unusable"; cause: ManagerCause; detectedAt: string }
+  | { status: "unavailable"; error: string };
+
+const MANAGER_PROBLEM: Record<ManagerCause | "unavailable", string> = {
+  none: "No manager chosen",
+  deleted: "The manager session was deleted",
+  archived: "The manager session is archived",
+  stopping: "The manager session is stopping",
+  side_chat: "The manager is a side chat",
+  not_found: "The manager session no longer exists",
+  unavailable: "Could not verify the manager session",
+};
+/**
+ * The line shown in the settings, and the refusal text of a live request: one wording for both. While live is effective the
+ * line says live is not delivering; otherwise it says what to do before going live.
+ */
+export function managerProblemText(lookup: ManagerLookup, mode: "off" | "shadow" | "live" = "shadow"): string | null {
+  if (lookup.status === "usable") return null;
+  const cause = lookup.status === "unusable" ? lookup.cause : "unavailable";
+  const suffix = mode === "live" ? "; live is not delivering" : cause === "unavailable" ? "" : cause === "none" ? "; choose one before going live" : "; choose another before going live";
+  return `${MANAGER_PROBLEM[cause]}${suffix}`;
+}
+
 const modeSchema = z.enum(["off", "shadow", "live"]);
 const bbProjectId = z.string().regex(/^proj_[A-Za-z0-9_-]+$/);
 const trackerProjectId = z.string().regex(/^[0-7][0-9A-HJKMNP-TV-Z]{25}$/);
@@ -50,6 +78,13 @@ const settingsSchema = z.object({
   manager: z.string().nullable(),
   managerChangedAt: z.string().nullable(),
   managerPrevious: z.string().nullable(),
+  /** What a lookup of the saved manager returned just now. */
+  managerLookup: z.union([
+    z.object({ status: z.literal("usable") }).strict(),
+    z.object({ status: z.literal("unusable"), cause: z.enum(MANAGER_CAUSES), detectedAt: z.string() }).strict(),
+    z.object({ status: z.literal("unavailable") }).strict(),
+  ]),
+  managerWarning: z.string().nullable(),
   unresolvedAttempts: z.array(attemptSchema),
 }).strict();
 

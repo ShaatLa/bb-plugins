@@ -1,7 +1,7 @@
 import type { BbPluginApi, ExperimentalPluginRpcHandlersWithContext, PluginRpcHandlers } from "@get-bb/plugin-sdk";
 import type { TasksApiStore } from "../api";
 import { publishProjectsChanged } from "../api";
-import { attentionRpcContract, SWEEP_PLUGIN_ID } from "../shared/attention";
+import { attentionRpcContract, managerProblemText, SWEEP_PLUGIN_ID } from "../shared/attention";
 import type { tasksRpcContract } from "../shared/contract";
 import { CURRENT_KEY_SQL, currentRev } from "./ledger";
 import { ackTransition, boundTrackerOf, getModeRow, kindState, SHADOW_GATE_MS } from "./modes";
@@ -104,15 +104,18 @@ export function attentionUiHandlers(bb: BbPluginApi, store: TasksApiStore): Pick
     return project;
   };
   return {
-    getAttentionSettings({ projectId }) {
+    async getAttentionSettings({ projectId }) {
       const project = requireTracker(projectId);
       const row = getModeRow(db, projectId);
       const manager = db.prepare<[string], { manager: string | null; changed_at: string | null; previous: string | null }>("SELECT manager, changed_at, previous FROM attention_manager WHERE tracker_id=?").get(projectId);
       const started = row.shadow_started_at ? Date.parse(row.shadow_started_at) : null;
+      const lookup = await service.lookupManager(manager?.manager || null);
       return {
         trackerId: projectId, linkedBbProjectId: project.linkedBbProjectId ?? null, state: kindState(db, projectId), changedAt: row.changed_at, previousMode: row.previous_mode, shadowStartedAt: row.shadow_started_at,
         gateRemainingMs: row.effective_mode === "shadow" && started !== null ? Math.max(0, Math.round(SHADOW_GATE_MS - (Date.now() - started))) : SHADOW_GATE_MS,
         manager: manager?.manager ?? null, managerChangedAt: manager?.changed_at ?? null, managerPrevious: manager?.previous ?? null,
+        managerLookup: lookup.status === "usable" ? { status: "usable" as const } : lookup.status === "unusable" ? { status: "unusable" as const, cause: lookup.cause, detectedAt: lookup.detectedAt } : { status: "unavailable" as const },
+        managerWarning: managerProblemText(lookup, row.effective_mode),
         unresolvedAttempts: db.prepare<[string], AttemptRow>("SELECT * FROM attention_attempts WHERE tracker_id=? AND outcome='unknown' AND disposition IS NULL ORDER BY started_at").all(projectId).map((row) => attemptWire(db, row)),
       };
     },

@@ -102,7 +102,15 @@ export function assertLinkChangeAllowed(db: Database, trackerId: string, current
   if (other && other !== trackerId) throw new Error("Another tracker project is bound to that BB project's manager attention; its link cannot be shared");
 }
 
-export interface RequestInput { trackerId: string; kind?: string; mode: AttentionMode; parityReviewed?: boolean }
+/** The manager setting of a tracker: a thread id, or null when none is chosen. */
+export const configuredManager = (db: Database, trackerId: string): string | null =>
+  db.prepare<[string], { manager: string | null }>("SELECT manager FROM attention_manager WHERE tracker_id=?").get(trackerId)?.manager || null;
+
+export interface RequestInput {
+  trackerId: string; kind?: string; mode: AttentionMode; parityReviewed?: boolean;
+  /** What a live request validated: it is written only if the manager and the shadow generation are still these. */
+  guard?: { manager: string | null; generation: number };
+}
 
 const newToken = () => randomBytes(12).toString("base64url");
 
@@ -140,6 +148,9 @@ export function requestMode(db: Database, input: RequestInput): KindState {
       const started = row.shadow_started_at ? Date.parse(row.shadow_started_at) : Date.now();
       if (Date.now() - started < SHADOW_GATE_MS) throw new Error("Live needs at least 48 hours of shadow observation first");
       if (input.parityReviewed !== true) throw new Error("Confirm that the parity differences were reviewed before switching to live");
+      // The manager was read before this transaction: a change made meanwhile makes that read stale, so nothing is written.
+      if (input.guard && (input.guard.generation !== row.effective_generation || input.guard.manager !== configuredManager(db, tracker.id)))
+        throw new Error("The manager changed while it was being checked; try again");
       // Work Board is not the sender yet, so there is nothing to drain: the transition is ready as soon as it is requested.
       record("requested_mode='live', requested_generation=?, transition_token=?, transition_direction='to_live', transition_state='ready', ready_at=?, ready_rev=?, parity_reviewed=1", generation, newToken(), at, currentRev(db, tracker.id));
     } else if (row.effective_mode === "live" && input.mode === "shadow") {

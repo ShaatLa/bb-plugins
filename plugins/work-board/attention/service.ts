@@ -1,12 +1,12 @@
 import { randomUUID } from "node:crypto";
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
-import { z } from "zod";
 import { deliverWithReceipt, searchAttentionMarker, type HistoryCursor, type Receipt } from "../steer";
 import { errorMessage } from "../shared/errors";
-import { SWEEP_PLUGIN_ID } from "../shared/attention";
+import { managerProblemText, type ManagerLookup } from "../shared/attention";
+import { publishProjectsChanged } from "../api";
 import { isSideChatShapedThread } from "../shared/side-chat";
 import { bumpRev, CURRENT_KEY_SQL, onAttentionChanged, onTrackerDirty, scanTracker } from "./ledger";
-import { finishToShadow, getModeRow, kindState, requestMode, type AttentionMode, type KindState } from "./modes";
+import { configuredManager, finishToShadow, getModeRow, kindState, requestMode, type AttentionMode, type KindState } from "./modes";
 import { ATTENTION_KIND, PILOT_SIGNALS } from "./observe";
 
 type Database = ReturnType<BbPluginApi["storage"]["database"]>;
@@ -38,6 +38,7 @@ interface AttemptRow {
   generation: number;
   batch_id: string;
   recipient_thread_id: string;
+  /** Old attempts may carry `sweep_fallback` or `parent`; new ones are always `manager`. */
   recipient_source: "manager" | "sweep_fallback" | "parent";
   started_at: string;
   transport_started_at: string | null;
@@ -113,34 +114,44 @@ function createService(bb: BbPluginApi) {
     return true;
   };
 
-  /** The recipient: the Work Board manager setting, else Sweep's, with an archived or deleted target replaced by its eligible parent. */
-  async function resolveRecipient(trackerId: string): Promise<{ threadId: string; source: "manager" | "sweep_fallback" | "parent" } | null> {
-    const own = db.prepare<[string], { manager: string | null }>("SELECT manager FROM attention_manager WHERE tracker_id=?").get(trackerId)?.manager || null;
-    let source: "manager" | "sweep_fallback" | "parent" = "manager";
-    let target = own;
-    if (!target) {
-      const bound = getModeRow(db, trackerId).bound_bb_project_id;
-      if (!bound) return null;
-      try {
-        const config = await bb.sdk.plugins.callRpc({ pluginId: SWEEP_PLUGIN_ID, method: "config.get", input: { projectId: bound, key: "manager" }, outputSchema: z.object({ manager: z.string().nullable().optional() }).passthrough() });
-        target = config.manager || null;
-      } catch { return null; }
-      source = "sweep_fallback";
+  // A deletion event is authoritative even when a later read of the thread fails.
+  const deletedIds = new Set<string>();
+
+  /**
+   * The manager session as a recipient. `unusable` needs evidence (the setting is empty, a deletion event, or a successful read
+   * that shows the cause); a read that failed for any other reason is only `unavailable`.
+   */
+  async function lookupManager(manager: string | null): Promise<ManagerLookup> {
+    const unusable = (cause: Extract<ManagerLookup, { status: "unusable" }>["cause"]): ManagerLookup => ({ status: "unusable", cause, detectedAt: nowIso() });
+    if (!manager) return unusable("none");
+    if (deletedIds.has(manager)) return unusable("deleted");
+    try {
+      const thread = await bb.sdk.threads.get({ threadId: manager });
+      if (!thread) return { status: "unavailable", error: "The thread read returned nothing" };
+      if (thread.deletedAt != null) return unusable("deleted");
+      if (thread.archivedAt != null) return unusable("archived");
+      // The same eligibility as comment delivery: a side chat or a stopping thread is not a manager.
+      if (isSideChatShapedThread(thread)) return unusable("side_chat");
+      if (thread.status === "stopping") return unusable("stopping");
+      return { status: "usable", threadId: manager };
+    } catch (error) {
+      if (deletedIds.has(manager)) return unusable("deleted");
+      if (typeof error === "object" && error !== null && "code" in error && error.code === "thread_not_found") return unusable("not_found");
+      return { status: "unavailable", error: errorMessage(error) };
     }
-    for (let hops = 0; target && hops < 5; hops++) {
-      try {
-        const thread = await bb.sdk.threads.get({ threadId: target });
-        if (!thread) return null;
-        if (thread.archivedAt == null && thread.deletedAt == null) {
-          // The same eligibility as comment delivery: a side chat or a stopping thread is not a manager.
-          if (isSideChatShapedThread(thread) || thread.status === "stopping") return null;
-          return { threadId: target, source };
-        }
-        target = thread.parentThreadId ?? null;
-        source = "parent";
-      } catch { return null; }
-    }
-    return null;
+  }
+
+  const lastManagerStatus = new Map<string, string>();
+  /** Re-read a tracker's manager and tell the settings UI when what it would show changed. */
+  async function refreshManagerStatus(trackerId: string): Promise<void> {
+    const manager = configuredManager(db, trackerId);
+    const lookup = await lookupManager(manager);
+    // The setting may have moved while the read was outstanding: that read says nothing about the current manager.
+    if (configuredManager(db, trackerId) !== manager) return;
+    const key = `${manager}:${lookup.status}:${lookup.status === "unusable" ? lookup.cause : ""}`;
+    if (lastManagerStatus.get(trackerId) === key) return;
+    lastManagerStatus.set(trackerId, key);
+    publishProjectsChanged(bb, trackerId);
   }
 
   /** Occurrences a drain may claim now: open, unbaselined, valid, past grace and with no blocking attempt or recent failure. */
@@ -162,17 +173,19 @@ function createService(bb: BbPluginApi) {
   }
 
   /** One transaction: the generation and the fence are checked, then the ids are claimed, so overlapping drains cannot share one. */
-  function claim(trackerId: string, recipient: { threadId: string; source: AttemptRow["recipient_source"] }): { attempt: string; ids: { id: string; task_key: string; signal: string }[]; batch: string } | null {
+  function claim(trackerId: string, recipient: { threadId: string }, generation: number): { attempt: string; ids: { id: string; task_key: string; signal: string }[]; batch: string } | null {
     return db.transaction(() => {
       const row = getModeRow(db, trackerId);
-      if (row.effective_mode !== "live" || row.requested_mode !== null) return null;
+      if (row.effective_mode !== "live" || row.requested_mode !== null || row.effective_generation !== generation) return null;
+      // The manager was verified before this transaction: a replacement made meanwhile makes that lookup stale.
+      if (configuredManager(db, trackerId) !== recipient.threadId || deletedIds.has(recipient.threadId)) return null;
       const ids = claimable(trackerId, Date.now());
       if (!ids.length) return null;
       const attempt = randomUUID();
       const batch = randomUUID();
       db.prepare<[string, string, string, number, string, string, string, string, number]>(
         "INSERT INTO attention_attempts(attempt_id, tracker_id, kind, generation, batch_id, recipient_thread_id, recipient_source, started_at, outcome, rev) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'claimed', ?)",
-      ).run(attempt, trackerId, ATTENTION_KIND, row.effective_generation, batch, recipient.threadId, recipient.source, nowIso(), bumpRev(db, trackerId));
+      ).run(attempt, trackerId, ATTENTION_KIND, row.effective_generation, batch, recipient.threadId, "manager", nowIso(), bumpRev(db, trackerId));
       for (const { id } of ids) db.prepare<[string, string]>("INSERT INTO attention_attempt_items(attempt_id, occurrence_id) VALUES (?, ?)").run(attempt, id);
       return { attempt, ids, batch };
     })();
@@ -274,9 +287,11 @@ function createService(bb: BbPluginApi) {
     }
     await recover(trackerId, true);
     if (!claimable(trackerId, Date.now()).length) return;
-    const recipient = await resolveRecipient(trackerId);
-    if (!recipient) return;
-    const claimed = claim(trackerId, recipient);
+    // Only a verified, usable manager receives claims; otherwise the open occurrences stay pending and the lookup is retried next pass.
+    const lookup = await lookupManager(configuredManager(db, trackerId));
+    if (lookup.status !== "usable") return;
+    const recipient = { threadId: lookup.threadId };
+    const claimed = claim(trackerId, recipient, row.effective_generation);
     if (!claimed) return;
     const run = transport(claimed, recipient.threadId, trackerId).catch(warn).finally(() => inflight.delete(claimed.attempt));
     inflight.set(claimed.attempt, run);
@@ -341,13 +356,24 @@ function createService(bb: BbPluginApi) {
     // this pass is the periodic one, so it is not throttled.
     for (const { tracker_id } of db.prepare<[], { tracker_id: string }>("SELECT DISTINCT tracker_id FROM attention_attempts WHERE outcome='unknown'").all())
       await recoverLate(tracker_id).catch(warn);
+    for (const { tracker_id } of db.prepare<[], { tracker_id: string }>("SELECT tracker_id FROM attention_manager WHERE manager IS NOT NULL").all())
+      await refreshManagerStatus(tracker_id).catch(warn);
     await drain();
   }
 
   /** The owner's mode request; a to_shadow also settles in-flight sends before it can become ready. */
   async function setMode(input: { trackerId: string; mode: AttentionMode; parityReviewed?: boolean }): Promise<KindState> {
-    const before = getModeRow(db, input.trackerId).effective_mode;
-    const state = requestMode(db, input);
+    const row = getModeRow(db, input.trackerId);
+    const before = row.effective_mode;
+    let guard: { manager: string | null; generation: number } | undefined;
+    if (input.mode === "live" && before === "shadow" && row.requested_mode === null) {
+      // Read the manager first; the request transaction then checks that neither the manager nor the shadow generation moved.
+      const manager = configuredManager(db, input.trackerId);
+      const problem = managerProblemText(await lookupManager(manager));
+      if (problem) throw new Error(problem);
+      guard = { manager, generation: row.effective_generation };
+    }
+    const state = requestMode(db, { ...input, guard });
     bb.log.info(`attention ${ATTENTION_KIND} for ${input.trackerId}: ${before} → ${input.mode}`);
     if (state.transition?.direction === "to_shadow" && state.transition.state === "preparing") await reconcileFence(input.trackerId);
     scheduleDrain();
@@ -368,6 +394,15 @@ function createService(bb: BbPluginApi) {
 
   function register() {
     const stops = [onAttentionChanged(notifyChanged), onTrackerDirty(scheduleScan)];
+    // The settings follow the configured manager: an event for any other thread changes nothing.
+    for (const type of ["thread.archived", "thread.unarchived", "thread.deleted"] as const) {
+      bb.events.on(type, ({ thread }) => {
+        const trackers = db.prepare<[string], { tracker_id: string }>("SELECT tracker_id FROM attention_manager WHERE manager=?").all(thread.id);
+        if (!trackers.length) return;
+        if (type === "thread.deleted") deletedIds.add(thread.id);
+        for (const { tracker_id } of trackers) { lastManagerStatus.delete(tracker_id); publishProjectsChanged(bb, tracker_id); }
+      });
+    }
     bb.background.schedule("attention-reconcile", RECONCILE_CRON, () => reconcileAll());
     bb.onDispose(() => {
       closed = true;
@@ -379,5 +414,5 @@ function createService(bb: BbPluginApi) {
     void reconcileAll().catch(warn);
   }
 
-  return { register, drain, drainTracker, nextEligibleDelay, recoverLate, reconcileAll, reconcileFence, setMode, resolveAttempt, scheduleDrain, recover, resolveRecipient };
+  return { register, drain, drainTracker, nextEligibleDelay, recoverLate, reconcileAll, reconcileFence, setMode, resolveAttempt, scheduleDrain, recover, lookupManager };
 }

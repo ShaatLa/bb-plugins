@@ -17,7 +17,7 @@ const MODE_NOTE = {
 
 type ManagerThread = Awaited<ReturnType<ReturnType<typeof useSdk>["threads"]["list"]>>[number];
 const threadTitle = (thread: ManagerThread) => thread.title || thread.titleFallback || "Untitled thread";
-const sweepManager = "Use Sweep's manager";
+const noManager = "No manager";
 const selectable = (thread: ManagerThread) => thread.archivedAt == null && thread.deletedAt == null
   && thread.visibility !== "hidden" && thread.status !== "stopping";
 
@@ -32,7 +32,7 @@ function ManagerPicker({ projectId, value, disabled, onChange }: {
   const [byId, setById] = useState<ManagerThread>();
   const names = useThreadNames(value ? [value] : []);
   const selected = threads?.find((thread) => thread.id === value) ?? (byId?.id === value ? byId : undefined);
-  const label = selected ? threadTitle(selected) : value ? names.get(value) ?? value : sweepManager;
+  const label = selected ? threadTitle(selected) : value ? names.get(value) ?? value : noManager;
   const exactId = search.trim();
 
   useEffect(() => {
@@ -87,7 +87,7 @@ function ManagerPicker({ projectId, value, disabled, onChange }: {
         <Command label="Search threads" shouldFilter={false}>
           <CommandInput placeholder="Search by thread name" value={search} onValueChange={setSearch} />
           <CommandList>
-            {!filter ? <CommandItem value={sweepManager} onSelect={() => choose("")}>{sweepManager}</CommandItem> : null}
+            {!filter ? <CommandItem value={noManager} onSelect={() => choose("")}>{noManager}</CommandItem> : null}
             {(exactMatch ? [...matches, exactMatch] : matches).map((thread) => (
               <CommandItem key={thread.id} value={thread.id} onSelect={() => choose(thread.id)}>
                 <span className="truncate" title={threadTitle(thread)}>{threadTitle(thread)}</span>
@@ -145,7 +145,7 @@ export function AttentionSettings({ projectId }: { projectId: string }) {
                 <p className="text-xs text-muted-foreground">Receives notices when Work Board is live.</p>
                 {settings.managerChangedAt ? <p className="text-xs text-muted-foreground">
                   Changed <time dateTime={settings.managerChangedAt}>{formatRelativeTime(settings.managerChangedAt, Date.now())}</time>
-                  {previousManager ? <> from {previousNames.get(previousManager) ?? previousManager}</> : " from Sweep's manager"}.
+                  {previousManager ? <> from {previousNames.get(previousManager) ?? previousManager}</> : " from no manager"}.
                 </p> : null}
               </div>
               <div className="flex min-w-0 items-center gap-2">
@@ -162,9 +162,7 @@ export function AttentionSettings({ projectId }: { projectId: string }) {
                     <span className="rounded-md bg-muted px-1.5 py-0.5 text-xs capitalize" data-testid="attention-mode">{mode}</span>
                   </div>
                   <p className="text-xs text-muted-foreground">{MODE_NOTE[mode]}</p>
-                  {settings.changedAt ? <p className="text-xs text-muted-foreground" data-testid="attention-changed">
-                    Changed <time dateTime={settings.changedAt} title={settings.changedAt}>{formatRelativeTime(settings.changedAt, Date.now())}</time> from {settings.previousMode ?? "off"}.
-                  </p> : null}
+                  {settings.managerWarning ? <p className="text-xs text-amber-600 dark:text-amber-400" data-testid="attention-manager-warning">{settings.managerWarning}</p> : null}
                 </div>
                 {!pending && (mode === "off"
                   ? <Button size="sm" className="h-8" variant="outline" disabled={busy || !settings.linkedBbProjectId} onClick={() => void setMode("shadow")}>Start shadow</Button>

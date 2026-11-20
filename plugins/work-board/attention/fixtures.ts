@@ -54,10 +54,16 @@ export function createFakeThreads() {
     lastBody: "",
     /** Holds every send until released, so a test can interleave a transition. */
     sendGate: undefined as Promise<void> | undefined,
-    threads: new Map<string, { archived?: boolean; parent?: string; status?: string }>(),
+    threads: new Map<string, { archived?: boolean; deleted?: boolean; parent?: string; status?: string; sideChat?: boolean }>(),
     /** The next queue read waits for this and then sees an empty queue: a search that was slow and stale. */
     listGateOnce: undefined as Promise<void> | undefined,
-    sweepManager: null as string | null,
+    /** Sweep's own manager setting, so a test can prove Work Board never asks for it. */
+    sweepManager: "thr_sweep" as string | null,
+    sweepCalls: 0,
+    /** Every thread read throws this, as in a transient outage; `{ code: "thread_not_found" }` is the platform's authoritative answer. */
+    getError: undefined as (Error & { code?: string }) | undefined,
+    /** The next thread read waits for this before answering. */
+    getGateOnce: undefined as Promise<void> | undefined,
   };
   let seq = 0;
   const text = (row: Row) => row.content.map((part) => part.text).join("\n");
@@ -65,7 +71,9 @@ export function createFakeThreads() {
     threads: {
       get: async ({ threadId }: { threadId: string }) => {
         const info = state.threads.get(threadId) ?? {};
-        return makeThreadResponse({ id: threadId, status: (info.status ?? "idle") as never, ...(info.archived ? { archivedAt: 1 } : {}), ...(info.parent ? { parentThreadId: info.parent } : {}) } as never);
+        if (state.getGateOnce) { const gate = state.getGateOnce; state.getGateOnce = undefined; await gate; }
+        if (state.getError) throw state.getError;
+        return makeThreadResponse({ id: threadId, status: (info.status ?? "idle") as never, ...(info.archived ? { archivedAt: 1 } : {}), ...(info.deleted ? { deletedAt: 1 } : {}), ...(info.sideChat ? { originKind: "fork", originPluginId: "side-chat", visibility: "hidden" } : {}), ...(info.parent ? { parentThreadId: info.parent } : {}) } as never);
       },
       queuedMessages: {
         list: async ({ threadId, signal }: { threadId: string; signal?: AbortSignal }) => {
@@ -127,7 +135,7 @@ export function createFakeThreads() {
     },
     plugins: {
       callRpc: async ({ pluginId, method }: { pluginId: string; method: string }) => {
-        if (pluginId === "sweep" && method === "config.get") return { manager: state.sweepManager };
+        if (pluginId === "sweep" && method === "config.get") { state.sweepCalls++; return { manager: state.sweepManager }; }
         throw new Error(`unexpected ${pluginId}.${method}`);
       },
     },

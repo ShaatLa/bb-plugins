@@ -721,24 +721,15 @@ describe("C2.1 a published handback", () => {
 });
 
 describe("C1.14 recipient eligibility", () => {
-  it("claims nothing when the manager or its fallback parent is stopping", async () => {
+  it("claims nothing while the manager is stopping and never falls back to its parent", async () => {
     const f = await make("live");
     f.card("One");
     f.makeEligible();
-    f.threads.threads.set(MANAGER, { status: "stopping" });
+    f.threads.threads.set(MANAGER, { status: "stopping", parent: "thr_parent" });
     await f.service.drain();
     expect(f.attempts()).toHaveLength(0);
-    f.threads.threads.delete(MANAGER);
-    f.db.prepare("UPDATE attention_manager SET manager=NULL").run();
-    f.threads.sweepManager = "thr_sweep";
-    f.threads.threads.set("thr_sweep", { archived: true, parent: "thr_parent" });
-    f.threads.threads.set("thr_parent", { status: "stopping" });
-    await f.service.drain();
-    expect(f.attempts()).toHaveLength(0);
+    expect(f.threads.sends).toBe(0);
     expect(f.occurrences()).toHaveLength(1);
-    f.threads.threads.delete("thr_parent");
-    await f.service.drain();
-    expect(f.attempts()).toHaveLength(1);
   });
 });
 
