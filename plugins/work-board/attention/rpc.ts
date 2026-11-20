@@ -1,7 +1,7 @@
 import type { BbPluginApi, ExperimentalPluginRpcHandlersWithContext, PluginRpcHandlers } from "@get-bb/plugin-sdk";
 import type { TasksApiStore } from "../api";
 import { publishProjectsChanged } from "../api";
-import { attentionRpcContract, managerProblemText, SWEEP_PLUGIN_ID } from "../shared/attention";
+import { attentionRpcContract, managerProblemText, SWEEP_PLUGIN_ID, type ManagerLookup } from "../shared/attention";
 import type { tasksRpcContract } from "../shared/contract";
 import { CURRENT_KEY_SQL, currentRev } from "./ledger";
 import { ackTransition, boundTrackerOf, getModeRow, kindState, SHADOW_GATE_MS } from "./modes";
@@ -106,10 +106,17 @@ export function attentionUiHandlers(bb: BbPluginApi, store: TasksApiStore): Pick
   return {
     async getAttentionSettings({ projectId }) {
       const project = requireTracker(projectId);
+      const managerRow = () => db.prepare<[string], { manager: string | null; changed_at: string | null; previous: string | null }>("SELECT manager, changed_at, previous FROM attention_manager WHERE tracker_id=?").get(projectId);
+      const read = async () => { const id = managerRow()?.manager || null; return { id, lookup: await service.lookupManager(id) }; };
+      // Everything after the lookup is read in one synchronous snapshot, so the mode and the warning cannot disagree. If the
+      // manager changed while it was read, the read is made once more; a second change reports it as unverified for now.
+      let result = await read();
+      if ((managerRow()?.manager || null) !== result.id) result = await read();
+      const manager = managerRow();
+      const lookup: ManagerLookup = (manager?.manager || null) === result.id ? result.lookup : { status: "unavailable", error: "The manager changed while it was read" };
+      service.noteShown(projectId, manager?.manager || null, lookup);
       const row = getModeRow(db, projectId);
-      const manager = db.prepare<[string], { manager: string | null; changed_at: string | null; previous: string | null }>("SELECT manager, changed_at, previous FROM attention_manager WHERE tracker_id=?").get(projectId);
       const started = row.shadow_started_at ? Date.parse(row.shadow_started_at) : null;
-      const lookup = await service.lookupManager(manager?.manager || null);
       return {
         trackerId: projectId, linkedBbProjectId: project.linkedBbProjectId ?? null, state: kindState(db, projectId), changedAt: row.changed_at, previousMode: row.previous_mode, shadowStartedAt: row.shadow_started_at,
         gateRemainingMs: row.effective_mode === "shadow" && started !== null ? Math.max(0, Math.round(SHADOW_GATE_MS - (Date.now() - started))) : SHADOW_GATE_MS,

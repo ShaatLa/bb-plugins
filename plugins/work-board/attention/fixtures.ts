@@ -19,7 +19,7 @@ export function createFakeThreads() {
     rows: [] as Row[],
     sends: 0,
     updates: 0,
-    requests: [] as { seq: number; requestId: string; text: string; at: number; extra?: Record<string, unknown>; grouped?: boolean }[],
+    requests: [] as { threadId: string; seq: number; requestId: string; text: string; at: number; extra?: Record<string, unknown>; grouped?: boolean }[],
     listCalls: 0,
     acceptedCalls: 0,
     queueCalls: 0,
@@ -35,7 +35,9 @@ export function createFakeThreads() {
     eventsGateOnce: undefined as Promise<void> | undefined,
     /** Every history read fails, as when the recipient's history is inaccessible. */
     eventsFail: false,
-    accepted: [] as { seq: number; clientRequestId: string; at: number }[],
+    accepted: [] as { threadId: string; seq: number; clientRequestId: string; at: number }[],
+    /** The thread id of every history read, so a test can see whose history was searched. */
+    eventReads: [] as string[],
     /** queue: a queued row; inline: dispatched at once; throw: the send fails with `sendError`. */
     sendMode: "queue" as "queue" | "inline" | "throw",
     /** Whether an inline send also records its accepted-input event. */
@@ -106,18 +108,20 @@ export function createFakeThreads() {
           const row = addRow(threadId, body);
           return { ok: true, delivery: "queued", queuedMessage: row };
         }
-        if (state.acceptInline) dispatch(body);
+        if (state.acceptInline) dispatch(body, threadId);
         return { ok: true, delivery: "sent" };
       },
       events: {
         // Honors the paging the real list has: type filter, order, limit and the seq bounds. Both arrays grow in seq order.
-        list: async ({ types, order = "desc", limit = "50", beforeSeq, afterSeq }: { types: string[]; order?: string; limit?: string; beforeSeq?: string; afterSeq?: string }) => {
+        list: async ({ threadId, types, order = "desc", limit = "50", beforeSeq, afterSeq }: { threadId: string; types: string[]; order?: string; limit?: string; beforeSeq?: string; afterSeq?: string }) => {
           state.listCalls++;
+          state.eventReads.push(threadId);
           if (types.includes("turn/input/accepted")) state.acceptedCalls++;
           if (state.eventsGateOnce) { const gate = state.eventsGateOnce; state.eventsGateOnce = undefined; await gate; throw fault("history unavailable"); }
           if (state.eventsFail || state.eventsFailWhen?.({ types, beforeSeq })) throw fault("history unavailable");
           const requests = types.includes("client/turn/requested");
-          const source = requests ? state.requests : state.accepted;
+          // Evidence belongs to the thread it was recorded in: another thread's history never shows it.
+          const source = (requests ? state.requests : state.accepted).filter((event) => event.threadId === threadId);
           const wanted = Number(limit);
           const out: unknown[] = [];
           const indices = order === "asc" ? source.map((_, index) => index) : source.map((_, index) => source.length - 1 - index);
@@ -146,24 +150,24 @@ export function createFakeThreads() {
     return row;
   }
   /** Record an accepted-input pair for `body`, as an idle thread does for an inline message. */
-  function dispatch(body: string) {
+  function dispatch(body: string, threadId = MANAGER) {
     const requestId = `req_${++seq}`;
-    state.requests.push({ seq: ++seq, requestId, text: body, at: Date.now() });
-    state.accepted.push({ seq: ++seq, clientRequestId: requestId, at: Date.now() });
+    state.requests.push({ threadId, seq: ++seq, requestId, text: body, at: Date.now() });
+    state.accepted.push({ threadId, seq: ++seq, clientRequestId: requestId, at: Date.now() });
   }
   /** A queued row leaves the queue and dispatches with its text. */
   function dispatchRow(row: Row) {
     state.rows.splice(state.rows.indexOf(row), 1);
-    dispatch(text(row));
+    dispatch(text(row), row.threadId);
   }
   /** A request whose acceptance is recorded separately, later. */
   function requestOnly(body: string, options: { extra?: Record<string, unknown>; grouped?: boolean } = {}): string {
     const requestId = `req_${++seq}`;
-    state.requests.push({ seq: ++seq, requestId, text: body, at: Date.now(), ...options });
+    state.requests.push({ threadId: MANAGER, seq: ++seq, requestId, text: body, at: Date.now(), ...options });
     return requestId;
   }
   function acceptRequest(requestId: string) {
-    state.accepted.push({ seq: ++seq, clientRequestId: requestId, at: Date.now() });
+    state.accepted.push({ threadId: state.requests.find((request) => request.requestId === requestId)?.threadId ?? MANAGER, seq: ++seq, clientRequestId: requestId, at: Date.now() });
   }
   return Object.assign(state, { sdk, text, dispatch, dispatchRow, addRow, requestOnly, acceptRequest });
 }

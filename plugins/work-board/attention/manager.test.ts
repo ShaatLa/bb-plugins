@@ -68,6 +68,52 @@ describe("going live", () => {
   });
 });
 
+describe("stale reads", () => {
+  it("writes no token when a deletion event arrives while the lookup is out and the read then returns an older usable snapshot", async () => {
+    const f = await make("shadow");
+    f.ageShadow(49);
+    const held = gate();
+    f.threads.getGateOnce = held.promise;
+    const request = f.setMode("live", true);
+    const refused = expect(request).rejects.toThrow("The manager session was deleted; choose another before going live");
+    while (f.threads.getGateOnce) await tick();
+    f.threads.threads.set(MANAGER, { deleted: true });
+    await event(f, "thread.deleted");
+    held.release();
+    await refused;
+    expect((await modes(f)).transition).toBeNull();
+    expect(f.db.prepare("SELECT transition_token FROM attention_modes WHERE tracker_id=?").get(f.tracker.id)).toEqual({ transition_token: null });
+  });
+
+  it("claims nothing when an archive event arrives while the drain's lookup is out and the read then returns an older usable snapshot", async () => {
+    const f = await make();
+    eligibleCard(f);
+    const held = gate();
+    f.threads.getGateOnce = held.promise;
+    const drain = f.service.drain();
+    while (f.threads.getGateOnce) await tick();
+    f.threads.threads.set(MANAGER, { archived: true });
+    await event(f, "thread.archived");
+    held.release();
+    await drain;
+    expect(f.attempts()).toHaveLength(0);
+    expect(f.threads.sends).toBe(0);
+  });
+
+  it("keeps the time a deletion was established across settings reads", async () => {
+    const f = await make("shadow");
+    await event(f, "thread.deleted");
+    const first = (await settings(f)).managerLookup;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    f.threads.getError = new Error("backend unavailable");
+    const second = (await settings(f)).managerLookup;
+    expect(first).toMatchObject({ status: "unusable", cause: "deleted", detectedAt: expect.any(String) });
+    expect(second).toEqual(first);
+    await event(f, "thread.deleted");
+    expect((await settings(f)).managerLookup).toEqual(first);
+  });
+});
+
 describe("lookup", () => {
   it("defers claims on a transient read failure without rolling back, then proceeds after a recovery read", async () => {
     const f = await make();
@@ -232,10 +278,16 @@ describe("in-flight attempts", () => {
     await setManager(f, "thr_b");
     await f.service.drain();
     expect(f.attempts().map((attempt) => attempt.outcome)).toEqual(["sending"]);
+    // The same text recorded in B's history is no receipt for an attempt made to A.
+    f.threads.dispatch(f.threads.lastBody, "thr_b");
+    await f.service.drain();
+    expect(f.attempts().map((attempt) => attempt.outcome)).toEqual(["sending"]);
     f.threads.dispatch(f.threads.lastBody);
     await f.service.drain();
     expect(f.attempts()).toMatchObject([{ recipient_thread_id: MANAGER, outcome: "inline" }]);
     expect(f.threads.sends).toBe(1);
+    expect(f.threads.eventReads).toContain(MANAGER);
+    expect(f.threads.eventReads).not.toContain("thr_b");
   });
 });
 
@@ -284,6 +336,17 @@ describe("settings refresh", () => {
     expect(signals(f)).toBeGreaterThan(before);
   });
 
+  it("publishes the recovered result after a settings load saw a transient failure between two passes that both read a usable manager", async () => {
+    const f = await make("shadow");
+    await f.service.reconcileAll();
+    f.threads.getError = new Error("backend unavailable");
+    expect((await settings(f)).managerWarning).toBe("Could not verify the manager session");
+    f.threads.getError = undefined;
+    const before = signals(f);
+    await f.service.reconcileAll();
+    expect(signals(f)).toBeGreaterThan(before);
+  });
+
   it("publishes nothing for a pass whose manager was replaced while its read was outstanding", async () => {
     const f = await make("shadow");
     const held = gate();
@@ -317,6 +380,36 @@ describe("transitions", () => {
     f.threads.threads.set(MANAGER, {});
     await f.service.drain();
     expect(f.attempts()).toHaveLength(1);
+  });
+
+  it("builds the settings response from one snapshot when a to_live ack lands during the manager lookup", async () => {
+    const f = await make("shadow");
+    f.ageShadow(49);
+    const transition = (await f.setMode("live", true)).transition!;
+    f.threads.threads.set(MANAGER, { archived: true });
+    const held = gate();
+    f.threads.getGateOnce = held.promise;
+    const load = settings(f);
+    while (f.threads.getGateOnce) await tick();
+    await f.sweep("attention.ack", { projectId: BB_PROJECT, trackerId: f.tracker.id, kind: "stale-status", token: transition.token, generation: transition.generation, direction: "to_live", fenceId: "fence", acceptedOccurrenceIds: [] });
+    held.release();
+    const result = await load;
+    expect(result.state.effective.mode).toBe("live");
+    expect(result.managerWarning).toBe("The manager session is archived; live is not delivering");
+  });
+
+  it("reads the manager again once when it changed during the lookup", async () => {
+    const f = await make("shadow");
+    f.threads.threads.set("thr_b", { archived: true });
+    const held = gate();
+    f.threads.getGateOnce = held.promise;
+    const load = settings(f);
+    while (f.threads.getGateOnce) await tick();
+    f.db.prepare("UPDATE attention_manager SET manager='thr_b'").run();
+    held.release();
+    const result = await load;
+    expect(result.manager).toBe("thr_b");
+    expect(result.managerLookup).toMatchObject({ status: "unusable", cause: "archived" });
   });
 
   it("runs an owner rollback unchanged while the manager is unusable", async () => {

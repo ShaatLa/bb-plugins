@@ -114,17 +114,30 @@ function createService(bb: BbPluginApi) {
     return true;
   };
 
-  // A deletion event is authoritative even when a later read of the thread fails.
-  const deletedIds = new Set<string>();
+  // A deletion event is authoritative even when a later read of the thread fails; the time is kept with the evidence.
+  const deletedAt = new Map<string, string>();
+  // Archive, unarchive and delete events of a manager move its epoch, so a read that started earlier cannot be trusted.
+  const epochs = new Map<string, number>();
+  const epochOf = (manager: string | null) => (manager ? epochs.get(manager) ?? 0 : 0);
 
   /**
    * The manager session as a recipient. `unusable` needs evidence (the setting is empty, a deletion event, or a successful read
-   * that shows the cause); a read that failed for any other reason is only `unavailable`.
+   * that shows the cause); a read that failed for any other reason is only `unavailable`. A read that overlapped an event of the
+   * manager is discarded and made again, so the answer is never older than the latest event.
    */
   async function lookupManager(manager: string | null): Promise<ManagerLookup> {
-    const unusable = (cause: Extract<ManagerLookup, { status: "unusable" }>["cause"]): ManagerLookup => ({ status: "unusable", cause, detectedAt: nowIso() });
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const epoch = epochOf(manager);
+      const result = await readManager(manager);
+      if (epochOf(manager) === epoch) return result;
+    }
+    return { status: "unavailable", error: "The manager session kept changing while it was read" };
+  }
+
+  async function readManager(manager: string | null): Promise<ManagerLookup> {
+    const unusable = (cause: Extract<ManagerLookup, { status: "unusable" }>["cause"], detectedAt = nowIso()): ManagerLookup => ({ status: "unusable", cause, detectedAt });
     if (!manager) return unusable("none");
-    if (deletedIds.has(manager)) return unusable("deleted");
+    if (deletedAt.has(manager)) return unusable("deleted", deletedAt.get(manager));
     try {
       const thread = await bb.sdk.threads.get({ threadId: manager });
       if (!thread) return { status: "unavailable", error: "The thread read returned nothing" };
@@ -135,22 +148,23 @@ function createService(bb: BbPluginApi) {
       if (thread.status === "stopping") return unusable("stopping");
       return { status: "usable", threadId: manager };
     } catch (error) {
-      if (deletedIds.has(manager)) return unusable("deleted");
       if (typeof error === "object" && error !== null && "code" in error && error.code === "thread_not_found") return unusable("not_found");
       return { status: "unavailable", error: errorMessage(error) };
     }
   }
 
-  const lastManagerStatus = new Map<string, string>();
-  /** Re-read a tracker's manager and tell the settings UI when what it would show changed. */
+  // What the settings view last received for a tracker, from a publish or from its own load.
+  const shown = new Map<string, string>();
+  const statusKey = (manager: string | null, lookup: ManagerLookup) => `${manager}:${lookup.status}:${lookup.status === "unusable" ? lookup.cause : ""}`;
+  const noteShown = (trackerId: string, manager: string | null, lookup: ManagerLookup) => { shown.set(trackerId, statusKey(manager, lookup)); };
+  /** Re-read a tracker's manager and publish when the result differs from what the settings view last received. */
   async function refreshManagerStatus(trackerId: string): Promise<void> {
     const manager = configuredManager(db, trackerId);
     const lookup = await lookupManager(manager);
     // The setting may have moved while the read was outstanding: that read says nothing about the current manager.
     if (configuredManager(db, trackerId) !== manager) return;
-    const key = `${manager}:${lookup.status}:${lookup.status === "unusable" ? lookup.cause : ""}`;
-    if (lastManagerStatus.get(trackerId) === key) return;
-    lastManagerStatus.set(trackerId, key);
+    if (shown.get(trackerId) === statusKey(manager, lookup)) return;
+    noteShown(trackerId, manager, lookup);
     publishProjectsChanged(bb, trackerId);
   }
 
@@ -178,7 +192,7 @@ function createService(bb: BbPluginApi) {
       const row = getModeRow(db, trackerId);
       if (row.effective_mode !== "live" || row.requested_mode !== null || row.effective_generation !== generation) return null;
       // The manager was verified before this transaction: a replacement made meanwhile makes that lookup stale.
-      if (configuredManager(db, trackerId) !== recipient.threadId || deletedIds.has(recipient.threadId)) return null;
+      if (configuredManager(db, trackerId) !== recipient.threadId) return null;
       const ids = claimable(trackerId, Date.now());
       if (!ids.length) return null;
       const attempt = randomUUID();
@@ -399,8 +413,9 @@ function createService(bb: BbPluginApi) {
       bb.events.on(type, ({ thread }) => {
         const trackers = db.prepare<[string], { tracker_id: string }>("SELECT tracker_id FROM attention_manager WHERE manager=?").all(thread.id);
         if (!trackers.length) return;
-        if (type === "thread.deleted") deletedIds.add(thread.id);
-        for (const { tracker_id } of trackers) { lastManagerStatus.delete(tracker_id); publishProjectsChanged(bb, tracker_id); }
+        epochs.set(thread.id, epochOf(thread.id) + 1);
+        if (type === "thread.deleted" && !deletedAt.has(thread.id)) deletedAt.set(thread.id, nowIso());
+        for (const { tracker_id } of trackers) { shown.delete(tracker_id); publishProjectsChanged(bb, tracker_id); }
       });
     }
     bb.background.schedule("attention-reconcile", RECONCILE_CRON, () => reconcileAll());
@@ -414,5 +429,5 @@ function createService(bb: BbPluginApi) {
     void reconcileAll().catch(warn);
   }
 
-  return { register, drain, drainTracker, nextEligibleDelay, recoverLate, reconcileAll, reconcileFence, setMode, resolveAttempt, scheduleDrain, recover, lookupManager };
+  return { register, drain, drainTracker, nextEligibleDelay, recoverLate, reconcileAll, reconcileFence, setMode, resolveAttempt, scheduleDrain, recover, lookupManager, noteShown };
 }

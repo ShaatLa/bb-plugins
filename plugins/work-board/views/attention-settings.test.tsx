@@ -35,7 +35,7 @@ it("shows the mode with its gate, starts shadow, saves the manager and lets the 
     registerAttention(bb, store);
     const project = store.tasks.createProject({ name: "Alpha", prefix: "ALP", color: "blue", linkedBbProjectId: "proj_example" });
     const manager = threadSummary({ id: "thr_example", title: "Release coordinator" });
-    const settings = renderSlot(app.settingsSections[0]!, {}, {
+    const slotOptions: NonNullable<Parameters<typeof renderSlot>[2]> = {
       rpc: Object.fromEntries(Object.keys(tasksRpcContract).map((method) => [method, (input: unknown) => harness.callRpc(method, input)])),
       sdk: {
         threads: {
@@ -48,7 +48,8 @@ it("shows the mode with its gate, starts shadow, saves the manager and lets the 
           },
         },
       },
-    });
+    };
+    const settings = renderSlot(app.settingsSections[0]!, {}, slotOptions);
     const section = await settings.findByRole("region", { name: "Manager attention" });
     await within(section).findByText("off");
     // The write RPC cannot tell the owner from an agent, so the copy must not promise that agents are kept out.
@@ -95,5 +96,60 @@ it("shows the mode with its gate, starts shadow, saves the manager and lets the 
     // Clearing the picker saved no manager, and the empty selection displays as "No manager" again.
     await waitFor(() => expect(within(section).getByRole("button", { name: /^Manager thread:/ }).textContent).toContain("No manager"));
     expect((await within(section).findByTestId("attention-manager-warning")).textContent).toContain("No manager chosen");
+    // Reopened, the saved empty selection still reads "No manager".
+    cleanup();
+    const reopened = renderSlot(app.settingsSections[0]!, {}, slotOptions);
+    const again = await reopened.findByRole("region", { name: "Manager attention" });
+    await waitFor(() => expect(within(again).getByRole("button", { name: /^Manager thread:/ }).textContent).toContain("No manager"));
+    expect((await within(again).findByTestId("attention-manager-warning")).textContent).toContain("No manager chosen");
+  } finally { cleanup(); await harness.dispose(); }
+});
+
+it("follows archive, unarchive and delete events of the manager in the open view without reopening", async () => {
+  const thread = { archivedAt: null as number | null, failing: false };
+  const { bb, harness } = createFakePluginHost({
+    pluginId: "work-board",
+    sdk: {
+      threads: {
+        get: async ({ threadId }: { threadId: string }) => {
+          if (thread.failing) throw new Error("backend unavailable");
+          return makeThreadResponse({ id: threadId, ...(thread.archivedAt ? { archivedAt: thread.archivedAt } : {}) });
+        },
+      },
+    } as never,
+  });
+  try {
+    const store = createStore(bb);
+    registerTasksApi(bb, store);
+    registerAttention(bb, store);
+    const project = store.tasks.createProject({ name: "Alpha", prefix: "ALP", color: "blue", linkedBbProjectId: "proj_example" });
+    bb.storage.database().prepare("INSERT INTO attention_manager(tracker_id, manager, changed_at, previous) VALUES (?, 'thr_example', ?, NULL)").run(project.id, new Date().toISOString());
+    const settings = renderSlot(app.settingsSections[0]!, {}, {
+      rpc: Object.fromEntries(Object.keys(tasksRpcContract).map((method) => [method, (input: unknown) => harness.callRpc(method, input)])),
+      sdk: { threads: { list: async () => [] } },
+    });
+    const section = await settings.findByRole("region", { name: "Manager attention" });
+    await within(section).findByText("off");
+    expect(within(section).queryByTestId("attention-manager-warning")).toBeNull();
+    // The host's realtime signals are handed to the mounted view, as the platform does for a subscribed slot.
+    let delivered = harness.realtimeSignals.length;
+    const deliver = async () => {
+      for (const signal of harness.realtimeSignals.slice(delivered)) if (signal.channel === "projects:changed") await settings.behavior.emitRealtime("projects:changed", signal.payload as never);
+      delivered = harness.realtimeSignals.length;
+    };
+    const event = (type: "thread.archived" | "thread.unarchived" | "thread.deleted") => harness.emitThreadEvent(type, { thread: makeThreadResponse({ id: "thr_example" }) as never });
+    const warning = () => within(section).queryByTestId("attention-manager-warning")?.textContent ?? null;
+    thread.archivedAt = 1;
+    await event("thread.archived");
+    await deliver();
+    await waitFor(() => expect(warning()).toBe("The manager session is archived; choose another before going live"));
+    thread.archivedAt = null;
+    await event("thread.unarchived");
+    await deliver();
+    await waitFor(() => expect(warning()).toBeNull());
+    thread.failing = true;
+    await event("thread.deleted");
+    await deliver();
+    await waitFor(() => expect(warning()).toBe("The manager session was deleted; choose another before going live"));
   } finally { cleanup(); await harness.dispose(); }
 });
