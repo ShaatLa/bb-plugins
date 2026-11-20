@@ -214,6 +214,15 @@ bb plugin build .
 bb plugin reload <plugin-id>
 ```
 
+To run a released version on your own machine and keep its settings, install it from its tag:
+
+```sh
+scripts/install-release.sh work-board          # newest work-board/v* tag
+scripts/install-release.sh work-board 0.59.4   # one release
+```
+
+It builds the tag into `releases/<entry>-<version>` next to the checkout (override with `BB_PLUGIN_RELEASES`) and installs that path; bb moves an existing local-path install of the same plugin and keeps its settings, and refuses to replace a Git or npm install. Keep that directory while the version is installed.
+
 `bb plugin dev` provides a build/reload watcher for an already-installed local directory. Do not enable built-in Tasks alongside a local Work Board installation.
 
 ## License and attribution
