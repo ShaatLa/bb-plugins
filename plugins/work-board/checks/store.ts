@@ -33,6 +33,12 @@ export interface State {
   /** Why the last delivery attempt failed; stored apart from the push failure. */
   managerError?: string | null;
   pushError?: string | null;
+  /** Archived-worktree paths already delivered; a path leaves only after a complete scan finds it gone. */
+  reportedWorktrees?: string[];
+  /** Paths of the staged report; they become reported only when its delivery is accepted. */
+  pendingWorktrees?: string[];
+  /** The last path the scan tried to measure; the next scan resumes after it. */
+  lastMeasuredWorktree?: string;
 }
 
 export interface DeliveryRow {

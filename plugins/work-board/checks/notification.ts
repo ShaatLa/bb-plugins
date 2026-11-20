@@ -1,4 +1,4 @@
-import { summaryLine } from "./reports";
+import { archivedWorktreeKind, summaryLine } from "./reports";
 
 const sections = { ANSWER: "Owner answers", ACTION: "Actions", WAIT: "Waiting", STATE: "State changes" };
 const taskKey = "[A-Z][A-Z0-9]{0,9}-\\d+";
@@ -43,9 +43,13 @@ function outputBlock(output: string) {
 /** BB Markdown for one report: items grouped by kind with task and thread links, unparsed lines kept verbatim in a block. */
 export function formatNotification(status: number, output: string) {
   const lines = output.split(/\r?\n/);
+  const worktreePrefix = `${archivedWorktreeKind} `;
+  const worktrees = lines.filter((line) => line.startsWith(worktreePrefix));
   if (status >= 2) {
     const blocks = [`\`Check failed\` (exit ${status})`];
-    if (output.trim()) blocks.push(outputBlock(output.trimEnd()));
+    if (worktrees.length) blocks.push(`**Archived worktrees**\n\n${worktrees.map((line) => `- ${formatReference(line.slice(worktreePrefix.length))}`).join("\n")}`);
+    const diagnostics = lines.filter((line) => !line.startsWith(worktreePrefix)).join("\n").trimEnd();
+    if (diagnostics.trim()) blocks.push(outputBlock(diagnostics));
     return blocks.join("\n\n");
   }
   const title = status === 1 ? "Needs attention" : "Check complete";
@@ -55,7 +59,7 @@ export function formatNotification(status: number, output: string) {
   for (const line of lines) {
     const summary = summaryLine.exec(line);
     if (summary) {
-      blocks[0] += ` · ${summary[3]} to review · ${summary[1]} threads · ${summary[2]} cards checked`;
+      blocks[0] += ` · ${Number(summary[3]) + worktrees.length} to review · ${summary[1]} threads · ${summary[2]} cards checked`;
       continue;
     }
     const item = /^(ANSWER|ACTION|WAIT|STATE) (\S.*)$/.exec(line);

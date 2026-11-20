@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 
 export const summaryLine = /^sweep: (\d+) threads, (\d+) cards checked, (\d+) actions$/;
+export const archivedWorktreeKind = "ACTION archived-worktree";
 const hash = (text: string) => createHash("sha256").update(text).digest("hex");
 
 /**
@@ -29,6 +30,8 @@ export function reportContents(exitCode: number, output: string) {
   const noteworthy: string[] = [], waiting: string[] = [];
   const comparisonItems: string[] = [];
   for (const [id, kind] of items) {
+    // Worktree delivery is tracked by path until a scan observes it cleared, not by item.
+    if (kind === archivedWorktreeKind) continue;
     comparisonItems.push(id);
     if (kind === "ANSWER" || kind.startsWith("ACTION")) noteworthy.push(id);
     if (kind === "WAIT") waiting.push(id);

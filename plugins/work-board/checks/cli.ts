@@ -43,6 +43,7 @@ export function checksCliCommands(bb: BbPluginApi, host: ChecksCliHost) {
           ["Blocked", status.blocked ?? "-"],
           ["Pending", status.pending ? `${status.pending.reportId} (exit ${status.pending.exitCode}, tick ${status.pending.tickId})` : "-"],
           ["Last delivery", status.lastDelivery ? `${when(status.lastDelivery.at)} to ${status.lastDelivery.to} (${status.lastDelivery.receipt?.mode ?? "-"})` : "-"],
+          ["Archived worktrees", `${status.reportedWorktrees} reported, ${status.pendingWorktrees} pending`],
           ["Manager error", status.managerError ?? "-"],
           ["Push error", status.pushError ?? "-"],
           ["State", status.stateMismatch ?? "ok"],

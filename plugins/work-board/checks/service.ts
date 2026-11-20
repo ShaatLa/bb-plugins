@@ -11,6 +11,7 @@ import { errorMessage } from "../shared/errors";
 import { deliverWithReceipt, searchAttentionMarker, type HistoryCursor, type Receipt as SteerReceipt } from "../steer";
 import { CHECK_FIELDS, CHECKS_PREFIX, completeConfig, effectiveConfig, parseField, readDraft, writeEnabled, writeField, type CheckField, type ChecksConfig } from "./config";
 import { checksHistory } from "./history";
+import { scanArchivedWorktrees, type ScanProject } from "./archived-worktrees";
 import { formatNotification } from "./notification";
 import { assertNoOtherOwner, isDraining, owners, runs, stateMismatch } from "./ownership";
 import { reportContents } from "./reports";
@@ -20,6 +21,7 @@ import { checksStore, type AttemptRow, type State } from "./store";
 type Database = ReturnType<BbPluginApi["storage"]["database"]>;
 
 const MAX_REFRESH_BACKOFF_MS = 3_600_000;
+const WORKTREE_SCAN_MS = 60_000;
 const LATE_SEARCH_BATCH = 20;
 const PUSH_TITLE = "Sweep manager unreachable";
 const repositoryUrl = z.string().min(1).max(2000).refine((url) => !url.startsWith("-"));
@@ -111,6 +113,8 @@ function createService(bb: BbPluginApi) {
       else next.lastReport = { fingerprint, changes, at: Date.now(), manager: attempt.manager_thread_id };
       next.deliveredAt = Date.now(); next.deliveredTickId = row.pending_tick ?? undefined; next.deliveredReportId = row.report_id;
       next.deliveredTo = attempt.manager_thread_id;
+      // The paths of the delivered report are reported now, in the same transaction as the promotion.
+      if (next.pendingWorktrees) { next.reportedWorktrees = [...new Set([...(next.reportedWorktrees ?? []), ...next.pendingWorktrees])]; next.pendingWorktrees = undefined; }
       next.receipt = { mode: receipt.outcome, id: receipt.outcome === "inline" ? receipt.inlineEventRef : receipt.queuedMessageId };
       // The delivery problem this acceptance resolves goes; an execution failure (script or refresh) stays.
       next.deliveryError = null; next.managerError = null; next.pushError = null;
@@ -236,9 +240,11 @@ function createService(bb: BbPluginApi) {
 
   // ---- running --------------------------------------------------------------------------------------------------
 
+  /** Runs the script; also returns the bb project it read (null when the lookup failed), which the worktree scan reuses. */
   async function runScript(trackerId: string, link: string, config: ChecksConfig, manager: string, committed: Buffer | null) {
+    let project: ScanProject | null = null;
     try {
-      const project = await bb.sdk.projects.get({ projectId: link }).catch((cause) => { throw new CheckoutRefreshError("Could not read the bb project repository settings", { cause }); });
+      project = (await bb.sdk.projects.get({ projectId: link }).catch((cause) => { throw new CheckoutRefreshError("Could not read the bb project repository settings", { cause }); })) ?? null;
       const remote = repositoryUrl.safeParse(project?.gitRemoteUrl);
       if (!remote.success) throw new CheckoutRefreshError("Set a valid Git remote URL in the bb project settings");
       const { bbCli, runtimePath } = await getChecksEnvironment(bb);
@@ -246,10 +252,10 @@ function createService(bb: BbPluginApi) {
         remote: remote.data, branch: config.branch, script: config.script, args: config.args, timeoutSeconds: config.timeoutSeconds, snapshots: config.snapshots,
         bbProjectId: link, manager, committed, bbCli, runtimePath, gitTimeoutMs: checksTuning.gitTimeoutMs, killGraceMs: checksTuning.killGraceMs,
       }, controller.signal);
-      return { result, refreshFailed: false };
+      return { result, refreshFailed: false, project };
     } catch (error) {
       if (controller.signal.aborted) throw error;
-      return { result: { code: 2, output: `ERROR ${String(error)}`, snapshot: null as Buffer | null }, refreshFailed: error instanceof CheckoutRefreshError };
+      return { result: { code: 2, output: `ERROR ${String(error)}`, snapshot: null as Buffer | null }, refreshFailed: error instanceof CheckoutRefreshError, project };
     }
   }
 
@@ -295,16 +301,27 @@ function createService(bb: BbPluginApi) {
       const config = full.config;
 
       const committed = committedFor(trackerId, link);
-      const { result, refreshFailed } = await runScript(trackerId, link, config, manager, committed);
+      const { result, refreshFailed, project } = await runScript(trackerId, link, config, manager, committed);
       controller.signal.throwIfAborted();
-      const code = result.code;
+      // Archived worktrees are scanned after the script, also after a failed one; the project is the one the script run read.
+      const worktrees = project ? await scanArchivedWorktrees(bb, project, state.reportedWorktrees ?? [], state.lastMeasuredWorktree, AbortSignal.any([controller.signal, AbortSignal.timeout(WORKTREE_SCAN_MS)])).catch((error) => {
+        controller.signal.throwIfAborted();
+        bb.log.warn(`Archived worktree scan failed for ${trackerId}: ${String(error)}`);
+        return null;
+      }) : null;
+      if (worktrees) state.lastMeasuredWorktree = worktrees.lastMeasuredPath;
+      // Only a complete observation of absence clears history.
+      if (worktrees?.complete && state.reportedWorktrees) { const present = new Set(worktrees.present); state.reportedWorktrees = state.reportedWorktrees.filter((path) => present.has(path)); }
+      const newWorktrees = worktrees?.newPaths.length ? worktrees.newPaths : undefined;
+      const output = worktrees?.lines.length ? [result.output.trimEnd(), ...worktrees.lines].filter(Boolean).join("\n") : result.output;
+      const code = newWorktrees && result.code === 0 ? 1 : result.code;
       state.exitCode = code;
       state.refreshFailures = refreshFailed ? (state.refreshFailures ?? 0) + 1 : 0;
       state.refreshRetryAt = refreshFailed ? Date.now() + Math.min(interval * 2 ** Math.min(state.refreshFailures - 1, 6), Math.max(interval, MAX_REFRESH_BACKOFF_MS)) : undefined;
       state.failureStage = refreshFailed ? "refresh" : code >= 2 ? "script" : null;
       // The execution diagnostic is part of the state the staging transaction saves, so a restart shows the right one.
       state.error = code >= 2 ? result.output : null;
-      const report = reportContents(code, result.output);
+      const report = reportContents(code, output);
       history.result(trackerId, link, tickId, now, report.items, refreshFailed ? "refresh" : code >= 2 ? "script" : undefined);
 
       const candidateChanged = result.snapshot !== null && (!committed || !result.snapshot.equals(committed));
@@ -316,16 +333,19 @@ function createService(bb: BbPluginApi) {
       const newItem = report.changes.noteworthy.some((id) => !knownItems.has(id));
       const changedFailure = state.lastFailure?.manager !== manager || state.lastFailure?.fingerprint !== report.fingerprint;
       const changedDiagnostic = code === 1 && !report.items.size && lastReport?.fingerprint !== report.fingerprint;
-      const notify = code >= 2 ? changedFailure : waitingChanged || newItem || candidateChanged || answerWithoutCandidate || changedDiagnostic;
+      const notify = !!newWorktrees || (code >= 2 ? changedFailure : waitingChanged || newItem || candidateChanged || answerWithoutCandidate || changedDiagnostic);
       // Any run below 2 ends a failure streak, even when it sends nothing: the same failure after a quiet success notifies again.
       if (code < 2) state.lastFailure = undefined;
       let delivery: Outcome = { status: "none" };
       if (notify) {
-        const body = waitingChanged && !report.changes.waiting ? `${result.output.trimEnd()}\nSTATE Waiting list is clear.\n` : result.output;
+        const body = waitingChanged && !report.changes.waiting ? `${output.trimEnd()}\nSTATE Waiting list is clear.\n` : output;
+        // The pending paths are saved with the report and published into the live state only after the commit.
+        const staged: State = { ...state, pendingWorktrees: newWorktrees };
         db.transaction(() => {
           store.stage(trackerId, { reportId: randomUUID(), project: link, exit: code, tick: tickId, body, snapshot: result.snapshot });
-          store.save(trackerId, state);
+          store.save(trackerId, staged);
         })();
+        state.pendingWorktrees = newWorktrees;
         delivery = await processPending(trackerId, link, state, tickId);
         controller.signal.throwIfAborted();
       } else if (code !== 0 || report.changes.waiting || result.snapshot !== null) history.suppress(tickId);
@@ -467,6 +487,7 @@ function createService(bb: BbPluginApi) {
       deliveryError: pending ? state.deliveryError ?? null : null,
       blocked: pending?.attempts.some((a) => a.outcome === "unknown") ? "blocked: delivery unknown, Retry needed" : null,
       refreshFailures: state.refreshFailures ?? 0, refreshRetryAt: state.refreshRetryAt ?? null,
+      reportedWorktrees: state.reportedWorktrees?.length ?? 0, pendingWorktrees: state.pendingWorktrees?.length ?? 0,
       managerError: state.managerError ?? null, pushError: state.pushError ?? null,
       lastDelivery: state.deliveredAt ? { at: state.deliveredAt, to: state.deliveredTo ?? null, receipt: state.receipt ?? null, reportId: state.deliveredReportId ?? null, tickId: state.deliveredTickId ?? null } : null,
       pending, awaitingRetry: !!pending?.attempts.some((a) => a.outcome === "unknown"),

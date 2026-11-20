@@ -29,6 +29,8 @@ export const checksStatusSchema = z.object({
   blocked: z.string().nullable(),
   refreshFailures: count,
   refreshRetryAt: z.number().nullable(),
+  reportedWorktrees: count,
+  pendingWorktrees: count,
   managerError: z.string().nullable(),
   pushError: z.string().nullable(),
   lastDelivery: z.object({ at: z.number(), to: z.string().nullable(), receipt: receiptSchema.nullable(), reportId: z.string().nullable(), tickId: z.string().nullable() }).nullable(),

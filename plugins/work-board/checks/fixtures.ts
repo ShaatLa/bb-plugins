@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { createFakePluginHost } from "@get-bb/plugin-sdk/testing";
@@ -59,9 +59,24 @@ export async function setup(options: { settings?: Record<string, string> } = {})
   const repo = createRepo();
   const pushes: { title: string; body: string }[] = [];
   const control = { pushFail: false, remote: repo.url as string | null, projectFail: false, onProject: undefined as (() => void) | undefined };
+  /** The archived-worktree scan's view of the host. Off (no primary host) until a test calls `worktrees.enable()`. */
+  const scan = {
+    calls: 0, primaryHostId: null as string | null, storage: "" as string, sources: [] as { hostId: string; path: string }[],
+    environments: [] as Record<string, unknown>[], threads: new Map<string, { archivedAt: number | null; deletedAt: number | null }>(),
+  };
   const sdk = {
     ...threads.sdk,
-    projects: { get: async () => { control.onProject?.(); if (control.projectFail) throw new Error("projects unavailable"); return { id: BB_PROJECT, gitRemoteUrl: control.remote }; } },
+    projects: { get: async () => { control.onProject?.(); if (control.projectFail) throw new Error("projects unavailable"); return { id: BB_PROJECT, gitRemoteUrl: control.remote, sources: scan.sources }; } },
+    system: { config: async () => { scan.calls++; return { primaryHostId: scan.primaryHostId }; } },
+    hosts: { get: async () => ({ threadStorageRootPath: scan.storage || null }) },
+    environments: { list: async ({ limit, offset }: { limit: number; offset: number }) => scan.environments.slice(offset, offset + limit) },
+    threads: {
+      ...threads.sdk.threads,
+      list: async ({ threadIds, archived }: { threadIds: string[]; archived?: boolean }) => threadIds.flatMap((id) => {
+        const row = scan.threads.get(id);
+        return row && (!archived || row.archivedAt != null) ? [{ id, ...row }] : [];
+      }),
+    },
     plugins: {
       callRpc: async ({ pluginId, method, input }: { pluginId: string; method: string; input: { title: string; body: string } }) => {
         if (pluginId !== "push-notifications" || method !== "notifications.send") throw new Error(`unexpected ${pluginId}.${method}`);
@@ -105,6 +120,29 @@ export async function setup(options: { settings?: Record<string, string> } = {})
   const sent = () => threads.rows.map((row) => threads.text(row)).join("\n");
   /** A second tracker on another bb project, for ownership tests. */
   const other = (link = BB_PROJECT) => store.tasks.createProject({ name: "Other", prefix: "OTH", color: "red", linkedBbProjectId: link });
-  return { ...host, bb, store, db, service, tracker, threads, repo, pushes, control, harness, setManager, script, standard, output, runs, io, configure, enable, tick, state, delivery, attempts, sent, other, dispose: () => harness.dispose() };
+  const sourceGit = (cwd: string, ...args: string[]) => git(cwd, ...args);
+  /** Temporary repositories for the scan: a source repository, worktrees under a thread storage root, and thread records. */
+  const worktrees = {
+    scan,
+    /** Turns the scan on with a fresh storage root and a source repository registered as a project source. */
+    enable() {
+      scan.primaryHostId = "host_example"; scan.storage = realpathSync(tempDir("checks-storage-"));
+      const source = worktrees.makeRepo(realpathSync(tempDir("checks-source-")));
+      scan.sources = [{ hostId: "host_example", path: source }];
+      return source;
+    },
+    makeRepo(dir: string) { mkdirSync(dir, { recursive: true }); sourceGit(dir, "init", "-q", "-b", "main"); sourceGit(dir, "commit", "-q", "--allow-empty", "-m", "init"); return realpathSync(dir); },
+    get source() { return scan.sources[0]!.path; },
+    /** `git worktree add` of a new detached tree at storage/threadId/name; the thread is archived unless said otherwise. */
+    add(threadId: string, name = "tree", { archived = true, deleted = false, under = scan.storage } = {}) {
+      const path = join(under, threadId, name);
+      mkdirSync(dirname(path), { recursive: true });
+      sourceGit(worktrees.source, "worktree", "add", "-q", "--detach", path);
+      scan.threads.set(threadId, { archivedAt: archived ? 1 : null, deletedAt: deleted ? 1 : null });
+      return realpathSync(path);
+    },
+    remove(path: string) { sourceGit(worktrees.source, "worktree", "remove", "--force", path); },
+  };
+  return { ...host, worktrees, bb, store, db, service, tracker, threads, repo, pushes, control, harness, setManager, script, standard, output, runs, io, configure, enable, tick, state, delivery, attempts, sent, other, dispose: () => harness.dispose() };
 }
 export type Fixture = Awaited<ReturnType<typeof setup>>;
