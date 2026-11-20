@@ -3,6 +3,7 @@ import { mkdir, mkdtemp, readFile, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { createFakePluginHost, makeThreadResponse } from '@get-bb/plugin-sdk/testing';
 import { deliveryStore } from './delivery.ts';
 import plugin from './server.ts';
@@ -163,7 +164,7 @@ for (const [origin, merges] of [['sweep', true], ['someone-else', false]]) {
     get:async()=>makeThreadResponse(),
     send:async request=>{sentRequests.push(request);},
     queuedMessages:{list:async()=>[row],update:async request=>{updates.push(request);return row;}},
-  }}});
+  },plugins:{list:async()=>({plugins:[]})}}});
   try {
     await plugin(mergeHost.bb);
     await mergeHost.harness.behavior.callRpc('configure',{projectId,config:{...config,script:'repeat.py',args:['5','EXA-1','none']}});
@@ -311,6 +312,7 @@ let projectRemote=repo;
 const repeatHost=createFakePluginHost({pluginId:'sweep',sdk:{
   projects:projectSettings(()=>projectRemote),
   threads:{get:async()=>makeThreadResponse(),send:async request=>{reports.push(request.input[0].text);}},
+  plugins:{list:async()=>({plugins:[]})},
 }});
 const realNow=Date.now;
 let time=realNow();
@@ -430,7 +432,7 @@ const slowRepo = await mkdtemp(join(tmpdir(), 'sweep-stop-'));
 const slowGit = (...args) => execFileSync('git', args, {cwd:slowRepo,stdio:'ignore'});
 slowGit('init','-b','main');slowGit('config','user.email','test@example.com');slowGit('config','user.name','Test');
 await writeFile(join(slowRepo,'sweep.py'),'import time\ntime.sleep(60)\n');slowGit('add','.');slowGit('commit','-m','slow fixture');
-const stopHost=createFakePluginHost({pluginId:'sweep',sdk:{projects:projectSettings(()=>slowRepo),threads:{get:async()=>makeThreadResponse({projectId})}}});
+const stopHost=createFakePluginHost({pluginId:'sweep',sdk:{projects:projectSettings(()=>slowRepo),threads:{get:async()=>makeThreadResponse({projectId})},plugins:{list:async()=>({plugins:[]})}}});
 try {
  await plugin(stopHost.bb);
  await stopHost.harness.behavior.callRpc('configure',{projectId,config:{enabled:true,branch:'main',script:'sweep.py',args:[],manager:first}});
@@ -439,3 +441,406 @@ try {
  service.controller.abort();
  let timer;try{await Promise.race([service.done,new Promise((_,reject)=>{timer=setTimeout(()=>reject(Error('service did not cancel')),2000)})]);}finally{clearTimeout(timer);}
 }finally{await stopHost.harness.lifecycle.dispose();await rm(slowRepo,{recursive:true,force:true});}
+
+// ---- Transfer of the runner between Sweep and Work Board --------------------------------------------------------------
+const xferRepo = await mkdtemp(join(tmpdir(), 'sweep-transfer-'));
+const xgit = (...args) => execFileSync('git', args, {cwd:xferRepo, stdio:'ignore'});
+xgit('init','-b','main');xgit('config','user.email','test@example.com');xgit('config','user.name','Test');
+await writeFile(join(xferRepo,'ctl.py'), `import argparse,json,os
+p=argparse.ArgumentParser()
+p.add_argument('mode');p.add_argument('--waits',nargs='*',default=[])
+p.add_argument('--committed-state');p.add_argument('--candidate-snapshot')
+a=p.parse_args()
+text=open(a.committed_state).read() if a.committed_state and os.path.exists(a.committed_state) else None
+n=json.loads(text)['n'] if text else 0
+print('STATE input='+(str(n) if text else 'none'))
+for w in a.waits: print('WAIT '+w+': blocker EXA-9')
+print('sweep: 1 threads, 1 cards checked, 0 actions')
+if a.candidate_snapshot:
+ if a.mode=='advance': open(a.candidate_snapshot,'w').write(json.dumps({'n':n+1}))
+ elif text: open(a.candidate_snapshot,'w').write(text)
+`);
+await writeFile(join(xferRepo,'fail.py'), `print('ERROR boom')\nraise SystemExit(2)\n`);
+await writeFile(join(xferRepo,'slow.py'), `import time\ntime.sleep(1.5)\n`);
+xgit('add','.');xgit('commit','-m','fixture');
+
+// The same literal document is pinned in the Work Board suite (checks/transfer.test.ts).
+const pinnedDocument = {"format":"bb-runner-state/1","from":"sweep","bbProjectId":"proj_example","handoffId":"handoff_example","previous":null,"exportedAt":"2026-01-01T00:00:00.000Z","committed":{"size":7,"sha256":"50fb9ee7a50fd1c8e2a0b35c9a2e9d5dbb9ee5b2cd8a98d7d2b02a9fb3b3a8c1"},"lastReport":{"fingerprint":"fingerprint_example","manager":"thr_example","at":1767225600000,"changes":{"noteworthy":["item_example"],"waiting":"waiting_example"}},"lastFailure":{"fingerprint":"failure_example","manager":"thr_example"},"reportedWorktrees":["/example/tree"],"lastMeasuredWorktree":"/example/tree"};
+{
+  const { transferDocument } = await import('./transfer.ts');
+  assert.deepEqual(transferDocument.parse(pinnedDocument), pinnedDocument);
+  assert.throws(() => transferDocument.parse({ ...pinnedDocument, extra: 1 }));
+  assert.throws(() => transferDocument.parse({ ...pinnedDocument, format: 'bb-runner-state/2' }));
+}
+
+const sha = bytes => createHash('sha256').update(bytes).digest('hex');
+/** A Work Board with the same rules as the real one, as far as Sweep can see it. */
+function fakeWorkBoard() {
+  const wb = { row: null, transferring: false, claim: 'grant', calls: [], document: null, bytes: Buffer.alloc(0) };
+  const own = () => ({ owner: wb.row?.owner ?? null, trackerId: wb.row?.trackerId ?? null, sentId: wb.row?.sentId ?? null, sentConfirmed: !!wb.row?.sentConfirmed, receivedId: wb.row?.receivedId ?? null, transferring: wb.transferring });
+  wb.callRpc = async ({ method, input, outputSchema }) => {
+    wb.calls.push(method);
+    let value;
+    if (method === 'checks.claim') {
+      if (wb.claim === 'throw') throw new Error('Work Board offline');
+      value = wb.claim === 'missing' ? {} : wb.claim === 'refuse' ? { granted: false, reason: 'a tracker is enabled' } : { granted: true };
+    } else if (method === 'checks.ownership') value = own();
+    else {
+      assert.ok(wb.row?.sentId === input.handoffId && !wb.row.sentConfirmed, 'only the current unconfirmed send is served');
+      if (method === 'checks.transferDocument') value = wb.document;
+      else { assert.equal(method, 'checks.transferChunk'); const slice = wb.bytes.subarray(input.offset, input.offset + 262144); value = { data: slice.toString('base64'), end: input.offset + slice.length >= wb.bytes.length }; }
+    }
+    return outputSchema.parse(value);
+  };
+  /** Work Board starts sending: the row names its handoff, unconfirmed, and the document and bytes are served. */
+  wb.send = (handoffId, previous, bytes, extra = {}) => {
+    wb.bytes = bytes ?? Buffer.alloc(0);
+    wb.document = { format: 'bb-runner-state/1', from: 'work-board', bbProjectId: projectId, handoffId, previous, exportedAt: '2026-01-01T00:00:00.000Z', committed: bytes ? { size: bytes.length, sha256: sha(bytes) } : null, reportedWorktrees: [], ...extra };
+    wb.row = { ...wb.row, owner: 'work-board', trackerId: 'tracker_example', sentId: handoffId, sentConfirmed: false };
+  };
+  wb.confirmSend = () => { wb.row = { ...wb.row, owner: 'sweep', trackerId: null, sentConfirmed: true }; };
+  /** Work Board receives what Sweep exported. */
+  wb.receive = async (call, document) => {
+    const parts = []; let offset = 0;
+    for (;;) { const chunk = await call('transfer.chunk', { handoffId: document.handoffId, offset }); parts.push(Buffer.from(chunk.data, 'base64')); offset += parts.at(-1).length; if (chunk.end) break; }
+    const bytes = Buffer.concat(parts);
+    if (document.committed) { assert.equal(bytes.length, document.committed.size); assert.equal(sha(bytes), document.committed.sha256); }
+    wb.row = { owner: 'work-board', trackerId: 'tracker_example', sentId: wb.row?.sentId ?? null, sentConfirmed: !!wb.row?.sentConfirmed, receivedId: document.handoffId };
+    return bytes;
+  };
+  return wb;
+}
+let xferSendFails = false, xferPushes = 0;
+const xferReports = [];
+function xferHost(wb, { listed = true, settings } = {}) {
+  const host = createFakePluginHost({ pluginId: 'sweep', settings, sdk: {
+    projects: projectSettings(() => xferRepo),
+    threads: { get: async () => makeThreadResponse(), send: async request => { if (xferSendFails) throw new Error('offline'); xferReports.push(request.input[0].text); } },
+    plugins: { list: async () => ({ plugins: listed ? [{ id: 'work-board', enabled: true }] : [] }), callRpc: async request => {
+      if (request.pluginId === 'push-notifications') { xferPushes++; return {}; }
+      assert.equal(request.pluginId, 'work-board');
+      return wb.callRpc(request);
+    } },
+  } });
+  const call = (method, input = {}) => host.harness.behavior.callRpc(method, { projectId, ...input });
+  const configure = (fields = {}) => call('configure', { config: { ...config, script: 'ctl.py', args: ['advance'], snapshots: true, ...fields } });
+  const tick = async fields => { await configure(fields); await host.harness.behavior.runSchedule('sweep'); return call('status'); };
+  return { ...host, call, configure, tick, committed: () => deliveryStore(host.bb.storage.database()).read(projectId)?.committed?.toString() ?? null };
+}
+
+// Admission: a refusal, an error or a missing field stops the run; a grant is recorded once; an absent Work Board admits.
+{
+  const wb = fakeWorkBoard();
+  const host = xferHost(wb);
+  xferReports.length = 0;
+  try {
+    await plugin(host.bb);
+    const claims = () => wb.calls.filter(call => call === 'checks.claim').length;
+    for (const [claim, message] of [['refuse', /Work Board holds/], ['throw', /could not confirm/], ['missing', /could not confirm/]]) {
+      wb.claim = claim;
+      const refused = await host.tick();
+      assert.match(refused.error, message);
+      assert.ok(refused.nextRun >= Date.now() + 50000 && refused.nextRun <= Date.now() + 61000);
+      assert.equal(refused.handoff, undefined);
+      await assert.rejects(host.call('run'), message);
+    }
+    assert.deepEqual([xferPushes, xferReports.length], [0, 0]);
+    wb.claim = 'grant';
+    const granted = await host.tick();
+    assert.deepEqual(granted.handoff, { granted: true });
+    assert.equal(granted.error, null);
+    assert.equal(xferReports.length, 1);
+    const before = claims();
+    await host.tick(); await host.call('run');
+    assert.equal(claims(), before);
+  } finally { await host.harness.lifecycle.dispose(); }
+
+  const absent = xferHost(wb, { listed: false });
+  const quiet = new Error('must not call Work Board');
+  wb.callRpc = async () => { throw quiet; };
+  try {
+    await plugin(absent.bb);
+    const ran = await absent.tick();
+    assert.equal(ran.handoff, undefined);
+    assert.equal(ran.error, null);
+    assert.equal((await absent.call('run')).exitCode, 0);
+  } finally { await absent.harness.lifecycle.dispose(); }
+
+  // The legacy whole-JSON setting can say enabled: true, but an unmarked project still needs the claim.
+  const refusing = fakeWorkBoard(); refusing.claim = 'refuse';
+  const legacy = xferHost(refusing, { settings: { projects: JSON.stringify({ [projectId]: { ...config, script: 'ctl.py', args: ['advance'], snapshots: true } }) } });
+  try {
+    await plugin(legacy.bb);
+    await legacy.harness.behavior.runSchedule('sweep');
+    assert.match((await legacy.call('status')).error, /Work Board holds/);
+  } finally { await legacy.harness.lifecycle.dispose(); }
+}
+
+// Export, the marker, import, settling and the round trip.
+{
+  const wb = fakeWorkBoard();
+  const host = xferHost(wb);
+  const { call } = host;
+  try {
+    await plugin(host.bb);
+    xferReports.length = 0;
+    let s = await host.tick();
+    assert.equal(xferReports.length, 1);
+    assert.equal(host.committed(), '{"n": 1}');
+    // An enabled project, a pending report and a running check each refuse the export and name the way out.
+    await assert.rejects(call('transfer.export'), /Disable Sweep first/);
+    xferSendFails = true;
+    s = await host.tick();
+    assert.match(s.pending, /STATE/);
+    await host.configure({ enabled: false });
+    await assert.rejects(call('transfer.export'), /report is pending/);
+    xferSendFails = false;
+    await host.tick({ args: ['same'] });
+    assert.equal((await call('status')).pending, null);
+    await host.configure({ enabled: false, script: 'slow.py', args: [] });
+    const slow = call('run');
+    await new Promise(resolve => setTimeout(resolve, 300));
+    assert.equal((await call('status')).running, true);
+    await assert.rejects(call('transfer.export'), /running: false/);
+    await slow;
+    await host.configure({ enabled: false });
+
+    const document = await call('transfer.export');
+    assert.deepEqual([document.format, document.from, document.bbProjectId, document.previous], ['bb-runner-state/1', 'sweep', projectId, null]);
+    assert.deepEqual(document.committed, { size: 8, sha256: sha(Buffer.from(host.committed())) });
+    assert.ok(document.lastReport.changes && document.lastReport.manager === first);
+    assert.equal(document.exportedAt, new Date(Date.parse(document.exportedAt)).toISOString());
+    assert.deepEqual(await call('transfer.export'), document);
+    s = await call('status');
+    assert.equal(s.handoff.sent.id, document.handoffId);
+    assert.deepEqual([s.running, s.importing, s.incoming, s.hasState], [false, false, null, true]);
+    // The sender is marked: no run, enable, seed or second export.
+    await assert.rejects(call('run'), /sent to Work Board/);
+    await assert.rejects(host.configure({ enabled: true }), /export-to-sweep/);
+    await assert.rejects(call('config.set', { key: 'enabled', value: true }), /export-to-sweep/);
+    await assert.rejects(call('seed-state', { snapshot: '{}' }), /transfer/);
+    const unmarked = await call('config.set', { key: 'timeoutSeconds', value: 20 });
+    assert.deepEqual(unmarked, { timeoutSeconds: 20 });
+    // Only the current unconfirmed id is served, and a confirmation needs Work Board's receipt.
+    await assert.rejects(call('transfer.chunk', { handoffId: 'handoff_forged', offset: 0 }), /No unconfirmed send/);
+    await assert.rejects(call('transfer.confirm', { handoffId: document.handoffId }), /not recorded the receipt/);
+    await assert.rejects(call('transfer.confirm', { handoffId: 'handoff_forged' }), /No send with that handoff id/);
+    const received = await wb.receive(call, document);
+    assert.equal(received.toString(), host.committed());
+    assert.deepEqual(await call('transfer.confirm', { handoffId: document.handoffId }), { confirmed: true });
+    assert.deepEqual(await call('transfer.confirm', { handoffId: document.handoffId }), { confirmed: true, duplicate: true });
+    await assert.rejects(call('transfer.export'), /already holds/);
+    await assert.rejects(call('transfer.chunk', { handoffId: document.handoffId, offset: 0 }), /No unconfirmed send/);
+    await assert.rejects(call('run'), /sent to Work Board/);
+
+    // Work Board returns the state. Forged ids, wrong lineage and an unconfirmed earlier send are refused before anything is staged.
+    const first1 = document.handoffId;
+    const returned = Buffer.from('{"n":7}');
+    const lastReport = { fingerprint: reportContents(0, 'x').fingerprint, manager: first, at: 1, changes: reportContents(0, 'STATE input=7\nWAIT EXA-3: blocker EXA-9\nsweep: 1 threads, 1 cards checked, 0 actions\n').changes };
+    const failureFingerprint = reportContents(2, 'ERROR boom').fingerprint;
+    wb.send('handoff_a', first1, returned, { lastReport, lastFailure: { fingerprint: failureFingerprint, manager: first }, reportedWorktrees: ['/example/tree'], lastMeasuredWorktree: '/example/tree' });
+    await assert.rejects(call('transfer.import', { handoffId: 'handoff_forged' }), /not sending that handoff/);
+    assert.deepEqual(await call('transfer.preflight', { previous: first1 }), { accept: true, reason: null });
+    assert.match((await call('transfer.preflight', { previous: 'handoff_old' })).reason, /Newer state is held here/);
+    wb.document = { ...wb.document, previous: 'handoff_old' };
+    await assert.rejects(call('transfer.import', { handoffId: 'handoff_a' }), /Newer state is held here/);
+    wb.document = { ...wb.document, previous: first1, bbProjectId: 'proj_other' };
+    await assert.rejects(call('transfer.import', { handoffId: 'handoff_a' }), /does not belong/);
+    wb.document = { ...wb.document, bbProjectId: projectId, from: 'sweep' };
+    await assert.rejects(call('transfer.import', { handoffId: 'handoff_a' }), /does not belong/);
+    wb.document = { ...wb.document, from: 'work-board', committed: { size: returned.length, sha256: sha(Buffer.from('other')) } };
+    await assert.rejects(call('transfer.import', { handoffId: 'handoff_a' }), /do not match/);
+    assert.equal((await call('status')).incoming, null);
+    wb.send('handoff_a', first1, returned, { lastReport, lastFailure: { fingerprint: failureFingerprint, manager: first }, reportedWorktrees: ['/example/tree'], lastMeasuredWorktree: '/example/tree' });
+    assert.deepEqual(await call('transfer.import', { handoffId: 'handoff_a' }), { staged: true });
+    assert.deepEqual(await call('transfer.import', { handoffId: 'handoff_a' }), { staged: true, duplicate: true });
+    s = await call('status');
+    assert.equal(s.incoming, 'handoff_a');
+    assert.equal(host.committed(), '{"n": 2}');
+    // Staged: frozen, and not applied while Work Board has not confirmed.
+    await assert.rejects(call('run'), /sent to Work Board/);
+    await assert.rejects(host.configure({ enabled: true }), /export-to-sweep/);
+    await assert.rejects(call('transfer.export'), /already staged/);
+    assert.equal((await call('transfer.preflight', { previous: first1 })).accept, false);
+    assert.deepEqual(await call('transfer.commit', { handoffId: 'handoff_a' }), { settled: 'waiting' });
+    assert.equal((await call('status')).incoming, 'handoff_a');
+    // Work Board confirms; two settlers overlap and the checkpoint is applied exactly once.
+    wb.confirmSend();
+    const settled = await Promise.all([call('transfer.commit', { handoffId: 'handoff_a' }), call('transfer.commit', { handoffId: 'handoff_a' })]);
+    assert.deepEqual(settled.map(result => result.settled).sort(), ['applied', 'none']);
+    s = await call('status');
+    assert.deepEqual(s.handoff, { granted: true, received: 'handoff_a' });
+    assert.deepEqual([s.incoming, s.enabled, s.config.enabled, s.reportedWorktrees, s.lastMeasuredWorktree, s.delivered, s.pendingWorktrees], [null, undefined, false, ['/example/tree'], '/example/tree', undefined, undefined]);
+    assert.equal(host.committed(), returned.toString());
+    // A late reply after the next tick advanced the state is a no-op, and a duplicate import writes nothing.
+    assert.deepEqual(await call('transfer.commit', { handoffId: 'handoff_a' }), { settled: 'none' });
+    assert.deepEqual(await call('transfer.import', { handoffId: 'handoff_a' }), { staged: false, duplicate: true });
+
+    // After the import: an unchanged failure sends nothing, an unchanged Waiting list sends nothing, a cleared one says so.
+    const reportsBefore = xferReports.length;
+    await host.tick({ script: 'fail.py', args: [], snapshots: false });
+    assert.equal(xferReports.length, reportsBefore);
+    await host.tick({ args: ['same', '--waits', 'EXA-3'] });
+    assert.equal(xferReports.length, reportsBefore);
+    assert.equal(host.committed(), returned.toString());
+    await host.tick({ args: ['same'] });
+    assert.equal(xferReports.length, reportsBefore + 1);
+    assert.match(xferReports.at(-1), /Waiting list is clear/);
+
+    // The next round: advance, export with previous = the received id; a replayed older handoff is refused, an aborted one is discarded.
+    await host.tick({ args: ['advance'] });
+    await host.configure({ enabled: false });
+    const second = await call('transfer.export');
+    assert.equal(second.previous, 'handoff_a');
+    assert.notEqual(second.handoffId, first1);
+    assert.equal(second.committed.size, Buffer.byteLength(host.committed()));
+    await wb.receive(call, second);
+    await call('transfer.confirm', { handoffId: second.handoffId });
+    wb.send('handoff_old', first1, returned);
+    await assert.rejects(call('transfer.import', { handoffId: 'handoff_old' }), /Newer state is held here/);
+    wb.send('handoff_b', second.handoffId, Buffer.from('{"n":20}'));
+    assert.deepEqual(await call('transfer.import', { handoffId: 'handoff_b' }), { staged: true });
+    wb.row = { ...wb.row, sentId: null, sentConfirmed: false };
+    assert.deepEqual(await call('transfer.commit', { handoffId: 'handoff_b' }), { settled: 'discarded' });
+    s = await call('status');
+    assert.deepEqual([s.incoming, s.handoff.sent.id], [null, second.handoffId]);
+    assert.notEqual(host.committed(), '{"n":20}');
+
+    // Settling on its own: the commit call is lost; the next run applies the staged state once Work Board shows the confirmation.
+    wb.send('handoff_c', second.handoffId, Buffer.from('{"n":30}'));
+    await call('transfer.import', { handoffId: 'handoff_c' });
+    wb.confirmSend();
+    assert.equal((await call('run')).exitCode, 0);
+    s = await call('status');
+    assert.deepEqual([s.incoming, s.handoff.received, host.committed()], [null, 'handoff_c', '{"n":30}']);
+  } finally { await host.harness.lifecycle.dispose(); }
+}
+
+// Cancel and abort: an unconfirmed send is cleared only on Work Board's positive answer.
+{
+  const wb = fakeWorkBoard();
+  const host = xferHost(wb);
+  try {
+    await plugin(host.bb);
+    await host.configure({ enabled: false });
+    const document = await host.call('transfer.export');
+    assert.equal(document.committed, null);
+    wb.transferring = true;
+    await assert.rejects(host.call('transfer.cancel'), /transferring or has received/);
+    wb.transferring = false;
+    wb.row = { owner: 'work-board', trackerId: 'tracker_example', sentId: null, sentConfirmed: false, receivedId: document.handoffId };
+    await assert.rejects(host.call('transfer.cancel'), /transferring or has received/);
+    wb.row = null;
+    assert.deepEqual(await host.call('transfer.cancel'), { cancelled: true });
+    assert.deepEqual(await host.call('transfer.cancel'), { cancelled: false });
+    assert.equal((await host.call('status')).handoff?.sent, undefined);
+    assert.notEqual((await host.call('transfer.export')).handoffId, document.handoffId);
+  } finally { await host.harness.lifecycle.dispose(); }
+}
+
+// Byte-exact chunked transfer, in both directions: 5 MB of whitespace and of non-ASCII text, and no bytes at all.
+for (const bytes of [Buffer.from(' \n\t\r'.repeat(1310720)), Buffer.from('Пример «значение» ✓ '.repeat(262144 + 1)).subarray(0, 5 * 1048576), null]) {
+  const wb = fakeWorkBoard();
+  const out = xferHost(wb);
+  try {
+    await plugin(out.bb);
+    await out.configure({ enabled: false });
+    if (bytes) deliveryStore(out.bb.storage.database()).replace(projectId, bytes);
+    const document = await out.call('transfer.export');
+    assert.deepEqual(document.committed, bytes ? { size: bytes.length, sha256: sha(bytes) } : null);
+    if (bytes) {
+      const parts = [];
+      for (let offset = 0, end = false; !end; offset += parts.at(-1).length) {
+        const chunk = await out.call('transfer.chunk', { handoffId: document.handoffId, offset });
+        parts.push(Buffer.from(chunk.data, 'base64')); end = chunk.end;
+        assert.ok(parts.at(-1).length <= 262144);
+      }
+      assert.equal(parts.length, Math.ceil(bytes.length / 262144));
+      assert.ok(Buffer.concat(parts).equals(bytes));
+    }
+  } finally { await out.harness.lifecycle.dispose(); }
+  const inbound = xferHost(wb);
+  try {
+    await plugin(inbound.bb);
+    await inbound.configure({ enabled: false });
+    wb.send('handoff_big', null, bytes);
+    assert.deepEqual(await inbound.call('transfer.import', { handoffId: 'handoff_big' }), { staged: true });
+    // A staged handoff with no send of its own: no run, enable or seed until Work Board confirms it.
+    await assert.rejects(inbound.call('run'), /pending for this project/);
+    await assert.rejects(inbound.configure({ enabled: true }), /pending for this project/);
+    await assert.rejects(inbound.call('seed-state', { snapshot: '{}' }), /transfer/);
+    wb.confirmSend();
+    assert.deepEqual(await inbound.call('transfer.commit', { handoffId: 'handoff_big' }), { settled: 'applied' });
+    const stored = deliveryStore(inbound.bb.storage.database()).read(projectId)?.committed ?? null;
+    assert.ok(bytes ? stored?.equals(bytes) : stored === null);
+  } finally { await inbound.harness.lifecycle.dispose(); }
+}
+// The legacy whole-JSON setting cannot get a marked project past admission, and a scheduled tick writes the refusal without a push.
+{
+  const wb = fakeWorkBoard();
+  const legacy = xferHost(wb, { settings: { projects: JSON.stringify({ [projectId]: { ...config, script: 'ctl.py', args: ['advance'], snapshots: true } }) } });
+  try {
+    await plugin(legacy.bb);
+    legacy.bb.storage.database().exec('CREATE TABLE IF NOT EXISTS status (id TEXT PRIMARY KEY, value TEXT NOT NULL)');
+    legacy.bb.storage.database().prepare('INSERT INTO status VALUES (?, ?)').run(projectId, JSON.stringify({ handoff: { granted: true, sent: { id: 'handoff_example', at: 1, confirmed: true } } }));
+    const pushes = xferPushes, reports = xferReports.length;
+    await legacy.harness.behavior.runSchedule('sweep');
+    const refused = await legacy.call('status');
+    assert.match(refused.error, /sent to Work Board/);
+    assert.deepEqual([xferPushes, xferReports.length, wb.calls], [pushes, reports, []]);
+  } finally { await legacy.harness.lifecycle.dispose(); }
+}
+
+// Export: the paths of an accepted report are reported before the export, and a legacy baseline is normalized or crosses without changes.
+{
+  const wb = fakeWorkBoard();
+  const host = xferHost(wb);
+  try {
+    await plugin(host.bb);
+    await host.tick();
+    const db = host.bb.storage.database();
+    const edit = change => { const state = JSON.parse(db.prepare('SELECT value FROM status WHERE id = ?').get(projectId).value); change(state); db.prepare('UPDATE status SET value = ? WHERE id = ?').run(JSON.stringify(state), projectId); return state; };
+    const original = edit(() => {}).lastReport.changes;
+    assert.ok(original);
+    edit(state => { state.pendingWorktrees = ['/example/tree']; });
+    deliveryStore(db).stage(projectId, '[sweep] exit 1 tick=proj_test:1\nACTION archived-worktree thr_example: "/example/tree" (4 KiB, clean)\n', null);
+    await host.tick({ args: ['same'] });
+    await host.configure({ enabled: false });
+    edit(state => { delete state.lastReport.changes; });
+    const normalized = await host.call('transfer.export');
+    assert.deepEqual(normalized.reportedWorktrees, ['/example/tree']);
+    assert.deepEqual(normalized.lastReport.changes, reportContents(1, 'ACTION archived-worktree thr_example: "/example/tree" (4 KiB, clean)\n').changes);
+  } finally { await host.harness.lifecycle.dispose(); }
+
+  const legacy = xferHost(wb);
+  try {
+    await plugin(legacy.bb);
+    await legacy.tick();
+    const db = legacy.bb.storage.database();
+    const state = JSON.parse(db.prepare('SELECT value FROM status WHERE id = ?').get(projectId).value);
+    delete state.lastReport.changes; delete state.delivered;
+    db.prepare('UPDATE status SET value = ? WHERE id = ?').run(JSON.stringify(state), projectId);
+    await legacy.configure({ enabled: false });
+    const document = await legacy.call('transfer.export');
+    assert.equal(document.lastReport.fingerprint, state.lastReport.fingerprint);
+    assert.equal('changes' in document.lastReport, false);
+    // An unknown baseline: the first scheduled run on the receiver resends once, then the report is known again.
+    const receiver = xferHost(wb);
+    try {
+      await plugin(receiver.bb);
+      await receiver.configure({ enabled: false });
+      const bytes = Buffer.from(legacy.committed());
+      wb.send('handoff_legacy', null, bytes, { lastReport: document.lastReport });
+      await receiver.call('transfer.import', { handoffId: 'handoff_legacy' });
+      wb.confirmSend();
+      await receiver.call('transfer.commit', { handoffId: 'handoff_legacy' });
+      const before = xferReports.length;
+      await receiver.tick({ args: ['same', '--waits', 'EXA-3'] });
+      assert.equal(xferReports.length, before + 1);
+      await receiver.tick({ args: ['same', '--waits', 'EXA-3'] });
+      assert.equal(xferReports.length, before + 1);
+    } finally { await receiver.harness.lifecycle.dispose(); }
+  } finally { await legacy.harness.lifecycle.dispose(); }
+}
+await rm(xferRepo, { recursive: true, force: true });
+console.log('Sweep transfer checks passed');

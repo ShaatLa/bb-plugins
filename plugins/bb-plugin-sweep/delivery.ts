@@ -19,6 +19,12 @@ export function deliveryStore(db: Database.Database) {
         WHERE delivery.committed IS NULL AND delivery.pending_message IS NULL`).run(project, snapshot);
       if (!result.changes) throw new Error("Committed state or a pending report already exists. Skip the import and use the existing state. Check bb sweep status for a pending report.");
     },
+    /** Replaces the committed bytes (or clears them) for a transfer; refused while a report is pending. */
+    replace(project: string, snapshot: Buffer | null) {
+      const result = db.prepare(`INSERT INTO delivery (project, committed) VALUES (?, ?)
+        ON CONFLICT(project) DO UPDATE SET committed = excluded.committed WHERE delivery.pending_message IS NULL`).run(project, snapshot);
+      if (!result.changes) throw new Error("A report is pending. Let it deliver before replacing committed state.");
+    },
     acknowledge(project: string) {
       const result = db.prepare(`UPDATE delivery SET committed = COALESCE(pending_snapshot, committed), pending_message = NULL, pending_snapshot = NULL
         WHERE project = ? AND pending_message IS NOT NULL`).run(project);

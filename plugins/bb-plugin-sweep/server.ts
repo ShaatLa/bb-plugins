@@ -2,7 +2,7 @@ import { defineRpcContract, type BbPluginApi } from '@get-bb/plugin-sdk';
 import { z } from 'zod';
 import { setTimeout as delay } from 'node:timers/promises';
 import { dirname, isAbsolute } from 'node:path';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { attentionObservations, attentionStore, type ShadowRun } from './attention.ts';
 import { scanArchivedWorktrees } from './archived-worktrees.ts';
 import { deliveryStore } from './delivery.ts';
@@ -12,6 +12,7 @@ import { formatNotification } from './notification.ts';
 import { managerTag, overviewContract, projectId, projectInput as input, projectsTag, statsInput, statsTag } from './overview-contract.ts';
 import { reportContents } from './reports.ts';
 import { CheckoutRefreshError, execute } from './runner.ts';
+import { chunkOutput, incomingStore, ownershipOutput, pullBytes, readChunk, sha256, transferDocument, type TransferDocument } from './transfer.ts';
 
 const repositoryUrl = z.string().min(1).max(2000).refine(s => !s.startsWith('-'));
 const bbCliSchema = z.string().refine(path => path === '' || isAbsolute(path), 'Enter the absolute path to bb (for example /opt/bin/bb), or clear bbCli to use the server environment.');
@@ -20,6 +21,8 @@ export type Config = z.infer<typeof configSchema>;
 const projectDraft = configSchema.partial().refine(config => !config.enabled || configSchema.safeParse(config).success, 'Complete the checkout settings before enabling Sweep');
 const projectsSchema = z.record(projectId, projectDraft);
 const configKey = configSchema.keyof();
+const transferInput = input;
+const handoffId = z.string().min(1).max(200);
 const configGetInput = input.extend({ key: configKey.optional() });
 const configSetInput = input.extend({ key: configKey, value: z.union([z.string(), z.number(), z.boolean(), z.array(z.string())]) });
 export const contract = defineRpcContract({
@@ -31,11 +34,19 @@ export const contract = defineRpcContract({
   'config.get': { experimental_description: 'Read project configuration or only the requested key, for example {"projectId":"proj_example","key":"manager"}.', input: configGetInput, output: z.unknown() },
   'config.set': { experimental_description: 'Set and return one key, for example {"projectId":"proj_example","key":"manager","value":"thr_example"}. A new manager receives pending reports too.', input: configSetInput, output: z.unknown() },
   'seed-state': { experimental_description: 'Import committed JSON once for a disabled project with no committed state or pending report. For example {"projectId":"proj_example","snapshot":"{}"}.', input: z.object({ projectId, snapshot: z.string().min(1).max(1000000).refine(s => { try { JSON.parse(s); return true; } catch { return false; } }, 'Pass the contents of the committed JSON file as a string, for example "{}".') }).strict(), output: z.object({ seeded: z.literal(true) }) },
-  status: { experimental_description: 'Read the last scheduled result and any pending report for one project.', input, output: z.unknown() },
+  status: { experimental_description: 'Read the last scheduled result and any pending report for one project, with running, importing, incoming, hasState and the transfer handoff.', input, output: z.unknown() },
+  'transfer.export': { experimental_description: 'Serves the Work Board transfer commands: marks this project as sent to Work Board and returns the transfer document. Needs a disabled, idle project with no pending report; repeats return the same document.', input: transferInput, output: transferDocument },
+  'transfer.chunk': { experimental_description: 'Serves the Work Board transfer commands: one chunk (at most 256 KB, base64) of the committed bytes of the current unconfirmed send.', input: transferInput.extend({ handoffId, offset: z.number().int().min(0) }), output: chunkOutput },
+  'transfer.confirm': { experimental_description: 'Serves the Work Board transfer commands: records that Work Board received the send. Refused unless Work Board shows the receipt.', input: transferInput.extend({ handoffId }), output: z.unknown() },
+  'transfer.preflight': { experimental_description: 'Serves the Work Board transfer commands: read-only answer whether this project would accept a handoff whose previous id is given.', input: transferInput.extend({ previous: z.string().min(1).nullable() }), output: z.object({ accept: z.boolean(), reason: z.string().nullable() }) },
+  'transfer.import': { experimental_description: 'Serves the Work Board transfer commands: pulls the handoff from Work Board and stages it. It is applied only once Work Board shows Sweep as the owner.', input: transferInput.extend({ handoffId }), output: z.unknown() },
+  'transfer.commit': { experimental_description: 'Serves the Work Board transfer commands: applies the staged handoff once Work Board confirms it, or discards it when the send was aborted.', input: transferInput.extend({ handoffId }), output: z.unknown() },
+  'transfer.cancel': { experimental_description: 'Serves the Work Board transfer commands: clears an unconfirmed send when Work Board shows it never received it.', input: transferInput, output: z.unknown() },
   run: { experimental_description: 'Refresh the checkout and execute the configured script. Sweep does not deliver or acknowledge the result. The script can have side effects.', input, output: z.unknown() },
 });
 type ReportReceipt = { fingerprint: string; manager?: string };
-type State = { tickId?: string; deliveredTickId?: string; deliveredTo?: string; deliveredNoticeId?: string; fallbackReason?: string; lastRun?: number; exitCode?: number | null; delivered?: string; deliveredAt?: number; error?: string | null; managerError?: string | null; alertError?: string | null; nextRun?: number; refreshFailures?: number; refreshRetryAt?: number; attentionShadow?: ShadowRun; reportedWorktrees?: string[]; pendingWorktrees?: string[]; lastMeasuredWorktree?: string; lastFailure?: ReportReceipt; lastReport?: ReportReceipt & { at: number; changes?: ReturnType<typeof reportContents>['changes'] } };
+type Handoff = { granted?: true; sent?: { id: string; at: number; confirmed?: true }; received?: string };
+type State = { handoff?: Handoff; tickId?: string; deliveredTickId?: string; deliveredTo?: string; deliveredNoticeId?: string; fallbackReason?: string; lastRun?: number; exitCode?: number | null; delivered?: string; deliveredAt?: number; error?: string | null; managerError?: string | null; alertError?: string | null; nextRun?: number; refreshFailures?: number; refreshRetryAt?: number; attentionShadow?: ShadowRun; reportedWorktrees?: string[]; pendingWorktrees?: string[]; lastMeasuredWorktree?: string; lastFailure?: ReportReceipt; lastReport?: ReportReceipt & { at: number; changes?: ReturnType<typeof reportContents>['changes'] } };
 const noticeReceipt = z.object({ id: z.string().min(1), created: z.boolean() });
 const maxRefreshBackoffMs = 3600000;
 const reportHeader = /^\[sweep\] (alive|exit (\d+))(?: tick=(\S+))?\n/;
@@ -66,10 +77,82 @@ export default async function plugin(bb: BbPluginApi) {
   db.exec('CREATE TABLE IF NOT EXISTS status (id TEXT PRIMARY KEY, value TEXT NOT NULL)');
   const state = (id: string): State => JSON.parse((db.prepare('SELECT value FROM status WHERE id = ?').get(id) as { value: string } | undefined)?.value ?? '{}');
   const save = (id: string, value: State) => db.prepare('INSERT INTO status VALUES (?, ?) ON CONFLICT(id) DO UPDATE SET value = excluded.value').run(id, JSON.stringify(value));
-  const status = async (id: string) => { const config = (await configs())[id] ?? null, current = state(id); return { projectId: id, config, ...current, nextRun: config?.enabled ? current.nextRun ?? Date.now() : null, pending: deliveries.read(id)?.pending_message ?? null }; };
+  const status = async (id: string) => { const config = (await configs())[id] ?? null, current = state(id); return { projectId: id, config, ...current, nextRun: config?.enabled ? current.nextRun ?? Date.now() : null, pending: deliveries.read(id)?.pending_message ?? null, running: busy.has(id), importing: importing.has(id), incoming: incoming.read(id)?.handoff_id ?? null, hasState: hasState(id) }; };
   const controller = new AbortController(); bb.onDispose(() => controller.abort());
   const attention = attentionStore(db, bb, controller.signal);
   const busy = new Set<string>();
+  const importing = new Set<string>(), incoming = incomingStore(db);
+  const workBoard = <T>(method: string, input: Record<string, string | number | null>, outputSchema: z.ZodType<T>, ms = 3000) => bb.sdk.plugins.callRpc({ pluginId: 'work-board', method, input, outputSchema, signal: AbortSignal.any([controller.signal, AbortSignal.timeout(ms)]) });
+  const ownership = (id: string) => workBoard('checks.ownership', { bbProjectId: id }, ownershipOutput);
+  const grant = z.object({ granted: z.boolean(), reason: z.string().optional() });
+  // Volatile keys do not make a project hold runner state: a settings edit or a refused tick writes them.
+  const hasState = (id: string) => {
+    const row = deliveries.read(id);
+    if (row?.committed || row?.pending_message) return true;
+    const { nextRun: _n, error: _e, alertError: _a, handoff: _h, refreshFailures: _f, refreshRetryAt: _r, ...rest } = state(id);
+    return Object.keys(rest).length > 0;
+  };
+  /** Why a project cannot take part in a transfer right now, or null: the sender and the receiver need it disabled, idle and drained. */
+  const notIdle = (id: string, config: Config | undefined) =>
+    !config ? 'Set branch and script for this project first.'
+    : config.enabled ? `Disable Sweep first: bb sweep config set enabled false --project ${id}.`
+    : busy.has(id) ? 'A check is running. Wait until bb sweep status shows running: false, then retry.'
+    : deliveries.read(id)?.pending_message ? 'A report is pending. Let it deliver (enable Sweep until bb sweep status shows pending: null, then disable it), then retry.'
+    : incoming.read(id) ? 'A handoff from Work Board is already staged here. Rerun bb work-board checks export-to-sweep to finish it.'
+    : null;
+  const sentNotice = 'This project\'s runner state was sent to Work Board. Run bb work-board checks export-to-sweep --project <KEY> to bring it back.';
+  /** Whether this project may run now. Returns the refusal, or null; an inconclusive answer from Work Board refuses. */
+  async function admit(id: string): Promise<string | null> {
+    const handoff = state(id).handoff;
+    if (handoff?.sent) return sentNotice;
+    if (importing.has(id) || incoming.read(id)) return 'A handoff from Work Board is pending for this project. Rerun bb work-board checks export-to-sweep to finish it.';
+    if (handoff?.granted) return null;
+    try {
+      const { plugins } = await bb.sdk.plugins.list({ signal: controller.signal });
+      if (!plugins.some(plugin => plugin.id === 'work-board')) return null;
+      const claim = await workBoard('checks.claim', { bbProjectId: id, claimant: 'sweep' }, grant);
+      if (!claim.granted) return `Work Board holds this project's repository checks (${claim.reason ?? 'no reason given'}). Run bb work-board checks export-to-sweep --project <KEY> to hand them to Sweep.`;
+      const next = state(id);
+      next.handoff = { ...next.handoff, granted: true };
+      save(id, next);
+      return null;
+    } catch (error) {
+      if (controller.signal.aborted) throw error;
+      return `Work Board could not confirm that Sweep may run (${String(error)}). Sweep retries in a minute.`;
+    }
+  }
+  // Legacy reports without baselines get them from the delivered text, and an old failure moves into lastFailure.
+  function normalizeBaselines(current: State) {
+    if (!current.lastReport || current.lastReport.changes || !current.delivered) return;
+    const previous = reportHeader.exec(current.delivered);
+    if (previous?.[2] === undefined) return;
+    const code = Number(previous[2]);
+    if (code >= 2) {
+      const { fingerprint, manager } = current.lastReport;
+      current.lastFailure ??= { fingerprint, manager };
+      current.lastReport = undefined;
+    } else {
+      current.lastReport.changes = reportContents(code, current.delivered.slice(previous[0].length)).changes;
+    }
+  }
+  function buildDocument(id: string, current: State, handoffId: string, at: number): TransferDocument {
+    const committed = deliveries.read(id)?.committed ?? null;
+    // JSON round trip: an absent baseline is a missing key, never an undefined one.
+    return transferDocument.parse(JSON.parse(JSON.stringify({
+      format: 'bb-runner-state/1', from: 'sweep', bbProjectId: id, handoffId, previous: current.handoff?.received ?? null, exportedAt: new Date(at).toISOString(),
+      committed: committed ? { size: committed.length, sha256: sha256(committed) } : null,
+      lastReport: current.lastReport, lastFailure: current.lastFailure, reportedWorktrees: current.reportedWorktrees ?? [], lastMeasuredWorktree: current.lastMeasuredWorktree,
+    })));
+  }
+  type Verdict = { accept: true; duplicate?: true } | { accept: false; reason: string };
+  /** The receiver rule, the same on both sides: duplicate, returning owner, empty initial destination, or refusal. */
+  function judge(id: string, previous: string | null, handoffId: string | null): Verdict {
+    const handoff = state(id).handoff ?? {};
+    if (handoffId !== null && handoff.received === handoffId) return { accept: true, duplicate: true };
+    if (handoff.sent && previous === handoff.sent.id) return handoff.sent.confirmed ? { accept: true } : { accept: false, reason: 'The earlier send to Work Board is not confirmed yet. Rerun bb work-board checks import-from-sweep to confirm it, then retry.' };
+    if (!handoff.sent && !handoff.received && !hasState(id)) return { accept: true };
+    return { accept: false, reason: 'Newer state is held here.' };
+  }
   async function managerFor(manager: string | undefined) {
     if (!manager) throw new Error('Manager is unset. Set the manager field to an available thread ID.');
     const thread = await bb.sdk.threads.get({ threadId: manager });
@@ -143,9 +226,12 @@ export default async function plugin(bb: BbPluginApi) {
     })();
   }
   async function tick(id: string, manual = false) {
+    // A staged handoff is settled before the run is reserved; busy is checked again after that await.
+    const staged = incoming.read(id);
+    if (staged) await settleIncoming(id, staged.handoff_id).catch(error => { if (controller.signal.aborted) throw error; bb.log.warn(`Sweep could not settle the staged handoff for ${id}: ${String(error)}`); });
     if (busy.has(id)) throw new Error('Sweep is already running for this project. Wait for the active check to finish and retry.');
     busy.add(id);
-    const current = state(id);
+    let current = state(id);
     let config: Config | undefined;
     let historyChanged = false;
     let shadowTick: { id: string; mode: ShadowRun } | undefined;
@@ -153,23 +239,18 @@ export default async function plugin(bb: BbPluginApi) {
     let observationRecorded = false;
     try {
       config = (await configs())[id]; if (!config) throw new Error('Set branch and script with bb sweep config set <key> <value> --project <id> before running Sweep.');
+      const refusal = await admit(id);
+      if (refusal) {
+        if (manual) throw new Error(refusal);
+        current = state(id); current.error = refusal; current.nextRun = Date.now() + 60000; save(id, current);
+        return await status(id);
+      }
+      current = state(id);
       const now = Date.now(), interval = config.intervalMinutes * 60000;
       const timestamp = Math.max(now, (Number(current.tickId?.split(':')[1]) || 0) + 1);
       const tickId = `${id}:${timestamp}`;
       if (!manual) {
-        if (current.lastReport && !current.lastReport.changes && current.delivered) {
-          const previous = reportHeader.exec(current.delivered);
-          if (previous?.[2] !== undefined) {
-            const code = Number(previous[2]);
-            if (code >= 2) {
-              const { fingerprint, manager } = current.lastReport;
-              current.lastFailure ??= { fingerprint, manager };
-              current.lastReport = undefined;
-            } else {
-              current.lastReport.changes = reportContents(code, current.delivered.slice(previous[0].length)).changes;
-            }
-          }
-        }
+        normalizeBaselines(current);
         current.tickId = tickId;
         current.lastRun = now;
         current.nextRun = now + interval;
@@ -294,6 +375,13 @@ export default async function plugin(bb: BbPluginApi) {
       const projects = await drafts();
       const previous = projects[id];
       const config = edit(previous);
+      if (config.enabled && !previous?.enabled) {
+        // Enabling settles a staged handoff first, and is refused while the project is marked or a handoff is pending.
+        const staged = incoming.read(id);
+        if (staged) await settleLocked(id, staged.handoff_id).catch(() => 'waiting');
+        if (state(id).handoff?.sent) throw new Error(sentNotice);
+        if (importing.has(id) || incoming.read(id)) throw new Error('A handoff from Work Board is pending for this project. Rerun bb work-board checks export-to-sweep to finish it.');
+      }
       projects[id] = config;
       await settings.experimental_set({ projects: JSON.stringify(projects) });
       if (!busy.has(id)) {
@@ -333,10 +421,118 @@ export default async function plugin(bb: BbPluginApi) {
     if (!config) throw new Error('Set branch and script before importing committed state.');
     if (config.enabled) throw new Error(`Disable Sweep first with bb sweep config set enabled false --project ${projectId}.`);
     if (busy.has(projectId)) throw new Error('Wait for the active Sweep check to finish before importing committed state.');
+    if (state(projectId).handoff?.sent || importing.has(projectId) || incoming.read(projectId)) throw new Error('This project is part of a transfer to or from Work Board. Seeding is refused until the transfer is settled.');
     deliveries.seed(projectId, Buffer.from(snapshot));
     return { seeded: true as const };
   });
+  /** Applies or discards the staged handoff when Work Board's row decides it. Runs under serializeWrite only. */
+  async function settleLocked(id: string, handoffId: string): Promise<'applied' | 'discarded' | 'waiting' | 'none'> {
+    if (incoming.read(id)?.handoff_id !== handoffId) return 'none';
+    let own: Awaited<ReturnType<typeof ownership>>;
+    try { own = await ownership(id); } catch (error) { if (controller.signal.aborted) throw error; return 'waiting'; }
+    const config = (await configs())[id];
+    // No await from here to the transaction: the row, the project and the checks are read together.
+    const row = incoming.read(id);
+    if (!row || row.handoff_id !== handoffId) return 'none';
+    if (!config || config.enabled || busy.has(id) || deliveries.read(id)?.pending_message) return 'waiting';
+    const confirmed = own.owner === 'sweep' && own.sentId === handoffId && own.sentConfirmed;
+    if (!confirmed && own.sentId === handoffId) return 'waiting';
+    const document = transferDocument.parse(JSON.parse(row.document));
+    let result: 'applied' | 'discarded' | 'none' = 'none';
+    db.transaction(() => {
+      if (!incoming.take(id, handoffId)) return;
+      if (!confirmed) { result = 'discarded'; return; }
+      deliveries.replace(id, row.bytes);
+      const next = state(id);
+      next.lastReport = document.lastReport; next.lastFailure = document.lastFailure;
+      next.reportedWorktrees = document.reportedWorktrees; next.lastMeasuredWorktree = document.lastMeasuredWorktree;
+      next.pendingWorktrees = undefined;
+      next.delivered = undefined; next.deliveredAt = undefined; next.deliveredTickId = undefined; next.deliveredTo = undefined; next.deliveredNoticeId = undefined;
+      next.handoff = { granted: true, received: handoffId };
+      next.nextRun = Date.now();
+      save(id, next);
+      result = 'applied';
+    })();
+    return result;
+  }
+  const settleIncoming = (id: string, handoffId: string) => serializeWrite(() => settleLocked(id, handoffId));
+  const transferExport = ({ projectId: id }: { projectId: string }) => serializeWrite(async () => {
+    const config = (await configs())[id];
+    // Everything below is synchronous: the checks and the write that marks the sender are one section.
+    const refusal = notIdle(id, config) ?? (importing.has(id) ? 'An import is in progress for this project.' : null);
+    if (refusal) throw new Error(refusal);
+    const current = state(id);
+    const sent = current.handoff?.sent;
+    if (sent?.confirmed) throw new Error('Work Board already holds this project\'s state. Run bb work-board checks export-to-sweep --project <KEY> to bring it back.');
+    if (sent) return buildDocument(id, current, sent.id, sent.at);
+    normalizeBaselines(current);
+    const handoffId = randomUUID(), at = Date.now();
+    const document = buildDocument(id, current, handoffId, at);
+    current.handoff = { ...current.handoff, sent: { id: handoffId, at } };
+    save(id, current);
+    return document;
+  });
+  const transferChunk = ({ projectId: id, handoffId, offset }: { projectId: string; handoffId: string; offset: number }) => {
+    const sent = state(id).handoff?.sent;
+    if (!sent || sent.confirmed || sent.id !== handoffId) throw new Error('No unconfirmed send with that handoff id.');
+    return readChunk(deliveries.read(id)?.committed ?? Buffer.alloc(0), offset);
+  };
+  const transferConfirm = ({ projectId: id, handoffId }: { projectId: string; handoffId: string }) => serializeWrite(async () => {
+    const sent = state(id).handoff?.sent;
+    if (sent?.id !== handoffId) throw new Error('No send with that handoff id is recorded here.');
+    if (sent.confirmed) return { confirmed: true as const, duplicate: true as const };
+    const own = await ownership(id);
+    if (own.owner !== 'work-board' || own.receivedId !== handoffId) throw new Error('Work Board has not recorded the receipt of that handoff.');
+    const current = state(id);
+    if (current.handoff?.sent?.id !== handoffId) throw new Error('The send changed while the receipt was checked. Retry.');
+    current.handoff = { ...current.handoff, sent: { ...sent, confirmed: true } };
+    save(id, current);
+    return { confirmed: true as const };
+  });
+  const transferPreflight = async ({ projectId: id, previous }: { projectId: string; previous: string | null }) => {
+    const refusal = notIdle(id, (await configs())[id]) ?? (importing.has(id) ? 'An import is in progress for this project.' : null);
+    if (refusal) return { accept: false, reason: refusal };
+    const verdict = judge(id, previous, null);
+    return { accept: verdict.accept, reason: verdict.accept ? null : verdict.reason };
+  };
+  const transferImport = ({ projectId: id, handoffId }: { projectId: string; handoffId: string }) => serializeWrite(async () => {
+    const config = (await configs())[id];
+    if (incoming.read(id)?.handoff_id === handoffId) return { staged: true as const, duplicate: true as const };
+    if (state(id).handoff?.received === handoffId) return { staged: false as const, duplicate: true as const };
+    const refusal = notIdle(id, config);
+    if (refusal) throw new Error(refusal);
+    importing.add(id);
+    try {
+      const own = await ownership(id);
+      if (own.sentId !== handoffId || own.sentConfirmed) throw new Error('Work Board is not sending that handoff.');
+      const document = await workBoard('checks.transferDocument', { bbProjectId: id, handoffId }, transferDocument);
+      if (document.from !== 'work-board' || document.bbProjectId !== id || document.handoffId !== handoffId) throw new Error('The handoff document does not belong to this project and sender.');
+      const bytes = await pullBytes(document, offset => workBoard('checks.transferChunk', { bbProjectId: id, handoffId, offset }, chunkOutput, 15000));
+      const verdict = judge(id, document.previous, handoffId);
+      if (!verdict.accept) throw new Error(verdict.reason);
+      const latest = (await configs())[id];
+      const again = judge(id, document.previous, handoffId);
+      const changed = notIdle(id, latest) ?? (again.accept ? null : again.reason);
+      if (changed) throw new Error(changed);
+      incoming.put(id, handoffId, document, bytes);
+      return { staged: true as const };
+    } finally { importing.delete(id); }
+  });
+  const transferCancel = ({ projectId: id }: { projectId: string }) => serializeWrite(async () => {
+    const sent = state(id).handoff?.sent;
+    if (!sent) return { cancelled: false as const };
+    if (sent.confirmed) throw new Error('The send is confirmed: Work Board holds the state. Run bb work-board checks export-to-sweep --project <KEY> to bring it back.');
+    const own = await ownership(id);
+    if (own.transferring || own.receivedId === sent.id) throw new Error('Work Board is transferring or has received that handoff. Rerun bb work-board checks import-from-sweep to confirm it.');
+    const current = state(id);
+    if (current.handoff?.sent?.id !== sent.id) throw new Error('The send changed while Work Board was asked. Retry.');
+    current.handoff = { ...current.handoff, sent: undefined };
+    save(id, current);
+    return { cancelled: true as const };
+  });
   bb.rpc.register(contract, {
+    'transfer.export': transferExport, 'transfer.chunk': transferChunk, 'transfer.confirm': transferConfirm, 'transfer.preflight': transferPreflight, 'transfer.import': transferImport,
+    'transfer.commit': async ({ projectId: id, handoffId }) => ({ settled: await settleIncoming(id, handoffId) }), 'transfer.cancel': transferCancel,
     'attention.observations': attention.read,
     'overview.projects': async () => {
       const projects = await configs();
