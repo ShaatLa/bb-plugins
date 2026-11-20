@@ -1243,6 +1243,7 @@ export const tasksRpcContract = {
         activeOnly: z.boolean().default(false),
         staleStatus: z.boolean().default(false),
         waitingOnOwner: z.boolean().default(false),
+        planDebt: z.boolean().default(false),
         includeScheduled: z.boolean().default(false),
         parentTaskId: idSchema.nullable().optional(),
         type: z.enum(TASK_TYPES).optional(),

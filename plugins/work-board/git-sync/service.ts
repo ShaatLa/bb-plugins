@@ -14,6 +14,8 @@ import {
   type PrLink,
 } from "../shared/git-sync";
 import { createGitSyncStore } from "./store";
+import { planDebtService } from "../plan-debt/service";
+import { hasPlanDebtEvent } from "../plan-debt/store";
 import {
   createGithubClient,
   githubToken,
@@ -487,8 +489,13 @@ export function createGitSyncService(
         }),
       };
     },
-    linkPr({ taskId, url, role, part }) {
-      return { link: remember(taskId, url, "manual", { role, part }) };
+    async linkPr({ taskId, url, role, part }) {
+      const db = bb.storage.database(), trigger = `pr:${prIdentity(parsePrUrl(url))}`;
+      const known = hasPlanDebtEvent(db, taskId, trigger);
+      const link = remember(taskId, url, "manual", { role, part });
+      if (known || !hasPlanDebtEvent(db, taskId, trigger)) return { link };
+      await planDebtService(bb, store.tasks).drain();
+      return { link, note: "Plan debt: this card works without an approved plan, so its active executors were reminded to submit one." };
     },
     unlinkPr({ taskId, url }) {
       const task = requireTask(taskId);

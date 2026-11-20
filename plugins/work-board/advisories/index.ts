@@ -6,6 +6,7 @@ import type { TaskAdvisory } from "../shared/task-advisories";
 import { createGitSyncStore } from "../git-sync/store";
 import { prLinkSchema, prSnapshotSchema } from "../shared/git-sync";
 import { getWorkflowPolicy } from "../shared/workflow-policy";
+import { openPlanDebts } from "../plan-debt/store";
 
 const deliverySnapshot = prSnapshotSchema.pick({ repository: true, number: true, url: true, state: true, mergeSha: true, mergedAt: true, observedAt: true });
 
@@ -43,6 +44,7 @@ export function taskAdvisories(bb: BbPluginApi, tasks: ReturnType<TasksApiStore[
   }
   const inProgress = new Map(db.prepare<[], { id: string; policy: string | null }>("SELECT id, workflow_policy AS policy FROM projects").all()
     .map((row) => [row.id, getWorkflowPolicy({ workflowPolicy: row.policy ? JSON.parse(row.policy) : null }).inProgressStatus]));
+  const debts = openPlanDebts(db, [...tasks.keys()]);
   for (const [id, task] of tasks) {
     const warnings: TaskAdvisory[] = (blockers.get(id) ?? []).flatMap(predecessor => merged.get(predecessor.id) ?? []);
     const activity = activities.get(id), checked = Date.parse(activity?.diagnostics?.checkedAt ?? "");
@@ -50,6 +52,8 @@ export function taskAdvisories(bb: BbPluginApi, tasks: ReturnType<TasksApiStore[
       const last = [...(threads.get(id) ?? [])].sort((a, b) => b.attachedAt.localeCompare(a.attachedAt) || b.id.localeCompare(a.id))[0];
       warnings.push({ kind: "no-live-session", checkedAt: activity.diagnostics.checkedAt, validUntil: new Date(checked + 60_000).toISOString(), lastActivityAt: task.lastActivityAt, lastAttachment: last ? { threadId: last.threadId, title: last.title, attachedAt: last.attachedAt, updatedAt: last.updatedAt } : null });
     }
+    const debt = debts.get(id);
+    if (debt) warnings.push({ kind: "plan-debt", checkedAt: new Date(now).toISOString(), validUntil: new Date(now + 60_000).toISOString(), taskKey: debt.key, since: debt.since, planVersion: debt.planVersion, planState: debt.planState });
     results.set(id, warnings);
   }
   return results;

@@ -242,7 +242,8 @@ export const gitSyncMethods = {
         part: z.string().nullable().default(null),
       })
       .strict(),
-    output: z.object({ link: prLinkSchema }).strict(),
+    // `note` is set when the confirmed link reminded the card's executors that it works without an approved plan.
+    output: z.object({ link: prLinkSchema, note: z.string().optional() }).strict(),
   },
   unlinkPr: {
     input: z.object({ taskId: z.string(), url: prUrlSchema }).strict(),

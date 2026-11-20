@@ -1,5 +1,6 @@
 import { WAITING_ON_OWNER, NEWEST_UNANSWERED } from "./waiting-on-owner";
 import { ensurePlanningStatus, getWorkflowPolicy, inWorkZone, isClosedStatus, planningStatusOf, settlePlanFlags, usableStartTarget, withPlanningStatus, workflowPolicySchema } from "../shared/workflow-policy.js";
+import { syncPlanDebt, syncProjectPlanDebt } from "../plan-debt/store";
 import { createClosureStore } from "../closure/store";
 import { ordinaryTaskVisibilitySql } from "../scheduled/visibility";
 import { projectPolicies, staleRows, staleStatusObservations as observeStaleStatus } from "../attention/observe";
@@ -267,6 +268,7 @@ function taskQueryFingerprint(
     activeOnly: filters.activeOnly === true,
     ...(filters.staleStatus ? { staleStatus: true } : {}),
     ...(filters.waitingOnOwner ? { waitingOnOwner: true } : {}),
+    ...(filters.planDebt ? { planDebt: true } : {}),
     parentTaskId:
       filters.parentTaskId === undefined
         ? { specified: false, value: null }
@@ -886,6 +888,7 @@ export function createTasksStore(db: PluginDatabase, log: (message: string) => v
         planningChanged ? (current.planning ?? "off") : (current.planningPrevious ?? null),
         id,
       );
+      syncProjectPlanDebt(db, id);
       return requireProject(id);
     })();
   }
@@ -1144,6 +1147,7 @@ export function createTasksStore(db: PluginDatabase, log: (message: string) => v
         createdAt,
       );
       const created = requireTask(id);
+      syncPlanDebt(db, id);
       advanceEpicFor(created, null);
       return created;
     },
@@ -1217,6 +1221,7 @@ export function createTasksStore(db: PluginDatabase, log: (message: string) => v
     const dateColumn = { created: "t.created_at", updated: "t.updated_at", archived: "t.archived_at" }[dateField];
     const clauses: string[] = [];
     if (filters.waitingOnOwner) clauses.push(WAITING_ON_OWNER);
+    if (filters.planDebt) clauses.push("EXISTS (SELECT 1 FROM plan_debt_episodes e WHERE e.task_id = t.id AND e.ended_at IS NULL)");
     if (filters.ordinaryOnly) clauses.push(ordinaryTaskVisibilitySql());
     if (filters.archive === "active") clauses.push("t.archived_at IS NULL");
     if (filters.archive === "archived") clauses.push("t.archived_at IS NOT NULL");
@@ -1616,6 +1621,7 @@ export function createTasksStore(db: PluginDatabase, log: (message: string) => v
           .run(input.progressNote, input.progressNote === null ? null : nowIso(), input.progressNote === null ? null : input.authorName ?? "You", id);
       }
       const updated = requireTask(id);
+      syncPlanDebt(db, id);
       advanceEpicFor(updated, current);
       return updated;
     },
@@ -1736,6 +1742,7 @@ export function createTasksStore(db: PluginDatabase, log: (message: string) => v
               });
           insertTaskLabel.run(task.id, targetLabel.id);
         }
+        syncPlanDebt(db, task.id);
         return { previousKey: task.key, task: requireTask(task.id) };
       });
       return { task: requireTask(root.id), moved };
@@ -1839,6 +1846,7 @@ export function createTasksStore(db: PluginDatabase, log: (message: string) => v
       `,
       ).run(input.status, position, nowIso(), id);
       const moved = requireTask(id);
+      syncPlanDebt(db, id);
       advanceEpicFor(moved, task);
       return moved;
     },
@@ -1868,7 +1876,7 @@ export function createTasksStore(db: PluginDatabase, log: (message: string) => v
     const timestamp = nowIso();
     const changed = family.filter(task => archived ? !task.archivedAt : Boolean(task.archivedAt));
     const update = db.prepare<[string | null, string, string]>("UPDATE tasks SET archived_at = ?, updated_at = ? WHERE id = ?");
-    for (const task of changed) update.run(archived ? timestamp : null, timestamp, task.id);
+    for (const task of changed) { update.run(archived ? timestamp : null, timestamp, task.id); syncPlanDebt(db, task.id); }
     return changed.map(task => requireTask(task.id));
   });
 

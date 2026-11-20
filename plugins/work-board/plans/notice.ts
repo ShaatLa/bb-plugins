@@ -18,18 +18,10 @@ export function cardInWork(tasks: TasksStore, taskId: string): boolean {
   return Boolean(task && project && inWorkNow(project, task.status));
 }
 
-export async function noticeLeftApproved(
-  bb: BbPluginApi,
-  tasks: TasksStore,
-  input: { taskId: string; version: number; state: PlanState; reason: string; changedBy: string | null; exclude?: ReadonlyArray<string | null>; /** Eligibility captured at the commit; read now when absent. */ inWork?: boolean },
-): Promise<void> {
-  const task = tasks.getTask(input.taskId);
-  const project = task && tasks.getProject(task.projectId);
-  if (!task || !project || !(input.inWork ?? inWorkNow(project, task.status))) return;
-  const skip = new Set([input.changedBy, ...(input.exclude ?? [])]);
-  // "Active" is read from the live thread, not from the link: a link's name or stored state says nothing about whether it is running.
+/** The card's linked threads that are executing now. "Active" is read from the live thread, not from the link: a link's name or stored state says nothing about whether it is running. */
+export async function activeExecutors(bb: BbPluginApi, tasks: TasksStore, taskId: string, skip: ReadonlySet<string | null> = new Set()): Promise<string[]> {
   const threads: string[] = [];
-  for (const threadId of new Set(tasks.listTaskThreads(task.id).map((link) => link.threadId))) {
+  for (const threadId of new Set(tasks.listTaskThreads(taskId).map((link) => link.threadId))) {
     if (skip.has(threadId)) continue;
     try {
       const thread = await bb.sdk.threads.get({ threadId });
@@ -38,6 +30,18 @@ export async function noticeLeftApproved(
       // A thread that cannot be read cannot be told either.
     }
   }
+  return threads;
+}
+
+export async function noticeLeftApproved(
+  bb: BbPluginApi,
+  tasks: TasksStore,
+  input: { taskId: string; version: number; state: PlanState; reason: string; changedBy: string | null; exclude?: ReadonlyArray<string | null>; /** Eligibility captured at the commit; read now when absent. */ inWork?: boolean },
+): Promise<void> {
+  const task = tasks.getTask(input.taskId);
+  const project = task && tasks.getProject(task.projectId);
+  if (!task || !project || !(input.inWork ?? inWorkNow(project, task.status))) return;
+  const threads = await activeExecutors(bb, tasks, task.id, new Set([input.changedBy, ...(input.exclude ?? [])]));
   const text = buildLeftApprovedNotice({ taskKey: task.key, version: input.version, state: input.state, reason: input.reason });
   for (const threadId of threads) {
     try {

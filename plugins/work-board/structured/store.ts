@@ -9,6 +9,8 @@ import { defaultTaskThreadId, deliverCommentToLatestAgent, notifyThread } from "
 import { errorMessage } from "../shared/errors";
 import { planReviewThread, wakeReviewer } from "../plans/delivery";
 import { openDecisionIds, reviewBinding, type ReviewBinding } from "../plans/pause";
+import { planDebtService } from "../plan-debt/service";
+import { recordPlanDebtEvent } from "../plan-debt/store";
 import { createPlanStore } from "../plans/store";
 import { buildOwnerReviewSettledMessage, buildResultCopyMessage, buildReviewPausedMessage, buildReviewResumedMessage } from "../shared/plan-notes";
 import {
@@ -272,6 +274,7 @@ export function createStructuredStore(bb: BbPluginApi, store: TasksApiStore) {
     },
     async answerQuestion(input) {
       let withdrawn = false;
+      let debtEvent = false;
       let notice = "";
       let comment: ReturnType<typeof store.tasks.createComment> | undefined;
       let wake: Wake = null;
@@ -321,6 +324,8 @@ export function createStructuredStore(bb: BbPluginApi, store: TasksApiStore) {
           ...(state.answerText ? [state.answerText] : []),
         ].join("; ");
         const answer = answerOf(next), previous = answerOf(current);
+        // A saved, non-empty answer to a decision is a plan-debt trigger of the card's open episode.
+        if ((next.kind ?? "decision") === "decision" && answer) debtEvent = recordPlanDebtEvent(db, next.taskId, `answer:${next.id}:${next.revision}`);
         withdrawn = !answer && Boolean(previous);
         comment = store.tasks.createComment({
           taskId: next.taskId,
@@ -346,8 +351,10 @@ export function createStructuredStore(bb: BbPluginApi, store: TasksApiStore) {
       if (!comment) return { ...result, question, notification: "unchanged" as const };
       bb.realtime.publish("comments:changed", { taskId: question.taskId });
       const planWake = await announce(wake);
+      // Its own message, after the answer's delivery below and outside it: the reminder has its own receipts.
+      const remind = () => (debtEvent ? planDebtService(bb, store.tasks).drain() : undefined);
       const threadId = question.askedByThread ?? defaultTaskThreadId(store.tasks, question.taskId, comment.id);
-      if (!threadId) return { ...result, question, notification: "none" as const, ...(planWake ? { planWake } : {}) };
+      if (!threadId) { await remind(); return { ...result, question, notification: "none" as const, ...(planWake ? { planWake } : {}) }; }
       const notifiedCount = await deliverCommentToLatestAgent(bb, store.tasks, {
         taskId: question.taskId,
         commentId: comment.id,
@@ -366,6 +373,7 @@ export function createStructuredStore(bb: BbPluginApi, store: TasksApiStore) {
         store.tasks.updateComment(comment!.id, { notifiedCount }),
       );
       bb.realtime.publish("comments:changed", { taskId: question.taskId });
+      await remind();
       return {
         ...result,
         question,

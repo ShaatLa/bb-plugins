@@ -227,6 +227,8 @@ export interface ListTasksFilters extends TaskDateFilters {
   activeOnly?: boolean;
   staleStatus?: boolean;
   waitingOnOwner?: boolean;
+  /** Only cards with an open plan-debt episode. */
+  planDebt?: boolean;
   parentTaskId?: string | null;
   type?: TaskType;
   epicId?: string | null;

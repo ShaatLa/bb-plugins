@@ -8,6 +8,7 @@ import { buildAnchor, fold, markdownPlainText, resolveAnchor } from "../shared/p
 import { findSection, getSection } from "../shared/plan";
 import { assertNoSecrets } from "../shared/secret-guard.js";
 import { reviewerRefusal } from "./pause";
+import { syncPlanDebt } from "../plan-debt/store";
 import { assertPlanning, closePendingReview, PlanError } from "./store";
 
 type Database = ReturnType<BbPluginApi["storage"]["database"]>;
@@ -260,6 +261,7 @@ export function createPlanNoteStore(db: Database, tasks: TasksStore, head: (task
     const ids = drafts.map((row) => row.id);
     db.prepare(`UPDATE task_plan_notes SET state = 'sent', sent_in_version = ?, sent_at = ?, updated_at = ? WHERE id IN (${ids.map(() => "?").join(", ")})`).run(plan.version, now, now, ...ids);
     db.prepare("UPDATE task_plans SET state = 'changes_requested', updated_at = ? WHERE task_id = ?").run(now, taskId);
+    syncPlanDebt(db, taskId);
     closePendingReview(db, taskId, "changes_requested", reviewerVersion === undefined ? by.name : by.threadId!);
     tasks.createComment({ taskId, kind: "system", authorName: by.name, body: `Plan v${plan.version}: changes requested by ${by.name} · ${plural(drafts.length, "note")}` });
     return { plan: head(taskId)!, version: plan.version, body: plan.body, taskKey: task.key, notes: drafts.map((row) => fresh(row.id)), reviewer: reviewerOf(plan) };
@@ -288,6 +290,7 @@ export function createPlanNoteStore(db: Database, tasks: TasksStore, head: (task
     assertNoSecrets(text, "plan approval note");
     const now = new Date().toISOString();
     db.prepare("UPDATE task_plans SET state = 'approved', updated_at = ? WHERE task_id = ?").run(now, taskId);
+    syncPlanDebt(db, taskId);
     closePendingReview(db, taskId, "approved", reviewerVersion === undefined ? by.name : by.threadId!);
     // A dedicated reviewer that approved is archived on its first idle after this turn (when the project allows it).
     if (reviewerVersion !== undefined) tasks.closures.reviewerIntent(taskId, by.threadId!);

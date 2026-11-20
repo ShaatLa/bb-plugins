@@ -1,6 +1,8 @@
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import { DEFAULT_TASK_STATUSES, taskStatusesSchema } from "../shared/statuses.js";
 import { ensurePlanningStatus, withPlanningStatus, workflowPolicySchema } from "../shared/workflow-policy.js";
+import type { PlanState } from "../shared/plan";
+import { hasPlanDebt } from "../shared/plan-debt";
 
 type PluginDatabase = ReturnType<BbPluginApi["storage"]["database"]>;
 type Log = (message: string) => void;
@@ -745,6 +747,43 @@ const MIGRATIONS = [
      PRIMARY KEY (tracker_id, project, fingerprint)
    );
    CREATE INDEX IF NOT EXISTS idx_checks_items_tracker_first ON checks_items(tracker_id, project, first_at);`,
+  // 0.70.0: plan debt. An episode is one stretch of a card working without an approved plan; its events and notices form the reminder outbox.
+  // The backfill opens an episode for each card already in debt, dated at install: history cannot prove when it entered the zone.
+  (db: PluginDatabase) => {
+    db.exec(`CREATE TABLE plan_debt_episodes (
+       id INTEGER PRIMARY KEY AUTOINCREMENT,
+       task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+       since TEXT NOT NULL,
+       ended_at TEXT
+     );
+     CREATE UNIQUE INDEX idx_plan_debt_open ON plan_debt_episodes(task_id) WHERE ended_at IS NULL;
+     CREATE TABLE plan_debt_events (
+       episode_id INTEGER NOT NULL REFERENCES plan_debt_episodes(id) ON DELETE CASCADE,
+       trigger TEXT NOT NULL,
+       created_at TEXT NOT NULL,
+       expanded INTEGER NOT NULL DEFAULT 0,
+       PRIMARY KEY (episode_id, trigger)
+     );
+     CREATE TABLE plan_debt_notices (
+       episode_id INTEGER NOT NULL REFERENCES plan_debt_episodes(id) ON DELETE CASCADE,
+       trigger TEXT NOT NULL,
+       destination TEXT NOT NULL,
+       marker TEXT NOT NULL UNIQUE,
+       state TEXT NOT NULL CHECK (state IN ('pending', 'sending', 'sent', 'failed', 'unknown')),
+       attempts INTEGER NOT NULL DEFAULT 0,
+       last_error TEXT,
+       updated_at TEXT NOT NULL,
+       PRIMARY KEY (episode_id, trigger, destination)
+     );`);
+    const now = new Date().toISOString();
+    const open = db.prepare("INSERT INTO plan_debt_episodes (task_id, since) VALUES (?, ?)");
+    const cards = db.prepare<[], { id: string; type: string; status: string; archived_at: string | null; planning: string | null; statuses: string | null; plan_state: PlanState | null }>(
+      `SELECT t.id, t.type, t.status, t.archived_at, p.planning, p.statuses, pl.state AS plan_state FROM tasks t JOIN projects p ON p.id = t.project_id
+       LEFT JOIN task_plans pl ON pl.task_id = t.id WHERE p.planning = 'required'`,
+    ).all();
+    for (const card of cards)
+      if (hasPlanDebt({ planning: card.planning, statuses: card.statuses ? JSON.parse(card.statuses) : null }, { type: card.type, status: card.status, archivedAt: card.archived_at }, card.plan_state)) open.run(card.id, now);
+  },
 ] as const;
 
 export function initializeTasksSchema(db: PluginDatabase, log: Log = () => {}): void {

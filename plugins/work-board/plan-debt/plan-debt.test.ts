@@ -1,0 +1,399 @@
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { MANAGER, setup as attentionSetup } from "../attention/fixtures";
+import { registerTasksCli } from "../cli";
+import { initializeTasksSchema } from "../db/schema";
+import { gitSyncService } from "../git-sync/service";
+import { createPlanStore } from "../plans/store";
+import type { PlanAuthor } from "../shared/contract";
+import { receiptPolling } from "../steer";
+import { planDebtService } from "./service";
+import { openPlanDebt } from "./store";
+
+const owner: PlanAuthor = { kind: "person", threadId: null, name: "Owner" };
+const author: PlanAuthor = { kind: "agent", threadId: "thr_author", name: "agent (thr_author)" };
+const PR = "https://github.com/owner/repo/pull/7";
+const HOUR = 3_600_000;
+
+const fixtures: { dispose: () => unknown }[] = [];
+beforeEach(() => { receiptPolling.tries = 1; receiptPolling.delayMs = 0; });
+afterEach(async () => { await Promise.all(fixtures.splice(0).map((f) => f.dispose())); });
+
+function setupDebt() {
+  const f = attentionSetup();
+  registerTasksCli(f.bb, f.store, { name: "Work Board", version: "test" });
+  const { store, db, tracker, threads } = f;
+  // Each send is its own request, so a test can tell one message from another.
+  threads.sendMode = "inline";
+  // Cards enter the work zone while planning is merely optional; `require()` then makes them debtors.
+  store.tasks.updateProject(tracker.id, { planning: "optional" });
+  const plans = createPlanStore(db, store.tasks);
+  const service = planDebtService(f.bb, store.tasks);
+  const fault = (status?: number) => Object.assign(new Error("rejected"), status ? { status } : {});
+  /** Fails the sends to one thread: a definite rejection, or (no status) an ambiguous loss. */
+  const send = threads.sdk.threads.send;
+  const failSendsTo = (threadId: string, status?: number) => {
+    const control = { failing: true, calls: 0, restore: () => { control.failing = false; } };
+    f.harness.sdk.stub("threads.send", async (args: { threadId: string }) => { if (control.failing && args.threadId === threadId) { control.calls++; throw fault(status); } return send(args as never); });
+    return control;
+  };
+  const card = (title: string, status = "in_progress") => store.tasks.createTask({ projectId: tracker.id, title, status });
+  const require = () => store.tasks.updateProject(tracker.id, { planning: "required" });
+  const executor = (taskId: string, threadId = "thr_worker") => {
+    store.tasks.upsertTaskThread({ taskId, threadId, presetName: "Worker", title: "W", liveStatus: "working" });
+    threads.threads.set(threadId, { status: "active" });
+  };
+  const withPlan = (taskId: string, state: "draft" | "in_review" | "approved") => {
+    plans.save({ taskId, op: "replace", baseVersion: 0, body: "# Plan\n", summary: "Plan", author });
+    if (state === "in_review") plans.submit(taskId, author, null);
+    if (state === "approved") plans.setState(taskId, "approved", owner);
+  };
+  const episodes = (taskId: string) => db.prepare<[string], { id: number; since: string; ended_at: string | null }>("SELECT * FROM plan_debt_episodes WHERE task_id = ? ORDER BY id").all(taskId);
+  const open = (taskId: string) => openPlanDebt(db, taskId);
+  const age = (hours: number) => db.prepare("UPDATE plan_debt_episodes SET since = ? WHERE ended_at IS NULL").run(new Date(Date.now() - hours * HOUR).toISOString());
+  const notices = () => db.prepare<[], { trigger: string; destination: string; state: string; attempts: number }>("SELECT trigger, destination, state, attempts FROM plan_debt_notices ORDER BY rowid").all();
+  const to = (threadId: string) => threads.requests.filter((request) => request.threadId === threadId).map((request) => request.text);
+  const reminders = (threadId: string) => to(threadId).filter((text) => text.includes("Plan debt"));
+  const call = (method: string, input?: unknown) => f.call(method, input);
+  const cli = async (...args: string[]) => JSON.parse((await f.harness.runCli(args)).stdout);
+  const ask = (taskId: string, extra: Record<string, unknown> = {}) => call("createQuestion", { taskId, kind: "decision", prompt: "Which one?", options: ["A", "B"], mode: "single", ...extra });
+  const answer = (question: { id: string; revision: number; options: { id: string }[] }, pick = true) => call("answerQuestion", { questionId: question.id, revision: question.revision, selectedOptionIds: pick ? [question.options[0]!.id] : [], authorName: "Owner" });
+  const allowRepository = () => call("setGitSyncConfig", { projectId: tracker.id, config: { repositories: ["owner/repo"] } });
+  const result = { ...f, plans, service, card, require, executor, withPlan, episodes, open, age, notices, to, reminders, call, cli, ask, answer, allowRepository, failSendsTo };
+  fixtures.push(result);
+  return result;
+}
+
+describe("episodes", () => {
+  it("opens when planning becomes required and closes when the plan is approved", () => {
+    const f = setupDebt();
+    const task = f.card("Debt");
+    expect(f.episodes(task.id)).toEqual([]);
+    f.require();
+    expect(f.open(task.id)).toMatchObject({ planVersion: null, planState: null });
+    f.withPlan(task.id, "draft");
+    expect(f.open(task.id)).toMatchObject({ planVersion: 1, planState: "draft" });
+    expect(f.episodes(task.id)).toHaveLength(1);
+    f.plans.setState(task.id, "approved", owner);
+    expect(f.open(task.id)).toBeNull();
+    expect(f.episodes(task.id)).toMatchObject([{ ended_at: expect.any(String) }]);
+  });
+
+  it("starts a new episode each time approval is lost, even with no scan between the changes", () => {
+    const f = setupDebt();
+    const task = f.card("Debt");
+    f.withPlan(task.id, "approved");
+    f.require();
+    expect(f.episodes(task.id)).toEqual([]);
+    f.plans.save({ taskId: task.id, op: "replace", baseVersion: 1, body: "# Plan v2\n", summary: "Edit", author });
+    f.plans.setState(task.id, "approved", owner);
+    f.plans.save({ taskId: task.id, op: "replace", baseVersion: 2, body: "# Plan v3\n", summary: "Edit", author });
+    expect(f.episodes(task.id).map((episode) => episode.ended_at !== null)).toEqual([true, false]);
+  });
+
+  it("follows a status change, a type change, archiving and unarchiving", () => {
+    const f = setupDebt();
+    const task = f.card("Debt");
+    f.require();
+    f.store.tasks.updateTask(task.id, { status: "todo" });
+    expect(f.open(task.id)).toBeNull();
+    // The gate would refuse the way back in, so the card re-enters through a project that does not require planning.
+    f.store.tasks.updateProject(f.tracker.id, { planning: "optional" });
+    f.store.tasks.updateTask(task.id, { status: "in_progress" });
+    f.require();
+    expect(f.open(task.id)).not.toBeNull();
+    f.store.tasks.updateTask(task.id, { type: "epic" });
+    expect(f.open(task.id)).toBeNull();
+    f.store.tasks.updateTask(task.id, { type: "task" });
+    expect(f.open(task.id)).not.toBeNull();
+    f.store.tasks.updatePosition(task.id, { status: "done" });
+    f.store.tasks.setTaskArchived(task.id, true);
+    expect(f.open(task.id)).toBeNull();
+    f.store.tasks.setTaskArchived(task.id, false);
+    expect(f.open(task.id)).not.toBeNull();
+    expect(f.episodes(task.id).map((episode) => episode.ended_at !== null)).toEqual([true, true, true, false]);
+  });
+
+  it("follows the project's planning and its status flags", () => {
+    const f = setupDebt();
+    const task = f.card("Debt");
+    f.require();
+    expect(f.open(task.id)).not.toBeNull();
+    f.store.tasks.updateProject(f.tracker.id, { planning: "optional" });
+    expect(f.open(task.id)).toBeNull();
+    f.require();
+    expect(f.open(task.id)).not.toBeNull();
+    const statuses = f.store.tasks.getProject(f.tracker.id)!.statuses!;
+    f.store.tasks.updateProject(f.tracker.id, { statuses: statuses.map((status) => (status.id === "in_progress" ? { ...status, requiresApprovedPlan: false } : status)) });
+    expect(f.open(task.id)).toBeNull();
+    f.store.tasks.updateProject(f.tracker.id, { statuses: statuses.map((status) => (status.id === "in_progress" ? { ...status, requiresApprovedPlan: true } : status)) });
+    expect(f.open(task.id)).not.toBeNull();
+  });
+
+  it("backfills the debt that exists at install, dated at install", () => {
+    const f = setupDebt();
+    const debt = f.card("Debt"), fine = f.card("Fine"), early = f.card("Early", "todo");
+    f.require();
+    f.withPlan(fine.id, "approved");
+    const version = f.db.prepare<[], { version: number }>("SELECT MAX(version) AS version FROM schema_version").get()!.version;
+    f.db.exec(`DROP TABLE plan_debt_notices; DROP TABLE plan_debt_events; DROP TABLE plan_debt_episodes; DELETE FROM schema_version WHERE version = ${version};`);
+    const before = Date.now();
+    initializeTasksSchema(f.db);
+    expect(f.open(debt.id)!.since >= new Date(before).toISOString()).toBe(true);
+    expect(f.open(fine.id)).toBeNull();
+    expect(f.open(early.id)).toBeNull();
+  });
+
+  it("repairs a missed sync on the scan", async () => {
+    const f = setupDebt();
+    const task = f.card("Debt"), other = f.card("Other");
+    f.require();
+    f.db.prepare("UPDATE tasks SET status = 'todo' WHERE id = ?").run(task.id);
+    f.db.prepare("DELETE FROM plan_debt_episodes WHERE task_id = ?").run(other.id);
+    await f.service.scan();
+    expect(f.open(task.id)).toBeNull();
+    expect(f.open(other.id)).not.toBeNull();
+  });
+});
+
+describe("the 24 h reminder", () => {
+  it("goes to an active executor and the manager once, and not again on the next scan", async () => {
+    const f = setupDebt();
+    const task = f.card("Debt");
+    f.executor(task.id);
+    f.require();
+    await f.service.scan();
+    expect(f.notices()).toEqual([]);
+    f.age(25);
+    await f.service.scan();
+    await f.service.scan();
+    expect(f.reminders("thr_worker")).toHaveLength(1);
+    expect(f.reminders(MANAGER)).toHaveLength(1);
+    expect(f.reminders("thr_worker")[0]).toContain("bb work-board plan submit ATT-1");
+    expect(f.reminders(MANAGER)[0]).toContain("Its executors were reminded");
+    expect(f.notices().map((row) => row.state)).toEqual(["sent", "sent"]);
+  });
+
+  it("retries only the destination that failed", async () => {
+    const f = setupDebt();
+    const task = f.card("Debt");
+    f.executor(task.id);
+    f.require();
+    f.age(25);
+    const failing = f.failSendsTo(MANAGER, 400);
+    await f.service.scan();
+    expect(f.notices()).toMatchObject([{ destination: "thr_worker", state: "sent", attempts: 1 }, { destination: MANAGER, state: "failed", attempts: 1 }]);
+    failing.restore();
+    await f.service.scan();
+    expect(f.notices()).toMatchObject([{ destination: "thr_worker", state: "sent", attempts: 1 }, { destination: MANAGER, state: "sent", attempts: 2 }]);
+    expect(f.reminders("thr_worker")).toHaveLength(1);
+  });
+
+  it("sends one message to a manager that is also an executor", async () => {
+    const f = setupDebt();
+    const task = f.card("Debt");
+    f.executor(task.id, MANAGER);
+    f.require();
+    f.age(25);
+    await f.service.scan();
+    expect(f.reminders(MANAGER)).toHaveLength(1);
+    expect(f.reminders(MANAGER)[0]).toContain("Submit the plan for review");
+  });
+
+  it("tells only the executors when no manager is set", async () => {
+    const f = setupDebt();
+    const task = f.card("Debt");
+    f.executor(task.id);
+    f.db.prepare("DELETE FROM attention_manager").run();
+    f.require();
+    f.age(25);
+    await f.service.scan();
+    expect(f.notices().map((row) => row.destination)).toEqual(["thr_worker"]);
+  });
+
+  it("sends once when scans overlap", async () => {
+    const f = setupDebt();
+    const task = f.card("Debt");
+    f.executor(task.id);
+    f.require();
+    f.age(25);
+    await Promise.all([f.service.scan(), f.service.scan(), f.service.drain()]);
+    expect(f.reminders("thr_worker")).toHaveLength(1);
+    expect(f.reminders(MANAGER)).toHaveLength(1);
+  });
+
+  it("reminds again in a new episode", async () => {
+    const f = setupDebt();
+    const task = f.card("Debt");
+    f.executor(task.id);
+    f.require();
+    f.age(25);
+    await f.service.scan();
+    f.plans.save({ taskId: task.id, op: "replace", baseVersion: 0, body: "# Plan\n", summary: "Plan", author });
+    f.plans.setState(task.id, "approved", owner);
+    f.plans.save({ taskId: task.id, op: "replace", baseVersion: 1, body: "# Plan v2\n", summary: "Edit", author });
+    f.age(25);
+    await f.service.scan();
+    expect(f.reminders("thr_worker")).toHaveLength(2);
+    expect(f.notices().filter((row) => row.trigger === "24h")).toHaveLength(4);
+  });
+
+  it("stops the unsent rows when the episode closes", async () => {
+    const f = setupDebt();
+    const task = f.card("Debt");
+    f.executor(task.id);
+    f.require();
+    f.age(25);
+    f.failSendsTo("thr_worker", 400);
+    await f.service.scan();
+    expect(f.notices().find((row) => row.destination === "thr_worker")).toMatchObject({ state: "failed" });
+    f.withPlan(task.id, "approved");
+    await f.service.scan();
+    expect(f.notices().find((row) => row.destination === "thr_worker")).toMatchObject({ state: "failed", attempts: 1 });
+    expect(f.reminders("thr_worker")).toHaveLength(0);
+  });
+
+  it("never resends an unknown send: it is searched for, and a late marker settles it as sent after one transport call", async () => {
+    const f = setupDebt();
+    const task = f.card("Debt");
+    f.executor(task.id);
+    f.require();
+    f.age(25);
+    const lost = f.failSendsTo("thr_worker");
+    await f.service.scan();
+    const [unknown] = f.notices().filter((row) => row.destination === "thr_worker");
+    expect(unknown).toMatchObject({ state: "unknown", attempts: 1 });
+    // A restart: the row would have been left in `sending`, which is read as unknown too.
+    f.db.prepare("UPDATE plan_debt_notices SET state = 'sending' WHERE destination = 'thr_worker'").run();
+    await f.service.scan();
+    await f.service.scan();
+    expect(f.notices().find((row) => row.destination === "thr_worker")).toMatchObject({ state: "unknown", attempts: 1 });
+    const shown = await f.cli("show", task.key, "--json");
+    expect(shown.planDebt.notices).toMatchObject([{ destination: "thr_worker", state: "unknown", attempts: 1, lastError: expect.any(String) }]);
+    const marker = f.db.prepare<[], { marker: string }>("SELECT marker FROM plan_debt_notices WHERE destination = 'thr_worker'").get()!.marker;
+    f.threads.addRow("thr_worker", `Plan debt\n\n${marker}`);
+    await f.service.scan();
+    expect(f.notices().find((row) => row.destination === "thr_worker")).toMatchObject({ state: "sent", attempts: 1 });
+    expect(lost.calls).toBe(1);
+    expect((await f.cli("show", task.key, "--json")).planDebt.notices).toEqual([]);
+  });
+});
+
+describe("a decision answered", () => {
+  it("reminds the executor as its own message, apart from the answer to a distinct asker", async () => {
+    const f = setupDebt();
+    const task = f.card("Debt");
+    f.executor(task.id);
+    f.require();
+    const { question } = await f.ask(task.id, { askedByThread: "thr_asker" });
+    await f.answer(question);
+    expect(f.reminders("thr_worker")).toHaveLength(1);
+    expect(f.reminders("thr_worker")[0]).toContain("a decision was answered on it");
+    expect(f.to("thr_asker")).toHaveLength(1);
+    expect(f.to("thr_asker")[0]).toContain("**Answer:** A");
+    expect(f.reminders("thr_asker")).toEqual([]);
+    expect(f.store.tasks.getTask(task.id)!.status).toBe("in_progress");
+  });
+
+  it("keeps the answer message unchanged when the asker is the executor", async () => {
+    const f = setupDebt();
+    const task = f.card("Debt");
+    f.executor(task.id);
+    f.require();
+    const { question } = await f.ask(task.id, { askedByThread: "thr_worker" });
+    await f.answer(question);
+    const texts = f.to("thr_worker");
+    expect(texts).toHaveLength(2);
+    expect(texts.filter((text) => text.includes("**Answer:** A") && !text.includes("Plan debt"))).toHaveLength(1);
+    expect(f.reminders("thr_worker")).toHaveLength(1);
+  });
+
+  it("sends nothing for a check, a withdrawn answer, a cleared answer or an unchanged save", async () => {
+    const f = setupDebt();
+    const task = f.card("Debt");
+    f.executor(task.id);
+    f.require();
+    const check = (await f.ask(task.id, { kind: "check", prompt: "Verified?", options: [] })).question;
+    const confirmed = await f.call("answerQuestion", { questionId: check.id, revision: check.revision, selectedOptionIds: [check.options[0].id], authorName: "Owner" });
+    expect(f.reminders("thr_worker")).toEqual([]);
+    expect(confirmed.question.revision).toBe(check.revision + 1);
+    const { question } = await f.ask(task.id);
+    const answered = (await f.answer(question)).question;
+    expect(f.reminders("thr_worker")).toHaveLength(1);
+    const same = await f.answer(answered);
+    expect(same.notification).toBe("unchanged");
+    const cleared = await f.answer(answered, false);
+    expect(cleared.question.answeredBy).toBeNull();
+    expect(f.reminders("thr_worker")).toHaveLength(1);
+    expect(f.db.prepare("SELECT trigger FROM plan_debt_events").all()).toHaveLength(1);
+  });
+
+  it("retries a failed answer reminder from its row, for the failed destination only, after the 24 h reminder went out", async () => {
+    const f = setupDebt();
+    const task = f.card("Debt");
+    f.executor(task.id);
+    f.require();
+    f.age(25);
+    await f.service.scan();
+    const failing = f.failSendsTo("thr_worker", 400);
+    const { question } = await f.ask(task.id);
+    await f.answer(question);
+    expect(f.notices().find((row) => row.trigger.startsWith("answer:"))).toMatchObject({ state: "failed", attempts: 1 });
+    failing.restore();
+    await f.service.drain();
+    expect(f.notices().map((row) => [row.trigger.split(":")[0], row.destination, row.state, row.attempts])).toEqual([["24h", "thr_worker", "sent", 1], ["24h", MANAGER, "sent", 1], ["answer", "thr_worker", "sent", 2]]);
+  });
+});
+
+describe("a PR link", () => {
+  it("tells the executor when another caller confirms a link, once", async () => {
+    const f = setupDebt();
+    const task = f.card("Debt");
+    f.executor(task.id);
+    f.require();
+    await f.allowRepository();
+    const first = await f.call("linkPr", { taskId: task.id, url: PR, role: "delivers" });
+    expect(first.note).toContain("Plan debt");
+    expect(f.reminders("thr_worker")).toHaveLength(1);
+    expect(f.reminders("thr_worker")[0]).toContain("a PR was linked to it");
+    const again = await f.call("linkPr", { taskId: task.id, url: PR, role: "delivers" });
+    expect(again.note).toBeUndefined();
+    expect(f.reminders("thr_worker")).toHaveLength(1);
+  });
+
+  it("sends nothing for an unconfirmed suggestion, and for a card without debt", async () => {
+    const f = setupDebt();
+    const task = f.card("Debt"), fine = f.card("Fine");
+    f.executor(task.id);
+    f.executor(fine.id, "thr_other");
+    f.withPlan(fine.id, "approved");
+    f.require();
+    await f.allowRepository();
+    gitSyncService(f.bb, f.store).remember(task.id, PR, "title");
+    expect(f.reminders("thr_worker")).toEqual([]);
+    await f.call("linkPr", { taskId: fine.id, url: PR, role: "delivers" });
+    expect(f.reminders("thr_other")).toEqual([]);
+    // Confirming the earlier suggestion is the trigger.
+    const confirmed = await f.call("linkPr", { taskId: task.id, url: PR, role: "delivers" });
+    expect(confirmed.note).toContain("Plan debt");
+    expect(f.reminders("thr_worker")).toHaveLength(1);
+  });
+});
+
+describe("surfaces", () => {
+  it("shows the advisory and the debt on the card, and lists only cards with debt", async () => {
+    const f = setupDebt();
+    const debt = f.card("Debt"), fine = f.card("Fine");
+    f.withPlan(fine.id, "approved");
+    f.require();
+    const shown = await f.cli("show", debt.key, "--json");
+    expect(shown.planDebt).toMatchObject({ planVersion: null, planState: null, notices: [] });
+    expect(shown.advisories).toMatchObject([{ kind: "plan-debt", taskKey: debt.key, planVersion: null }]);
+    expect((await f.cli("show", fine.key, "--json")).planDebt).toBeNull();
+    expect((await f.cli("show", fine.key, "--json")).advisories).toEqual([]);
+    const text = (await f.harness.runCli(["show", debt.key])).stdout;
+    expect(text).toContain(`Plan debt since ${shown.planDebt.since}: no plan. Submit it for review: bb work-board plan submit ${debt.key} --reviewer`);
+    const listed = await f.cli("list", "--plan-debt", "--json");
+    expect(listed.tasks.map((task: { key: string }) => task.key)).toEqual([debt.key]);
+    expect((await f.cli("list", "--json")).tasks.length).toBeGreaterThan(1);
+  });
+});

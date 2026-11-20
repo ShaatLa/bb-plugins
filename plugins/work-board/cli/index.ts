@@ -4,6 +4,7 @@ import { createGithubClient, githubToken } from "../git-sync/github";
 import { waitForPrCi } from "../git-sync/ci-wait";
 import { gitSyncConfigSchema } from "../shared/git-sync";
 import { advisoryText } from "../shared/task-advisories";
+import { openPlanDebt, unsentNoticesOf } from "../plan-debt/store";
 import { TASK_DATE_FIELDS } from "../shared/task-dates.js";
 import { workflowPolicySchema } from "../shared/workflow-policy.js";
 import { DEFAULT_TASK_STATUSES, taskStatusesSchema } from "../shared/statuses.js";
@@ -2609,6 +2610,7 @@ export function registerTasksCli(
               description: "Keep only tasks with a live agent thread",
             },
             "waiting-on-owner": { type: "boolean", description: "Keep only tasks waiting on you" },
+            "plan-debt": { type: "boolean", description: "Keep only tasks in work without an approved plan" },
             "include-scheduled": {
               type: "boolean",
               description: "Also list scheduled templates and pre-start runs (hidden by default; see bb work-board schedule)",
@@ -2706,6 +2708,7 @@ export function registerTasksCli(
                     activeOnly: input.options.active,
                     staleStatus: input.options["stale-status"],
                     waitingOnOwner: input.options["waiting-on-owner"],
+                    planDebt: input.options["plan-debt"],
                     ...(input.options["include-scheduled"] ? { includeScheduled: true } : {}),
                     search: input.options.search,
                     sort: input.options.latest !== undefined ? "newest" : input.options.sort,
@@ -2769,7 +2772,7 @@ export function registerTasksCli(
                   task.agentsWorking,
                   task.staleStatusFlags.join(", ") || "-",
                   task.blockedBy.map(blocker => blocker.key).join(", ") || "-",
-                  task.advisories.map(item => item.kind === "merged-predecessor" ? `Check ${item.predecessor.key}: merged PR #${item.pr.number}` : "No live session").join("; ") || "-",
+                  task.advisories.map(item => item.kind === "merged-predecessor" ? `Check ${item.predecessor.key}: merged PR #${item.pr.number}` : item.kind === "plan-debt" ? "Plan debt" : "No live session").join("; ") || "-",
                 ]),
                 "No tasks.",
               );
@@ -2878,10 +2881,14 @@ export function registerTasksCli(
               if (brief && evidence.records.length) more.evidence = `bb work-board evidence ${task.key}`;
               if (brief && questions.some(q => !isQuestionOpen(q) || q.history?.length)) more.questions = `bb work-board question list ${task.key}`;
               if (brief && allPrLinks.some(link => link.snapshot && "checks" in link.snapshot)) more.checks = `bb work-board show ${task.key} --json --comments 0`;
+              // The debt of the card now, with the reminders still owed: an unresolved one is visible here, not silent.
+              const debtNow = openPlanDebt(bb.storage.database(), task.id);
+              const planDebt = debtNow && { ...debtNow, notices: unsentNoticesOf(bb.storage.database(), task.id).map(({ trigger, destination, state, attempts, lastError }) => ({ trigger, destination, state, attempts, lastError })) };
               if (input.options.json) {
                 return JSON.stringify({
                   prLinks,
                   overlaps,
+                  planDebt,
                   task: { ...task, waitingOnOwner: waiting },
                   link: taskMarkdownLink(task.key),
                   startHint: hint,

@@ -6,6 +6,7 @@ import { isClosedStatus, planningStatusOf } from "../shared/workflow-policy";
 import { statusLabel } from "../shared/statuses.js";
 import { planningOffMessage, planningOn, planningRequired } from "../shared/project-settings";
 import { isPaused, submitRefusal } from "./pause";
+import { syncPlanDebt } from "../plan-debt/store";
 import { countPlanChanges, diffPlanBodies, type PlanDiff } from "../shared/plan-diff";
 import {
   assertPlanText,
@@ -240,6 +241,7 @@ export function createPlanStore(db: Database, tasks: TasksStore) {
        ON CONFLICT (task_id) DO UPDATE SET version = excluded.version, body = excluded.body, state = excluded.state,
          updated_at = excluded.updated_at, author_kind = excluded.author_kind, author_thread = excluded.author_thread, author_name = excluded.author_name`,
     ).run(input.taskId, version, body, state, createdAt, by.kind, by.threadId, by.name);
+    syncPlanDebt(db, input.taskId);
 
     closePendingReview(db, input.taskId, "superseded", by.name);
     const kind = {
@@ -271,6 +273,7 @@ export function createPlanStore(db: Database, tasks: TasksStore) {
     const row = planRow(taskId)!;
     const updatedAt = new Date().toISOString();
     db.prepare("UPDATE task_plans SET state = ?, updated_at = ? WHERE task_id = ?").run(state, updatedAt, taskId);
+    syncPlanDebt(db, taskId);
     comment(taskId, by, `Plan v${row.version} ${text} by ${by.name}`);
     return { plan: headOf(planRow(taskId)!), version: null };
   }
@@ -446,7 +449,7 @@ export function createPlanStore(db: Database, tasks: TasksStore) {
   function restore(taskId: string, plan: CapturedPlan | null): void {
     db.prepare("DELETE FROM task_plan_versions WHERE task_id = ?").run(taskId);
     db.prepare("DELETE FROM task_plans WHERE task_id = ?").run(taskId);
-    if (!plan) return;
+    if (!plan) { syncPlanDebt(db, taskId); return; }
     const insertVersion = db.prepare(
       `INSERT INTO task_plan_versions (task_id, version, body, base_version, op, target, summary, author_kind, author_thread, author_name, added, removed, created_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -457,6 +460,7 @@ export function createPlanStore(db: Database, tasks: TasksStore) {
       `INSERT INTO task_plans (task_id, format, version, body, state, updated_at, author_kind, author_thread, author_name, reviewer_kind, reviewer_thread, review_version)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ).run(taskId, plan.format, plan.version, plan.body, plan.state, plan.updatedAt, plan.updatedBy.kind, plan.updatedBy.threadId, plan.updatedBy.name, plan.reviewer.kind, plan.reviewer.threadId, plan.reviewVersion);
+    syncPlanDebt(db, taskId);
   }
 
   /** Every review attempt of a project in one statement, for export. */

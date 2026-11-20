@@ -14,6 +14,7 @@ import {
 
 import { prepareOverlaps } from "./overlap";
 import { touchAttention } from "../attention/ledger";
+import { recordPlanDebtEvent } from "../plan-debt/store";
 
 type Database = ReturnType<BbPluginApi["storage"]["database"]>;
 export function createGitSyncStore(db: Database) {
@@ -37,9 +38,13 @@ export function createGitSyncStore(db: Database) {
     const link = prLinkSchema.parse(value);
     assertNoSecretsInValue(link, "PR link");
     return db.transaction(() => {
+      const before = db.prepare<[string, string], { payload: string }>("SELECT payload FROM task_pr_links WHERE task_id = ? AND identity = ?").get(link.taskId, prIdentity(link));
       db.prepare<[string, string, string]>(
         "INSERT INTO task_pr_links(task_id, identity, payload) VALUES (?, ?, ?) ON CONFLICT(task_id, identity) DO UPDATE SET payload=excluded.payload",
       ).run(link.taskId, prIdentity(link), JSON.stringify(link));
+      // A link that becomes confirmed, from new or unconfirmed, is a plan-debt trigger of the card's open episode.
+      const was = before ? prLinkSchema.parse(JSON.parse(before.payload)) : null;
+      if (link.confirmed && !link.excluded && !(was?.confirmed && !was.excluded)) recordPlanDebtEvent(db, link.taskId, `pr:${prIdentity(link)}`);
       touchAttention(db, [link.taskId]);
       return link;
     })();

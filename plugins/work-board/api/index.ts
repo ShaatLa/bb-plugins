@@ -1305,6 +1305,7 @@ export function registerHandlers(
         activeOnly: input.activeOnly,
         staleStatus: input.staleStatus,
         waitingOnOwner: input.waitingOnOwner,
+        planDebt: input.planDebt,
         parentTaskId: input.parentTaskId,
         type: input.type,
         epicId: input.epicId,

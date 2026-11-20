@@ -30,12 +30,12 @@ export function TaskAdvisories({ items, compact = false }: { items?: readonly Ta
       {summary}
     </summary>
     <ul className="mt-2 space-y-3">{current.map((item, index) => <li key={`${item.kind}:${index}`} className="space-y-1">
-      <p>{item.kind === "merged-predecessor" ? "Predecessor has a merged delivery PR. Check acceptance criteria or remaining work before marking it Done." : "In Progress without a live attached session. Consider reassigning or queueing."}</p>
+      <p>{item.kind === "merged-predecessor" ? "Predecessor has a merged delivery PR. Check acceptance criteria or remaining work before marking it Done." : item.kind === "plan-debt" ? advisoryText(item) : "In Progress without a live attached session. Consider reassigning or queueing."}</p>
       {item.kind === "merged-predecessor" ? <>
         <button type="button" className="block text-left underline" onClick={() => navigation.go({ kind: "task", taskKey: item.predecessor.key })}>{item.predecessor.key} · {item.predecessor.title} ({item.predecessor.status})</button>
         <BbLink className="block underline" href={item.pr.url}>{item.pr.repository}#{item.pr.number}</BbLink>
         <p className="break-all text-muted-foreground">Merge {item.pr.mergeSha} · {item.pr.mergedAt}</p>
-      </> : <>
+      </> : item.kind === "plan-debt" ? null : <>
         {item.lastAttachment ? <button type="button" className="block text-left underline" onClick={() => openThread(item.lastAttachment!.threadId)}>Last attachment: {item.lastAttachment.title || item.lastAttachment.threadId} · {item.lastAttachment.attachedAt}</button> : <p>No attachment history retained.</p>}
         <p className="text-muted-foreground">Last task activity: {item.lastActivityAt}</p>
       </>}

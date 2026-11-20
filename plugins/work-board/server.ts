@@ -16,10 +16,11 @@ import { registerDelegation } from "./delegate";
 import { registerLifecycle } from "./lifecycle";
 import { TASK_LINK_INSTRUCTIONS } from "./shared/task-link";
 import { registerMentions } from "./mentions";
+import { planDebtService } from "./plan-debt/service";
 import { autoArchiveTasks } from "./lifecycle/task-archive";
 
 const WORK_BOARD_PLUGIN_NAME = "Work Board";
-export const WORK_BOARD_PLUGIN_VERSION = "0.68.0";
+export const WORK_BOARD_PLUGIN_VERSION = "0.70.0";
 
 const tasksRpcContract = defineRpcContract({
   ping: {
@@ -50,6 +51,7 @@ export default async function plugin(bb: BbPluginApi) {
   registerScheduled(bb, store);
   registerPublicApi(bb, store.tasks);
   registerMentions(bb, store);
+  planDebtService(bb, store.tasks).register();
   // Read when a provider session starts, so only threads started or resumed after install see it.
   bb.agents.contributeInstructions(({ projectId }) =>
     store.tasks.listProjects().some((project) => project.linkedBbProjectId === projectId)
