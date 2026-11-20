@@ -525,6 +525,11 @@ describe("question and evidence UI", () => {
       { rpc },
     );
     const section = await slot.findByRole("region", { name: "Evidence" });
+    const details = section.querySelector("details")!;
+    expect(details.open).toBe(false);
+    expect(within(section).getByText("· 1")).toBeTruthy();
+    fireEvent.click(within(section).getByText("Evidence"));
+    expect(details.open).toBe(true);
     expect(within(section).getByText("approve")).toBeTruthy();
     expect(within(section).getByText("a".repeat(9)).getAttribute("title")).toBe(
       "a".repeat(40),
