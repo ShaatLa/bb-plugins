@@ -4,6 +4,7 @@ import { taskActivitySchema } from "./task-activity.js";
 import { storageMethods } from "./storage";
 import { gitSyncMethods } from "./git-sync";
 import { lockMethods } from "./locks";
+import { attentionUiMethods } from "./attention";
 import { taskDateFiltersSchema } from "./task-dates.js";
 import { PLAN_FORMATS, PLAN_OPS, PLAN_STATES } from "./plan";
 import { PLAN_NOTE_BODY_MAX, PLAN_NOTE_CONTEXT_MAX, PLAN_NOTE_HEADING_MAX, PLAN_NOTE_KINDS, PLAN_NOTE_QUOTE_MAX, PLAN_NOTE_STATES } from "./plan-notes";
@@ -911,6 +912,7 @@ export const tasksRpcContract = {
   listTaskClaims: { input: z.object({ taskId: idSchema }).strict(), output: z.object({ claims: z.array(sequenceClaimSchema) }).strict() },
 
   ...lockMethods,
+  ...attentionUiMethods,
   createFolder: {
     input: z
       .object({

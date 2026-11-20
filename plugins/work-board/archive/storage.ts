@@ -1,3 +1,4 @@
+import { markTrackerDirty } from "../attention/ledger";
 import { createGitSyncStore } from "../git-sync/store";
 import { prIdentity } from "../shared/git-sync";
 import { DEFAULT_TASK_STATUSES } from "../shared/statuses.js";
@@ -257,6 +258,8 @@ export function restoreProject(
   const db = bb.storage.database();
   const { manifest, records } = archive;
   const projectId = manifest.project.id;
+  // An import never touches attention state; the cards it changes reach the ledger through the debounced scan.
+  markTrackerDirty(projectId);
   store.transaction(() => {
     const localTaskIds = new Set(db.prepare<[string], { id: string }>("SELECT id FROM tasks WHERE project_id=?").all(projectId).map(row => row.id));
     const localDependencies = new Map<string, string[]>();

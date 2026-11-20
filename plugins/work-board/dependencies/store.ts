@@ -1,6 +1,7 @@
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import type { TasksStore } from "../db";
 import type { DependencyTask } from "../shared/contract";
+import { touchAttention } from "../attention/ledger";
 
 type Database = ReturnType<BbPluginApi["storage"]["database"]>;
 export type DependencyEdge = { taskId: string; blockingTaskId: string };
@@ -78,14 +79,23 @@ export function createDependencyStore(db: Database, tasks: TasksStore) {
       ) SELECT id FROM predecessors WHERE id=? LIMIT 1
     `).get(blockingTaskId, taskId);
     if (cycle) throw new Error("Dependency would create a cycle");
-    return db.prepare<[string, string]>("INSERT OR IGNORE INTO task_dependencies(task_id, blocking_task_id) VALUES (?, ?)")
-      .run(taskId, blockingTaskId).changes > 0;
+    // The dependent's hold changes, and so may its stale-status flags; the ledger follows in the same transaction.
+    return db.transaction(() => {
+      const added = db.prepare<[string, string]>("INSERT OR IGNORE INTO task_dependencies(task_id, blocking_task_id) VALUES (?, ?)")
+        .run(taskId, blockingTaskId).changes > 0;
+      touchAttention(db, [taskId, blockingTaskId]);
+      return added;
+    })();
   }
   function remove(taskId: string, blockingTaskId: string) {
     requireTask(taskId);
     requireTask(blockingTaskId);
-    return db.prepare<[string, string]>("DELETE FROM task_dependencies WHERE task_id=? AND blocking_task_id=?")
-      .run(taskId, blockingTaskId).changes > 0;
+    return db.transaction(() => {
+      const removed = db.prepare<[string, string]>("DELETE FROM task_dependencies WHERE task_id=? AND blocking_task_id=?")
+        .run(taskId, blockingTaskId).changes > 0;
+      touchAttention(db, [taskId, blockingTaskId]);
+      return removed;
+    })();
   }
   function relate(taskId: string, relatedTaskId: string) {
     const task = requireTask(taskId), other = requireTask(relatedTaskId);

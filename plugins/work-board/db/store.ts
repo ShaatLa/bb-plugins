@@ -2,6 +2,9 @@ import { WAITING_ON_OWNER, NEWEST_UNANSWERED } from "./waiting-on-owner";
 import { getWorkflowPolicy, inWorkZone, isClosedStatus, settlePlanFlags, workflowPolicySchema } from "../shared/workflow-policy.js";
 import { createClosureStore } from "../closure/store";
 import { ordinaryTaskVisibilitySql } from "../scheduled/visibility";
+import { projectPolicies, staleRows, staleStatusObservations as observeStaleStatus } from "../attention/observe";
+import { closeTaskOccurrences, markTrackerDirty, touchAttention } from "../attention/ledger";
+import { assertLinkChangeAllowed } from "../attention/modes";
 import { archiveSettingSchema, autoArchiveAfterDaysSchema, planningSchema, staleIdleThresholdSchema, statusNotificationsSchema } from "../shared/project-settings";
 import { taskDateFiltersSchema } from "../shared/task-dates.js";
 import {
@@ -753,6 +756,7 @@ export function createTasksStore(db: PluginDatabase) {
 
   function createProject(input: CreateProjectInput): Project {
     const id = createUlid();
+    assertLinkChangeAllowed(db, id, null, validateLinkedBbProjectId(input.linkedBbProjectId ?? null));
     const folderId = input.folderId ?? null;
     if (folderId !== null) requireFolder(folderId);
     db.prepare<
@@ -821,6 +825,8 @@ export function createTasksStore(db: PluginDatabase) {
       const folderId =
         input.folderId === undefined ? current.folderId : input.folderId;
       if (folderId !== null) requireFolder(folderId);
+      // A tracker bound to manager attention keeps its BB project link; a bound BB project takes no second tracker.
+      if (input.linkedBbProjectId !== undefined) assertLinkChangeAllowed(db, id, current.linkedBbProjectId ?? null, validateLinkedBbProjectId(input.linkedBbProjectId));
       // A change of planning is recorded with its time and old value in the same write; the same value changes nothing.
       const nextPlanning = planningSchema.parse(input.planning ?? current.planning ?? "off");
       const planningChanged = nextPlanning !== (current.planning ?? "off");
@@ -1076,23 +1082,8 @@ export function createTasksStore(db: PluginDatabase) {
   }
 
   function staleStatusFlags(taskIds?: readonly string[], projectId?: string): Map<string, string[]> {
-    const policies = new Map(listProjects().map((project) => [project.id, getWorkflowPolicy(project)]));
-    const rows = db.prepare<[string | null, string | null, string | null, string | null], { id: string; project_id: string; status: string; active: number; held: number; open_pr: number; merged_pr: number; merge_evidence: number; outcome: number; unknown_pr: number; legacy_outcome: number; closed_pr: number }>(`
-      SELECT t.id, t.project_id, t.status,
-        EXISTS(SELECT 1 FROM task_threads x WHERE x.task_id=t.id AND x.live_status IN ('starting','working')) AS active,
-        EXISTS(SELECT 1 FROM task_dependencies d JOIN tasks b ON b.id=d.blocking_task_id WHERE d.task_id=t.id AND b.status <> 'done') AS held,
-        EXISTS(SELECT 1 FROM task_pr_links l JOIN git_pr_snapshots s ON s.project_id=t.project_id AND s.identity=l.identity
-          WHERE l.task_id=t.id AND COALESCE(json_extract(l.payload,'$.excluded'),0)=0 AND json_extract(s.payload,'$.state') IN ('open','draft')) AS open_pr,
-        EXISTS(SELECT 1 FROM task_pr_links l JOIN git_pr_snapshots s ON s.project_id=t.project_id AND s.identity=l.identity
-          WHERE l.task_id=t.id AND COALESCE(json_extract(l.payload,'$.excluded'),0)=0 AND json_extract(s.payload,'$.state')='merged') AS merged_pr,
-        EXISTS(SELECT 1 FROM comments c WHERE c.task_id=t.id AND json_extract(c.evidence,'$.kind')='merge') AS merge_evidence,
-        EXISTS(SELECT 1 FROM comments c WHERE c.task_id=t.id AND json_extract(c.evidence,'$.kind')='outcome') AS outcome,
-        EXISTS(SELECT 1 FROM legacy_done_tasks d JOIN comments c ON c.task_id=d.task_id WHERE d.task_id=t.id AND c.kind != 'system') AS legacy_outcome,
-        -- Merged is final, so a failed refresh of a merged PR leaves its state known.
-        EXISTS(SELECT 1 FROM task_pr_links l LEFT JOIN git_pr_snapshots s ON s.project_id=t.project_id AND s.identity=l.identity WHERE l.task_id=t.id AND COALESCE(json_extract(l.payload,'$.excluded'),0)=0 AND (s.payload IS NULL OR (s.error IS NOT NULL AND COALESCE(json_extract(s.payload,'$.state'),'') <> 'merged'))) AS unknown_pr
-        , EXISTS(SELECT 1 FROM task_pr_links l JOIN git_pr_snapshots s ON s.project_id=t.project_id AND s.identity=l.identity
-          WHERE l.task_id=t.id AND COALESCE(json_extract(l.payload,'$.excluded'),0)=0 AND json_extract(s.payload,'$.state')='closed') AS closed_pr
-      FROM tasks t WHERE (? IS NULL OR t.project_id=?) AND (? IS NULL OR t.id IN (SELECT value FROM json_each(?))) ORDER BY t.id`).all(projectId ?? null, projectId ?? null, taskIds ? JSON.stringify(taskIds) : null, taskIds ? JSON.stringify(taskIds) : null);
+    const policies = projectPolicies(db);
+    const rows = staleRows(db, taskIds, projectId);
     const result = new Map<string, string[]>();
     for (const row of rows) {
       const policy = policies.get(row.project_id);
@@ -1108,6 +1099,11 @@ export function createTasksStore(db: PluginDatabase) {
       if (flags.length) result.set(row.id, flags);
     }
     return result;
+  }
+
+  /** Stale-status flags of a tracker's cards with a validity per signal; `unknown` marks only the genuinely undecidable. */
+  function staleStatusObservations(trackerId: string, taskIds?: readonly string[]) {
+    return observeStaleStatus(db, taskIds, trackerId);
   }
 
   function listTasksPage(filters: ListTasksFilters = {}): ListTasksPage {
@@ -2515,6 +2511,59 @@ export function createTasksStore(db: PluginDatabase) {
     })();
   }
 
+  // Manager-attention hooks. A source write recomputes the ledger of the cards it touched inside its own transaction;
+  // project-wide changes (policy, labels, relinks) only ask for the debounced scan.
+  const touching = <A extends unknown[], R>(fn: (...args: A) => R, ids: (result: R, ...args: A) => readonly string[]) => {
+    const run = db.transaction((...args: A): R => {
+      const result = fn(...args);
+      touchAttention(db, ids(result, ...args));
+      return result;
+    });
+    return (...args: A): R => run(...args);
+  };
+  const dirtying = <A extends unknown[], R>(fn: (...args: A) => R, project: (result: R, ...args: A) => string | undefined) =>
+    (...args: A): R => {
+      const result = fn(...args);
+      const trackerId = project(result, ...args);
+      if (trackerId) markTrackerDirty(trackerId);
+      return result;
+    };
+  const createTaskHooked = touching(createTask, (task) => [task.id]);
+  const updateTaskHooked = touching(updateTask, (task) => [task.id]);
+  const moveTaskToProjectHooked = touching(moveTaskToProject, (_result, id) => [id]);
+  const updatePositionHooked = touching(updatePosition, (task) => [task.id]);
+  const setTaskArchivedHooked = touching(setTaskArchived, (tasks) => tasks.map((task) => task.id));
+  const archiveCompletedTasksHooked = touching(archiveCompletedTasks, (tasks) => tasks.map((task) => task.id));
+  const addTaskLabelHooked = touching(addTaskLabel, (_label, taskId) => [taskId]);
+  const removeTaskLabelHooked = touching(removeTaskLabel, (_removed, taskId) => [taskId]);
+  const createCommentHooked = touching(createComment, (comment) => (comment.evidence ? [comment.taskId] : []));
+  const upsertTaskThreadHooked = touching(upsertTaskThread, (thread) => [thread.taskId]);
+  const updateTaskThreadStatusHooked = touching(updateTaskThreadStatus, (thread) => [thread.taskId]);
+  const deleteTaskThreadTransaction = db.transaction((id: string): boolean => {
+    const taskId = getTaskThread(id)?.taskId;
+    const removed = deleteTaskThread(id);
+    if (taskId) touchAttention(db, [taskId]);
+    return removed;
+  });
+  const deleteTaskThreadHooked = (id: string): boolean => deleteTaskThreadTransaction(id);
+  const deleteTaskTransaction = db.transaction((id: string): boolean => {
+    // A deleted card has nothing left to observe, so its occurrences close first and the cards it blocked are recomputed after.
+    const blocked = db.prepare<[string], { task_id: string }>("SELECT task_id FROM task_dependencies WHERE blocking_task_id=?").all(id).map((row) => row.task_id);
+    const removed = deleteTask(id);
+    if (removed) { closeTaskOccurrences(db, id, "deleted"); touchAttention(db, blocked); }
+    return removed;
+  });
+  const deleteTaskHooked = (id: string): boolean => deleteTaskTransaction(id);
+  const updateProjectHooked = dirtying(updateProject, (project) => project.id);
+  const createLabelHooked = dirtying(createLabel, (label) => label.projectId);
+  const updateLabelHooked = dirtying(updateLabel, (label) => label.projectId);
+  const deleteLabelHooked = (id: string): boolean => {
+    const projectId = getLabel(id)?.projectId;
+    const removed = deleteLabel(id);
+    if (removed && projectId) markTrackerDirty(projectId);
+    return removed;
+  };
+
   return {
     createSequence, getSequence, listSequences, listSequenceClaims, listTaskClaims, setSequenceNext, deleteSequence, claimSequence, releaseClaim,
     createFolder,
@@ -2525,37 +2574,38 @@ export function createTasksStore(db: PluginDatabase) {
     createProject,
     getProject,
     listProjects,
-    updateProject,
+    updateProject: updateProjectHooked,
     deleteProject,
-    createTask,
+    createTask: createTaskHooked,
     getTask,
     getTaskByKey,
     listTasksPage,
     staleStatusFlags,
+    staleStatusObservations,
     listTasks,
     listSubtasks,
-    updateTask,
+    updateTask: updateTaskHooked,
     closures,
     closureScope,
     onClosure: (listener: (closureId: string) => void) => { closureListener = listener; },
     planGate,
     scheduledStatus,
-    moveTaskToProject,
-    updatePosition,
-    deleteTask,
-    setTaskArchived,
-    archiveCompletedTasks,
-    createLabel,
+    moveTaskToProject: moveTaskToProjectHooked,
+    updatePosition: updatePositionHooked,
+    deleteTask: deleteTaskHooked,
+    setTaskArchived: setTaskArchivedHooked,
+    archiveCompletedTasks: archiveCompletedTasksHooked,
+    createLabel: createLabelHooked,
     getLabel,
     listLabels,
-    updateLabel,
-    deleteLabel,
-    addTaskLabel,
-    removeTaskLabel,
+    updateLabel: updateLabelHooked,
+    deleteLabel: deleteLabelHooked,
+    addTaskLabel: addTaskLabelHooked,
+    removeTaskLabel: removeTaskLabelHooked,
     listTaskLabels,
     listTaskLabelsForProject,
     listLabelsForTask,
-    createComment,
+    createComment: createCommentHooked,
     getComment,
     listComments,
     listCommentsForProject,
@@ -2569,7 +2619,7 @@ export function createTasksStore(db: PluginDatabase) {
     listAttachmentsForProject,
     updateAttachment,
     deleteAttachment,
-    upsertTaskThread,
+    upsertTaskThread: upsertTaskThreadHooked,
     getTaskThread,
     getTaskThreadByThreadId,
     listTaskThreadsByThreadId,
@@ -2577,8 +2627,8 @@ export function createTasksStore(db: PluginDatabase) {
     listTaskThreadsForProject,
     listTaskThreadsForTasks,
     listTaskActivity,
-    updateTaskThreadStatus,
-    deleteTaskThread,
+    updateTaskThreadStatus: updateTaskThreadStatusHooked,
+    deleteTaskThread: deleteTaskThreadHooked,
     createPreset,
     getPreset,
     listPresets,

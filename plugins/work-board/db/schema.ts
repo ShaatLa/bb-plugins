@@ -572,6 +572,93 @@ const MIGRATIONS = [
    ALTER TABLE task_plan_reviews ADD COLUMN dedicated_reviewer INTEGER NOT NULL DEFAULT 0 CHECK (dedicated_reviewer IN (0, 1));
    ALTER TABLE task_plan_reviews ADD COLUMN archive_state TEXT CHECK (archive_state IS NULL OR archive_state IN ('pending', 'archiving', 'archived', 'kept'));
    ALTER TABLE task_plan_reviews ADD COLUMN archive_seen_active INTEGER NOT NULL DEFAULT 0;`,
+  // 0.61.0: the attention ledger for manager notices. Local state only (never exported): per-tracker revision counter, the
+  // off/shadow/live selector with its transition, handback and ack records, occurrences, delivery attempts and observations.
+  `CREATE TABLE IF NOT EXISTS attention_rev (tracker_id TEXT PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE, rev INTEGER NOT NULL DEFAULT 0);
+   CREATE TABLE IF NOT EXISTS attention_modes (
+     tracker_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+     kind TEXT NOT NULL,
+     bound_tracker_id TEXT,
+     bound_bb_project_id TEXT,
+     effective_mode TEXT NOT NULL DEFAULT 'off' CHECK (effective_mode IN ('off', 'shadow', 'live')),
+     effective_generation INTEGER NOT NULL DEFAULT 0,
+     requested_mode TEXT CHECK (requested_mode IS NULL OR requested_mode IN ('shadow', 'live')),
+     requested_generation INTEGER,
+     transition_token TEXT,
+     transition_direction TEXT CHECK (transition_direction IS NULL OR transition_direction IN ('to_live', 'to_shadow')),
+     transition_state TEXT CHECK (transition_state IS NULL OR transition_state IN ('preparing', 'ready')),
+     ready_at TEXT,
+     ready_rev INTEGER,
+     parity_reviewed INTEGER NOT NULL DEFAULT 0 CHECK (parity_reviewed IN (0, 1)),
+     shadow_started_at TEXT,
+     changed_at TEXT,
+     previous_mode TEXT,
+     PRIMARY KEY (tracker_id, kind)
+   );
+   CREATE TABLE IF NOT EXISTS attention_handback (
+     tracker_id TEXT NOT NULL, kind TEXT NOT NULL, generation INTEGER NOT NULL, occurrence_id TEXT NOT NULL,
+     PRIMARY KEY (tracker_id, kind, generation, occurrence_id)
+   );
+   CREATE TABLE IF NOT EXISTS attention_acks (
+     tracker_id TEXT NOT NULL, kind TEXT NOT NULL, token TEXT NOT NULL, generation INTEGER NOT NULL, direction TEXT NOT NULL,
+     fence_id TEXT NOT NULL, ids_hash TEXT NOT NULL, result_json TEXT NOT NULL,
+     PRIMARY KEY (tracker_id, kind, token)
+   );
+   CREATE TABLE IF NOT EXISTS manager_attention (
+     id TEXT PRIMARY KEY,
+     tracker_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+     task_id TEXT NOT NULL,
+     task_key TEXT NOT NULL,
+     kind TEXT NOT NULL,
+     signal TEXT NOT NULL,
+     first_seen_at TEXT NOT NULL,
+     eligible_at TEXT NOT NULL,
+     cleared_at TEXT,
+     retired_reason TEXT,
+     sweep_baselined_generation INTEGER,
+     created_rev INTEGER NOT NULL,
+     rev INTEGER NOT NULL
+   );
+   CREATE INDEX IF NOT EXISTS idx_manager_attention_rev ON manager_attention(tracker_id, kind, rev);
+   CREATE INDEX IF NOT EXISTS idx_manager_attention_task ON manager_attention(task_id, kind, signal, cleared_at);
+   CREATE TABLE IF NOT EXISTS attention_attempts (
+     attempt_id TEXT PRIMARY KEY,
+     tracker_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+     kind TEXT NOT NULL,
+     generation INTEGER NOT NULL,
+     batch_id TEXT NOT NULL UNIQUE,
+     recipient_thread_id TEXT NOT NULL,
+     recipient_source TEXT NOT NULL CHECK (recipient_source IN ('manager', 'sweep_fallback', 'parent')),
+     started_at TEXT NOT NULL,
+     transport_started_at TEXT,
+     outcome TEXT NOT NULL CHECK (outcome IN ('claimed', 'sending', 'appended', 'queued', 'inline', 'failed', 'unknown')),
+     queued_message_id TEXT,
+     inline_event_ref TEXT,
+     accepted_at TEXT,
+     disposition TEXT CHECK (disposition IS NULL OR disposition IN ('waived_loss', 'retry')),
+     disposition_at TEXT,
+     error TEXT,
+     rev INTEGER NOT NULL
+   );
+   CREATE INDEX IF NOT EXISTS idx_attention_attempts_rev ON attention_attempts(tracker_id, kind, rev);
+   CREATE TABLE IF NOT EXISTS attention_attempt_items (
+     attempt_id TEXT NOT NULL REFERENCES attention_attempts(attempt_id) ON DELETE CASCADE,
+     occurrence_id TEXT NOT NULL,
+     PRIMARY KEY (attempt_id, occurrence_id)
+   );
+   CREATE INDEX IF NOT EXISTS idx_attention_attempt_items_occurrence ON attention_attempt_items(occurrence_id);
+   CREATE TABLE IF NOT EXISTS attention_observations (
+     id INTEGER PRIMARY KEY AUTOINCREMENT,
+     tracker_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+     kind TEXT NOT NULL, at TEXT NOT NULL, task_id TEXT NOT NULL, signal TEXT NOT NULL,
+     validity TEXT NOT NULL CHECK (validity IN ('valid', 'unknown')), rev INTEGER NOT NULL
+   );
+   CREATE INDEX IF NOT EXISTS idx_attention_observations_rev ON attention_observations(tracker_id, kind, rev);
+   CREATE TABLE IF NOT EXISTS attention_unknown (tracker_id TEXT NOT NULL, kind TEXT NOT NULL, task_id TEXT NOT NULL, signal TEXT NOT NULL, PRIMARY KEY (tracker_id, kind, task_id, signal));
+   CREATE TABLE IF NOT EXISTS attention_manager (
+     tracker_id TEXT PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
+     manager TEXT, changed_at TEXT, previous TEXT
+   );`,
 ] as const;
 
 export function initializeTasksSchema(db: PluginDatabase): void {

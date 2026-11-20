@@ -1572,7 +1572,7 @@ it("lets the migration turn planning on only for projects that already have a pl
     ALTER TABLE task_threads DROP COLUMN link_origin;
     ALTER TABLE projects DROP COLUMN archive_threads_on_close;
     ALTER TABLE projects DROP COLUMN archive_reviewer_on_approval;
-    DELETE FROM schema_version WHERE version = (SELECT MAX(version) FROM schema_version);
+    DELETE FROM schema_version WHERE version = 37;
   `);
   db.exec(`
     DROP TABLE task_plan_reviews;
@@ -1585,7 +1585,7 @@ it("lets the migration turn planning on only for projects that already have a pl
     ALTER TABLE projects DROP COLUMN planning_changed_at;
     ALTER TABLE projects DROP COLUMN planning_previous;
     ALTER TABLE projects DROP COLUMN planning;
-    DELETE FROM schema_version WHERE version = (SELECT MAX(version) FROM schema_version);
+    DELETE FROM schema_version WHERE version = 36;
   `);
   const { initializeTasksSchema } = await import("../db/schema");
   initializeTasksSchema(db);
@@ -1670,4 +1670,26 @@ describe("archive v21: thread-archive settings and links", () => {
     await importProject(target.bb, target.store, await exportOf(source, "link-two"), true);
     expect(targetDb.prepare("SELECT thread_id, created_for_task, link_origin FROM task_threads WHERE id = ?").get(link.id)).toEqual({ thread_id: "thr_two", created_for_task: 0, link_origin: null });
   });
+});
+
+it("never exports manager-attention state, and an import, --overwrite included, changes no mode, ack, ledger, manager or link", async () => {
+  const source = await seed();
+  const db = source.bb.storage.database();
+  const { requestMode } = await import("../attention/modes");
+  requestMode(db, { trackerId: source.project.id, mode: "shadow" });
+  db.prepare("INSERT INTO attention_manager(tracker_id, manager, changed_at, previous) VALUES (?, 'thr_example', ?, NULL)").run(source.project.id, new Date().toISOString());
+  db.prepare("INSERT INTO attention_acks(tracker_id, kind, token, generation, direction, fence_id, ids_hash, result_json) VALUES (?, 'stale-status', 't1', 1, 'to_live', 'f1', 'h', '{}')").run(source.project.id);
+  const out = join(await directory(), "snapshot");
+  await exportProject(source.bb, source.store, source.project.id, out);
+  const archive = await readProjectArchive(source.bb, undefined, out);
+  expect(JSON.stringify(archive)).not.toMatch(/attention|manager_attention|thr_example|fence/i);
+  source.store.tasks.updateTask(source.task.id, { title: "Changed locally" });
+  const tables = ["attention_modes", "attention_acks", "attention_manager", "attention_rev", "manager_attention", "attention_attempts", "attention_handback"];
+  const state = () => JSON.stringify([tables.map((table) => db.prepare(`SELECT * FROM ${table} ORDER BY 1, 2`).all()), source.store.tasks.getProject(source.project.id)?.linkedBbProjectId]);
+  const before = state();
+  await importProject(source.bb, source.store, out, false).catch(() => undefined);
+  await importProject(source.bb, source.store, out, true);
+  expect(source.store.tasks.getTask(source.task.id)?.title).not.toBe("Changed locally");
+  expect(state()).toBe(before);
+  expect(source.store.tasks.getProject(source.project.id)?.linkedBbProjectId).toBe("proj_original");
 });

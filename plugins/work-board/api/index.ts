@@ -15,6 +15,7 @@ import { actorLabel, buildApprovalMessage, buildFeedbackMessage, buildResultCopy
 import { storageService } from "../storage";
 import { gitSyncService } from "../git-sync/service";
 import { projectConfigHandlers } from "../config";
+import { attentionUiHandlers } from "../attention/rpc";
 import { createLockHandlers } from "../locks/service";
 import { statusLabel } from "../shared/statuses.js";
 import { createClosureService, type ClosureService } from "../closure/service";
@@ -967,6 +968,7 @@ export function registerHandlers(
     ...structured.handlers,
     ...gitSyncService(bb, store).handlers,
     ...projectConfigHandlers(bb, store),
+    ...attentionUiHandlers(bb, store),
     ...createLockHandlers(bb, store),
     createFolder(input) {
       const folder = store.tasks.createFolder(input);

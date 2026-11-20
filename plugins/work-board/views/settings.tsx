@@ -2,6 +2,7 @@ import { GitSyncSettings } from "./git-sync-settings";
 import { DisclosureSummary } from "../components/disclosure";
 import { formatRelativeTime } from "./activity/time.js";
 import { StorageSettings } from "./storage-settings";
+import { AttentionSettings } from "./attention-settings";
 import { NavigationBadgeSettings } from "./navigation-badge-settings";
 import { TasksRefreshProvider } from "../shell/refresh.js";
 import {
@@ -643,6 +644,7 @@ function TasksSettingsContent() {
           <ProjectStatuses key={`${project.id}:${JSON.stringify(project.statuses)}`} project={project} />
         </section>
         <GitSyncSettings key={`git:${project.id}`} projectId={project.id} />
+        <AttentionSettings key={`attention:${project.id}`} projectId={project.id} />
       </> : !projects.error ? <p className="text-xs text-muted-foreground">
         {projects.data ? "Create a project to configure its workflow." : "Loading projects…"}
       </p> : null}

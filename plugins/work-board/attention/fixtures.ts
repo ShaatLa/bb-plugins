@@ -1,0 +1,154 @@
+import { createFakePluginHost, makeThreadResponse } from "@get-bb/plugin-sdk/testing";
+import { createStore, registerTasksApi } from "../api";
+import { touchAttention } from "./ledger";
+import { registerAttention } from "./rpc";
+import { attentionService } from "./service";
+
+export const SWEEP = { kind: "plugin", pluginId: "sweep" } as const;
+export const BB_PROJECT = "proj_example";
+export const MANAGER = "thr_manager";
+
+interface Row { id: string; threadId: string; state: string; editable: boolean; originPluginId: string; updatedAt: string; content: { type: "text"; text: string; mentions: [] }[]; payload: { kind: string } }
+type Fault = Error & { status?: number };
+const fault = (message: string, status?: number): Fault => Object.assign(new Error(message), status ? { status } : {});
+
+/** An in-memory stand-in for the thread SDK area Work Board delivers through. */
+export function createFakeThreads() {
+  const state = {
+    rows: [] as Row[],
+    sends: 0,
+    updates: 0,
+    requests: [] as { seq: number; requestId: string; text: string }[],
+    accepted: [] as { seq: number; clientRequestId: string }[],
+    /** queue: a queued row; inline: dispatched at once; throw: the send fails with `sendError`. */
+    sendMode: "queue" as "queue" | "inline" | "throw",
+    /** Whether an inline send also records its accepted-input event. */
+    acceptInline: true,
+    sendError: undefined as Fault | undefined,
+    /** A lost update response: the write lands, the caller sees an error. */
+    updateLost: false,
+    /** An explicit rejection: the write never happens. */
+    updateRejection: undefined as Fault | undefined,
+    /** With a lost update: the row dispatches (and leaves the queue) before the caller re-reads it. */
+    dispatchAfterUpdate: false,
+    /** The row left the queue without our text and the update failed with no status. */
+    dropRowOnUpdate: false,
+    /** The send reaches the thread but its response is lost. */
+    sendLandsThenThrows: false,
+    lastBody: "",
+    /** Holds every send until released, so a test can interleave a transition. */
+    sendGate: undefined as Promise<void> | undefined,
+    threads: new Map<string, { archived?: boolean; parent?: string }>(),
+    sweepManager: null as string | null,
+  };
+  let seq = 0;
+  const text = (row: Row) => row.content.map((part) => part.text).join("\n");
+  const sdk = {
+    threads: {
+      get: async ({ threadId }: { threadId: string }) => {
+        const info = state.threads.get(threadId) ?? {};
+        return makeThreadResponse({ id: threadId, status: "idle", ...(info.archived ? { archivedAt: 1 } : {}), ...(info.parent ? { parentThreadId: info.parent } : {}) } as never);
+      },
+      queuedMessages: {
+        list: async ({ threadId }: { threadId: string }) => state.rows.filter((row) => row.threadId === threadId),
+        update: async ({ queuedMessageId, input, expectedUpdatedAt }: { queuedMessageId: string; input: { text: string }[]; expectedUpdatedAt: string }) => {
+          state.updates++;
+          if (state.updateRejection) throw state.updateRejection;
+          const row = state.rows.find((candidate) => candidate.id === queuedMessageId);
+          if (state.dropRowOnUpdate && row) { state.rows.splice(state.rows.indexOf(row), 1); throw fault("socket closed"); }
+          if (!row || row.updatedAt !== expectedUpdatedAt) throw fault("changed", 409);
+          row.content = [{ type: "text", text: input[0]!.text, mentions: [] }];
+          row.updatedAt = `${Date.now()}-${++seq}`;
+          if (state.updateLost) { if (state.dispatchAfterUpdate) dispatchRow(row); throw fault("socket closed"); }
+          return row;
+        },
+      },
+      send: async ({ threadId, input }: { threadId: string; input: { text: string }[] }) => {
+        state.sends++;
+        if (state.sendGate) await state.sendGate;
+        if (state.sendMode === "throw") throw state.sendError ?? fault("socket closed");
+        const body = input[0]!.text;
+        state.lastBody = body;
+        if (state.sendLandsThenThrows) { addRow(threadId, body); throw fault("socket closed"); }
+        if (state.sendMode === "queue") {
+          const row = addRow(threadId, body);
+          return { ok: true, delivery: "queued", queuedMessage: row };
+        }
+        if (state.acceptInline) dispatch(body);
+        return { ok: true, delivery: "sent" };
+      },
+      events: {
+        list: async ({ types }: { types: string[] }) => {
+          if (types.includes("client/turn/requested")) return state.requests.map((request) => ({ seq: request.seq, type: "client/turn/requested", createdAt: "2026-11-20T00:00:00.000Z", data: { requestId: request.requestId, input: [{ type: "text", text: request.text }] } })).reverse();
+          return state.accepted.map((event) => ({ seq: event.seq, type: "turn/input/accepted", createdAt: "2026-11-20T00:00:00.000Z", data: { clientRequestId: event.clientRequestId } })).reverse();
+        },
+      },
+    },
+    plugins: {
+      callRpc: async ({ pluginId, method }: { pluginId: string; method: string }) => {
+        if (pluginId === "sweep" && method === "config.get") return { manager: state.sweepManager };
+        throw new Error(`unexpected ${pluginId}.${method}`);
+      },
+    },
+  };
+  function addRow(threadId: string, body: string): Row {
+    const row: Row = { id: `qm_${++seq}`, threadId, state: "queued", editable: true, originPluginId: "work-board", updatedAt: `u${++seq}`, content: [{ type: "text", text: body, mentions: [] }], payload: { kind: "message" } };
+    state.rows.push(row);
+    return row;
+  }
+  /** Record an accepted-input pair for `body`, as an idle thread does for an inline message. */
+  function dispatch(body: string) {
+    const requestId = `req_${++seq}`;
+    state.requests.push({ seq: ++seq, requestId, text: body });
+    state.accepted.push({ seq: ++seq, clientRequestId: requestId });
+  }
+  /** A queued row leaves the queue and dispatches with its text. */
+  function dispatchRow(row: Row) {
+    state.rows.splice(state.rows.indexOf(row), 1);
+    dispatch(text(row));
+  }
+  return Object.assign(state, { sdk, text, dispatch, dispatchRow, addRow });
+}
+
+export function setup(threads = createFakeThreads()) {
+  const host = createFakePluginHost({ pluginId: "work-board", sdk: threads.sdk as never });
+  const { bb, harness } = host;
+  const store = createStore(bb);
+  registerTasksApi(bb, store);
+  registerAttention(bb, store);
+  const db = bb.storage.database();
+  const tracker = store.tasks.createProject({ name: "Attention", prefix: "ATT", color: "blue", linkedBbProjectId: BB_PROJECT });
+  store.tasks.updateProject(tracker.id, { statuses: [{ id: "backlog", name: "Backlog" }, { id: "todo", name: "Todo" }, { id: "in_progress", name: "In Progress" }, { id: "in_review", name: "In Review" }, { id: "in_testing", name: "In Testing" }, { id: "done", name: "Done" }, { id: "canceled", name: "Canceled" }] });
+  const service = attentionService(bb);
+  db.prepare("INSERT INTO attention_manager(tracker_id, manager, changed_at, previous) VALUES (?, ?, ?, NULL)").run(tracker.id, MANAGER, new Date().toISOString());
+  const call = (method: string, input?: unknown, caller?: { kind: "plugin"; pluginId: string }) =>
+    harness.callRpc(method, input, caller ? { experimental_caller: caller } : undefined) as Promise<any>;
+  const sweep = (method: string, input?: unknown) => call(method, input, SWEEP);
+  const setMode = (mode: "off" | "shadow" | "live", parityReviewed?: boolean) => call("updateAttentionMode", { projectId: tracker.id, mode, parityReviewed });
+  /** Pretend the shadow observation started `hours` ago. */
+  const ageShadow = (hours: number) => db.prepare("UPDATE attention_modes SET shadow_started_at=? WHERE tracker_id=?").run(new Date(Date.now() - hours * 3_600_000).toISOString(), tracker.id);
+  const card = (title: string, status: "in_progress" | "in_review" | "in_testing" | "done" | "todo" = "in_progress", extra: Record<string, unknown> = {}) =>
+    store.tasks.createTask({ projectId: tracker.id, title, status, ...extra });
+  const occurrences = (all = false) => db.prepare<[string], any>(`SELECT * FROM manager_attention WHERE tracker_id=? ${all ? "" : "AND cleared_at IS NULL"} ORDER BY created_rev`).all(tracker.id);
+  const attempts = () => db.prepare<[string], any>("SELECT * FROM attention_attempts WHERE tracker_id=? ORDER BY started_at, rev").all(tracker.id);
+  /** Make every open occurrence past its grace period. */
+  const makeEligible = () => db.prepare("UPDATE manager_attention SET eligible_at='2000-01-01T00:00:00.000Z'").run();
+  const linkPr = (taskId: string, number: number, state: "open" | "merged" | "closed" | "failed" | "missing") => {
+    const identity = `owner/repo#${number}`;
+    db.prepare("INSERT OR REPLACE INTO task_pr_links(task_id, identity, payload) VALUES (?, ?, ?)").run(taskId, identity, JSON.stringify({ taskId }));
+    db.prepare("DELETE FROM git_pr_snapshots WHERE project_id=? AND identity=?").run(tracker.id, identity);
+    if (state !== "missing") db.prepare("INSERT INTO git_pr_snapshots(project_id, identity, payload, error) VALUES (?, ?, ?, ?)").run(tracker.id, identity, state === "failed" ? null : JSON.stringify({ state }), state === "failed" ? "refresh failed" : null);
+    touchAttention(db, [taskId]);
+  };
+  return { ...host, bb, store, db, tracker, threads, service, call, sweep, setMode, ageShadow, card, occurrences, attempts, makeEligible, linkPr, dispose: () => harness.dispose() };
+}
+
+/** Switch to shadow, age the observation past the gate, then promote and let Sweep acknowledge, so live is effective. */
+export async function goLive(f: ReturnType<typeof setup>, accepted: string[] = []) {
+  await f.setMode("shadow");
+  f.ageShadow(49);
+  const state = await f.setMode("live", true);
+  const transition = state.transition;
+  const ack = await f.sweep("attention.ack", { projectId: BB_PROJECT, trackerId: f.tracker.id, kind: "stale-status", token: transition.token, generation: transition.generation, direction: "to_live", fenceId: "fence-live", acceptedOccurrenceIds: accepted });
+  return { transition, ack };
+}

@@ -12,6 +12,7 @@ import {
 } from "../shared/git-sync";
 
 import { prepareOverlaps } from "./overlap";
+import { touchAttention } from "../attention/ledger";
 
 type Database = ReturnType<BbPluginApi["storage"]["database"]>;
 export function createGitSyncStore(db: Database) {
@@ -34,11 +35,19 @@ export function createGitSyncStore(db: Database) {
   const saveLink = (value: PrLink) => {
     const link = prLinkSchema.parse(value);
     assertNoSecretsInValue(link, "PR link");
-    db.prepare<[string, string, string]>(
-      "INSERT INTO task_pr_links(task_id, identity, payload) VALUES (?, ?, ?) ON CONFLICT(task_id, identity) DO UPDATE SET payload=excluded.payload",
-    ).run(link.taskId, prIdentity(link), JSON.stringify(link));
-    return link;
+    return db.transaction(() => {
+      db.prepare<[string, string, string]>(
+        "INSERT INTO task_pr_links(task_id, identity, payload) VALUES (?, ?, ?) ON CONFLICT(task_id, identity) DO UPDATE SET payload=excluded.payload",
+      ).run(link.taskId, prIdentity(link), JSON.stringify(link));
+      touchAttention(db, [link.taskId]);
+      return link;
+    })();
   };
+  // A snapshot write changes the PR facts of every card linked to that PR, so those cards are recomputed in its transaction.
+  const touchLinked = (projectId: string, identities: readonly string[]) =>
+    touchAttention(db, db.prepare<[string, string], { task_id: string }>(
+      "SELECT l.task_id FROM task_pr_links l JOIN tasks t ON t.id=l.task_id WHERE t.project_id=? AND l.identity IN (SELECT value FROM json_each(?))",
+    ).all(projectId, JSON.stringify(identities)).map((row) => row.task_id));
   let cached: { projectId: string; token: string; evaluate: (taskId: string) => Overlap[]; results: Map<string, Overlap[]> } | undefined;
   // One project scan per call, not per task: board summaries arrive in batches of hundreds.
   function overlapsForTasks(taskIds: readonly string[]) {
@@ -70,7 +79,7 @@ export function createGitSyncStore(db: Database) {
     }
     return result;
   }
-  return {
+  const store = {
     overlaps(taskId: string) {
       return overlapsForTasks([taskId]).get(taskId) ?? [];
     },
@@ -216,5 +225,18 @@ export function createGitSyncStore(db: Database) {
         "INSERT INTO git_pr_snapshots(project_id, identity, payload, error, last_attempt_at, failure_count) VALUES (?, ?, NULL, ?, ?, 1) ON CONFLICT(project_id, identity) DO UPDATE SET error=CASE WHEN error IS excluded.error THEN error ELSE excluded.error END, last_attempt_at=excluded.last_attempt_at, failure_count=failure_count+1",
       ).run(projectId, prIdentity(link), error, Date.now());
     },
+  };
+  return {
+    ...store,
+    saveSnapshot: (projectId: string, link: Pick<PrLink, "repository" | "number">, snapshot: PrSnapshot) =>
+      db.transaction(() => {
+        store.saveSnapshot(projectId, link, snapshot);
+        touchLinked(projectId, [prIdentity(link), prIdentity(snapshot)]);
+      })(),
+    fail: (projectId: string, link: Pick<PrLink, "repository" | "number">, error: string) =>
+      db.transaction(() => {
+        store.fail(projectId, link, error);
+        touchLinked(projectId, [prIdentity(link)]);
+      })(),
   };
 }

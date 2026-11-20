@@ -187,3 +187,105 @@ export async function deliverCommentToLatestAgent(
   }
   return 0;
 }
+
+export type Receipt =
+  | { outcome: "appended" | "queued"; queuedMessageId: string }
+  | { outcome: "inline"; inlineEventRef: string }
+  /** Sent to an idle thread; its accepted-input event has not arrived yet. */
+  | { outcome: "pending" }
+  /** The write may or may not have happened and nothing proves either; it is never resent automatically. */
+  | { outcome: "unknown"; error: string }
+  /** Definitely not delivered: an explicit rejection, so a later pass may send again. */
+  | { outcome: "failed"; error: string };
+
+/** How long an inline send waits for its accepted-input event before it stays `sending`; tests shorten it. */
+export const receiptPolling = { tries: 3, delayMs: 300 };
+
+const statusOf = (error: unknown) => (typeof error === "object" && error !== null && "status" in error && typeof error.status === "number" ? error.status : undefined);
+// An update refused on its precondition (the row changed under us) proves the write did not commit; a 404 does not, since a dispatched row also vanishes.
+const isPreconditionRejection = (error: unknown) => [409, 412].includes(statusOf(error) ?? 0);
+const isDefiniteSendFailure = (error: unknown) => [400, 401, 403, 404, 409, 412, 422].includes(statusOf(error) ?? 0);
+
+type QueueRow = Awaited<ReturnType<BbPluginApi["sdk"]["threads"]["queuedMessages"]["list"]>>[number];
+const rowText = (row: QueueRow) => row.content.map((part) => (part.type === "text" ? part.text : "")).join("\n");
+
+/** A marker is evidence only in the recipient's own queue or in its accepted-input history, never in a send response. */
+export async function findAttentionMarker(bb: BbPluginApi, threadId: string, marker: string): Promise<Receipt | null> {
+  try {
+    for (const row of await bb.sdk.threads.queuedMessages.list({ threadId })) {
+      const text = rowText(row);
+      const at = text.indexOf(marker);
+      if (at >= 0) return { outcome: text.slice(0, at).includes(QUEUED_NOTICE_SEPARATOR) ? "appended" : "queued", queuedMessageId: row.id };
+    }
+  } catch { /* An unreadable queue is no evidence either way. */ }
+  try {
+    const requests = await bb.sdk.threads.events.list({ threadId, types: ["client/turn/requested"], order: "desc", limit: "50", signal: AbortSignal.timeout(5000) });
+    const requestIds = requests.filter((event) => event.type === "client/turn/requested" && JSON.stringify(event.data).includes(marker)).map((event) => (event.data as { requestId?: string }).requestId);
+    if (!requestIds.length) return null;
+    const accepted = await bb.sdk.threads.events.list({ threadId, types: ["turn/input/accepted"], order: "desc", limit: "50", signal: AbortSignal.timeout(5000) });
+    const hit = accepted.find((event) => event.type === "turn/input/accepted" && requestIds.includes((event.data as { clientRequestId?: string }).clientRequestId));
+    return hit ? { outcome: "inline", inlineEventRef: `${threadId}:${hit.seq}` } : null;
+  } catch {
+    return null;
+  }
+}
+
+type AppendResult = { kind: "none" } | { kind: "done"; receipt: Receipt };
+
+// Like appendToQueuedNotice, but a failed update is judged by re-reading the row, never by guessing.
+async function appendMarked(bb: BbPluginApi, threadId: string, text: string, marker: string): Promise<AppendResult> {
+  for (let attempt = 0; attempt < 2; attempt++) {
+    let last: QueueRow | undefined;
+    try {
+      last = (await bb.sdk.threads.queuedMessages.list({ threadId })).at(-1);
+    } catch {
+      return { kind: "none" };
+    }
+    const part = last?.content.length === 1 ? last.content[0] : undefined;
+    if (!last || !part || part.type !== "text" || last.originPluginId !== bb.pluginId || (last.state !== "queued" && last.state !== "waiting") || !last.editable) return { kind: "none" };
+    try {
+      await bb.sdk.threads.queuedMessages.update({ threadId, queuedMessageId: last.id, expectedUpdatedAt: last.updatedAt, input: [{ ...part, text: part.text + QUEUED_NOTICE_SEPARATOR + text }] });
+      return { kind: "done", receipt: { outcome: "appended", queuedMessageId: last.id } };
+    } catch (error) {
+      if (isPreconditionRejection(error)) continue;
+      const message = errorMessage(error);
+      let again: QueueRow | undefined;
+      try {
+        again = (await bb.sdk.threads.queuedMessages.list({ threadId })).find((row) => row.id === last.id);
+      } catch {
+        return { kind: "done", receipt: { outcome: "unknown", error: message } };
+      }
+      if (again && rowText(again).includes(marker)) return { kind: "done", receipt: { outcome: "appended", queuedMessageId: again.id } };
+      // A row that left the queue may have dispatched with our text, so the accepted-input history decides; otherwise nothing more is written.
+      const found = again ? null : await findAttentionMarker(bb, threadId, marker);
+      return { kind: "done", receipt: found ?? { outcome: "unknown", error: message } };
+    }
+  }
+  return { kind: "none" };
+}
+
+/**
+ * Deliver `text` carrying `marker` and report what is provable: `appended` (merged into our queued notice, with its row id),
+ * `queued` (a new row), `inline` (accepted-input event seen), `pending` (sent inline, event not yet seen), `failed` (explicitly
+ * rejected) or `unknown` (possibly written, never resent). Runs under the same per-thread serialization as the other notice writers.
+ */
+export function deliverWithReceipt(bb: BbPluginApi, threadId: string, text: string, marker: string): Promise<Receipt> {
+  const body = `${text}\n\n${marker}`;
+  return serialPerThread(threadId, async (): Promise<Receipt> => {
+    const appended = await appendMarked(bb, threadId, body, marker);
+    if (appended.kind === "done") return appended.receipt;
+    try {
+      const sent = await bb.sdk.threads.send({ threadId, originPluginId: bb.pluginId, input: [{ type: "text", text: withPluginHeader(bb.pluginId, body), mentions: [] }], mode: "queue-if-active" });
+      if (sent.delivery === "queued") return { outcome: "queued", queuedMessageId: sent.queuedMessage.id };
+      for (let attempt = 0; attempt < receiptPolling.tries; attempt++) {
+        const found = await findAttentionMarker(bb, threadId, marker);
+        if (found) return found;
+        await new Promise((resolve) => setTimeout(resolve, receiptPolling.delayMs));
+      }
+      return { outcome: "pending" };
+    } catch (error) {
+      if (isDefiniteSendFailure(error)) return { outcome: "failed", error: errorMessage(error) };
+      return (await findAttentionMarker(bb, threadId, marker)) ?? { outcome: "unknown", error: errorMessage(error) };
+    }
+  });
+}
