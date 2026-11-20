@@ -90,7 +90,7 @@ function SubTaskDonut({
       type="button"
       title={epic ? "Tasks completed" : "Sub-tasks completed"}
       onClick={onClick}
-      className="inline-flex items-center gap-1.5 rounded-full border border-border bg-secondary px-2.5 py-0.5 text-xs text-muted-foreground shadow-2xs hover:border-input hover:text-foreground"
+      className="inline-flex shrink-0 items-center whitespace-nowrap gap-1.5 rounded-full border border-border bg-secondary px-2.5 py-0.5 text-xs text-muted-foreground shadow-2xs hover:border-input hover:text-foreground"
     >
       <span
         aria-hidden
@@ -553,19 +553,19 @@ function TaskDetail({
           subtasks.data?.length ? (
             <div className="mb-4 flex flex-wrap items-center gap-2">
               {task.type === "epic" ? (
-                <span className="rounded-full border border-border px-2.5 py-0.5 text-xs font-medium">
+                <span className="shrink-0 whitespace-nowrap rounded-full border border-border px-2.5 py-0.5 text-xs font-medium">
                   Epic
                 </span>
               ) : null}
               {epic.data ? (
                 <button
                   type="button"
-                  className="inline-flex max-w-full items-center gap-1.5 rounded-full border border-border bg-secondary px-2.5 py-0.5 text-xs hover:border-input"
+                  className="inline-flex min-w-0 max-w-full items-center gap-1.5 whitespace-nowrap rounded-full border border-border bg-secondary px-2.5 py-0.5 text-xs hover:border-input"
                   onClick={() =>
                     navigation.go({ kind: "task", taskKey: epic.data!.key })
                   }
                 >
-                  <Icon name="Zap" className="size-3" />
+                  <Icon name="Zap" className="size-3 shrink-0" />
                   <span className="truncate">
                     {epic.data.key} · {epic.data.title}
                   </span>
@@ -574,14 +574,15 @@ function TaskDetail({
               {parentTask ? (
                 <button
                   type="button"
-                  className="inline-flex max-w-full items-center gap-1.5 rounded-full border border-border bg-secondary px-2.5 py-0.5 text-xs text-muted-foreground shadow-2xs hover:border-input"
+                  className="inline-flex min-w-0 max-w-full items-center gap-1.5 whitespace-nowrap rounded-full border border-border bg-secondary px-2.5 py-0.5 text-xs text-muted-foreground shadow-2xs hover:border-input"
                   onClick={() =>
                     navigation.go({ kind: "task", taskKey: parentTask.key })
                   }
                 >
-                  Sub-task of
-                  <StatusIcon projectId={parentTask.projectId} status={parentTask.status} className="size-3" />
-                  <span className="font-medium text-foreground">
+                  {/* Only the title shrinks; the label and the key never wrap. */}
+                  <span className="shrink-0">Sub-task of</span>
+                  <StatusIcon projectId={parentTask.projectId} status={parentTask.status} className="size-3 shrink-0" />
+                  <span className="shrink-0 font-medium text-foreground">
                     {parentTask.key}
                   </span>
                   <span className="min-w-0 truncate">{parentTask.title}</span>
