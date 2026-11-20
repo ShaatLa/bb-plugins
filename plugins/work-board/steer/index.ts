@@ -204,7 +204,8 @@ export const receiptPolling = { tries: 3, delayMs: 300 };
 const statusOf = (error: unknown) => (typeof error === "object" && error !== null && "status" in error && typeof error.status === "number" ? error.status : undefined);
 // An update refused on its precondition (the row changed under us) proves the write did not commit; a 404 does not, since a dispatched row also vanishes.
 const isPreconditionRejection = (error: unknown) => [409, 412].includes(statusOf(error) ?? 0);
-const isDefiniteSendFailure = (error: unknown) => [400, 401, 403, 404, 409, 412, 422].includes(statusOf(error) ?? 0);
+// Any explicit 4xx response is a rejection by the server: nothing was written. A missing status (a lost response) is not.
+const isDefiniteSendFailure = (error: unknown) => { const status = statusOf(error) ?? 0; return status >= 400 && status <= 499; };
 
 type QueueRow = Awaited<ReturnType<BbPluginApi["sdk"]["threads"]["queuedMessages"]["list"]>>[number];
 const rowText = (row: QueueRow) => row.content.map((part) => (part.type === "text" ? part.text : "")).join("\n");

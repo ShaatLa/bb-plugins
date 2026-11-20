@@ -84,11 +84,11 @@ describe("definite failure and uncertainty", () => {
     expect(f.runs()).toBe(1 + 1); // the pending report was delivered first, then the script ran again
   });
 
-  it("treats a definite 403 on an append as failed, pushes, and appends on the next tick", async () => {
+  it.each([403, 413, 429])("treats a definite %i on an append as failed, pushes, and appends on the next tick", async (status) => {
     const f = await make();
     await f.tick();
     f.output("ACTION idle EXA-2", 1);
-    f.threads.updateRejection = Object.assign(new Error("forbidden"), { status: 403 });
+    f.threads.updateRejection = Object.assign(new Error("rejected"), { status });
     await f.tick();
     expect(f.attempts().at(-1)).toMatchObject({ outcome: "failed" });
     expect(f.pushes).toHaveLength(1);

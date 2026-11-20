@@ -239,11 +239,16 @@ describe("deliverWithReceipt", () => {
     expect(f.threads.sends).toBe(0);
   });
 
-  it("reports a definite rejection of the append, with the row read back unchanged, as failed and writes nothing", async () => {
+  it("reports any explicit 4xx on the append, with the row read back unchanged, as failed and writes nothing", async () => {
     const f = await seed();
-    f.threads.updateRejection = Object.assign(new Error("forbidden"), { status: 403 });
-    expect(await deliverWithReceipt(f.bb, MANAGER, "text", marker)).toMatchObject({ outcome: "failed", error: "forbidden" });
+    for (const status of [403, 413, 429, 418]) {
+      f.threads.updateRejection = Object.assign(new Error(`rejected ${status}`), { status });
+      expect(await deliverWithReceipt(f.bb, MANAGER, "text", marker)).toMatchObject({ outcome: "failed", error: `rejected ${status}` });
+    }
     expect(f.threads.sends).toBe(0);
+    // A 5xx is not a rejection: the write may have happened.
+    f.threads.updateRejection = Object.assign(new Error("unavailable"), { status: 503 });
+    expect(await deliverWithReceipt(f.bb, MANAGER, "text", marker)).toMatchObject({ outcome: "unknown" });
     // An error without a status stays ambiguous: the row may have changed under a lost response.
     f.threads.updateRejection = Object.assign(new Error("socket closed"), {});
     expect(await deliverWithReceipt(f.bb, MANAGER, "text", marker)).toMatchObject({ outcome: "unknown" });
