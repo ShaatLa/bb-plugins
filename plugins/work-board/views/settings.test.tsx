@@ -490,8 +490,8 @@ it("lets the owner pick each planning mode for the selected project, and the cho
     await settings.findByRole("combobox", { name: "Mode" });
     // The project sections come in this order; the former General block is gone (native fields are rendered by the host).
     const regions = settings.getAllByRole("region").map(node => node.getAttribute("aria-label"));
-    expect(regions.filter(name => name?.startsWith("Project "))).toEqual([
-      "Project task statuses", "Project planning", "Project archiving", "Project activity and notifications", "Project Git and PR sync",
+    expect(regions.filter(name => name?.startsWith("Project ") || name === "Repository checks")).toEqual([
+      "Project task statuses", "Project planning", "Project archiving", "Project activity and notifications", "Project Git and PR sync", "Repository checks",
     ]);
     expect(settings.queryByText("General")).toBeNull();
     expect(settings.queryByText("Open by default")).toBeNull();
