@@ -690,7 +690,7 @@ const MIGRATIONS = [
   // 0.62.0: a project that already plans gets a Planning status (see settlePlanningStatuses). The log is bound per run.
   (db: PluginDatabase, log: Log) => settlePlanningStatuses(db, log),
   // 0.64.0: the repository-check runner (checks/). Local state only (never exported), keyed by tracker. Every staged report and
-  // committed snapshot records the bb project it belongs to, so a relink never applies state recorded for another project.
+  // committed snapshot records the bb project it belongs to, so a relink never applies state recorded for another project; history rows are keyed by it too.
   `CREATE TABLE IF NOT EXISTS checks_config (
      tracker_id TEXT PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
      enabled INTEGER NOT NULL DEFAULT 0 CHECK (enabled IN (0, 1)),
@@ -734,17 +734,17 @@ const MIGRATIONS = [
    );
    CREATE INDEX IF NOT EXISTS idx_checks_attempts_report ON checks_attempts(tracker_id, report_id, started_at);
    CREATE TABLE IF NOT EXISTS checks_ticks (
-     tick TEXT PRIMARY KEY, tracker_id TEXT NOT NULL, at INTEGER NOT NULL,
+     tick TEXT PRIMARY KEY, tracker_id TEXT NOT NULL, project TEXT NOT NULL, at INTEGER NOT NULL,
      executed INTEGER NOT NULL DEFAULT 0, delivered INTEGER NOT NULL DEFAULT 0, repeated INTEGER NOT NULL DEFAULT 0,
      suppressed INTEGER NOT NULL DEFAULT 0, refresh_failed INTEGER NOT NULL DEFAULT 0, script_failed INTEGER NOT NULL DEFAULT 0,
-     delivery_failed INTEGER NOT NULL DEFAULT 0
+     delivery_failed INTEGER NOT NULL DEFAULT 0, delivery_unknown INTEGER NOT NULL DEFAULT 0
    );
-   CREATE INDEX IF NOT EXISTS idx_checks_ticks_tracker_at ON checks_ticks(tracker_id, at);
+   CREATE INDEX IF NOT EXISTS idx_checks_ticks_tracker_at ON checks_ticks(tracker_id, project, at);
    CREATE TABLE IF NOT EXISTS checks_items (
-     tracker_id TEXT NOT NULL, fingerprint TEXT NOT NULL, kind TEXT NOT NULL, first_at INTEGER NOT NULL, last_at INTEGER NOT NULL,
-     PRIMARY KEY (tracker_id, fingerprint)
+     tracker_id TEXT NOT NULL, project TEXT NOT NULL, fingerprint TEXT NOT NULL, kind TEXT NOT NULL, first_at INTEGER NOT NULL, last_at INTEGER NOT NULL,
+     PRIMARY KEY (tracker_id, project, fingerprint)
    );
-   CREATE INDEX IF NOT EXISTS idx_checks_items_tracker_first ON checks_items(tracker_id, first_at);`,
+   CREATE INDEX IF NOT EXISTS idx_checks_items_tracker_first ON checks_items(tracker_id, project, first_at);`,
 ] as const;
 
 export function initializeTasksSchema(db: PluginDatabase, log: Log = () => {}): void {

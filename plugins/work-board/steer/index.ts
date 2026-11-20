@@ -428,6 +428,8 @@ async function appendMarked(bb: BbPluginApi, threadId: string, text: string, mar
         return { kind: "done", receipt: { outcome: "unknown", error: message } };
       }
       if (again && rowText(again).includes(marker)) return { kind: "done", receipt: { outcome: "appended", queuedMessageId: again.id } };
+      // A known rejection (a definite 4xx) with the row read back untouched proves the update never committed.
+      if (again && again.updatedAt === last.updatedAt && isDefiniteSendFailure(error)) return { kind: "done", receipt: { outcome: "failed", error: message } };
       // A row that left the queue may have dispatched with our text, so the accepted-input history decides; otherwise nothing more is written.
       const found = again ? null : await findAttentionMarker(bb, threadId, marker);
       return { kind: "done", receipt: found ?? { outcome: "unknown", error: message } };

@@ -15,9 +15,11 @@ export interface State {
   lastRun?: number;
   nextRun?: number;
   exitCode?: number | null;
-  /** The most recent failure: a refresh, the script, or a delivery. */
-  failureStage?: "refresh" | "script" | "delivery" | null;
+  /** The most recent execution failure: a refresh or the script. A delivery that cannot complete is `deliveryError`, kept apart. */
+  failureStage?: "refresh" | "script" | null;
   error?: string | null;
+  /** Why the staged report is not delivered yet; cleared by the acceptance that resolves it. */
+  deliveryError?: string | null;
   refreshFailures?: number;
   refreshRetryAt?: number;
   lastFailure?: Baseline;

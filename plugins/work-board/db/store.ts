@@ -5,6 +5,7 @@ import { ordinaryTaskVisibilitySql } from "../scheduled/visibility";
 import { projectPolicies, staleRows, staleStatusObservations as observeStaleStatus } from "../attention/observe";
 import { closeTaskOccurrences, markTrackerDirty, touchAttention } from "../attention/ledger";
 import { assertLinkChangeAllowed } from "../attention/modes";
+import { assertChecksDeleteAllowed } from "../checks/ownership";
 import { archiveSettingSchema, autoArchiveAfterDaysSchema, planningSchema, staleIdleThresholdSchema, statusNotificationsSchema } from "../shared/project-settings";
 import { taskDateFiltersSchema } from "../shared/task-dates.js";
 import {
@@ -878,6 +879,7 @@ export function createTasksStore(db: PluginDatabase, log: (message: string) => v
   }
 
   function deleteProject(id: string): boolean {
+    assertChecksDeleteAllowed(db, id);
     // Deleting would cascade through the mode, ledger and attempts while Sweep may still hold its fence.
     if (db.prepare("SELECT 1 FROM attention_modes WHERE tracker_id=? AND (bound_tracker_id IS NOT NULL OR requested_mode IS NOT NULL OR effective_mode<>'off')").get(id))
       throw new Error("Switch manager attention off in the project settings before deleting this project");

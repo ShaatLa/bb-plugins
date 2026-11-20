@@ -24,6 +24,9 @@ export const checksStatusSchema = z.object({
   exitCode: z.number().nullable(),
   failureStage: z.enum(["refresh", "script", "delivery"]).nullable(),
   error: z.string().nullable(),
+  deliveryError: z.string().nullable(),
+  /** Set while a terminally unknown delivery waits for the owner's Retry. */
+  blocked: z.string().nullable(),
   refreshFailures: count,
   refreshRetryAt: z.number().nullable(),
   managerError: z.string().nullable(),
@@ -36,8 +39,8 @@ export const checksStatusSchema = z.object({
   awaitingRetry: z.boolean(),
   stateMismatch: z.string().nullable(),
   stats: z.object({
-    trackerId: z.string(), days: count, since: count, ticks: count, executed: count, deliveries: count, repeats: count, suppressedReports: count,
-    refreshFailures: count, scriptFailures: count, deliveryFailures: count, newItems: z.record(z.string(), count),
+    trackerId: z.string(), projectId: z.string(), days: count, since: count, ticks: count, executed: count, deliveries: count, repeats: count, suppressedReports: count,
+    refreshFailures: count, scriptFailures: count, deliveryFailures: count, deliveryUnknown: count, newItems: z.record(z.string(), count),
   }),
 });
 export type ChecksStatus = z.infer<typeof checksStatusSchema>;

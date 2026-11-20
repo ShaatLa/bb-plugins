@@ -62,6 +62,22 @@ describe("checkout", () => {
     expect(readFileSync(lock, "utf8")).toBe("existing");
   });
 
+  it("removes a lock the cancelled fetch created, after the exit, and keeps one that existed", async () => {
+    const root = tempDir(); const lock = join(root, "shallow.lock");
+    const hang = 'process.on("SIGTERM", () => {}); setInterval(() => {}, 1000);';
+    const cancel = async (script: string) => {
+      const controller = new AbortController();
+      const running = command(process.execPath, ["-e", script], root, controller.signal, { timeoutMs: 30_000, shallowLock: lock, killGraceMs: 200 });
+      setTimeout(() => controller.abort(new Error("shutdown")), 700);
+      await expect(running).rejects.toThrow(/shutdown/);
+    };
+    await cancel(`require('node:fs').writeFileSync('shallow.lock', 'new'); ${hang}`);
+    expect(existsSync(lock)).toBe(false);
+    writeFileSync(lock, "existing");
+    await cancel(hang);
+    expect(readFileSync(lock, "utf8")).toBe("existing");
+  });
+
   it("refuses a script path that escapes the checkout", async () => {
     const repo = createRepo(); repo.commit({ "checks/run.sh": executable("echo ok") });
     execFileSync("ln", ["-s", "/bin/sh", join(repo.dir, "checks", "link.sh")]); repo.commit({});
@@ -170,6 +186,9 @@ describe("execution", () => {
     await expect(run(tempDir(), repo, { snapshots: true })).rejects.toThrow(/complete JSON/);
     script('echo \'{"a"\' > "$BB_SWEEP_CANDIDATE_SNAPSHOT"; exit 2');
     expect((await run(tempDir(), repo, { snapshots: true })).snapshot).toBeNull();
+    // Malformed UTF-8 inside a string must not pass as JSON after a lenient decode.
+    script('printf \'{"a":"\\377"}\' > "$BB_SWEEP_CANDIDATE_SNAPSHOT"');
+    await expect(run(tempDir(), repo, { snapshots: true })).rejects.toThrow(/valid UTF-8/);
     // No candidate at all is fine.
     script("echo none");
     expect((await run(tempDir(), repo, { snapshots: true })).snapshot).toBeNull();

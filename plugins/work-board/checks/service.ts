@@ -85,9 +85,14 @@ function createService(bb: BbPluginApi) {
 
   // ---- delivery -------------------------------------------------------------------------------------------------
 
-  /** Durable delivery: promote the candidate, clear the pending report and record the delivery, in one transaction. First confirmed receipt wins. */
+  /**
+   * Durable delivery: promote the candidate, clear the pending report and record the delivery, in one transaction. First confirmed
+   * receipt wins. The new state is built on a copy and published into the caller's object only after the commit, so a failed
+   * promotion leaves both the database and the in-memory state as they were.
+   */
   function accept(attempt: AttemptRow, receipt: Extract<SteerReceipt, { outcome: "appended" | "queued" | "inline" }>, state: State, tickId: string): boolean {
-    return db.transaction(() => {
+    let next: State | undefined;
+    const accepted = db.transaction(() => {
       const row = store.delivery(attempt.tracker_id);
       if (!row?.report_id || row.report_id !== attempt.report_id) {
         // The report is delivered already (or reset): a late receipt acknowledges nothing.
@@ -100,18 +105,22 @@ function createService(bb: BbPluginApi) {
       store.supersedeOpen(attempt.tracker_id, row.report_id, attempt.attempt_id);
       const code = row.pending_exit ?? 0;
       const { fingerprint, changes } = reportContents(code, row.pending_body ?? "");
+      next = structuredClone(state);
       // The baseline belongs to the manager this attempt was sent to, not to whatever the setting says now.
-      if (code >= 2) state.lastFailure = { fingerprint, manager: attempt.manager_thread_id };
-      else state.lastReport = { fingerprint, changes, at: Date.now(), manager: attempt.manager_thread_id };
-      state.deliveredAt = Date.now(); state.deliveredTickId = row.pending_tick ?? undefined; state.deliveredReportId = row.report_id;
-      state.deliveredTo = attempt.manager_thread_id;
-      state.receipt = { mode: receipt.outcome, id: receipt.outcome === "inline" ? receipt.inlineEventRef : receipt.queuedMessageId };
-      state.managerError = null; state.pushError = null;
+      if (code >= 2) next.lastFailure = { fingerprint, manager: attempt.manager_thread_id };
+      else next.lastReport = { fingerprint, changes, at: Date.now(), manager: attempt.manager_thread_id };
+      next.deliveredAt = Date.now(); next.deliveredTickId = row.pending_tick ?? undefined; next.deliveredReportId = row.report_id;
+      next.deliveredTo = attempt.manager_thread_id;
+      next.receipt = { mode: receipt.outcome, id: receipt.outcome === "inline" ? receipt.inlineEventRef : receipt.queuedMessageId };
+      // The delivery problem this acceptance resolves goes; an execution failure (script or refresh) stays.
+      next.deliveryError = null; next.managerError = null; next.pushError = null;
       store.promote(attempt.tracker_id, row.report_id);
       history.delivered(tickId);
-      store.save(attempt.tracker_id, state);
+      store.save(attempt.tracker_id, next);
       return true;
     })();
+    if (accepted && next) { for (const key of Object.keys(state)) delete (state as Record<string, unknown>)[key]; Object.assign(state, next); }
+    return accepted;
   }
 
   /** One bounded pass of the history search for an attempt's marker; a pass that cannot read is counted, and enough of them give up. */
@@ -131,8 +140,9 @@ function createService(bb: BbPluginApi) {
 
   async function markUnknown(attempt: AttemptRow, reason: string, state: State, link: string) {
     if (!store.advance(attempt.attempt_id, ["sending"], "outcome='unknown', error=?", reason)) return;
-    state.error = `Delivery outcome unknown (${reason}). Choose Retry in the repository checks settings to send the report again; it may duplicate.`;
-    await push(link, state, new Error(state.error));
+    history.deliveryUnknown(attempt.tick_id);
+    state.deliveryError = `Delivery outcome unknown (${reason}). Choose Retry in the repository checks settings to send the report again; it may duplicate.`;
+    await push(link, state, new Error(state.deliveryError));
   }
 
   const isConfirmed = (receipt: SteerReceipt): receipt is Extract<SteerReceipt, { outcome: "appended" | "queued" | "inline" }> =>
@@ -213,7 +223,7 @@ function createService(bb: BbPluginApi) {
     await settle(trackerId, link, row.report_id, state, tickId);
     if (store.delivery(trackerId)?.report_id !== row.report_id) return { status: "cleared" };
     const open = store.attempts(trackerId, row.report_id, ["sending", "unknown"]);
-    if (open.some((attempt) => attempt.outcome === "unknown")) return { status: "blocked", error: state.error ?? "Delivery outcome unknown. Choose Retry in the repository checks settings." };
+    if (open.some((attempt) => attempt.outcome === "unknown")) return { status: "blocked", error: state.deliveryError ?? "Delivery outcome unknown. Choose Retry in the repository checks settings." };
     // An open attempt keeps the report: no second attempt starts while its receipt may still arrive.
     if (open.length) return { status: "blocked", error: "Waiting for evidence that the manager received the report" };
     return dispatch(trackerId, link, state, tickId);
@@ -260,13 +270,12 @@ function createService(bb: BbPluginApi) {
       state.bbProjectId ??= link;
       const tickId = `${trackerId}:${Math.max(now, (Number(state.tickId?.split(":")[1]) || 0) + 1)}`;
       state.tickId = tickId; state.lastRun = now;
-      db.transaction(() => { history.start(trackerId, tickId, now); store.save(trackerId, state); })();
+      db.transaction(() => { history.start(trackerId, link, tickId, now); store.save(trackerId, state); })();
 
       const pending = await processPending(trackerId, link, state, tickId);
       controller.signal.throwIfAborted();
       if (pending.status === "blocked") {
-        state.error = pending.error ?? state.error ?? null;
-        if (state.managerError) state.failureStage = "delivery";
+        state.deliveryError = pending.error ?? state.deliveryError ?? null;
         store.save(trackerId, state);
         return;
       }
@@ -289,7 +298,7 @@ function createService(bb: BbPluginApi) {
       state.refreshRetryAt = refreshFailed ? Date.now() + Math.min(interval * 2 ** Math.min(state.refreshFailures - 1, 6), Math.max(interval, MAX_REFRESH_BACKOFF_MS)) : undefined;
       state.failureStage = refreshFailed ? "refresh" : code >= 2 ? "script" : null;
       const report = reportContents(code, result.output);
-      history.result(trackerId, tickId, now, report.items, refreshFailed ? "refresh" : code >= 2 ? "script" : undefined);
+      history.result(trackerId, link, tickId, now, report.items, refreshFailed ? "refresh" : code >= 2 ? "script" : undefined);
 
       const candidateChanged = result.snapshot !== null && (!committed || !result.snapshot.equals(committed));
       const answerWithoutCandidate = config.snapshots && result.snapshot === null && [...report.items.values()].includes("ANSWER");
@@ -313,9 +322,10 @@ function createService(bb: BbPluginApi) {
         delivery = await processPending(trackerId, link, state, tickId);
         controller.signal.throwIfAborted();
       } else if (code !== 0 || report.changes.waiting || result.snapshot !== null) history.suppress(tickId);
-      if (state.refreshRetryAt) state.nextRun = state.refreshRetryAt;
-      state.error = code >= 2 ? result.output : delivery.status === "blocked" ? delivery.error ?? null : null;
-      if (delivery.status === "blocked") state.failureStage ??= "delivery";
+      // A report still pending is retried at the normal cadence, whatever the refresh deadline says.
+      if (state.refreshRetryAt && !store.delivery(trackerId)?.report_id) state.nextRun = state.refreshRetryAt;
+      state.error = code >= 2 ? result.output : null;
+      if (delivery.status === "blocked") state.deliveryError = delivery.error ?? state.deliveryError ?? null;
       store.save(trackerId, state);
     } catch (error) {
       if (!controller.signal.aborted) {
@@ -398,7 +408,7 @@ function createService(bb: BbPluginApi) {
     db.transaction(() => {
       db.prepare("UPDATE checks_attempts SET outcome='superseded' WHERE tracker_id=? AND report_id=? AND outcome IN ('sending', 'unknown')").run(trackerId, row.report_id);
       const state = store.state(trackerId);
-      state.error = null; state.nextRun = Date.now();
+      state.deliveryError = null; state.nextRun = Date.now();
       store.save(trackerId, state);
     })();
     bb.log.info(`repository checks for ${trackerId}: retry of report ${row.report_id}`);
@@ -422,6 +432,11 @@ function createService(bb: BbPluginApi) {
     return Object.fromEntries(Object.entries(config).map(([key, value]) => [`${CHECKS_PREFIX}${key}`, value]));
   }
 
+  /** Scheduled-run statistics of the tracker's current bb project; history of a previous link is never mixed in. */
+  function stats(trackerId: string, days: number) {
+    return history.stats(trackerId, tracker(trackerId).link ?? "", days);
+  }
+
   function status(trackerId: string) {
     const { link, prefix } = tracker(trackerId);
     const draft = readDraft(db, trackerId);
@@ -439,13 +454,17 @@ function createService(bb: BbPluginApi) {
       trackerId, prefix, bbProjectId: link, config: effectiveConfig(draft), enabledChangedAt: draft.enabledChangedAt, enabledPrevious: draft.enabledPrevious,
       manager: configuredManager(db, trackerId), draining, ownedByOtherTracker: other ?? null,
       lastRun: state.lastRun ?? null, nextRun: draft.enabled || draining ? state.nextRun ?? Date.now() : null, tickId: state.tickId ?? null,
-      exitCode: state.exitCode ?? null, failureStage: state.failureStage ?? null, error: state.error ?? null,
+      exitCode: state.exitCode ?? null, error: state.error ?? null,
+      // A report that cannot be delivered is the current problem, whatever the last run did; an unknown outcome blocks until Retry.
+      failureStage: pending && state.deliveryError ? ("delivery" as const) : state.failureStage ?? null,
+      deliveryError: pending ? state.deliveryError ?? null : null,
+      blocked: pending?.attempts.some((a) => a.outcome === "unknown") ? "blocked: delivery unknown, Retry needed" : null,
       refreshFailures: state.refreshFailures ?? 0, refreshRetryAt: state.refreshRetryAt ?? null,
       managerError: state.managerError ?? null, pushError: state.pushError ?? null,
       lastDelivery: state.deliveredAt ? { at: state.deliveredAt, to: state.deliveredTo ?? null, receipt: state.receipt ?? null, reportId: state.deliveredReportId ?? null, tickId: state.deliveredTickId ?? null } : null,
       pending, awaitingRetry: !!pending?.attempts.some((a) => a.outcome === "unknown"),
       stateMismatch: mismatch ? `State belongs to ${mismatch}; reset it` : null,
-      stats: history.stats(trackerId, 1),
+      stats: stats(trackerId, 1),
     };
   }
 
@@ -480,7 +499,7 @@ function createService(bb: BbPluginApi) {
   }
 
   return {
-    register, runDue, scheduledTick, manualRun, status, stats: (trackerId: string, days: number) => history.stats(trackerId, days),
+    register, runDue, scheduledTick, manualRun, status, stats,
     setEnabled, setField, retry, reset, configValues, fieldKeys: CHECK_FIELDS,
   };
 }

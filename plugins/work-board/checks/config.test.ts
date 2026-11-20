@@ -61,6 +61,15 @@ describe("settings", () => {
     // From the shell: digits parse to a number, so a numeric branch name still works.
     expect((await f.harness.runCli(["config", "set", "checks.branch", "2024", "--project", "CHK", "--json"])).exitCode).toBe(0);
     expect(await getKey(f, "branch")).toBe("2024");
+    // Branch and script keep their literal text: `1e3` is a legal branch name, not the number 1000.
+    expect((await f.harness.runCli(["config", "set", "checks.branch", "1e3", "--project", "CHK"])).exitCode).toBe(0);
+    expect(await getKey(f, "branch")).toBe("1e3");
+    expect((await f.harness.runCli(["config", "set", "checks.script", "1e3", "--project", "CHK"])).exitCode).toBe(0);
+    expect(await getKey(f, "script")).toBe("1e3");
+    // A typed caller must send strings.
+    await expect(setKey(f, "branch", 1000)).rejects.toThrow(/Invalid value/);
+    await expect(setKey(f, "script", 5)).rejects.toThrow(/Invalid value/);
+    await expect(f.harness.callRpc("updateChecksSetting", { projectId: f.tracker.id, key: "branch", value: 7 })).rejects.toThrow(/Invalid value/);
   });
 
   it("merges concurrent per-field edits, and a stale edit never restores `enabled`", async () => {
@@ -151,6 +160,22 @@ describe("ownership", () => {
     f.service.reset(f.tracker.id);
     expect(f.service.status(f.tracker.id).stateMismatch).toBeNull();
     expect(f.delivery()).toBeUndefined();
+  });
+
+  it("refuses to delete a tracker, force included, while checks are enabled or draining", async () => {
+    const f = await make();
+    f.output("ACTION idle EXA-1", 1);
+    f.enable();
+    await expect(f.harness.callRpc("deleteProject", { projectId: f.tracker.id, force: true })).rejects.toThrow(/before deleting/);
+    f.threads.threads.set("thr_manager", { archived: true });
+    await f.tick();
+    f.service.setEnabled(f.tracker.id, false);
+    await expect(f.harness.callRpc("deleteProject", { projectId: f.tracker.id, force: true })).rejects.toThrow(/before deleting/);
+    expect(f.delivery()?.report_id).toBeTruthy();
+    f.threads.threads.set("thr_manager", {});
+    await f.tick();
+    expect(await f.harness.callRpc("deleteProject", { projectId: f.tracker.id, force: true })).toMatchObject({ deleted: true });
+    expect(f.db.prepare("SELECT COUNT(*) AS n FROM checks_delivery").get()).toEqual({ n: 0 });
   });
 
   it("never delivers a report staged for another bb project", async () => {

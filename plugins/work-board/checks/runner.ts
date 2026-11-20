@@ -18,7 +18,7 @@ function missingIsNull(error: NodeJS.ErrnoException) {
 export interface CommandOptions {
   timeoutMs?: number;
   env?: NodeJS.ProcessEnv;
-  /** A lock file this command may create; after a timeout, a lock that did not exist before it started is removed. */
+  /** A lock file this command may create; after a timeout or a cancellation, a lock that did not exist before it started is removed. */
   shallowLock?: string;
   killGraceMs?: number;
 }
@@ -33,7 +33,7 @@ export async function command(cmd: string, args: string[], cwd: string, signal: 
   const grouped = process.platform !== "win32";
   return new Promise((resolve, reject) => {
     const child = spawn(cmd, args, { cwd, env, detached: grouped, stdio: ["ignore", "pipe", "pipe"] });
-    let output = "", bytes = 0, failure: Error | undefined, timedOut = false, settled = false;
+    let output = "", bytes = 0, failure: Error | undefined, timedOut = false, cancelled = false, settled = false;
     let escalation: ReturnType<typeof setTimeout> | undefined;
     const killGroup = (sig: NodeJS.Signals) => {
       try {
@@ -57,7 +57,7 @@ export async function command(cmd: string, args: string[], cwd: string, signal: 
       killGroup("SIGTERM");
       escalation = setTimeout(() => killGroup("SIGKILL"), killGraceMs);
     }, timeoutMs);
-    const onAbort = () => { failure ??= signal.reason instanceof Error ? signal.reason : new Error("aborted"); killGroup("SIGKILL"); };
+    const onAbort = () => { cancelled = true; failure ??= signal.reason instanceof Error ? signal.reason : new Error("aborted"); killGroup("SIGKILL"); };
     if (signal.aborted) onAbort(); else signal.addEventListener("abort", onAbort, { once: true });
     child.stdout.setEncoding("utf8"); child.stderr.setEncoding("utf8");
     const collect = (chunk: string) => {
@@ -73,7 +73,7 @@ export async function command(cmd: string, args: string[], cwd: string, signal: 
     });
     child.on("close", async (code, sig) => {
       if (timedOut || failure) killGroup("SIGKILL"); // helpers that outlived the command
-      if (timedOut && couldCreateLock) {
+      if ((timedOut || cancelled) && couldCreateLock) {
         try {
           // The private checkout has one runner: a lock that preceded this command stays, one it created goes.
           const lock = await lstat(shallowLock!).catch(missingIsNull);
@@ -166,8 +166,9 @@ export async function execute(base: string, trackerId: string, run: ScriptRun, s
     if (run.snapshots && result.code <= 1) {
       snapshot = await readFile(candidate).catch(missingIsNull);
       if (snapshot) {
-        try { JSON.parse(snapshot.toString("utf8")); }
-        catch (cause) { throw new Error("Write a complete JSON document to --candidate-snapshot, or omit the candidate if nothing needs acknowledgement.", { cause }); }
+        // Strict decoding: a lenient one would replace malformed bytes and let a document through whose original bytes are not UTF-8.
+        try { JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(snapshot)); }
+        catch (cause) { throw new Error("Write a complete JSON document (valid UTF-8) to --candidate-snapshot, or omit the candidate if nothing needs acknowledgement.", { cause }); }
       }
     }
     return { ...result, snapshot };

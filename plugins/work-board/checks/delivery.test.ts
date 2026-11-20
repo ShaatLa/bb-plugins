@@ -84,6 +84,71 @@ describe("definite failure and uncertainty", () => {
     expect(f.runs()).toBe(1 + 1); // the pending report was delivered first, then the script ran again
   });
 
+  it("treats a definite 403 on an append as failed, pushes, and appends on the next tick", async () => {
+    const f = await make();
+    await f.tick();
+    f.output("ACTION idle EXA-2", 1);
+    f.threads.updateRejection = Object.assign(new Error("forbidden"), { status: 403 });
+    await f.tick();
+    expect(f.attempts().at(-1)).toMatchObject({ outcome: "failed" });
+    expect(f.pushes).toHaveLength(1);
+    expect(pendingId(f)).toBeTruthy();
+    f.threads.updateRejection = undefined;
+    await f.tick();
+    expect(accepted(f).map((a) => a.outcome)).toEqual(["queued", "appended"]);
+  });
+
+  it("keeps the database and the in-memory state unchanged when the commit of an acceptance fails, then recovers without a second send", async () => {
+    const f = await make();
+    f.threads.threads.set(MANAGER, { archived: true });
+    await f.tick();
+    f.threads.threads.set(MANAGER, {});
+    f.db.exec("CREATE TRIGGER fail_promote BEFORE UPDATE ON checks_delivery BEGIN SELECT RAISE(ABORT, 'disk full'); END");
+    await expect(f.tick()).rejects.toThrow(/disk full/);
+    expect(pendingId(f)).toBeTruthy();
+    expect(f.attempts()).toMatchObject([{ outcome: "sending" }]);
+    expect(f.state().lastReport).toBeUndefined();
+    expect(f.state().deliveredAt).toBeUndefined();
+    f.db.exec("DROP TRIGGER fail_promote");
+    await f.tick();
+    expect(f.threads.sends).toBe(1);
+    expect(accepted(f)).toHaveLength(1);
+    expect(f.state().lastReport).toMatchObject({ manager: MANAGER });
+  });
+
+  it("clears the delivery error and stage an acceptance resolves, on a disabled drain and under refresh backoff, and keeps an independent failure", async () => {
+    const f = await make();
+    f.threads.sendMode = "throw"; f.threads.sendError = Object.assign(new Error("forbidden"), { status: 403 });
+    await f.tick();
+    expect(f.service.status(f.tracker.id)).toMatchObject({ failureStage: "delivery", error: null, deliveryError: expect.stringContaining("forbidden") });
+    f.service.setEnabled(f.tracker.id, false);
+    f.threads.sendMode = "queue";
+    await f.tick(); // the scheduler drains it in the background
+    expect(f.service.status(f.tracker.id)).toMatchObject({ pending: null, failureStage: null, error: null, deliveryError: null, managerError: null });
+    // Under a refresh backoff the same clearing holds, and an exit-2 report keeps its execution diagnostic.
+    f.service.setEnabled(f.tracker.id, true);
+    f.control.remote = "file:///nonexistent/example";
+    f.threads.updateRejection = Object.assign(new Error("forbidden"), { status: 403 }); // the append is rejected
+    await f.tick();
+    expect(f.service.status(f.tracker.id)).toMatchObject({ failureStage: "delivery", pending: expect.anything() });
+    f.threads.updateRejection = undefined;
+    await f.tick();
+    expect(f.service.status(f.tracker.id)).toMatchObject({ pending: null, deliveryError: null, failureStage: "refresh", error: expect.stringContaining("Checkout refresh failed") });
+  });
+
+  it("shows a terminal unknown as blocked, counts it apart from failures on the staged tick, and leaves the bytes", async () => {
+    const f = await make();
+    unknownSend(f);
+    await f.tick();
+    await f.tick();
+    const status = f.service.status(f.tracker.id);
+    expect(status).toMatchObject({ blocked: "blocked: delivery unknown, Retry needed", awaitingRetry: true, failureStage: "delivery" });
+    expect(status.stats).toMatchObject({ deliveryUnknown: 1, deliveryFailures: 0 });
+    const stagedTick = f.delivery()!.pending_tick;
+    expect(f.db.prepare("SELECT delivery_unknown FROM checks_ticks WHERE tick=?").get(stagedTick)).toEqual({ delivery_unknown: 1 });
+    expect((await f.harness.runCli(["checks", "status", "--project", "CHK"])).stdout).toContain("blocked: delivery unknown, Retry needed");
+  });
+
   it("enters recovery on the stored thread after a lost write response, even after a manager change, and starts no second attempt", async () => {
     const f = await make();
     unknownSend(f);

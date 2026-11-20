@@ -1,5 +1,5 @@
 import { writeFileSync } from "node:fs";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { receiptPolling } from "../steer";
 import { checksTuning } from "./service";
 import { cleanTempDirs, MANAGER, setup, type Fixture } from "./fixtures";
@@ -73,6 +73,44 @@ describe("scheduling", () => {
     expect(f.runs()).toBe(1);
     expect(f.state()).toMatchObject({ refreshFailures: 0 });
     expect(f.state().refreshRetryAt).toBeUndefined();
+  });
+
+  it("keeps the normal retry deadline while a report is pending, whatever the refresh deadline, through the due-time gate", async () => {
+    const f = await make({ intervalMinutes: 10 });
+    f.control.remote = "file:///nonexistent/one";
+    await f.tick(); // the first refresh failure is reported and delivered
+    expect(f.attempts()).toHaveLength(1);
+    f.db.prepare("UPDATE checks_state SET value = json_remove(value, '$.refreshRetryAt')").run();
+    f.control.remote = "file:///nonexistent/two";
+    f.threads.threads.set(MANAGER, { archived: true });
+    await f.tick(); // a different failure, and the manager rejects it
+    const minutes = (at: number) => Math.round((at - Date.now()) / 60_000);
+    expect([minutes(f.state().refreshRetryAt), minutes(f.state().nextRun)]).toEqual([20, 10]);
+    f.threads.threads.set(MANAGER, {});
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      vi.setSystemTime(Date.now() + 10 * 60_000 + 5000);
+      await f.service.runDue();
+    } finally { vi.useRealTimers(); }
+    expect(f.attempts().filter((a) => ["queued", "appended"].includes(a.outcome as string))).toHaveLength(2);
+    expect(f.service.status(f.tracker.id).pending).toBeNull();
+  });
+
+  it("scopes statistics and first-seen items to the linked bb project, so a relink and reset never mix them", async () => {
+    const f = await make();
+    f.output(idle("EXA-1"), 1);
+    await f.tick();
+    await f.tick();
+    expect(f.service.stats(f.tracker.id, 1)).toMatchObject({ projectId: "proj_example", ticks: 2, executed: 2, repeats: 1, newItems: { "ACTION no-active-thread": 1 } });
+    f.service.setEnabled(f.tracker.id, false);
+    f.store.tasks.updateProject(f.tracker.id, { linkedBbProjectId: "proj_other" });
+    f.service.reset(f.tracker.id);
+    expect(f.service.stats(f.tracker.id, 1)).toMatchObject({ projectId: "proj_other", ticks: 0, executed: 0, repeats: 0, newItems: {} });
+    f.service.setEnabled(f.tracker.id, true);
+    f.control.remote = f.repo.url;
+    await f.tick();
+    // The identical finding is first seen in the new project: no repeat, one new item, one tick.
+    expect(f.service.stats(f.tracker.id, 1)).toMatchObject({ ticks: 1, executed: 1, repeats: 0, newItems: { "ACTION no-active-thread": 1 } });
   });
 
   it("records a timeout and an output over 1 MB as exit-2 script failures", async () => {

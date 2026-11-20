@@ -71,6 +71,7 @@ export function ChecksSettings({ projectId }: { projectId: string }) {
           <div className="space-y-1 text-xs" data-testid="checks-status">
             <p>Last run {when(status.lastRun)} · next run {when(status.nextRun)} · exit {status.exitCode ?? "–"}{status.failureStage ? ` · ${status.failureStage} failure` : ""}</p>
             {status.error ? <p className="text-destructive">{status.error}</p> : null}
+            {status.deliveryError && !status.blocked ? <p className="text-destructive">{status.deliveryError}</p> : null}
             {status.lastDelivery ? <p>Last report {when(status.lastDelivery.at)} to {status.lastDelivery.to} ({status.lastDelivery.receipt?.mode ?? "recorded"})</p> : null}
             {status.pending ? <p>Report waiting for delivery since {status.pending.stagedAt ? formatRelativeTime(status.pending.stagedAt, Date.now()) : "–"}.</p> : null}
             {status.managerError ? <p className="text-amber-600 dark:text-amber-400">Manager: {status.managerError}</p> : null}
@@ -81,7 +82,7 @@ export function ChecksSettings({ projectId }: { projectId: string }) {
               </p>
             ) : null}
             {status.awaitingRetry ? (
-              <p className="flex flex-wrap items-center gap-2" data-testid="checks-retry">Work Board cannot tell whether the report reached the manager. Retry sends it again and may duplicate it.
+              <p className="flex flex-wrap items-center gap-2" data-testid="checks-retry">{status.blocked}. Work Board cannot tell whether the report reached the manager. Retry sends it again and may duplicate it.
                 <Button size="sm" className="h-7 px-2.5" variant="outline" disabled={busy} onClick={() => void run(() => rpc.call("retryChecksReport", { projectId }))}>Retry</Button>
               </p>
             ) : null}

@@ -224,6 +224,16 @@ describe("deliverWithReceipt", () => {
     expect(f.threads.sends).toBe(1);
   });
 
+  it("reports a definite rejection of the append, with the row read back unchanged, as failed and writes nothing", async () => {
+    const f = await seed();
+    f.threads.updateRejection = Object.assign(new Error("forbidden"), { status: 403 });
+    expect(await deliverWithReceipt(f.bb, MANAGER, "text", marker)).toMatchObject({ outcome: "failed", error: "forbidden" });
+    expect(f.threads.sends).toBe(0);
+    // An error without a status stays ambiguous: the row may have changed under a lost response.
+    f.threads.updateRejection = Object.assign(new Error("socket closed"), {});
+    expect(await deliverWithReceipt(f.bb, MANAGER, "text", marker)).toMatchObject({ outcome: "unknown" });
+  });
+
   it("finds a send that landed but lost its response in the queue and does not send twice", async () => {
     const f = await live();
     f.threads.sendLandsThenThrows = true;

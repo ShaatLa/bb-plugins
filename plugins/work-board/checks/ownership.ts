@@ -50,3 +50,11 @@ export function assertChecksLinkChangeAllowed(db: Database, trackerId: string, c
     throw new Error("Repository checks are enabled or still delivering a report for this project: disable them and let the report drain, or reset the checks state, before changing the BB project link");
   }
 }
+
+/** Deleting a tracker cascades through its staged report, candidate and attempts, so it waits until the runner is off and drained. */
+export function assertChecksDeleteAllowed(db: Database, trackerId: string): void {
+  const link = db.prepare<[string], { link: string | null }>("SELECT linked_bb_project_id AS link FROM projects WHERE id=?").get(trackerId)?.link ?? null;
+  if (readDraft(db, trackerId).enabled || isDraining(db, trackerId, link)) {
+    throw new Error("Repository checks are enabled or still delivering a report for this project: disable them and let the report drain before deleting it");
+  }
+}

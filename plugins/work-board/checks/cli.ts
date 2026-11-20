@@ -39,6 +39,8 @@ export function checksCliCommands(bb: BbPluginApi, host: ChecksCliHost) {
           ["Exit", String(status.exitCode ?? "-")],
           ["Failure stage", status.failureStage ?? "-"],
           ["Error", status.error ?? "-"],
+          ["Delivery error", status.deliveryError ?? "-"],
+          ["Blocked", status.blocked ?? "-"],
           ["Pending", status.pending ? `${status.pending.reportId} (exit ${status.pending.exitCode}, tick ${status.pending.tickId})` : "-"],
           ["Last delivery", status.lastDelivery ? `${when(status.lastDelivery.at)} to ${status.lastDelivery.to} (${status.lastDelivery.receipt?.mode ?? "-"})` : "-"],
           ["Manager error", status.managerError ?? "-"],
@@ -66,7 +68,7 @@ export function checksCliCommands(bb: BbPluginApi, host: ChecksCliHost) {
         return input.options.json ? JSON.stringify(stats) : detail([
           ["Window", `${stats.days} day(s)`], ["Ticks", String(stats.ticks)], ["Executed", String(stats.executed)], ["Deliveries", String(stats.deliveries)],
           ["Repeats", String(stats.repeats)], ["Suppressed reports", String(stats.suppressedReports)], ["Refresh failures", String(stats.refreshFailures)],
-          ["Script failures", String(stats.scriptFailures)], ["Delivery failures", String(stats.deliveryFailures)], ["New items", JSON.stringify(stats.newItems)],
+          ["Script failures", String(stats.scriptFailures)], ["Delivery failures", String(stats.deliveryFailures)], ["Delivery unknown", String(stats.deliveryUnknown)], ["New items", JSON.stringify(stats.newItems)],
         ]);
       }),
     }),

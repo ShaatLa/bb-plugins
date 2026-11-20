@@ -105,10 +105,12 @@ export function writeEnabled(db: Database, trackerId: string, enabled: boolean):
   db.prepare<[number, string, number, string]>("UPDATE checks_config SET enabled=?, enabled_changed_at=?, enabled_previous=? WHERE tracker_id=?").run(enabled ? 1 : 0, new Date().toISOString(), previous ? 1 : 0, trackerId);
 }
 
-/** Validates one supplied value; a string-typed field takes a number the CLI parsed from digits. */
+/** Fields whose CLI value is literal text, never JSON: `1e3` is a legal branch name. */
+export const LITERAL_TEXT_FIELDS: readonly CheckField[] = ["branch", "script"];
+
+/** Validates one supplied value strictly: a typed caller's number is not a branch. */
 export function parseField(field: CheckField, value: unknown): unknown {
-  const candidate = (field === "branch" || field === "script") && typeof value === "number" ? String(value) : value;
-  const parsed = FIELD_SCHEMAS[field].safeParse(candidate);
+  const parsed = FIELD_SCHEMAS[field].safeParse(value);
   if (!parsed.success) throw new Error(`Invalid value for checks.${field}: ${parsed.error.issues.map((issue) => issue.message).join("; ")}`);
   return parsed.data;
 }

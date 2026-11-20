@@ -77,6 +77,7 @@ import { ACTIVITY_LABELS } from "../shared/task-activity.js";
 import { threadHealthJson } from "../shared/thread-health";
 import { scheduledCliCommands } from "../scheduled/cli";
 import { checksCliCommands } from "../checks/cli";
+import { LITERAL_TEXT_FIELDS } from "../checks/config";
 import { planCommands } from "./plan";
 import { planAdvisory } from "../shared/plan";
 import { planningOn, planningRequired, PLANNING_OWNER_ONLY } from "../shared/project-settings";
@@ -1087,7 +1088,10 @@ export function registerTasksCli(
               const project = await requiredProject(domain, ctx, input.options.project);
               const raw = input.positionals.value;
               let value: unknown = raw;
-              try { value = JSON.parse(raw); } catch { /* plain text stays a string */ }
+              // Branch and script are literal text: JSON decoding would turn the legal branch `1e3` into 1000.
+              if (!LITERAL_TEXT_FIELDS.some((field) => input.positionals.key === `checks.${field}`)) {
+                try { value = JSON.parse(raw); } catch { /* plain text stays a string */ }
+              }
               const result = await domain["config.set"]({ projectId: project.id, key: input.positionals.key, value });
               return input.options.json ? JSON.stringify(result) : `${result.key}=${typeof result.value === "string" ? result.value : JSON.stringify(result.value)}`;
             });
