@@ -137,6 +137,13 @@ describe('Answers app', () => {
     pickView(slot, 'Awaiting answer');
     await waitFor(() => expect(list).toHaveBeenCalledWith(expect.objectContaining({ view: 'waiting' })));
   });
+  it('still marks a thread tab row read once it is scrolled past, a rule only the Inbox chat leaves', async () => {
+    const zero = { top:0, bottom:0, left:0, right:0, width:0, height:0 } as DOMRect;
+    // The row ends above the top of the scroll area: scrolled past, never in view.
+    vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (this: HTMLElement) { return this.classList.contains('overflow-auto') ? { ...zero, top:500, bottom:1000 } as DOMRect : this instanceof HTMLLIElement && this.closest('[aria-label=Answers]') ? { ...zero, top:-300, bottom:-100, height:200 } as DOMRect : zero; });
+    const { markRead } = await setup();
+    await waitFor(() => expect(markRead).toHaveBeenCalledWith({ ids: ['ans_one'] }));
+  });
   it('marks an item or all items read, with no link out of the chat it is already in', async () => {
     const { slot, markRead } = await setup();
     fireEvent.click(slot.getByRole('button', { name: 'Mark read' }));

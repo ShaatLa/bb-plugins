@@ -1434,6 +1434,7 @@ it('keeps expanded updates and the full transcript across cached chat switches',
  fireEvent.click(slot.getByRole('button',{name:'Back to Agent Hub'}));expect(slot.getByRole('button',{name:/3 background updates/})).toBe(toggle);expect(toggle.getAttribute('aria-expanded')).toBe('true');
 });
 it('keeps a chat of background updates at its New divider, right above the first unread, when an older read page arrives', async () => {
+  const jump = async () => { const button = await waitFor(() => { const node = document.querySelector('[aria-label="Jump to unread"]') as HTMLElement; expect(node.className).not.toContain('invisible'); return node; }); fireEvent.click(button); };
   const observers: (() => void)[] = [];
   vi.stubGlobal('ResizeObserver', class { constructor(private callback: () => void) { observers.push(() => this.callback()); } observe() {} disconnect() {} });
   const tops = new WeakMap<Element, number>(); const divider = 700;
@@ -1456,15 +1457,17 @@ it('keeps a chat of background updates at its New divider, right above the first
     fireEvent.click(await recipients.findByRole('option')); await slot.findByRole('list', { name:'History' });
     const first = await waitFor(() => { const node = document.querySelector('[data-new]'); expect(node).not.toBeNull(); return node!; });
     const scroller = document.querySelector('[aria-label=History]')!.closest('.overflow-auto')!;
-    await waitFor(() => expect(tops.get(scroller)).toBe(divider));
+    await waitFor(() => expect(tops.get(scroller)).toBe(3000)); // opened at the newest
     const ids = () => Array.from(document.querySelectorAll('[data-new], [data-history-ids]')).flatMap(node => node.hasAttribute('data-new') ? ['new'] : node.getAttribute('data-history-ids')!.split(' '));
     await waitFor(() => expect(ids()).toContain('ans_u0')); // the older read page joined the chat
     expect(first.isConnected).toBe(true); expect(ids().indexOf('new')).toBe(ids().indexOf('ans_u2') - 1); expect(ids().indexOf('ans_u1')).toBeLessThan(ids().indexOf('new'));
+    await jump(); expect(tops.get(scroller)).toBe(divider); // the button lands right above the first unread
     observers.forEach(observe => observe());
     expect(tops.get(scroller)).toBe(divider);
   } finally { spies.forEach(spy => spy.mockRestore()); vi.unstubAllGlobals(); }
 });
 it('keeps the reader at their place when an older page arrives above after the open position was released', async () => {
+  const jump = async () => { const button = await waitFor(() => { const node = document.querySelector('[aria-label="Jump to unread"]') as HTMLElement; expect(node.className).not.toContain('invisible'); return node; }); fireEvent.click(button); };
   const observers: (() => void)[] = [];
   vi.stubGlobal('ResizeObserver', class { constructor(private callback: () => void) { observers.push(() => this.callback()); } observe() {} disconnect() {} });
   const tops = new WeakMap<Element, number>(); let shift = 0;
@@ -1477,7 +1480,7 @@ it('keeps the reader at their place when an older page arrives above after the o
     vi.spyOn(HTMLElement.prototype, 'offsetTop', 'get').mockImplementation(function (this: HTMLElement) { return this.hasAttribute('data-new') ? 700 + shift : 0; }),
     vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (this: HTMLElement) {
       if (!this.isConnected) return { top:0, bottom:0, left:0, right:0, width:0, height:0 } as DOMRect;
-      const off = this.hasAttribute('data-new') ? 700 + shift : this.hasAttribute('data-history-ids') ? 710 + shift : null, top = off === null ? (this.classList.contains('overflow-auto') ? 50 : 0) : off - (tops.get(document.querySelector('.overflow-auto')!) ?? 0) + 50;
+      const off = this.hasAttribute('data-new') ? 700 + shift : this.hasAttribute('data-history-ids') ? 710 + shift : null, top = off === null ? (this.classList.contains('overflow-auto') ? 50 : 0) : off - (tops.get(this.closest('.overflow-auto')!) ?? 0) + 50;
       return { top, bottom: off === null ? 0 : top + 100, left:0, right:0, width:0, height:0 } as DOMRect;
     }),
   ];
@@ -1487,7 +1490,8 @@ it('keeps the reader at their place when an older page arrives above after the o
     const { slot, recipients } = setup({ list: (input: any) => input.cursor ? new Promise(r => { release = r; }) : { items:[5, 4, 3, 2].map(n => update(n, null)), nextCursor:'1|ans_u2' } });
     fireEvent.click(await recipients.findByRole('option')); await slot.findByRole('list', { name:'History' });
     const scroller = document.querySelector('[aria-label=History]')!.closest('.overflow-auto')!;
-    await waitFor(() => expect(tops.get(scroller)).toBe(700));
+    await waitFor(() => expect(tops.get(scroller)).toBe(3000));
+    await jump(); expect(tops.get(scroller)).toBe(700);
     fireEvent.scroll(scroller); await new Promise(r => requestAnimationFrame(() => r(0))); fireEvent.wheel(scroller); // the reader acts: the hold ends
     await waitFor(() => expect(release).toBeTypeOf('function'));
     shift = 400; await act(async () => { release({ items:[update(1, 1), update(0, 1)], nextCursor:null }); }); await new Promise(r => setTimeout(r, 50));
@@ -1530,4 +1534,104 @@ it('starts a run of updates at the first unread, so older read updates stay abov
   const groups = [update(0, 1), update(1, 1), update(2, null), update(3, null), update(4, null)];
   expect(ids(conversation(groups as any, false, [], false, null, true, 'ans_u2').entries)).toEqual(['ans_u0+ans_u1', 'ans_u2+ans_u3+ans_u4']);
   expect(ids(conversation(groups as any, false, [], false, null, true).entries)).toEqual(['ans_u0+ans_u1+ans_u2+ans_u3+ans_u4']);
+});
+
+// jsdom has no layout: each History row is 300 high and the New divider 40, stacked in DOM order inside a 500 high view.
+function stackLayout() {
+  const tops = new WeakMap<Element, number>();
+  const list = () => document.querySelector('[aria-label=History]'), view = () => list()?.closest('.overflow-auto') ?? null;
+  const offsets = () => { const map = new Map<Element, number>(); let y = 0; for (const el of Array.from(list()?.children ?? [])) { map.set(el, y); y += el.hasAttribute('data-new') ? 40 : 300; } return { map, total: y }; };
+  const rowOf = (el: Element) => { let node: Element | null = el; while (node && node.parentElement !== list()) node = node.parentElement; return node; };
+  const zero = { top:0, bottom:0, left:0, right:0, width:0, height:0 } as DOMRect;
+  const spies = [
+    vi.spyOn(HTMLElement.prototype, 'clientHeight', 'get').mockReturnValue(500),
+    vi.spyOn(HTMLElement.prototype, 'clientWidth', 'get').mockReturnValue(400),
+    vi.spyOn(HTMLElement.prototype, 'scrollHeight', 'get').mockImplementation(function (this: HTMLElement) { return this === view() ? offsets().total : 0; }),
+    vi.spyOn(HTMLElement.prototype, 'scrollTop', 'get').mockImplementation(function (this: HTMLElement) { return tops.get(this) ?? 0; }),
+    // A browser clamps the scroll position to the content.
+    vi.spyOn(HTMLElement.prototype, 'scrollTop', 'set').mockImplementation(function (this: HTMLElement, value: number) { tops.set(this, Math.max(0, Math.min(value, this === view() ? offsets().total - 500 : 0))); }),
+    vi.spyOn(HTMLElement.prototype, 'offsetTop', 'get').mockImplementation(function (this: HTMLElement) { return offsets().map.get(this) ?? 0; }),
+    vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (this: HTMLElement) {
+      if (!this.isConnected) return zero;
+      if (this === view()) return { ...zero, top:0, bottom:500 } as DOMRect;
+      const row = list() ? rowOf(this) : null, off = row ? offsets().map.get(row) : undefined; if (!row || off === undefined) return zero;
+      const top = off - (tops.get(view()!) ?? 0), height = row.hasAttribute('data-new') ? 40 : 300;
+      return { ...zero, top, bottom: top + height, height } as DOMRect;
+    }),
+  ];
+  return { scroller: () => view() as HTMLElement, top: () => tops.get(view()!) ?? 0, restore: () => spies.forEach(spy => spy.mockRestore()) };
+}
+// An answered message of the owner's chat, n minutes into the hour; read unless it is one of the unread ones.
+const chatItem = (n: number, readAt: number | null) => ({ ...base, id:`ans_${n}`, question:`Question ${n}`, questionSeq:n * 2, answer:`Reply ${n}`, answerSeq:n * 2 + 1, readAt, createdAt:asked + n * minute, answeredAt:asked + n * minute + 1000 });
+const chatList = (unread: number[], total = 7) => () => ({ items:Array.from({ length: total }, (_, n) => chatItem(n, unread.includes(n) ? null : 1)).reverse(), nextCursor:null });
+const jumpButton = () => document.querySelector('[aria-label="Jump to unread"]') as HTMLElement;
+const markedIds = (markRead: ReturnType<typeof vi.fn>) => markRead.mock.calls.flatMap(([input]: any) => input.ids as string[]).sort();
+const settle = async (scroller: Element) => { fireEvent.wheel(scroller); await new Promise(r => setTimeout(r, 80)); }; // the reader acts: the hold ends, reads count
+
+it('opens a chat whose first unread message is above the last screen at the newest message, not at the first unread', async () => {
+  const layout = stackLayout();
+  try {
+    const { slot, recipients } = setup({ recipients:[{ ...one, unread:6 }], list: chatList([1, 2, 3, 4, 5, 6]) });
+    fireEvent.click(await recipients.findByRole('option')); await slot.findByRole('list', { name:'History' });
+    await waitFor(() => expect(layout.top()).toBe(2140 - 500)); // the divider is at 300; the old rule opened there
+    expect(document.querySelector('[data-new]')).not.toBeNull();
+  } finally { layout.restore(); }
+});
+it('keeps a short unread tail in view with its New divider, and a chat with nothing unread at the newest without the button', async () => {
+  const layout = stackLayout();
+  try {
+    const { slot, recipients } = setup({ list: chatList([6]) });
+    fireEvent.click(await recipients.findByRole('option')); await slot.findByRole('list', { name:'History' });
+    await waitFor(() => expect(layout.top()).toBe(2140 - 500)); // the divider (1800) sits in the last screen
+    expect(document.querySelector('[data-new]')).not.toBeNull(); expect(jumpButton().className).toContain('invisible');
+    cleanup();
+    const next = setup({ list: chatList([]) });
+    fireEvent.click(await next.recipients.findByRole('option')); await next.slot.findByRole('list', { name:'History' });
+    await waitFor(() => expect(layout.top()).toBe(2100 - 500));
+    expect(document.querySelector('[data-new]')).toBeNull(); expect(jumpButton().className).toContain('invisible');
+  } finally { layout.restore(); }
+});
+it('offers Jump to unread with the unread count of the contact badge while the first unread is out of sight above, and hides it once it is in view', async () => {
+  const layout = stackLayout();
+  try {
+    const { slot, recipients } = setup({ recipients:[{ ...one, unread:6 }], list: chatList([1, 2, 3, 4, 5, 6]) });
+    fireEvent.click(await recipients.findByRole('option')); await slot.findByRole('list', { name:'History' });
+    await waitFor(() => expect(jumpButton().className).not.toContain('invisible'));
+    expect(jumpButton().textContent).toBe('6 unread'); expect((await recipients.findAllByLabelText('6 unread')).length).toBeGreaterThan(0);
+    layout.scroller().scrollTop = 0; fireEvent.scroll(layout.scroller()); // the first unread comes into view
+    await waitFor(() => expect(jumpButton().className).toContain('invisible'));
+  } finally { layout.restore(); }
+});
+it('jumps to the first unread at once, marking read only what is in view there and nothing between it and the newest', async () => {
+  const layout = stackLayout(), markRead = vi.fn(() => ({ ok:true }));
+  try {
+    const { slot, recipients } = setup({ recipients:[{ ...one, unread:6 }], list: chatList([1, 2, 3, 4, 5, 6]), rpc:{ markRead } });
+    fireEvent.click(await recipients.findByRole('option')); await slot.findByRole('list', { name:'History' });
+    await waitFor(() => expect(jumpButton().className).not.toContain('invisible'));
+    fireEvent.click(jumpButton()); expect(layout.top()).toBe(300); // set at once: a smooth scroll would pass over, and mark, rows in between
+    fireEvent.scroll(layout.scroller()); await new Promise(r => setTimeout(r, 80));
+    expect(markedIds(markRead)).toEqual(['ans_1']); // the view holds the New divider and the first unread only
+    await waitFor(() => expect(jumpButton().className).toContain('invisible'));
+  } finally { layout.restore(); }
+});
+it('leaves the unread rows above the first screen unread while the chat sits at the newest, and marks the ones in view', async () => {
+  const layout = stackLayout(), markRead = vi.fn(() => ({ ok:true }));
+  try {
+    const { slot, recipients } = setup({ recipients:[{ ...one, unread:6 }], list: chatList([1, 2, 3, 4, 5, 6]), rpc:{ markRead } });
+    fireEvent.click(await recipients.findByRole('option')); await slot.findByRole('list', { name:'History' });
+    await waitFor(() => expect(layout.top()).toBe(2140 - 500));
+    await settle(layout.scroller());
+    expect(markedIds(markRead)).toEqual(['ans_5', 'ans_6']); // ans_1 to ans_4 lie above the view: not seen, not read
+  } finally { layout.restore(); }
+});
+it('shows Jump to unread for a chat reopened at its remembered place with unread rows above it', async () => {
+  localStorage.setItem('bb-plugin-answers:page:scroll', JSON.stringify({ thr_one: { top:5, depth:1, anchor:'ans_4', offset:0 } }));
+  const layout = stackLayout();
+  try {
+    const { slot, recipients } = setup({ list: chatList([1], 7) });
+    fireEvent.click(await recipients.findByRole('option')); await slot.findByRole('list', { name:'History' });
+    await waitFor(() => expect(layout.top()).toBe(1240)); // ans_4's row (ans_0, the divider and ans_1 to ans_3 above it) at the top of the view
+    await waitFor(() => expect(jumpButton().className).not.toContain('invisible'));
+    expect(jumpButton().textContent).toBe('1 unread');
+  } finally { layout.restore(); }
 });

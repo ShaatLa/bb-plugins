@@ -109,23 +109,24 @@ export function useAgentHubBadge() {
 
 // chat: render as a conversation exchange (no thread header); markable: offer Mark read (the Inbox marks on open).
 // Like Telegram's read cursor: a message is read once its end has reached the screen or was scrolled past. No timer.
-const readLists = new WeakMap<HTMLElement, { cards: Map<HTMLElement, () => void>; check: () => void; schedule: () => void; frame: number }>();
-function useReadOnView(ref: React.RefObject<HTMLElement | null>, enabled: boolean, onRead: () => void) {
+const readLists = new WeakMap<HTMLElement, { cards: Map<HTMLElement, { read: () => void; seenOnly: boolean }>; check: () => void; schedule: () => void; frame: number }>();
+// seenOnly: a card above the view (opened at the newest, never in sight) is not counted as scrolled past.
+function useReadOnView(ref: React.RefObject<HTMLElement | null>, enabled: boolean, onRead: () => void, seenOnly = false) {
   const latest = useRef(onRead); latest.current = onRead;
   useEffect(() => {
     const node = ref.current, root = node?.closest<HTMLElement>('.overflow-auto');
     if (!enabled || !node || !root) return;
     let list = readLists.get(root);
     if (!list) {
-      const cards = new Map<HTMLElement, () => void>();
+      const cards = new Map<HTMLElement, { read: () => void; seenOnly: boolean }>();
       list = { cards, frame: 0, check: () => {}, schedule: () => {} };
       const shared = list;
-      shared.check = () => { shared.frame = 0; if (document.visibilityState === 'hidden') return; const bottom = root.getBoundingClientRect().bottom; for (const [card, read] of cards) { const box = card.getBoundingClientRect(); if (box.height > 0 && box.bottom <= bottom) { cards.delete(card); read(); } } };
+      shared.check = () => { shared.frame = 0; if (document.visibilityState === 'hidden') return; const { top, bottom } = root.getBoundingClientRect(); for (const [card, { read, seenOnly }] of cards) { const box = card.getBoundingClientRect(); if (box.height > 0 && box.bottom <= bottom && (!seenOnly || box.bottom > top)) { cards.delete(card); read(); } } };
       shared.schedule = () => { if (!shared.frame) shared.frame = requestAnimationFrame(shared.check); };
       root.addEventListener('scroll', shared.schedule, { passive: true }); document.addEventListener('visibilitychange', shared.schedule);
       readLists.set(root, shared);
     }
-    list.cards.set(node, () => latest.current()); list.schedule();
+    list.cards.set(node, { read: () => latest.current(), seenOnly }); list.schedule();
     return () => { list.cards.delete(node); if (!list.cards.size) { cancelAnimationFrame(list.frame); root.removeEventListener('scroll', list.schedule); document.removeEventListener('visibilitychange', list.schedule); readLists.delete(root); } };
   }, [ref, enabled]);
 }
@@ -251,7 +252,7 @@ export function UpdateGroup({ items, reveal, children }: { items: Item[]; reveal
 // part: a late answer split from its question (see conversation in inbox.tsx); onJump scrolls to the other part's history id.
 // A question asked without choices still gets a one-tap yes and no, in the language it was asked in.
 export const defaultChoices = (question: string) => /[А-Яа-яЁё]/.test(question) ? ['Да', 'Нет'] : ['Yes', 'No'];
-export function ItemCard({ item, members, late, live = true, chat = false, markable = !chat, autoRead = false, replyToOwn = true, part, onJump, compact = false, open }: { item: Item; members?: Item[]; late?: Item[]; live?: boolean; chat?: boolean; markable?: boolean; autoRead?: boolean; replyToOwn?: boolean; part?: 'question' | 'answer'; onJump?: (id: string) => void; compact?: boolean; open?: { href: string; label: string; onClick?: () => void } }) {
+export function ItemCard({ item, members, late, live = true, chat = false, markable = !chat, autoRead = false, seenOnly = false, replyToOwn = true, part, onJump, compact = false, open }: { item: Item; members?: Item[]; late?: Item[]; live?: boolean; chat?: boolean; markable?: boolean; autoRead?: boolean; seenOnly?: boolean; replyToOwn?: boolean; part?: 'question' | 'answer'; onJump?: (id: string) => void; compact?: boolean; open?: { href: string; label: string; onClick?: () => void } }) {
   const rpc = useRpc<AgentHubRpcContract>();
   // Agent Hub's own writes refresh through the server's realtime invalidation; a reply goes to bb's thread, so it refreshes here.
   const { refresh } = experimental_useRpcRefresh();
@@ -334,7 +335,7 @@ export function ItemCard({ item, members, late, live = true, chat = false, marka
   const unread = group.some(isUnread), card = useRef<HTMLLIElement>(null);
   // Telegram-style status: a dot while the answer is new, a double check once read.
   const readMark = unread ? <span className="size-1.5 rounded-full bg-foreground/70" aria-label="Unread" /> : group.every(member => member.readAt !== null) && (last.kind === 'mine' || (last.kind === 'update' && last.asks)) && last.status === 'answered' ? <ReadTicks at={last.readAt!} /> : null;
-  useReadOnView(card, autoRead && unread && part !== 'question', () => void act(() => rpc.call('markRead', { ids: group.filter(isUnread).map(member => member.id) })));
+  useReadOnView(card, autoRead && unread && part !== 'question', () => void act(() => rpc.call('markRead', { ids: group.filter(isUnread).map(member => member.id) })), seenOnly);
   // "Done" said different things per item; name what dismissing actually does, and offer it only where it does something.
   const dismiss: [string, IconName] | null = item.dismissedAt !== null ? null
     : item.kind === 'mine' && (item.status === 'waiting' || item.status === 'deferred') ? ['Stop waiting', 'X']
