@@ -10,7 +10,7 @@ import { createDependencyStore } from "../dependencies/store";
 import { createPlanStore, PlanError } from "../plans/store";
 import { createPlanNoteStore } from "../plans/notes";
 import { deliverPlanReview, reviewerProblem, wakeReviewer } from "../plans/delivery";
-import { noticeLeftApproved } from "../plans/notice";
+import { cardInWork, noticeLeftApproved } from "../plans/notice";
 import { actorLabel, buildApprovalMessage, buildFeedbackMessage, buildResultCopyMessage, buildStateChangeMessage, buildReviewRequestMessage, orderNotes, type PlanNoteKind } from "../shared/plan-notes";
 import { storageService } from "../storage";
 import { gitSyncService } from "../git-sync/service";
@@ -763,6 +763,8 @@ export function createPlanReviewFlow(bb: BbPluginApi, store: TasksApiStore) {
       const outcome = runNoteWrite(bb, store, () => ({ taskId, ...notes.sendFeedback(taskId, by, reviewerVersion) }), { comments: true });
       if (!outcome.ok) return outcome;
       const { plan, version, body, taskKey, notes: sent, reviewer } = outcome.result;
+      // Eligibility for the executor notice is read at the commit, before the delivery below can take any time.
+      const inWork = before === "approved" && cardInWork(store.tasks, taskId);
       // The feedback is saved above; delivery only wakes the author, and its failure is reported, not undone.
       const text = buildFeedbackMessage({ taskKey, version, notes: orderNotes(sent, body), by: reviewerVersion === undefined ? "the owner" : actorLabel(by), reviewer });
       const recipients = plans.resultRecipients(taskId, version);
@@ -773,7 +775,7 @@ export function createPlanReviewFlow(bb: BbPluginApi, store: TasksApiStore) {
         copyText: (actor) => buildResultCopyMessage({ taskKey, headline: text.split("\n")[0]!, actor }),
       });
       if (before === "approved")
-        await noticeLeftApproved(bb, store.tasks, { taskId, version, state: plan.state, reason: "changes were requested", changedBy: by.threadId, exclude: [...Object.values(recipients), ...delivery.deliveries.map((entry) => entry.threadId)] });
+        await noticeLeftApproved(bb, store.tasks, { taskId, version, state: plan.state, reason: "changes were requested", changedBy: by.threadId, inWork, exclude: [...Object.values(recipients), ...delivery.deliveries.map((entry) => entry.threadId)] });
       return { ok: true as const, plan, ...delivery, notes: sent.length };
     },
     approve: async (taskId: string, by: PlanAuthor, text?: string, reviewerVersion?: number) => {
@@ -922,6 +924,7 @@ export function registerHandlers(
       if (!result.ok) return result;
       // A repeated state changed nothing and sends nothing. An approval or a request for changes reaches the waiting
       // author like the dedicated owner commands do, and the outcome is returned.
+      const inWork = before === "approved" && cardInWork(store.tasks, taskId);
       let deliveries: Awaited<ReturnType<typeof deliverPlanReview>>["deliveries"] = [];
       if (result.changed && (state === "approved" || state === "changes_requested")) {
         const task = store.tasks.getTask(taskId)!;
@@ -933,7 +936,7 @@ export function registerHandlers(
         deliveries = (await deliverPlanReview(bb, { taskId, recipients, text, copyText: (actor) => buildResultCopyMessage({ taskKey: task.key, headline: text.split("\n")[0]!, actor }) })).deliveries;
       }
       if (before === "approved" && state !== "approved")
-        await noticeLeftApproved(bb, store.tasks, { taskId, version: result.plan.version, state, reason: "the owner changed its state", changedBy: author.threadId, exclude: deliveries.map((entry) => entry.threadId) });
+        await noticeLeftApproved(bb, store.tasks, { taskId, version: result.plan.version, state, reason: "the owner changed its state", changedBy: author.threadId, inWork, exclude: deliveries.map((entry) => entry.threadId) });
       return { ok: true as const, plan: result.plan, version: result.version, deliveries };
     },
     listTaskDependencies: ({ taskId }) => dependencies.list(taskId),

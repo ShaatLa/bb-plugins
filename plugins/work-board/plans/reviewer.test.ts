@@ -690,3 +690,58 @@ function setupLong() {
   const base = setup();
   return { ...base, host: base };
 }
+
+describe("fixes found in the second review", () => {
+  it("refuses setTaskPlanState back to review without a new version, and an approval over owner drafts, before any write or delivery", async () => {
+    const { save, submit, flow, call, task, note, plans, reviews, sent, systemComments } = setup();
+    await save(BODY, 0);
+    await submit("thr_reviewer_a");
+    await note(reviewerA, 1);
+    await flow.sendFeedback(task.id, reviewerA, 1);
+    const logged = systemComments().length;
+    const rows = reviews();
+    const count = sent().length;
+    // Putting a changes-requested v1 back in review would make a delayed approval of v1 valid again.
+    expect(await call("setTaskPlanState", { taskId: task.id, state: "in_review", author: owner })).toMatchObject({ ok: false, error: { code: "plan_state", message: expect.stringContaining("save a new version") } });
+    expect(plans.head(task.id)?.state).toBe("changes_requested");
+    // An approval with an unsent owner draft is refused like approvePlan does.
+    await call("createPlanNote", { taskId: task.id, kind: "general", body: "Owner draft." });
+    for (const method of ["approvePlan", "setTaskPlanState"]) {
+      const input = method === "approvePlan" ? { taskId: task.id, author: owner } : { taskId: task.id, state: "approved", author: owner };
+      expect(await call(method, input)).toMatchObject({ ok: false, error: { code: "plan_state", message: expect.stringContaining("1 draft note") } });
+    }
+    expect(plans.head(task.id)?.state).toBe("changes_requested");
+    expect(systemComments()).toHaveLength(logged);
+    expect(reviews()).toEqual(rows);
+    expect(sent()).toHaveLength(count);
+    // An approved plan cannot go back to in_review either.
+    await save(`${BODY}Two.\n`, 1);
+    await submit("thr_reviewer_a");
+    await call("sendPlanFeedback", { taskId: task.id, author: owner });
+    await save(`${BODY}Three.\n`, 2);
+    await call("setTaskPlanState", { taskId: task.id, state: "approved", author: owner });
+    expect(await call("setTaskPlanState", { taskId: task.id, state: "in_review", author: owner })).toMatchObject({ ok: false, error: { code: "plan_state" } });
+  });
+
+  it("lets a reviewer resolve a reopened, previously sent note and approve the same version, keeping its reply and number", async () => {
+    const { save, submit, flow, call, task, note, notes } = setup();
+    await save(BODY, 0);
+    await submit("thr_reviewer_a");
+    await note(reviewerA, 1);
+    await flow.sendFeedback(task.id, reviewerA, 1);
+    await save(`${BODY}Revised.\n`, 1);
+    await call("replyPlanNote", { taskId: task.id, number: 1, body: "Fixed.", addressed: true, author });
+    await submit("thr_reviewer_a");
+    await flow.setState(task.id, reviewerA, 2, [1], "resolved");
+    await flow.setState(task.id, reviewerA, 2, [1], "draft");
+    expect(await flow.approve(task.id, reviewerA, undefined, 2)).toMatchObject({ ok: false });
+    expect(await flow.setState(task.id, reviewerA, 2, [1], "resolved")).toMatchObject({ ok: true });
+    expect(await flow.approve(task.id, reviewerA, undefined, 2)).toMatchObject({ ok: true, plan: { state: "approved", version: 2 } });
+    expect(await notes()).toEqual([expect.objectContaining({ number: 1, state: "resolved", reply: "Fixed." })]);
+    // A draft that never went out still cannot be resolved.
+    await save(`${BODY}Three.\n`, 2);
+    await submit("thr_reviewer_a");
+    await note(reviewerA, 3, { body: "Never sent." });
+    expect(await flow.setState(task.id, reviewerA, 3, [2], "resolved")).toMatchObject({ ok: false, error: { message: expect.stringContaining("is a draft") } });
+  });
+});

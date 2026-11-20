@@ -1398,6 +1398,14 @@ export function createTasksStore(db: PluginDatabase) {
     const plan = db.prepare<[string], { version: number; state: PlanState }>("SELECT version, state FROM task_plans WHERE task_id = ?").get(task.id);
     return plan ? planGateRefusal(task.key, plan, target) : noPlanGateRefusal(task.key, target);
   }
+  /** Where a scheduled card (a run card or a template) starts: Backlog, or the first unmarked status when planning requires plans. */
+  function scheduledStatus(projectId: string): string {
+    const project = requireProject(projectId);
+    if (project.planning !== "required") return "backlog";
+    const found = (project.statuses ?? DEFAULT_TASK_STATUSES).find((status) => status.id !== "canceled" && !inWorkZone(project, status.id));
+    if (!found) throw new Error(`Every status except canceled is marked "only with an approved plan" in ${project.prefix}, so a scheduled card has nowhere to start; unmark one status in the project's planning flags`);
+    return found.id;
+  }
   function planGate(task: Task, status: string): string | null {
     const project = requireProject(task.projectId);
     return gateRefusal(task, status, project, project);
@@ -2469,6 +2477,7 @@ export function createTasksStore(db: PluginDatabase) {
     listSubtasks,
     updateTask,
     planGate,
+    scheduledStatus,
     moveTaskToProject,
     updatePosition,
     deleteTask,

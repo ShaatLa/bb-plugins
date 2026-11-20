@@ -426,7 +426,7 @@ export function handlers(
         // The send above took time: the card and the project are read again here, so a card canceled meanwhile stays canceled.
         // A card whose plan is not approved stays where it is; the seed prompt carries the plan warning.
         const current = store.tasks.getTask(task.id) ?? task;
-        const target = effectiveInProgressStatus(store.tasks.getProject(task.projectId) ?? project);
+        const target = effectiveInProgressStatus(store.tasks.getProject(current.projectId) ?? project);
         if ((current.status === "backlog" || current.status === "todo") && target) {
           if (store.tasks.planGate(current, target)) skippedMove = true;
           else store.tasks.updateTask(task.id, { status: target });
@@ -438,7 +438,7 @@ export function handlers(
           body: `Dispatched to existing thread ${thread.title ?? thread.titleFallback ?? thread.id}`,
         });
       });
-      if (skippedMove && !planWarning) await noticeSkippedMove(bb, store.tasks, task, thread.id);
+      if (skippedMove && !planWarning) await noticeSkippedMove(bb, store.tasks, store.tasks.getTask(task.id) ?? task, thread.id);
       if (delivery?.delivery === "queued")
         activityService(bb, store).queued(task.id, thread.id, delivery.queuedMessage.id);
       publishThreadsChanged(bb, task.id);
@@ -519,7 +519,8 @@ export function handlers(
 
         // The spawn above took time: the card and the project are read again here, so a card canceled meanwhile stays canceled.
         const current = store.tasks.getTask(task.id) ?? task;
-        const freshProject = store.tasks.getProject(task.projectId) ?? project;
+        // The card may have changed projects meanwhile; its own project decides the target status.
+        const freshProject = store.tasks.getProject(current.projectId) ?? project;
         const inProgress = effectiveInProgressStatus(freshProject);
         if ((current.status === "backlog" || current.status === "todo") && inProgress && store.tasks.planGate(current, inProgress)) skippedMove = true;
         else if ((current.status === "backlog" || current.status === "todo") && inProgress) {
@@ -541,7 +542,7 @@ export function handlers(
         return attached;
       });
 
-      if (skippedMove && !planWarning) await noticeSkippedMove(bb, store.tasks, task, thread.id);
+      if (skippedMove && !planWarning) await noticeSkippedMove(bb, store.tasks, store.tasks.getTask(task.id) ?? task, thread.id);
       try {
         const currentThread = await bb.sdk.threads.get({ threadId: thread.id });
         const currentLiveStatus = taskThreadLiveStatus(currentThread);

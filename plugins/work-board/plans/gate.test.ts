@@ -1,5 +1,5 @@
 import { createFakePluginHost, makeThreadResponse } from "@get-bb/plugin-sdk/testing";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { createStore, registerTasksApi } from "../api";
 import { registerTasksCli } from "../cli";
 import { registerDelegation } from "../delegate";
@@ -216,6 +216,54 @@ describe("conversion and cancellation races", () => {
     expect(f.status(task.id)).toBe("canceled");
     expect(f.store.tasks.listTaskThreads(task.id)).toEqual([expect.objectContaining({ threadId: "thr_spawned" })]);
     expect(f.store.tasks.listComments(task.id).some((comment) => comment.body.includes("Status changed"))).toBe(false);
+  });
+});
+
+describe("transfers and status moves during a dispatch or a delivery", () => {
+  /** The source project starts work in a custom status that the destination does not have. */
+  function twoProjects(setupResult: ReturnType<typeof setup>) {
+    const { store, project } = setupResult;
+    store.tasks.updateProject(project.id, { statuses: [...DEFAULT_TASK_STATUSES.slice(0, 3), { id: "busy", name: "Busy" }, ...DEFAULT_TASK_STATUSES.slice(3)], workflowPolicy: { bugfixStatus: null, doneStatus: "done", inProgressStatus: "busy", reviewStatus: null, testingStatus: null, earlyStatuses: ["todo"], ownerDecisionLabel: null } });
+    return store.tasks.createProject({ name: "Destination", prefix: "DST", color: "red" });
+  }
+
+  it.each(["existing thread", "preset spawn"] as const)("uses the card's own project after it moved during a %s dispatch", async (kind) => {
+    let transfer = () => {};
+    const f = setup("optional", { onSend: () => transfer(), onSpawn: () => transfer() });
+    const destination = twoProjects(f);
+    const task = f.card("Work");
+    transfer = () => void f.store.tasks.moveTaskToProject(task.id, destination.id);
+    if (kind === "existing thread") await f.call("delegateToThread", { taskId: task.id, threadId: "thr_existing" });
+    else await f.call("delegate", { taskId: task.id, presetId: f.preset.id });
+    // The thread stays attached; the card takes the destination's In progress status, not the source's custom one.
+    expect(f.store.tasks.getTask(task.id)).toMatchObject({ projectId: destination.id, status: "in_progress" });
+    expect(f.store.tasks.listTaskThreads(task.id)).toHaveLength(1);
+  });
+
+  it.each([
+    ["in work at the commit, moved out during the delivery", "in_progress", "todo", 1],
+    ["not in work at the commit, moved in during the delivery", "todo", "in_progress", 0],
+  ] as const)("captures executor eligibility at the committed transition: %s", async (_label, from, during, notices) => {
+    let release!: () => void;
+    const hold = new Promise<void>((resolve) => (release = resolve));
+    const f = setup("optional");
+    // Only the decision message to the plan author is slow; the notice goes to a different thread.
+    f.harness.sdk.stub("threads.send", async ({ threadId }: { threadId: string }) => {
+      if (threadId === "thr_author") await hold;
+      return {};
+    });
+    const task = f.card("Work", { status: from });
+    f.store.tasks.upsertTaskThread({ taskId: task.id, threadId: "thr_executor", presetName: "Default", title: "Executor", liveStatus: "working" });
+    f.plans.save({ taskId: task.id, op: "replace", baseVersion: 0, body: PLAN, summary: "Plan", author });
+    f.plans.setState(task.id, "approved", owner);
+    await f.call("createPlanNote", { taskId: task.id, kind: "general", body: "Stop." });
+    const pending = f.call("sendPlanFeedback", { taskId: task.id, author: owner });
+    // The decision is committed while the delivery to the author is still pending.
+    await vi.waitFor(() => expect(f.plans.head(task.id)?.state).toBe("changes_requested"));
+    f.store.tasks.updateTask(task.id, { status: during });
+    release();
+    await pending;
+    expect(f.sent().filter((entry) => entry[0].threadId === "thr_executor")).toHaveLength(notices);
   });
 });
 

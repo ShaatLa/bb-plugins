@@ -176,7 +176,8 @@ export function createPlanNoteStore(db: Database, tasks: TasksStore, head: (task
     if (row.state === state) return noteOf(row);
     const now = new Date().toISOString();
     if (state === "resolved") {
-      if (row.state === "draft") throw new PlanError("plan_state", `${label} is a draft; send it, or delete it`);
+      // A reopened note was sent once and keeps its reply: it can be resolved again. A draft that never went out cannot.
+      if (row.state === "draft" && row.sent_at === null) throw new PlanError("plan_state", `${label} is a draft; send it, or delete it`);
       db.prepare("UPDATE task_plan_notes SET state = 'resolved', updated_at = ? WHERE id = ?").run(now, noteId);
     } else {
       if (row.state === "sent") throw new PlanError("plan_state", `${label} is waiting for the agent's answer`);

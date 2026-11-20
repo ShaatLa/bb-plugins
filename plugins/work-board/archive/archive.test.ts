@@ -1439,6 +1439,58 @@ describe("archive v20: reviewers, review history and planning", () => {
     });
   });
 
+  it("refuses a v19 overwrite that would orphan a pending review attempt, so a later submit and decision stay consistent", async () => {
+    const source = await reviewed();
+    const out = await exported(source, "v19-orphan");
+    await toV19(out);
+    // The snapshot has the same version as a draft; locally it is in review with a pending attempt.
+    for (const id of JSON.parse(await readFile(join(out, "project.json"), "utf8")).taskIds) {
+      const path = join(out, "tasks", `${id}.json`);
+      const record = JSON.parse(await readFile(path, "utf8"));
+      if (record.plan) record.plan.state = "draft";
+      await writeFile(path, jsonText(record));
+    }
+    const history = source.plans.captureReviews(source.task.id);
+    await expect(importProject(source.bb, source.store, out, true)).rejects.toThrow(/pending review of v1 that this import would orphan/);
+    expect(source.plans.head(source.task.id)?.state).toBe("in_review");
+    expect(source.plans.captureReviews(source.task.id)).toEqual(history);
+    // Nothing was written: a decision closes the one pending attempt, and the project still exports and restores.
+    source.plans.setState(source.task.id, "approved", owner);
+    expect(source.plans.captureReviews(source.task.id).filter((review) => review.outcome === "pending")).toEqual([]);
+    const again = await exported(source, "v20-after-orphan-refusal");
+    const target = setup();
+    await importProject(target.bb, target.store, again, false);
+    expect(createPlanStore(target.bb.storage.database(), target.store.tasks).captureReviews(source.task.id)).toEqual(source.plans.captureReviews(source.task.id));
+  });
+
+  it("refuses a v18 overwrite that would rewind below a retained note, and the refused project stays exportable and restorable", async () => {
+    const source = await seed();
+    const plans = createPlanStore(source.bb.storage.database(), source.store.tasks);
+    const notes = createPlanNoteStore(source.bb.storage.database(), source.store.tasks, plans.head);
+    plans.save({ taskId: source.task.id, op: "replace", baseVersion: 0, body: "# Plan\n\nOne.\n", summary: "One", author: authorA });
+    const out = await exported(source, "v18-note-rewind");
+    await toV19(out);
+    const manifestPath = join(out, "project.json");
+    const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
+    manifest.version = 18;
+    await writeFile(manifestPath, jsonText(manifest));
+    for (const id of manifest.taskIds) {
+      const path = join(out, "tasks", `${id}.json`);
+      const record = JSON.parse(await readFile(path, "utf8"));
+      delete record.planNotes;
+      await writeFile(path, jsonText(record));
+    }
+    // Locally the plan moved on to v2 and the owner left a note on it.
+    plans.save({ taskId: source.task.id, op: "replace", baseVersion: 1, body: "# Plan\n\nTwo.\n", summary: "Two", author: authorA });
+    notes.create({ taskId: source.task.id, kind: "general", body: "A note on v2.", authorName: "You" });
+    await expect(importProject(source.bb, source.store, out, true)).rejects.toThrow(/rewound to v1, but its local notes refer to v2/);
+    expect(plans.head(source.task.id)?.version).toBe(2);
+    const again = await exported(source, "v20-after-note-refusal");
+    const target = setup();
+    await importProject(target.bb, target.store, again, false);
+    expect(createPlanStore(target.bb.storage.database(), target.store.tasks).head(source.task.id)?.version).toBe(2);
+  });
+
   it("reads a v19 snapshot as the owner's, infers optional for a fresh project with a plan, and keeps local review history", async () => {
     const source = await reviewed();
     const out = await exported(source, "v19-legacy");

@@ -55,3 +55,27 @@ describe('scheduled persistence',()=>{
   await f.harness.lifecycle.dispose();
  });
 });
+
+describe('scheduled cards under planning flags',()=>{
+ const mark=(f:ReturnType<typeof fixture>,ids:string[])=>f.store.tasks.updateProject(f.project.id,{planning:'required',statuses:f.store.tasks.getProject(f.project.id)!.statuses!.map(status=>({...status,requiresApprovedPlan:ids.includes(status.id)}))});
+ it('starts template and run cards in the first unmarked status when Backlog is marked, and still starts the run',()=>{
+  const f=fixture();mark(f,['backlog','in_progress','in_review','done']);
+  const s=f.scheduled.create(f.input);
+  expect(f.store.tasks.getTask(s.templateTaskId)!.status).toBe('todo');
+  const r=f.scheduled.reserve(s.id,'slot:one','2026-11-01T09:00:00.000Z');
+  const task=f.scheduled.createRunTask(r.run.id);
+  expect(task.status).toBe('todo');
+  const started=f.scheduled.markStarted(r.run.id,{threadId:'thr_worker',requestId:'r1',title:'Worker',presetName:'Existing thread'});
+  expect(started.startedAt).not.toBeNull();
+ });
+ it('keeps Backlog when it is unmarked, and when planning is not required',()=>{
+  const f=fixture();
+  expect(f.store.tasks.getTask(f.scheduled.create(f.input).templateTaskId)!.status).toBe('backlog');
+  mark(f,['in_progress']);
+  expect(f.store.tasks.getTask(f.scheduled.create(f.input).templateTaskId)!.status).toBe('backlog');
+ });
+ it('fails with a clear error naming the planning flags when every status but canceled is marked',()=>{
+  const f=fixture();mark(f,['backlog','todo','in_progress','in_review','done']);
+  expect(()=>f.scheduled.create(f.input)).toThrow(/Every status except canceled is marked.*planning flags/);
+ });
+});

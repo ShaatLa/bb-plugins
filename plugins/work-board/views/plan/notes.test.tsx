@@ -279,6 +279,20 @@ describe("general notes, Send feedback and Approve", () => {
     await slot.findByText("Approval saved, but not delivered: tell thr_example yourself that EXA-1 plan v1 is approved. They read it with bb work-board plan show EXA-1 and bb work-board plan notes EXA-1 --all");
   });
 
+  it("reports the version that was actually decided when another session saved a newer one behind the page", async () => {
+    const { slot, harness, note, save } = await open();
+    await note({ kind: "general", body: "Add a rollback step." });
+    await slot.findByRole("button", { name: "Send feedback (1)" });
+    // v2 is saved by someone else; the page has not refreshed and still shows v1.
+    await save({ baseVersion: 1, body: `${BODY}\nSecond.\n`, summary: "Second" });
+    harness.sdk.stub("threads.send", async () => {
+      throw new Error("gone");
+    });
+    fireEvent.click(slot.getByRole("button", { name: "Send feedback (1)" }));
+    await slot.findByText(/tell thr_example yourself that EXA-1 plan v2 needs changes/);
+    expect(slot.queryByText(/plan v1 needs changes/)).toBeNull();
+  });
+
   it("keeps the notes sent and says so when the agent could not be notified", async () => {
     const { slot, harness, note } = await open();
     await note({ kind: "general", body: "Add a rollback step." });

@@ -317,6 +317,14 @@ export function createPlanStore(db: Database, tasks: TasksStore) {
     const row = planRow(taskId);
     if (!row) throw new PlanError("plan_invalid", `${task.key} has no plan`);
     if (row.state === state) return { plan: headOf(row), version: null, changed: false };
+    // The same rules as `submit` and `approvePlan`, checked before any history write or delivery: a review is bound to a
+    // version, so a plan that was decided needs a new version before it goes back to review, and unsent drafts block an approval.
+    if (state === "in_review" && row.state !== "draft")
+      throw new PlanError("plan_state", `Plan v${row.version} is ${row.state.replace("_", " ")}; save a new version before it goes back to review`);
+    if (state === "approved") {
+      const drafts = db.prepare<[string], { count: number }>("SELECT COUNT(*) AS count FROM task_plan_notes WHERE task_id = ? AND state = 'draft' AND author_kind = 'person'").get(taskId)!.count;
+      if (drafts > 0) throw new PlanError("plan_state", `${task.key} has ${drafts} draft note${drafts === 1 ? "" : "s"} not sent yet; send them as feedback or delete them before approving`);
+    }
     const text = { in_review: "submitted for review", approved: "approved", changes_requested: "changes requested" }[state];
     if (state === "in_review") startReview(taskId, row.version, null, by);
     else closePendingReview(db, taskId, state, by.name);

@@ -11,14 +11,21 @@ import { notifyThread } from "../steer";
  * it once, for information. The thread that made the change and `exclude` (the threads that already get the decision
  * message for this change) are left out. A failed delivery is only logged: the change is saved.
  */
+/** Whether the card is "in work" right now. Callers read it at the committed transition, before they await any delivery. */
+export function cardInWork(tasks: TasksStore, taskId: string): boolean {
+  const task = tasks.getTask(taskId);
+  const project = task && tasks.getProject(task.projectId);
+  return Boolean(task && project && inWorkNow(project, task.status));
+}
+
 export async function noticeLeftApproved(
   bb: BbPluginApi,
   tasks: TasksStore,
-  input: { taskId: string; version: number; state: PlanState; reason: string; changedBy: string | null; exclude?: ReadonlyArray<string | null> },
+  input: { taskId: string; version: number; state: PlanState; reason: string; changedBy: string | null; exclude?: ReadonlyArray<string | null>; /** Eligibility captured at the commit; read now when absent. */ inWork?: boolean },
 ): Promise<void> {
   const task = tasks.getTask(input.taskId);
   const project = task && tasks.getProject(task.projectId);
-  if (!task || !project || !inWorkNow(project, task.status)) return;
+  if (!task || !project || !(input.inWork ?? inWorkNow(project, task.status))) return;
   const skip = new Set([input.changedBy, ...(input.exclude ?? [])]);
   // "Active" is read from the live thread, not from the link: a link's name or stored state says nothing about whether it is running.
   const threads: string[] = [];

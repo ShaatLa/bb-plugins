@@ -54,9 +54,9 @@ export function usePlanReviewActions(taskId: string | null, refresh: () => void)
     update: (noteId: string, body: string) => run(() => rpc.call("updatePlanNote", { noteId, body }), () => ({})),
     remove: (noteId: string) => run(() => rpc.call("deletePlanNote", { noteId }), () => ({})),
     setState: (noteId: string, state: "resolved" | "draft") => run(() => rpc.call("setPlanNoteState", { noteId, state }), () => ({})),
-    send: () => run(() => rpc.call("sendPlanFeedback", { taskId: taskId!, author: PERSON_AUTHOR }), (result) => ({ delivered: result.delivered, deliveries: result.deliveries, notes: result.notes })),
+    send: () => run(() => rpc.call("sendPlanFeedback", { taskId: taskId!, author: PERSON_AUTHOR }), (result) => ({ delivered: result.delivered, deliveries: result.deliveries, notes: result.notes, version: result.plan.version })),
     approve: (note: string) =>
-      run(() => rpc.call("approvePlan", { taskId: taskId!, author: PERSON_AUTHOR, ...(note.trim() ? { note: note.trim() } : {}) }), (result) => ({ delivered: result.delivered, deliveries: result.deliveries })),
+      run(() => rpc.call("approvePlan", { taskId: taskId!, author: PERSON_AUTHOR, ...(note.trim() ? { note: note.trim() } : {}) }), (result) => ({ delivered: result.delivered, deliveries: result.deliveries, version: result.plan.version })),
   };
 }
 

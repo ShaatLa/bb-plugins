@@ -292,18 +292,30 @@ export function restoreProject(
       if (planKey(local && archivePlanSchema.parse(local)) !== planKey(imported))
         throw new Error(`Import conflict: plan ${record.task.key}; use --overwrite`);
     }
-    // Archives before v20 leave the local review history alone, so they must not rewind a plan below a version it still
-    // refers to: the project would then fail the validation of its own export. Checked before anything is written.
-    if (manifest.version < 20)
-      for (const record of records) {
-        const imported = planOf(record);
-        if (imported === undefined || !localTaskIds.has(record.task.id)) continue;
-        const local = plans.capture(record.task.id);
-        if (planKey(local && archivePlanSchema.parse(local)) === planKey(imported)) continue;
-        const newest = Math.max(0, ...plans.captureReviews(record.task.id).map((review) => review.version));
-        if (newest > (imported?.version ?? 0))
-          throw new Error(`Import conflict: plan ${record.task.key} would be rewound to v${imported?.version ?? 0}, but its local review history refers to v${newest}; import a v20 snapshot, or remove the review history first`);
+    // Archives before v20 leave the local review history alone, and those before v19 the local notes. A plan they replace
+    // must not fall below a version that history still refers to, or orphan a pending review attempt: either would leave
+    // a project that fails the validation of its own export. Checked before anything is written.
+    for (const record of records) {
+      const imported = planOf(record);
+      if (imported === undefined || !localTaskIds.has(record.task.id)) continue;
+      const local = plans.capture(record.task.id);
+      if (planKey(local && archivePlanSchema.parse(local)) === planKey(imported)) continue;
+      const to = imported?.version ?? 0;
+      if (manifest.version < 20) {
+        const reviews = plans.captureReviews(record.task.id);
+        const newest = Math.max(0, ...reviews.map((review) => review.version));
+        if (newest > to)
+          throw new Error(`Import conflict: plan ${record.task.key} would be rewound to v${to}, but its local review history refers to v${newest}; import a v20 snapshot, or remove the review history first`);
+        const pending = reviews.find((review) => review.outcome === "pending");
+        if (pending && !(imported && imported.state === "in_review" && imported.version === pending.version))
+          throw new Error(`Import conflict: plan ${record.task.key} has a pending review of v${pending.version} that this import would orphan; finish or reassign the review first, or import a v20 snapshot`);
       }
+      if (manifest.version < 19) {
+        const refs = createPlanNoteStore(db, store.tasks, plans.head).capture(record.task.id).flatMap((note) => [note.madeOnVersion, note.sentInVersion ?? 0, note.addressedInVersion ?? 0]);
+        const newest = Math.max(0, ...refs);
+        if (newest > to) throw new Error(`Import conflict: plan ${record.task.key} would be rewound to v${to}, but its local notes refer to v${newest}; import a v19 or later snapshot, or delete those notes first`);
+      }
+    }
     // Archives before v19 cannot carry plan notes either, so they leave local notes untouched.
     const planNotes = createPlanNoteStore(db, store.tasks, plans.head);
     const notesOf = (record: (typeof records)[number]) => (manifest.version >= 19 ? record.planNotes ?? [] : undefined);
