@@ -14,7 +14,7 @@ import {
 import { createStructuredStore } from "../structured/store";
 import { createPlanStore } from "../plans/store";
 import { createPlanNoteStore } from "../plans/notes";
-import { ensurePlanningStatus, getWorkflowPolicy, settlePlanFlags, withPlanningStatus } from "../shared/workflow-policy";
+import { ensurePlanningStatus, getWorkflowPolicy, settlePlanFlags, withPlanningStatus, workflowPolicySchema } from "../shared/workflow-policy";
 import { planningOn } from "../shared/project-settings";
 import { scheduleRunSchema, scheduleSchema, scheduleSourceSchema, type ScheduleRun } from "../shared/scheduled";
 import {
@@ -199,6 +199,16 @@ export async function archiveRecords(
   return records;
 }
 
+/** A stored workflow policy as the schema reads it, so a missing field and its default compare equal. */
+function normalizedPolicy(value: unknown): unknown {
+  if (typeof value !== "string") return value;
+  try {
+    return JSON.stringify(workflowPolicySchema.parse(JSON.parse(value)));
+  } catch {
+    return value;
+  }
+}
+
 function dbRow(value: object): Row {
   return Object.fromEntries(
     Object.entries(value).map(([key, value]) => [
@@ -369,16 +379,17 @@ export function restoreProject(
           );
         if (table === "projects" && current.statuses == null)
           current.statuses = JSON.stringify(DEFAULT_TASK_STATUSES);
-        const differs = Object.keys(row).some(
-          (key) => current[key] !== row[key],
-        );
+        // A stored policy that predates a field reads, and so exports, with that field's default; compare them as read.
+        const differ = (key: string) =>
+          current[key] !== row[key] && !(table === "projects" && key === "workflow_policy" && normalizedPolicy(current[key]) === normalizedPolicy(row[key]));
+        const differs = Object.keys(row).some(differ);
         if (!differs) return;
         if (
           !overwrite &&
           Object.keys(row).some(
             (key) =>
               !(table === "projects" && key === "next_task_number") &&
-              current[key] !== row[key],
+              differ(key),
           )
         )
           throw new Error(

@@ -63,7 +63,7 @@ export function startsFromStatus(project: ZoneProject, status: string): boolean 
  * target, or null when there is none (the caller then leaves the policy alone and the automatic move stays off; `reason`
  * says why). Cases in order: a valid target already set is kept; a status with the id `planning`, then one named
  * "Planning", is used when it is valid; when either is taken by an invalid status nothing is inserted (a duplicate name is
- * refused by the status rules); only when both are free, the list has room and In progress is present, an unmarked
+ * refused by the status rules; both candidates are judged before insertion is blocked); only when both are free, the list has room and In progress is present, an unmarked
  * "Planning" is inserted right before In progress.
  */
 export function ensurePlanningStatus<S extends { id: string; name: string; requiresApprovedPlan?: boolean }>(project: {
@@ -74,14 +74,19 @@ export function ensurePlanningStatus<S extends { id: string; name: string; requi
   const keep = (planningStatus: string | null, reason: string | null = null, statuses: S[] = [...list]) => ({ statuses, planningStatus, reason });
   const current = planningStatusOf({ ...project, statuses: list });
   if (current) return keep(current);
-  const taken = list.find((status) => status.id === "planning") ?? list.find((status) => status.name.toLowerCase() === "planning");
-  if (taken)
-    return isPlanningTarget({ ...project, statuses: list }, taken.id) ? keep(taken.id) : keep(null, `status "${taken.name}" (${taken.id}) is taken but cannot be a planning status`);
+  // Both candidates are judged, in order: an unusable `planning` id must not mask a usable status named Planning.
+  const taken = [list.find((status) => status.id === "planning"), list.find((status) => status.name.toLowerCase() === "planning")].filter((status) => status !== undefined);
+  const usable = taken.find((status) => isPlanningTarget({ ...project, statuses: list }, status.id));
+  if (usable) return keep(usable.id);
+  if (taken.length) return keep(null, `status "${taken[0]!.name}" (${taken[0]!.id}) is taken but cannot be a planning status`);
   const start = effectiveInProgressStatus({ ...project, statuses: list });
   const at = start ? list.findIndex((status) => status.id === start) : -1;
   if (at < 0) return keep(null, "the project has no In progress status to put Planning before");
   if (list.length >= MAX_STATUSES) return keep(null, `the status list already holds ${MAX_STATUSES} statuses`);
-  return keep("planning", null, [...list.slice(0, at), { id: "planning", name: "Planning" } as S, ...list.slice(at)]);
+  const inserted = [...list.slice(0, at), { id: "planning", name: "Planning" } as S, ...list.slice(at)];
+  // The new column must pass the same role rules, or Planning would close cards (a policy can already map `planning` to Done).
+  if (!isPlanningTarget({ ...project, statuses: inserted }, "planning")) return keep(null, "the id planning is already assigned to a workflow role");
+  return keep("planning", null, inserted);
 }
 
 /** The policy with `planningStatus` set; the same policy when there is nothing to set or it already holds. */

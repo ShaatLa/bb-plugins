@@ -2,7 +2,7 @@ import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import type { TasksStore } from "../db";
 import type { PlanAuthor, PlanReview, PlanVersion, SaveTaskPlanInput, TaskPlanHead } from "../shared/contract";
 import { assertNoSecrets } from "../shared/secret-guard.js";
-import { planningStatusOf } from "../shared/workflow-policy";
+import { isClosedStatus, planningStatusOf } from "../shared/workflow-policy";
 import { statusLabel } from "../shared/statuses.js";
 import { planningOffMessage, planningOn, planningRequired } from "../shared/project-settings";
 import { isPaused, submitRefusal } from "./pause";
@@ -259,7 +259,8 @@ export function createPlanStore(db: Database, tasks: TasksStore) {
     let movedTo: { status: string; label: string } | null = null;
     const project = !current && !task.archivedAt && task.scheduledRole !== "template" ? tasks.getProject(task.projectId) : undefined;
     const planning = project && planningOn(project) ? planningStatusOf(project) : null;
-    if (planning && (task.status === "backlog" || task.status === "todo") && !tasks.planGate(task, planning)) {
+    // A closed card never moves, even when the owner mapped Done to Backlog or Todo; a card already there is not "moved".
+    if (planning && project && (task.status === "backlog" || task.status === "todo") && task.status !== planning && !isClosedStatus(project, task.status) && !tasks.planGate(task, planning)) {
       tasks.updateTask(task.id, { status: planning });
       movedTo = { status: planning, label: statusLabel(planning, project!.statuses) };
     }
@@ -330,6 +331,11 @@ export function createPlanStore(db: Database, tasks: TasksStore) {
     const task = requireEditable(taskId);
     const row = planRow(taskId);
     if (!row) throw new PlanError("plan_invalid", `${task.key} has no plan`);
+    // A repeat of `in_review` is refused like a submit while a decision is open, so it never reports a paused review as fine.
+    if (state === "in_review") {
+      const refused = submitRefusal(db, task.key, taskId);
+      if (refused) throw new PlanError("plan_state", refused);
+    }
     if (row.state === state) return { plan: headOf(row), version: null, changed: false };
     // The same rules as `submit` and `approvePlan`, checked before any history write or delivery: a review is bound to a
     // version, so a plan that was decided needs a new version before it goes back to review, and unsent drafts block an approval.
@@ -338,10 +344,6 @@ export function createPlanStore(db: Database, tasks: TasksStore) {
     if (state === "approved") {
       const drafts = db.prepare<[string], { count: number }>("SELECT COUNT(*) AS count FROM task_plan_notes WHERE task_id = ? AND state = 'draft' AND author_kind = 'person'").get(taskId)!.count;
       if (drafts > 0) throw new PlanError("plan_state", `${task.key} has ${drafts} draft note${drafts === 1 ? "" : "s"} not sent yet; send them as feedback or delete them before approving`);
-    }
-    if (state === "in_review") {
-      const refused = submitRefusal(db, task.key, taskId);
-      if (refused) throw new PlanError("plan_state", refused);
     }
     const text = { in_review: "submitted for review", approved: "approved", changes_requested: "changes requested" }[state];
     if (state === "in_review") startReview(taskId, row.version, null, by);

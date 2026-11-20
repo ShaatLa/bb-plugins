@@ -1,5 +1,5 @@
 import { createFakePluginHost, makeThreadResponse } from "@get-bb/plugin-sdk/testing";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { createPlanReviewFlow, createStore, registerTasksApi } from "../api";
 import plugin from "../server";
 import type { PlanAuthor, TaskQuestion } from "../shared/contract";
@@ -136,14 +136,22 @@ describe("review pause on an open owner decision", () => {
     expect(store.tasks).toBeTruthy();
   });
 
-  it("wakes nobody when the owner reviews", async () => {
-    const { save, submit, ask, answer, sent } = setup();
+  it("wakes no reviewer thread when the owner reviews, but still tells the author when the decision is settled", async () => {
+    const { save, submit, call, task, answer, sent, sentTo, forget } = setup();
     await save(BODY, 0);
     expect(await submit("owner")).toMatchObject({ ok: true });
-    const opened = await ask();
+    forget();
+    // The asker is another thread than the one that submitted the plan.
+    const opened = await call<WakeResult & { question: TaskQuestion }>("createQuestion", { taskId: task.id, kind: "decision", askedByThread: "thr_asker", prompt: "Which one?", options: ["A", "B"], mode: "single" });
     expect(opened.planWake).toBeUndefined();
-    expect((await answer(opened.question)).planWake).toBeUndefined();
     expect(sent()).toEqual([]);
+    const settled = await answer(opened.question);
+    expect(settled.planWake).toMatchObject({ event: "resumed", delivered: "sent", failed: [] });
+    expect(sentTo("thr_author")).toHaveLength(1);
+    expect(sentTo("thr_author")[0]).toContain("EXA-1 plan v1: the owner's decision is settled; the owner reviews the plan.");
+    expect(sentTo("thr_author")[0]).toContain("For information.");
+    // The asker got its own answer notice, which is not the plan copy.
+    expect(sentTo("thr_asker").join("\n")).not.toContain("the owner reviews the plan");
   });
 
   it("reports a failed wake as a result and still saves the question", async () => {
@@ -155,6 +163,77 @@ describe("review pause on an open owner decision", () => {
     const failed = await ask();
     expect(failed.planWake).toMatchObject({ event: "paused", delivered: "failed", failed: ["thr_reviewer_a"], hint: expect.stringContaining("thr_reviewer_a") });
     expect((await call<{ questions: unknown[] }>("listQuestions", { taskId: task.id })).questions).toHaveLength(1);
+  });
+});
+
+describe("stale resume wakes", () => {
+  /** Settles the open decision while the queue read of the wake is held open, and changes the card meanwhile. */
+  async function settleHeld(change: (ctx: ReturnType<typeof setup>) => void) {
+    const ctx = setup();
+    await ctx.inReview();
+    const opened = await ctx.ask();
+    ctx.forget();
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    let reading = false;
+    ctx.harness.sdk.stub("threads.queuedMessages.list", async () => {
+      reading = true;
+      await gate;
+      return [];
+    });
+    const pending = ctx.answer(opened.question);
+    await vi.waitFor(() => expect(reading).toBe(true));
+    change(ctx);
+    release();
+    return { ...ctx, settled: await pending };
+  }
+  const resumes = (texts: string[]) => texts.filter((text) => resumedText.test(text) || /decision is settled/.test(text));
+
+  it.each([
+    ["an owner override", ({ plans, task }: ReturnType<typeof setup>) => void plans.setState(task.id, "approved", owner)],
+    ["a reassignment", ({ plans, task }: ReturnType<typeof setup>) => void plans.submit(task.id, author, "thr_reviewer_b")],
+    ["a newer draft", ({ plans, task }: ReturnType<typeof setup>) => void plans.save({ taskId: task.id, op: "replace", baseVersion: 1, body: `${BODY}More.\n`, summary: "Edit", author })],
+  ])("drops the reviewer wake and the author copy after %s during the queue read", async (_label, change) => {
+    const f = await settleHeld(change);
+    expect(f.settled.planWake).toBeUndefined();
+    expect(resumes(f.sentTo("thr_reviewer_a"))).toEqual([]);
+    expect(resumes(f.sentTo("thr_reviewer_b"))).toEqual([]);
+    expect(f.sentTo("thr_author")).toEqual([]);
+  });
+
+  it("drops the resume when a decision was reopened during the queue read, and the new pause still wakes", async () => {
+    let reopened: ReturnType<ReturnType<typeof setup>["ask"]> | undefined;
+    const f = await settleHeld((ctx) => void (reopened = ctx.ask()));
+    expect((await reopened)!.planWake).toMatchObject({ event: "paused" });
+    expect(f.settled.planWake).toBeUndefined();
+    expect(f.sentTo("thr_reviewer_a").map((text) => (pausedText.test(text) ? "pause" : "other"))).toEqual(["pause"]);
+    expect(f.sentTo("thr_author")).toEqual([]);
+  });
+});
+
+describe("reports of an unreachable author", () => {
+  it("reports a named author that cannot be reached as a failure, through the command line", async () => {
+    const host = createFakePluginHost({
+      pluginId: "work-board",
+      sdk: { threads: { get: async ({ threadId }: { threadId: string }) => { if (threadId === "thr_author") throw new Error("gone"); return makeThreadResponse({ id: threadId, status: "active" }); }, send: async () => undefined } },
+    });
+    hosts.push(host);
+    await plugin(host.bb);
+    const { harness } = host;
+    const cli = (...args: string[]) => harness.runCli(args);
+    await cli("project", "create", "--name", "Example", "--prefix", "EXA");
+    const projectId = (host.bb.storage.database().prepare("SELECT id FROM projects").get() as { id: string }).id;
+    await harness.callRpc("updateProject" as never, { projectId, planning: "optional" } as never);
+    await cli("create", "--project", "EXA", "--title", "Planned work");
+    const taskId = (host.bb.storage.database().prepare("SELECT id FROM tasks").get() as { id: string }).id;
+    await harness.callRpc("saveTaskPlan" as never, { taskId, summary: "Edit", author, op: "replace", baseVersion: 0, body: BODY } as never);
+    await harness.callRpc("submitTaskPlan" as never, { taskId, author: { ...author, threadId: "thr_submitter", name: "agent (thr_submitter)" }, reviewer: "thr_reviewer_a" } as never);
+    const added = await cli("question", "add", "EXA-1", "--prompt", "Which one?", "--option", "A", "--option", "B");
+    expect(added, added.stderr).toMatchObject({ exitCode: 0 });
+    const shown = JSON.parse((await cli("show", "EXA-1", "--json")).stdout);
+    const question = shown.questions[0] as { id: string; revision: number; options: Array<{ id: string }> };
+    const answered = await cli("question", "answer", "EXA-1", "--question", question.id, "--revision", String(question.revision), "--answer", question.options[0]!.id);
+    expect(answered.stdout).toMatch(/Saved answer to .*\nThe question is saved, but thr_author could not be told that the owner's decision is settled/);
   });
 });
 
@@ -276,6 +355,14 @@ describe("guards while a decision is open", () => {
     expect(store.tasks.getTask(task.id)).toBeTruthy();
     await answer(opened.question);
     expect(await submit("thr_reviewer_a")).toMatchObject({ ok: true, outcome: "submitted" });
+  });
+
+  it("refuses a repeated return to review on an already paused review, through the public RPC", async () => {
+    const { inReview, ask, call, task, plans } = setup();
+    await inReview("owner" as never);
+    await ask();
+    expect(plans.paused(task.id)).toBe(true);
+    expect(await call("setTaskPlanState", { taskId: task.id, state: "in_review", author: owner })).toMatchObject({ ok: false, error: { code: "plan_state", message: expect.stringContaining("has an open owner decision") } });
   });
 
   it("refuses reviewer approve and feedback while paused, and lets notes, dismissals and the owner through", async () => {

@@ -5,11 +5,12 @@ import type { TasksApiStore } from "../api";
 import { createUlid } from "../db/store";
 import { getWorkflowPolicy } from "../shared/workflow-policy";
 import { planningOn } from "../shared/project-settings";
-import { defaultTaskThreadId, deliverCommentToLatestAgent } from "../steer";
-import { deliverPlanReview, wakeReviewer } from "../plans/delivery";
+import { defaultTaskThreadId, deliverCommentToLatestAgent, notifyThread } from "../steer";
+import { errorMessage } from "../shared/errors";
+import { planReviewThread, wakeReviewer } from "../plans/delivery";
 import { openDecisionIds, reviewBinding, type ReviewBinding } from "../plans/pause";
 import { createPlanStore } from "../plans/store";
-import { buildResultCopyMessage, buildReviewPausedMessage, buildReviewResumedMessage } from "../shared/plan-notes";
+import { buildOwnerReviewSettledMessage, buildResultCopyMessage, buildReviewPausedMessage, buildReviewResumedMessage } from "../shared/plan-notes";
 import {
   questionSchema,
   templateSchema,
@@ -41,39 +42,63 @@ export function createStructuredStore(bb: BbPluginApi, store: TasksApiStore) {
   const plans = createPlanStore(db, store.tasks);
   /**
    * The wake a question write owes the plan reviewer, read inside the write's own transaction from the open-decision count
-   * before and after: only 0 → ≥1 (pause) and ≥1 → 0 (resume) count, and only while a review waits on the card.
+   * before and after: only 0 → ≥1 (pause) and ≥1 → 0 (resume) count, and only while a review waits on the card. A resume also
+   * fixes who is told about it, as of the attempt it settled.
    */
-  type Wake = { event: PlanWake["event"]; taskId: string; binding: ReviewBinding } | null;
+  type Wake = { event: PlanWake["event"]; taskId: string; binding: ReviewBinding; recipients: { actor: string | null; copy: string | null } } | null;
   const decisionTransition = (taskId: string, before: number): Wake => {
     const after = openDecisionIds(db, taskId).length;
     if ((before === 0) === (after === 0)) return null;
     const binding = reviewBinding(db, taskId);
-    return binding ? { event: after > 0 ? "paused" : "resumed", taskId, binding } : null;
+    return binding ? { event: after > 0 ? "paused" : "resumed", taskId, binding, recipients: plans.resultRecipients(taskId, binding.version) } : null;
   };
   /** Sends the wake after the commit. A delivery failure never undoes the question; it comes back for the command to print. */
   async function announce(wake: Wake): Promise<PlanWake | undefined> {
     const task = wake && store.tasks.getTask(wake.taskId);
     const project = task && store.tasks.getProject(task.projectId);
-    // An owner review has no thread to wake, and with planning off the plan is not touched.
-    if (!wake || !task || !project || !planningOn(project) || !wake.binding.reviewerThread) return undefined;
-    // A resume belongs to the attempt it was settled under: after an override, a reassignment or a newer draft nothing is sent.
-    if (wake.event === "resumed" && reviewBinding(db, task.id)?.attemptId !== wake.binding.attemptId) return undefined;
-    const { reviewerThread, version } = wake.binding;
+    // With planning off the plan is not touched. An owner review has no thread to wake, but its author still hears a resume.
+    if (!wake || !task || !project || !planningOn(project)) return undefined;
+    const { reviewerThread, version, attemptId } = wake.binding;
+    if (!reviewerThread && wake.event === "paused") return undefined;
+    // Read again right before each append or send: after an override, a reassignment, a newer draft (and for a resume, a
+    // decision that was reopened) a notice that went stale is dropped, however long the thread lookup or queue read took.
+    const wanted = () => reviewBinding(db, task.id)?.attemptId === attemptId && (wake.event === "paused" || openDecisionIds(db, task.id).length === 0);
+    if (!wanted()) return undefined;
     const failed: string[] = [];
     let hint: string | null = null;
-    const text = (wake.event === "paused" ? buildReviewPausedMessage : buildReviewResumedMessage)({ taskKey: task.key, version });
-    const woke = await wakeReviewer(bb, { taskId: task.id, taskKey: task.key, threadId: reviewerThread, text });
-    if (woke.delivered === "failed") {
-      failed.push(reviewerThread);
-      hint = woke.hint;
+    // A wake that went stale everywhere reports nothing.
+    let sentAny = false;
+    const text = (wake.event === "paused" ? buildReviewPausedMessage : reviewerThread ? buildReviewResumedMessage : buildOwnerReviewSettledMessage)({ taskKey: task.key, version });
+    if (reviewerThread) {
+      const woke = await wakeReviewer(bb, { taskId: task.id, taskKey: task.key, threadId: reviewerThread, text, wanted });
+      if (woke.delivered === "failed") {
+        failed.push(reviewerThread);
+        hint = woke.hint;
+      } else if (woke.delivered === "sent") sentAny = true;
     }
     if (wake.event === "resumed") {
-      // The author hears about it for information, through the same routing as a review result.
+      // The author hears about it for information, through the same routing as a review result, as of the settled attempt.
       const copy = buildResultCopyMessage({ taskKey: task.key, headline: text, actor: reviewerThread });
-      const sent = await deliverPlanReview(bb, { taskId: task.id, recipients: plans.resultRecipients(task.id, version), text: copy, copyText: () => copy });
-      // An author with no thread (a plan written in the app) has nobody to tell; only a failed send is a failure.
-      for (const entry of sent.deliveries) if (entry.delivered === "failed" && entry.threadId) failed.push(entry.threadId);
+      const told = new Set<string>();
+      for (const original of [wake.recipients.actor, wake.recipients.copy]) {
+        // A recipient that cannot be reached at all is a failure; an author with no thread (a plan written in the app) is not.
+        if (!original) continue;
+        const thread = await planReviewThread(bb, original);
+        if (!thread) {
+          failed.push(original);
+          continue;
+        }
+        if (thread === reviewerThread || told.has(thread)) continue;
+        told.add(thread);
+        try {
+          if (await notifyThread(bb, thread, copy, wanted)) sentAny = true;
+        } catch (error) {
+          bb.log.warn(`failed to tell ${thread} that the decision on ${task.key} is settled: ${errorMessage(error)}`);
+          failed.push(thread);
+        }
+      }
     }
+    if (!failed.length && !sentAny) return undefined;
     return { event: wake.event, delivered: failed.length ? "failed" : "sent", failed, hint };
   }
   const getQuestion = (id: string) => {

@@ -80,6 +80,20 @@ describe("ensurePlanningStatus", () => {
     expect(result.reason).toContain("planning");
   });
 
+  it("judges both candidates: an unusable planning id does not mask a usable status named Planning", () => {
+    const statuses = defaults();
+    statuses.splice(2, 0, { id: "planning", name: "Research", requiresApprovedPlan: true }, { id: "design", name: "Planning" });
+    const result = ensurePlanningStatus({ statuses });
+    expect(result).toMatchObject({ planningStatus: "design", statuses });
+  });
+
+  it("does not insert a Planning column that a workflow role already claims through the absent id", () => {
+    const result = ensurePlanningStatus({ statuses: defaults(), workflowPolicy: workflowPolicySchema.parse({ doneStatus: "planning" }) });
+    expect(result.planningStatus).toBeNull();
+    expect(result.statuses).toEqual(defaults());
+    expect(result.reason).toContain("workflow role");
+  });
+
   it("inserts nothing into a full list or a list without In progress, and says why", () => {
     const full = [...defaults(), ...Array.from({ length: 26 }, (_, index) => ({ id: `extra_${index}`, name: `Extra ${index}` }))];
     expect(full).toHaveLength(32);
@@ -110,6 +124,26 @@ describe("planning status in the project settings", () => {
     expect(planningStatusOf(f.current())).toBeNull();
     expect(startsFromStatus(f.current(), "planning")).toBe(false);
     expect(startsFromStatus(f.current(), "todo")).toBe(true);
+  });
+});
+
+describe("planning status and workflow roles when planning is turned on", () => {
+  it("adds no column that would close cards when the policy maps the absent id planning to Done", () => {
+    const f = setup("off");
+    f.store.tasks.updateProject(f.project.id, { workflowPolicy: workflowPolicySchema.parse({ doneStatus: "planning" }) });
+    f.store.tasks.updateProject(f.project.id, { planning: "optional" });
+    expect(ids(f.current().statuses ?? DEFAULT_TASK_STATUSES)).not.toContain("planning");
+    expect(planningStatusOf(f.current())).toBeNull();
+  });
+
+  it("selects a usable Planning-named column when the planning id is unusable", () => {
+    const f = setup("off");
+    f.store.tasks.updateProject(f.project.id, {
+      statuses: [...DEFAULT_TASK_STATUSES.slice(0, 2), { id: "planning", name: "Research", requiresApprovedPlan: true }, { id: "design", name: "Planning" }, ...DEFAULT_TASK_STATUSES.slice(2)] as never,
+    });
+    f.store.tasks.updateProject(f.project.id, { planning: "optional" });
+    expect(f.current().workflowPolicy?.planningStatus).toBe("design");
+    expect(ids(f.current().statuses)).toHaveLength(8);
   });
 });
 
@@ -166,6 +200,27 @@ describe("entering Planning with the first plan version", () => {
     f.db.prepare("INSERT INTO task_scheduled_sources(task_id, schedule_id, schedule_title, role) VALUES (?, '00000000-0000-0000-0000-000000000000', 'Hidden', 'template')").run(template.id);
     expect(f.save(template.id).movedTo).toBeNull();
     expect(f.status(template.id)).toBe("backlog");
+  });
+
+  it("never reopens a closed card whose Done is mapped to Todo or Backlog, through the saveTaskPlan RPC", async () => {
+    for (const closed of ["todo", "backlog"]) {
+      const f = setup();
+      f.edit((statuses) => statuses, { doneStatus: closed });
+      const task = f.card(closed, `Closed in ${closed}`);
+      const saved = (await f.harness.callRpc("saveTaskPlan" as never, { taskId: task.id, summary: "Plan", author, op: "replace", baseVersion: 0, body: BODY } as never)) as { ok: boolean; movedTo: unknown };
+      expect(saved).toMatchObject({ ok: true, movedTo: null });
+      expect(f.status(task.id)).toBe(closed);
+    }
+  });
+
+  it("reports no move for a card that is already in the planning column, such as a Todo column named Planning", async () => {
+    const f = setup();
+    f.edit((statuses) => statuses.filter((status) => status.id !== "planning").map((status) => (status.id === "todo" ? { ...status, name: "Planning" } : status)), { planningStatus: "todo" });
+    expect(planningStatusOf(f.current())).toBe("todo");
+    const task = f.card("todo");
+    const saved = (await f.harness.callRpc("saveTaskPlan" as never, { taskId: task.id, summary: "Plan", author, op: "replace", baseVersion: 0, body: BODY } as never)) as { ok: boolean; movedTo: unknown };
+    expect(saved).toMatchObject({ ok: true, movedTo: null });
+    expect(f.status(task.id)).toBe("todo");
   });
 
   it("does not move a card when planning is off", async () => {

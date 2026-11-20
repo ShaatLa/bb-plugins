@@ -90,15 +90,20 @@ export async function reviewerProblem(bb: BbPluginApi, threadId: string, taskKey
   }
 }
 
-/** Wakes the reviewer thread itself; there is no fallback to another thread. A failure never throws: the submission is saved, and the caller reports it. */
+/**
+ * Wakes the reviewer thread itself; there is no fallback to another thread. A failure never throws: the submission is saved,
+ * and the caller reports it. With `wanted`, a wake that went stale is dropped right before the append or send (`dropped`).
+ */
+export async function wakeReviewer(bb: BbPluginApi, input: { taskId: string; taskKey: string; threadId: string; text: string }): Promise<{ delivered: "sent" | "failed"; hint: string | null }>;
+export async function wakeReviewer(bb: BbPluginApi, input: { taskId: string; taskKey: string; threadId: string; text: string; wanted: () => boolean }): Promise<{ delivered: "sent" | "failed" | "dropped"; hint: string | null }>;
 export async function wakeReviewer(
   bb: BbPluginApi,
-  input: { taskId: string; taskKey: string; threadId: string; text: string },
-): Promise<{ delivered: "sent" | "failed"; hint: string | null }> {
+  input: { taskId: string; taskKey: string; threadId: string; text: string; wanted?: () => boolean },
+): Promise<{ delivered: "sent" | "failed" | "dropped"; hint: string | null }> {
   const problem = await reviewerProblem(bb, input.threadId, input.taskKey);
   if (problem) return { delivered: "failed", hint: problem };
   try {
-    await notifyThread(bb, input.threadId, input.text);
+    if (!(await notifyThread(bb, input.threadId, input.text, input.wanted))) return { delivered: "dropped", hint: null };
     return { delivered: "sent", hint: null };
   } catch (error) {
     bb.log.warn(`failed to wake the plan reviewer ${input.threadId} of ${input.taskId}: ${errorMessage(error)}`);

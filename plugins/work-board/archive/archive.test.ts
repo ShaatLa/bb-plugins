@@ -1430,6 +1430,61 @@ describe("archive v20: reviewers, review history and planning", () => {
       expect(imported.workflowPolicy?.planningStatus).toBe("planning");
     });
 
+    it("restores an unchanged snapshot of a planning-off project whose stored policy predates planningStatus, without --overwrite", async () => {
+      const source = await seed();
+      source.store.tasks.updateProject(source.project.id, { planning: "off" });
+      source.bb.storage.database().prepare("UPDATE projects SET workflow_policy = ? WHERE id = ?").run(
+        JSON.stringify({ bugfixStatus: "bugfix", doneStatus: "done", inProgressStatus: "in_progress", reviewStatus: "in_review", testingStatus: "in_testing", earlyStatuses: ["todo"], ownerDecisionLabel: "owner decision" }),
+        source.project.id,
+      );
+      const out = await exported(source, "policy-predates");
+      await importProject(source.bb, source.store, out, false);
+      expect(source.store.tasks.getProject(source.project.id)!.workflowPolicy).toMatchObject({ bugfixStatus: "bugfix", earlyStatuses: ["todo"], planningStatus: null });
+    });
+
+    it("imports a project whose policy maps the absent id planning to Done without inserting a Planning column", async () => {
+      const source = await seed();
+      source.bb.storage.database().prepare("UPDATE projects SET planning = 'optional', statuses = ?, workflow_policy = ? WHERE id = ?").run(
+        JSON.stringify(DEFAULT_TASK_STATUSES),
+        JSON.stringify(workflowPolicySchema.parse({ doneStatus: "planning" })),
+        source.project.id,
+      );
+      const out = await exported(source, "planning-id-claimed");
+      const target = setup();
+      await importProject(target.bb, target.store, out, false);
+      const imported = target.store.tasks.getProject(source.project.id)!;
+      expect(imported.statuses!.map((status) => status.id)).toEqual(DEFAULT_TASK_STATUSES.map((status) => status.id));
+      expect(planningStatusOf(imported)).toBeNull();
+    });
+
+    it.each([
+      ["a pending attempt of an older version", (review: { version: number; reviewer: { threadId: string } }) => void (review.version = 1)],
+      ["a pending attempt that names another reviewer", (review: { version: number; reviewer: { threadId: string } }) => void (review.reviewer.threadId = "thr_other")],
+    ])("treats the review as not paused, and wakes nobody, when the history has %s", async (_label, tamper) => {
+      const source = await reviewed();
+      source.plans.save({ taskId: source.task.id, op: "replace", baseVersion: 1, body: "# Plan\n\n## Steps\n- two\n", summary: "Plan v2", author: authorA });
+      source.plans.submit(source.task.id, authorA, "thr_reviewer_b");
+      await createStructuredStore(source.bb, source.store).handlers.createQuestion({ taskId: source.task.id, kind: "decision", askedByThread: null, prompt: "Which one?", steps: [], options: ["A", "B"], mode: "single" });
+      const out = await exported(source, "inconsistent-history");
+      const path = join(out, "tasks", `${source.task.id}.json`);
+      const record = JSON.parse(await readFile(path, "utf8"));
+      tamper(record.planReviews.filter((review: { outcome: string }) => review.outcome === "pending").at(-1));
+      await writeFile(path, jsonText(record));
+      const target = setup();
+      await importProject(target.bb, target.store, out, false);
+      target.harness.sdk.stub("threads.get", async ({ threadId }: { threadId: string }) => makeThreadResponse({ id: threadId, status: "active" }));
+      const plans = createPlanStore(target.bb.storage.database(), target.store.tasks);
+      expect(plans.head(source.task.id)).toMatchObject({ version: 2, state: "in_review" });
+      expect(plans.paused(source.task.id)).toBe(false);
+      const handlers = createStructuredStore(target.bb, target.store).handlers;
+      const [question] = (await handlers.listQuestions({ taskId: source.task.id })).questions;
+      const settled = await handlers.answerQuestion({ questionId: question!.id, revision: question!.revision, selectedOptionIds: [question!.options[0]!.id], authorName: "Owner" });
+      expect(settled.planWake).toBeUndefined();
+      // The answer's own notice to the asker is not a plan wake: no send mentions the plan review.
+      const texts = (target.harness.sdk.callsTo("threads.send") as Array<[{ input: Array<{ text: string }> }]>).map((call) => call[0].input[0]!.text);
+      expect(texts.filter((text) => /plan v\d/.test(text))).toEqual([]);
+    });
+
     it("enables and imports a board whose Done is named Planning, with the id planning free, and keeps its statuses unchanged", async () => {
       const source = await seed();
       const statuses = DEFAULT_TASK_STATUSES.map((status) => (status.id === "done" ? { ...status, name: "Planning" } : { ...status }));

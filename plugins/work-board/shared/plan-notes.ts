@@ -194,6 +194,10 @@ export function buildReviewPausedMessage(input: { taskKey: string; version: numb
 export function buildReviewResumedMessage(input: { taskKey: string; version: number }): string {
   return `${input.taskKey} plan v${input.version}: the owner's decision is settled. Read the decisions on the card, then judge whether the plan text still holds: approve it, or send feedback if it needs changes.`;
 }
+/** The informational line for the author when the owner reviews the plan: nobody else acts on the settled decision. */
+export function buildOwnerReviewSettledMessage(input: { taskKey: string; version: number }): string {
+  return `${input.taskKey} plan v${input.version}: the owner's decision is settled; the owner reviews the plan.`;
+}
 export function buildReviewRequestMessage(input: { taskKey: string; version: number; /** The version this reviewer itself decided on last, if any. */ decidedVersion: number | null; blockingNotes: number }): string {
   const { taskKey: key, version, decidedVersion } = input;
   return [

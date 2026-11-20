@@ -11,7 +11,10 @@ export function openDecisionIds(db: Database, taskId: string): string[] {
     .map((row) => row.id);
 }
 
-/** The review a pause is bound to: the plan is in review and has a pending attempt. Null when no review is waiting. */
+/**
+ * The review a pause is bound to: the plan is in review and has a pending attempt that agrees with the head, that is the
+ * same version and the same reviewer. Null when no review is waiting, or when the history and the head disagree.
+ */
 export interface ReviewBinding {
   /** The pending attempt's row id; a different one later means the review moved on. */
   attemptId: number;
@@ -24,7 +27,10 @@ export function reviewBinding(db: Database, taskId: string): ReviewBinding | nul
   const row = db
     .prepare<[string], { id: number; version: number; reviewer_thread: string | null }>(
       `SELECT r.id, r.version, r.reviewer_thread FROM task_plan_reviews r JOIN task_plans p ON p.task_id = r.task_id
-       WHERE r.task_id = ? AND r.outcome = 'pending' AND p.state = 'in_review' ORDER BY r.id DESC LIMIT 1`,
+       WHERE r.task_id = ? AND r.outcome = 'pending' AND p.state = 'in_review'
+         AND r.version = p.version AND r.version = COALESCE(p.review_version, p.version)
+         AND r.reviewer_kind = COALESCE(p.reviewer_kind, 'owner') AND r.reviewer_thread IS p.reviewer_thread
+       ORDER BY r.id DESC LIMIT 1`,
     )
     .get(taskId);
   return row ? { attemptId: row.id, version: row.version, reviewerThread: row.reviewer_thread } : null;
