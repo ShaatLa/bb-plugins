@@ -486,10 +486,12 @@ describe("C6 the recovery machine", () => {
     for (let index = 0; index < 10; index++) f.threads.dispatch(`new ${index}`);
     // Every request page below the marked request fails, repeatedly; the marked request and its acceptance stay readable.
     const failBelow = f.threads.requests.find((entry) => entry.requestId === request)!.seq;
-    f.threads.eventsFailWhen = ({ types, beforeSeq }) => types.includes("client/turn/requested") && beforeSeq !== undefined && Number(beforeSeq) < failBelow;
+    let acceptedReadable = false;
+    f.threads.eventsFailWhen = ({ types, beforeSeq }) => (types.includes("client/turn/requested") && beforeSeq !== undefined && Number(beforeSeq) < failBelow) || (types.includes("turn/input/accepted") && !acceptedReadable);
     await f.service.recover(f.tracker.id, false, false);
     expect(f.attempts()[0].outcome).toBe("sending");
     expect(cursor(f, "partial").hit.requestIds).toEqual([request]);
+    acceptedReadable = true;
     await f.service.recover(f.tracker.id, false, false);
     expect(f.attempts()[0]).toMatchObject({ outcome: "inline" });
   });
@@ -551,6 +553,95 @@ describe("C6 the recovery machine", () => {
     await f.service.recover(f.tracker.id, false, false);
     const outcomes = Object.fromEntries(f.attempts().map((a) => [a.attempt_id, a.outcome]));
     expect(outcomes).toEqual({ meta: "unknown", foreign: "unknown", grouped: "inline", genuine: "appended" });
+  });
+});
+
+describe("C7 ranges and the delivery path", () => {
+  const limits = { ...historyLimits };
+  afterEach(() => { Object.assign(historyLimits, limits); });
+  const attemptFor = (f: Awaited<ReturnType<typeof make>>, id: string) => {
+    unknownAttempt(f, id, new Date(Date.now() - 3_600_000).toISOString(), "sending");
+    f.db.prepare("INSERT INTO attention_attempt_items(attempt_id, occurrence_id) VALUES (?, ?)").run(id, f.occurrences()[0].id);
+  };
+  const cursor = (f: Awaited<ReturnType<typeof make>>, id: string) => JSON.parse((f.db.prepare("SELECT recovery_cursor FROM attention_attempts WHERE attempt_id=?").get(id) as { recovery_cursor: string }).recovery_cursor);
+
+  it("C7.1: a one-shot acceptance-read failure keeps the saved older ranges, so the older accepted candidate is still found", async () => {
+    historyLimits.passPages = 4;
+    historyLimits.acceptancePages = 2;
+    const f = await make("live");
+    f.card("Two candidates, one hiccup");
+    attemptFor(f, "hiccup");
+    const marker = `notice ${attentionMarker("batch-hiccup")}`;
+    // Oldest to newest: R2 with its acceptance, 160 filler pairs, R1 (never accepted), 40 filler pairs.
+    f.threads.acceptRequest(f.threads.requestOnly(marker));
+    for (let index = 0; index < 160; index++) f.threads.dispatch(`filler ${index}`);
+    f.threads.requestOnly(marker);
+    for (let index = 0; index < 40; index++) f.threads.dispatch(`newer ${index}`);
+    await f.service.recover(f.tracker.id, false, false);
+    const before = cursor(f, "hiccup");
+    expect(before.hit.requestIds).toHaveLength(1);
+    expect(before.gaps.length).toBeGreaterThan(0);
+    // The pass that starts with a saved candidate and older ranges fails on its very first read (the acceptance scan).
+    f.threads.eventsFail = true;
+    await f.service.recover(f.tracker.id, false, false);
+    f.threads.eventsFail = false;
+    // The failed pass still holds every range that was not read through, and the candidate.
+    expect(cursor(f, "hiccup").gaps.filter((gap: { late?: boolean }) => !gap.late)).toEqual(before.gaps.filter((gap: { late?: boolean }) => !gap.late));
+    expect(cursor(f, "hiccup").hit).toEqual(before.hit);
+    for (let pass = 0; pass < 6 && f.attempts()[0].outcome === "sending"; pass++) await f.service.recover(f.tracker.id, false, false);
+    expect(f.attempts()[0]).toMatchObject({ outcome: "inline" });
+  });
+
+  it("C7.2: a head range that keeps failing neither blocks readable older ranges nor piles up identical saved ranges", async () => {
+    historyLimits.passPages = 3;
+    historyLimits.acceptancePages = 2;
+    const f = await make("live");
+    f.card("Failing head");
+    attemptFor(f, "head");
+    f.threads.acceptRequest(f.threads.requestOnly(`notice ${attentionMarker("batch-head")}`));
+    for (let index = 0; index < 200; index++) f.threads.dispatch(`filler ${index}`);
+    await f.service.recover(f.tracker.id, false, false);
+    expect(f.attempts()[0].outcome).toBe("sending");
+    for (let index = 0; index < 10; index++) f.threads.dispatch(`fresh ${index}`);
+    // From here the newest page cannot be read at all; the older ranges can.
+    f.threads.eventsFailWhen = ({ types, beforeSeq }) => types.includes("client/turn/requested") && beforeSeq === undefined;
+    const headRanges = () => (cursor(f, "head").gaps as { from?: number; to?: number; late?: boolean }[]).filter((gap) => gap.from === undefined && gap.late);
+    for (let pass = 0; pass < 8 && f.attempts()[0].outcome === "sending"; pass++) {
+      await f.service.recover(f.tracker.id, false, false);
+      expect(headRanges().length).toBeLessThanOrEqual(1);
+    }
+    expect(f.attempts()[0]).toMatchObject({ outcome: "inline" });
+  });
+
+  it("C7.4: a stalled queue read in the delivery path ends at its timeout, through drain and rollback", async () => {
+    historyLimits.readTimeoutMs = 30;
+    const f = await make("live");
+    f.card("Stalled before any write");
+    f.makeEligible();
+    f.threads.queueHang = true;
+    const started = Date.now();
+    await f.service.drain();
+    expect(Date.now() - started).toBeLessThan(3000);
+    // Nothing was written, so the attempt is a definite failure to retry, and a rollback is not held by it.
+    expect(f.attempts().map((a) => a.outcome)).toEqual(["failed"]);
+    expect(f.threads.sends).toBe(0);
+    expect(f.threads.updates).toBe(0);
+    f.threads.queueHang = false;
+
+    // A re-read that stalls after an ambiguous update keeps the outcome unknown instead of holding the transport.
+    const g = await make("live");
+    g.card("Stalled after an update");
+    g.threads.addRow(MANAGER, "earlier notice");
+    g.makeEligible();
+    g.threads.dropRowOnUpdate = true;
+    g.threads.queueHangOnCall = g.threads.queueCalls + 2;
+    await g.service.drain();
+    expect(g.attempts().map((a) => a.outcome)).toEqual(["unknown"]);
+    expect(g.threads.sends).toBe(0);
+    const rollback = await g.setMode("shadow");
+    expect(rollback.transition).toMatchObject({ state: "preparing" });
+    await g.call("resolveAttentionAttempt", { attemptId: g.attempts()[0].attempt_id, disposition: "waived_loss" });
+    expect((await modes(g)).transition.state).toBe("ready");
   });
 });
 

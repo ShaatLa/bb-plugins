@@ -229,6 +229,13 @@ export const historyLimits = { passPages: 40, acceptancePages: 10, readTimeoutMs
  *                                        min(pointer, its seq))                 the decision waits for its acceptance         have an acceptance inside the window
  *   history read errors                  5 failed passes over 30 minutes        the service records unknown, cursor kept      later success clears the count
  *
+ * Ranges: the saved ranges are loaded before any read and are only ever dropped by reading them through (each range once, even if a
+ * pass fails); a failed read of one range leaves the others their chance in the same pass, and is counted once at the end.
+ *
+ * Concurrency model: Work Board runs as ONE plugin instance per bb server; a reload disposes the old instance and the SDK aborts its
+ * callers. In-flight sends, the pending-inline grace period and the per-attempt lock are therefore process-local on purpose. The
+ * database guards (conditional cursor write, outcome only moves forward) are defence in depth, not cross-process coordination.
+ *
  * Decision: `complete` = every non-late request gap is read AND (no candidate OR the acceptance pointer reached `accBound`).
  * A receipt found at any time, in or after the window, wins. Per pass the newest traffic takes at most half the budget while older
  * gaps wait, a stored acceptance scan goes first, so no stream of new events can postpone the decision.
@@ -290,10 +297,23 @@ export async function searchAttentionMarker(bb: BbPluginApi, threadId: string, m
   let hitAfter = cursor.hit?.after;
   let high = cursor.high;
   let fresh = false;
-  const work: (Gap & { done?: boolean })[] = [];
-  const unfinished = (): Gap[] => work.filter((gap) => !gap.done).map((gap) => ({ ...(gap.from !== undefined ? { from: gap.from } : {}), ...(gap.to !== undefined ? { to: gap.to } : {}), ...(gap.late ? { late: true } : {}) }));
+  type Work = Gap & { done?: boolean };
+  const work: Work[] = [];
+  const key = (gap: Gap) => `${gap.from ?? ""}:${gap.to ?? ""}:${gap.late ? 1 : 0}`;
+  /** Every range not yet read through, each once: a saved range is only ever dropped by reading it. */
+  const unfinished = (): Gap[] => {
+    const seen = new Set<string>();
+    return work.filter((gap) => !gap.done).map((gap) => ({ ...(gap.from !== undefined ? { from: gap.from } : {}), ...(gap.to !== undefined ? { to: gap.to } : {}), ...(gap.late ? { late: true as const } : {}) })).filter((gap) => !seen.has(key(gap)) && seen.add(key(gap)));
+  };
   /** The cursor as far as this pass got, kept per page so a later failing page loses nothing. */
   const progress = (): HistoryCursor => ({ ...next, high, gaps: unfinished(), ...(requestIds.size && hitAfter !== undefined ? { hit: { requestIds: [...requestIds], after: hitAfter } } : {}) });
+
+  // The saved ranges are loaded before any read, so a failure anywhere in the pass cannot erase one.
+  const saved = [...(cursor.gaps ?? [])].sort((a, b) => (a.from ?? Infinity) - (b.from ?? Infinity));
+  const head: Work | undefined = cursor.high !== undefined && !saved.some((gap) => gap.from === undefined && gap.to === cursor.high && gap.late) ? { to: cursor.high, late: true } : undefined;
+  if (head) work.push(head);
+  work.push(...saved.map((gap) => ({ ...gap })));
+  if (cursor.high === undefined && !saved.length) work.push({});
 
   // The acceptance follows its request, so page forward from the earliest matching request; the pointer only moves forward, except
   // that a newly found candidate rewinds it to its own seq.
@@ -311,8 +331,8 @@ export async function searchAttentionMarker(bb: BbPluginApi, threadId: string, m
     return null;
   };
 
-  // Reads one stretch of requests newest first, spending at most `cap` pages and moving `gap.from` down after each page; true when it is read through.
-  const scanRequests = async (gap: Gap & { done?: boolean }, cap: number): Promise<void> => {
+  // Reads one stretch of requests newest first, spending at most `cap` pages and moving `gap.from` down after each page.
+  const scanRequests = async (gap: Work, cap: number): Promise<void> => {
     let first = gap.from === undefined;
     for (let page = 0; ; page++) {
       if (page >= cap || budget <= 0) return;
@@ -340,48 +360,41 @@ export async function searchAttentionMarker(bb: BbPluginApi, threadId: string, m
     }
   };
 
-  try {
-    if (cursor.accBound === undefined) {
-      // Pass 1 fixes the acceptance window: whatever acceptances exist now. One page of the budget.
-      budget--;
+  // Independent reads: a failure of one leaves the others their chance, and is reported once the pass is over.
+  let readError: unknown;
+  const guarded = async <T>(job: () => Promise<T>): Promise<T | undefined> => {
+    try { return await job(); } catch (error) { readError ??= error; return undefined; }
+  };
+
+  if (cursor.accBound === undefined) {
+    // Pass 1 fixes the acceptance window: whatever acceptances exist now. One page of the budget.
+    budget--;
+    await guarded(async () => {
       const newest = await bb.sdk.threads.events.list({ threadId, types: ["turn/input/accepted"], order: "desc", limit: "1", signal: AbortSignal.timeout(historyLimits.readTimeoutMs) });
       next.accBound = newest[0]?.seq ?? 0;
-    }
-    if (cursor.hit) {
-      const found = await scanAcceptance(historyLimits.acceptancePages);
-      next.hit = { requestIds: [...requestIds], after: hitAfter! };
-      if (found) return { receipt: found, cursor: progress(), complete: true };
-    }
-    const saved = [...(cursor.gaps ?? [])].sort((a, b) => (a.from ?? Infinity) - (b.from ?? Infinity));
-    if (cursor.high === undefined && !saved.length) saved.push({});
-    // Requests newer than the last pass first, but only up to their share while older ranges wait.
-    const head: (Gap & { done?: boolean }) | undefined = cursor.high !== undefined ? { to: cursor.high, late: true } : undefined;
-    if (head) work.push(head);
-    work.push(...saved.map((gap) => ({ ...gap })));
-    if (head) {
-      const spent = historyLimits.passPages - budget;
-      await scanRequests(head, saved.length ? Math.max(0, headShare() - spent) : budget);
-    }
-    for (const gap of work) if (gap !== head) await scanRequests(gap, budget);
-    next.high = high;
-    next.gaps = unfinished();
-    if (requestIds.size && hitAfter !== undefined) {
-      next.hit = { requestIds: [...requestIds], after: hitAfter };
-      // A request found in this pass: look for its acceptance with whatever pages are left.
-      if (fresh && budget > 0) {
-        const found = await scanAcceptance(budget);
-        next.hit = { requestIds: [...requestIds], after: hitAfter };
-        if (found) return { receipt: found, cursor: next, complete: true };
-      }
-    }
-    const complete = next.gaps.every((gap) => gap.late) && (!next.hit || next.hit.after >= next.accBound!);
-    // The queue could not be read and nothing positive turned up: that is a failed read, not an absence.
-    if (queueError !== undefined) return { receipt: null, cursor: next, complete: false, error: `Queue unreadable: ${queueError}` };
-    return { receipt: null, cursor: next, complete };
-  } catch (error) {
-    // A failed read is not unfinished pagination: the cursor keeps every page that was read and the caller decides when to give up.
-    return { receipt: null, cursor: { ...progress(), ...(next.accBound !== undefined ? { accBound: next.accBound } : {}) }, complete: false, error: failure(error) };
+    });
   }
+  if (cursor.hit) {
+    const found = await guarded(() => scanAcceptance(historyLimits.acceptancePages));
+    if (found) return { receipt: found, cursor: progress(), complete: true };
+  }
+  // Requests newer than the last pass first, but only up to their share while older ranges wait.
+  if (head) {
+    const spent = historyLimits.passPages - budget;
+    await guarded(() => scanRequests(head, saved.length ? Math.max(0, headShare() - spent) : budget));
+  }
+  for (const gap of work) if (gap !== head) await guarded(() => scanRequests(gap, budget));
+  if (requestIds.size && hitAfter !== undefined && fresh && budget > 0) {
+    // A request found in this pass: look for its acceptance with whatever pages are left.
+    const found = await guarded(() => scanAcceptance(budget));
+    if (found) return { receipt: found, cursor: progress(), complete: true };
+  }
+  const result = progress();
+  if (readError !== undefined) return { receipt: null, cursor: result, complete: false, error: failure(readError) };
+  // The queue could not be read and nothing positive turned up: that is a failed read, not an absence.
+  if (queueError !== undefined) return { receipt: null, cursor: result, complete: false, error: `Queue unreadable: ${queueError}` };
+  const complete = result.accBound !== undefined && (result.gaps ?? []).every((gap) => gap.late) && (!result.hit || result.hit.after >= result.accBound);
+  return { receipt: null, cursor: result, complete };
 }
 
 export async function findAttentionMarker(bb: BbPluginApi, threadId: string, marker: string, since?: string): Promise<Receipt | null> {
@@ -395,9 +408,10 @@ async function appendMarked(bb: BbPluginApi, threadId: string, text: string, mar
   for (let attempt = 0; attempt < 2; attempt++) {
     let last: QueueRow | undefined;
     try {
-      last = (await bb.sdk.threads.queuedMessages.list({ threadId })).at(-1);
-    } catch {
-      return { kind: "none" };
+      last = (await bb.sdk.threads.queuedMessages.list({ threadId, signal: AbortSignal.timeout(historyLimits.readTimeoutMs) })).at(-1);
+    } catch (error) {
+      // Nothing has been written yet, so a failed or timed-out read is a definite failure: the batch is retried later, not sent blind.
+      return { kind: "done", receipt: { outcome: "failed", error: `Queue unreadable: ${errorMessage(error)}` } };
     }
     const part = last?.content.length === 1 ? last.content[0] : undefined;
     if (!last || !part || part.type !== "text" || last.originPluginId !== bb.pluginId || (last.state !== "queued" && last.state !== "waiting") || !last.editable) return { kind: "none" };
@@ -409,7 +423,7 @@ async function appendMarked(bb: BbPluginApi, threadId: string, text: string, mar
       const message = errorMessage(error);
       let again: QueueRow | undefined;
       try {
-        again = (await bb.sdk.threads.queuedMessages.list({ threadId })).find((row) => row.id === last.id);
+        again = (await bb.sdk.threads.queuedMessages.list({ threadId, signal: AbortSignal.timeout(historyLimits.readTimeoutMs) })).find((row) => row.id === last.id);
       } catch {
         return { kind: "done", receipt: { outcome: "unknown", error: message } };
       }

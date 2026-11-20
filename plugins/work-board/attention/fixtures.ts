@@ -27,6 +27,8 @@ export function createFakeThreads() {
     queueFail: false,
     /** Queue reads never answer until their signal aborts. */
     queueHang: false,
+    /** Only the nth queue read (1-based) hangs, so a test can stall a re-read after an update. */
+    queueHangOnCall: 0,
     /** Decides per history read whether it fails; the first matching read of a pass is the failing page. */
     eventsFailWhen: undefined as ((args: { types: string[]; beforeSeq?: string }) => boolean) | undefined,
     /** The next history read waits for this, then rejects. */
@@ -69,7 +71,7 @@ export function createFakeThreads() {
         list: async ({ threadId, signal }: { threadId: string; signal?: AbortSignal }) => {
           state.queueCalls++;
           if (state.queueFail) throw fault("queue unavailable");
-          if (state.queueHang) await new Promise((_, reject) => signal?.addEventListener("abort", () => reject(fault("queue timed out"))));
+          if (state.queueHang || state.queueCalls === state.queueHangOnCall) await new Promise((_, reject) => signal?.addEventListener("abort", () => reject(fault("queue timed out"))));
           if (state.listGateOnce) { const gate = state.listGateOnce; state.listGateOnce = undefined; await gate; return []; }
           return state.rows.filter((row) => row.threadId === threadId);
         },
