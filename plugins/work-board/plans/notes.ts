@@ -280,6 +280,8 @@ export function createPlanNoteStore(db: Database, tasks: TasksStore, head: (task
     const now = new Date().toISOString();
     db.prepare("UPDATE task_plans SET state = 'approved', updated_at = ? WHERE task_id = ?").run(now, taskId);
     closePendingReview(db, taskId, "approved", reviewerVersion === undefined ? by.name : by.threadId!);
+    // A dedicated reviewer that approved is archived on its first idle after this turn (when the project allows it).
+    if (reviewerVersion !== undefined) tasks.closures.reviewerIntent(taskId, by.threadId!);
     const shown = text && (text.length > COMMENT_NOTE_CAP ? `${text.slice(0, COMMENT_NOTE_CAP)}…` : text);
     tasks.createComment({ taskId, kind: "system", authorName: by.name, body: `Plan v${plan.version}: approved by ${by.name}${shown ? ` · note: ${shown}` : ""}` });
     return { plan: head(taskId)!, version: plan.version, taskKey: task.key, note: text ?? null };

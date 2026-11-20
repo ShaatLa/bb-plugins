@@ -268,7 +268,8 @@ describe("lifecycle SQL scope", () => {
           thread: makeThreadResponse({ id: "thr_worker_0", status: "idle" }),
           lastAssistantText: null,
         });
-        expect(f.queries).toHaveLength(status === "todo" ? 5 : 1);
+        // Closing evaluates the card's threads once (3 reads); a card with a closure also looks for turn-bound rows on idle.
+        expect(f.queries).toHaveLength({ todo: 5, done: 5, canceled: 2 }[status as string] ?? 1);
         expect(f.store.tasks.getTaskThread(f.mappings[0]!.id)?.liveStatus).toBe(
           "idle",
         );

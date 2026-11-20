@@ -66,7 +66,7 @@ export function captureProject(
     const taskIdSet = new Set(tasks.map(task => task.id));
     const manifest = archiveProjectSchema.parse({
       format: "bb-work-board",
-      version: 20,
+      version: 21,
       gitSync: createGitSyncStore(bb.storage.database()).config(projectId),
       project,
       folders,
@@ -392,7 +392,10 @@ export function restoreProject(
       throw new Error("Task number exceeds the supported range");
     // Planning is the owner's setting: an import never changes an existing project's. A project the import creates takes
     // the snapshot's value; a snapshot from before v20 has none, so it is inferred from its plans.
-    const { planning: snapshotPlanning, planningChangedAt, planningPrevious, planFlagsInitialized, ...manifestProject } = manifest.project;
+    const { planning: snapshotPlanning, planningChangedAt, planningPrevious, planFlagsInitialized, archiveThreadsOnClose, archiveReviewerOnApproval, ...manifestProject } = manifest.project;
+    // The two thread-archive switches are the project owner's too: an existing project keeps its own, a project the
+    // import creates takes a v21 snapshot's value, and an older snapshot has none, so the defaults (on) apply.
+    const snapshotArchiveSettings = manifest.version >= 21 ? { ...(archiveThreadsOnClose === undefined ? {} : { archiveThreadsOnClose }), ...(archiveReviewerOnApproval === undefined ? {} : { archiveReviewerOnApproval }) } : {};
     // The flags and their marker are the owner's too. They are merged by status id before the lists are compared: an
     // existing project keeps the local flag of every status it has (a new id gets the default), a project the import
     // creates takes the snapshot's flags, and `canceled` is never marked. A flag-only difference is never a conflict or a write.
@@ -402,7 +405,7 @@ export function restoreProject(
       : settlePlanFlags({ statuses: incomingStatuses, previous: null, planning: "off", initialized: true }).statuses;
     const project = {
       ...manifestProject,
-      ...(currentProject ? {} : { planning: snapshotPlanning ?? (records.some((record) => record.plan) ? "optional" : "off"), ...(planningChangedAt === undefined ? {} : { planningChangedAt, planningPrevious }), planFlagsInitialized: planFlagsInitialized ?? false }),
+      ...(currentProject ? {} : { ...snapshotArchiveSettings, planning: snapshotPlanning ?? (records.some((record) => record.plan) ? "optional" : "off"), ...(planningChangedAt === undefined ? {} : { planningChangedAt, planningPrevious }), planFlagsInitialized: planFlagsInitialized ?? false }),
       statuses: settledStatuses,
       nextTaskNumber: Math.max(
         manifest.project.nextTaskNumber,

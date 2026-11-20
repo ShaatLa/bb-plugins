@@ -9,7 +9,7 @@ import { PLAN_FORMATS, PLAN_OPS, PLAN_STATES } from "./plan";
 import { PLAN_NOTE_BODY_MAX, PLAN_NOTE_CONTEXT_MAX, PLAN_NOTE_HEADING_MAX, PLAN_NOTE_KINDS, PLAN_NOTE_QUOTE_MAX, PLAN_NOTE_STATES } from "./plan-notes";
 import type { PluginRpcContract } from "@get-bb/plugin-sdk";
 import { z } from "zod";
-import { autoArchiveAfterDaysSchema, planningSchema, staleIdleThresholdSchema, statusNotificationsSchema, boardPreferencesSchema } from "./project-settings";
+import { archiveSettingSchema, autoArchiveAfterDaysSchema, planningSchema, staleIdleThresholdSchema, statusNotificationsSchema, boardPreferencesSchema } from "./project-settings";
 import {
   TASK_SORTS,
   TASKS_PAGE_DEFAULT_LIMIT,
@@ -313,6 +313,10 @@ export const projectSchema = z
     autoArchiveAfterDays: autoArchiveAfterDaysSchema.optional(),
     staleIdleMinutes: staleIdleThresholdSchema.optional(),
     statusNotifications: statusNotificationsSchema.optional(),
+    /** v21: archive the sessions Work Board created for a card when it closes (default on). */
+    archiveThreadsOnClose: archiveSettingSchema.optional(),
+    /** v21: archive a dedicated plan reviewer after it approved the plan (default on). */
+    archiveReviewerOnApproval: archiveSettingSchema.optional(),
     planning: planningSchema.optional(),
     /** False until the "only with an approved plan" flags were set up (by the owner, or by the first switch to required). */
     planFlagsInitialized: z.boolean().optional(),
@@ -496,11 +500,21 @@ const tasksDomainErrorSchema = z
   })
   .strict();
 
+/** What happened to one session linked to a card that this change closed. */
+export const closedThreadSchema = z
+  .object({ threadId: z.string(), action: z.enum(["archived", "on_idle", "kept"]), reason: z.string().nullable() })
+  .strict();
+export type ClosedThread = z.infer<typeof closedThreadSchema>;
+
 const taskMutationResultSchema = z.discriminatedUnion("ok", [
   z
     .object({
       ok: z.literal(true),
       task: taskSchema,
+      /** Only when the change closed the card: the fate of every linked session. */
+      closedThreads: z.array(closedThreadSchema).optional(),
+      /** Only when the call asked to attach its own thread: whether that link was made. */
+      attached: z.boolean().optional(),
     })
     .strict(),
   z.object({ ok: z.literal(false), error: tasksDomainErrorSchema }).strict(),
@@ -556,6 +570,8 @@ const updateTaskInputSchema = z
     epicId: idSchema.nullable().optional(),
     labelIds: taskLabelsSchema.optional(),
     agentThreadId: evidenceThreadSchema.nullable().optional(),
+    /** The caller's own session, attached to the card in the same write (`update --progress` from an unattached card session). */
+    attachThread: z.object({ threadId: z.string().startsWith("thr_"), title: nonBlankStringSchema, liveStatus: z.enum(["starting", "working", "idle", "completed", "failed"]) }).strict().optional(),
     authorName: nonBlankStringSchema.default("You"),
   })
   .strict()
@@ -583,6 +599,8 @@ const updateProjectInputSchema = z
     autoArchiveAfterDays: autoArchiveAfterDaysSchema.optional(),
     staleIdleMinutes: staleIdleThresholdSchema.optional(),
     statusNotifications: statusNotificationsSchema.optional(),
+    archiveThreadsOnClose: archiveSettingSchema.optional(),
+    archiveReviewerOnApproval: archiveSettingSchema.optional(),
     planning: planningSchema.optional(),
     color: nonBlankStringSchema.optional(),
     folderId: idSchema.nullable().optional(),
@@ -596,6 +614,8 @@ const updateProjectInputSchema = z
       input.autoArchiveAfterDays !== undefined ||
       input.staleIdleMinutes !== undefined ||
       input.statusNotifications !== undefined ||
+      input.archiveThreadsOnClose !== undefined ||
+      input.archiveReviewerOnApproval !== undefined ||
       input.planning !== undefined ||
       input.name !== undefined ||
       input.color !== undefined ||
@@ -1174,7 +1194,7 @@ export const tasksRpcContract = {
     output: z.object({ from: z.number().int().min(0), to: z.number().int().min(1), patch: z.string(), added: z.number().int().min(0), removed: z.number().int().min(0) }).strict(),
   },
   submitTaskPlan: {
-    input: z.object({ taskId: idSchema, author: planAuthorSchema, reviewer: planReviewerInputSchema.optional() }).strict(),
+    input: z.object({ taskId: idSchema, author: planAuthorSchema, reviewer: planReviewerInputSchema.optional(), dedicatedReviewer: z.boolean().optional() }).strict(),
     output: planSubmitResultSchema,
   },
   listPlanReviews: {

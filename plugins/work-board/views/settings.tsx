@@ -31,7 +31,7 @@ import {
 } from "../shared/statuses.js";
 import type { Project } from "../shared/contract.js";
 import { errorMessage } from "../shared/errors.js";
-import { DEFAULT_BOARD_PREFERENCES, boardPreferencesSchema, type autoArchiveAfterDaysSchema, type planningSchema, type statusNotificationsSchema, type staleIdleThresholdSchema } from "../shared/project-settings";
+import { DEFAULT_BOARD_PREFERENCES, boardPreferencesSchema, type archiveSettingSchema, type autoArchiveAfterDaysSchema, type planningSchema, type statusNotificationsSchema, type staleIdleThresholdSchema } from "../shared/project-settings";
 import type { z } from "zod";
 import { NewProjectDialog } from "./manage/new-project-dialog.js";
 
@@ -405,6 +405,7 @@ function ProjectAutomationSettings({ project, onSaved }: { project: Project; onS
     autoArchiveAfterDays?: z.infer<typeof autoArchiveAfterDaysSchema>;
     staleIdleMinutes?: z.infer<typeof staleIdleThresholdSchema>;
     statusNotifications?: z.infer<typeof statusNotificationsSchema>;
+    archiveThreadsOnClose?: z.infer<typeof archiveSettingSchema>;
   }) => {
     setBusy(true);
     setError(null);
@@ -463,6 +464,18 @@ function ProjectAutomationSettings({ project, onSaved }: { project: Project; onS
         </Select>
       </label>
       <p className="text-xs text-muted-foreground">Applies only to this project. Uses the enabled channels in BB Push notifications.</p>
+      <label className="flex flex-wrap items-center justify-between gap-2 text-sm">
+        Archive threads of closed cards
+        <Select value={project.archiveThreadsOnClose ?? "on"} disabled={busy}
+          onValueChange={(value) => void save({ archiveThreadsOnClose: value as z.infer<typeof archiveSettingSchema> })}>
+          <SelectTrigger aria-label="Archive threads of closed cards" className="h-8 w-48"><SelectValue /></SelectTrigger>
+          <SelectContent>
+            <SelectItem value="on">On</SelectItem>
+            <SelectItem value="off">Off</SelectItem>
+          </SelectContent>
+        </Select>
+      </label>
+      <p className="text-xs text-muted-foreground">When a card goes to Done or Canceled, the sessions Work Board created for it are archived once they are idle. Sessions made outside Work Board, or linked to another open card, are kept.</p>
       {error ? <p role="alert" className="text-xs text-destructive">{error}</p> : null}
     </section>
   );
@@ -472,7 +485,7 @@ function ProjectPlanningSettings({ project, onSaved }: { project: Project; onSav
   const rpc = useTasksRpc();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const save = async (changes: { planning?: z.infer<typeof planningSchema>; statuses?: TaskStatusDefinition[] }) => {
+  const save = async (changes: { planning?: z.infer<typeof planningSchema>; archiveReviewerOnApproval?: z.infer<typeof archiveSettingSchema>; statuses?: TaskStatusDefinition[] }) => {
     setBusy(true);
     setError(null);
     try {
@@ -505,6 +518,18 @@ function ProjectPlanningSettings({ project, onSaved }: { project: Project; onSav
         </Select>
       </label>
       <p className="text-xs text-muted-foreground">Off hides plans for this project (existing plans are kept). Optional turns on plans and their review. Required keeps a card out of the statuses below until its plan is approved; epics are exempt.</p>
+      <label className="flex flex-wrap items-center justify-between gap-2 text-sm">
+        Archive the plan reviewer after approval
+        <Select value={project.archiveReviewerOnApproval ?? "on"} disabled={busy}
+          onValueChange={(value) => void save({ archiveReviewerOnApproval: value as z.infer<typeof archiveSettingSchema> })}>
+          <SelectTrigger aria-label="Archive the plan reviewer after approval" className="h-8 w-48"><SelectValue /></SelectTrigger>
+          <SelectContent>
+            <SelectItem value="on">On</SelectItem>
+            <SelectItem value="off">Off</SelectItem>
+          </SelectContent>
+        </Select>
+      </label>
+      <p className="text-xs text-muted-foreground">A reviewer thread submitted with --dedicated-reviewer is archived after it approves a plan. A reused thread is never archived.</p>
       {project.planningChangedAt ? (
         <p className="text-xs text-muted-foreground" data-testid="planning-changed">
           Changed <time dateTime={project.planningChangedAt} title={project.planningChangedAt}>{formatRelativeTime(project.planningChangedAt, Date.now())}</time>, was {project.planningPrevious ?? "off"}

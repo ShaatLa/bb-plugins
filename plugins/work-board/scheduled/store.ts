@@ -1,3 +1,4 @@
+import { snapshotLateLink } from "../delegate/attach";
 import { randomUUID } from "node:crypto";
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import type { z } from "zod";
@@ -147,7 +148,10 @@ export function createScheduledStore(bb:BbPluginApi,store:TasksApiStore) {
    const inProgress=effectiveInProgressStatus(store.tasks.getProject(task.projectId)!);
    if((task.status==="backlog"||task.status==="todo")&&inProgress&&!store.tasks.planGate(task,inProgress))store.tasks.updateTask(r.taskId,{status:inProgress});
    db.prepare("UPDATE task_scheduled_sources SET started_at=? WHERE task_id=?").run(now.toISOString(),r.taskId);
-   store.tasks.upsertTaskThread({taskId:r.taskId,threadId:input.threadId,title:input.title,presetName:input.presetName,liveStatus:input.liveStatus??"working"});
+   // The run's stored execution target tells a fresh spawn from a reused session; only a spawn is Work Board's to archive.
+   const spawned=r.execution!==null&&r.execution.targetThreadId===undefined;
+   const link=store.tasks.upsertTaskThread({taskId:r.taskId,threadId:input.threadId,title:input.title,presetName:input.presetName,liveStatus:input.liveStatus??"working",linkOrigin:spawned?"scheduled_spawn":"scheduled_existing",createdForTask:spawned});
+   snapshotLateLink(store.tasks,r.taskId,link,spawned);
    return updateRun(runId,{state:task.status==="done"?"completed":task.status==="canceled"?"canceled":"running",threadId:input.threadId,requestId:input.requestId,startedAt:now.toISOString(),resolvedAt:null,finishedAt:["done","canceled"].includes(task.status)?now.toISOString():null,reason:null},now);
   });
  }

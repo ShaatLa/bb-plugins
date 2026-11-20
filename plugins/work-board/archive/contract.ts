@@ -48,6 +48,7 @@ export const archiveProjectSchema = z
       z.literal(18),
       z.literal(19),
       z.literal(20),
+      z.literal(21),
     ]),
     project: projectSchema,
     gitSync: gitSyncConfigSchema.optional(),

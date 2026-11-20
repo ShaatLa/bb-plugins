@@ -826,7 +826,7 @@ it("exports v17 typed questions and imports v16 owner tasks as plain tasks", asy
   await exportProject(source.bb, source.store, source.project.id, out);
   const manifestPath = join(out, "project.json");
   const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
-  expect(manifest.version).toBe(20);
+  expect(manifest.version).toBe(21);
   const path = join(out, "tasks", `${source.task.id}.json`);
   const record = JSON.parse(await readFile(path, "utf8"));
   expect(record.task).not.toHaveProperty("executionTarget");
@@ -863,7 +863,7 @@ it("exports plans (v18+) with every version, refuses a differing local plan with
   await exportProject(source.bb, source.store, source.project.id, out);
   const manifestPath = join(out, "project.json");
   const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
-  expect(manifest.version).toBe(20);
+  expect(manifest.version).toBe(21);
   const recordPath = join(out, "tasks", `${source.task.id}.json`);
   const record = JSON.parse(await readFile(recordPath, "utf8"));
   expect(record.plan).toMatchObject({ format: "markdown", version: 2, state: "in_review", body: "# Plan\n\n## Steps\n- one\n- two\n", reviewer: { kind: "thread", threadId: "thr_reviewer" }, reviewVersion: 2 });
@@ -982,7 +982,7 @@ it("round-trips configurable project statuses, their order and custom task stage
   const out = join(await directory(), "statuses-v6");
   await exportProject(source.bb, source.store, source.project.id, out);
   const manifest = JSON.parse(await readFile(join(out, "project.json"), "utf8"));
-  expect(manifest.version).toBe(20);
+  expect(manifest.version).toBe(21);
   expect(manifest.project.statuses).toEqual(statuses);
   expect(manifest.project).toMatchObject({ autoArchiveAfterDays: "14", staleIdleMinutes: "120" });
   const target = setup();
@@ -1083,7 +1083,7 @@ describe("archive v13 scheduled tasks", () => {
     const out = join(await directory(), "scheduled-v13");
     await exportProject(f.bb, f.store, f.project.id, out);
     const manifest = JSON.parse(await readFile(join(out, "project.json"), "utf8"));
-    expect(manifest.version).toBe(20);
+    expect(manifest.version).toBe(21);
     expect(manifest.schedules).toHaveLength(2);
     expect(JSON.stringify(manifest)).not.toMatch(/thr_server_local|thr_gone|q_live|req_live|01ARZ3NDEKTSV4RRFFQ69G5FAV/);
     const target = setup();
@@ -1217,7 +1217,7 @@ it("round-trips v16 current state and imports v15 without it", async () => {
   await exportProject(source.bb, source.store, source.project.id, out);
   const manifestPath = join(out, "project.json");
   const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
-  expect(manifest.version).toBe(20);
+  expect(manifest.version).toBe(21);
   const target = setup();
   await importProject(target.bb, target.store, out, false);
   expect(target.store.tasks.getTask(source.task.id)).toEqual(source.store.tasks.getTask(source.task.id));
@@ -1564,7 +1564,16 @@ it("lets the migration turn planning on only for projects that already have a pl
   source.store.tasks.createTask({ projectId: without.id, title: "Plain" });
   const now = new Date().toISOString();
   db.prepare("INSERT INTO task_plans (task_id, format, version, body, state, updated_at, author_kind, author_thread, author_name) VALUES (?, 'markdown', 1, '# Plan', 'in_review', ?, 'agent', NULL, 'agent')").run(task.id, now);
-  // Roll the 0.59.0 migration back, then apply it again to the data of an older install.
+  // Roll the 0.60.0 migration back first, then the 0.59.0 one, and apply both again to the data of an older install.
+  db.exec(`
+    DROP TABLE closure_threads;
+    DROP TABLE task_closures;
+    ALTER TABLE task_threads DROP COLUMN created_for_task;
+    ALTER TABLE task_threads DROP COLUMN link_origin;
+    ALTER TABLE projects DROP COLUMN archive_threads_on_close;
+    ALTER TABLE projects DROP COLUMN archive_reviewer_on_approval;
+    DELETE FROM schema_version WHERE version = (SELECT MAX(version) FROM schema_version);
+  `);
   db.exec(`
     DROP TABLE task_plan_reviews;
     ALTER TABLE task_plans DROP COLUMN reviewer_kind;
@@ -1587,4 +1596,66 @@ it("lets the migration turn planning on only for projects that already have a pl
   expect(source.store.tasks.getProject(withPlan.id)!.planning).toBe("optional");
   // The existing in-review plan has the owner as its reviewer and can be approved at once.
   expect(createPlanStore(db, source.store.tasks).head(task.id)).toMatchObject({ state: "in_review", reviewer: { kind: "owner", threadId: null }, reviewVersion: null });
+});
+
+describe("archive v21: thread-archive settings and links", () => {
+  const exportOf = async (source: Awaited<ReturnType<typeof seed>>, name: string) => {
+    const out = join(await directory(), name);
+    await exportProject(source.bb, source.store, source.project.id, out);
+    return out;
+  };
+  const asV20 = async (out: string) => {
+    const path = join(out, "project.json");
+    const manifest = JSON.parse(await readFile(path, "utf8"));
+    manifest.version = 20;
+    delete manifest.project.archiveThreadsOnClose;
+    delete manifest.project.archiveReviewerOnApproval;
+    await writeFile(path, jsonText(manifest));
+  };
+
+  it("round-trips both settings into a new project", async () => {
+    const source = await seed();
+    source.store.tasks.updateProject(source.project.id, { archiveThreadsOnClose: "off", archiveReviewerOnApproval: "off" });
+    const out = await exportOf(source, "v21-settings");
+    const manifest = JSON.parse(await readFile(join(out, "project.json"), "utf8"));
+    expect(manifest.version).toBe(21);
+    expect(manifest.project).toMatchObject({ archiveThreadsOnClose: "off", archiveReviewerOnApproval: "off" });
+    const target = setup();
+    await importProject(target.bb, target.store, out, false);
+    expect(target.store.tasks.getProject(source.project.id)).toMatchObject({ archiveThreadsOnClose: "off", archiveReviewerOnApproval: "off" });
+  });
+
+  it("gives a v20 snapshot's new project the defaults and never changes an existing project's own settings", async () => {
+    const source = await seed();
+    const out = await exportOf(source, "v20-defaults");
+    await asV20(out);
+    const fresh = setup();
+    await importProject(fresh.bb, fresh.store, out, false);
+    expect(fresh.store.tasks.getProject(source.project.id)).toMatchObject({ archiveThreadsOnClose: "on", archiveReviewerOnApproval: "on" });
+    fresh.store.tasks.updateProject(source.project.id, { archiveThreadsOnClose: "off", archiveReviewerOnApproval: "off" });
+    await importProject(fresh.bb, fresh.store, out, false);
+    await importProject(fresh.bb, fresh.store, out, true);
+    expect(fresh.store.tasks.getProject(source.project.id)).toMatchObject({ archiveThreadsOnClose: "off", archiveReviewerOnApproval: "off" });
+    // A v21 snapshot with other values does not overwrite them either.
+    const v21 = await exportOf(source, "v21-other");
+    await importProject(fresh.bb, fresh.store, v21, true);
+    expect(fresh.store.tasks.getProject(source.project.id)).toMatchObject({ archiveThreadsOnClose: "off", archiveReviewerOnApproval: "off" });
+  });
+
+  it("imports a closed card's links as never archivable and replays no close action", async () => {
+    const source = await seed();
+    source.store.tasks.upsertTaskThread({ taskId: source.task.id, threadId: "thr_example", presetName: "Preset", title: "Worker", liveStatus: "idle", linkOrigin: "delegate_spawn", createdForTask: true });
+    source.store.tasks.updateTask(source.task.id, { status: "done" });
+    const out = await exportOf(source, "v21-links");
+    const target = setup();
+    await importProject(target.bb, target.store, out, false);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const db = target.bb.storage.database();
+    expect(db.prepare("SELECT thread_id, created_for_task, link_origin FROM task_threads ORDER BY thread_id").all()).toEqual([
+      { thread_id: "thr_example", created_for_task: 0, link_origin: null },
+      { thread_id: "thr_saved_worker", created_for_task: 0, link_origin: null },
+    ]);
+    expect(db.prepare("SELECT COUNT(*) AS n FROM task_closures").get()).toEqual({ n: 0 });
+    expect(target.harness.sdk.callsTo("threads.archive")).toEqual([]);
+  });
 });

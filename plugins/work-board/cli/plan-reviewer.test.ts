@@ -37,7 +37,7 @@ describe("bb work-board plan: reviewer commands", () => {
   it("runs a whole review from the reviewer thread: note, feedback, resolve and approve, each with --version", async () => {
     const { ok, run, sentTo } = await setup();
     const submitted = await ok(["plan", "submit", "EXA-1", "--reviewer", REVIEWER], AUTHOR);
-    expect(submitted).toBe(`EXA-1 plan v1 submitted for review by ${REVIEWER}\nReviewer ${REVIEWER} notified`);
+    expect(submitted).toBe(`EXA-1 plan v1 submitted for review by ${REVIEWER}\nReviewer ${REVIEWER} notified\nTip: spawn a fresh reviewer thread for each review and pass --dedicated-reviewer; that reviewer is archived after it approves (a reused thread never is).`);
     expect(sentTo(REVIEWER)[0]).toContain("EXA-1 · plan v1 submitted for your review");
     expect(await ok(["plan", "note", "EXA-1", "--version", "1", "--body", "Say which table.", "--quote", "Add the table.", "--section", "Steps"], REVIEWER)).toContain("EXA-1 N1 saved as a draft on v1");
     expect(await ok(["plan", "note", "EXA-1", "--version", "1", "--body", "Missing rollback."], REVIEWER)).toContain("N2 saved as a draft");

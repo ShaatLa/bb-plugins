@@ -263,7 +263,7 @@ export function createPlanStore(db: Database, tasks: TasksStore) {
   }
 
   /** Opens a review attempt: the head names the reviewer and the version under review, and the history gets a row. */
-  function startReview(taskId: string, version: number, reviewerThread: string | null, by: PlanAuthor) {
+  function startReview(taskId: string, version: number, reviewerThread: string | null, by: PlanAuthor, dedicated = false) {
     const now = new Date().toISOString();
     db.prepare("UPDATE task_plans SET state = 'in_review', updated_at = ?, reviewer_kind = ?, reviewer_thread = ?, review_version = ? WHERE task_id = ?").run(
       now,
@@ -273,8 +273,8 @@ export function createPlanStore(db: Database, tasks: TasksStore) {
       taskId,
     );
     db.prepare(
-      "INSERT INTO task_plan_reviews (task_id, version, reviewer_kind, reviewer_thread, submitted_by_thread, submitted_at, outcome) VALUES (?, ?, ?, ?, ?, ?, 'pending')",
-    ).run(taskId, version, reviewerThread ? "thread" : "owner", reviewerThread, by.threadId, now);
+      "INSERT INTO task_plan_reviews (task_id, version, reviewer_kind, reviewer_thread, submitted_by_thread, submitted_at, outcome, dedicated_reviewer) VALUES (?, ?, ?, ?, ?, ?, 'pending', ?)",
+    ).run(taskId, version, reviewerThread ? "thread" : "owner", reviewerThread, by.threadId, now, reviewerThread && dedicated ? 1 : 0);
   }
 
   /**
@@ -282,7 +282,7 @@ export function createPlanStore(db: Database, tasks: TasksStore) {
    * changes nothing (`resent`: the caller only wakes the reviewer again); another reviewer takes the review over.
    * `unusable` says why the reviewer thread cannot be used (archived, deleted); it refuses a new or reassigned review.
    */
-  const submit = db.transaction((taskId: string, by: PlanAuthor, reviewerThread: string | null, unusable: string | null = null, defaultedFrom: { kind: "owner" | "thread"; threadId: string | null } | null = null) => {
+  const submit = db.transaction((taskId: string, by: PlanAuthor, reviewerThread: string | null, unusable: string | null = null, defaultedFrom: { kind: "owner" | "thread"; threadId: string | null } | null = null, dedicated = false) => {
     const task = requireEditable(taskId);
     const row = planRow(taskId);
     // A bare resubmit chose the latest attempt's reviewer before an asynchronous lookup; that choice must still hold now.
@@ -306,7 +306,7 @@ export function createPlanStore(db: Database, tasks: TasksStore) {
     const label = reviewerThread ?? "the owner";
     const reassigned = row.state === "in_review";
     if (reassigned) closePendingReview(db, taskId, "reassigned", by.name);
-    startReview(taskId, row.version, reviewerThread, by);
+    startReview(taskId, row.version, reviewerThread, by, dedicated);
     comment(taskId, by, reassigned ? `Plan: review of v${row.version} reassigned to ${label}` : `Plan v${row.version} submitted for review by ${label}`);
     return { plan: headOf(planRow(taskId)!), version: null, outcome: reassigned ? ("reassigned" as const) : ("submitted" as const) };
   });

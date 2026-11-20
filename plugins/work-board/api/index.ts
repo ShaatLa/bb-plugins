@@ -17,6 +17,8 @@ import { gitSyncService } from "../git-sync/service";
 import { projectConfigHandlers } from "../config";
 import { createLockHandlers } from "../locks/service";
 import { statusLabel } from "../shared/statuses.js";
+import { createClosureService, type ClosureService } from "../closure/service";
+import { attachManualLink, canTakeWorkerLink } from "../delegate/attach";
 import type { BbPluginApi, PluginRpcHandlers } from "@get-bb/plugin-sdk";
 import {
   createTasksStore,
@@ -82,6 +84,8 @@ const MAX_THREAD_SEARCH_RESULTS = 10;
 
 export interface TasksApiStore {
   readonly tasks: TasksStore;
+  /** What happens to the threads of a card after it closed (archive decisions, turn-bound intents, notices). */
+  readonly closures: ClosureService;
   transaction<T>(operation: () => T): T;
   taskLabelIds(taskIds: readonly string[]): Map<string, string[]>;
   projectTaskCount(projectId: string): number;
@@ -94,11 +98,15 @@ export function createStore(bb: BbPluginApi): TasksApiStore {
   const database = bb.storage.database();
   const tasks = createTasksStore(database);
   observeStatusNotifications(bb, tasks);
+  const closures = createClosureService(bb, tasks);
+  // A closure is evaluated once, after the commit that wrote it; the RPC and CLI paths ask the same evaluation.
+  tasks.onClosure((closureId) => void closures.onClosed(closureId));
 
   return {
     tasks,
+    closures,
     transaction<T>(operation: () => T): T {
-      return database.transaction(operation)();
+      return tasks.closureScope(() => database.transaction(operation)());
     },
     taskLabelIds(taskIds: readonly string[]): Map<string, string[]> {
       const labelsByTask = new Map<string, string[]>();
@@ -892,7 +900,7 @@ export function registerHandlers(
         await noticeLeftApproved(bb, store.tasks, { taskId: input.taskId, version: result.plan.version, state: result.plan.state, reason: "a new version was saved", changedBy: input.author.threadId });
       return result;
     },
-    submitTaskPlan: async ({ taskId, author, reviewer }) => {
+    submitTaskPlan: async ({ taskId, author, reviewer, dedicatedReviewer }) => {
       const task = store.tasks.getTask(taskId);
       // Without a reviewer a revised plan goes back to the reviewer of the latest attempt.
       let latest;
@@ -906,7 +914,7 @@ export function registerHandlers(
       if (!chosen) return { ok: false as const, error: { code: "plan_invalid" as const, message: "This plan was never submitted with a reviewer: pass --reviewer owner (only when the user asked to approve the plan) or --reviewer <thread id>" } };
       const thread = chosen === "owner" ? null : chosen;
       const problem = thread ? await reviewerProblem(bb, thread, task?.key ?? taskId) : null;
-      const result = planWrite(() => plans.submit(taskId, author, thread, problem, reviewer === undefined ? (latest ?? null) : null));
+      const result = planWrite(() => plans.submit(taskId, author, thread, problem, reviewer === undefined ? (latest ?? null) : null, dedicatedReviewer === true));
       if (!result.ok) return result;
       if (!thread) return { ...result, delivered: null, deliveryHint: null };
       const text = buildReviewRequestMessage({
@@ -1115,11 +1123,16 @@ export function registerHandlers(
           validateTaskLabels(store, current.projectId, input.labelIds);
         }
 
+        const closureBefore = store.tasks.closures.currentId(current.id);
         const result = store.transaction(() => {
           const beforeLabelIds = store.tasks
             .listTaskLabels(current.id)
             .map((link) => link.labelId);
+          // The caller's own session is attached first, so the closure snapshot below includes it.
+          const attached = input.attachThread !== undefined && !current.archivedAt && canTakeWorkerLink(bb, current.id)
+            ? attachManualLink(store.tasks, current.id, input.attachThread) : undefined;
           const updated = store.tasks.updateTask(current.id, {
+            closerThreadId: input.agentThreadId ?? null,
             title: input.title,
             description: input.description,
             notifyStatus: Boolean(input.agentThreadId),
@@ -1176,6 +1189,7 @@ export function registerHandlers(
           return {
             task: apiTask(store, updated),
             systemCommentsWritten: bodies.length,
+            attached,
           };
         });
 
@@ -1183,7 +1197,10 @@ export function registerHandlers(
         if (result.systemCommentsWritten > 0) {
           publishCommentsChanged(bb, result.task.id);
         }
-        return { ok: true, task: result.task };
+        if (result.attached) bb.realtime.publish("threads:changed", { taskId: result.task.id });
+        const closureAfter = store.tasks.closures.currentId(current.id);
+        const closedThreads = closureAfter && closureAfter !== closureBefore ? await store.closures.onClosed(closureAfter) : undefined;
+        return { ok: true, task: result.task, ...(closedThreads ? { closedThreads } : {}), ...(result.attached === undefined ? {} : { attached: result.attached }) };
       } catch (error) {
         if (error instanceof SecretDetectedError) {
           return {
@@ -1256,8 +1273,10 @@ export function registerHandlers(
     async boardMove(input) {
       const current = store.tasks.getTask(input.taskId);
       if (!current) throw new Error(`Task not found: ${input.taskId}`);
+      const closureBefore = store.tasks.closures.currentId(current.id);
       const result = store.transaction(() => {
         const moved = store.tasks.updatePosition(current.id, {
+          closerThreadId: input.agentThreadId ?? null,
           status: input.status,
           notifyStatus: Boolean(input.agentThreadId),
           beforeTaskId: input.beforeTaskId,
@@ -1273,7 +1292,9 @@ export function registerHandlers(
       });
       publishTasksChanged(bb, result.task.id, result.task.projectId);
       if (result.statusChanged) publishCommentsChanged(bb, result.task.id);
-      return { ok: true, task: result.task };
+      const closureAfter = store.tasks.closures.currentId(current.id);
+      const closedThreads = closureAfter && closureAfter !== closureBefore ? await store.closures.onClosed(closureAfter) : undefined;
+      return { ok: true, task: result.task, ...(closedThreads ? { closedThreads } : {}) };
     },
     moveTaskToProject(input) {
       const current = store.tasks.getTask(input.taskId);

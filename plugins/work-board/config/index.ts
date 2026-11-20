@@ -6,13 +6,15 @@ import { publishProjectsChanged } from "../api";
 import { gitSyncService } from "../git-sync/service";
 import { createGitSyncStore } from "../git-sync/store";
 import { gitSyncConfigSchema } from "../shared/git-sync";
-import { autoArchiveAfterDaysSchema, PLANNING_OWNER_ONLY, planningSchema, staleIdleThresholdSchema, statusNotificationsSchema } from "../shared/project-settings";
+import { archiveSettingSchema, autoArchiveAfterDaysSchema, PLANNING_OWNER_ONLY, planningSchema, staleIdleThresholdSchema, statusNotificationsSchema } from "../shared/project-settings";
 
 // Per-project settings addressable one key at a time; Git settings carry a "git." prefix.
 const PROJECT_KEYS = {
   autoArchiveAfterDays: autoArchiveAfterDaysSchema,
   staleIdleMinutes: staleIdleThresholdSchema,
   statusNotifications: statusNotificationsSchema,
+  archiveThreadsOnClose: archiveSettingSchema,
+  archiveReviewerOnApproval: archiveSettingSchema,
   planning: planningSchema,
 } as const;
 type ProjectKey = keyof typeof PROJECT_KEYS;

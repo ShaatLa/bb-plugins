@@ -123,7 +123,7 @@ export function planCommands(deps: PlanCliDeps) {
         "  bb work-board plan restore KEY --version N --base-version N --summary TEXT",
         "  bb work-board plan log KEY",
         "  bb work-board plan diff KEY [--from N] [--to M]",
-        "  bb work-board plan submit KEY --reviewer owner|thr_x   (owner only when the user asked to approve the plan)",
+        "  bb work-board plan submit KEY --reviewer owner|thr_x [--dedicated-reviewer]   (owner only when the user asked to approve the plan; spawn a fresh reviewer thread for the review and pass the flag, and it is archived after it approves)",
         "  bb work-board plan notes KEY [--all]",
         "  bb work-board plan reply KEY N1 --body TEXT [--addressed]",
         "  bb work-board plan reviews KEY",
@@ -282,6 +282,10 @@ export function planCommands(deps: PlanCliDeps) {
           placeholder: "owner|thr_x",
           description: "Who approves the plan: a reviewer thread, or `owner` only when the user asked to approve the plan. Required on the first submit; later it defaults to the current reviewer. Another reviewer takes the review over",
         },
+        "dedicated-reviewer": {
+          type: "boolean",
+          description: "The reviewer thread was spawned only for this review: it is archived after it approves the plan (when the project allows it). Pass it on every submit that should count; a reused thread is never archived",
+        },
         ...common,
       },
       run(input, ctx) {
@@ -296,7 +300,7 @@ export function planCommands(deps: PlanCliDeps) {
           // Notes sent to the author and nobody answered: submitting does not refuse, but the agent should know.
           // A new version already moved the plan from changes_requested back to draft, so the notes decide, not the state.
           const unanswered = (await domain.listPlanNotes({ taskId: task.id })).notes.filter((note) => note.state === "sent");
-          const result = unwrap(tasksRpcContract.submitTaskPlan.output.parse(await domain.submitTaskPlan({ taskId: task.id, author: authorOf(ctx), ...(reviewer ? { reviewer } : {}) })));
+          const result = unwrap(tasksRpcContract.submitTaskPlan.output.parse(await domain.submitTaskPlan({ taskId: task.id, author: authorOf(ctx), ...(reviewer ? { reviewer } : {}), ...(input.options["dedicated-reviewer"] ? { dedicatedReviewer: true } : {}) })));
           if (input.options.json) return JSON.stringify({ plan: result.plan, outcome: result.outcome, delivered: result.delivered, deliveryHint: result.deliveryHint, unansweredNotes: unanswered.map((note) => note.number) });
           const asked = result.plan.reviewer.kind === "thread" ? result.plan.reviewer.threadId : "the owner";
           const headline = {
@@ -308,7 +312,10 @@ export function planCommands(deps: PlanCliDeps) {
           const warning = unanswered.length
             ? `\nWarning: ${unanswered.length} note${unanswered.length === 1 ? " is" : "s are"} still unanswered: ${unanswered.map((note) => noteLabel(note.number)).join(", ")}. Answer each with \`bb work-board plan reply ${task.key} N1 --body "…" --addressed\`.`
             : "";
-          return `${oneLine(headline)}\n${delivery}${warning}`;
+          const hint = result.plan.reviewer.kind === "thread" && result.outcome !== "resent" && !input.options["dedicated-reviewer"]
+            ? "\nTip: spawn a fresh reviewer thread for each review and pass --dedicated-reviewer; that reviewer is archived after it approves (a reused thread never is)."
+            : "";
+          return `${oneLine(headline)}\n${delivery}${warning}${hint}`;
         });
       },
     }),

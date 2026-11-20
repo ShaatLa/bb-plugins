@@ -536,6 +536,40 @@ const MIGRATIONS = [
    ALTER TABLE projects ADD COLUMN planning_changed_at TEXT;
    ALTER TABLE projects ADD COLUMN planning_previous TEXT CHECK (planning_previous IS NULL OR planning_previous IN ('off', 'optional', 'required'));
    UPDATE projects SET planning = 'optional' WHERE id IN (SELECT t.project_id FROM tasks t JOIN task_plans p ON p.task_id = t.id);`,
+  // 0.60.0: threads of closed cards. A link records whether Work Board spawned its session and who wrote it; a closure
+  // records each open -> closed change with a snapshot of the card's links, the archive action and the notice state of each.
+  `ALTER TABLE task_threads ADD COLUMN created_for_task INTEGER NOT NULL DEFAULT 0 CHECK (created_for_task IN (0, 1));
+   ALTER TABLE task_threads ADD COLUMN link_origin TEXT CHECK (link_origin IS NULL OR link_origin IN
+     ('delegate_spawn', 'delegate_existing', 'scheduled_spawn', 'scheduled_existing', 'discovery', 'parent', 'manual'));
+   CREATE TABLE task_closures (
+     id TEXT PRIMARY KEY,
+     task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+     closed_at TEXT NOT NULL,
+     closed_by_thread TEXT,
+     reopened_at TEXT
+   );
+   CREATE INDEX idx_task_closures_task ON task_closures(task_id);
+   CREATE TABLE closure_threads (
+     closure_id TEXT NOT NULL REFERENCES task_closures(id) ON DELETE CASCADE,
+     thread_id TEXT NOT NULL,
+     link_id TEXT,
+     live_status TEXT NOT NULL,
+     action TEXT NOT NULL CHECK (action IN ('candidate', 'on_idle', 'evaluating', 'archiving', 'archived', 'kept')),
+     reason TEXT,
+     attempt_id TEXT,
+     seen_active INTEGER NOT NULL DEFAULT 0 CHECK (seen_active IN (0, 1)),
+     self_notice TEXT NOT NULL DEFAULT 'none' CHECK (self_notice IN ('none', 'sending', 'sent', 'failed', 'unknown')),
+     parent_notice TEXT NOT NULL DEFAULT 'none' CHECK (parent_notice IN ('none', 'sending', 'sent', 'failed', 'unknown')),
+     self_attempts INTEGER NOT NULL DEFAULT 0,
+     parent_attempts INTEGER NOT NULL DEFAULT 0,
+     PRIMARY KEY (closure_id, thread_id)
+   );
+   CREATE INDEX idx_closure_threads_thread ON closure_threads(thread_id);
+   ALTER TABLE projects ADD COLUMN archive_threads_on_close TEXT NOT NULL DEFAULT 'on' CHECK (archive_threads_on_close IN ('on', 'off'));
+   ALTER TABLE projects ADD COLUMN archive_reviewer_on_approval TEXT NOT NULL DEFAULT 'on' CHECK (archive_reviewer_on_approval IN ('on', 'off'));
+   ALTER TABLE task_plan_reviews ADD COLUMN dedicated_reviewer INTEGER NOT NULL DEFAULT 0 CHECK (dedicated_reviewer IN (0, 1));
+   ALTER TABLE task_plan_reviews ADD COLUMN archive_state TEXT CHECK (archive_state IS NULL OR archive_state IN ('pending', 'archiving', 'archived', 'kept'));
+   ALTER TABLE task_plan_reviews ADD COLUMN archive_seen_active INTEGER NOT NULL DEFAULT 0;`,
 ] as const;
 
 export function initializeTasksSchema(db: PluginDatabase): void {

@@ -16,6 +16,11 @@ export function getWorkflowPolicy(project: { workflowPolicy?: Partial<WorkflowPo
   return workflowPolicySchema.parse(project.workflowPolicy ?? {});
 }
 
+/** A card is closed in `done`, `canceled` and the policy's own done status. */
+export function isClosedStatus(project: { workflowPolicy?: Partial<WorkflowPolicy> | null }, status: string): boolean {
+  return status === "done" || status === "canceled" || status === getWorkflowPolicy(project).doneStatus;
+}
+
 /**
  * The status that means "in progress" for a project: the policy's `inProgressStatus` when it is set, else `in_progress`
  * when the project has that status, else none (a project without one has no plan gate and no automatic move).

@@ -532,6 +532,33 @@ other work neither warns on the closed card nor adds to its cost. The task
 page and `bb work-board threads` list live threads before completed or failed ones,
 newest first.
 
+### Threads of closed cards (0.60.0)
+
+When a card moves to Done or Canceled (or the project's done status), the sessions
+Work Board itself created for it are archived: a thread spawned by Delegate with a
+preset, or by a scheduled run that started a fresh thread. Everything else is only
+kept: sessions linked by title, "Existing thread", a manual `attach`, a parent
+fallback, a scheduled run in an existing thread, and links from before 0.60.0 or
+from an import. An idle session is archived at once; one that is still working
+(including the session that closed the card) is archived on the first idle of the
+turn that was running, and a new turn cancels that. Before every archive Work
+Board re-checks the card, the link, other open cards, an open plan review, pinned
+state, queued input and live children, and any doubt or SDK error keeps the thread.
+A restart cancels pending archives. The result is listed in the card's activity log
+and in the output of `bb work-board update KEY --status …` (and the board drag
+RPC) as `closedThreads`; `--json` carries the same list.
+
+A kept or still-working session that starts a new turn inside a closed card hears
+about it once, and so does its parent (an archived parent is replaced by its own
+parent); failed notices are retried once. Project settings, one key at a time with
+`bb work-board config get|set KEY VALUE --project PREFIX` or in Settings:
+`archiveThreadsOnClose` (on by default, Archiving and activity) and
+`archiveReviewerOnApproval` (on by default, Planning). A plan reviewer is archived
+after it approves only when it was submitted with `plan submit KEY --reviewer thr_x
+--dedicated-reviewer` (a reviewer spawned for that review; a reused thread never
+is) and has no other open work. Export format **v21** carries both settings; an
+import never changes an existing project's own and never archives anything.
+
 ## Task mentions
 
 Type `@` in the bb composer and select **Work Board** to search by task key or title.

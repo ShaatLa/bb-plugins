@@ -2,6 +2,7 @@ import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import type { TasksStore, TaskThread, TaskThreadLiveStatus } from "../db";
 import { isSideChatShapedThread } from "../shared/side-chat";
 import { errorMessage } from "../shared/errors";
+import { isClosedStatus } from "../shared/workflow-policy";
 
 type SdkThread = Awaited<ReturnType<BbPluginApi["sdk"]["threads"]["get"]>>;
 const pending = new WeakMap<TasksStore, Map<string, Promise<TaskThread[]>>>();
@@ -34,6 +35,12 @@ export function recordThreadLink(
     authorName: "Work Board",
     body,
   });
+}
+
+function parentCardClosed(store: TasksStore, taskId: string): boolean {
+  const task = store.getTask(taskId);
+  const project = task && store.getProject(task.projectId);
+  return !!task && !!project && isClosedStatus(project, task.status);
 }
 
 async function reconcile(
@@ -153,12 +160,13 @@ async function reconcile(
         removed &&
         store.listTaskThreads(taskId).length === 0 &&
         // A finished task needs no responsible session; the fallback only keeps open work accountable.
-        !["done", "canceled"].includes(store.getTask(taskId)?.status ?? "")
+        !parentCardClosed(store, taskId)
       ) {
         store.upsertTaskThread({
           taskId,
           threadId: parent.id,
           presetName: "Parent thread",
+          linkOrigin: "parent",
           title: parent.title ?? parent.titleFallback ?? parent.id,
           liveStatus: threadLiveStatus(parent),
         });

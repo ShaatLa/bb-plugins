@@ -12,6 +12,8 @@ export const planningOn = (project: { planning?: string | null }) => project.pla
 export const planningRequired = (project: { planning?: string | null }) => project.planning === "required";
 export const planningOffMessage = (prefix: string) => `planning is off for project ${prefix}; the owner can enable it in the project settings`;
 export const PLANNING_OWNER_ONLY = "planning is changed by the owner in the project settings";
+/** Automation switches of the closed-card thread handling; both default to on. */
+export const archiveSettingSchema = z.enum(["on", "off"]);
 export const boardPreferencesSchema = z.object({
   defaultScreen: z.enum(["last-project-board", "last-project-list", "all", "active"]),
 }).strict();

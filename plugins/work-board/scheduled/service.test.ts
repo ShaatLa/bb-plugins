@@ -103,6 +103,17 @@ describe('Scheduled execution',()=>{
    await f.service.reconcileAll();expect(f.harness.sdk.callsTo('threads.send')).toHaveLength(1);
   }finally{await f.harness.dispose();}
  });
+ it('closes a canceled queued run through the same hook, once',async()=>{
+  const f=fixture();try{
+   const s=f.create(),r=await f.service.runNow(s.id,'cancel');
+   const seen:string[]=[];f.store.tasks.onClosure(id=>{seen.push(id);});
+   f.harness.sdk.stub('threads.queuedMessages.delete',async()=>{const [entry]=f.getQueue();f.clearQueue();await f.harness.emitThreadEvent('message.cancelled',{entry:entry!});return {ok:true};});
+   expect((await f.service.cancel(r.id)).state).toBe('canceled');
+   await new Promise(resolve=>setTimeout(resolve,0));
+   expect(seen).toEqual([f.store.tasks.closures.currentId(r.taskId!)]);
+   expect(seen).toHaveLength(1);
+  }finally{await f.harness.dispose();}
+ });
  it.each(['backlog','done'] as const)('requires cancellation evidence and preserves an existing %s result',async status=>{
   const f=fixture();try{
    const s=f.create(),r=await f.service.runNow(s.id,'cancel');if(status==='done')f.store.tasks.updateTask(r.taskId!,{status:'done'});

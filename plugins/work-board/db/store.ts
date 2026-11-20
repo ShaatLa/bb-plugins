@@ -1,7 +1,8 @@
 import { WAITING_ON_OWNER, NEWEST_UNANSWERED } from "./waiting-on-owner";
-import { getWorkflowPolicy, inWorkZone, settlePlanFlags, workflowPolicySchema } from "../shared/workflow-policy.js";
+import { getWorkflowPolicy, inWorkZone, isClosedStatus, settlePlanFlags, workflowPolicySchema } from "../shared/workflow-policy.js";
+import { createClosureStore } from "../closure/store";
 import { ordinaryTaskVisibilitySql } from "../scheduled/visibility";
-import { autoArchiveAfterDaysSchema, planningSchema, staleIdleThresholdSchema, statusNotificationsSchema } from "../shared/project-settings";
+import { archiveSettingSchema, autoArchiveAfterDaysSchema, planningSchema, staleIdleThresholdSchema, statusNotificationsSchema } from "../shared/project-settings";
 import { taskDateFiltersSchema } from "../shared/task-dates.js";
 import {
   DEFAULT_TASK_STATUSES,
@@ -84,6 +85,8 @@ interface ProjectRow {
   auto_archive_after_days: string | null;
   stale_idle_minutes: string | null;
   status_notifications: string | null;
+  archive_threads_on_close: string;
+  archive_reviewer_on_approval: string;
   planning: string | null;
   plan_flags_initialized: number;
   planning_changed_at: string | null;
@@ -397,6 +400,8 @@ function projectFromRow(row: ProjectRow): Project {
     autoArchiveAfterDays: autoArchiveAfterDaysSchema.parse(row.auto_archive_after_days ?? "off"),
     staleIdleMinutes: staleIdleThresholdSchema.parse(row.stale_idle_minutes ?? "45"),
     statusNotifications: statusNotificationsSchema.parse(row.status_notifications ?? "off"),
+    archiveThreadsOnClose: archiveSettingSchema.parse(row.archive_threads_on_close),
+    archiveReviewerOnApproval: archiveSettingSchema.parse(row.archive_reviewer_on_approval),
     planning: planningSchema.parse(row.planning ?? "off"),
     planFlagsInitialized: row.plan_flags_initialized === 1,
     planningChangedAt: row.planning_changed_at,
@@ -557,6 +562,42 @@ export function escapeLike(value: string): string {
 
 export function createTasksStore(db: PluginDatabase) {
   initializeTasksSchema(db);
+  const closures = createClosureStore(db);
+  // Closures written by the current writes. They are handed to the listener only after the outermost commit; a rollback
+  // drops the ones added inside it, and a closure row a raw rollback took with it is found missing by the listener.
+  const pendingClosures: string[] = [];
+  let closureListener: ((closureId: string) => void) | null = null;
+  let closureScopes = 0;
+  function drainClosures(): void {
+    if (db.inTransaction) { setTimeout(drainClosures, 0); return; }
+    for (let id = pendingClosures.shift(); id !== undefined; id = pendingClosures.shift()) {
+      try { closureListener?.(id); } catch { /* the listener reports its own failures */ }
+    }
+  }
+  /** Runs one write (or one whole transaction) and dispatches its closures after the outermost commit, now or in a microtask. */
+  function closureScope<T>(run: () => T, defer = false): T {
+    const mark = pendingClosures.length;
+    closureScopes++;
+    let done = false;
+    try {
+      const result = run();
+      done = true;
+      return result;
+    } finally {
+      closureScopes--;
+      if (!done) pendingClosures.length = Math.min(pendingClosures.length, mark);
+      else if (closureScopes === 0 && pendingClosures.length) { if (defer) queueMicrotask(drainClosures); else drainClosures(); }
+    }
+  }
+  /** The write moved a card between open and closed: closing records a closure, reopening ends the current one. */
+  function trackClosure(task: Task, status: string, closerThreadId: string | null | undefined): void {
+    if (status === task.status) return;
+    const project = requireProject(task.projectId);
+    const was = isClosedStatus(project, task.status);
+    const now = isClosedStatus(project, status);
+    if (!was && now) pendingClosures.push(closures.open(task.id, closerThreadId ?? null, project.archiveThreadsOnClose !== "off"));
+    else if (was && !now) closures.reopen(task.id);
+  }
 
   const getFolderRow = db.prepare<[string], FolderRow>(
     "SELECT * FROM folders WHERE id = ?",
@@ -784,12 +825,12 @@ export function createTasksStore(db: PluginDatabase) {
       const nextPlanning = planningSchema.parse(input.planning ?? current.planning ?? "off");
       const planningChanged = nextPlanning !== (current.planning ?? "off");
       db.prepare<
-        [string, string, string, string | null, string | null, string, string | null, string, string, string, string, number, string | null, string | null, string]
+        [string, string, string, string | null, string | null, string, string | null, string, string, string, string, string, string, number, string | null, string | null, string]
       >(
         `
       UPDATE projects
       SET name = ?, prefix = ?, color = ?, folder_id = ?, linked_bb_project_id = ?, statuses = ?, workflow_policy = ?,
-          auto_archive_after_days = ?, stale_idle_minutes = ?, status_notifications = ?, planning = ?, plan_flags_initialized = ?, planning_changed_at = ?, planning_previous = ?
+          auto_archive_after_days = ?, stale_idle_minutes = ?, status_notifications = ?, archive_threads_on_close = ?, archive_reviewer_on_approval = ?, planning = ?, plan_flags_initialized = ?, planning_changed_at = ?, planning_previous = ?
       WHERE id = ?
     `,
       ).run(
@@ -811,6 +852,8 @@ export function createTasksStore(db: PluginDatabase) {
         autoArchiveAfterDaysSchema.parse(input.autoArchiveAfterDays ?? current.autoArchiveAfterDays ?? "off"),
         staleIdleThresholdSchema.parse(input.staleIdleMinutes ?? current.staleIdleMinutes ?? "45"),
         statusNotificationsSchema.parse(input.statusNotifications ?? current.statusNotifications ?? "off"),
+        archiveSettingSchema.parse(input.archiveThreadsOnClose ?? current.archiveThreadsOnClose ?? "on"),
+        archiveSettingSchema.parse(input.archiveReviewerOnApproval ?? current.archiveReviewerOnApproval ?? "on"),
         nextPlanning,
         settled.initialized ? 1 : 0,
         planningChanged ? nowIso() : (current.planningChangedAt ?? null),
@@ -1457,6 +1500,7 @@ export function createTasksStore(db: PluginDatabase) {
             .get(current.projectId, status)?.position ?? POSITION_STEP;
       }
 
+      trackClosure(current, status, input.closerThreadId);
       db.prepare<
         [
           string,
@@ -1509,7 +1553,7 @@ export function createTasksStore(db: PluginDatabase) {
     assertNoSecrets(input.progressNote ?? undefined, "current state");
     if (input.progressNote != null && Buffer.byteLength(input.progressNote, "utf8") > 4096)
       throw new Error("Current state exceeds 4 KB; keep it to current state and move details to a comment or attachment");
-    return updateTaskTransaction(id, input);
+    return closureScope(() => updateTaskTransaction(id, input), true);
   }
 
   const moveTaskToProjectTransaction = db.transaction(
@@ -1714,6 +1758,7 @@ export function createTasksStore(db: PluginDatabase) {
             .get(task.projectId, input.status, id)?.position ?? POSITION_STEP;
       }
 
+      trackClosure(task, input.status, input.closerThreadId);
       db.prepare<[Task["status"], number, string, string]>(
         `
         UPDATE tasks SET status = ?, position = ?, updated_at = ? WHERE id = ?
@@ -1724,7 +1769,7 @@ export function createTasksStore(db: PluginDatabase) {
   );
 
   function updatePosition(id: string, input: UpdateTaskPositionInput): Task {
-    return updatePositionTransaction(id, input);
+    return closureScope(() => updatePositionTransaction(id, input), true);
   }
 
   function archiveFamily(id: string): Task[] {
@@ -2181,17 +2226,21 @@ export function createTasksStore(db: PluginDatabase) {
         TaskThreadLiveStatus,
         string,
         string,
+        number,
+        string | null,
       ]
     >(
       `
       INSERT INTO task_threads (
-        id, task_id, thread_id, preset_name, title, live_status, attached_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        id, task_id, thread_id, preset_name, title, live_status, attached_at, updated_at, created_for_task, link_origin
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT (task_id, thread_id) DO UPDATE SET
         preset_name = excluded.preset_name,
         title = excluded.title,
         live_status = excluded.live_status,
-        updated_at = excluded.updated_at
+        updated_at = excluded.updated_at,
+        created_for_task = excluded.created_for_task,
+        link_origin = excluded.link_origin
     `,
     ).run(
       id,
@@ -2202,6 +2251,8 @@ export function createTasksStore(db: PluginDatabase) {
       input.liveStatus,
       timestamp,
       timestamp,
+      input.createdForTask && input.linkOrigin ? 1 : 0,
+      input.linkOrigin ?? null,
     );
     const thread = getTaskThreadByThreadId(input.taskId, input.threadId);
     if (!thread) throw new Error("Task thread upsert failed");
@@ -2484,6 +2535,9 @@ export function createTasksStore(db: PluginDatabase) {
     listTasks,
     listSubtasks,
     updateTask,
+    closures,
+    closureScope,
+    onClosure: (listener: (closureId: string) => void) => { closureListener = listener; },
     planGate,
     scheduledStatus,
     moveTaskToProject,

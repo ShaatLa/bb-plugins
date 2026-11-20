@@ -486,7 +486,7 @@ it("lets the owner pick each planning mode for the selected project, and the cho
     const automation = within(settings.getByRole("region", { name: "Project automation" }));
     expect(automation.queryByRole("combobox", { name: "Planning" })).toBeNull();
     expect(automation.queryByText(/^Off hides plans/)).toBeNull();
-    expect(automation.getAllByRole("combobox").map(box => box.getAttribute("aria-label"))).toEqual(["Automatically archive completed tasks", "Flag idle threads without task updates", "Task status notifications"]);
+    expect(automation.getAllByRole("combobox").map(box => box.getAttribute("aria-label"))).toEqual(["Automatically archive completed tasks", "Flag idle threads without task updates", "Task status notifications", "Archive threads of closed cards"]);
     expect(region().getByText(/^Off hides plans/).textContent).not.toContain("agents cannot");
     expect(mode().textContent).toContain("Off");
     for (const [label, value] of [["Optional", "optional"], ["Required", "required"], ["Off", "off"], ["Required", "required"]] as const) {
@@ -503,6 +503,28 @@ it("lets the owner pick each planning mode for the selected project, and the cho
     cleanup();
     const reloaded = renderSlot(app.settingsSections[0]!, {}, { rpc });
     await waitFor(() => expect(reloaded.getByRole("combobox", { name: "Planning" }).textContent).toContain("Required"));
+  } finally { cleanup(); await harness.dispose(); }
+});
+
+it("lets the owner switch the two thread-archive settings, each in its own section", async () => {
+  const { bb, harness } = createFakePluginHost({ pluginId: "work-board" });
+  try {
+    const store = createStore(bb);
+    const alpha = store.tasks.createProject({ name: "Alpha", prefix: "A", color: "blue" });
+    registerTasksApi(bb, store);
+    const rpc = Object.fromEntries(Object.keys(tasksRpcContract).map(method => [method, (input: unknown) => harness.callRpc(method, input)]));
+    const settings = renderSlot(app.settingsSections[0]!, {}, { rpc });
+    const archiveThreads = () => within(settings.getByRole("region", { name: "Project automation" })).getByRole("combobox", { name: "Archive threads of closed cards" });
+    const archiveReviewer = () => within(settings.getByRole("region", { name: "Project planning" })).getByRole("combobox", { name: "Archive the plan reviewer after approval" });
+    await settings.findByRole("combobox", { name: "Planning" });
+    expect(archiveThreads().textContent).toContain("On");
+    expect(archiveReviewer().textContent).toContain("On");
+    fireEvent.click(archiveThreads());
+    fireEvent.click(await settings.findByRole("option", { name: "Off" }));
+    await waitFor(() => expect(store.tasks.getProject(alpha.id)?.archiveThreadsOnClose).toBe("off"));
+    fireEvent.click(archiveReviewer());
+    fireEvent.click(await settings.findByRole("option", { name: "Off" }));
+    await waitFor(() => expect(store.tasks.getProject(alpha.id)?.archiveReviewerOnApproval).toBe("off"));
   } finally { cleanup(); await harness.dispose(); }
 });
 

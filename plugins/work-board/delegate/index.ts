@@ -35,10 +35,10 @@ import {
 import { errorMessage } from "../shared/errors";
 import { truncateToWidth } from "../shared/text-measure";
 import { delegationRpcContract } from "./contract";
+import { MANUAL_PRESET_NAME, snapshotLateLink } from "./attach";
 
 const MAX_DELEGATED_THREAD_TITLE_WIDTH = 120;
 const SYSTEM_AUTHOR_NAME = "Work Board";
-const MANUAL_PRESET_NAME = "Attached";
 
 const presetExecutionSchema = z
   .object({
@@ -412,10 +412,12 @@ export function handlers(
         input: [{ type: "text", text: withPluginHeader(bb.pluginId, prompt), mentions: [] }],
       });
       let skippedMove = false;
+      let lateClosure: string | null = null;
       store.transaction(() => {
-        store.tasks.upsertTaskThread({
+        const link = store.tasks.upsertTaskThread({
           taskId: task.id,
           threadId: thread.id,
+          linkOrigin: "delegate_existing",
           presetName: "Existing thread",
           title: truncateToWidth(
             thread.title ?? thread.titleFallback ?? delegatedThreadTitle(task),
@@ -437,7 +439,9 @@ export function handlers(
           threadId: thread.id,
           body: `Dispatched to existing thread ${thread.title ?? thread.titleFallback ?? thread.id}`,
         });
+        lateClosure = snapshotLateLink(store.tasks, task.id, link, false);
       });
+      await store.closures.lateLink(lateClosure, thread.id);
       if (skippedMove && !planWarning) await noticeSkippedMove(bb, store.tasks, store.tasks.getTask(task.id) ?? task, thread.id);
       if (delivery?.delivery === "queued")
         activityService(bb, store).queued(task.id, thread.id, delivery.queuedMessage.id);
@@ -509,6 +513,7 @@ export function handlers(
         .catch((error: unknown) => mapSpawnTargetError(error, preset));
 
       let skippedMove = false;
+      let lateClosure: string | null = null;
       const taskThread = store.transaction(() => {
         const attached = store.tasks.upsertTaskThread({
           taskId: task.id,
@@ -516,6 +521,8 @@ export function handlers(
           presetName: preset.name,
           title,
           liveStatus: "starting",
+          linkOrigin: "delegate_spawn",
+          createdForTask: true,
         });
 
         // The spawn above took time: the card and the project are read again here, so a card canceled meanwhile stays canceled.
@@ -540,8 +547,10 @@ export function handlers(
           threadId: thread.id,
           body: `Dispatched to ${preset.name}`,
         });
+        lateClosure = snapshotLateLink(store.tasks, task.id, attached, true);
         return attached;
       });
+      await store.closures.lateLink(lateClosure, thread.id);
 
       if (skippedMove && !planWarning) await noticeSkippedMove(bb, store.tasks, store.tasks.getTask(task.id) ?? task, thread.id);
       try {
@@ -590,6 +599,7 @@ export function handlers(
           presetName: MANUAL_PRESET_NAME,
           title,
           liveStatus: taskThreadLiveStatus(thread),
+          linkOrigin: "manual",
         });
 
         if (!existing) {

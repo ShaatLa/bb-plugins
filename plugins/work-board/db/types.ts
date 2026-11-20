@@ -22,6 +22,9 @@ export type TaskThreadLiveStatus = (typeof TASK_THREAD_LIVE_STATUSES)[number];
 
 export type PresetEnvironmentKind = (typeof PRESET_ENVIRONMENT_KINDS)[number];
 
+export const LINK_ORIGINS = ["delegate_spawn", "delegate_existing", "scheduled_spawn", "scheduled_existing", "discovery", "parent", "manual"] as const;
+export type LinkOrigin = (typeof LINK_ORIGINS)[number];
+
 export interface Folder {
   id: string;
   name: string;
@@ -34,6 +37,8 @@ export interface Project {
   autoArchiveAfterDays?: ProjectContract["autoArchiveAfterDays"];
   staleIdleMinutes?: ProjectContract["staleIdleMinutes"];
   statusNotifications?: ProjectContract["statusNotifications"];
+  archiveThreadsOnClose?: ProjectContract["archiveThreadsOnClose"];
+  archiveReviewerOnApproval?: ProjectContract["archiveReviewerOnApproval"];
   planning?: ProjectContract["planning"];
   planFlagsInitialized?: boolean;
   planningChangedAt?: ProjectContract["planningChangedAt"];
@@ -166,6 +171,8 @@ export interface UpdateProjectInput {
   autoArchiveAfterDays?: ProjectContract["autoArchiveAfterDays"];
   staleIdleMinutes?: ProjectContract["staleIdleMinutes"];
   statusNotifications?: ProjectContract["statusNotifications"];
+  archiveThreadsOnClose?: ProjectContract["archiveThreadsOnClose"];
+  archiveReviewerOnApproval?: ProjectContract["archiveReviewerOnApproval"];
   planning?: ProjectContract["planning"];
   name?: string;
   prefix?: string;
@@ -189,6 +196,8 @@ export interface CreateTaskInput {
 
 export interface UpdateTaskInput {
   notifyStatus?: boolean;
+  /** The thread that closes the card; it is archived after its closing turn instead of at once. */
+  closerThreadId?: string | null;
   progressNote?: string | null;
   authorName?: string;
   title?: string;
@@ -234,6 +243,7 @@ export interface ListTasksPage {
 
 export interface UpdateTaskPositionInput {
   notifyStatus?: boolean;
+  closerThreadId?: string | null;
   status: TaskStatus;
   beforeTaskId?: string | null;
   afterTaskId?: string | null;
@@ -284,6 +294,9 @@ export interface UpsertTaskThreadInput {
   presetName: string;
   title: string;
   liveStatus: TaskThreadLiveStatus;
+  /** Who wrote the link; null for writers that do not say. Only a spawned link (`createdForTask`) can be archived. */
+  linkOrigin?: LinkOrigin | null;
+  createdForTask?: boolean;
 }
 
 export interface CreatePresetInput {

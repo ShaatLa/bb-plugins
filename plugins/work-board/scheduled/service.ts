@@ -104,6 +104,8 @@ function createService(bb:BbPluginApi,store:TasksApiStore) {
  async function startRun(runId:string,input:Parameters<typeof data.markStarted>[1]) {
   const run=data.run(runId),task=run.taskId?store.tasks.getTask(run.taskId):undefined,project=task&&store.tasks.getProject(task.projectId);
   const started=data.markStarted(runId,input);
+  // A run that starts after its card closed has a snapshot row of its own now; it is settled like a close-time one.
+  if(task)await store.closures.lateLink(store.tasks.closures.currentId(task.id),input.threadId);
   const target=project&&effectiveInProgressStatus(project);
   if(!run.startedAt&&task&&target&&(task.status==="backlog"||task.status==="todo")&&store.tasks.getTask(task.id)!.status===task.status&&store.tasks.planGate(task,target)&&!await bb.storage.kv.get(advisoryPrefix+runId))
    {await noticeSkippedMove(bb,store.tasks,task,input.threadId);alive();}
