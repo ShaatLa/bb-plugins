@@ -3,17 +3,17 @@ import { mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync }
 import { basename, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { receiptPolling } from "../steer";
-import { scanTuning } from "./archived-worktrees";
+import { scanTuning, scansRunning } from "./archived-worktrees";
 import { formatNotification } from "./notification";
 import { reportContents } from "./reports";
 import { checksTuning } from "./service";
 import { binDir, BB_PROJECT, cleanTempDirs, MANAGER, setup, tempDir, type Fixture } from "./fixtures";
 
 // A filesystem call that never settles, for the one path a test names.
-const stall = vi.hoisted(() => ({ path: null as string | null, calls: 0, release: () => {} }));
+const stall = vi.hoisted(() => ({ path: null as string | null, calls: 0, pending: [] as (() => void)[], release() { this.pending.splice(0).forEach((resolve) => resolve()); } }));
 vi.mock("node:fs/promises", async (original) => {
   const actual = await original<typeof import("node:fs/promises")>();
-  return { ...actual, realpath: Object.assign((path: string, ...rest: unknown[]) => (path === stall.path ? new Promise<string>((resolve) => { stall.calls++; stall.release = () => resolve(path); }) : (actual.realpath as (...args: unknown[]) => Promise<string>)(path, ...rest)), actual.realpath) };
+  return { ...actual, realpath: Object.assign((path: string, ...rest: unknown[]) => (path === stall.path ? new Promise<string>((resolve) => { stall.calls++; stall.pending.push(() => resolve(path)); }) : (actual.realpath as (...args: unknown[]) => Promise<string>)(path, ...rest)), actual.realpath) };
 });
 
 const fixtures: Fixture[] = [];
@@ -21,7 +21,13 @@ const make = async (script = "", code = 0) => {
   const f = await setup(); fixtures.push(f); f.standard(); f.output(script, code); f.enable(); f.worktrees.enable(); return f;
 };
 beforeEach(() => { receiptPolling.tries = 1; receiptPolling.delayMs = 0; checksTuning.lateSearchMs = 0; });
-afterEach(async () => { vi.unstubAllEnvs(); scanTuning.measurementMs = 30_000; scanTuning.deadlineMs = 60_000; stall.path = null; stall.calls = 0; stall.release(); await Promise.all(fixtures.splice(0).map((f) => f.dispose())); cleanTempDirs(); });
+afterEach(async () => {
+  vi.unstubAllEnvs(); scanTuning.measurementMs = 30_000; scanTuning.deadlineMs = 60_000; stall.path = null; stall.calls = 0;
+  // Settle a stalled scan before the fixtures go, so a failed test reports its assertion instead of tearing down under a running scan.
+  stall.release();
+  await Promise.all(fixtures.map((f) => vi.waitFor(() => expect(scansRunning(f.bb)).toBe(0), { timeout: 5000 })));
+  await Promise.all(fixtures.splice(0).map((f) => f.dispose())); cleanTempDirs();
+});
 
 /** A definite rejection keeps the staged report pending, so its raw body can be read. */
 const hold = (f: Fixture) => { f.threads.sendMode = "throw"; f.threads.sendError = Object.assign(new Error("forbidden"), { status: 403 }); };
@@ -338,7 +344,7 @@ describe("tick", () => {
     expect(accepted(f)).toBe(2);
     expect(f.sent()).toContain("EXA-2");
     // Once the stalled call settles, the next tick scans again.
-    stall.release(); stall.path = null;
+    scanTuning.deadlineMs = 60_000; stall.release(); stall.path = null;
     await vi.waitFor(async () => { f.output("ACTION idle-thread EXA-3", 1); await f.tick(); expect(f.worktrees.scan.calls).toBe(2); });
     expect(reported(f)).toEqual([path]);
   });

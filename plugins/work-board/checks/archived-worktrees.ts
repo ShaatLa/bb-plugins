@@ -41,6 +41,9 @@ function untilAborted<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
 /** The bb projects with a scan still in flight: an abandoned scan may be stuck in a filesystem call, and another one would only add to it. */
 const inFlight = new WeakMap<BbPluginApi, Set<string>>();
 
+/** How many scans of this plugin instance have not settled yet; tests wait for zero before tearing down. */
+export const scansRunning = (bb: BbPluginApi) => inFlight.get(bb)?.size ?? 0;
+
 export function scanArchivedWorktrees(bb: BbPluginApi, project: ScanProject, reported: string[], afterPath: string | undefined, signal: AbortSignal) {
   const running = inFlight.get(bb) ?? inFlight.set(bb, new Set()).get(bb)!;
   if (running.has(project.id)) {
