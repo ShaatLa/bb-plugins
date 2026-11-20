@@ -23,7 +23,7 @@ function fakeSweep(f: Fixture) {
     config: { enabled: false } as { enabled: boolean } | null, running: false, importing: false, pendingReport: false, hasStateFlag: false,
     handoff: undefined as Handoff | undefined, incoming: null as null | { id: string; document: any; bytes: Buffer | null },
     committed: null as Buffer | null, baselines: {} as Record<string, unknown>, worktrees: [] as string[],
-    calls: [] as string[], chunkCalls: 0, applied: 0, importReply: undefined as undefined | Record<string, unknown>, afterStatus: undefined as undefined | (() => void), statusShape: "new" as "new" | "old",
+    calls: [] as string[], chunkCalls: 0, applied: 0, importReply: undefined as undefined | Record<string, unknown>, commitReply: undefined as undefined | Record<string, unknown>, afterStatus: undefined as undefined | (() => void), statusShape: "new" as "new" | "old",
     /** Methods whose reply is lost after they executed, and methods refused before they ran. */
     lost: new Set<string>(), refuse: new Map<string, string>(), gateMethod: "", gate: undefined as Promise<void> | undefined, tamperPrevious: undefined as string | null | undefined,
     /** Both services restart: Work Board's harness is replaced, and Sweep's state is rebuilt from its persisted form only. */
@@ -129,7 +129,7 @@ function fakeSweep(f: Fixture) {
           return { staged: true };
         } finally { s.importing = false; }
       }
-      case "transfer.commit": return { settled: await settle(input.handoffId) };
+      case "transfer.commit": if (s.commitReply) return s.commitReply; return { settled: await settle(input.handoffId) };
       case "transfer.cancel": {
         const sent = s.handoff?.sent;
         if (!sent || sent.id !== input.handoffId) return { cancelled: false, current: sent?.id ?? null };
@@ -586,7 +586,7 @@ describe("the unconfirmed send", () => {
     await imported(h, settled);
     settled.refuse.set("transfer.commit", "offline");
     const warning = await exportTo(h);
-    expect(warning).toMatchObject({ outcome: "returned", warning: expect.stringMatching(/settles it on its own/) });
+    expect(warning).toMatchObject({ outcome: "pending-application", warning: expect.stringMatching(/settles it on its own/) });
     expect(settled.incoming?.id).toBe(warning.handoffId);
     settled.refuse.clear();
     expect(await settled.settle(warning.handoffId!)).toBe("applied");
@@ -620,6 +620,25 @@ describe("the unconfirmed send", () => {
     expect(sweep.committed?.toString()).toBe('{"n":1}');
     expect(sweep.applied).toBe(1);
     expect(sweep.incoming).toBeNull();
+  });
+
+  it("reports the application as pending, and keeps the confirmed row, when Sweep answers the commit with waiting", async () => {
+    const { f, sweep } = await make();
+    await imported(f, sweep);
+    sweep.commitReply = { settled: "waiting" };
+    const result = await exportTo(f);
+    expect(result).toMatchObject({ outcome: "pending-application", warning: expect.stringMatching(/not applied the state yet \(waiting\)/) });
+    expect(row(f)).toMatchObject({ owner: "sweep", sent_id: result.handoffId, sent_confirmed: 1 });
+    expect(sweep.incoming?.id).toBe(result.handoffId);
+    // "none" is completion only when Sweep shows the handoff as received.
+    sweep.commitReply = { settled: "none" };
+    const { f: g, sweep: other } = await make();
+    await imported(g, other);
+    other.commitReply = { settled: "none" };
+    await expect(exportTo(g)).resolves.toMatchObject({ outcome: "pending-application", warning: expect.stringMatching(/does not show this handoff as received/) });
+    sweep.commitReply = undefined;
+    await expect(exportTo(f)).resolves.toMatchObject({ outcome: "already-returned" });
+    expect(sweep.applied).toBe(1);
   });
 
   it("does not take a reply that proves no staging as a receipt: the same send stays unconfirmed and resumable", async () => {
@@ -752,12 +771,12 @@ describe("the unconfirmed send", () => {
 });
 
 describe("an unknown baseline", () => {
-  const run = async (baseline: string, output: string, code = 0, baselineCode = 0) => {
+  const run = async (baseline: string, output: string, code = 0, baselineCode = 0, candidate = '{"seen":1}') => {
     const { f, sweep } = await make();
     f.standard();
     sweep.seed('{"seen":1}', { lastReport: { fingerprint: reportContents(baselineCode, baseline).fingerprint, manager: MANAGER, at: 1 } });
     await importFrom(f);
-    f.output(output, code, '{"seen":1}');
+    f.output(output, code, candidate);
     await f.enable({ snapshots: true });
     await f.tick();
     return f;
@@ -776,6 +795,11 @@ describe("an unknown baseline", () => {
     const f = await run(text, text.trim(), 1, 1);
     expect(f.threads.sends).toBe(0);
     expect(f.sent()).toBe("");
+  });
+  it("says the Waiting list is clear when a changed candidate sends a report with an unchanged fingerprint", async () => {
+    const f = await run("STATE same\n", "STATE same", 0, 0, '{"seen":2}');
+    expect(f.threads.sends).toBe(1);
+    expect(f.sent()).toContain("Waiting list is clear");
   });
   it("sends changed items", async () => {
     const f = await run("STATE same\n", "ACTION idle-no-link EXA-1: idle 5 min", 1);

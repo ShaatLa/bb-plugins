@@ -337,12 +337,22 @@ export function createTransfer(deps: TransferDeps) {
       return done("stale", `The send ${id} was already decided (owner ${row?.owner ?? "none"}, send ${row?.sent_id ?? "none"}${row?.sent_confirmed ? ", confirmed" : ""}); nothing changed.`, { handoffId: id });
     }
     let warning: string | undefined;
-    try { await sweepCall("transfer.commit", { projectId: link, handoffId: id }, settledOutput, 30_000); } catch (error) {
+    try {
+      const { settled } = await sweepCall("transfer.commit", { projectId: link, handoffId: id }, settledOutput, 30_000);
+      // The confirmed row stays whatever Sweep answers; only the report changes. "none" means another settler got there first: verify it.
+      if (settled === "none") {
+        const status = await sweepCall("status", { projectId: link }, sweepStatus);
+        if (status.handoff?.received !== id) warning = "Sweep reports nothing to settle, yet it does not show this handoff as received. Check bb sweep status and rerun this command.";
+      } else if (settled !== "applied") {
+        warning = `Sweep has not applied the state yet (${settled}). It stays staged and Sweep applies it on its own at its next run or enable; rerun this command to check.`;
+      }
+    } catch (error) {
       if (deps.signal.aborted) throw error;
       warning = `Sweep did not answer the commit (${errorMessage(error)}). Sweep settles it on its own at its next run or enable; rerun this command to check.`;
     }
-    bb.log.info(`repository checks for ${trackerId}: handed ${id} to Sweep`);
-    return done("returned", "Handed the runner state to Sweep. Sweep stays disabled; enable it when ready. The first report after a transfer may repeat once.", { handoffId: id, warning });
+    bb.log.info(`repository checks for ${trackerId}: handed ${id} to Sweep${warning ? " (application pending)" : ""}`);
+    if (warning) return done("pending-application", "Ownership moved to Sweep, but Sweep has not applied the state yet. Sweep stays disabled; enable it only once bb sweep status shows the handoff as received.", { handoffId: id, warning });
+    return done("returned", "Handed the runner state to Sweep. Sweep stays disabled; enable it when ready. The first report after a transfer may repeat once.", { handoffId: id });
   }
 
   async function exportToSweep(trackerId: string): Promise<TransferResult> {

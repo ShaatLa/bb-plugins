@@ -356,7 +356,8 @@ function createService(bb: BbPluginApi) {
       if (code < 2) state.lastFailure = undefined;
       let delivery: Outcome = { status: "none" };
       if (notify) {
-        const body = (waitingChanged || fingerprintChanged) && !report.changes.waiting ? `${output.trimEnd()}\nSTATE Waiting list is clear.\n` : output;
+        // A report already being sent from an unknown baseline always says when the Waiting list is empty.
+        const body = (waitingChanged || fingerprintChanged || (!!lastReport && !previous && code < 2)) && !report.changes.waiting ? `${output.trimEnd()}\nSTATE Waiting list is clear.\n` : output;
         // The pending paths are saved with the report and published into the live state only after the commit.
         const staged: State = { ...state, pendingWorktrees: newWorktrees };
         db.transaction(() => {
