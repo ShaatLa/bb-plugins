@@ -44,7 +44,7 @@ it("shows the mode with its gate, starts shadow, saves the manager and lets the 
             if (input?.projectId !== "proj_example" || input.archived !== false) return [];
             return input.offset === 0
               ? Array.from({ length: 100 }, (_, index) => threadSummary({ id: `thr_example_${index}`, title: `Worker ${index}` }))
-              : [manager, threadSummary({ id: "thr_old", title: "Release coordinator (archived)", archivedAt: 1 })];
+              : [manager, threadSummary({ id: "thr_noise", title: "Coordination round for a contributor" }), threadSummary({ id: "thr_old", title: "Release coordinator (archived)", archivedAt: 1 })];
           },
         },
       },
@@ -65,6 +65,7 @@ it("shows the mode with its gate, starts shadow, saves the manager and lets the 
     fireEvent.change(await menu.findByPlaceholderText("Search by thread name"), { target: { value: "coordinator" } });
     const match = await menu.findByRole("option", { name: "Release coordinator" });
     expect(menu.queryByRole("option", { name: /archived/ })).toBeNull();
+    expect(menu.queryByRole("option", { name: /Coordination round/ })).toBeNull();
     expect(menu.queryByRole("option", { name: "Worker 1" })).toBeNull();
     fireEvent.click(match);
     expect(picker.textContent).toContain("Release coordinator");

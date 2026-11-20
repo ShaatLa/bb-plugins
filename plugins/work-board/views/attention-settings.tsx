@@ -69,6 +69,8 @@ function ManagerPicker({ projectId, value, disabled, onChange }: {
   const choose = (next: string) => { onChange(next); setOpen(false); };
   const options = threads ?? [];
   const exactMatch = byId?.id === exactId && !options.some((thread) => thread.id === exactId) ? byId : undefined;
+  const filter = exactId.toLocaleLowerCase();
+  const matches = options.filter((thread) => thread.id === exactId || threadTitle(thread).toLocaleLowerCase().includes(filter));
   return (
     <Popover open={open} onOpenChange={(next) => {
       setOpen(next);
@@ -82,12 +84,12 @@ function ManagerPicker({ projectId, value, disabled, onChange }: {
         </Button>
       </PopoverTrigger>
       <PopoverContent align="start" className="w-[var(--radix-popover-trigger-width)] min-w-52 max-w-[var(--radix-popover-content-available-width)] p-0">
-        <Command label="Search threads">
+        <Command label="Search threads" shouldFilter={false}>
           <CommandInput placeholder="Search by thread name" value={search} onValueChange={setSearch} />
           <CommandList>
-            <CommandItem value={sweepManager} onSelect={() => choose("")}>{sweepManager}</CommandItem>
-            {(exactMatch ? [...options, exactMatch] : options).map((thread) => (
-              <CommandItem key={thread.id} value={thread.id} keywords={[threadTitle(thread)]} onSelect={() => choose(thread.id)}>
+            {sweepManager.toLocaleLowerCase().includes(filter) ? <CommandItem value={sweepManager} onSelect={() => choose("")}>{sweepManager}</CommandItem> : null}
+            {(exactMatch ? [...matches, exactMatch] : matches).map((thread) => (
+              <CommandItem key={thread.id} value={thread.id} onSelect={() => choose(thread.id)}>
                 <span className="truncate" title={threadTitle(thread)}>{threadTitle(thread)}</span>
               </CommandItem>
             ))}
