@@ -39,7 +39,6 @@ export function GitSyncSettings({ projectId }: { projectId: string }) {
   const [ignored, setIgnored] = useState("");
   const [overlapRules, setOverlapRules] = useState<OverlapRule[]>([]);
   const [overlapOn, setOverlapOn] = useState(false);
-  const [overlapTouched, setOverlapTouched] = useState(false);
   const [busy, setBusy] = useState(false);
   const [syncing, setSyncing] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -55,20 +54,20 @@ export function GitSyncSettings({ projectId }: { projectId: string }) {
     setIgnored(stored.prWaitIgnoredChecks.join("\n"));
     setOverlapRules(stored.overlapRules ?? []);
     setOverlapOn(overlapEnabled(stored));
-    setOverlapTouched(false);
   };
   useEffect(() => {
     if (query.data && savedSignature.current !== JSON.stringify(query.data.config)) load(query.data.config);
   }, [query.data]);
-  // What Save writes. The switch is written only after the owner touched it, so a stored configuration without
-  // the key stays derivable from its rules; switching rules off keeps the rows.
+  // What Save writes. The switch is written only while it differs from the stored effective value, so a stored
+  // configuration without the key stays derivable from its rules (a toggle reverted before Save counts as untouched);
+  // switching rules off keeps the rows.
   const formConfig = (): GitSyncConfig => ({
     ...config,
     repositories: lines(repositories),
     requiredChecks: lines(checks),
     postMergeWorkflows: lines(workflows),
     prWaitIgnoredChecks: lines(ignored),
-    ...(overlapTouched ? { overlapEnabled: overlapOn } : {}),
+    ...(saved && overlapOn !== overlapEnabled(saved) ? { overlapEnabled: overlapOn } : {}),
     // Rows without a pattern are not rules yet.
     overlapRules: overlapRules.filter((rule) => rule.pattern.trim()),
   });
@@ -125,7 +124,7 @@ export function GitSyncSettings({ projectId }: { projectId: string }) {
         <span className="text-xs text-muted-foreground" data-testid="git-summary">
           {saved
             ? `${saved.enabled ? "Sync on" : "Sync off"} · ${saved.repositories.length === 1 ? "1 repository" : `${saved.repositories.length} repositories`}${unsaved ? " · unsaved changes" : ""}`
-            : "Loading…"}
+            : query.error ? "Unavailable" : "Loading…"}
         </span>
       </DisclosureSummary>
     <div className="space-y-3 border-t border-border p-3">
@@ -415,7 +414,6 @@ export function GitSyncSettings({ projectId }: { projectId: string }) {
                   checked={overlapOn}
                   onCheckedChange={(on) => {
                     setOverlapOn(on);
-                    setOverlapTouched(true);
                     if (on && !overlapRules.length) setOverlapRules([{ pattern: "", match: "changed" }]);
                   }}
                 />

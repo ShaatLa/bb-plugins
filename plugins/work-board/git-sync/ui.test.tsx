@@ -298,6 +298,34 @@ it("writes the shared-file switch only once the owner touches it and keeps an ex
   expect(data.config(f.project.id).overlapRules).toEqual(rules);
 });
 
+it("treats a switch toggled back to its stored value as untouched, so the key stays absent", async () => {
+  const f = setup();
+  const data = createGitSyncStore(f.bb.storage.database());
+  data.setConfig(f.project.id, gitSyncConfigSchema.parse({}));
+  const slot = renderSlot(app.settingsSections[0]!, {}, { rpc: f.rpc });
+  fireEvent.click(await slot.findByText("Git and pull requests"));
+  fireEvent.click(await slot.findByText("Advanced settings"));
+  const control = await slot.findByRole("switch", { name: "Highlight shared files between PRs" });
+  await waitFor(() => expect((control.closest("fieldset") as HTMLFieldSetElement).disabled).toBe(false));
+  fireEvent.click(control);
+  fireEvent.click(control);
+  expect(slot.queryByText("Unsaved changes")).toBeNull();
+  fireEvent.click(slot.getByRole("button", { name: "Save Git/PR settings" }));
+  await slot.findByText("Git/PR settings saved.");
+  expect(data.config(f.project.id).overlapEnabled).toBeUndefined();
+  await f.harness.callRpc("config.set", { projectId: f.project.id, key: "git.overlapRules", value: [{ pattern: "docs/**", match: "changed" }] });
+  const result = await f.harness.callRpc("config.get", { projectId: f.project.id, key: "git.overlapEnabled" }) as { values: Record<string, unknown> };
+  expect(result.values["git.overlapEnabled"]).toBe(true);
+});
+
+it("shows Unavailable in the collapsed Git summary when the configuration cannot be loaded", async () => {
+  const f = setup();
+  f.rpc.getGitSyncConfig = async () => { throw new Error("Configuration unavailable"); };
+  const slot = renderSlot(app.settingsSections[0]!, {}, { rpc: f.rpc });
+  await waitFor(() => expect(slot.getByTestId("git-summary").textContent).toBe("Unavailable"));
+  expect((await slot.findByText("Git and pull requests")).closest("details")!.open).toBe(false);
+});
+
 it("reconciles the Git form with the stored values after a save, so a trimmed pattern is not unsaved", async () => {
   const f = setup();
   const data = createGitSyncStore(f.bb.storage.database());
