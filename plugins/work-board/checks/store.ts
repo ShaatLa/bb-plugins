@@ -98,6 +98,12 @@ export function checksStore(db: Database) {
         report_id = NULL, pending_project = NULL, pending_exit = NULL, pending_tick = NULL, pending_body = NULL, pending_snapshot = NULL, pending_at = NULL
         WHERE tracker_id = ? AND report_id = ?`).run(trackerId, reportId).changes > 0;
     },
+    /** A transfer replaces the committed bytes (or clears them); the caller has already required that no report is pending. */
+    replaceCommitted(trackerId: string, link: string, bytes: Buffer | null) {
+      const result = db.prepare(`INSERT INTO checks_delivery (tracker_id, committed, committed_project) VALUES (?, ?, ?)
+        ON CONFLICT(tracker_id) DO UPDATE SET committed = excluded.committed, committed_project = excluded.committed_project WHERE checks_delivery.report_id IS NULL`).run(trackerId, bytes, bytes ? link : null);
+      if (!result.changes) throw new Error("A report is pending; committed state cannot be replaced.");
+    },
     attempts(trackerId: string, reportId: string, outcomes?: AttemptOutcome[]): AttemptRow[] {
       const rows = db.prepare<[string, string], AttemptRow>("SELECT * FROM checks_attempts WHERE tracker_id = ? AND report_id = ? ORDER BY started_at, rowid").all(trackerId, reportId);
       return outcomes ? rows.filter((row) => outcomes.includes(row.outcome)) : rows;

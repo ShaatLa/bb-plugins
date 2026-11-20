@@ -44,6 +44,7 @@ export function ChecksSettings({ projectId }: { projectId: string }) {
               <div className="space-y-1">
                 <h4 className="text-sm font-medium">Run the repository check script</h4>
                 <p className="text-xs text-muted-foreground">Off by default. Findings go to the manager thread chosen in Manager attention.</p>
+                <p className="text-xs text-muted-foreground">Runner owner: {status.runnerOwner}{status.unconfirmedSend ? ` · send to Sweep ${status.unconfirmedSend} is not confirmed` : ""}</p>
                 {status.ownedByOtherTracker ? <p className="text-xs text-amber-600 dark:text-amber-400">Another project linked to this BB project owns the runner.</p> : null}
                 {!status.bbProjectId ? <p className="text-xs text-muted-foreground">Link a BB project to enable.</p> : null}
               </div>

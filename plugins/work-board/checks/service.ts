@@ -17,6 +17,7 @@ import { assertNoOtherOwner, isDraining, owners, runs, stateMismatch } from "./o
 import { reportContents } from "./reports";
 import { CheckoutRefreshError, execute, KILL_GRACE_MS, GIT_TIMEOUT_MS } from "./runner";
 import { checksStore, type AttemptRow, type State } from "./store";
+import { createTransfer } from "./transfer";
 
 type Database = ReturnType<BbPluginApi["storage"]["database"]>;
 
@@ -83,6 +84,10 @@ function createService(bb: BbPluginApi) {
     const row = store.delivery(trackerId);
     return row?.committed && row.committed_project === link ? row.committed : null;
   };
+
+  const transfer = createTransfer({ bb, db, store, signal: controller.signal, tracker, committedFor, changed });
+  /** A tick that finds nothing to do (busy, idle, another owner) returns quietly, as it always has. */
+  class Skipped extends Error {}
 
   // ---- delivery -------------------------------------------------------------------------------------------------
 
@@ -265,7 +270,20 @@ function createService(bb: BbPluginApi) {
     // A due callback re-checks `enabled` when it starts, so disabling while it waited prevents the run.
     if (!readDraft(db, trackerId).enabled && !isDraining(db, trackerId, link)) return;
     if (owners(db, link).some((id) => id !== trackerId)) return;
-    runs.set(link, trackerId);
+    try {
+      // The run is reserved in the same synchronous step that admits it, after any lookup of Sweep.
+      await transfer.claimForWorkBoard(trackerId, (current) => {
+        if (!current || runs.has(current) || (!readDraft(db, trackerId).enabled && !isDraining(db, trackerId, current)) || owners(db, current).some((id) => id !== trackerId)) throw new Skipped();
+      }, (current) => { runs.set(current, trackerId); });
+    } catch (error) {
+      if (error instanceof Skipped || controller.signal.aborted) return;
+      // Not admitted: nothing ran. The refusal is shown as the tracker's error and the next try is a minute away; no push.
+      const refused = store.state(trackerId);
+      refused.error = errorMessage(error); refused.nextRun = Date.now() + 60_000;
+      store.save(trackerId, refused);
+      changed(trackerId);
+      return;
+    }
     const state = store.state(trackerId);
     try {
       const now = Date.now();
@@ -332,12 +350,14 @@ function createService(bb: BbPluginApi) {
       const newItem = report.changes.noteworthy.some((id) => !knownItems.has(id));
       const changedFailure = state.lastFailure?.manager !== manager || state.lastFailure?.fingerprint !== report.fingerprint;
       const changedDiagnostic = code === 1 && !report.items.size && lastReport?.fingerprint !== report.fingerprint;
-      const notify = !!newWorktrees || (code >= 2 ? changedFailure : waitingChanged || newItem || candidateChanged || answerWithoutCandidate || changedDiagnostic);
+      // An unknown baseline (a report that crossed a transfer without its item hashes): a different fingerprint is news, and an empty Waiting list is never suppressed.
+      const fingerprintChanged = !!lastReport && !previous && code < 2 && lastReport.fingerprint !== report.fingerprint;
+      const notify = !!newWorktrees || (code >= 2 ? changedFailure : waitingChanged || newItem || candidateChanged || answerWithoutCandidate || changedDiagnostic || fingerprintChanged);
       // Any run below 2 ends a failure streak, even when it sends nothing: the same failure after a quiet success notifies again.
       if (code < 2) state.lastFailure = undefined;
       let delivery: Outcome = { status: "none" };
       if (notify) {
-        const body = waitingChanged && !report.changes.waiting ? `${output.trimEnd()}\nSTATE Waiting list is clear.\n` : output;
+        const body = (waitingChanged || fingerprintChanged) && !report.changes.waiting ? `${output.trimEnd()}\nSTATE Waiting list is clear.\n` : output;
         // The pending paths are saved with the report and published into the live state only after the commit.
         const staged: State = { ...state, pendingWorktrees: newWorktrees };
         db.transaction(() => {
@@ -369,17 +389,20 @@ function createService(bb: BbPluginApi) {
 
   /** A manual run refreshes the checkout and runs the script, and nothing else: it never stages, delivers, promotes or counts. */
   async function manualRun(trackerId: string) {
-    const { link } = tracker(trackerId);
-    if (!link) throw new Error("Link a bb project to this tracker before running its checks.");
-    assertNoOtherOwner(db, trackerId, link);
-    const full = completeConfig(readDraft(db, trackerId));
-    if (!full.ok) throw new Error(full.error);
-    const manager = configuredManager(db, trackerId);
-    if (!manager) throw new Error(MANAGER_UNSET);
-    if (runs.has(link)) throw new Error("Repository checks are already running for this project. Wait for the active check to finish and retry.");
-    runs.set(link, trackerId);
+    let plan!: { link: string; config: ChecksConfig; manager: string };
+    await transfer.claimForWorkBoard(trackerId, (link) => {
+      if (!link) throw new Error("Link a bb project to this tracker before running its checks.");
+      assertNoOtherOwner(db, trackerId, link);
+      const full = completeConfig(readDraft(db, trackerId));
+      if (!full.ok) throw new Error(full.error);
+      const manager = configuredManager(db, trackerId);
+      if (!manager) throw new Error(MANAGER_UNSET);
+      if (runs.has(link)) throw new Error("Repository checks are already running for this project. Wait for the active check to finish and retry.");
+      plan = { link, config: full.config, manager };
+    }, (link) => { runs.set(link, trackerId); });
+    const { link, config, manager } = plan;
     try {
-      const { result } = await runScript(trackerId, link, full.config, manager, committedFor(trackerId, link));
+      const { result } = await runScript(trackerId, link, config, manager, committedFor(trackerId, link));
       return { exitCode: result.code, output: result.output, manual: true as const };
     } finally { runs.delete(link); }
   }
@@ -395,22 +418,26 @@ function createService(bb: BbPluginApi) {
     store.save(trackerId, { ...state, nextRun: Date.now() });
   }
 
-  function setEnabled(trackerId: string, enabled: boolean) {
-    const { link, prefix } = tracker(trackerId);
-    const before = readDraft(db, trackerId);
-    if (enabled) {
+  async function setEnabled(trackerId: string, enabled: boolean) {
+    const { prefix } = tracker(trackerId);
+    const apply = () => {
+      const before = readDraft(db, trackerId);
+      writeEnabled(db, trackerId, enabled);
+      // The platform cannot tell the app from another caller, so a change is only made visible: a log entry.
+      bb.log.info(`repository checks for ${prefix}: ${before.enabled ? "enabled" : "disabled"} → ${enabled ? "enabled" : "disabled"}`);
+      if (enabled) touchState(trackerId);
+      changed(trackerId);
+    };
+    // Disabling is always allowed, even for a fenced tracker; enabling is an admission and needs the runner ownership.
+    if (!enabled) apply();
+    else await transfer.claimForWorkBoard(trackerId, (link) => {
       if (!link) throw new Error("Link a bb project to this tracker before enabling repository checks.");
       assertNoOtherOwner(db, trackerId, link);
       const mismatch = stateMismatch(db, trackerId, link);
       if (mismatch) throw new Error(`State belongs to ${mismatch}; reset it before enabling.`);
-      const full = completeConfig(before);
+      const full = completeConfig(readDraft(db, trackerId));
       if (!full.ok) throw new Error(full.error);
-    }
-    writeEnabled(db, trackerId, enabled);
-    // The platform cannot tell the app from another caller, so a change is only made visible: a log entry.
-    bb.log.info(`repository checks for ${prefix}: ${before.enabled ? "enabled" : "disabled"} → ${enabled ? "enabled" : "disabled"}`);
-    if (enabled) touchState(trackerId);
-    changed(trackerId);
+    }, apply);
     return { enabled };
   }
 
@@ -445,6 +472,8 @@ function createService(bb: BbPluginApi) {
   /** The owner's reset of stored state (status, committed snapshot, staged report, attempts); refused while the runner owns it. */
   function reset(trackerId: string) {
     const { link } = tracker(trackerId);
+    const fence = transfer.fenceMessage(trackerId, link);
+    if (fence) throw new Error(fence);
     if (readDraft(db, trackerId).enabled || isDraining(db, trackerId, link)) throw new Error("Disable repository checks and let the pending report drain before resetting their state.");
     store.reset(trackerId);
     bb.log.info(`repository checks for ${trackerId}: state reset`);
@@ -477,7 +506,7 @@ function createService(bb: BbPluginApi) {
     const mismatch = link ? stateMismatch(db, trackerId, link) : null;
     const other = link ? owners(db, link).find((id) => id !== trackerId) : undefined;
     return {
-      trackerId, prefix, bbProjectId: link, config: effectiveConfig(draft), enabledChangedAt: draft.enabledChangedAt, enabledPrevious: draft.enabledPrevious,
+      trackerId, prefix, bbProjectId: link, ...transfer.ownerStatus(link), config: effectiveConfig(draft), enabledChangedAt: draft.enabledChangedAt, enabledPrevious: draft.enabledPrevious,
       manager: configuredManager(db, trackerId), draining, ownedByOtherTracker: other ?? null,
       lastRun: state.lastRun ?? null, nextRun: draft.enabled || draining ? state.nextRun ?? Date.now() : null, tickId: state.tickId ?? null,
       exitCode: state.exitCode ?? null, error: state.error ?? null,
@@ -508,6 +537,7 @@ function createService(bb: BbPluginApi) {
   }
 
   function register() {
+    transfer.registerRpc();
     bb.background.schedule("checks", "* * * * *", runDue);
     // Recover due ticks if the host cron dispatcher stalls; nextRun and the run lock prevent repeats.
     bb.background.service("checks-due", {
@@ -527,6 +557,6 @@ function createService(bb: BbPluginApi) {
 
   return {
     register, runDue, scheduledTick, manualRun, status, stats,
-    setEnabled, setField, retry, reset, configValues, fieldKeys: CHECK_FIELDS,
+    setEnabled, setField, retry, reset, configValues, fieldKeys: CHECK_FIELDS, transfer,
   };
 }

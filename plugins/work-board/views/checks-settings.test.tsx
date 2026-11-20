@@ -19,7 +19,7 @@ const app = await loadPluginApp(() => import("../app"));
 afterEach(() => { cleanup(); window.localStorage.clear(); });
 
 it("edits one field at a time, lets the owner enable the runner, and offers Retry and Reset where they apply", async () => {
-  const { bb, harness } = createFakePluginHost({ pluginId: "work-board" });
+  const { bb, harness } = createFakePluginHost({ pluginId: "work-board", sdk: { plugins: { list: async () => ({ plugins: [] }) } } as never });
   try {
     const store = createStore(bb);
     registerTasksApi(bb, store);

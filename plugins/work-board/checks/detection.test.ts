@@ -7,7 +7,7 @@ import { cleanTempDirs, MANAGER, setup, type Fixture } from "./fixtures";
 
 const fixtures: Fixture[] = [];
 const make = async (fields: Record<string, unknown> = {}) => {
-  const f = await setup(); fixtures.push(f); f.standard(); f.enable(fields); return f;
+  const f = await setup(); fixtures.push(f); f.standard(); await f.enable(fields); return f;
 };
 beforeEach(() => { receiptPolling.tries = 1; receiptPolling.delayMs = 0; checksTuning.lateSearchMs = 0; });
 afterEach(async () => { await Promise.all(fixtures.splice(0).map((f) => f.dispose())); cleanTempDirs(); });

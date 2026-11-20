@@ -58,7 +58,7 @@ export async function setup(options: { settings?: Record<string, string> } = {})
   const threads = createFakeThreads();
   const repo = createRepo();
   const pushes: { title: string; body: string }[] = [];
-  const control = { pushFail: false, remote: repo.url as string | null, projectFail: false, onProject: undefined as (() => void) | undefined };
+  const control = { pushFail: false, remote: repo.url as string | null, projectFail: false, onProject: undefined as (() => void) | undefined, /** The installed Sweep, when a test installs one: its RPC handler. */ sweep: undefined as undefined | ((method: string, input: unknown) => Promise<unknown>) };
   /** The archived-worktree scan's view of the host. Off (no primary host) until a test calls `worktrees.enable()`. */
   const scan = {
     calls: 0, primaryHostId: null as string | null, storage: "" as string, sources: [] as { hostId: string; path: string }[],
@@ -78,7 +78,13 @@ export async function setup(options: { settings?: Record<string, string> } = {})
       }),
     },
     plugins: {
-      callRpc: async ({ pluginId, method, input }: { pluginId: string; method: string; input: { title: string; body: string } }) => {
+      list: async () => ({ plugins: control.sweep ? [{ id: "sweep", enabled: true }] : [] }),
+      callRpc: async ({ pluginId, method, input, outputSchema }: { pluginId: string; method: string; input: { title: string; body: string }; outputSchema?: { parse(value: unknown): unknown } }) => {
+        if (pluginId === "sweep") {
+          if (!control.sweep) throw new Error("Plugin sweep is not installed");
+          const value = await control.sweep(method, input);
+          return outputSchema ? outputSchema.parse(value) : value;
+        }
         if (pluginId !== "push-notifications" || method !== "notifications.send") throw new Error(`unexpected ${pluginId}.${method}`);
         if (control.pushFail) throw new Error("push unavailable");
         pushes.push(input);

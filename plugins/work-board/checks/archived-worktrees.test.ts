@@ -18,7 +18,7 @@ vi.mock("node:fs/promises", async (original) => {
 
 const fixtures: Fixture[] = [];
 const make = async (script = "", code = 0) => {
-  const f = await setup(); fixtures.push(f); f.standard(); f.output(script, code); f.enable(); f.worktrees.enable(); return f;
+  const f = await setup(); fixtures.push(f); f.standard(); f.output(script, code); await f.enable(); f.worktrees.enable(); return f;
 };
 beforeEach(() => { receiptPolling.tries = 1; receiptPolling.delayMs = 0; checksTuning.lateSearchMs = 0; });
 afterEach(async () => {

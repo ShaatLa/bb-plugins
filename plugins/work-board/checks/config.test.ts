@@ -38,11 +38,11 @@ describe("settings", () => {
     await expect(setKey(f, "branch", "bad branch")).rejects.toThrow(/Invalid value for checks.branch/);
     await expect(setKey(f, "script", "/abs/run.sh")).rejects.toThrow(/Invalid value/);
     expect(await getKey(f, "branch")).toBeNull();
-    expect(() => f.service.setEnabled(f.tracker.id, true)).toThrow(/Set branch and script/);
+    await expect(f.service.setEnabled(f.tracker.id, true)).rejects.toThrow(/Set branch and script/);
     await setKey(f, "branch", "main");
-    expect(() => f.service.setEnabled(f.tracker.id, true)).toThrow(/Set script/);
+    await expect(f.service.setEnabled(f.tracker.id, true)).rejects.toThrow(/Set script/);
     await setKey(f, "script", "checks/run.sh");
-    expect(f.service.setEnabled(f.tracker.id, true)).toEqual({ enabled: true });
+    await expect(f.service.setEnabled(f.tracker.id, true)).resolves.toEqual({ enabled: true });
   });
 
   it("validates fields as Sweep does: timeout 0, 1, 300 and 301, branch, script and argv limits", async () => {
@@ -74,7 +74,7 @@ describe("settings", () => {
 
   it("merges concurrent per-field edits, and a stale edit never restores `enabled`", async () => {
     const f = await make();
-    f.enable();
+    await f.enable();
     await Promise.all([setKey(f, "intervalMinutes", 20), setKey(f, "timeoutSeconds", 60), setKey(f, "snapshots", true), setKey(f, "args", ["a"])]);
     expect(f.service.status(f.tracker.id).config).toEqual({ enabled: true, branch: "main", script: "checks/run.sh", args: ["a"], intervalMinutes: 20, timeoutSeconds: 60, snapshots: true });
     // The owner turns it off; an edit that raced with it changes only its own field.
@@ -86,7 +86,7 @@ describe("settings", () => {
   it("re-checks `enabled` when a due callback resumes, so disabling while it waited prevents the run", async () => {
     const f = await make();
     f.output("ACTION idle EXA-1", 1);
-    f.enable();
+    await f.enable();
     f.threads.threads.set("thr_manager", { archived: true });
     await f.tick(); // runs, stages the report; delivery fails
     expect(f.runs()).toBe(1);
@@ -107,23 +107,25 @@ describe("ownership", () => {
   it("lets one tracker own a bb project's runner: the second can neither enable nor run, dry-run included", async () => {
     const f = await make();
     f.output("ACTION idle EXA-1", 1);
-    f.enable();
+    await f.enable();
     const second = f.other();
     for (const [key, value] of Object.entries({ branch: "main", script: "checks/run.sh" })) f.service.setField(second.id, key as never, value);
     f.db.prepare("INSERT INTO attention_manager(tracker_id, manager, changed_at) VALUES (?, 'thr_manager', ?)").run(second.id, new Date().toISOString());
-    expect(() => f.service.setEnabled(second.id, true)).toThrow(/belong to tracker CHK/);
+    await expect(f.service.setEnabled(second.id, true)).rejects.toThrow(/belong to tracker CHK/);
     await expect(f.service.manualRun(second.id)).rejects.toThrow(/belong to tracker CHK/);
     expect((await f.harness.runCli(["checks", "run", "--project", "OTH", "--dry-run"])).exitCode).toBe(1);
     expect(f.runs()).toBe(0);
-    // Once the first is disabled and has nothing pending, the second may take over.
+    // Disabling changes nothing: the first stays the owner until its row is released, and then the second may take over.
     f.service.setEnabled(f.tracker.id, false);
-    expect(f.service.setEnabled(second.id, true)).toEqual({ enabled: true });
+    await expect(f.service.setEnabled(second.id, true)).rejects.toThrow(/belong to tracker CHK/);
+    await expect(f.service.transfer.release(f.tracker.id)).resolves.toMatchObject({ outcome: "released" });
+    await expect(f.service.setEnabled(second.id, true)).resolves.toEqual({ enabled: true });
   });
 
   it("keeps a disabled tracker the owner while it has a pending report, and refuses relink and reset until it drains", async () => {
     const f = await make();
     f.output("ACTION idle EXA-1", 1);
-    f.enable();
+    await f.enable();
     f.threads.threads.set("thr_manager", { archived: true });
     await f.tick();
     expect(f.delivery()?.report_id).toBeTruthy();
@@ -131,7 +133,7 @@ describe("ownership", () => {
     expect(f.service.status(f.tracker.id)).toMatchObject({ draining: true, nextRun: expect.any(Number) });
     const second = f.other();
     for (const [key, value] of Object.entries({ branch: "main", script: "checks/run.sh" })) f.service.setField(second.id, key as never, value);
-    expect(() => f.service.setEnabled(second.id, true)).toThrow(/still delivering|belong to tracker CHK/);
+    await expect(f.service.setEnabled(second.id, true)).rejects.toThrow(/still delivering|belong to tracker CHK/);
     expect(() => f.store.tasks.updateProject(f.tracker.id, { linkedBbProjectId: "proj_other" })).toThrow(/still delivering/);
     expect(() => f.service.reset(f.tracker.id)).toThrow(/drain/);
     // The scheduler drains it in the background although it is disabled; no new run starts.
@@ -140,13 +142,15 @@ describe("ownership", () => {
     expect(f.delivery()?.report_id).toBeNull();
     expect(f.runs()).toBe(1);
     expect(f.service.status(f.tracker.id)).toMatchObject({ draining: false, nextRun: null });
-    expect(f.service.setEnabled(second.id, true)).toEqual({ enabled: true });
+    await expect(f.service.setEnabled(second.id, true)).rejects.toThrow(/belong to tracker CHK/);
+    await f.service.transfer.release(f.tracker.id);
+    await expect(f.service.setEnabled(second.id, true)).resolves.toEqual({ enabled: true });
   });
 
   it("freezes the link while enabled, and never applies state recorded for another bb project after a relink", async () => {
     const f = await make();
     f.output("", 0, '{"seen":1}');
-    f.enable({ snapshots: true });
+    await f.enable({ snapshots: true });
     expect(() => f.store.tasks.updateProject(f.tracker.id, { linkedBbProjectId: "proj_other" })).toThrow(/Repository checks/);
     await f.tick(); // the first candidate is a baseline: delivered and promoted
     expect(f.db.prepare("SELECT committed_project FROM checks_delivery").get()).toEqual({ committed_project: BB_PROJECT });
@@ -156,7 +160,7 @@ describe("ownership", () => {
     // The script sees no committed file; enabling and scheduled ticks refuse until the owner resets.
     f.script(`if [ -e "$BB_SWEEP_COMMITTED_STATE" ]; then echo committed; else echo absent; fi`);
     expect((await f.service.manualRun(f.tracker.id)).output).toBe("absent\n");
-    expect(() => f.service.setEnabled(f.tracker.id, true)).toThrow(/belongs? to proj_example|State belongs/);
+    await expect(f.service.setEnabled(f.tracker.id, true)).rejects.toThrow(/belongs? to proj_example|State belongs/);
     f.service.reset(f.tracker.id);
     expect(f.service.status(f.tracker.id).stateMismatch).toBeNull();
     expect(f.delivery()).toBeUndefined();
@@ -165,7 +169,7 @@ describe("ownership", () => {
   it("refuses to delete a tracker, force included, while checks are enabled or draining", async () => {
     const f = await make();
     f.output("ACTION idle EXA-1", 1);
-    f.enable();
+    await f.enable();
     await expect(f.harness.callRpc("deleteProject", { projectId: f.tracker.id, force: true })).rejects.toThrow(/before deleting/);
     f.threads.threads.set("thr_manager", { archived: true });
     await f.tick();
@@ -181,7 +185,7 @@ describe("ownership", () => {
   it("never delivers a report staged for another bb project", async () => {
     const f = await make();
     f.output("ACTION idle EXA-1", 1);
-    f.enable();
+    await f.enable();
     f.threads.threads.set("thr_manager", { archived: true });
     await f.tick();
     f.service.setEnabled(f.tracker.id, false);

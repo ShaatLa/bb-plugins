@@ -20,7 +20,7 @@ import { planDebtService } from "./plan-debt/service";
 import { autoArchiveTasks } from "./lifecycle/task-archive";
 
 const WORK_BOARD_PLUGIN_NAME = "Work Board";
-export const WORK_BOARD_PLUGIN_VERSION = "0.70.0";
+export const WORK_BOARD_PLUGIN_VERSION = "0.71.0";
 
 const tasksRpcContract = defineRpcContract({
   ping: {

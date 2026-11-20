@@ -6,7 +6,7 @@ import { cleanTempDirs, MANAGER, setup, type Fixture } from "./fixtures";
 
 const fixtures: Fixture[] = [];
 const make = async (fields: Record<string, unknown> = {}) => {
-  const f = await setup(); fixtures.push(f); f.standard(); f.output("ACTION idle EXA-1", 1); f.enable(fields); return f;
+  const f = await setup(); fixtures.push(f); f.standard(); f.output("ACTION idle EXA-1", 1); await f.enable(fields); return f;
 };
 beforeEach(() => { receiptPolling.tries = 1; receiptPolling.delayMs = 0; checksTuning.lateSearchMs = 0; });
 afterEach(async () => { await Promise.all(fixtures.splice(0).map((f) => f.dispose())); cleanTempDirs(); });
@@ -130,7 +130,7 @@ describe("definite failure and uncertainty", () => {
     await f.tick(); // the scheduler drains it in the background
     expect(f.service.status(f.tracker.id)).toMatchObject({ pending: null, failureStage: null, error: null, deliveryError: null, managerError: null });
     // Under a refresh backoff the same clearing holds, and an exit-2 report keeps its execution diagnostic.
-    f.service.setEnabled(f.tracker.id, true);
+    await f.service.setEnabled(f.tracker.id, true);
     f.control.remote = "file:///nonexistent/example";
     f.threads.updateRejection = Object.assign(new Error("forbidden"), { status: 403 }); // the append is rejected
     await f.tick();

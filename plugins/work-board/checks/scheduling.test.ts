@@ -6,7 +6,7 @@ import { cleanTempDirs, MANAGER, setup, type Fixture } from "./fixtures";
 
 const fixtures: Fixture[] = [];
 const make = async (fields: Record<string, unknown> = {}) => {
-  const f = await setup(); fixtures.push(f); f.standard(); f.enable(fields); return f;
+  const f = await setup(); fixtures.push(f); f.standard(); await f.enable(fields); return f;
 };
 beforeEach(() => { receiptPolling.tries = 1; receiptPolling.delayMs = 0; checksTuning.lateSearchMs = 0; checksTuning.killGraceMs = 200; });
 afterEach(async () => { await Promise.all(fixtures.splice(0).map((f) => f.dispose())); cleanTempDirs(); });
@@ -106,7 +106,7 @@ describe("scheduling", () => {
     f.store.tasks.updateProject(f.tracker.id, { linkedBbProjectId: "proj_other" });
     f.service.reset(f.tracker.id);
     expect(f.service.stats(f.tracker.id, 1)).toMatchObject({ projectId: "proj_other", ticks: 0, executed: 0, repeats: 0, newItems: {} });
-    f.service.setEnabled(f.tracker.id, true);
+    await f.service.setEnabled(f.tracker.id, true);
     f.control.remote = f.repo.url;
     await f.tick();
     // The identical finding is first seen in the new project: no repeat, one new item, one tick.

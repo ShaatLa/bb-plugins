@@ -7,6 +7,7 @@ import { projectPolicies, staleRows, staleStatusObservations as observeStaleStat
 import { closeTaskOccurrences, markTrackerDirty, touchAttention } from "../attention/ledger";
 import { assertLinkChangeAllowed } from "../attention/modes";
 import { assertChecksDeleteAllowed } from "../checks/ownership";
+import { releaseOwner } from "../checks/transfer";
 import { archiveSettingSchema, autoArchiveAfterDaysSchema, planningSchema, staleIdleThresholdSchema, statusNotificationsSchema } from "../shared/project-settings";
 import { taskDateFiltersSchema } from "../shared/task-dates.js";
 import {
@@ -889,6 +890,8 @@ export function createTasksStore(db: PluginDatabase, log: (message: string) => v
         id,
       );
       syncProjectPlanDebt(db, id);
+      // The owner row of the old link goes with it; the assertions above already refused a row that must stay.
+      if (input.linkedBbProjectId !== undefined && (current.linkedBbProjectId ?? null) !== validateLinkedBbProjectId(input.linkedBbProjectId)) releaseOwner(db, id, current.linkedBbProjectId ?? null);
       return requireProject(id);
     })();
   }
@@ -898,10 +901,10 @@ export function createTasksStore(db: PluginDatabase, log: (message: string) => v
     // Deleting would cascade through the mode, ledger and attempts while Sweep may still hold its fence.
     if (db.prepare("SELECT 1 FROM attention_modes WHERE tracker_id=? AND (bound_tracker_id IS NOT NULL OR requested_mode IS NOT NULL OR effective_mode<>'off')").get(id))
       throw new Error("Switch manager attention off in the project settings before deleting this project");
-    return (
-      db.prepare<[string]>("DELETE FROM projects WHERE id = ?").run(id)
-        .changes > 0
-    );
+    return db.transaction(() => {
+      releaseOwner(db, id, db.prepare<[string], { link: string | null }>("SELECT linked_bb_project_id AS link FROM projects WHERE id = ?").get(id)?.link ?? null);
+      return db.prepare<[string]>("DELETE FROM projects WHERE id = ?").run(id).changes > 0;
+    })();
   }
 
   function getTask(id: string): Task | undefined {

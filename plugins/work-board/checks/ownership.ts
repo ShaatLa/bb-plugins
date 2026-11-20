@@ -1,5 +1,6 @@
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import { readDraft } from "./config";
+import { assertOwnerReleasable } from "./transfer";
 
 type Database = ReturnType<BbPluginApi["storage"]["database"]>;
 
@@ -49,6 +50,8 @@ export function assertChecksLinkChangeAllowed(db: Database, trackerId: string, c
   if (readDraft(db, trackerId).enabled || isDraining(db, trackerId, currentLink)) {
     throw new Error("Repository checks are enabled or still delivering a report for this project: disable them and let the report drain, or reset the checks state, before changing the BB project link");
   }
+  // The owner row is given up with the link when it came from a first admission (see releaseOwner); a send in flight or a transfer lineage refuses.
+  assertOwnerReleasable(db, trackerId, currentLink, "relinked");
 }
 
 /** Deleting a tracker cascades through its staged report, candidate and attempts, so it waits until the runner is off and drained. */
@@ -57,4 +60,5 @@ export function assertChecksDeleteAllowed(db: Database, trackerId: string): void
   if (readDraft(db, trackerId).enabled || isDraining(db, trackerId, link)) {
     throw new Error("Repository checks are enabled or still delivering a report for this project: disable them and let the report drain before deleting it");
   }
+  assertOwnerReleasable(db, trackerId, link, "deleted");
 }
