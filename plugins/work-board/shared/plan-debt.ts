@@ -26,6 +26,6 @@ export function planDebtText(key: string, debt: PlanDebtInfo): string {
 export function planDebtNotice(key: string, debt: PlanDebtInfo, trigger: string, forManager: boolean): string {
   const why = trigger === "24h" ? "it has been in work for 24 h" : trigger.startsWith("answer:") ? "a decision was answered on it" : "a PR was linked to it";
   return forManager
-    ? `Plan debt: ${key} has been in work without an approved plan since ${debt.since} (${planPhrase(debt)}). Its executors were reminded to submit the plan.`
+    ? `Plan debt: ${key} has been in work without an approved plan since ${debt.since} (${planPhrase(debt)}). The plan is still outstanding.`
     : `Plan debt: ${key} is in work without an approved plan (${planPhrase(debt)}), and ${why}. Submit the plan for review: bb work-board plan submit ${key} --reviewer …`;
 }

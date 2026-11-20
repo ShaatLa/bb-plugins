@@ -36,6 +36,6 @@ describe("the plan-debt definition", () => {
     expect(planDebtNotice("EXA-1", debt, "24h", false)).toContain("it has been in work for 24 h");
     expect(planDebtNotice("EXA-1", debt, "answer:q:2", false)).toContain("a decision was answered on it");
     expect(planDebtNotice("EXA-1", debt, "pr:owner/repo#1", false)).toContain("a PR was linked to it");
-    expect(planDebtNotice("EXA-1", debt, "24h", true)).toContain("Its executors were reminded");
+    expect(planDebtNotice("EXA-1", debt, "24h", true)).toContain("The plan is still outstanding");
   });
 });

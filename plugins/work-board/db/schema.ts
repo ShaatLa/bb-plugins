@@ -786,6 +786,8 @@ const MIGRATIONS = [
   },
   // 0.70.0: the marker search of an unresolved plan-debt notice resumes from its cursor on the next drain.
   `ALTER TABLE plan_debt_notices ADD COLUMN cursor TEXT;`,
+  // 0.70.0: the recipients of an event are fixed when it is first expanded; `candidates` holds the executor threads whose state is still unread.
+  `ALTER TABLE plan_debt_events ADD COLUMN candidates TEXT;`,
 ] as const;
 
 export function initializeTasksSchema(db: PluginDatabase, log: Log = () => {}): void {

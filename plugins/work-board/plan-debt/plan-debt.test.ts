@@ -136,7 +136,7 @@ describe("episodes", () => {
     expect(f.open(debt.id)).toBeNull();
     expect(f.episodes(debt.id)).toMatchObject([{ ended_at: expect.any(String) }]);
     const version = f.db.prepare<[], { version: number }>("SELECT MAX(version) AS version FROM schema_version").get()!.version;
-    f.db.exec(`DROP TABLE plan_debt_notices; DROP TABLE plan_debt_events; DROP TABLE plan_debt_episodes; DELETE FROM schema_version WHERE version >= ${version - 1};`);
+    f.db.exec(`DROP TABLE plan_debt_notices; DROP TABLE plan_debt_events; DROP TABLE plan_debt_episodes; DELETE FROM schema_version WHERE version >= ${version - 2};`);
     initializeTasksSchema(f.db);
     expect(f.db.prepare("SELECT COUNT(*) AS n FROM plan_debt_episodes").get()).toEqual({ n: 0 });
   });
@@ -163,7 +163,7 @@ describe("episodes", () => {
     f.require();
     f.withPlan(fine.id, "approved");
     const version = f.db.prepare<[], { version: number }>("SELECT MAX(version) AS version FROM schema_version").get()!.version;
-    f.db.exec(`DROP TABLE plan_debt_notices; DROP TABLE plan_debt_events; DROP TABLE plan_debt_episodes; DELETE FROM schema_version WHERE version >= ${version - 1};`);
+    f.db.exec(`DROP TABLE plan_debt_notices; DROP TABLE plan_debt_events; DROP TABLE plan_debt_episodes; DELETE FROM schema_version WHERE version >= ${version - 2};`);
     const before = Date.now();
     initializeTasksSchema(f.db);
     expect(f.open(debt.id)!.since >= new Date(before).toISOString()).toBe(true);
@@ -197,7 +197,8 @@ describe("the 24 h reminder", () => {
     expect(f.reminders("thr_worker")).toHaveLength(1);
     expect(f.reminders(MANAGER)).toHaveLength(1);
     expect(f.reminders("thr_worker")[0]).toContain("bb work-board plan submit ATT-1");
-    expect(f.reminders(MANAGER)[0]).toContain("Its executors were reminded");
+    expect(f.reminders(MANAGER)[0]).toContain("The plan is still outstanding");
+    expect(f.reminders(MANAGER)[0]).not.toContain("reminded");
     expect(f.notices().map((row) => row.state)).toEqual(["sent", "sent"]);
   });
 
@@ -464,6 +465,12 @@ describe("reminder delivery", () => {
     expect(f.threads.sends).toBe(1);
   });
 
+  it("accepts a guard only on a fresh send, so a guard never has a queue update between it and the send", () => {
+    const f = setupDebt();
+    // @ts-expect-error a guard without `fresh` could be overtaken by an append.
+    void deliverWithReceipt(f.bb, "thr_x", "text", "<!-- m -->", { guard: () => true }).catch(() => undefined);
+  });
+
   it("sends a decision reminder as its own queued message, leaving the answer's intact", async () => {
     const f = setupDebt();
     f.threads.sendMode = "queue";
@@ -528,6 +535,32 @@ describe("reminder delivery", () => {
     expect(idle.id).toBeTruthy();
   });
 
+  it("fixes the recipients at the first expansion: a later manager or worker never receives the event, and the pending lookup is visible", async () => {
+    const f = setupDebt();
+    const task = f.card("Debt");
+    f.executor(task.id, "thr_one");
+    f.executor(task.id, "thr_two");
+    f.require();
+    f.age(25);
+    const get = f.threads.sdk.threads.get;
+    let outage = true;
+    f.harness.sdk.stub("threads.get", async (args: { threadId: string }) => { if (outage && args.threadId === "thr_two") throw new Error("host unreachable"); return get(args as never); });
+    await f.service.scan();
+    expect(f.reminders(MANAGER)).toHaveLength(1);
+    expect(f.reminders("thr_one")).toHaveLength(1);
+    expect((await f.cli("show", task.key, "--json")).planDebt.pendingLookups).toMatchObject([{ trigger: "24h", threads: ["thr_two"] }]);
+    // Between drains the manager is replaced and a new worker attaches.
+    f.db.prepare("UPDATE attention_manager SET manager = 'thr_manager2'").run();
+    f.executor(task.id, "thr_new");
+    outage = false;
+    await f.service.scan();
+    expect(f.reminders("thr_two")).toHaveLength(1);
+    expect(f.reminders("thr_manager2")).toEqual([]);
+    expect(f.reminders("thr_new")).toEqual([]);
+    expect(f.reminders(MANAGER)).toHaveLength(1);
+    expect((await f.cli("show", task.key, "--json")).planDebt.pendingLookups).toEqual([]);
+  });
+
   it("treats a thread the platform reports as gone as inactive, not as a failed lookup", async () => {
     const f = setupDebt();
     const task = f.card("Debt");
@@ -566,7 +599,7 @@ describe("answer attachments and PR renames", () => {
     f.require();
     await f.allowRepository();
     const first = await f.call("linkPr", { taskId: task.id, url: PR, role: "delivers" });
-    expect(first.note).toContain("Plan debt");
+    expect(first.note).toBe("Plan debt: this card works without an approved plan; a reminder for its executors was recorded.");
     expect(f.reminders("thr_worker")).toHaveLength(1);
     const git = createGitSyncStore(f.db);
     const date = new Date().toISOString();

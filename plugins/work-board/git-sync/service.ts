@@ -495,7 +495,7 @@ export function createGitSyncService(
       const link = remember(taskId, url, "manual", { role, part });
       if (known || !hasPlanDebtEvent(db, taskId, trigger)) return { link };
       await planDebtService(bb, store.tasks).drain();
-      return { link, note: "Plan debt: this card works without an approved plan, so its active executors were reminded to submit one." };
+      return { link, note: "Plan debt: this card works without an approved plan; a reminder for its executors was recorded." };
     },
     unlinkPr({ taskId, url }) {
       const task = requireTask(taskId);

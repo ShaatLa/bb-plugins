@@ -4,7 +4,7 @@ import { createGithubClient, githubToken } from "../git-sync/github";
 import { waitForPrCi } from "../git-sync/ci-wait";
 import { gitSyncConfigSchema } from "../shared/git-sync";
 import { advisoryText } from "../shared/task-advisories";
-import { openPlanDebt, unsentNoticesOf } from "../plan-debt/store";
+import { openPlanDebt, pendingLookupsOf, unsentNoticesOf } from "../plan-debt/store";
 import { TASK_DATE_FIELDS } from "../shared/task-dates.js";
 import { workflowPolicySchema } from "../shared/workflow-policy.js";
 import { DEFAULT_TASK_STATUSES, taskStatusesSchema } from "../shared/statuses.js";
@@ -2883,7 +2883,7 @@ export function registerTasksCli(
               if (brief && allPrLinks.some(link => link.snapshot && "checks" in link.snapshot)) more.checks = `bb work-board show ${task.key} --json --comments 0`;
               // The debt of the card now, with the reminders still owed: an unresolved one is visible here, not silent.
               const debtNow = openPlanDebt(bb.storage.database(), task.id);
-              const planDebt = debtNow && { ...debtNow, notices: unsentNoticesOf(bb.storage.database(), task.id).map(({ trigger, destination, state, attempts, lastError }) => ({ trigger, destination, state, attempts, lastError })) };
+              const planDebt = debtNow && { ...debtNow, pendingLookups: pendingLookupsOf(bb.storage.database(), task.id), notices: unsentNoticesOf(bb.storage.database(), task.id).map(({ trigger, destination, state, attempts, lastError }) => ({ trigger, destination, state, attempts, lastError })) };
               if (input.options.json) {
                 return JSON.stringify({
                   prLinks,

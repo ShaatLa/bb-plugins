@@ -10,7 +10,7 @@ export interface NoticeRow {
   episodeId: number; trigger: string; destination: string; marker: string; state: NoticeState; attempts: number;
   lastError: string | null; cursor: string | null; updatedAt: string; taskId: string; projectId: string; eventAt: string;
 }
-export interface PendingEvent { episodeId: number; trigger: string; taskId: string; projectId: string }
+export interface PendingEvent { episodeId: number; trigger: string; taskId: string; projectId: string; /** Executor threads whose state is still unread; null before the first expansion fixed the recipients. */ candidates: string[] | null }
 
 const CARD = `SELECT t.id, t.project_id, t.type, t.status, t.archived_at, p.planning, p.statuses, p.workflow_policy, pl.state AS plan_state
   FROM tasks t JOIN projects p ON p.id = t.project_id LEFT JOIN task_plans pl ON pl.task_id = t.id`;
@@ -87,18 +87,28 @@ export function writeDueReminders(db: Database, now = Date.now()): void {
 }
 
 export function unexpandedEvents(db: Database): PendingEvent[] {
-  return db.prepare<[], { episode_id: number; trigger: string; task_id: string; project_id: string }>(
-    `SELECT ev.episode_id, ev.trigger, e.task_id, t.project_id FROM plan_debt_events ev JOIN plan_debt_episodes e ON e.id = ev.episode_id JOIN tasks t ON t.id = e.task_id
+  return db.prepare<[], { episode_id: number; trigger: string; task_id: string; project_id: string; candidates: string | null }>(
+    `SELECT ev.episode_id, ev.trigger, ev.candidates, e.task_id, t.project_id FROM plan_debt_events ev JOIN plan_debt_episodes e ON e.id = ev.episode_id JOIN tasks t ON t.id = e.task_id
      WHERE ev.expanded = 0 AND e.ended_at IS NULL ORDER BY ev.created_at, ev.rowid`,
-  ).all().map((row) => ({ episodeId: row.episode_id, trigger: row.trigger, taskId: row.task_id, projectId: row.project_id }));
+  ).all().map((row) => ({ episodeId: row.episode_id, trigger: row.trigger, taskId: row.task_id, projectId: row.project_id, candidates: row.candidates === null ? null : JSON.parse(row.candidates) }));
 }
 
-/** One notice row per destination, at most once per event; the event is marked expanded in the same transaction unless `complete` is false (a recipient lookup failed, so the next drain expands it again). */
-export function expandEvent(db: Database, episodeId: number, trigger: string, destinations: readonly string[], complete = true): void {
+/** The events of a card's open episode whose recipients are not all settled, with the threads still being looked up. */
+export const pendingLookupsOf = (db: Database, taskId: string): { trigger: string; createdAt: string; threads: string[] }[] =>
+  db.prepare<[string], { trigger: string; created_at: string; candidates: string | null }>(
+    `SELECT ev.trigger, ev.created_at, ev.candidates FROM plan_debt_events ev JOIN plan_debt_episodes e ON e.id = ev.episode_id WHERE e.task_id = ? AND e.ended_at IS NULL AND ev.expanded = 0 ORDER BY ev.created_at, ev.rowid`,
+  ).all(taskId).map((row) => ({ trigger: row.trigger, createdAt: row.created_at, threads: row.candidates === null ? [] : JSON.parse(row.candidates) }));
+
+/**
+ * One notice row per destination, at most once per event. `pending` are the executor threads whose state could not be read: they are kept
+ * on the event and only they are looked up again, so a recipient change after the first expansion never changes who is told. The event is
+ * marked expanded in the same transaction once nothing is pending.
+ */
+export function expandEvent(db: Database, episodeId: number, trigger: string, destinations: readonly string[], pending: readonly string[] = []): void {
   db.transaction(() => {
     const insert = db.prepare("INSERT OR IGNORE INTO plan_debt_notices (episode_id, trigger, destination, marker, state, updated_at) VALUES (?, ?, ?, ?, 'pending', ?)");
     for (const destination of destinations) insert.run(episodeId, trigger, destination, `<!-- work-board-plan-debt:${randomUUID()} -->`, new Date().toISOString());
-    if (complete) db.prepare("UPDATE plan_debt_events SET expanded = 1 WHERE episode_id = ? AND trigger = ?").run(episodeId, trigger);
+    db.prepare("UPDATE plan_debt_events SET candidates = ?, expanded = ? WHERE episode_id = ? AND trigger = ?").run(JSON.stringify(pending), pending.length ? 0 : 1, episodeId, trigger);
   })();
 }
 

@@ -1,7 +1,7 @@
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import { configuredManager } from "../attention/modes";
 import type { TasksStore } from "../db";
-import { lookupExecutors } from "../plans/notice";
+import { linkedThreads, threadActivity } from "../plans/notice";
 import { errorMessage } from "../shared/errors";
 import { planDebtNotice } from "../shared/plan-debt";
 import { deliverWithReceipt, searchAttentionMarker, type Receipt } from "../steer";
@@ -31,16 +31,26 @@ function createService(bb: BbPluginApi, tasks: TasksStore) {
     return run;
   };
 
-  /** Each committed event becomes one notice row per destination: the card's active executors, plus the manager for the 24 h reminder. */
+  /**
+   * Each committed event becomes one notice row per destination: the card's active executors, plus the manager for the 24 h reminder. The
+   * first expansion fixes the candidates (the linked threads and the manager at that time); a thread whose state cannot be read stays
+   * pending and is the only thing a later drain looks up again, so nobody is added or replaced after the fact.
+   */
   async function expand() {
     for (const event of unexpandedEvents(db)) {
-      const { active, failed } = await lookupExecutors(bb, tasks, event.taskId);
-      const destinations = new Set(active);
-      const manager = event.trigger === "24h" ? configuredManager(db, event.projectId) : null;
+      const first = event.candidates === null;
+      const candidates = first ? linkedThreads(tasks, event.taskId) : event.candidates!;
+      const manager = first && event.trigger === "24h" ? configuredManager(db, event.projectId) : null;
+      const destinations = new Set<string>();
+      const pending: string[] = [];
+      for (const threadId of candidates) {
+        const state = await threadActivity(bb, threadId);
+        if (state === "active") destinations.add(threadId);
+        else if (state === "unknown") pending.push(threadId);
+      }
       if (manager) destinations.add(manager);
-      // A thread whose state could not be read is not "inactive": the event stays open for the next drain, and rows already made are kept.
-      if (failed.length) bb.log.warn(`Plan debt ${event.trigger} reminder of ${event.taskId}: could not read ${failed.join(", ")}; it will be retried`);
-      expandEvent(db, event.episodeId, event.trigger, [...destinations], failed.length === 0);
+      if (pending.length) bb.log.warn(`Plan debt ${event.trigger} reminder of ${event.taskId}: could not read ${pending.join(", ")}; it will be retried`);
+      expandEvent(db, event.episodeId, event.trigger, [...destinations], pending);
     }
   }
 
