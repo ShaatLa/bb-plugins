@@ -3,7 +3,8 @@ import { publishCommentsChanged, type TasksApiStore } from "../api";
 import type { TaskThread, TaskThreadLiveStatus } from "../db";
 import { createSystemComment, publishThreadsChanged } from "../delegate";
 import { errorMessage } from "../shared/errors";
-import { reconcileTaskThreads } from "./thread-links";
+import { reconcileTaskThreads, recordThreadLink } from "./thread-links";
+import { getWorkflowPolicy } from "../shared/workflow-policy";
 import { attachNamedTaskThread } from "./discovery";
 
 const TERMINAL_LIVE_STATUSES = new Set<TaskThreadLiveStatus>(["completed"]);
@@ -55,6 +56,27 @@ function sdkErrorCode(error: unknown): string | undefined {
   return typeof error.code === "string" ? error.code : undefined;
 }
 
+/**
+ * A done or canceled card keeps a thread only while that thread works on it. When the thread goes idle, or starts a
+ * new turn after the card was closed, the link is released: later work is elsewhere, so the card neither warns nor
+ * counts its cost.
+ */
+function releaseFromClosedTask(bb: BbPluginApi, store: TasksApiStore, thread: TaskThread, liveStatus: "working" | "idle"): boolean {
+  // One indexed read: lifecycle events are hot and query-counted.
+  const task = bb.storage.database().prepare<[string], { id: string; key: string; status: string; policy: string | null }>(
+    "SELECT t.id, p.prefix || '-' || t.number AS key, t.status, p.workflow_policy AS policy FROM tasks t JOIN projects p ON p.id = t.project_id WHERE t.id = ?",
+  ).get(thread.taskId);
+  if (!task || !["done", "canceled", getWorkflowPolicy({ workflowPolicy: task.policy ? JSON.parse(task.policy) : null }).doneStatus].includes(task.status)) return false;
+  store.transaction(() => {
+    store.tasks.deleteTaskThread(thread.id);
+    recordThreadLink(store.tasks, task.id, thread.threadId,
+      `Thread detached (automatic): @thread:${thread.threadId} ${liveStatus === "idle" ? "finished its turn" : "started new work"} after ${task.key} was closed`);
+  });
+  publishThreadsChanged(bb, task.id);
+  publishCommentsChanged(bb, task.id);
+  return true;
+}
+
 function transitionThread(
   bb: BbPluginApi,
   store: TasksApiStore,
@@ -67,6 +89,7 @@ function transitionThread(
   ) {
     return;
   }
+  if ((liveStatus === "working" || liveStatus === "idle") && releaseFromClosedTask(bb, store, thread, liveStatus)) return;
 
   let commented = false;
   store.transaction(() => {

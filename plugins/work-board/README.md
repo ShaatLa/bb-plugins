@@ -525,7 +525,10 @@ project's review status. A child thread also reports to its parent with
 If work begins outside the Delegate action, the agent can associate its current
 thread with `bb work-board attach KEY`. The inverse is `bb work-board detach KEY
 [--thread <id>]`, and each thread card on the task page has a detach control;
-use either to drop a thread that died or moved on to other work. The task
+use either to drop a thread that died or moved on to other work. A done or
+canceled card releases a thread by itself once that thread finishes its current
+turn or starts a new one ("Thread detached (automatic)"), so a session reused for
+other work neither warns on the closed card nor adds to its cost. The task
 page and `bb work-board threads` list live threads before completed or failed ones,
 newest first.
 

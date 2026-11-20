@@ -207,11 +207,12 @@ describe("lifecycle SQL scope", () => {
           ).toBe("working");
         };
         await transition("active", "working", 0, 0);
-        await transition("idle", "idle", 3, 0);
+        // +1 per mapping: the read that releases links of closed cards.
+        await transition("idle", "idle", 4, 0);
         // +1 statement per mapping: the duplicate-comment lookup; comments:changed only when written
         await transition("error", "failed", 7, 1, 2);
         await transition("error", "failed", 0, 1);
-        await transition("active", "working", 3, 1);
+        await transition("active", "working", 4, 1);
         await transition("deleted", "completed", 7, 2, 2);
         await transition("active", "completed", 0, 2);
         await transition("deleted", "completed", 0, 2);
@@ -226,7 +227,7 @@ describe("lifecycle SQL scope", () => {
     ["starting", null, "starting", 4],
     ["active", null, "working", 1],
     ["stopping", null, "working", 1],
-    ["idle", null, "idle", 4],
+    ["idle", null, "idle", 5],
     ["error", null, "failed", 8],
     ["idle", 1, "completed", 8],
     ["error", 1, "failed", 8],
@@ -267,7 +268,7 @@ describe("lifecycle SQL scope", () => {
           thread: makeThreadResponse({ id: "thr_worker_0", status: "idle" }),
           lastAssistantText: null,
         });
-        expect(f.queries).toHaveLength(status === "todo" ? 4 : 1);
+        expect(f.queries).toHaveLength(status === "todo" ? 5 : 1);
         expect(f.store.tasks.getTaskThread(f.mappings[0]!.id)?.liveStatus).toBe(
           "idle",
         );

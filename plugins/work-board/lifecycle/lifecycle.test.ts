@@ -59,6 +59,32 @@ function trackedThreadFixture(
 }
 
 describe("task thread lifecycle", () => {
+  it("releases a closed card's thread when it starts new work, but keeps one that works across the close until its turn ends", async () => {
+    // The startup snapshot reports the thread idle, so the next turn starts after the card was closed.
+    const fixture = trackedThreadFixture("idle", "idle");
+    await registerLifecycle(fixture.bb, fixture.store);
+    const key = fixture.store.tasks.getTask(fixture.taskId)!.key;
+    fixture.store.tasks.updateTask(fixture.taskId, { status: "done" });
+    await fixture.harness.emitThreadEvent("thread.active", { thread: makeThreadResponse({ id: "thr_worker", status: "active" }) });
+    expect(fixture.store.tasks.getTaskThread(fixture.taskThreadId)).toBeFalsy();
+    expect(fixture.store.tasks.listComments(fixture.taskId).at(-1)?.body).toBe(`Thread detached (automatic): @thread:thr_worker started new work after ${key} was closed`);
+
+    const working = trackedThreadFixture("working", "active");
+    await registerLifecycle(working.bb, working.store);
+    working.store.tasks.updateTask(working.taskId, { status: "canceled" });
+    await working.harness.emitThreadEvent("thread.active", { thread: makeThreadResponse({ id: "thr_worker", status: "active" }) });
+    expect(working.store.tasks.getTaskThread(working.taskThreadId)?.liveStatus).toBe("working");
+    await working.harness.emitThreadEvent("thread.idle", { thread: makeThreadResponse({ id: "thr_worker", status: "idle" }), lastAssistantText: null });
+    expect(working.store.tasks.getTaskThread(working.taskThreadId)).toBeFalsy();
+    expect(working.store.tasks.listComments(working.taskId).at(-1)?.body).toMatch(/finished its turn after TASK-1 was closed$/);
+
+    const open = trackedThreadFixture("idle", "active");
+    await registerLifecycle(open.bb, open.store);
+    await open.harness.emitThreadEvent("thread.active", { thread: makeThreadResponse({ id: "thr_worker", status: "active" }) });
+    expect(open.store.tasks.getTaskThread(open.taskThreadId)?.liveStatus).toBe("working");
+    await Promise.all([fixture.harness.dispose(), working.harness.dispose(), open.harness.dispose()]);
+  });
+
   it("does not overwrite a newer lifecycle event with a delayed startup snapshot", async () => {
     const fixture = trackedThreadFixture("idle", "idle");
     let resolve!: (thread: ReturnType<typeof makeThreadResponse>) => void;
