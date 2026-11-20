@@ -151,6 +151,9 @@ export function applyEvents(db: Database.Database, threadId: string, events: Eve
     hidden += db.prepare('UPDATE items SET steer_seq=NULL WHERE thread_id=? AND turn_id=? AND steer_seq IS NOT NULL AND steer_seq<?').run(threadId,turn,e.seq).changes;
    }
   } else if (e.type === 'item/completed' && turn && d.item?.type === 'agentMessage' && !d.item.parentToolCallId && typeof d.item.text === 'string') {
+   // A steer no tool result followed is read when the reply being written ends, so a message coming after an earlier one written since the steer answers the steer.
+   const earlier = (col: string) => `SELECT ${col} FROM items m WHERE m.thread_id=items.thread_id AND m.turn_id=items.turn_id AND m.kind='mine' AND m.status IN ('waiting','deferred') AND length(trim(coalesce(m.candidate,'')))>0 AND m.candidate_seq>items.steer_seq ORDER BY m.candidate_seq DESC LIMIT 1`;
+   hidden += db.prepare(`UPDATE items SET candidate=(${earlier('m.candidate')}),candidate_seq=(${earlier('m.candidate_seq')}),steer_tools=0,steer_seq=NULL WHERE thread_id=? AND turn_id=? AND kind='update' AND request_id IS NOT NULL AND steer_seq IS NOT NULL AND EXISTS(${earlier('1')})`).run(threadId,turn).changes;
    hidden += db.prepare(`UPDATE items SET candidate=?,candidate_seq=?,updated_at=? WHERE thread_id=? AND ((turn_id=? AND status IN ('waiting','deferred') AND question_seq<? AND steer_seq IS NULL) OR resolve_turn_id=?)`).run(cap(d.item.text,20000),e.seq,now,threadId,turn,e.seq,turn).changes;
    hidden += db.prepare('UPDATE turn_updates SET answer=?,answer_seq=?,busy=1 WHERE thread_id=? AND turn_id=?').run(cap(d.item.text,20000),e.seq,threadId,turn).changes;
   } else if (e.type === 'turn/completed' && turn) {

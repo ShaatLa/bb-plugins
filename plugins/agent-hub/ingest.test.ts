@@ -139,6 +139,15 @@ describe('updates',()=>{
   expect(rows(db).find(r=>r.kind==='mine')).toMatchObject({status:'answered',answer:long,answer_seq:7});
   expect(updates(db)).toEqual([expect.objectContaining({trigger_kind:'agent',answer:'steer reply',read_at:100,turn_id:'x'})]);
  });
+ it('gives a steer\'s reply to the steer when the agent read it between two messages, with no tool result after it',()=>{
+  const db=setup(), long='Full answer. '.repeat(40); const tool=(seq:number)=>ev(seq,'item/completed','x',{item:{type:'commandExecution',command:'ls'}});
+  applyEvents(db,'t',[req(1),start(),accept(),tool(4),req(5,'s',{initiator:'agent',senderThreadId:'thr_s',input:text('[bb message from thread:thr_s] released')}),accept(6,'s'),message(7,long),message(8,'steer reply'),done(9)],'p',100,true,true);
+  expect(rows(db).find(r=>r.kind==='mine')).toMatchObject({status:'answered',answer:long,answer_seq:7});
+  expect(updates(db)).toEqual([expect.objectContaining({trigger_kind:'agent',answer:'steer reply',read_at:100,turn_id:'x'})]);
+  // One message after an unseen steer is still the owner's answer: the steer is read by the next turn or never.
+  const one=setup(); applyEvents(one,'t',[req(1),start(),accept(),tool(4),req(5,'s',{initiator:'agent',senderThreadId:'thr_s',input:text('[bb message from thread:thr_s] released')}),accept(6,'s'),message(7,long),done(8)],'p',100,true,true);
+  expect(rows(one).find(r=>r.kind==='mine')).toMatchObject({answer:long}); expect(updates(one)[0]).toMatchObject({answer:null});
+ });
  it('keeps the turn\'s last message as the owner\'s answer when only a progress note came before the steer, or much work followed',()=>{
   const tool=(seq:number)=>ev(seq,'item/completed','x',{item:{type:'commandExecution',command:'ls'}}), steer=[req(5,'s',{initiator:'agent',senderThreadId:'thr_s',input:text('[bb message from thread:thr_s] addendum')}),accept(6,'s')];
   const note=setup(); applyEvents(note,'t',[req(1),start(),accept(),tool(4),...steer,message(7,'Reading the tests first.'),tool(8),message(9,'Final report'),done(10)],'p',100,true,true);
