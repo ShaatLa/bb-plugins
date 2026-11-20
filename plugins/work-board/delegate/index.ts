@@ -442,7 +442,8 @@ export function handlers(
       if (delivery?.delivery === "queued")
         activityService(bb, store).queued(task.id, thread.id, delivery.queuedMessage.id);
       publishThreadsChanged(bb, task.id);
-      publishTasksChanged(bb, task.id, task.projectId);
+      // The card may have changed projects during the dispatch: subscribers of its committed project hear about it.
+      publishTasksChanged(bb, task.id, (store.tasks.getTask(task.id) ?? task).projectId);
       publishCommentsChanged(bb, task.id);
       return { threadId: thread.id };
     },
@@ -558,7 +559,8 @@ export function handlers(
       }
 
       publishThreadsChanged(bb, task.id);
-      publishTasksChanged(bb, task.id, task.projectId);
+      // The card may have changed projects during the dispatch: subscribers of its committed project hear about it.
+      publishTasksChanged(bb, task.id, (store.tasks.getTask(task.id) ?? task).projectId);
       publishCommentsChanged(bb, task.id);
       return { threadId: thread.id };
     },

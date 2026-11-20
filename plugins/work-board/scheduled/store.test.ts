@@ -57,6 +57,7 @@ describe('scheduled persistence',()=>{
 });
 
 describe('scheduled cards under planning flags',()=>{
+ const reorder=(f:ReturnType<typeof fixture>,ids:string[],marked:string[])=>{const all=f.store.tasks.getProject(f.project.id)!.statuses!;f.store.tasks.updateProject(f.project.id,{planning:'required',statuses:ids.map(id=>({...all.find(status=>status.id===id)!,requiresApprovedPlan:marked.includes(id)}))});};
  const mark=(f:ReturnType<typeof fixture>,ids:string[])=>f.store.tasks.updateProject(f.project.id,{planning:'required',statuses:f.store.tasks.getProject(f.project.id)!.statuses!.map(status=>({...status,requiresApprovedPlan:ids.includes(status.id)}))});
  it('starts template and run cards in the first unmarked status when Backlog is marked, and still starts the run',()=>{
   const f=fixture();mark(f,['backlog','in_progress','in_review','done']);
@@ -74,8 +75,27 @@ describe('scheduled cards under planning flags',()=>{
   mark(f,['in_progress']);
   expect(f.store.tasks.getTask(f.scheduled.create(f.input).templateTaskId)!.status).toBe('backlog');
  });
- it('fails with a clear error naming the planning flags when every status but canceled is marked',()=>{
+ it('fails with a clear error naming the planning flags when every status but Done and canceled is marked',()=>{
   const f=fixture();mark(f,['backlog','todo','in_progress','in_review','done']);
-  expect(()=>f.scheduled.create(f.input)).toThrow(/Every status except canceled is marked.*planning flags/);
+  expect(()=>f.scheduled.create(f.input)).toThrow(/Every status that is not Done or canceled is marked.*planning flags/);
+ });
+ it('never places a card in Done: Backlog first when unmarked, else the first unmarked non-terminal status, and the run stays running',()=>{
+  const f=fixture();
+  // Done sits before an unmarked Backlog: Backlog is preferred.
+  reorder(f,['done','backlog','todo','in_progress','in_review','canceled'],['in_progress','in_review']);
+  const s=f.scheduled.create(f.input);
+  expect(f.store.tasks.getTask(s.templateTaskId)!.status).toBe('backlog');
+  const r=f.scheduled.reserve(s.id,'slot:one','2026-11-01T09:00:00.000Z');
+  expect(f.scheduled.createRunTask(r.run.id).status).toBe('backlog');
+  expect(f.scheduled.markStarted(r.run.id,{threadId:'thr_worker',requestId:'r1',title:'Worker',presetName:'Existing thread'}).state).toBe('running');
+  // Backlog is marked: the first unmarked status is Done, which is terminal, so Todo is used and the run is running.
+  reorder(f,['done','backlog','todo','in_progress','in_review','canceled'],['backlog','in_progress','in_review']);
+  const second=f.scheduled.reserve(s.id,'slot:two','2026-11-02T09:00:00.000Z');
+  const task=f.scheduled.createRunTask(second.run.id);
+  expect(task.status).toBe('todo');
+  expect(f.scheduled.markStarted(second.run.id,{threadId:'thr_worker',requestId:'r2',title:'Worker',presetName:'Existing thread'}).state).toBe('running');
+  // Only Done and canceled are unmarked: nothing viable is left.
+  reorder(f,['backlog','todo','in_progress','in_review','done','canceled'],['backlog','todo','in_progress','in_review']);
+  expect(()=>f.scheduled.create(f.input)).toThrow(/planning flags/);
  });
 });

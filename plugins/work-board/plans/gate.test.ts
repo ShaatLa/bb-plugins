@@ -238,6 +238,9 @@ describe("transfers and status moves during a dispatch or a delivery", () => {
     // The thread stays attached; the card takes the destination's In progress status, not the source's custom one.
     expect(f.store.tasks.getTask(task.id)).toMatchObject({ projectId: destination.id, status: "in_progress" });
     expect(f.store.tasks.listTaskThreads(task.id)).toHaveLength(1);
+    // Project-scoped subscribers hear about the card in the project it ended up in.
+    const published = f.harness.realtimeSignals.filter((signal) => signal.channel === "tasks:changed" && (signal.payload as { taskId: string }).taskId === task.id);
+    expect(published.at(-1)!.payload).toEqual({ taskId: task.id, projectId: destination.id });
   });
 
   it.each([

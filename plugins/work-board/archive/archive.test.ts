@@ -1439,28 +1439,52 @@ describe("archive v20: reviewers, review history and planning", () => {
     });
   });
 
-  it("refuses a v19 overwrite that would orphan a pending review attempt, so a later submit and decision stay consistent", async () => {
+  async function pendingV19(name: string, edit: (record: { plan: any }) => void) {
     const source = await reviewed();
-    const out = await exported(source, "v19-orphan");
+    const out = await exported(source, name);
     await toV19(out);
-    // The snapshot has the same version as a draft; locally it is in review with a pending attempt.
     for (const id of JSON.parse(await readFile(join(out, "project.json"), "utf8")).taskIds) {
       const path = join(out, "tasks", `${id}.json`);
       const record = JSON.parse(await readFile(path, "utf8"));
-      if (record.plan) record.plan.state = "draft";
+      if (record.plan) edit(record);
       await writeFile(path, jsonText(record));
     }
+    return { source, out };
+  }
+
+  it("refuses a v19 overwrite that would replace the head of a plan with a pending attempt, so the reviewer can still act", async () => {
+    // The snapshot has the same version in_review but different text: restoring it would detach the recorded reviewer.
+    const { source, out } = await pendingV19("v19-detach", (record) => {
+      record.plan.body = "# Plan\n\n## Steps\n- other\n";
+      record.plan.versions[0].body = record.plan.body;
+    });
     const history = source.plans.captureReviews(source.task.id);
-    await expect(importProject(source.bb, source.store, out, true)).rejects.toThrow(/pending review of v1 that this import would orphan/);
-    expect(source.plans.head(source.task.id)?.state).toBe("in_review");
+    await expect(importProject(source.bb, source.store, out, true)).rejects.toThrow(/pending review of v1 that this import would detach/);
+    expect(source.plans.head(source.task.id)).toMatchObject({ state: "in_review", reviewer: { kind: "thread", threadId: "thr_reviewer_b" }, reviewVersion: 1 });
     expect(source.plans.captureReviews(source.task.id)).toEqual(history);
-    // Nothing was written: a decision closes the one pending attempt, and the project still exports and restores.
+    // The recorded reviewer's command still works, and a decision closes the one pending attempt.
+    const reviewerB = { kind: "agent" as const, threadId: "thr_reviewer_b", name: "agent (thr_reviewer_b)" };
+    expect(() => source.notes.createByReviewer({ taskId: source.task.id, by: reviewerB, version: 1, body: "Still reviewing." })).not.toThrow();
     source.plans.setState(source.task.id, "approved", owner);
     expect(source.plans.captureReviews(source.task.id).filter((review) => review.outcome === "pending")).toEqual([]);
-    const again = await exported(source, "v20-after-orphan-refusal");
+    const again = await exported(source, "v20-after-detach-refusal");
     const target = setup();
     await importProject(target.bb, target.store, again, false);
     expect(createPlanStore(target.bb.storage.database(), target.store.tasks).captureReviews(source.task.id)).toEqual(source.plans.captureReviews(source.task.id));
+  });
+
+  it("keeps the review binding of a pending attempt when a v19 import replaces the head with the same text and version", async () => {
+    // Same text and version, but the version record differs, so the head really is replaced.
+    const { source, out } = await pendingV19("v19-same-text", (record) => {
+      record.plan.versions[0].summary = "Rewritten summary";
+      record.plan.state = "draft";
+    });
+    await importProject(source.bb, source.store, out, true);
+    expect(source.plans.listVersions(source.task.id).versions[0]!.summary).toBe("Rewritten summary");
+    expect(source.plans.head(source.task.id)).toMatchObject({ state: "in_review", reviewer: { kind: "thread", threadId: "thr_reviewer_b" }, reviewVersion: 1 });
+    const reviewerB = { kind: "agent" as const, threadId: "thr_reviewer_b", name: "agent (thr_reviewer_b)" };
+    expect(() => source.notes.createByReviewer({ taskId: source.task.id, by: reviewerB, version: 1, body: "Still bound." })).not.toThrow();
+    expect(source.plans.captureReviews(source.task.id).filter((review) => review.outcome === "pending")).toHaveLength(1);
   });
 
   it("refuses a v18 overwrite that would rewind below a retained note, and the refused project stays exportable and restorable", async () => {

@@ -306,9 +306,11 @@ export function restoreProject(
         const newest = Math.max(0, ...reviews.map((review) => review.version));
         if (newest > to)
           throw new Error(`Import conflict: plan ${record.task.key} would be rewound to v${to}, but its local review history refers to v${newest}; import a v20 snapshot, or remove the review history first`);
+        // An older-format plan has no reviewer, so replacing the head of a plan with a pending attempt would detach that
+        // thread from its review. The one exception is a head with the same text and version, whose binding is kept.
         const pending = reviews.find((review) => review.outcome === "pending");
-        if (pending && !(imported && imported.state === "in_review" && imported.version === pending.version))
-          throw new Error(`Import conflict: plan ${record.task.key} has a pending review of v${pending.version} that this import would orphan; finish or reassign the review first, or import a v20 snapshot`);
+        if (pending && !(imported && local && imported.version === local.version && imported.body === local.body))
+          throw new Error(`Import conflict: plan ${record.task.key} has a pending review of v${pending.version} that this import would detach; finish or reassign the review first, or import a v20 snapshot`);
       }
       if (manifest.version < 19) {
         const refs = createPlanNoteStore(db, store.tasks, plans.head).capture(record.task.id).flatMap((note) => [note.madeOnVersion, note.sentInVersion ?? 0, note.addressedInVersion ?? 0]);
@@ -604,7 +606,11 @@ export function restoreProject(
       const imported = planOf(record);
       if (imported === undefined) continue;
       const local = plans.capture(record.task.id);
-      if (planKey(local && archivePlanSchema.parse(local)) !== planKey(imported)) plans.restore(record.task.id, imported);
+      if (planKey(local && archivePlanSchema.parse(local)) !== planKey(imported)) {
+        // An older-format import of the same text and version keeps the review binding of its pending attempt.
+        const bound = manifest.version < 20 && local && imported && plans.captureReviews(record.task.id).some((review) => review.outcome === "pending");
+        plans.restore(record.task.id, bound ? { ...imported, state: local.state, reviewer: local.reviewer, reviewVersion: local.reviewVersion } : imported);
+      }
     }
     for (const record of records) {
       const imported = notesOf(record);

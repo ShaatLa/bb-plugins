@@ -76,6 +76,17 @@ describe('Scheduled execution',()=>{
    }finally{await f.harness.dispose();}
   }
  });
+ it('records an occurrence as skipped with the planning-flags reason when the flags changed after the schedule was enabled, and does not retry it',async()=>{
+  const f=fixture();try{
+   const s=f.create();
+   f.store.tasks.updateProject(f.project.id,{planning:'required',statuses:f.store.tasks.getProject(f.project.id)!.statuses!.map(status=>({...status,requiresApprovedPlan:status.id!=='done'&&status.id!=='canceled'}))});
+   const r=await f.service.runNow(s.id,'flags');
+   expect(r).toMatchObject({state:'skipped'});expect(r.reason).toContain('planning flags');expect(r.taskId).toBeNull();
+   const sends=f.harness.sdk.callsTo('threads.send').length;
+   await f.service.reconcileAll();const again=await f.service.runNow(s.id,'flags');
+   expect(again.id).toBe(r.id);expect(f.data.run(r.id).state).toBe('skipped');expect(f.harness.sdk.callsTo('threads.send')).toHaveLength(sends);
+  }finally{await f.harness.dispose();}
+ });
  it.each(['backlog','done'] as const)('requires cancellation evidence and preserves an existing %s result',async status=>{
   const f=fixture();try{
    const s=f.create(),r=await f.service.runNow(s.id,'cancel');if(status==='done')f.store.tasks.updateTask(r.taskId!,{status:'done'});

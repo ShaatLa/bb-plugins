@@ -1402,8 +1402,12 @@ export function createTasksStore(db: PluginDatabase) {
   function scheduledStatus(projectId: string): string {
     const project = requireProject(projectId);
     if (project.planning !== "required") return "backlog";
-    const found = (project.statuses ?? DEFAULT_TASK_STATUSES).find((status) => status.id !== "canceled" && !inWorkZone(project, status.id));
-    if (!found) throw new Error(`Every status except canceled is marked "only with an approved plan" in ${project.prefix}, so a scheduled card has nowhere to start; unmark one status in the project's planning flags`);
+    // Backlog when it exists and is not marked; else the first unmarked status that is not terminal (never Done or canceled:
+    // a run card placed there would be recorded as completed the moment its worker starts).
+    const statuses = project.statuses ?? DEFAULT_TASK_STATUSES;
+    const terminal = new Set(["canceled", getWorkflowPolicy(project).doneStatus ?? "done"]);
+    const found = statuses.find((status) => status.id === "backlog" && !inWorkZone(project, status.id)) ?? statuses.find((status) => !terminal.has(status.id) && !inWorkZone(project, status.id));
+    if (!found) throw new Error(`Every status that is not Done or canceled is marked "only with an approved plan" in ${project.prefix}, so a scheduled card has nowhere to start; unmark one status in the project's planning flags`);
     return found.id;
   }
   function planGate(task: Task, status: string): string | null {
