@@ -53,44 +53,72 @@ async function appendToQueuedNotice(
   threadId: string,
   text: string,
 ): Promise<boolean> {
-  try {
-    const last = (await bb.sdk.threads.queuedMessages.list({ threadId })).at(-1);
-    const part = last?.content.length === 1 ? last.content[0] : undefined;
-    if (
-      !last ||
-      !part ||
-      part.type !== "text" ||
-      last.originPluginId !== bb.pluginId ||
-      // bb marks a row held for a busy thread `waiting`; both states are still unsent.
-      (last.state !== "queued" && last.state !== "waiting") ||
-      !last.editable
-    )
-      return false;
-    await bb.sdk.threads.queuedMessages.update({
-      threadId,
-      queuedMessageId: last.id,
-      expectedUpdatedAt: last.updatedAt,
-      input: [{ ...part, text: part.text + QUEUED_NOTICE_SEPARATOR + text }],
-    });
-    return true;
-  } catch {
-    return false;
+  // A conflict means the row changed under us, so list once more before giving up.
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const last = (await bb.sdk.threads.queuedMessages.list({ threadId })).at(-1);
+      const part = last?.content.length === 1 ? last.content[0] : undefined;
+      if (
+        !last ||
+        !part ||
+        part.type !== "text" ||
+        last.originPluginId !== bb.pluginId ||
+        // bb marks a row held for a busy thread `waiting`; both states are still unsent.
+        (last.state !== "queued" && last.state !== "waiting") ||
+        !last.editable
+      )
+        return false;
+      await bb.sdk.threads.queuedMessages.update({
+        threadId,
+        queuedMessageId: last.id,
+        expectedUpdatedAt: last.updatedAt,
+        input: [{ ...part, text: part.text + QUEUED_NOTICE_SEPARATOR + text }],
+      });
+      return true;
+    } catch {
+      // Retry once, then fall back to a normal send.
+    }
   }
+  return false;
+}
+
+// Concurrent deliveries to one thread would both see the same last row, so each thread's append-or-send runs in turn.
+const threadChains = new Map<string, Promise<unknown>>();
+function serialPerThread<T>(threadId: string, job: () => Promise<T>): Promise<T> {
+  const run = (threadChains.get(threadId) ?? Promise.resolve()).then(job);
+  const tail = run.then(() => undefined, () => undefined);
+  threadChains.set(threadId, tail);
+  void tail.then(() => {
+    if (threadChains.get(threadId) === tail) threadChains.delete(threadId);
+  });
+  return run;
+}
+
+/** Merge into the thread's queued notice, else send a new message; throws when the send fails. */
+function appendOrSend(
+  bb: BbPluginApi,
+  threadId: string,
+  text: string,
+  mode: "steer-if-active" | "queue-if-active",
+): Promise<void> {
+  return serialPerThread(threadId, async () => {
+    if (await appendToQueuedNotice(bb, threadId, text)) return;
+    await bb.sdk.threads.send({
+      threadId,
+      originPluginId: bb.pluginId,
+      input: [{ type: "text", text: withPluginHeader(bb.pluginId, text), mentions: [] }],
+      mode,
+    });
+  });
 }
 
 /** Wake one known thread, merged into its queued Work Board notice when there is one. Throws on failure. */
-export async function notifyThread(
+export function notifyThread(
   bb: BbPluginApi,
   threadId: string,
   text: string,
 ): Promise<void> {
-  if (await appendToQueuedNotice(bb, threadId, text)) return;
-  await bb.sdk.threads.send({
-    threadId,
-    originPluginId: bb.pluginId,
-    input: [{ type: "text", text: withPluginHeader(bb.pluginId, text), mentions: [] }],
-    mode: "queue-if-active",
-  });
+  return appendOrSend(bb, threadId, text, "queue-if-active");
 }
 
 export async function deliverCommentToLatestAgent(
@@ -133,13 +161,7 @@ export async function deliverCommentToLatestAgent(
         continue;
       }
       if (thread.status === "stopping") continue;
-      if (await appendToQueuedNotice(bb, threadId, prompt)) return 1;
-      await bb.sdk.threads.send({
-        threadId,
-        originPluginId: bb.pluginId,
-        input: [{ type: "text", text: withPluginHeader(bb.pluginId, prompt), mentions: [] }],
-        mode: input.mode ?? "steer-if-active",
-      });
+      await appendOrSend(bb, threadId, prompt, input.mode ?? "steer-if-active");
       return 1;
     } catch (error) {
       bb.log.warn(

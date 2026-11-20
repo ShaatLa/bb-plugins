@@ -4,7 +4,7 @@ import {
 } from "@get-bb/plugin-sdk/testing";
 import { describe, expect, it } from "vitest";
 import { createTasksStore } from "../db";
-import { deliverCommentToLatestAgent, QUEUED_NOTICE_SEPARATOR } from ".";
+import { deliverCommentToLatestAgent, notifyThread, QUEUED_NOTICE_SEPARATOR } from ".";
 
 function setup(
   getThread: (threadId: string) => ReturnType<typeof makeThreadResponse> = (
@@ -312,6 +312,64 @@ describe("comment notification delivery", () => {
         deliverCommentToLatestAgent(bb, store, { taskId: task.id, ...input }),
       ).resolves.toBe(1);
       expect(harness.sdk.callsTo("threads.send")).toHaveLength(1);
+    });
+
+    describe("concurrent deliveries", () => {
+      // A stub queue that records sends as rows, with a tick of latency so unserialized callers would interleave.
+      function stubQueue(host: ReturnType<typeof setup>) {
+        const rows: ReturnType<typeof row>[] = [];
+        const tick = () => new Promise((resolve) => setTimeout(resolve, 1));
+        host.harness.sdk.stub("threads.queuedMessages.list", async () => {
+          await tick();
+          return structuredClone(rows) as never;
+        });
+        host.harness.sdk.stub("threads.send", async (request: never) => {
+          await tick();
+          rows.push(row({ id: `q${rows.length + 1}`, content: (request as { input: never }).input }));
+        });
+        return rows;
+      }
+
+      it("ends in one send plus one update for two deliveries to the same busy thread", async () => {
+        const f = setup();
+        const rows = stubQueue(f);
+        f.harness.sdk.stub("threads.queuedMessages.update", async (request: never) => {
+          const { queuedMessageId, input: next } = request as { queuedMessageId: string; input: never };
+          Object.assign(rows.find((r) => r.id === queuedMessageId)!, { content: next, updatedAt: 43 });
+          return rows[0] as never;
+        });
+
+        await Promise.all([notifyThread(f.bb, "thr_example", "first"), notifyThread(f.bb, "thr_example", "second")]);
+
+        expect(f.harness.sdk.callsTo("threads.send")).toHaveLength(1);
+        expect(f.harness.sdk.callsTo("threads.queuedMessages.update")).toHaveLength(1);
+        expect(rows).toHaveLength(1);
+        expect((rows[0].content[0] as { text: string }).text).toMatch(
+          new RegExp(`first${QUEUED_NOTICE_SEPARATOR}second$`),
+        );
+      });
+
+      it("re-lists once and retries the append after a stale-row conflict", async () => {
+        const f = setup();
+        const rows = stubQueue(f);
+        rows.push(row());
+        let conflicts = 1;
+        f.harness.sdk.stub("threads.queuedMessages.update", async (request: never) => {
+          if (conflicts-- > 0) {
+            rows[0].updatedAt = 43; // someone else edited the row
+            throw Object.assign(new Error("stale"), { status: 409 });
+          }
+          const { expectedUpdatedAt } = request as { expectedUpdatedAt: number };
+          expect(expectedUpdatedAt).toBe(43);
+          return rows[0] as never;
+        });
+
+        await notifyThread(f.bb, "thr_example", "later");
+
+        expect(f.harness.sdk.callsTo("threads.queuedMessages.list")).toHaveLength(2);
+        expect(f.harness.sdk.callsTo("threads.queuedMessages.update")).toHaveLength(2);
+        expect(f.harness.sdk.callsTo("threads.send")).toEqual([]);
+      });
     });
   });
 });
