@@ -157,9 +157,8 @@ describe("ownership", () => {
     f.service.setEnabled(f.tracker.id, false);
     f.store.tasks.updateProject(f.tracker.id, { linkedBbProjectId: "proj_other" });
     expect(f.service.status(f.tracker.id).stateMismatch).toBe(`State belongs to ${BB_PROJECT}; reset it`);
-    // The script sees no committed file; enabling and scheduled ticks refuse until the owner resets.
-    f.script(`if [ -e "$BB_SWEEP_COMMITTED_STATE" ]; then echo committed; else echo absent; fi`);
-    expect((await f.service.manualRun(f.tracker.id)).output).toBe("absent\n");
+    // Manual runs, enabling and scheduled ticks all refuse until the owner resets: nothing runs without the checkpoint, and nothing claims the new project.
+    await expect(f.service.manualRun(f.tracker.id)).rejects.toThrow(/State belongs/);
     await expect(f.service.setEnabled(f.tracker.id, true)).rejects.toThrow(/belongs? to proj_example|State belongs/);
     f.service.reset(f.tracker.id);
     expect(f.service.status(f.tracker.id).stateMismatch).toBeNull();

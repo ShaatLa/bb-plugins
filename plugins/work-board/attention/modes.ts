@@ -3,6 +3,7 @@ import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import { bumpRev, CURRENT_KEY_SQL, currentRev, invalidateAttentionCache, retireOpenOccurrences, scanTracker, ACCEPTED_OUTCOMES } from "./ledger";
 import { ATTENTION_KIND, PILOT_SIGNALS } from "./observe";
 import { assertChecksLinkChangeAllowed } from "../checks/ownership";
+import { fenceMessage } from "../checks/transfer";
 
 type Database = ReturnType<BbPluginApi["storage"]["database"]>;
 
@@ -124,6 +125,9 @@ export function requestMode(db: Database, input: RequestInput): KindState {
     invalidateAttentionCache(db);
     const tracker = db.prepare<[string], { id: string; linked: string | null }>("SELECT id, linked_bb_project_id AS linked FROM projects WHERE id=?").get(input.trackerId);
     if (!tracker) throw new Error(`Project not found: ${input.trackerId}`);
+    // A transfer in flight, or a send to Sweep that is not confirmed, freezes the tracker: no transition may start under it.
+    const fence = fenceMessage(db, tracker.id, tracker.linked);
+    if (fence) throw new Error(fence);
     const row = getModeRow(db, tracker.id, kind);
     if (isPending(row)) throw new Error("A mode transition is pending; wait for Sweep to acknowledge it");
     db.prepare<[string, string]>("INSERT OR IGNORE INTO attention_modes(tracker_id, kind) VALUES (?, ?)").run(tracker.id, kind);

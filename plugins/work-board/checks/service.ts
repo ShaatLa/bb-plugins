@@ -274,6 +274,9 @@ function createService(bb: BbPluginApi) {
       // The run is reserved in the same synchronous step that admits it, after any lookup of Sweep.
       await transfer.claimForWorkBoard(trackerId, (current) => {
         if (!current || runs.has(current) || (!readDraft(db, trackerId).enabled && !isDraining(db, trackerId, current)) || owners(db, current).some((id) => id !== trackerId)) throw new Skipped();
+        // State recorded for another bb project is refused before the project is claimed.
+        const mismatch = stateMismatch(db, trackerId, current);
+        if (mismatch) throw new Error(`State belongs to ${mismatch}; reset it`);
       }, (current) => { runs.set(current, trackerId); });
     } catch (error) {
       if (error instanceof Skipped || controller.signal.aborted) return;
@@ -289,12 +292,6 @@ function createService(bb: BbPluginApi) {
       const now = Date.now();
       const interval = effectiveConfig(readDraft(db, trackerId)).intervalMinutes * 60_000;
       state.nextRun = now + interval;
-      const mismatch = stateMismatch(db, trackerId, link);
-      if (mismatch) {
-        state.error = `State belongs to ${mismatch}; reset it`;
-        store.save(trackerId, state);
-        return;
-      }
       state.bbProjectId ??= link;
       const tickId = `${trackerId}:${Math.max(now, (Number(state.tickId?.split(":")[1]) || 0) + 1)}`;
       state.tickId = tickId; state.lastRun = now;
@@ -345,9 +342,11 @@ function createService(bb: BbPluginApi) {
       const answerWithoutCandidate = config.snapshots && result.snapshot === null && [...report.items.values()].includes("ANSWER");
       const lastReport = state.lastReport?.manager === manager ? state.lastReport : undefined;
       const previous = lastReport?.changes;
-      const waitingChanged = code < 2 && report.changes.waiting !== (previous?.waiting ?? "");
+      // An unknown baseline (a report that crossed a transfer without its item hashes) with the same fingerprint has the same items, so they are not compared.
+      const sameUnknown = !!lastReport && !previous && lastReport.fingerprint === report.fingerprint;
+      const waitingChanged = code < 2 && !sameUnknown && report.changes.waiting !== (previous?.waiting ?? "");
       const knownItems = new Set(previous?.noteworthy);
-      const newItem = report.changes.noteworthy.some((id) => !knownItems.has(id));
+      const newItem = !sameUnknown && report.changes.noteworthy.some((id) => !knownItems.has(id));
       const changedFailure = state.lastFailure?.manager !== manager || state.lastFailure?.fingerprint !== report.fingerprint;
       const changedDiagnostic = code === 1 && !report.items.size && lastReport?.fingerprint !== report.fingerprint;
       // An unknown baseline (a report that crossed a transfer without its item hashes): a different fingerprint is news, and an empty Waiting list is never suppressed.
@@ -393,6 +392,8 @@ function createService(bb: BbPluginApi) {
     await transfer.claimForWorkBoard(trackerId, (link) => {
       if (!link) throw new Error("Link a bb project to this tracker before running its checks.");
       assertNoOtherOwner(db, trackerId, link);
+      const mismatch = stateMismatch(db, trackerId, link);
+      if (mismatch) throw new Error(`State belongs to ${mismatch}; reset it before running.`);
       const full = completeConfig(readDraft(db, trackerId));
       if (!full.ok) throw new Error(full.error);
       const manager = configuredManager(db, trackerId);
@@ -418,8 +419,11 @@ function createService(bb: BbPluginApi) {
     store.save(trackerId, { ...state, nextRun: Date.now() });
   }
 
+  /** Counts the disables of each tracker: an enable that waited for Sweep's status is void once a disable has happened since it began. */
+  const disables = new Map<string, number>();
   async function setEnabled(trackerId: string, enabled: boolean) {
     const { prefix } = tracker(trackerId);
+    const began = disables.get(trackerId) ?? 0;
     const apply = () => {
       const before = readDraft(db, trackerId);
       writeEnabled(db, trackerId, enabled);
@@ -429,8 +433,9 @@ function createService(bb: BbPluginApi) {
       changed(trackerId);
     };
     // Disabling is always allowed, even for a fenced tracker; enabling is an admission and needs the runner ownership.
-    if (!enabled) apply();
+    if (!enabled) { disables.set(trackerId, began + 1); apply(); }
     else await transfer.claimForWorkBoard(trackerId, (link) => {
+      if ((disables.get(trackerId) ?? 0) !== began) throw new Error("Repository checks were disabled while this enable waited for Sweep. Enable them again.");
       if (!link) throw new Error("Link a bb project to this tracker before enabling repository checks.");
       assertNoOtherOwner(db, trackerId, link);
       const mismatch = stateMismatch(db, trackerId, link);

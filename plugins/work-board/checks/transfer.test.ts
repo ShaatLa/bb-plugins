@@ -16,15 +16,27 @@ const pinnedDocument = {"format":"bb-runner-state/1","from":"sweep","bbProjectId
 type Handoff = { granted?: true; sent?: { id: string; confirmed?: true }; received?: string };
 /** A Sweep with the rules of Sweep 0.7.0 as far as Work Board can see them; its pulls go through Work Board's RPC transport. */
 function fakeSweep(f: Fixture) {
-  const wb = (method: string, input: unknown) => f.harness.callRpc(method, input, { experimental_caller: SWEEP }) as Promise<any>;
+  let target = f.harness;
+  const wb = (method: string, input: unknown) => target.callRpc(method, input, { experimental_caller: SWEEP }) as Promise<any>;
   let counter = 0;
   const s = {
     config: { enabled: false } as { enabled: boolean } | null, running: false, importing: false, pendingReport: false, hasStateFlag: false,
     handoff: undefined as Handoff | undefined, incoming: null as null | { id: string; document: any; bytes: Buffer | null },
     committed: null as Buffer | null, baselines: {} as Record<string, unknown>, worktrees: [] as string[],
-    calls: [] as string[], chunkCalls: 0, statusShape: "new" as "new" | "old",
+    calls: [] as string[], chunkCalls: 0, applied: 0, importReply: undefined as undefined | Record<string, unknown>, afterStatus: undefined as undefined | (() => void), statusShape: "new" as "new" | "old",
     /** Methods whose reply is lost after they executed, and methods refused before they ran. */
     lost: new Set<string>(), refuse: new Map<string, string>(), gateMethod: "", gate: undefined as Promise<void> | undefined, tamperPrevious: undefined as string | null | undefined,
+    /** Both services restart: Work Board's harness is replaced, and Sweep's state is rebuilt from its persisted form only. */
+    restart(harness: typeof f.harness) {
+      target = harness;
+      const persisted = JSON.stringify({ config: s.config, hasStateFlag: s.hasStateFlag, handoff: s.handoff, baselines: s.baselines, worktrees: s.worktrees, committed: s.committed?.toString("base64") ?? null,
+        incoming: s.incoming ? { ...s.incoming, bytes: s.incoming.bytes?.toString("base64") ?? null } : null });
+      s.config = null; s.hasStateFlag = false; s.handoff = undefined; s.baselines = {}; s.worktrees = []; s.committed = null; s.incoming = null; s.importing = false; s.running = false;
+      const loaded = JSON.parse(persisted);
+      Object.assign(s, { config: loaded.config, hasStateFlag: loaded.hasStateFlag, handoff: loaded.handoff, baselines: loaded.baselines, worktrees: loaded.worktrees,
+        committed: loaded.committed === null ? null : Buffer.from(loaded.committed, "base64"),
+        incoming: loaded.incoming ? { ...loaded.incoming, bytes: loaded.incoming.bytes === null ? null : Buffer.from(loaded.incoming.bytes, "base64") } : null });
+    },
     seed(committed: string | null = '{"n":1}', extra: Record<string, unknown> = {}) {
       s.committed = committed === null ? null : Buffer.from(committed);
       s.hasStateFlag = true;
@@ -54,11 +66,12 @@ function fakeSweep(f: Fixture) {
     s.committed = staged.bytes; s.baselines = { lastReport: staged.document.lastReport, lastFailure: staged.document.lastFailure, lastMeasuredWorktree: staged.document.lastMeasuredWorktree };
     s.worktrees = staged.document.reportedWorktrees; s.hasStateFlag = true;
     s.handoff = { granted: true, received: id };
+    s.applied++;
     return "applied";
   }
   async function run(method: string, input: any): Promise<unknown> {
     switch (method) {
-      case "status": return s.statusShape === "old" ? { config: s.config } : { config: s.config, running: s.running, hasState: hasState(), importing: s.importing, incoming: s.incoming?.id ?? null, handoff: s.handoff };
+      case "status": s.afterStatus && queueMicrotask(s.afterStatus); return s.statusShape === "old" ? { config: s.config } : { config: s.config, running: s.running, hasState: hasState(), importing: s.importing, incoming: s.incoming?.id ?? null, handoff: s.handoff };
       case "transfer.export": {
         const refusal = notIdle(); if (refusal) throw new Error(refusal);
         const sent = s.handoff?.sent;
@@ -92,6 +105,7 @@ function fakeSweep(f: Fixture) {
         return { accept: verdict.accept, reason: verdict.accept ? null : verdict.reason };
       }
       case "transfer.import": {
+        if (s.importReply) return s.importReply;
         if (s.incoming?.id === input.handoffId) return { staged: true, duplicate: true };
         if (s.handoff?.received === input.handoffId) return { staged: false, duplicate: true };
         const refusal = notIdle(); if (refusal) throw new Error(refusal);
@@ -118,7 +132,7 @@ function fakeSweep(f: Fixture) {
       case "transfer.commit": return { settled: await settle(input.handoffId) };
       case "transfer.cancel": {
         const sent = s.handoff?.sent;
-        if (!sent) return { cancelled: false };
+        if (!sent || sent.id !== input.handoffId) return { cancelled: false, current: sent?.id ?? null };
         if (sent.confirmed) throw new Error("The send is confirmed.");
         const own = await wb("checks.ownership", { bbProjectId: BB_PROJECT });
         if (own.transferring || own.receivedId === sent.id) throw new Error("Work Board is transferring or has received that handoff.");
@@ -243,7 +257,7 @@ describe("both directions", () => {
     };
     await expect(importFrom(refused.f)).rejects.toThrow(/do not match|more bytes|empty chunk/);
     expect(refused.f.delivery()).toBeUndefined();
-  });
+  }, 90_000);
 });
 
 describe("preconditions", () => {
@@ -396,6 +410,34 @@ describe("admission", () => {
     expect(row(f)).toBeUndefined();
   });
 
+  it("refuses a manual run and a scheduled tick with state recorded for another bb project before claiming the new one", async () => {
+    const { f } = await make();
+    await f.enable(); await f.tick();
+    f.service.setEnabled(f.tracker.id, false);
+    f.store.tasks.updateProject(f.tracker.id, { linkedBbProjectId: "proj_other" });
+    expect(f.service.status(f.tracker.id).stateMismatch).toMatch(/State belongs to proj_example/);
+    const runsBefore = f.runs();
+    await expect(f.service.manualRun(f.tracker.id)).rejects.toThrow(/State belongs to/);
+    forceEnabled(f);
+    await f.service.scheduledTick(f.tracker.id);
+    expect(f.service.status(f.tracker.id).error).toMatch(/State belongs to/);
+    expect(f.runs()).toBe(runsBefore);
+    expect(f.db.prepare("SELECT * FROM checks_runner_owner WHERE bb_project_id='proj_other'").get()).toBeUndefined();
+  });
+
+  it("voids an enable that waited for Sweep's status once a disable has happened", async () => {
+    const { f, sweep } = await make();
+    const gate = deferred();
+    sweep.gateMethod = "status"; sweep.gate = gate.promise; sweep.config = null;
+    const enabling = f.service.setEnabled(f.tracker.id, true).then(() => "enabled", (error: Error) => error.message);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    await f.service.setEnabled(f.tracker.id, false);
+    gate.release();
+    expect(await enabling).toMatch(/disabled while this enable waited/);
+    expect(f.service.status(f.tracker.id).config.enabled).toBe(false);
+    expect(row(f)).toBeUndefined();
+  });
+
   it("treats an old, unreadable or unclear status of Sweep as inconclusive, and only a positive one as evidence", async () => {
     const { f, sweep } = await make();
     const attempt = async (setup: () => void, expected: RegExp | null) => {
@@ -418,6 +460,8 @@ describe("admission", () => {
     await attempt(() => { sweep.hasStateFlag = true; }, /may run or hold state/);
     await attempt(() => { sweep.config = { enabled: true }; }, /may run or hold state/);
     await attempt(() => { sweep.handoff = { granted: true }; }, /may run or hold state/);
+    // Without the 0.7.0 fields even "no config" is not evidence: an old Sweep could still run from its legacy setting.
+    await attempt(() => { sweep.statusShape = "old"; sweep.config = null; }, /may run or hold state/);
     await attempt(() => { sweep.config = null; }, null);
     await attempt(() => {}, null);
     f.control.sweep = undefined;
@@ -555,11 +599,54 @@ describe("the unconfirmed send", () => {
     sweep.lost.add("transfer.import");
     await expect(exportTo(f)).rejects.toThrow();
     const id = row(f).sent_id as string;
+    const staged = sweep.incoming!;
+    expect(staged.id).toBe(id);
+    // Both services restart: Work Board is reloaded on its persisted database, Sweep is rebuilt from its persisted form.
     transfers.clear(); runs.clear();
+    const next = await f.harness.lifecycle.reload(async (bb) => {
+      const { createStore, registerTasksApi } = await import("../api");
+      const { registerChecks } = await import("./rpc");
+      registerTasksApi(bb, createStore(bb)); registerChecks(bb);
+    });
+    fixtures.splice(fixtures.indexOf(f), 1, { ...f, dispose: () => next.harness.dispose() } as Fixture);
+    sweep.restart(next.harness);
+    expect(sweep.incoming).not.toBe(staged);
+    expect(sweep.incoming).toMatchObject({ id });
+    expect(sweep.incoming?.bytes?.toString()).toBe('{"n":1}');
+    const { checksService } = await import("./service");
     const before = sweep.calls.length;
-    await expect(exportTo(f)).resolves.toMatchObject({ outcome: "returned", handoffId: id });
+    await expect(checksService(next.bb).transfer.exportToSweep(f.tracker.id)).resolves.toMatchObject({ outcome: "returned", handoffId: id });
     expect(sweep.calls.slice(before)).toEqual(["transfer.import", "transfer.commit"]);
     expect(sweep.committed?.toString()).toBe('{"n":1}');
+    expect(sweep.applied).toBe(1);
+    expect(sweep.incoming).toBeNull();
+  });
+
+  it("does not take a reply that proves no staging as a receipt: the same send stays unconfirmed and resumable", async () => {
+    const { f, sweep } = await make();
+    await imported(f, sweep);
+    sweep.importReply = { staged: false };
+    await expect(exportTo(f)).rejects.toThrow(/neither a staging nor a duplicate receipt/);
+    const saved = row(f);
+    expect(saved).toMatchObject({ owner: "work-board", sent_confirmed: 0, sent_id: expect.any(String) });
+    expect(sweep.calls).not.toContain("transfer.commit");
+    sweep.importReply = undefined;
+    await expect(exportTo(f)).resolves.toMatchObject({ outcome: "returned", handoffId: saved.sent_id });
+  });
+
+  it("freezes manager-attention transitions while a transfer runs or a send is unconfirmed", async () => {
+    const { f, sweep } = await make();
+    await imported(f, sweep);
+    const start = () => f.harness.callRpc("updateAttentionMode", { projectId: f.tracker.id, mode: "shadow" });
+    transfers.set(BB_PROJECT, "export-to-sweep");
+    await expect(start()).rejects.toThrow(/transfer \(export-to-sweep\) is running/);
+    transfers.clear();
+    sweep.refuse.set("transfer.import", "offline");
+    await expect(exportTo(f)).rejects.toThrow();
+    await expect(start()).rejects.toThrow(/not confirmed/);
+    expect(f.db.prepare("SELECT COUNT(*) AS n FROM attention_modes WHERE requested_mode IS NOT NULL OR effective_mode<>'off'").get()).toEqual({ n: 0 });
+    sweep.refuse.clear();
+    await exportTo(f);
   });
 
   it("serializes concurrent commands on the lock, and a stale completion changes nothing", async () => {
@@ -614,6 +701,28 @@ describe("the unconfirmed send", () => {
     expect(again.handoffId).not.toBe(id);
   });
 
+  it("does not abort a send without positive evidence from Sweep, even when Sweep is gone", async () => {
+    const { f, sweep } = await make();
+    await imported(f, sweep);
+    sweep.refuse.set("transfer.import", "offline");
+    await expect(exportTo(f)).rejects.toThrow();
+    const saved = row(f);
+    f.control.sweep = undefined;
+    await expect(f.service.transfer.abortSend(f.tracker.id)).rejects.toThrow(/not installed or not enabled/);
+    expect(row(f)).toEqual(saved);
+  });
+
+  it("cancels only the send it observed, and reports what Sweep actually did", async () => {
+    const { f, sweep } = await make();
+    sweep.seed();
+    const first = await sweep.handle("transfer.export", {}) as { handoffId: string };
+    sweep.afterStatus = () => { sweep.handoff = { ...sweep.handoff, sent: { id: "sweep_handoff_replaced" } }; };
+    await expect(f.service.transfer.cancelSweepSend(f.tracker.id)).resolves.toMatchObject({ outcome: "changed", handoffId: first.handoffId });
+    expect(sweep.handoff?.sent?.id).toBe("sweep_handoff_replaced");
+    sweep.afterStatus = undefined;
+    await expect(f.service.transfer.cancelSweepSend(f.tracker.id)).resolves.toMatchObject({ outcome: "cancelled", handoffId: "sweep_handoff_replaced" });
+  });
+
   it("confirms, after a lost confirmation and a restart, instead of cancelling a send Work Board received, and cancels one it never received", async () => {
     const { f, sweep } = await make();
     sweep.seed();
@@ -643,10 +752,10 @@ describe("the unconfirmed send", () => {
 });
 
 describe("an unknown baseline", () => {
-  const run = async (baseline: string, output: string, code = 0) => {
+  const run = async (baseline: string, output: string, code = 0, baselineCode = 0) => {
     const { f, sweep } = await make();
     f.standard();
-    sweep.seed('{"seen":1}', { lastReport: { fingerprint: reportContents(0, baseline).fingerprint, manager: MANAGER, at: 1 } });
+    sweep.seed('{"seen":1}', { lastReport: { fingerprint: reportContents(baselineCode, baseline).fingerprint, manager: MANAGER, at: 1 } });
     await importFrom(f);
     f.output(output, code, '{"seen":1}');
     await f.enable({ snapshots: true });
@@ -661,6 +770,12 @@ describe("an unknown baseline", () => {
     const f = await run("STATE same\n", "STATE same");
     expect(f.sent()).toBe("");
     expect(f.threads.sends).toBe(0);
+  });
+  it("stays quiet when the fingerprint is unchanged, whatever Waiting and action items it holds", async () => {
+    const text = "WAIT EXA-3: blocker EXA-9\nACTION idle-no-link EXA-1: idle 5 min\n";
+    const f = await run(text, text.trim(), 1, 1);
+    expect(f.threads.sends).toBe(0);
+    expect(f.sent()).toBe("");
   });
   it("sends changed items", async () => {
     const f = await run("STATE same\n", "ACTION idle-no-link EXA-1: idle 5 min", 1);

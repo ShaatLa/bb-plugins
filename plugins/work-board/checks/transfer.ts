@@ -155,8 +155,8 @@ export function createTransfer(deps: TransferDeps) {
       if (deps.signal.aborted) throw error;
       throw new Error(`Sweep's state for this project could not be read (${errorMessage(error)}). Retry in a moment.`);
     }
-    if (status.config === null) return;
-    if (status.config.enabled === false && status.running === false && status.hasState === false && !status.handoff) return;
+    // Positive evidence only: the 0.7.0 fields must be present even without a config, or an old Sweep could still run from its legacy setting.
+    if ((status.config === null || status.config.enabled === false) && status.running === false && status.hasState === false && status.importing !== true && !status.incoming && !status.handoff) return;
     throw new Error("Sweep may run or hold state for this project (or reports a version without the transfer fields). Disable Sweep and move its state with bb work-board checks import-from-sweep, or update Sweep.");
   }
 
@@ -322,10 +322,14 @@ export function createTransfer(deps: TransferDeps) {
 
   /** The push of a saved send: Sweep pulls and stages it, the row flips to Sweep by compare-and-set, and Sweep is told to commit. */
   async function pushToSweep(trackerId: string, link: string, id: string): Promise<TransferResult> {
-    try { await sweepCall("transfer.import", { projectId: link, handoffId: id }, importOutput, 120_000); } catch (error) {
+    const refusal = (why: string) => new Error(`Sweep refused the handoff: ${why}. Rerun to retry it; if Sweep keeps refusing it, run bb work-board checks abort-send.`);
+    let imported: z.infer<typeof importOutput>;
+    try { imported = await sweepCall("transfer.import", { projectId: link, handoffId: id }, importOutput, 120_000); } catch (error) {
       if (deps.signal.aborted) throw error;
-      throw new Error(`Sweep refused the handoff: ${errorMessage(error)}. Rerun to retry it; if Sweep keeps refusing it, run bb work-board checks abort-send.`);
+      throw refusal(errorMessage(error));
     }
+    // Only a staging or a duplicate receipt is evidence; anything else leaves the same send unconfirmed and resumable.
+    if (imported.staged !== true && imported.duplicate !== true) throw refusal("Sweep reported neither a staging nor a duplicate receipt");
     // Compare-and-set on the send this call started: a delayed reply cannot overwrite a later decision.
     const flipped = db.prepare("UPDATE checks_runner_owner SET sent_confirmed=1, owner='sweep', tracker_id=NULL, updated_at=? WHERE bb_project_id=? AND owner='work-board' AND tracker_id=? AND sent_id=? AND sent_confirmed=0").run(now(), link, trackerId, id).changes === 1;
     if (!flipped) {
@@ -390,12 +394,12 @@ export function createTransfer(deps: TransferDeps) {
       const row = readOwner(db, link);
       if (!(row?.owner === "work-board" && row.tracker_id === trackerId && unconfirmedSend(row))) return done("nothing-to-abort", "No unconfirmed send is saved for this tracker.");
       const id = row.sent_id!;
-      if (await sweepInstalled()) {
-        const status = await sweepCall("status", { projectId: link }, sweepStatus);
-        if (status.incoming === undefined || status.importing === undefined) throw new Error("Sweep's status has no transfer fields (an older Sweep), so it cannot be shown that it holds nothing for this send.");
-        if (status.incoming === id) throw new Error("Sweep holds this handoff staged. Rerun bb work-board checks export-to-sweep to finish it instead of aborting.");
-        if (status.importing) throw new Error("Sweep is importing right now. Wait for it to finish, then rerun.");
-      }
+      // Positive evidence is required: Sweep may have staged the handoff and gone offline with the row still on disk.
+      if (!(await sweepInstalled())) throw new Error("Sweep is not installed or not enabled, so it cannot be shown that it holds nothing staged for this send. Bring Sweep back, then rerun; the send stays saved meanwhile.");
+      const status = await sweepCall("status", { projectId: link }, sweepStatus);
+      if (status.incoming === undefined || status.importing === undefined) throw new Error("Sweep's status has no transfer fields (an older Sweep), so it cannot be shown that it holds nothing for this send.");
+      if (status.incoming === id) throw new Error("Sweep holds this handoff staged. Rerun bb work-board checks export-to-sweep to finish it instead of aborting.");
+      if (status.importing) throw new Error("Sweep is importing right now. Wait for it to finish, then rerun.");
       const cleared = db.prepare("UPDATE checks_runner_owner SET sent_id=NULL, sent_confirmed=0, updated_at=? WHERE bb_project_id=? AND tracker_id=? AND sent_id=? AND sent_confirmed=0").run(now(), link, trackerId, id).changes === 1;
       if (!cleared) return done("stale", "The send was already decided; nothing changed.", { handoffId: id });
       // A staging that interleaved is discarded at once; if Sweep cannot be reached it settles it on its own.
@@ -417,7 +421,9 @@ export function createTransfer(deps: TransferDeps) {
       await sweepCall("transfer.confirm", { projectId: link, handoffId: sent.id }, z.object({ confirmed: z.literal(true) }).passthrough());
       return done("confirmed", "Work Board had received Sweep's send; it is confirmed now.", { handoffId: sent.id });
     }
-    await sweepCall("transfer.cancel", { projectId: link }, z.object({ cancelled: z.boolean() }).passthrough());
+    // The observed id travels with the call; Sweep compares it under its write lock and reports what it actually did.
+    const result = await sweepCall("transfer.cancel", { projectId: link, handoffId: sent.id }, z.object({ cancelled: z.boolean() }).passthrough());
+    if (!result.cancelled) return done("changed", `Sweep's send ${sent.id} was already decided or replaced; nothing was cancelled. Check bb sweep status and rerun.`, { handoffId: sent.id });
     return done("cancelled", "Sweep's unconfirmed send was cancelled; Sweep keeps its state.", { handoffId: sent.id });
   }
 

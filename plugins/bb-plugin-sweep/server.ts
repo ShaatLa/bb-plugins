@@ -41,7 +41,7 @@ export const contract = defineRpcContract({
   'transfer.preflight': { experimental_description: 'Serves the Work Board transfer commands: read-only answer whether this project would accept a handoff whose previous id is given.', input: transferInput.extend({ previous: z.string().min(1).nullable() }), output: z.object({ accept: z.boolean(), reason: z.string().nullable() }) },
   'transfer.import': { experimental_description: 'Serves the Work Board transfer commands: pulls the handoff from Work Board and stages it. It is applied only once Work Board shows Sweep as the owner.', input: transferInput.extend({ handoffId }), output: z.unknown() },
   'transfer.commit': { experimental_description: 'Serves the Work Board transfer commands: applies the staged handoff once Work Board confirms it, or discards it when the send was aborted.', input: transferInput.extend({ handoffId }), output: z.unknown() },
-  'transfer.cancel': { experimental_description: 'Serves the Work Board transfer commands: clears an unconfirmed send when Work Board shows it never received it.', input: transferInput, output: z.unknown() },
+  'transfer.cancel': { experimental_description: 'Serves the Work Board transfer commands: clears the unconfirmed send with the given handoff id when Work Board shows it never received it; does nothing if the send changed.', input: transferInput.extend({ handoffId }), output: z.unknown() },
   run: { experimental_description: 'Refresh the checkout and execute the configured script. Sweep does not deliver or acknowledge the result. The script can have side effects.', input, output: z.unknown() },
 });
 type ReportReceipt = { fingerprint: string; manager?: string };
@@ -369,13 +369,14 @@ export default async function plugin(bb: BbPluginApi) {
     writes = operation.then(() => {}, () => {});
     return operation;
   }
-  function writeConfig(id: string, edit: (config: Partial<Config> | undefined) => Partial<Config>) {
+  /** `enabling` marks an explicit request to enable, which is guarded even when the stored draft already says enabled (a legacy whole-JSON write). */
+  function writeConfig(id: string, edit: (config: Partial<Config> | undefined) => Partial<Config>, enabling = false) {
     return serializeWrite(async () => {
       if (!(await bb.sdk.projects.list()).some(p => p.id === id)) throw new Error('Unknown project. Run bb project list and use an existing project ID.');
       const projects = await drafts();
       const previous = projects[id];
       const config = edit(previous);
-      if (config.enabled && !previous?.enabled) {
+      if (config.enabled && (enabling || !previous?.enabled)) {
         // Enabling settles a staged handoff first, and is refused while the project is marked or a handoff is pending.
         const staged = incoming.read(id);
         if (staged) await settleLocked(id, staged.handoff_id).catch(() => 'waiting');
@@ -396,7 +397,7 @@ export default async function plugin(bb: BbPluginApi) {
     });
   }
   const configure = async ({ projectId, config }: { projectId: string; config: Config }) => {
-    await writeConfig(projectId, () => config);
+    await writeConfig(projectId, () => config, config.enabled);
     return status(projectId);
   };
   const configGet = async ({ projectId, key }: z.infer<typeof configGetInput>) => {
@@ -412,7 +413,7 @@ export default async function plugin(bb: BbPluginApi) {
       const enabled = configSchema.safeParse(next);
       if (!enabled.success) throw new Error('Set branch (for example main) and script (for example checks/sweep.py) before enabling Sweep.');
       return enabled.data;
-    });
+    }, key === 'enabled' && parsed.data === true);
     return { [key]: config[key] };
   };
   const seedState = ({ projectId, snapshot }: { projectId: string; snapshot: string }) => serializeWrite(async () => {
@@ -518,14 +519,15 @@ export default async function plugin(bb: BbPluginApi) {
       return { staged: true as const };
     } finally { importing.delete(id); }
   });
-  const transferCancel = ({ projectId: id }: { projectId: string }) => serializeWrite(async () => {
+  const transferCancel = ({ projectId: id, handoffId }: { projectId: string; handoffId: string }) => serializeWrite(async () => {
     const sent = state(id).handoff?.sent;
-    if (!sent) return { cancelled: false as const };
+    // The caller observed a specific send; a different or missing one is not cancelled.
+    if (sent?.id !== handoffId) return { cancelled: false as const, current: sent?.id ?? null };
     if (sent.confirmed) throw new Error('The send is confirmed: Work Board holds the state. Run bb work-board checks export-to-sweep --project <KEY> to bring it back.');
     const own = await ownership(id);
     if (own.transferring || own.receivedId === sent.id) throw new Error('Work Board is transferring or has received that handoff. Rerun bb work-board checks import-from-sweep to confirm it.');
     const current = state(id);
-    if (current.handoff?.sent?.id !== sent.id) throw new Error('The send changed while Work Board was asked. Retry.');
+    if (current.handoff?.sent?.id !== sent.id) return { cancelled: false as const, current: current.handoff?.sent?.id ?? null };
     current.handoff = { ...current.handoff, sent: undefined };
     save(id, current);
     return { cancelled: true as const };

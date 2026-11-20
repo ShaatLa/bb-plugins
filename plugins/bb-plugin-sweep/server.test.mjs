@@ -726,13 +726,17 @@ function xferHost(wb, { listed = true, settings } = {}) {
     const document = await host.call('transfer.export');
     assert.equal(document.committed, null);
     wb.transferring = true;
-    await assert.rejects(host.call('transfer.cancel'), /transferring or has received/);
+    const cancel = (id = document.handoffId) => host.call('transfer.cancel', { handoffId: id });
+    await assert.rejects(cancel(), /transferring or has received/);
     wb.transferring = false;
     wb.row = { owner: 'work-board', trackerId: 'tracker_example', sentId: null, sentConfirmed: false, receivedId: document.handoffId };
-    await assert.rejects(host.call('transfer.cancel'), /transferring or has received/);
+    await assert.rejects(cancel(), /transferring or has received/);
     wb.row = null;
-    assert.deepEqual(await host.call('transfer.cancel'), { cancelled: true });
-    assert.deepEqual(await host.call('transfer.cancel'), { cancelled: false });
+    // A send other than the one the caller observed is never cancelled.
+    assert.deepEqual(await cancel('handoff_other'), { cancelled: false, current: document.handoffId });
+    assert.equal((await host.call('status')).handoff.sent.id, document.handoffId);
+    assert.deepEqual(await cancel(), { cancelled: true });
+    assert.deepEqual(await cancel(), { cancelled: false, current: null });
     assert.equal((await host.call('status')).handoff?.sent, undefined);
     assert.notEqual((await host.call('transfer.export')).handoffId, document.handoffId);
   } finally { await host.harness.lifecycle.dispose(); }
@@ -788,7 +792,33 @@ for (const bytes of [Buffer.from(' \n\t\r'.repeat(1310720)), Buffer.from('При
     const refused = await legacy.call('status');
     assert.match(refused.error, /sent to Work Board/);
     assert.deepEqual([xferPushes, xferReports.length, wb.calls], [pushes, reports, []]);
+    // The stored draft already says enabled, yet an explicit enable request is still refused while the project is marked.
+    await assert.rejects(legacy.configure({ enabled: true }), /export-to-sweep/);
+    await assert.rejects(legacy.call('config.set', { key: 'enabled', value: true }), /export-to-sweep/);
+    assert.deepEqual(await legacy.call('config.set', { key: 'timeoutSeconds', value: 20 }), { timeoutSeconds: 20 });
   } finally { await legacy.harness.lifecycle.dispose(); }
+}
+
+// A restart between staging and confirmation: the staged handoff survives in the database, keeps its id and bytes, and is applied once.
+{
+  const wb = fakeWorkBoard();
+  let host = xferHost(wb);
+  try {
+    await plugin(host.bb);
+    await host.configure({ enabled: false });
+    const bytes = Buffer.from('{"n":41}');
+    wb.send('handoff_restart', null, bytes);
+    assert.deepEqual(await host.call('transfer.import', { handoffId: 'handoff_restart' }), { staged: true });
+    const reloaded = await host.harness.lifecycle.reload(plugin);
+    host = { ...host, harness: reloaded.harness, bb: reloaded.bb, call: (method, input = {}) => reloaded.harness.behavior.callRpc(method, { projectId, ...input }) };
+    assert.equal((await host.call('status')).incoming, 'handoff_restart');
+    assert.deepEqual(await host.call('transfer.commit', { handoffId: 'handoff_restart' }), { settled: 'waiting' });
+    wb.confirmSend();
+    const settled = await Promise.all([host.call('transfer.commit', { handoffId: 'handoff_restart' }), host.call('transfer.commit', { handoffId: 'handoff_restart' })]);
+    assert.deepEqual(settled.map(result => result.settled).sort(), ['applied', 'none']);
+    assert.equal(deliveryStore(reloaded.bb.storage.database()).read(projectId).committed.toString(), bytes.toString());
+    assert.deepEqual((await host.call('status')).handoff, { granted: true, received: 'handoff_restart' });
+  } finally { await host.harness.lifecycle.dispose(); }
 }
 
 // Export: the paths of an accepted report are reported before the export, and a legacy baseline is normalized or crosses without changes.
