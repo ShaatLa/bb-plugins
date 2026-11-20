@@ -151,3 +151,14 @@ it('drops an open question\'s text above a form of several parts, which already 
   const one = renderSlot({ component:ItemCard }, { item:{ ...ask, question:'Only part?', questions:[part('one', 'Only part?')] }, chat:true, compact:true }, { sdk } as any);
   await waitFor(() => expect(one.container.textContent).toContain('Only part?'));
 });
+it('lays an open question out top to bottom: form, its footer with Won\'t reply in Cancel\'s place, then the time and actions', async () => {
+  const ask = { ...item, id:'ans_layout', kind:'for_me' as const, status:'open' as const, question:'Pick?', answer:null, answerSeq:null, questions:[{ id:'one', prompt:'Pick?', shortLabel:'one', required:false, multiSelect:false, allowFreeText:true, options:[{ value:'a', label:'Alpha' }] }] } as any;
+  const view = renderSlot({ component:ItemCard }, { item:ask, chat:true, compact:true }, { sdk } as any);
+  const decline = await view.findByRole('button', { name:'Won’t reply' });
+  const submit = view.getByRole('button', { name:'Submit answer' });
+  expect(decline.parentElement).toBe(submit.parentElement!.parentElement);
+  const time = view.container.querySelector('time')!, more = view.getByRole('button', { name:'More' });
+  expect(submit.compareDocumentPosition(time) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  expect(time.compareDocumentPosition(more) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  expect(view.queryByLabelText('Unread')).toBeNull();
+});
