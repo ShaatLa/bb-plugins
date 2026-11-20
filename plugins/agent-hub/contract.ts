@@ -5,7 +5,7 @@ import { z } from 'zod';
 export const NOTIFICATIONS_CHANNEL = 'agent-hub:notifications';
 export const desktopNotificationSchema = z.object({id:z.string(),title:z.string(),body:z.string(),threadId:z.string().optional()});
 export const YOUR_CALL = 'Your call';
-export const ITEMS_TAG = 'answers:items', COUNTS_TAG = 'answers:counts', POOLS_TAG = 'answers:pools', QUEUE_TAG = 'answers:queue', CONTEXT_TAG = 'answers:context';
+export const ITEMS_TAG = 'answers:items', COUNTS_TAG = 'answers:counts', POOLS_TAG = 'answers:pools', QUEUE_TAG = 'answers:queue', RECIPIENTS_TAG = 'answers:recipients', RECIPIENTS_THROTTLE_MS = 3000, CONTEXT_TAG = 'answers:context';
 export const idSchema = z.string().regex(/^ans_[A-Za-z0-9_-]+$/);
 const threadId = z.string().min(1).max(200), time = z.number().int().nonnegative();
 export const itemAttachmentSchema = z.object({ type:z.enum(['localImage','localFile']), path:z.string(), name:z.string().optional(), mimeType:z.string().optional(), sizeBytes:z.number().optional(), hostId:z.string().optional(), sourceProjectId:z.string().optional() });
@@ -72,7 +72,7 @@ export const rpcContract=defineRpcContract({
  workBoardProjects:{input:inputs.workBoardProjects,output:z.object({available:z.boolean(),projects:z.array(z.object({id:z.string(),name:z.string(),prefix:z.string()}))})},
  createTask:{input:inputs.createTask,output:z.object({key:z.string()})},
  inlinePreview:{input:inputs.inlinePreview,output:inlinePreviewSchema},
- recipients:{tags:()=>[ITEMS_TAG],input:inputs.recipients,output:z.object({recipients:z.array(recipientSchema),asking:z.array(threadId).default([])})},
+ recipients:{tags:()=>[RECIPIENTS_TAG],input:inputs.recipients,output:z.object({recipients:z.array(recipientSchema),asking:z.array(threadId).default([])})},
  markThreadRead:{input:inputs.markThreadRead,output:bulkRead}, queueStamp:{tags:()=>[QUEUE_TAG],input:inputs.queueStamp,output:z.object({stamp:z.number()})}, contextStamp:{tags:()=>[CONTEXT_TAG],input:inputs.contextStamp,output:z.object({stamp:z.number(),compactedAt:z.number().nullable().default(null)})}, logClientError:{input:inputs.logClientError,output:z.object({ok:z.literal(true)})}, pools:{tags:()=>[POOLS_TAG],input:inputs.pools,output:z.object({pools:z.array(poolSchema)})},
  poolAdd:{input:inputs.poolAdd,output:z.object({id:poolIdSchema})}, poolUpdate:{input:inputs.poolUpdate,output:z.object({revision:time})}, poolRemove:{input:inputs.poolRemove,output:ok},
  poolSend:{input:inputs.poolSend,output:z.object({delivery:z.enum(['sent','queued']),sent:time,keptEdited:time})}, quoteReply:{input:inputs.quoteReply,output:z.object({delivery:z.enum(['sent','queued'])})},

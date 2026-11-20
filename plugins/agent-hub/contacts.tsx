@@ -11,6 +11,8 @@ import { useSteadyError } from './app';
 import { EmptyState } from './empty';
 import { beginContactDrag, mountSidebarContacts, selectContact, useSelectedContact } from './open-chat';
 const errorText = (e: unknown) => e instanceof Error ? e.message : String(e);
+// bb refetches plugin queries on focus only while its realtime socket is down, so the list polls itself; one clock per key is shared by all mounts.
+const POLL_MS = 3000, HUNG_MS = 15000, readClock = new Map<string, { settledAt: number; startedAt: number | null; mounts: number }>();
 export function useContacts(selected: string | undefined) {
   const rpc = useRpc<AgentHubRpcContract>(), sidebar = experimental_useSidebarThreads(), sidebarThreads = sidebar.threads;
   const providers = experimental_useProviders().providers;
@@ -38,6 +40,22 @@ export function useContacts(selected: string | undefined) {
   // A thread read in bb drops its unread mark there; refetching recipients lets the server mark the same answers read here,
   // and the server's invalidation refreshes the rest when that changed something.
   useEffect(() => { if (firstBbRead.current) { firstBbRead.current = false; return; } void result.refetch(); }, [bbReadKey]);
+  const refetchRef = useRef(result.refetch); refetchRef.current = result.refetch;
+  const clockKey = selected ?? '';
+  // Poll when the data is older than POLL_MS, and restart a read that has run for HUNG_MS; the reissue resets the shared start so other mounts leave it alone.
+  useEffect(() => {
+    const clock = readClock.get(clockKey) ?? { settledAt: Date.now(), startedAt: null, mounts: 0 }; readClock.set(clockKey, clock); clock.mounts++;
+    const tick = () => {
+      const now = Date.now();
+      if (document.visibilityState !== 'visible' || now - clock.settledAt <= POLL_MS || (clock.startedAt !== null && now - clock.startedAt <= HUNG_MS)) return;
+      const mine = clock.startedAt = now;
+      void refetchRef.current().catch(() => {}).finally(() => { if (clock.startedAt === mine) { clock.startedAt = null; clock.settledAt = Date.now(); } });
+    };
+    const timer = setInterval(tick, POLL_MS); document.addEventListener('visibilitychange', tick);
+    return () => { clearInterval(timer); document.removeEventListener('visibilitychange', tick); if (--clock.mounts === 0) readClock.delete(clockKey); };
+  }, [clockKey]);
+  // The clock moves only when a read starts or ends, never on re-renders, so streaming sidebar updates cannot hold the poll off.
+  useEffect(() => { const clock = readClock.get(clockKey); if (!clock) return; if (result.isFetching) clock.startedAt ??= Date.now(); else { clock.startedAt = null; clock.settledAt = Date.now(); } }, [result.isFetching, clockKey]);
   // Each selection has its own cache entry, and a revisited one holds old unread counts until its refetch lands.
   // Show the last settled list instead, so switching neither blanks the list nor flashes stale unread badges.
   const lastRecipients = useRef(result.data); if (result.data && !result.isFetching) lastRecipients.current = result.data; const settledRecipients = lastRecipients.current ?? result.data;

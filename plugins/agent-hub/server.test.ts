@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createFakePluginHost, makeThreadResponse } from '@get-bb/plugin-sdk/testing';
 import plugin, { INSTRUCTIONS, buildReplyMessage } from './server';
-import { ITEMS_TAG, COUNTS_TAG, POOLS_TAG, inputs, rpcContract } from './contract';
+import { ITEMS_TAG, COUNTS_TAG, POOLS_TAG, RECIPIENTS_TAG, RECIPIENTS_THROTTLE_MS, inputs, rpcContract } from './contract';
 import { createDriver } from './driver';
 import { migrations } from './schema';
 import Database from 'better-sqlite3';
@@ -218,13 +218,21 @@ describe('server',()=>{
   await harness.behavior.callAgentTool('agent_hub_ask',{question:'hello'},{threadId:'t'});
   await harness.behavior.emitThreadEvent('thread.deleted',{thread:makeThreadResponse({id:'t'})});
   await vi.waitFor(()=>expect(seen.at(-1)).toBe('deleted')); // the burst collapses into one trailing invalidate
-  expect(harness.inspection.experimental_rpcInvalidations.every(tags=>JSON.stringify(tags)===JSON.stringify([ITEMS_TAG,COUNTS_TAG]) || JSON.stringify(tags)===JSON.stringify([POOLS_TAG]))).toBe(true); off();
+  expect(harness.inspection.experimental_rpcInvalidations.every(tags=>JSON.stringify(tags)===JSON.stringify([ITEMS_TAG,COUNTS_TAG]) || JSON.stringify(tags)===JSON.stringify([RECIPIENTS_TAG]) || JSON.stringify(tags)===JSON.stringify([POOLS_TAG]))).toBe(true); off();
  });
  it('coalesces a burst of invalidations into a leading and one trailing call',async()=>{
   const {harness}=setup();
   for(const q of ['a','b','c']) await harness.behavior.callAgentTool('agent_hub_ask',{question:q},{threadId:'t'});
-  const n=harness.inspection.experimental_rpcInvalidations.length;
-  expect(n).toBe(1); await vi.waitFor(()=>expect(harness.inspection.experimental_rpcInvalidations.length).toBe(2));
+  const items=()=>harness.inspection.experimental_rpcInvalidations.filter(tags=>tags?.includes(ITEMS_TAG)).length;
+  expect(items()).toBe(1); await vi.waitFor(()=>expect(items()).toBe(2));
+ });
+ it('sends recipients invalidations as their own call, a leading one and one trailing call RECIPIENTS_THROTTLE_MS later',async()=>{
+  vi.useFakeTimers(); const {harness}=setup();
+  const recipients=()=>harness.inspection.experimental_rpcInvalidations.filter(tags=>tags?.includes(RECIPIENTS_TAG)).length;
+  for(const q of ['a','b','c']) await harness.behavior.callAgentTool('agent_hub_ask',{question:q},{threadId:'t'});
+  await vi.advanceTimersByTimeAsync(RECIPIENTS_THROTTLE_MS-1); expect(recipients()).toBe(1);
+  await vi.advanceTimersByTimeAsync(1); expect(recipients()).toBe(2);
+  expect(harness.inspection.experimental_rpcInvalidations.some(tags=>tags?.includes(RECIPIENTS_TAG) && tags.length>1)).toBe(false);
  });
  it.each(['live','list','recipients','legacy-list','legacy-recipients'])('ingests sub-thread history read and outside aggregates via %s',async mode=>{
   const {harness,db}=setup(), sub='thr_example_child', thread=makeThreadResponse({id:sub,parentThreadId:'thr_example'});
@@ -286,7 +294,7 @@ describe('server',()=>{
  });
  it('does not invalidate when an empty thread is archived, unarchived or deleted',async()=>{
   const {harness,db}=setup(); seed(db,'ans_a','for_me','a');
-  const count=()=>harness.inspection.experimental_rpcInvalidations.length;
+  const count=()=>harness.inspection.experimental_rpcInvalidations.filter(tags=>tags?.includes(ITEMS_TAG)).length;
   for(const ev of ['thread.archived','thread.unarchived','thread.deleted']) await harness.behavior.emitThreadEvent(ev as any,{thread:makeThreadResponse({id:'empty'})});
   expect(count()).toBe(0);
   await harness.behavior.emitThreadEvent('thread.archived',{thread:makeThreadResponse({id:'a'})}); expect(count()).toBe(1);
@@ -489,7 +497,7 @@ describe('reply pools and inbox',()=>{
   gate.resolve({ok:true,delivery:'queued'});
   expect(await pending).toEqual({delivery:'queued',sent:2,keptEdited:1}); off();
   expect(send.mock.calls[0][0]).toMatchObject({input:[{text:'> a\n\nfirst\n\n> b\n\nsecond'}]});
-  expect(observations).toHaveLength(2);
+  expect(observations).toHaveLength(3); // pools, items and recipients
   for (const state of observations) {expect(state.item).toEqual({status:'replied',answer:'first\n\nsecond'}); expect(state.rows.map((r:any)=>r.id)).toEqual([a.id,c.id]);}
  });
  it('forwards attachments on quote replies and pooled sends',async()=>{

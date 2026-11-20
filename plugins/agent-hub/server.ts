@@ -5,7 +5,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import type { BbPluginApi } from '@get-bb/plugin-sdk';
 import { z } from 'zod';
 import { deliveryError } from './delivery';
-import { rpcContract, inputs, itemSchema, ITEMS_TAG, COUNTS_TAG, POOLS_TAG, QUEUE_TAG, CONTEXT_TAG, inlinePreviewSchema, tokenomosThreads, tokenomosSum, type Item, type ListInput, type Counts, type Attachment, type SendOptions, type FormQuestion, YOUR_CALL, defaultAnswer } from './contract';
+import { rpcContract, inputs, itemSchema, ITEMS_TAG, COUNTS_TAG, RECIPIENTS_TAG, RECIPIENTS_THROTTLE_MS, POOLS_TAG, QUEUE_TAG, CONTEXT_TAG, inlinePreviewSchema, tokenomosThreads, tokenomosSum, type Item, type ListInput, type Counts, type Attachment, type SendOptions, type FormQuestion, YOUR_CALL, defaultAnswer } from './contract';
 import { migrations } from './schema';
 import { cap, ATTENTION_SQL, ACTIVE_THREAD_SQL, OWNER_ITEM_SQL, failRequest } from './ingest';
 import { createDriver } from './driver';
@@ -73,8 +73,15 @@ function start(bb: BbPluginApi, migrationError: string | null) {
   const invalidate = (): void => {
     if (invOff) return;
     if (invTimer) { invPending = true; return; }
-    bb.rpc.experimental_invalidate([ITEMS_TAG,COUNTS_TAG]);
+    bb.rpc.experimental_invalidate([ITEMS_TAG,COUNTS_TAG]); invalidateRecipients();
     invTimer = setTimeout(() => { invTimer = undefined; if (invPending) { invPending = false; invalidate(); } },150); invTimer.unref();
+  };
+  // shortcut: a recipients read slower than the interval is still restarted until the burst ends; raise it if reads grow.
+  let recTimer: ReturnType<typeof setTimeout> | undefined, recPending = false;
+  const invalidateRecipients = (): void => {
+    if (recTimer) { recPending = true; return; }
+    bb.rpc.experimental_invalidate([RECIPIENTS_TAG]);
+    recTimer = setTimeout(() => { recTimer = undefined; if (recPending) { recPending = false; invalidateRecipients(); } },RECIPIENTS_THROTTLE_MS); recTimer.unref();
   };
   const invalidatePools = () => bb.rpc.experimental_invalidate([POOLS_TAG]);
   const queueStamps = new Map<string,number>(); // per thread, bumped by bb's queue events below
@@ -610,5 +617,5 @@ function start(bb: BbPluginApi, migrationError: string | null) {
   void notifier.settings.get().then(next=>{if(reminderSettingsChanged) return;remindHours=next.remindHours;wakeDue();}).catch(e=>bb.log.warn(`Agent Hub reminders: ${String(e)}`));
   wakeDue();
   const startup = (migrationPending ? Promise.resolve() : driver.reconcile()).catch(e=>bb.log.warn(`Agent Hub discovery: ${String(e)}`));
-  bb.onDispose(async()=>{disposed=true; projectCache=undefined; threadCache.clear(); if (wakeTimer) clearTimeout(wakeTimer); await driver.dispose(); await startup; await notifier.dispose(); invOff=true; if (invTimer) clearTimeout(invTimer);});
+  bb.onDispose(async()=>{disposed=true; projectCache=undefined; threadCache.clear(); if (wakeTimer) clearTimeout(wakeTimer); await driver.dispose(); await startup; await notifier.dispose(); invOff=true; if (invTimer) clearTimeout(invTimer); if (recTimer) clearTimeout(recTimer);});
 }
