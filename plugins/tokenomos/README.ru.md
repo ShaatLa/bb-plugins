@@ -129,7 +129,7 @@ Tokenomos читает из транскриптов только числа т�
 Установка:
 
 ```sh
-bb plugin install git:https://github.com/ShaatLa/bb-plugins.git@main --plugin tokenomos
+bb plugin install git:https://github.com/ShaatLa/bb-plugins.git@0.x --plugin tokenomos --tag-prefix tokenomos/
 ```
 
 - `wake-cost` — текущий контекст и оценка стоимости холодного и тёплого пробуждения, TTL кэша и его происхождение; неизвестный контекст отличается от неизвестного треда.

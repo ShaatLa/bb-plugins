@@ -37,19 +37,19 @@ BB supplies its own npm/Node tooling for Git installations. You do **not** need 
 Install the plugins you need:
 
 ```sh
-bb plugin install git:https://github.com/ShaatLa/bb-plugins.git@main --plugin agent-hub
-bb plugin install git:https://github.com/ShaatLa/bb-plugins.git@main --plugin antigravity
-bb plugin install git:https://github.com/ShaatLa/bb-plugins.git@main --plugin ci-dashboard
-bb plugin install git:https://github.com/ShaatLa/bb-plugins.git@main --plugin idle-compact
-bb plugin install git:https://github.com/ShaatLa/bb-plugins.git@main --plugin local-models
-bb plugin install git:https://github.com/ShaatLa/bb-plugins.git@main --plugin tokenomos
+bb plugin install git:https://github.com/ShaatLa/bb-plugins.git@0.x --plugin agent-hub --tag-prefix agent-hub/
+bb plugin install git:https://github.com/ShaatLa/bb-plugins.git@0.x --plugin antigravity --tag-prefix antigravity/
+bb plugin install git:https://github.com/ShaatLa/bb-plugins.git@0.x --plugin ci-dashboard --tag-prefix ci-dashboard/
+bb plugin install git:https://github.com/ShaatLa/bb-plugins.git@0.x --plugin idle-compact --tag-prefix idle-compact/
+bb plugin install git:https://github.com/ShaatLa/bb-plugins.git@0.x --plugin local-models --tag-prefix local-models/
+bb plugin install git:https://github.com/ShaatLa/bb-plugins.git@0.x --plugin tokenomos --tag-prefix tokenomos/
 ```
 
 For **Work Board**, first choose whether to [migrate existing built-in Tasks data](#migrate-built-in-tasks-data). If you want an empty tracker, skip migration and install directly:
 
 ```sh
 bb plugin disable tasks
-bb plugin install git:https://github.com/ShaatLa/bb-plugins.git@main --plugin work-board
+bb plugin install git:https://github.com/ShaatLa/bb-plugins.git@0.x --plugin work-board --tag-prefix work-board/
 ```
 
 The `--plugin` values are collection entry names. You can also select a directory with `--subdirectory plugins/work-board`, for example. The repository root itself is a collection, not a plugin package.
@@ -63,16 +63,16 @@ bb plugin source work-board --json
 
 ### Updates
 
-An installation tracking `@main` receives branch changes when you apply an update:
+Each plugin is released as a version tag `<entry>/vX.Y.Z` (for example `work-board/v0.59.4`), created automatically when its `package.json` version changes on `main`. The install commands above track every `0.x` release of one plugin; BB checks the tags and applies the newest compatible release when you update:
 
 ```sh
 bb plugin outdated
 bb plugin update antigravity
 bb plugin update work-board
-bb plugin update ci-dashboard
+bb plugin update --all
 ```
 
-Replace `@main` in an installation URL with a full commit SHA to pin an exact revision. Local-path installations use the checkout on disk; published Git updates do not update them. Rebuild and reload a local installation after updating its checkout.
+`bb plugin outdated` offers a 1.0 or later release outside the `0.x` range separately; take it with `bb plugin update <id> --range '^1.0.0'`. Use a narrower range such as `^0.59.0` to receive patches only, or a tag such as `@work-board/v0.59.4` to pin one release. Installing `@main` instead tracks every commit on the branch, including unreleased work. Local-path installations use the checkout on disk; published Git updates do not update them. Rebuild and reload a local installation after updating its checkout.
 
 If a plugin is already installed, check its source before changing installation methods. Keep its existing ID and data rather than installing a renamed copy. In particular, Antigravity remains provider `antigravity`, and built-in Tasks must stay disabled while Work Board is enabled.
 
@@ -178,7 +178,7 @@ git clone https://github.com/ShaatLa/bb-plugins.git
 cd bb-plugins/plugins/work-board
 bb plugin disable tasks
 python3 scripts/import_tasks.py
-bb plugin install git:https://github.com/ShaatLa/bb-plugins.git@main --plugin work-board
+bb plugin install git:https://github.com/ShaatLa/bb-plugins.git@0.x --plugin work-board --tag-prefix work-board/
 ```
 
 The helper copies the SQLite database through its backup API, preserves record IDs and attachment files, and rewrites attachment URLs in copied descriptions/comments for `work-board`. The original built-in data remains in place. For another BB data location, pass `--data-dir /path/to/bb-data`.

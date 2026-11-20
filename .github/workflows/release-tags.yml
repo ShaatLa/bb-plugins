@@ -1,0 +1,44 @@
+name: Release tags
+
+# Tags <entry>/v<version> (e.g. work-board/v0.59.4) for every collection entry whose
+# package.json version has no tag yet. bb resolves `--tag-prefix <entry>/` installs over these tags.
+on:
+  push:
+    branches: [main]
+    paths:
+      - "plugins/*/package.json"
+      - ".bb/plugins.json"
+      - ".github/workflows/release-tags.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency: release-tags
+
+jobs:
+  tag:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Create missing version tags
+        run: |
+          # Aliases share a source; only the first entry name for a source gets tags.
+          tags=$(python3 -c '
+          import json
+          seen = set()
+          for e in json.load(open(".bb/plugins.json"))["plugins"]:
+              if e["source"] in seen:
+                  continue
+              seen.add(e["source"])
+              print(e["name"] + "/v" + json.load(open(e["source"] + "/package.json"))["version"])
+          ')
+          for t in $tags; do
+            # Never move an existing tag: bb refuses a tag that later points at another commit.
+            if git rev-parse -q --verify "refs/tags/$t" >/dev/null; then continue; fi
+            git tag "$t"
+            git push origin "refs/tags/$t"
+            echo "created $t"
+          done

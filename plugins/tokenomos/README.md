@@ -129,7 +129,7 @@ Tokenomos reads only token counts, session and message identifiers, timestamps, 
 Installation:
 
 ```sh
-bb plugin install git:https://github.com/ShaatLa/bb-plugins.git@main --plugin tokenomos
+bb plugin install git:https://github.com/ShaatLa/bb-plugins.git@0.x --plugin tokenomos --tag-prefix tokenomos/
 ```
 
 - `wake-cost`: current context, estimated cost for cold and warm wake-ups, cache TTL, and its origin; an unknown context is distinct from an unknown thread.

@@ -9,7 +9,7 @@ Open **CI Dashboard** using the pipeline icon in BB’s navigation sidebar. The 
 Install from the collection:
 
 ```sh
-bb plugin install git:https://github.com/ShaatLa/bb-plugins.git@main --plugin ci-dashboard
+bb plugin install git:https://github.com/ShaatLa/bb-plugins.git@0.x --plugin ci-dashboard --tag-prefix ci-dashboard/
 ```
 
 For local development:

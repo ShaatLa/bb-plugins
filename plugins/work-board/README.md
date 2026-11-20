@@ -125,7 +125,7 @@ bb work-board project update EXA --auto-archive off --stale-idle off
 ```
 
 
-Source: [ShaatLa/bb-plugins](https://github.com/ShaatLa/bb-plugins/tree/main/plugins/work-board). Install this collection entry with `bb plugin install git:https://github.com/ShaatLa/bb-plugins.git@main --plugin work-board` after disabling built-in Tasks and completing any data import described below. Existing local-path Work Board installations can be re-registered with `bb plugin install /path/to/collection --plugin work-board` while retaining the same plugin ID and data.
+Source: [ShaatLa/bb-plugins](https://github.com/ShaatLa/bb-plugins/tree/main/plugins/work-board). Install this collection entry with `bb plugin install git:https://github.com/ShaatLa/bb-plugins.git@0.x --plugin work-board --tag-prefix work-board/` after disabling built-in Tasks and completing any data import described below. Existing local-path Work Board installations can be re-registered with `bb plugin install /path/to/collection --plugin work-board` while retaining the same plugin ID and data.
 
 Project tracker for collaborative work between humans and AI agents inside BB. Based on the built-in BB Tasks from BB 0.46.1, it retains its projects, comments, attachments, presets, and thread links.
 
@@ -165,7 +165,7 @@ Save your settings (`bb plugin config agent-board --json`) and back up the datab
 ```sh
 bb plugin disable agent-board
 python3 scripts/import_tasks.py --source-plugin agent-board
-bb plugin install git:https://github.com/ShaatLa/bb-plugins.git@main --plugin work-board
+bb plugin install git:https://github.com/ShaatLa/bb-plugins.git@0.x --plugin work-board --tag-prefix work-board/
 bb work-board status --json
 ```
 
@@ -402,7 +402,7 @@ subtasks, Markdown comments, attachments, agent presets, and a full CLI.
 Install Work Board from this collection after completing any required migration:
 
 ```sh
-bb plugin install git:https://github.com/ShaatLa/bb-plugins.git@main --plugin work-board
+bb plugin install git:https://github.com/ShaatLa/bb-plugins.git@0.x --plugin work-board --tag-prefix work-board/
 ```
 
 The plugin adds the Work Board sidebar panel, the `bb work-board` command, and an agent
@@ -410,7 +410,7 @@ skill that teaches workers how to report progress back to tasks.
 
 ## Quick start
 
-Install the plugin with `bb plugin install git:https://github.com/ShaatLa/bb-plugins.git@main --plugin work-board`. Then use the `bb work-board` CLI
+Install the plugin with `bb plugin install git:https://github.com/ShaatLa/bb-plugins.git@0.x --plugin work-board --tag-prefix work-board/`. Then use the `bb work-board` CLI
 to create a tracker project. Link it to the bb project where delegated agents
 will run:
 

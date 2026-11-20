@@ -50,7 +50,7 @@ bb agent-hub get ID [--json]
 bb agent-hub read <ids...> | --all [--thread ID]
 bb agent-hub status [--thread ID]
 bb agent-hub digest [--since 24h|7d|ISO-date] [--json]
-bb plugin install git:https://github.com/ShaatLa/bb-plugins.git@main --plugin agent-hub
+bb plugin install git:https://github.com/ShaatLa/bb-plugins.git@0.x --plugin agent-hub --tag-prefix agent-hub/
 ```
 
 ## Limitations

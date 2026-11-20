@@ -118,7 +118,7 @@ bb work-board project update EXA --auto-archive off --stale-idle off
 ```
 
 
-Исходный код: [ShaatLa/bb-plugins](https://github.com/ShaatLa/bb-plugins/tree/main/plugins/work-board). Установите эту запись коллекции командой `bb plugin install git:https://github.com/ShaatLa/bb-plugins.git@main --plugin work-board` после отключения встроенного Tasks и завершения любого импорта данных, описанного ниже. Существующие локальные установки Work Board можно зарегистрировать заново командой `bb plugin install /path/to/collection --plugin work-board`, сохранив тот же идентификатор плагина и данные.
+Исходный код: [ShaatLa/bb-plugins](https://github.com/ShaatLa/bb-plugins/tree/main/plugins/work-board). Установите эту запись коллекции командой `bb plugin install git:https://github.com/ShaatLa/bb-plugins.git@0.x --plugin work-board --tag-prefix work-board/` после отключения встроенного Tasks и завершения любого импорта данных, описанного ниже. Существующие локальные установки Work Board можно зарегистрировать заново командой `bb plugin install /path/to/collection --plugin work-board`, сохранив тот же идентификатор плагина и данные.
 
 Трекер проектов для совместной работы людей и AI-агентов внутри BB. Основан на встроенном BB Tasks из BB 0.46.1 и сохраняет его проекты, комментарии, вложения, пресеты и связи с тредами.
 
@@ -158,7 +158,7 @@ bb work-board project update EXA --auto-archive off --stale-idle off
 ```sh
 bb plugin disable agent-board
 python3 scripts/import_tasks.py --source-plugin agent-board
-bb plugin install git:https://github.com/ShaatLa/bb-plugins.git@main --plugin work-board
+bb plugin install git:https://github.com/ShaatLa/bb-plugins.git@0.x --plugin work-board --tag-prefix work-board/
 bb work-board status --json
 ```
 
@@ -395,14 +395,14 @@ Work Board — это трекер в стиле Linear внутри bb для �
 Установите Work Board из этого набора после завершения всех необходимых миграций:
 
 ```sh
-bb plugin install git:https://github.com/ShaatLa/bb-plugins.git@main --plugin work-board
+bb plugin install git:https://github.com/ShaatLa/bb-plugins.git@0.x --plugin work-board --tag-prefix work-board/
 ```
 
 Плагин добавляет боковую панель Work Board, команду `bb work-board` и навык агента, который обучает исполнителей сообщать о ходе выполнения задач.
 
 ## Быстрый старт
 
-Установите плагин командой `bb plugin install git:https://github.com/ShaatLa/bb-plugins.git@main --plugin work-board`. Затем используйте CLI `bb work-board` для создания проекта трекера. Свяжите его с проектом bb, в котором будут выполняться делегированные агенты:
+Установите плагин командой `bb plugin install git:https://github.com/ShaatLa/bb-plugins.git@0.x --plugin work-board --tag-prefix work-board/`. Затем используйте CLI `bb work-board` для создания проекта трекера. Свяжите его с проектом bb, в котором будут выполняться делегированные агенты:
 
 ```sh
 bb work-board project create \
