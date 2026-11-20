@@ -1,4 +1,5 @@
 import { getProjectConfig } from './project-config';
+import { sendOrAppend } from './queued-notice';
 import type { BbPluginApi } from '@get-bb/plugin-sdk';
 import type Database from 'better-sqlite3';
 import { applyEvents, COMPACTED_EVENT, CONTEXT_EVENT, QUIET_SQL, RELEVANT, type Event } from './ingest';
@@ -89,7 +90,7 @@ export function createDriver(bb: BbPluginApi, db: Database.Database, invalidate:
       for (const {text,turn,seq} of warnings) {
         if (signal.aborted || thread.archivedAt || db.prepare('SELECT 1 FROM archived_threads WHERE thread_id=?').get(id) || !await handoffWarnings()) continue;
         if (await usedChannel(id,turn,seq,channelCommands)) {bb.log.warn(`Agent Hub warning skipped: turn ${turn} used a channel its ingest missed`); continue;}
-        try {await bb.sdk.threads.send({threadId:id,originPluginId:'agent-hub',mode:'queue-if-active',input:[{type:'text',text,mentions:[]}]});}
+        try {await sendOrAppend(bb,{threadId:id,text,header:false});}
         catch (e) {bb.log.warn(`Agent Hub handoff warning: ${String(e)}`);}
       }
     }

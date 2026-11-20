@@ -65,3 +65,11 @@ it('keeps a reply to a warning sent before the rename quiet too', async () => {
 it.each(['agent_hub_ask','bb work-board question add EXA-1 --kind decision'])('sends no question warning when the turn used %s but ingest missed that event',async tool => {
  const s=setup(); await s.control(); await s.turn('Which one do you want?',undefined,tool,false,true); expect(s.send).not.toHaveBeenCalled();
 });
+it.each([['agent-hub',true],['example',false]])('extends a queued row from %s with the handoff warning only when it is ours: %s',async (origin,merges) => {
+ const s=setup(); const row={id:'q1',content:[{type:'text',text:'Earlier notice',mentions:[]}],originPluginId:origin,state:'queued',editable:true,updatedAt:42};
+ s.harness.sdk.stub('threads.queuedMessages.list',async () => [row] as never);
+ s.harness.sdk.stub('threads.queuedMessages.update',async () => row as never);
+ await s.turn();
+ expect(s.send.mock.calls.length).toBe(merges ? 0 : 1);
+ expect(s.harness.sdk.callsTo('threads.queuedMessages.update')).toEqual(merges ? [[{threadId:'thr_example',queuedMessageId:'q1',expectedUpdatedAt:42,input:[{type:'text',text:'Earlier notice\n\n---\n\n'+handoff,mentions:[]}]}]] : []);
+});
