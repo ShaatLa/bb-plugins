@@ -126,7 +126,7 @@ describe("status flags", () => {
       ...f.current().statuses!.map((status) => ({ ...status, requiresApprovedPlan: status.id === "backlog" || status.id === "canceled" })),
       { id: "extra_marked", name: "Extra marked", requiresApprovedPlan: false },
     ];
-    statuses.splice(3, 0, { id: "mid", name: "Mid", requiresApprovedPlan: false } as never);
+    statuses.splice(statuses.findIndex((status) => status.id === "in_progress") + 1, 0, { id: "mid", name: "Mid", requiresApprovedPlan: false } as never);
     await writeFile(path, JSON.stringify(statuses));
     const result = await f.harness.runCli(["project", "update", "EXA", "--statuses-file", path]);
     expect(result, result.stderr).toMatchObject({ exitCode: 0 });

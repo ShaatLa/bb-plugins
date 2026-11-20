@@ -1,6 +1,30 @@
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
+import { DEFAULT_TASK_STATUSES, taskStatusesSchema } from "../shared/statuses.js";
+import { ensurePlanningStatus, withPlanningStatus, workflowPolicySchema } from "../shared/workflow-policy.js";
 
 type PluginDatabase = ReturnType<BbPluginApi["storage"]["database"]>;
+type Log = (message: string) => void;
+
+/** 0.62.0: a project that already plans gets its planning status settled; one bad board is logged and skipped. */
+function settlePlanningStatuses(db: PluginDatabase, log: Log): void {
+  const rows = db.prepare<[], { id: string; prefix: string; statuses: string | null; workflow_policy: string | null }>("SELECT id, prefix, statuses, workflow_policy FROM projects WHERE planning IN ('optional', 'required')").all();
+  for (const row of rows) {
+    try {
+      const statuses = row.statuses == null ? null : taskStatusesSchema.parse(JSON.parse(row.statuses));
+      const policy = row.workflow_policy == null ? null : workflowPolicySchema.parse(JSON.parse(row.workflow_policy));
+      const ensured = ensurePlanningStatus({ statuses, workflowPolicy: policy });
+      if (ensured.planningStatus === null) {
+        log(`planning status not set for ${row.prefix}: ${ensured.reason}`);
+        continue;
+      }
+      const next = withPlanningStatus(policy, ensured.planningStatus);
+      const inserted = ensured.statuses.length !== (statuses ?? DEFAULT_TASK_STATUSES).length;
+      db.prepare("UPDATE projects SET statuses = CASE WHEN ? THEN ? ELSE statuses END, workflow_policy = ? WHERE id = ?").run(inserted ? 1 : 0, JSON.stringify(ensured.statuses), next ? JSON.stringify(next) : null, row.id);
+    } catch (error) {
+      log(`planning status not set for ${row.prefix}: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+}
 
 const MIGRATIONS = [
   `
@@ -663,9 +687,11 @@ const MIGRATIONS = [
      tracker_id TEXT PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
      manager TEXT, changed_at TEXT, previous TEXT
    );`,
+  // 0.62.0: a project that already plans gets a Planning status (see settlePlanningStatuses). The log is bound per run.
+  (db: PluginDatabase, log: Log) => settlePlanningStatuses(db, log),
 ] as const;
 
-export function initializeTasksSchema(db: PluginDatabase): void {
+export function initializeTasksSchema(db: PluginDatabase, log: Log = () => {}): void {
   db.pragma("foreign_keys = ON");
   // A large transaction must not retain its peak WAL allocation after checkpoints can reset it.
   db.pragma("journal_size_limit = 4194304");
@@ -690,7 +716,7 @@ export function initializeTasksSchema(db: PluginDatabase): void {
       const version = index + 1;
       if (hasVersion.get(version)) continue;
       if (typeof sql === "string") db.exec(sql);
-      else sql(db);
+      else sql(db, log);
       recordVersion.run(version, new Date().toISOString());
     }
   });

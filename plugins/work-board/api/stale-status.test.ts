@@ -71,7 +71,7 @@ it("uses configured status IDs and distinguishes unavailable and closed PR snaps
   const { bb, harness } = createFakePluginHost({ pluginId: "work-board" });
   const store = createStore(bb);
   const project = store.tasks.createProject({ name: "Custom", prefix: "CUS", color: "blue" });
-  store.tasks.updateProject(project.id, { workflowPolicy: { bugfixStatus: null, doneStatus: "done", inProgressStatus: "todo", reviewStatus: "in_review", testingStatus: null, earlyStatuses: [], ownerDecisionLabel: null } });
+  store.tasks.updateProject(project.id, { workflowPolicy: { bugfixStatus: null, doneStatus: "done", inProgressStatus: "todo", reviewStatus: "in_review", testingStatus: null, planningStatus: null, earlyStatuses: [], ownerDecisionLabel: null } });
   const progress = store.tasks.createTask({ projectId: project.id, title: "Working", status: "todo" });
   store.tasks.upsertTaskThread({ taskId: progress.id, threadId: "thr_worker", title: "Worker", presetName: "agent", liveStatus: "working" });
   const review = store.tasks.createTask({ projectId: project.id, title: "PR", status: "in_review" });
@@ -84,7 +84,7 @@ it("uses configured status IDs and distinguishes unavailable and closed PR snaps
   db.prepare<[string, string, string]>("UPDATE git_pr_snapshots SET payload=?, error='sync unavailable' WHERE project_id=? AND identity=?").run(JSON.stringify({ state: "merged" }), project.id, "pr");
   expect(store.tasks.staleStatusFlags([review.id]).get(review.id)).toEqual(["no_open_pr"]);
   // Testing after the merge is expected; testing with no PR at all is still flagged.
-  store.tasks.updateProject(project.id, { workflowPolicy: { bugfixStatus: null, doneStatus: "done", inProgressStatus: "todo", reviewStatus: "in_review", testingStatus: "in_testing", earlyStatuses: [], ownerDecisionLabel: null } });
+  store.tasks.updateProject(project.id, { workflowPolicy: { bugfixStatus: null, doneStatus: "done", inProgressStatus: "todo", reviewStatus: "in_review", testingStatus: "in_testing", planningStatus: null, earlyStatuses: [], ownerDecisionLabel: null } });
   const statuses = [...(store.tasks.getProject(project.id)!.statuses ?? [])];
   if (!statuses.some((status) => status.id === "in_testing")) store.tasks.updateProject(project.id, { statuses: [...statuses, { id: "in_testing", name: "In testing" }] });
   const testing = store.tasks.createTask({ projectId: project.id, title: "QA", status: "in_testing" });

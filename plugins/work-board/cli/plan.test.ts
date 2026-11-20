@@ -184,7 +184,7 @@ describe("bb work-board plan", () => {
 
     const json = JSON.parse(await ok(["show", "EXA-1", "--json"]));
     expect(json).toMatchObject({ planning: "optional", planWarning: expect.stringContaining("not approved") });
-    expect(json.plan).toEqual({ version: 1, state: "in_review", reviewer: { kind: "owner", threadId: null }, noteCounts: { draft: 0, open: 0, addressed: 0, resolved: 0 }, updatedAt: expect.any(String), updatedBy: "agent (thr_example)" });
+    expect(json.plan).toEqual({ version: 1, state: "in_review", reviewer: { kind: "owner", threadId: null }, review: { paused: false }, noteCounts: { draft: 0, open: 0, addressed: 0, resolved: 0 }, updatedAt: expect.any(String), updatedBy: "agent (thr_example)" });
     expect(JSON.parse(await ok(["show", "EXA-1", "--json", "--with-plan"])).plan.body).toBe(PLAN);
   });
 

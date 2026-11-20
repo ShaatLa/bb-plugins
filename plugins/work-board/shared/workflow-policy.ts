@@ -7,11 +7,14 @@ export const workflowPolicySchema = z.object({
   inProgressStatus: taskStatusSchema.nullable().default("in_progress"),
   reviewStatus: taskStatusSchema.nullable().default("in_review"),
   testingStatus: taskStatusSchema.nullable().default("in_testing"),
+  /** The status a card sits in while a session plans it; null turns the automatic move off. Valid only as `planningStatusOf` says. */
+  planningStatus: taskStatusSchema.nullable().default(null),
   earlyStatuses: z.array(taskStatusSchema).default(["todo", "in_progress"]),
   ownerDecisionLabel: z.string().trim().min(1).max(100).nullable().default("owner decision"),
 }).strict();
 
 export type WorkflowPolicy = z.infer<typeof workflowPolicySchema>;
+const MAX_STATUSES = 32;
 export function getWorkflowPolicy(project: { workflowPolicy?: Partial<WorkflowPolicy> | null }): WorkflowPolicy {
   return workflowPolicySchema.parse(project.workflowPolicy ?? {});
 }
@@ -32,6 +35,60 @@ export function effectiveInProgressStatus(project: { workflowPolicy?: Partial<Wo
 }
 
 type ZoneProject = { workflowPolicy?: Partial<WorkflowPolicy> | null; statuses?: ReadonlyArray<{ id: string; requiresApprovedPlan?: boolean }> | null };
+
+/**
+ * Whether `id` can serve as the planning status of this project right now: it is listed, not closed, not another workflow
+ * role (In progress, review, testing, done, bugfix) and not marked "only with an approved plan".
+ */
+export function isPlanningTarget(project: ZoneProject, id: string): boolean {
+  const entry = (project.statuses?.length ? project.statuses : DEFAULT_TASK_STATUSES).find((status) => status.id === id) as { requiresApprovedPlan?: boolean } | undefined;
+  if (!entry || entry.requiresApprovedPlan === true || isClosedStatus(project, id)) return false;
+  const policy = getWorkflowPolicy(project);
+  return ![effectiveInProgressStatus(project), policy.inProgressStatus, policy.reviewStatus, policy.testingStatus, policy.doneStatus, policy.bugfixStatus].includes(id);
+}
+
+/** The configured planning status while it is a valid target (read at every use, so later settings edits count), else null. */
+export function planningStatusOf(project: ZoneProject): string | null {
+  const id = getWorkflowPolicy(project).planningStatus;
+  return id && isPlanningTarget(project, id) ? id : null;
+}
+
+/** The statuses a delegated card leaves for In progress: Backlog, Todo and, while it is a valid target, the planning status. */
+export function startsFromStatus(project: ZoneProject, status: string): boolean {
+  return status === "backlog" || status === "todo" || (planningStatusOf(project) !== null && status === planningStatusOf(project));
+}
+
+/**
+ * Settles the planning status of a project whose planning is on, without writing anything. `planningStatus` is the valid
+ * target, or null when there is none (the caller then leaves the policy alone and the automatic move stays off; `reason`
+ * says why). Cases in order: a valid target already set is kept; a status with the id `planning`, then one named
+ * "Planning", is used when it is valid; when either is taken by an invalid status nothing is inserted (a duplicate name is
+ * refused by the status rules); only when both are free, the list has room and In progress is present, an unmarked
+ * "Planning" is inserted right before In progress.
+ */
+export function ensurePlanningStatus<S extends { id: string; name: string; requiresApprovedPlan?: boolean }>(project: {
+  workflowPolicy?: Partial<WorkflowPolicy> | null;
+  statuses?: readonly S[] | null;
+}): { statuses: S[]; planningStatus: string | null; reason: string | null } {
+  const list = (project.statuses?.length ? project.statuses : DEFAULT_TASK_STATUSES) as readonly S[];
+  const keep = (planningStatus: string | null, reason: string | null = null, statuses: S[] = [...list]) => ({ statuses, planningStatus, reason });
+  const current = planningStatusOf({ ...project, statuses: list });
+  if (current) return keep(current);
+  const taken = list.find((status) => status.id === "planning") ?? list.find((status) => status.name.toLowerCase() === "planning");
+  if (taken)
+    return isPlanningTarget({ ...project, statuses: list }, taken.id) ? keep(taken.id) : keep(null, `status "${taken.name}" (${taken.id}) is taken but cannot be a planning status`);
+  const start = effectiveInProgressStatus({ ...project, statuses: list });
+  const at = start ? list.findIndex((status) => status.id === start) : -1;
+  if (at < 0) return keep(null, "the project has no In progress status to put Planning before");
+  if (list.length >= MAX_STATUSES) return keep(null, `the status list already holds ${MAX_STATUSES} statuses`);
+  return keep("planning", null, [...list.slice(0, at), { id: "planning", name: "Planning" } as S, ...list.slice(at)]);
+}
+
+/** The policy with `planningStatus` set; the same policy when there is nothing to set or it already holds. */
+export function withPlanningStatus(policy: Partial<WorkflowPolicy> | null | undefined, planningStatus: string | null): WorkflowPolicy | null {
+  if (planningStatus === null) return policy == null ? null : getWorkflowPolicy({ workflowPolicy: policy });
+  return getWorkflowPolicy({ workflowPolicy: { ...policy, planningStatus } });
+}
 
 /** The statuses the owner marked "only with an approved plan". `canceled` can never be marked. */
 export function planGatedStatuses(project: ZoneProject): string[] {

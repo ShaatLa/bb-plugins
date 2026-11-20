@@ -1,4 +1,4 @@
-import { workflowPolicySchema } from "../shared/workflow-policy";
+import { planningStatusOf, workflowPolicySchema } from "../shared/workflow-policy";
 import { isUtf8 } from "node:buffer";
 import {
   mkdtemp,
@@ -13,6 +13,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, relative } from "node:path";
 import {
   createFakePluginHost,
+  makeThreadResponse,
   type FakePluginHarness,
 } from "@get-bb/plugin-sdk/testing";
 import { afterEach, describe, expect, it } from "vitest";
@@ -976,7 +977,8 @@ it("round-trips configurable project statuses, their order and custom task stage
   statuses[2]!.name = "Development";
   statuses.splice(4, 0, { id: "in_testing", name: "In testing", icon: "testing", color: "steelblue" });
   const workflowPolicy = workflowPolicySchema.parse({ bugfixStatus: "repair" });
-  source.store.tasks.updateProject(source.project.id, { statuses, workflowPolicy, autoArchiveAfterDays: "14", staleIdleMinutes: "120" });
+  // Planning off: an import that creates a planning project settles a Planning status, which this round trip does not cover.
+  source.store.tasks.updateProject(source.project.id, { statuses, workflowPolicy, autoArchiveAfterDays: "14", staleIdleMinutes: "120", planning: "off" });
   source.store.tasks.updateTask(source.task.id, { status: "in_testing" });
   source.bb.storage.database().prepare("INSERT OR IGNORE INTO task_activity_history(task_id) VALUES (?)").run(source.task.id);
   const out = join(await directory(), "statuses-v6");
@@ -1346,6 +1348,104 @@ describe("archive v20: reviewers, review history and planning", () => {
     expect(createPlanStore(target.bb.storage.database(), target.store.tasks).captureReviews(source.task.id)).toEqual(history);
   });
 
+  describe("planning status and open decisions", () => {
+    const editProject = async (out: string, edit: (manifest: Record<string, any>) => void) => {
+      const path = join(out, "project.json");
+      const manifest = JSON.parse(await readFile(path, "utf8"));
+      edit(manifest);
+      await writeFile(path, jsonText(manifest));
+    };
+    const projectRow = (bb: { storage: { database(): ReturnType<typeof setup>["bb"]["storage"]["database"] extends () => infer D ? D : never } }, id: string) =>
+      bb.storage.database().prepare("SELECT statuses, workflow_policy FROM projects WHERE id = ?").get(id);
+
+    it("reads a v20 snapshot with a pending thread review and an open decision as paused, with no stored fields, and its last answer sends the resume wake", async () => {
+      const source = await reviewed();
+      await createStructuredStore(source.bb, source.store).handlers.createQuestion({ taskId: source.task.id, kind: "decision", askedByThread: null, prompt: "Which one?", steps: [], options: ["A", "B"], mode: "single" });
+      const out = await exported(source, "v20-paused");
+      await editProject(out, (manifest) => {
+        manifest.version = 20;
+        delete manifest.project.archiveThreadsOnClose;
+        delete manifest.project.archiveReviewerOnApproval;
+      });
+      const record = JSON.parse(await readFile(join(out, "tasks", `${source.task.id}.json`), "utf8"));
+      expect(JSON.stringify(record.plan)).not.toMatch(/paus/i);
+      const target = setup();
+      await importProject(target.bb, target.store, out, false);
+      target.harness.sdk.stub("threads.get", async ({ threadId }: { threadId: string }) => makeThreadResponse({ id: threadId, status: "active" }));
+      const plans = createPlanStore(target.bb.storage.database(), target.store.tasks);
+      expect(plans.paused(source.task.id)).toBe(true);
+      const handlers = createStructuredStore(target.bb, target.store).handlers;
+      const [question] = (await handlers.listQuestions({ taskId: source.task.id })).questions;
+      const settled = await handlers.answerQuestion({ questionId: question!.id, revision: question!.revision, selectedOptionIds: [question!.options[0]!.id], authorName: "Owner" });
+      expect(settled.planWake).toMatchObject({ event: "resumed" });
+      const sends = target.harness.sdk.callsTo("threads.send") as Array<[{ threadId: string; input: Array<{ text: string }> }]>;
+      expect(sends.map((call) => call[0].threadId)).toContain("thr_reviewer_b");
+      expect(sends.find((call) => call[0].threadId === "thr_reviewer_b")![0].input[0]!.text).toContain("the owner's decision is settled");
+      expect(plans.paused(source.task.id)).toBe(false);
+    });
+
+    it("settles Planning on the proposed project: an older snapshot without the column still validates a local card in Planning, and a repeated import changes nothing", async () => {
+      const source = await reviewed();
+      const out = await exported(source, "planning-older");
+      source.store.tasks.createTask({ projectId: source.project.id, title: "Local", status: "planning" });
+      await editProject(out, (manifest) => {
+        manifest.project.statuses = manifest.project.statuses.filter((status: { id: string }) => status.id !== "planning");
+        if (manifest.project.workflowPolicy) manifest.project.workflowPolicy.planningStatus = null;
+      });
+      for (const file of await readdir(join(out, "tasks"))) {
+        const path = join(out, "tasks", file);
+        const task = JSON.parse(await readFile(path, "utf8"));
+        if (task.task.status === "planning") task.task.status = "todo";
+        await writeFile(path, jsonText(task));
+      }
+      const before = projectRow(source.bb as never, source.project.id);
+      await importProject(source.bb, source.store, out, true);
+      expect(projectRow(source.bb as never, source.project.id)).toEqual(before);
+      expect(source.store.tasks.getProject(source.project.id)!.statuses!.map((status) => status.id)).toContain("planning");
+      expect(source.store.tasks.getProject(source.project.id)!.workflowPolicy?.planningStatus).toBe("planning");
+      expect(source.store.tasks.listTasks({ projectId: source.project.id }).filter((task) => task.status === "planning").map((task) => task.title)).toEqual(["Local"]);
+      await importProject(source.bb, source.store, out, true);
+      expect(projectRow(source.bb as never, source.project.id)).toEqual(before);
+    });
+
+    it("gives a project that a legacy archive creates as optional its Planning status", async () => {
+      const source = await reviewed();
+      const out = await exported(source, "planning-legacy");
+      await toV19(out);
+      await editProject(out, (manifest) => {
+        manifest.project.statuses = manifest.project.statuses.filter((status: { id: string }) => status.id !== "planning");
+        if (manifest.project.workflowPolicy) manifest.project.workflowPolicy.planningStatus = null;
+      });
+      for (const file of await readdir(join(out, "tasks"))) {
+        const path = join(out, "tasks", file);
+        const task = JSON.parse(await readFile(path, "utf8"));
+        if (task.task.status === "planning") task.task.status = "todo";
+        await writeFile(path, jsonText(task));
+      }
+      const target = setup();
+      await importProject(target.bb, target.store, out, false);
+      const imported = target.store.tasks.getProject(source.project.id)!;
+      expect(imported.planning).toBe("optional");
+      expect(imported.statuses!.map((status) => status.id)).toEqual(["backlog", "todo", "planning", "in_progress", "in_review", "done", "canceled"]);
+      expect(imported.workflowPolicy?.planningStatus).toBe("planning");
+    });
+
+    it("enables and imports a board whose Done is named Planning, with the id planning free, and keeps its statuses unchanged", async () => {
+      const source = await seed();
+      const statuses = DEFAULT_TASK_STATUSES.map((status) => (status.id === "done" ? { ...status, name: "Planning" } : { ...status }));
+      source.store.tasks.updateProject(source.project.id, { planning: "off", statuses });
+      source.store.tasks.updateProject(source.project.id, { planning: "optional" });
+      const enabled = source.store.tasks.getProject(source.project.id)!;
+      expect(enabled.statuses).toEqual(statuses);
+      expect(planningStatusOf(enabled)).toBeNull();
+      const out = await exported(source, "planning-done-named");
+      const target = setup();
+      await importProject(target.bb, target.store, out, false);
+      expect(target.store.tasks.getProject(source.project.id)!.statuses).toEqual(statuses);
+      expect(planningStatusOf(target.store.tasks.getProject(source.project.id)!)).toBeNull();
+    });
+  });
+
   describe("status flags", () => {
     const flagged = (project: { statuses?: Array<{ id: string; requiresApprovedPlan?: boolean }> }) => (project.statuses ?? []).filter((status) => status.requiresApprovedPlan).map((status) => status.id);
     const unmark = (store: Awaited<ReturnType<typeof seed>>["store"], projectId: string, id: string) =>
@@ -1396,7 +1496,7 @@ describe("archive v20: reviewers, review history and planning", () => {
       await importProject(target.bb, target.store, out, false);
       // The snapshot adds a status after Done that it marks false, and marks canceled; the local project is required.
       await editSnapshot(out, (project) => {
-        project.statuses.splice(5, 0, { id: "after_done", name: "After done", requiresApprovedPlan: false });
+        project.statuses.splice(project.statuses.findIndex((status: { id: string }) => status.id === "canceled"), 0, { id: "after_done", name: "After done", requiresApprovedPlan: false });
         for (const status of project.statuses) if (status.id === "canceled") status.requiresApprovedPlan = true;
       });
       // A genuinely new status is a real difference, so this import needs --overwrite; the flags are merged either way.

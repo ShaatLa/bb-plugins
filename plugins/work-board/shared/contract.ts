@@ -248,6 +248,11 @@ const questionStateSchema = z
       });
   });
 
+/** The wake a question write sent the plan reviewer: `failed` lists the threads that could not be told, `hint` says what to do by hand. */
+export const planWakeSchema = z
+  .object({ event: z.enum(["paused", "resumed"]), delivered: z.enum(["sent", "failed"]), failed: z.array(z.string()), hint: z.string().nullable() })
+  .strict();
+export type PlanWake = z.infer<typeof planWakeSchema>;
 export const questionSchema = questionStateSchema
   .safeExtend({
     id: idSchema,
@@ -1056,7 +1061,7 @@ export const tasksRpcContract = {
           .max(20).default([]),
       })
       .strict(),
-    output: z.object({ question: questionSchema }).strict(),
+    output: z.object({ question: questionSchema, planWake: planWakeSchema.optional() }).strict(),
   },
   answerQuestion: {
     input: z
@@ -1077,6 +1082,7 @@ export const tasksRpcContract = {
         notification: z
           .enum(["sent", "failed", "none", "unchanged"])
           .optional(),
+        planWake: planWakeSchema.optional(),
       })
       .strict(),
   },
@@ -1100,13 +1106,13 @@ export const tasksRpcContract = {
         authorName: nonBlankStringSchema.default("You"),
       })
       .strict(),
-    output: z.object({ question: questionSchema }).strict(),
+    output: z.object({ question: questionSchema, planWake: planWakeSchema.optional() }).strict(),
   },
   deleteQuestion: {
     input: z
       .object({ questionId: idSchema, revision: z.number().int().positive() })
       .strict(),
-    output: z.object({ deleted: z.boolean() }).strict(),
+    output: z.object({ deleted: z.boolean(), planWake: planWakeSchema.optional() }).strict(),
   },
   listTemplates: {
     input: z.object({ projectId: idSchema }).strict(),
@@ -1153,11 +1159,11 @@ export const tasksRpcContract = {
   },
   getTaskPlan: {
     input: z.object({ taskId: idSchema, version: z.number().int().min(1).optional() }).strict(),
-    output: z.object({ plan: taskPlanHeadSchema.extend({ requested: planVersionSchema.extend({ body: z.string() }).strict(), noteCounts: planNoteCountsSchema }).strict().nullable() }).strict(),
+    output: z.object({ plan: taskPlanHeadSchema.extend({ requested: planVersionSchema.extend({ body: z.string() }).strict(), noteCounts: planNoteCountsSchema, /** Derived: in review while the card has an open owner decision. */ paused: z.boolean().default(false) }).strict().nullable() }).strict(),
   },
   listTaskPlanVersions: {
     input: z.object({ taskId: idSchema }).strict(),
-    output: z.object({ plan: taskPlanHeadSchema.nullable(), versions: z.array(planVersionSchema), noteCounts: planNoteCountsSchema }).strict(),
+    output: z.object({ plan: taskPlanHeadSchema.nullable(), versions: z.array(planVersionSchema), noteCounts: planNoteCountsSchema, paused: z.boolean().default(false) }).strict(),
   },
   listPlanNotes: {
     input: z.object({ taskId: idSchema }).strict(),
@@ -1191,7 +1197,21 @@ export const tasksRpcContract = {
     input: z.object({ taskId: idSchema, author: planAuthorSchema, note: z.string().max(PLAN_NOTE_BODY_MAX).optional() }).strict(),
     output: planReviewResultSchema,
   },
-  saveTaskPlan: { input: savePlanInputSchema, output: planMutationResultSchema },
+  saveTaskPlan: {
+    input: savePlanInputSchema,
+    output: z.discriminatedUnion("ok", [
+      z
+        .object({
+          ok: z.literal(true),
+          plan: taskPlanHeadSchema,
+          version: planVersionSchema.nullable(),
+          /** Set when the first version moved the card into the planning status in the same write: its id and name. */
+          movedTo: z.object({ status: z.string(), label: z.string() }).strict().nullable().default(null),
+        })
+        .strict(),
+      z.object({ ok: z.literal(false), error: planErrorSchema }).strict(),
+    ]),
+  },
   diffTaskPlan: {
     input: z.object({ taskId: idSchema, from: z.number().int().min(0).optional(), to: z.number().int().min(1).optional() }).strict(),
     output: z.object({ from: z.number().int().min(0), to: z.number().int().min(1), patch: z.string(), added: z.number().int().min(0), removed: z.number().int().min(0) }).strict(),
@@ -1202,7 +1222,7 @@ export const tasksRpcContract = {
   },
   listPlanReviews: {
     input: z.object({ taskId: idSchema }).strict(),
-    output: z.object({ reviews: z.array(planReviewSchema) }).strict(),
+    output: z.object({ reviews: z.array(planReviewSchema), paused: z.boolean().default(false) }).strict(),
   },
   setTaskPlanState: {
     input: z.object({ taskId: idSchema, state: z.enum(SETTABLE_PLAN_STATES), author: planAuthorSchema }).strict(),

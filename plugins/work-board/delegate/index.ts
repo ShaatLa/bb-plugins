@@ -7,7 +7,7 @@ import type { DependencyTask } from "../shared/contract";
 import { activityService } from "../activity/index.js";
 import { recordThreadLink } from "../lifecycle/thread-links";
 import { DEFAULT_TASK_STATUSES, statusLabel } from "../shared/statuses.js";
-import { effectiveInProgressStatus, getWorkflowPolicy } from "../shared/workflow-policy";
+import { effectiveInProgressStatus, getWorkflowPolicy, startsFromStatus } from "../shared/workflow-policy";
 import type { BbPluginApi, PluginRpcHandlers } from "@get-bb/plugin-sdk";
 import { z } from "zod";
 import { createStructuredStore } from "../structured/store";
@@ -428,8 +428,9 @@ export function handlers(
         // The send above took time: the card and the project are read again here, so a card canceled meanwhile stays canceled.
         // A card whose plan is not approved stays where it is; the seed prompt carries the plan warning.
         const current = store.tasks.getTask(task.id) ?? task;
-        const target = effectiveInProgressStatus(store.tasks.getProject(current.projectId) ?? project);
-        if ((current.status === "backlog" || current.status === "todo") && target) {
+        const currentProject = store.tasks.getProject(current.projectId) ?? project;
+        const target = effectiveInProgressStatus(currentProject);
+        if (startsFromStatus(currentProject, current.status) && target) {
           if (store.tasks.planGate(current, target)) skippedMove = true;
           else store.tasks.updateTask(task.id, { status: target });
         }
@@ -530,8 +531,8 @@ export function handlers(
         // The card may have changed projects meanwhile; its own project decides the target status.
         const freshProject = store.tasks.getProject(current.projectId) ?? project;
         const inProgress = effectiveInProgressStatus(freshProject);
-        if ((current.status === "backlog" || current.status === "todo") && inProgress && store.tasks.planGate(current, inProgress)) skippedMove = true;
-        else if ((current.status === "backlog" || current.status === "todo") && inProgress) {
+        if (startsFromStatus(freshProject, current.status) && inProgress && store.tasks.planGate(current, inProgress)) skippedMove = true;
+        else if (startsFromStatus(freshProject, current.status) && inProgress) {
           store.tasks.updateTask(task.id, { status: inProgress });
           createSystemComment(store.tasks, {
             taskId: task.id,

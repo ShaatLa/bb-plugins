@@ -54,6 +54,20 @@ describe("Plan tab", () => {
     expect(slot.container.querySelector(".tiptap")?.getAttribute("contenteditable")).toBe("false");
   });
 
+  it("says the review waits for the owner's decision while a decision is open, and stops when it is answered", async () => {
+    const { slot, task, project, harness } = await open();
+    const refresh = () => slot.behavior.emitRealtime("tasks:changed", { taskId: task.id, projectId: project.id });
+    await slot.findByText("Draft");
+    expect(slot.queryByText("Waiting for the owner's decision")).toBeNull();
+    await harness.callRpc("submitTaskPlan" as never, { taskId: task.id, author: { kind: "person", threadId: null, name: "You" }, reviewer: "owner" } as never);
+    const { question } = (await harness.callRpc("createQuestion" as never, { taskId: task.id, kind: "decision", prompt: "Which one?", options: ["A", "B"], mode: "single" } as never)) as { question: { id: string; revision: number; options: Array<{ id: string }> } };
+    await refresh();
+    expect(await slot.findByText("Waiting for the owner's decision")).toBeTruthy();
+    await harness.callRpc("answerQuestion" as never, { questionId: question.id, revision: question.revision, selectedOptionIds: [question.options[0]!.id], authorName: "You" } as never);
+    await refresh();
+    await waitFor(() => expect(slot.queryByText("Waiting for the owner's decision")).toBeNull());
+  });
+
   it("keeps the state badge next to the title, and the version and actions together on the right", async () => {
     const { slot } = await open();
     const title = await slot.findByRole("button", { name: /Planned work/ });

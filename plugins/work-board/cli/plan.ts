@@ -99,7 +99,8 @@ export function planCommands(deps: PlanCliDeps) {
     );
     const version = result.version!;
     const summary = `${task.key} plan saved as v${version.version} · ${lines(version.added, version.removed)} · state ${result.plan.state}. Next edit: --base-version ${version.version}`;
-    return input.options.json ? JSON.stringify({ plan: result.plan, version }) : summary;
+    // Printed only for a move that was committed with this save.
+    return input.options.json ? JSON.stringify({ plan: result.plan, version, movedTo: result.movedTo }) : result.movedTo ? `${summary}\n${task.key} moved to ${result.movedTo.label}` : summary;
   }
 
   /** Text from a file on the calling machine, or inline when no file is given. */
@@ -168,7 +169,7 @@ export function planCommands(deps: PlanCliDeps) {
             return JSON.stringify({ taskKey: task.key, plan: { ...plan, requested: undefined }, requested: { ...plan.requested, body: undefined }, section: input.options.section ?? null, body: text });
           const historical = plan.requested.version !== plan.version;
           return [
-            `Plan v${plan.version} · ${plan.state} · updated ${plan.updatedAt} by ${plan.updatedBy.name}${plan.noteCounts.open ? ` · ${plan.noteCounts.open} open note${plan.noteCounts.open === 1 ? "" : "s"}` : ""}`,
+            `Plan v${plan.version} · ${plan.state}${plan.paused ? " · waiting for the owner's decision" : ""} · updated ${plan.updatedAt} by ${plan.updatedBy.name}${plan.noteCounts.open ? ` · ${plan.noteCounts.open} open note${plan.noteCounts.open === 1 ? "" : "s"}` : ""}`,
             `Next edit: --base-version ${plan.version}`,
             ...(historical ? [`Showing historical v${plan.requested.version} (${plan.requested.summary}); do not use it as a base version`] : []),
             ...(input.options.section !== undefined ? [`Section: ${input.options.section}`] : []),
@@ -370,13 +371,14 @@ export function planCommands(deps: PlanCliDeps) {
       run(input) {
         return guard(async () => {
           const task = await resolveTask(domain, input.positionals["key-or-id"]);
-          const { reviews } = tasksRpcContract.listPlanReviews.output.parse(await domain.listPlanReviews({ taskId: task.id }));
-          if (input.options.json) return JSON.stringify({ taskKey: task.key, reviews });
-          return table(
+          const { reviews, paused } = tasksRpcContract.listPlanReviews.output.parse(await domain.listPlanReviews({ taskId: task.id }));
+          if (input.options.json) return JSON.stringify({ taskKey: task.key, paused, reviews });
+          const rows = table(
             ["VERSION", "REVIEWER", "SUBMITTED", "OUTCOME", "DECIDED", "BY"],
             reviews.map((review) => [`v${review.version}`, review.reviewer.kind === "thread" ? review.reviewer.threadId! : "owner", review.submittedAt, review.outcome, review.decidedAt ?? "-", review.decidedBy ?? "-"]),
             "(none)",
           );
+          return paused ? `Waiting for the owner's decision: the review is paused until it is settled.\n${rows}` : rows;
         });
       },
     }),

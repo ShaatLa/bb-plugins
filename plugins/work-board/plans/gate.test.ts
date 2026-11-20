@@ -47,7 +47,10 @@ function setup(planning: "off" | "optional" | "required" = "required", options: 
   const plans = createPlanStore(host.bb.storage.database(), store.tasks);
   const card = (title: string, input: Record<string, unknown> = {}) => store.tasks.createTask({ projectId: project.id, title, status: "todo", ...input });
   const withPlan = (taskId: string, state: "draft" | "in_review" | "changes_requested" | "approved") => {
+    const before = store.tasks.getTask(taskId)!.status;
     plans.save({ taskId, op: "replace", baseVersion: 0, body: PLAN, summary: "Plan", author });
+    // The first version moves a Backlog or Todo card to Planning; these tests are about the gate, so the card stays where it was.
+    store.tasks.updateTask(taskId, { status: before });
     if (state === "in_review") plans.submit(taskId, author, null);
     if (state === "changes_requested") plans.setState(taskId, "changes_requested", owner);
     if (state === "approved") plans.setState(taskId, "approved", owner);
@@ -223,7 +226,7 @@ describe("transfers and status moves during a dispatch or a delivery", () => {
   /** The source project starts work in a custom status that the destination does not have. */
   function twoProjects(setupResult: ReturnType<typeof setup>) {
     const { store, project } = setupResult;
-    store.tasks.updateProject(project.id, { statuses: [...DEFAULT_TASK_STATUSES.slice(0, 3), { id: "busy", name: "Busy" }, ...DEFAULT_TASK_STATUSES.slice(3)], workflowPolicy: { bugfixStatus: null, doneStatus: "done", inProgressStatus: "busy", reviewStatus: null, testingStatus: null, earlyStatuses: ["todo"], ownerDecisionLabel: null } });
+    store.tasks.updateProject(project.id, { statuses: [...DEFAULT_TASK_STATUSES.slice(0, 3), { id: "busy", name: "Busy" }, ...DEFAULT_TASK_STATUSES.slice(3)], workflowPolicy: { bugfixStatus: null, doneStatus: "done", inProgressStatus: "busy", reviewStatus: null, testingStatus: null, planningStatus: null, earlyStatuses: ["todo"], ownerDecisionLabel: null } });
     return store.tasks.createProject({ name: "Destination", prefix: "DST", color: "red" });
   }
 
@@ -313,6 +316,52 @@ describe("automatic moves", () => {
     expect(harness.sdk.callsTo("threads.spawn")).toHaveLength(1);
     expect((harness.sdk.callsTo("threads.spawn")[0] as any[])[0].prompt).toContain("Plan v1 is draft (not approved)");
     expect(harness.sdk.callsTo("threads.send")).toEqual([]);
+  });
+
+  it("treats the planning status like Todo for both delegate paths: the card moves only when the gate allows, and otherwise stays in Planning with its attachment", async () => {
+    const f = setup();
+    const approved = f.card("Approved", { status: "planning" });
+    f.withPlan(approved.id, "approved");
+    await f.call("delegateToThread", { taskId: approved.id, threadId: "thr_existing" });
+    expect(f.status(approved.id)).toBe("in_progress");
+    const spawnApproved = f.card("Spawn approved", { status: "planning" });
+    f.withPlan(spawnApproved.id, "approved");
+    await f.call("delegate", { taskId: spawnApproved.id, presetId: f.preset.id });
+    expect(f.status(spawnApproved.id)).toBe("in_progress");
+    const draft = f.card("Draft", { status: "planning" });
+    f.withPlan(draft.id, "draft");
+    await f.call("delegateToThread", { taskId: draft.id, threadId: "thr_existing" });
+    expect(f.status(draft.id)).toBe("planning");
+    expect(f.store.tasks.listTaskThreads(draft.id)).toHaveLength(1);
+    const spawnDraft = f.card("Spawn draft", { status: "planning" });
+    f.withPlan(spawnDraft.id, "draft");
+    await f.call("delegate", { taskId: spawnDraft.id, presetId: f.preset.id });
+    expect(f.status(spawnDraft.id)).toBe("planning");
+    expect(f.store.tasks.listTaskThreads(spawnDraft.id)).toHaveLength(1);
+  });
+
+  it("keeps a card in Planning with one advisory when approval ended between the prompt and the move", async () => {
+    let lose = () => {};
+    const f = setup("required", { onSend: () => lose() });
+    const task = f.card("Approved", { status: "planning" });
+    f.withPlan(task.id, "approved");
+    lose = () => void f.plans.save({ taskId: task.id, op: "replace", baseVersion: 1, body: `${PLAN}Changed.\n`, summary: "Edit", author });
+    await f.call("delegateToThread", { taskId: task.id, threadId: "thr_existing" });
+    expect(f.status(task.id)).toBe("planning");
+    const texts = f.sent().map((entry) => entry[0].input[0]!.text);
+    expect(texts).toHaveLength(2);
+    expect(texts[1]).toContain("The card was not moved to In progress");
+  });
+
+  it("does not promote out of a status that carries the planning name but is closed", async () => {
+    const f = setup("optional");
+    f.store.tasks.updateProject(f.project.id, {
+      statuses: f.store.tasks.getProject(f.project.id)!.statuses!.filter((status) => status.id !== "planning").map((status) => (status.id === "done" ? { ...status, name: "Planning" } : status)),
+      workflowPolicy: { ...f.store.tasks.getProject(f.project.id)!.workflowPolicy!, planningStatus: "done" },
+    });
+    const task = f.card("Closed", { status: "done" });
+    await f.call("delegateToThread", { taskId: task.id, threadId: "thr_existing" });
+    expect(f.status(task.id)).toBe("done");
   });
 
   it("decides at move time: a prompt built while approved is followed by exactly one advisory notice when approval ended before the move", async () => {

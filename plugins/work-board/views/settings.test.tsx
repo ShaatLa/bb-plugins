@@ -567,19 +567,19 @@ it("edits the plan-gated statuses as chips: add and remove save the flag, cancel
     // The first switch to required marked In progress and every later status; chips follow the project status order.
     expect(settings.getByRole("heading", { name: "Statuses that need an approved plan" })).toBeTruthy();
     expect(chips()).toEqual(["Remove In Progress", "Remove In Review", "Remove Done"]);
-    expect(free()).toBe("Without an approved plan a card stays in: Backlog, Todo, Canceled");
+    expect(free()).toBe("Without an approved plan a card stays in: Backlog, Todo, Planning, Canceled");
     expect(settings.getByTestId("plan-gated-statuses").querySelectorAll("[data-status-icon]")).toHaveLength(3);
     // Adding offers the unmarked statuses except canceled.
     fireEvent.click(settings.getByRole("combobox", { name: "Add status" }));
-    expect((await settings.findAllByRole("option")).map(option => option.textContent)).toEqual(["Backlog", "Todo"]);
+    expect((await settings.findAllByRole("option")).map(option => option.textContent)).toEqual(["Backlog", "Todo", "Planning"]);
     fireEvent.click(settings.getByRole("option", { name: "Todo" }));
     await waitFor(() => expect(flag("todo")).toBe(true));
-    await waitFor(() => expect(free()).toBe("Without an approved plan a card stays in: Backlog, Canceled"));
+    await waitFor(() => expect(free()).toBe("Without an approved plan a card stays in: Backlog, Planning, Canceled"));
     expect(chips()).toEqual(["Remove Todo", "Remove In Progress", "Remove In Review", "Remove Done"]);
     // Removing clears the flag and the status leaves the chips.
     fireEvent.click(settings.getByRole("button", { name: "Remove Done" }));
     await waitFor(() => expect(flag("done")).toBe(false));
-    await waitFor(() => expect(free()).toBe("Without an approved plan a card stays in: Backlog, Done, Canceled"));
+    await waitFor(() => expect(free()).toBe("Without an approved plan a card stays in: Backlog, Planning, Done, Canceled"));
     expect(chips()).toEqual(["Remove Todo", "Remove In Progress", "Remove In Review"]);
     expect(flag("canceled")).toBe(false);
   } finally { cleanup(); await harness.dispose(); }

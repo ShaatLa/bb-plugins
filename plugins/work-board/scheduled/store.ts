@@ -7,7 +7,7 @@ import type { Task as StoredTask } from "../db";
 import { createDependencyStore } from "../dependencies/store";
 import { createScheduleInputSchema, updateScheduleInputSchema, scheduleSchema, scheduleRunSchema, scheduleSourceSchema, type Schedule, type ScheduleRun, type ScheduleSource, type Recurrence } from "../shared/scheduled";
 import { nextOccurrence } from "./recurrence";
-import { effectiveInProgressStatus } from "../shared/workflow-policy";
+import { effectiveInProgressStatus, startsFromStatus } from "../shared/workflow-policy";
 
 export { ordinaryTaskVisibilitySql } from "./visibility";
 type Page = { projectId?:string; scheduleId?:string; search?:string; needsAttention?:boolean; limit?:number; cursor?:string };
@@ -145,8 +145,8 @@ export function createScheduledStore(bb:BbPluginApi,store:TasksApiStore) {
    if(!r.taskId)throw new Error("Run task is missing");
    const task=requireTask(r.taskId);
    // A card whose plan is not approved is tracked and dispatched as usual, but its status stays where it is.
-   const inProgress=effectiveInProgressStatus(store.tasks.getProject(task.projectId)!);
-   if((task.status==="backlog"||task.status==="todo")&&inProgress&&!store.tasks.planGate(task,inProgress))store.tasks.updateTask(r.taskId,{status:inProgress});
+   const project=store.tasks.getProject(task.projectId)!,inProgress=effectiveInProgressStatus(project);
+   if(startsFromStatus(project,task.status)&&inProgress&&!store.tasks.planGate(task,inProgress))store.tasks.updateTask(r.taskId,{status:inProgress});
    db.prepare("UPDATE task_scheduled_sources SET started_at=? WHERE task_id=?").run(now.toISOString(),r.taskId);
    // The run's stored execution target tells a fresh spawn from a reused session; only a spawn is Work Board's to archive.
    const spawned=r.execution!==null&&r.execution.targetThreadId===undefined;

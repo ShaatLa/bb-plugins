@@ -879,6 +879,13 @@ function lockCommands(domain: TasksDomain) {
   };
 }
 
+/** The one-line report of a plan-review wake that was not delivered; empty when it was sent or none was owed. */
+function planWakeLine(wake: { event: "paused" | "resumed"; delivered: string; failed: string[]; hint: string | null } | undefined): string[] {
+  if (!wake || wake.delivered === "sent") return [];
+  const what = wake.event === "paused" ? "the plan review is paused on this decision" : "the owner's decision is settled";
+  return [`The question is saved, but ${wake.failed.join(", ")} could not be told that ${what}; tell them yourself.${wake.hint ? ` ${wake.hint}` : ""}`];
+}
+
 export function registerTasksCli(
   bb: BbPluginApi,
   store: TasksApiStore,
@@ -1338,6 +1345,7 @@ export function registerTasksCli(
                 ...(input.options.prompt.length > 300
                   ? ["The question is long. Ask one decision or one check in one or two short sentences; put what to do in --step, split a multi-part acceptance into several --kind check questions and put evidence in a task comment."] : []),
                 ...compoundStepWarnings(input.options.step),
+                ...planWakeLine(result.planWake),
               ];
               return input.options.json
                 ? JSON.stringify({ ...result, warnings })
@@ -1445,7 +1453,7 @@ export function registerTasksCli(
               }
               return input.options.json
                 ? JSON.stringify(result)
-                : `Saved answer to ${result.question.id}`;
+                : [`Saved answer to ${result.question.id}`, ...planWakeLine(result.planWake)].join("\n");
             });
           },
         }),
@@ -1587,7 +1595,7 @@ export function registerTasksCli(
                 }));
               }
               const result = await domain.updateQuestion(update);
-              const warnings = compoundStepWarnings(input.options.step);
+              const warnings = [...compoundStepWarnings(input.options.step), ...planWakeLine(result.planWake)];
               return input.options.json
                 ? JSON.stringify({ ...result, warnings })
                 : { exitCode: 0, stdout: `Saved question ${result.question.id} (revision ${result.question.revision})`, stderr: warnings.join("\n") };
@@ -1632,7 +1640,7 @@ export function registerTasksCli(
               });
               return input.options.json
                 ? JSON.stringify(result)
-                : "Deleted question";
+                : ["Deleted question", ...planWakeLine(result.planWake)].join("\n");
             });
           },
         }),
@@ -2868,7 +2876,7 @@ export function registerTasksCli(
                   link: taskMarkdownLink(task.key),
                   planning,
                   ...(planning !== "off" ? { planWarning: planAdvisory(taskPlan, planningRequired(project) && task.type !== "epic") } : {}),
-                  plan: taskPlan ? { version: taskPlan.version, state: taskPlan.state, reviewer: taskPlan.reviewer, noteCounts: taskPlan.noteCounts, updatedAt: taskPlan.updatedAt, updatedBy: taskPlan.updatedBy.name, ...(withPlan ? { body: taskPlan.requested.body } : {}) } : null,
+                  plan: taskPlan ? { version: taskPlan.version, state: taskPlan.state, reviewer: taskPlan.reviewer, review: { paused: taskPlan.paused }, noteCounts: taskPlan.noteCounts, updatedAt: taskPlan.updatedAt, updatedBy: taskPlan.updatedBy.name, ...(withPlan ? { body: taskPlan.requested.body } : {}) } : null,
                   project,
                   labels,
                   subtasks: task.type === "epic" ? [] : subtasks,
@@ -2920,7 +2928,7 @@ export function registerTasksCli(
                     "Labels",
                     labels.map((label) => label.name).join(", ") || "-",
                   ],
-                  ["Plan", taskPlan ? `v${taskPlan.version} · ${taskPlan.state}${taskPlan.noteCounts.open ? ` · ${taskPlan.noteCounts.open} open note${taskPlan.noteCounts.open === 1 ? "" : "s"}` : ""} · reviewer ${taskPlan.reviewer.threadId ?? "owner"} · bb work-board plan show ${task.key}` : planning === "off" ? "planning is off for this project" : "-"],
+                  ["Plan", taskPlan ? `v${taskPlan.version} · ${taskPlan.state}${taskPlan.paused ? " · waiting for the owner's decision" : ""}${taskPlan.noteCounts.open ? ` · ${taskPlan.noteCounts.open} open note${taskPlan.noteCounts.open === 1 ? "" : "s"}` : ""} · reviewer ${taskPlan.reviewer.threadId ?? "owner"} · bb work-board plan show ${task.key}` : planning === "off" ? "planning is off for this project" : "-"],
                   ["Created", task.createdAt],
                   ["Updated", task.updatedAt],
                 ]),

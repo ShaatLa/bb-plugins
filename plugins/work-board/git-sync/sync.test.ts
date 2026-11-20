@@ -913,6 +913,8 @@ it("skips a card whose plan is not approved in a required project while the sync
   for (const task of f.tasks.slice(0, 2)) {
     f.store.tasks.updateTask(task.id, { status: "todo" });
     plans.save({ taskId: task.id, op: "replace", baseVersion: 0, body: "# Plan\n", summary: "Plan", author });
+    // The first plan version moved the card to Planning; this test is about the gate on a card waiting in Todo.
+    f.store.tasks.updateTask(task.id, { status: "todo" });
   }
   plans.setState(f.tasks[1]!.id, "approved", { kind: "person", threadId: null, name: "Owner" });
   await f.service.handlers.setGitSyncConfig({ projectId: f.project.id, config: gitSyncConfigSchema.parse({ repositories: ["example/service"], titleDiscovery: false }) });
@@ -925,7 +927,7 @@ it("skips a card whose plan is not approved in a required project while the sync
 it("uses custom workflow status IDs and does not reverse a closed PR", async () => {
   const f = setup();
   const statuses = [...f.project.statuses!, { id: "ready_custom", name: "Ready custom" }, { id: "review_custom", name: "Review custom" }];
-  f.store.tasks.updateProject(f.project.id, { statuses, workflowPolicy: { bugfixStatus: null, doneStatus: "done", inProgressStatus: null, reviewStatus: "review_custom", testingStatus: null, earlyStatuses: ["ready_custom"], ownerDecisionLabel: null } });
+  f.store.tasks.updateProject(f.project.id, { statuses, workflowPolicy: { bugfixStatus: null, doneStatus: "done", inProgressStatus: null, reviewStatus: "review_custom", testingStatus: null, planningStatus: null, earlyStatuses: ["ready_custom"], ownerDecisionLabel: null } });
   f.store.tasks.updateTask(f.task.id, { status: "ready_custom" });
   await f.service.handlers.setGitSyncConfig({ projectId: f.project.id, config: gitSyncConfigSchema.parse({ repositories: ["example/service"], titleDiscovery: false }) });
   await f.service.handlers.linkPr({ taskId: f.task.id, url: "https://github.com/example/service/pull/42", role: "delivers", part: null });

@@ -79,7 +79,8 @@ describe('Scheduled execution',()=>{
  it('records an occurrence as skipped with the planning-flags reason when the flags changed after the schedule was enabled, and does not retry it',async()=>{
   const f=fixture();try{
    const s=f.create();
-   f.store.tasks.updateProject(f.project.id,{planning:'required',statuses:f.store.tasks.getProject(f.project.id)!.statuses!.map(status=>({...status,requiresApprovedPlan:status.id!=='done'&&status.id!=='canceled'}))});
+   f.store.tasks.updateProject(f.project.id,{planning:'required'});
+   f.store.tasks.updateProject(f.project.id,{statuses:f.store.tasks.getProject(f.project.id)!.statuses!.map(status=>({...status,requiresApprovedPlan:status.id!=='done'&&status.id!=='canceled'}))});
    const r=await f.service.runNow(s.id,'flags');
    expect(r).toMatchObject({state:'skipped'});expect(r.reason).toContain('planning flags');expect(r.taskId).toBeNull();
    const sends=f.harness.sdk.callsTo('threads.send').length;

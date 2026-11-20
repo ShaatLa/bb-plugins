@@ -186,6 +186,14 @@ export function buildResultCopyMessage(input: { taskKey: string; headline: strin
 }
 
 /** The message that wakes a reviewer thread when a plan is submitted to it. */
+/** A plan review stops while the owner has an open decision; the reviewer waits. */
+export function buildReviewPausedMessage(input: { taskKey: string; version: number }): string {
+  return `${input.taskKey} plan v${input.version}: review paused, waiting for the owner's decision. Check \`bb work-board plan reviews ${input.taskKey}\` before acting.`;
+}
+/** The last open decision was settled: the reviewer judges whether the plan text still holds. */
+export function buildReviewResumedMessage(input: { taskKey: string; version: number }): string {
+  return `${input.taskKey} plan v${input.version}: the owner's decision is settled. Read the decisions on the card, then judge whether the plan text still holds: approve it, or send feedback if it needs changes.`;
+}
 export function buildReviewRequestMessage(input: { taskKey: string; version: number; /** The version this reviewer itself decided on last, if any. */ decidedVersion: number | null; blockingNotes: number }): string {
   const { taskKey: key, version, decidedVersion } = input;
   return [

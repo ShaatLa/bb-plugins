@@ -7,6 +7,7 @@ import { noteLabel, PLAN_NOTE_BODY_MAX, PLAN_NOTE_HEADING_MAX, PLAN_NOTE_QUOTE_M
 import { buildAnchor, fold, markdownPlainText, resolveAnchor } from "../shared/plan-anchor";
 import { findSection, getSection } from "../shared/plan";
 import { assertNoSecrets } from "../shared/secret-guard.js";
+import { reviewerRefusal } from "./pause";
 import { assertPlanning, closePendingReview, PlanError } from "./store";
 
 type Database = ReturnType<BbPluginApi["storage"]["database"]>;
@@ -229,6 +230,12 @@ export function createPlanNoteStore(db: Database, tasks: TasksStore, head: (task
     return { task, plan };
   }
 
+  /** A reviewer decides inside its own transaction against the live decisions: while the owner has one open, the review is paused. */
+  function pausedGuard(key: string, version: number, taskId: string) {
+    const refused = reviewerRefusal(db, key, version, taskId);
+    if (refused) throw new PlanError("plan_state", refused);
+  }
+
   /** Reviewer-thread notes by number; the owner's notes are never reachable from a reviewer command. */
   function reviewerNotes(taskId: string, numbers: readonly number[]): NoteRow[] {
     return numbers.map((number) => {
@@ -246,6 +253,7 @@ export function createPlanNoteStore(db: Database, tasks: TasksStore, head: (task
    */
   const sendFeedback = db.transaction((taskId: string, by: PlanAuthor, reviewerVersion?: number) => {
     const { task, plan } = reviewerVersion === undefined ? requirePlan(taskId) : requireReviewer(taskId, by.threadId, reviewerVersion);
+    if (reviewerVersion !== undefined) pausedGuard(task.key, plan.version, taskId);
     const drafts = draftRows(taskId, reviewerVersion === undefined ? "person" : "thread");
     if (drafts.length === 0) throw new PlanError("plan_state", `${task.key} has no draft notes to send`);
     const now = new Date().toISOString();
@@ -263,6 +271,7 @@ export function createPlanNoteStore(db: Database, tasks: TasksStore, head: (task
    */
   const approve = db.transaction((taskId: string, by: PlanAuthor, note?: string, reviewerVersion?: number) => {
     const { task, plan } = reviewerVersion === undefined ? requirePlan(taskId) : requireReviewer(taskId, by.threadId, reviewerVersion);
+    if (reviewerVersion !== undefined) pausedGuard(task.key, plan.version, taskId);
     if (plan.state === "approved") throw new PlanError("plan_state", `Plan v${plan.version} is already approved`);
     if (reviewerVersion === undefined) {
       const drafts = draftRows(taskId, "person").length;

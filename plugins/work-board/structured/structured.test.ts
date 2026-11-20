@@ -109,15 +109,15 @@ describe("task questions", () => {
   it("allows one link across prompt and steps, keeps a reopen to the same scope and hands the reopened question to the reopener", async () => {
     const { structured, task } = setup();
     const ask = (prompt: string, steps: string[]) => structured.handlers.createQuestion({ kind: "check", askedByThread: "thr_example", taskId: task.id, prompt, steps, mode: "single", options: [] });
-    expect(() => ask("Does [the page](https://example.com/a) look right?", ["Open [state B](https://example.com/b)"])).toThrow(/at most one link.*has 2.*several --kind check questions/);
-    expect(() => ask("See https://example.com/a and https://example.com/b", [])).toThrow(/has 2/);
-    expect(() => ask("Open [the board](/plugins/work-board/work-board/task/EXA-1)", ["Then [the plan](/plugins/work-board/work-board/task/EXA-1/plan)"])).toThrow(/has 2/);
+    await expect(ask("Does [the page](https://example.com/a) look right?", ["Open [state B](https://example.com/b)"])).rejects.toThrow(/at most one link.*has 2.*several --kind check questions/);
+    await expect(ask("See https://example.com/a and https://example.com/b", [])).rejects.toThrow(/has 2/);
+    await expect(ask("Open [the board](/plugins/work-board/work-board/task/EXA-1)", ["Then [the plan](/plugins/work-board/work-board/task/EXA-1/plan)"])).rejects.toThrow(/has 2/);
     // The same link twice is one link.
     const { question } = await ask("Does [the page](https://example.com/a) look right?", ["Open https://example.com/a", "Press Save"]);
     const answered = (await structured.handlers.answerQuestion({ questionId: question.id, revision: question.revision, selectedOptionIds: [question.options[0]!.id], authorName: "Owner" })).question;
     const reopen = (steps: string[], askedByThread?: string) => structured.handlers.updateQuestion({ questionId: question.id, revision: answered.revision, prompt: answered.prompt, steps, mode: answered.mode, options: answered.options, reopen: true, authorName: "Agent", ...(askedByThread ? { askedByThread } : {}) });
-    expect(() => reopen([...(answered.steps ?? []), "Dismiss the notice"])).toThrow(/cannot add steps.*new question/);
-    expect(() => reopen(["Open https://example.com/c", "Press Save"])).toThrow(/at most one link|cannot add links/);
+    await expect(reopen([...(answered.steps ?? []), "Dismiss the notice"])).rejects.toThrow(/cannot add steps.*new question/);
+    await expect(reopen(["Open https://example.com/c", "Press Save"])).rejects.toThrow(/at most one link|cannot add links/);
     const reopened = (await reopen(["Open https://example.com/a", "Press Save and reload"], "thr_reopener")).question;
     expect(reopened.askedByThread).toBe("thr_reopener");
     expect(reopened.steps).toEqual(["Open https://example.com/a", "Press Save and reload"]);
@@ -137,24 +137,24 @@ describe("task questions", () => {
     };
     await update("Do you approve the plan now?");
     store.tasks.updateProject(project.id, { planning: "optional" });
-    expect(() => ask(link)).toThrow(/plan submit.*--reviewer/);
+    await expect(ask(link)).rejects.toThrow(/plan submit.*--reviewer/);
     await expect(update("Do you accept the plan so we can go?")).rejects.toThrow(/Plan approval is not an owner question/);
     // Without a plan on the task, approval wording alone is an ordinary question (e.g. a plan of something else), but a plan link is not.
     bb.storage.database().prepare("DELETE FROM task_plans WHERE task_id = ?").run(task.id);
     await ask("Do you approve the pricing plan change?");
-    expect(() => ask(link)).toThrow(/plan submit/);
+    await expect(ask(link)).rejects.toThrow(/plan submit/);
     bb.storage.database().prepare("INSERT INTO task_plans (task_id, format, version, body, state, updated_at, author_kind, author_thread, author_name) VALUES (?, 'markdown', 1, '# Plan', 'in_review', ?, 'agent', NULL, 'agent')").run(task.id, now);
-    expect(() => ask("Do you accept the plan so I can start?")).toThrow(/Plan approval is not an owner question/);
-    expect(() => ask("Принимаете план от 19.11?")).toThrow(/plan submit/);
-    expect(() => ask("Can I start step 1?", ["Approve the plan first"])).toThrow(/plan submit/);
+    await expect(ask("Do you accept the plan so I can start?")).rejects.toThrow(/Plan approval is not an owner question/);
+    await expect(ask("Принимаете план от 19.11?")).rejects.toThrow(/plan submit/);
+    await expect(ask("Can I start step 1?", ["Approve the plan first"])).rejects.toThrow(/plan submit/);
     await ask("Which database should step 2 use?");
   });
 
   it("keeps each check step to one sentence and warns about chained actions", async () => {
     const { structured, task, cli } = setup();
     const ask = (steps: string[]) => structured.handlers.createQuestion({ kind: "check", askedByThread: null, taskId: task.id, prompt: "Does Retry recover the list?", steps, mode: "single", options: [] });
-    expect(() => ask(["Press Retry, close the message and press Reload. Check that the list appears."])).toThrow(/Step 1 has 2 sentences.*separate --step values, in order/);
-    expect(() => ask(["Press Retry", "Нажмите Retry. Проверьте список."])).toThrow(/Step 2 has 2 sentences/);
+    await expect(ask(["Press Retry, close the message and press Reload. Check that the list appears."])).rejects.toThrow(/Step 1 has 2 sentences.*separate --step values, in order/);
+    await expect(ask(["Press Retry", "Нажмите Retry. Проверьте список."])).rejects.toThrow(/Step 2 has 2 sentences/);
     await ask(["Open settings, e.g. the Storage page", "Check that the list appears."]);
     expect(compoundStepWarnings(["Press Retry, close the message and press Reload", "Check that the list appears", "Нажмите Retry, затем закройте окно"])).toEqual([expect.stringMatching(/^Steps 1, 3 may join several actions.*separate --step values, in order/)]);
     expect(compoundStepWarnings(["Open Settings and Storage", "Check the list"])).toEqual([]);

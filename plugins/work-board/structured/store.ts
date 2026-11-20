@@ -6,10 +6,15 @@ import { createUlid } from "../db/store";
 import { getWorkflowPolicy } from "../shared/workflow-policy";
 import { planningOn } from "../shared/project-settings";
 import { defaultTaskThreadId, deliverCommentToLatestAgent } from "../steer";
+import { deliverPlanReview, wakeReviewer } from "../plans/delivery";
+import { openDecisionIds, reviewBinding, type ReviewBinding } from "../plans/pause";
+import { createPlanStore } from "../plans/store";
+import { buildResultCopyMessage, buildReviewPausedMessage, buildReviewResumedMessage } from "../shared/plan-notes";
 import {
   questionSchema,
   templateSchema,
   type TaskQuestion,
+  type PlanWake,
   type DescriptionTemplate,
   type tasksRpcContract,
 } from "../shared/contract";
@@ -33,6 +38,44 @@ export function createStructuredStore(bb: BbPluginApi, store: TasksApiStore) {
     if (!planningOn(store.tasks.getProject(task.projectId) ?? {})) return;
     assertNotPlanApproval(prompt, steps, task.key, db.prepare<[string], { found: number }>("SELECT 1 AS found FROM task_plans WHERE task_id = ?").get(taskId) !== undefined);
   };
+  const plans = createPlanStore(db, store.tasks);
+  /**
+   * The wake a question write owes the plan reviewer, read inside the write's own transaction from the open-decision count
+   * before and after: only 0 → ≥1 (pause) and ≥1 → 0 (resume) count, and only while a review waits on the card.
+   */
+  type Wake = { event: PlanWake["event"]; taskId: string; binding: ReviewBinding } | null;
+  const decisionTransition = (taskId: string, before: number): Wake => {
+    const after = openDecisionIds(db, taskId).length;
+    if ((before === 0) === (after === 0)) return null;
+    const binding = reviewBinding(db, taskId);
+    return binding ? { event: after > 0 ? "paused" : "resumed", taskId, binding } : null;
+  };
+  /** Sends the wake after the commit. A delivery failure never undoes the question; it comes back for the command to print. */
+  async function announce(wake: Wake): Promise<PlanWake | undefined> {
+    const task = wake && store.tasks.getTask(wake.taskId);
+    const project = task && store.tasks.getProject(task.projectId);
+    // An owner review has no thread to wake, and with planning off the plan is not touched.
+    if (!wake || !task || !project || !planningOn(project) || !wake.binding.reviewerThread) return undefined;
+    // A resume belongs to the attempt it was settled under: after an override, a reassignment or a newer draft nothing is sent.
+    if (wake.event === "resumed" && reviewBinding(db, task.id)?.attemptId !== wake.binding.attemptId) return undefined;
+    const { reviewerThread, version } = wake.binding;
+    const failed: string[] = [];
+    let hint: string | null = null;
+    const text = (wake.event === "paused" ? buildReviewPausedMessage : buildReviewResumedMessage)({ taskKey: task.key, version });
+    const woke = await wakeReviewer(bb, { taskId: task.id, taskKey: task.key, threadId: reviewerThread, text });
+    if (woke.delivered === "failed") {
+      failed.push(reviewerThread);
+      hint = woke.hint;
+    }
+    if (wake.event === "resumed") {
+      // The author hears about it for information, through the same routing as a review result.
+      const copy = buildResultCopyMessage({ taskKey: task.key, headline: text, actor: reviewerThread });
+      const sent = await deliverPlanReview(bb, { taskId: task.id, recipients: plans.resultRecipients(task.id, version), text: copy, copyText: () => copy });
+      // An author with no thread (a plan written in the app) has nobody to tell; only a failed send is a failure.
+      for (const entry of sent.deliveries) if (entry.delivered === "failed" && entry.threadId) failed.push(entry.threadId);
+    }
+    return { event: wake.event, delivered: failed.length ? "failed" : "sent", failed, hint };
+  }
   const getQuestion = (id: string) => {
     const row = db
       .prepare<
@@ -160,7 +203,7 @@ export function createStructuredStore(bb: BbPluginApi, store: TasksApiStore) {
         FROM tasks t WHERE t.id IN (${taskIds.map(() => "?").join(",")})
       `).all(...taskIds).map(row => ({ ...row, waitingOnOwner: Boolean(row.waitingOnOwner) })) : [],
     }),
-    createQuestion(input) {
+    async createQuestion(input) {
       requireTask(input.taskId);
       assertQuestionShape(input.prompt, input.steps ?? []);
       assertStepsAtomic(input.steps ?? []);
@@ -186,21 +229,26 @@ export function createStructuredStore(bb: BbPluginApi, store: TasksApiStore) {
         updatedAt: now,
       });
       assertNoSecretsInValue(question, "question");
-      store.transaction(() => {
+      const wake = store.transaction(() => {
+        const before = openDecisionIds(db, question.taskId).length;
         db.prepare<[string, string, string]>(
           "INSERT INTO task_questions (id, task_id, payload) VALUES (?, ?, ?)",
         ).run(question.id, question.taskId, JSON.stringify(question));
         syncDecisionLabel(question.taskId);
+        return decisionTransition(question.taskId, before);
       });
       changed(question.taskId);
-      return { question };
+      const planWake = await announce(wake);
+      return { question, ...(planWake ? { planWake } : {}) };
     },
     async answerQuestion(input) {
       let withdrawn = false;
       let notice = "";
       let comment: ReturnType<typeof store.tasks.createComment> | undefined;
+      let wake: Wake = null;
       const question = store.transaction(() => {
         const current = getQuestion(input.questionId);
+        const before = openDecisionIds(db, current.taskId).length;
         const attachmentIds = input.attachmentIds ?? [];
         if (new Set(attachmentIds).size !== attachmentIds.length) throw new Error("Duplicate attachment IDs");
         for (const id of attachmentIds) {
@@ -238,6 +286,7 @@ export function createStructuredStore(bb: BbPluginApi, store: TasksApiStore) {
           "UPDATE task_questions SET payload = ? WHERE id = ?",
         ).run(JSON.stringify(next), next.id);
         syncDecisionLabel(next.taskId);
+        wake = decisionTransition(next.taskId, before);
         const answerOf = (state: typeof current) => [
           ...state.options.filter((option) => state.selectedOptionIds.includes(option.id)).map((option) => option.label),
           ...(state.answerText ? [state.answerText] : []),
@@ -267,8 +316,9 @@ export function createStructuredStore(bb: BbPluginApi, store: TasksApiStore) {
       changed(question.taskId);
       if (!comment) return { ...result, question, notification: "unchanged" as const };
       bb.realtime.publish("comments:changed", { taskId: question.taskId });
+      const planWake = await announce(wake);
       const threadId = question.askedByThread ?? defaultTaskThreadId(store.tasks, question.taskId, comment.id);
-      if (!threadId) return { ...result, question, notification: "none" as const };
+      if (!threadId) return { ...result, question, notification: "none" as const, ...(planWake ? { planWake } : {}) };
       const notifiedCount = await deliverCommentToLatestAgent(bb, store.tasks, {
         taskId: question.taskId,
         commentId: comment.id,
@@ -291,11 +341,14 @@ export function createStructuredStore(bb: BbPluginApi, store: TasksApiStore) {
         ...result,
         question,
         notification: notifiedCount ? ("sent" as const) : ("failed" as const),
+        ...(planWake ? { planWake } : {}),
       };
     },
-    updateQuestion(input) {
+    async updateQuestion(input) {
+      let wake: Wake = null;
       const question = store.transaction(() => {
         const current = getQuestion(input.questionId);
+        const before = openDecisionIds(db, current.taskId).length;
         if (current.revision !== input.revision)
           throw new Error("Question changed; reload it before editing");
         if (
@@ -351,6 +404,7 @@ export function createStructuredStore(bb: BbPluginApi, store: TasksApiStore) {
           "UPDATE task_questions SET payload = ? WHERE id = ?",
         ).run(JSON.stringify(next), next.id);
         syncDecisionLabel(next.taskId);
+        wake = decisionTransition(next.taskId, before);
         store.tasks.createComment({
           taskId: next.taskId,
           kind: "system",
@@ -361,20 +415,25 @@ export function createStructuredStore(bb: BbPluginApi, store: TasksApiStore) {
       });
       changed(question.taskId);
       bb.realtime.publish("comments:changed", { taskId: question.taskId });
-      return { question };
+      const planWake = await announce(wake);
+      return { question, ...(planWake ? { planWake } : {}) };
     },
-    deleteQuestion(input) {
+    async deleteQuestion(input) {
       const question = getQuestion(input.questionId);
       if (question.revision !== input.revision)
         throw new Error("Question changed; reload it before deleting");
+      let wake: Wake = null;
       const deleted = store.transaction(() => {
+        const before = openDecisionIds(db, question.taskId).length;
         const result = db.prepare<[string]>("DELETE FROM task_questions WHERE id = ?")
           .run(question.id).changes > 0;
         syncDecisionLabel(question.taskId);
+        wake = decisionTransition(question.taskId, before);
         return result;
       });
       changed(question.taskId);
-      return { deleted };
+      const planWake = await announce(wake);
+      return { deleted, ...(planWake ? { planWake } : {}) };
     },
     listTemplates: ({ projectId }) => ({ templates: listTemplates(projectId) }),
     setTemplate(input) {

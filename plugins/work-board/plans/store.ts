@@ -2,7 +2,10 @@ import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import type { TasksStore } from "../db";
 import type { PlanAuthor, PlanReview, PlanVersion, SaveTaskPlanInput, TaskPlanHead } from "../shared/contract";
 import { assertNoSecrets } from "../shared/secret-guard.js";
+import { planningStatusOf } from "../shared/workflow-policy";
+import { statusLabel } from "../shared/statuses.js";
 import { planningOffMessage, planningOn, planningRequired } from "../shared/project-settings";
+import { isPaused, submitRefusal } from "./pause";
 import { countPlanChanges, diffPlanBodies, type PlanDiff } from "../shared/plan-diff";
 import {
   assertPlanText,
@@ -164,7 +167,7 @@ export function createPlanStore(db: Database, tasks: TasksStore) {
     if (version !== undefined && version !== row.version && !requested)
       throw new Error(`Plan version ${version} does not exist; the current version is ${row.version}`);
     const source = requested ?? versionRow(taskId, row.version)!;
-    return { ...headOf(row), requested: { ...versionOf(source), body: source.body } };
+    return { ...headOf(row), paused: isPaused(db, taskId), requested: { ...versionOf(source), body: source.body } };
   }
 
   function listVersions(taskId: string) {
@@ -251,7 +254,16 @@ export function createPlanStore(db: Database, tasks: TasksStore) {
       by,
       [`Plan v${version} by ${by.name}: ${summary}`, kind, `+${added} −${removed} lines`, ...(resetState ? [`state ${current!.state} → draft`] : [])].join(" · "),
     );
-    return { plan: headOf(planRow(input.taskId)!), version: versionOf(versionRow(input.taskId, version)!) };
+    // The first version of a plan moves a Backlog or Todo card into the planning status, in this same write. A card that is
+    // further along, closed or archived stays; so does one whose target is not valid now or is gated.
+    let movedTo: { status: string; label: string } | null = null;
+    const project = !current && !task.archivedAt && task.scheduledRole !== "template" ? tasks.getProject(task.projectId) : undefined;
+    const planning = project && planningOn(project) ? planningStatusOf(project) : null;
+    if (planning && (task.status === "backlog" || task.status === "todo") && !tasks.planGate(task, planning)) {
+      tasks.updateTask(task.id, { status: planning });
+      movedTo = { status: planning, label: statusLabel(planning, project!.statuses) };
+    }
+    return { plan: headOf(planRow(input.taskId)!), version: versionOf(versionRow(input.taskId, version)!), movedTo };
   });
 
   function changeState(taskId: string, state: PlanState, by: PlanAuthor, text: string) {
@@ -292,6 +304,8 @@ export function createPlanStore(db: Database, tasks: TasksStore) {
         throw new PlanError("plan_conflict", `The reviewer of ${task.key} changed while you resubmitted; run \`plan submit\` again to send it to the current reviewer`);
     }
     if (!row) throw new PlanError("plan_invalid", `${task.key} has no plan to submit; create it with \`bb work-board plan set ${task.key} --base-version 0\``);
+    const refused = submitRefusal(db, task.key, taskId);
+    if (refused) throw new PlanError("plan_state", refused);
     if (row.state === "approved") throw new PlanError("plan_state", `Plan v${row.version} is already approved; a new version returns it to draft`);
     if (row.state === "changes_requested")
       throw new PlanError("plan_state", `Plan v${row.version} has changes requested; revise it and save a new version (\`bb work-board plan edit ${task.key} … --base-version ${row.version}\`), then submit again`);
@@ -324,6 +338,10 @@ export function createPlanStore(db: Database, tasks: TasksStore) {
     if (state === "approved") {
       const drafts = db.prepare<[string], { count: number }>("SELECT COUNT(*) AS count FROM task_plan_notes WHERE task_id = ? AND state = 'draft' AND author_kind = 'person'").get(taskId)!.count;
       if (drafts > 0) throw new PlanError("plan_state", `${task.key} has ${drafts} draft note${drafts === 1 ? "" : "s"} not sent yet; send them as feedback or delete them before approving`);
+    }
+    if (state === "in_review") {
+      const refused = submitRefusal(db, task.key, taskId);
+      if (refused) throw new PlanError("plan_state", refused);
     }
     const text = { in_review: "submitted for review", approved: "approved", changes_requested: "changes requested" }[state];
     if (state === "in_review") startReview(taskId, row.version, null, by);
@@ -458,7 +476,10 @@ export function createPlanStore(db: Database, tasks: TasksStore) {
     for (const r of reviews) insert.run(taskId, r.version, r.reviewer.kind, r.reviewer.threadId, r.submittedByThread, r.submittedAt, r.outcome, r.decidedAt, r.decidedBy);
   }
 
-  return { head, get, listVersions, save, submit, setState, listReviews, captureReviews, advisoryFor, resultRecipients, lastDecidedVersion, diff, latestAgentThread, capture, captureProject, restore, captureReviewsProject, restoreReviews };
+  /** Whether the plan's review is paused on an open owner decision; derived from the live decisions. */
+  const paused = (taskId: string): boolean => isPaused(db, taskId);
+
+  return { head, get, paused, listVersions, save, submit, setState, listReviews, captureReviews, advisoryFor, resultRecipients, lastDecidedVersion, diff, latestAgentThread, capture, captureProject, restore, captureReviewsProject, restoreReviews };
 }
 
 export type PlanStore = ReturnType<typeof createPlanStore>;

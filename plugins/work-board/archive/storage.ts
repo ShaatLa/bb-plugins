@@ -14,7 +14,8 @@ import {
 import { createStructuredStore } from "../structured/store";
 import { createPlanStore } from "../plans/store";
 import { createPlanNoteStore } from "../plans/notes";
-import { settlePlanFlags } from "../shared/workflow-policy";
+import { ensurePlanningStatus, getWorkflowPolicy, settlePlanFlags, withPlanningStatus } from "../shared/workflow-policy";
+import { planningOn } from "../shared/project-settings";
 import { scheduleRunSchema, scheduleSchema, scheduleSourceSchema, type ScheduleRun } from "../shared/scheduled";
 import {
   archiveProjectSchema,
@@ -419,6 +420,16 @@ export function restoreProject(
         maxNumber + 1,
       ),
     };
+    // The planning status is settled on the proposed project, before the comparison and the merged-task validation: an older
+    // snapshot without the Planning column still validates local cards in Planning, and preview and apply agree.
+    const proposedPlanning = currentProject ? currentProject.planning : project.planning;
+    if (planningOn({ planning: proposedPlanning })) {
+      const policy = project.workflowPolicy ?? currentProject?.workflowPolicy;
+      const ensured = ensurePlanningStatus({ statuses: project.statuses, workflowPolicy: policy });
+      project.statuses = ensured.statuses;
+      if (ensured.planningStatus !== null && getWorkflowPolicy({ workflowPolicy: policy }).planningStatus !== ensured.planningStatus)
+        project.workflowPolicy = withPlanningStatus(policy, ensured.planningStatus) ?? undefined;
+    }
     plan("projects", dbRow(project), ["id"]);
     const labels = new Map(
       store.tasks.listLabels(projectId).map((label) => [label.id, label]),

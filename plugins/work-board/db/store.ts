@@ -1,5 +1,5 @@
 import { WAITING_ON_OWNER, NEWEST_UNANSWERED } from "./waiting-on-owner";
-import { getWorkflowPolicy, inWorkZone, isClosedStatus, settlePlanFlags, workflowPolicySchema } from "../shared/workflow-policy.js";
+import { ensurePlanningStatus, getWorkflowPolicy, inWorkZone, isClosedStatus, planningStatusOf, settlePlanFlags, withPlanningStatus, workflowPolicySchema } from "../shared/workflow-policy.js";
 import { createClosureStore } from "../closure/store";
 import { ordinaryTaskVisibilitySql } from "../scheduled/visibility";
 import { projectPolicies, staleRows, staleStatusObservations as observeStaleStatus } from "../attention/observe";
@@ -563,8 +563,8 @@ export function escapeLike(value: string): string {
     .replaceAll("_", "\\_");
 }
 
-export function createTasksStore(db: PluginDatabase) {
-  initializeTasksSchema(db);
+export function createTasksStore(db: PluginDatabase, log: (message: string) => void = () => {}) {
+  initializeTasksSchema(db, log);
   const closures = createClosureStore(db);
   // Closures written by the current writes. They are handed to the listener only after the outermost commit; a rollback
   // drops the ones added inside it, and a closure row a raw rollback took with it is found missing by the listener.
@@ -812,9 +812,19 @@ export function createTasksStore(db: PluginDatabase) {
       const requested = taskStatusesSchema.parse(
         input.statuses ?? current.statuses ?? DEFAULT_TASK_STATUSES,
       );
-      const policy = input.workflowPolicy === undefined ? current.workflowPolicy : workflowPolicySchema.parse(input.workflowPolicy);
-      const settled = settlePlanFlags({ statuses: requested, previous: current.statuses, planning: planningSchema.parse(input.planning ?? current.planning ?? "off"), initialized: current.planFlagsInitialized === true, workflowPolicy: policy });
-      const statuses = settled.statuses;
+      let policy = input.workflowPolicy === undefined ? current.workflowPolicy : workflowPolicySchema.parse(input.workflowPolicy);
+      // A change of planning is recorded with its time and old value in the same write; the same value changes nothing.
+      const nextPlanning = planningSchema.parse(input.planning ?? current.planning ?? "off");
+      const planningChanged = nextPlanning !== (current.planning ?? "off");
+      const settled = settlePlanFlags({ statuses: requested, previous: current.statuses, planning: nextPlanning, initialized: current.planFlagsInitialized === true, workflowPolicy: policy });
+      let statuses = settled.statuses;
+      // Turning planning on settles the planning status: an existing one is found, else one is inserted before In progress.
+      if (planningChanged && nextPlanning !== "off") {
+        const ensured = ensurePlanningStatus({ statuses, workflowPolicy: policy });
+        statuses = ensured.statuses;
+        policy = withPlanningStatus(policy, ensured.planningStatus) ?? undefined;
+        if (ensured.planningStatus === null) log(`planning status not set for ${current.prefix}: ${ensured.reason}`);
+      }
       assertNoSecretsInValue(statuses, "statuses");
       assertNoSecretsInValue(policy, "workflowPolicy");
       const ids = new Set(statuses.map((status) => status.id));
@@ -827,9 +837,6 @@ export function createTasksStore(db: PluginDatabase) {
       if (folderId !== null) requireFolder(folderId);
       // A tracker bound to manager attention keeps its BB project link; a bound BB project takes no second tracker.
       if (input.linkedBbProjectId !== undefined) assertLinkChangeAllowed(db, id, current.linkedBbProjectId ?? null, validateLinkedBbProjectId(input.linkedBbProjectId));
-      // A change of planning is recorded with its time and old value in the same write; the same value changes nothing.
-      const nextPlanning = planningSchema.parse(input.planning ?? current.planning ?? "off");
-      const planningChanged = nextPlanning !== (current.planning ?? "off");
       db.prepare<
         [string, string, string, string | null, string | null, string, string | null, string, string, string, string, string, string, number, string | null, string | null, string]
       >(
@@ -1088,12 +1095,14 @@ export function createTasksStore(db: PluginDatabase) {
     const policies = projectPolicies(db);
     const rows = staleRows(db, taskIds, projectId);
     const result = new Map<string, string[]>();
+    // The planning status is read from the live project, so a settings edit that made it invalid counts at once.
+    const planning = new Map(listProjects().map((project) => [project.id, planningStatusOf(project)]));
     for (const row of rows) {
       const policy = policies.get(row.project_id);
       if (!policy) continue;
       const flags: string[] = [];
-      // A card held behind an unfinished predecessor is waiting by rule, not abandoned.
-      if (row.status === policy.inProgressStatus && !row.active && !row.held) flags.push("no_active_thread");
+      // A card held behind an unfinished predecessor is waiting by rule, not abandoned. Planning is active work like In progress.
+      if ((row.status === policy.inProgressStatus || (planning.get(row.project_id) ?? null) === row.status) && !row.active && !row.held) flags.push("no_active_thread");
       // Testing after the merge (a check on a shared environment) is expected, so a merged PR satisfies it.
       const prSettled = row.open_known || (row.status === policy.testingStatus && row.merged_pr);
       if ((row.status === policy.reviewStatus || row.status === policy.testingStatus) && !prSettled) flags.push(row.unknown_pr ? "pr_state_unavailable" : "no_open_pr");

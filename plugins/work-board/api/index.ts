@@ -99,7 +99,7 @@ export interface TasksApiStore {
 
 export function createStore(bb: BbPluginApi): TasksApiStore {
   const database = bb.storage.database();
-  const tasks = createTasksStore(database);
+  const tasks = createTasksStore(database, (message) => bb.log.info(message));
   observeStatusNotifications(bb, tasks);
   const closures = createClosureService(bb, tasks);
   // A closure is evaluated once, after the commit that wrote it; the RPC and CLI paths ask the same evaluation.
@@ -881,7 +881,7 @@ export function registerHandlers(
       const plan = plans.get(taskId, version);
       return { plan: plan && { ...plan, noteCounts: planNotes.counts(taskId) } };
     },
-    listTaskPlanVersions: ({ taskId }) => ({ ...plans.listVersions(taskId), noteCounts: planNotes.counts(taskId) }),
+    listTaskPlanVersions: ({ taskId }) => ({ ...plans.listVersions(taskId), noteCounts: planNotes.counts(taskId), paused: plans.paused(taskId) }),
     listPlanNotes: ({ taskId }) => ({ notes: planNotes.list(taskId) }),
     createPlanNote: (input) => noteResult(() => planNotes.create(input as Parameters<typeof planNotes.create>[0])),
     updatePlanNote: ({ noteId, body }) => noteResult(() => planNotes.update(noteId, body)),
@@ -894,7 +894,7 @@ export function registerHandlers(
     // The owner's decisions: an `author` passed here names the actor in the log but never acts as a reviewer.
     sendPlanFeedback: ({ taskId, author }) => review.sendFeedback(taskId, author),
     approvePlan: ({ taskId, author, note }) => review.approve(taskId, author, note),
-    listPlanReviews: ({ taskId }) => ({ reviews: plans.listReviews(taskId) }),
+    listPlanReviews: ({ taskId }) => ({ reviews: plans.listReviews(taskId), paused: plans.paused(taskId) }),
     diffTaskPlan: ({ taskId, from, to }) => plans.diff(taskId, from, to),
     saveTaskPlan: async (input) => {
       const before = plans.head(input.taskId)?.state;

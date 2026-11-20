@@ -361,6 +361,7 @@ function PlanViewBody({ taskKey, surface }: { taskKey: string; surface: "panel" 
             {task.data ? <span> {task.data.title}</span> : null}
           </button>
           {head ? <PlanStateChip state={head.state} /> : null}
+          {head && overview.data?.paused ? <span role="status" className="shrink-0 text-xs text-warning">Waiting for the owner's decision</span> : null}
         </div>
         <div className="ml-auto flex items-center gap-0.5">
           {head && mode === "compare" ? (

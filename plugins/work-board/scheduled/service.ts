@@ -5,7 +5,7 @@ import { z } from "zod";
 import { buildSeedPrompt, noticeSkippedMove, presetSpawnEnvironment } from "../delegate";
 import { createPlanStore } from "../plans/store";
 import { PlanningPlacementError } from "../db/store";
-import { effectiveInProgressStatus } from "../shared/workflow-policy";
+import { effectiveInProgressStatus, startsFromStatus } from "../shared/workflow-policy";
 import { publishTasksChanged } from "../api";
 import type { TasksApiStore } from "../api";
 import { createDependencyStore } from "../dependencies/store";
@@ -107,7 +107,7 @@ function createService(bb:BbPluginApi,store:TasksApiStore) {
   // A run that starts after its card closed has a snapshot row of its own now; it is settled like a close-time one.
   if(task)await store.closures.lateLink(store.tasks.closures.currentId(task.id),input.threadId);
   const target=project&&effectiveInProgressStatus(project);
-  if(!run.startedAt&&task&&target&&(task.status==="backlog"||task.status==="todo")&&store.tasks.getTask(task.id)!.status===task.status&&store.tasks.planGate(task,target)&&!await bb.storage.kv.get(advisoryPrefix+runId))
+  if(!run.startedAt&&task&&target&&startsFromStatus(project,task.status)&&store.tasks.getTask(task.id)!.status===task.status&&store.tasks.planGate(task,target)&&!await bb.storage.kv.get(advisoryPrefix+runId))
    {await noticeSkippedMove(bb,store.tasks,task,input.threadId);alive();}
   return started;
  }
