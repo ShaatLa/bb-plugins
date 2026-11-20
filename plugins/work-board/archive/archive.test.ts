@@ -31,6 +31,8 @@ import { DEFAULT_TASK_STATUSES, type TaskStatusDefinition } from "../shared/stat
 import { createStructuredStore } from "../structured/store";
 import { createPlanStore } from "../plans/store";
 import { createPlanNoteStore } from "../plans/notes";
+import { createGitSyncStore } from "../git-sync/store";
+import { prIdentity, prLinkSchema } from "../shared/git-sync";
 
 const harnesses: FakePluginHarness[] = [];
 const directories: string[] = [];
@@ -1896,4 +1898,53 @@ it("C1.1: a restore cannot relink a bound tracker or add a second tracker to a b
   requestMode(target.bb.storage.database(), { trackerId: bound.id, mode: "shadow" });
   await expect(importProject(target.bb, target.store, out, false)).rejects.toThrow(/bound/);
   expect(target.store.tasks.getProject(source.project.id)).toBeUndefined();
+});
+
+describe("plan debt and imports", () => {
+  const debtor = async () => {
+    const f = setup();
+    const project = f.store.tasks.createProject({ name: "Example", prefix: "EXA", color: "blue" });
+    f.store.tasks.updateProject(project.id, { planning: "optional" });
+    const task = f.store.tasks.createTask({ projectId: project.id, title: "Debt", status: "in_progress" });
+    const db = f.bb.storage.database();
+    const episodes = () => db.prepare<[string], { id: number; since: string; ended_at: string | null }>("SELECT * FROM plan_debt_episodes WHERE task_id = ? ORDER BY id").all(task.id);
+    const exported = async (name: string) => { const out = join(await directory(), name); await exportProject(f.bb, f.store, project.id, out); return out; };
+    return { ...f, project, task, db, episodes, exported };
+  };
+
+  it("settles episodes inside the import, so moving a debtor to Done and back keeps no stale deadline", async () => {
+    const f = await debtor();
+    const inWork = await f.exported("in-work");
+    f.store.tasks.updatePosition(f.task.id, { status: "done" });
+    const closed = await f.exported("closed");
+    // The card is back in progress without a plan while planning is required: the debt of the card is open.
+    f.db.prepare("UPDATE tasks SET status = 'in_progress' WHERE id = ?").run(f.task.id);
+    f.store.tasks.updateProject(f.project.id, { planning: "required" });
+    const first = f.episodes();
+    expect(first).toMatchObject([{ ended_at: null }]);
+    // No scan between the imports: the import itself closes and opens the episodes.
+    await importProject(f.bb, f.store, closed, true);
+    expect(f.episodes()).toMatchObject([{ ended_at: expect.any(String) }]);
+    await importProject(f.bb, f.store, inWork, true);
+    const after = f.episodes();
+    expect(after).toHaveLength(2);
+    expect(after[1]).toMatchObject({ ended_at: null });
+    expect(after[1]!.id).not.toBe(first[0]!.id);
+  });
+
+  it("records a newly confirmed PR link against the open episode, once", async () => {
+    const f = await debtor();
+    const now = new Date().toISOString();
+    const git = createGitSyncStore(f.db);
+    git.saveLink(prLinkSchema.parse({ repository: "owner/repo", number: 7, url: "https://github.com/owner/repo/pull/7", taskId: f.task.id, source: "manual", role: "delivers", part: null, confirmed: true, excluded: false, remoteId: null, createdAt: now, updatedAt: now }));
+    const withLink = await f.exported("with-link");
+    f.db.prepare("DELETE FROM task_pr_links WHERE task_id = ?").run(f.task.id);
+    f.store.tasks.updateProject(f.project.id, { planning: "required" });
+    const events = () => f.db.prepare("SELECT trigger FROM plan_debt_events").all();
+    expect(events()).toEqual([]);
+    await importProject(f.bb, f.store, withLink, true);
+    expect(events()).toEqual([{ trigger: `pr:${prIdentity({ repository: "owner/repo", number: 7 })}` }]);
+    await importProject(f.bb, f.store, withLink, true);
+    expect(events()).toHaveLength(1);
+  });
 });

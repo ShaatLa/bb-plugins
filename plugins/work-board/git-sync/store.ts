@@ -34,7 +34,8 @@ export function createGitSyncStore(db: Database) {
       )
       .all(...(taskId ? [taskId] : []))
       .map((row) => prLinkSchema.parse(JSON.parse(row.payload)));
-  const saveLink = (value: PrLink) => {
+  /** `renamedFrom` is the link this one replaces under a new identity: its confirmation carries over, so a rename is not a new confirmation. */
+  const saveLink = (value: PrLink, renamedFrom?: PrLink) => {
     const link = prLinkSchema.parse(value);
     assertNoSecretsInValue(link, "PR link");
     return db.transaction(() => {
@@ -43,7 +44,7 @@ export function createGitSyncStore(db: Database) {
         "INSERT INTO task_pr_links(task_id, identity, payload) VALUES (?, ?, ?) ON CONFLICT(task_id, identity) DO UPDATE SET payload=excluded.payload",
       ).run(link.taskId, prIdentity(link), JSON.stringify(link));
       // A link that becomes confirmed, from new or unconfirmed, is a plan-debt trigger of the card's open episode.
-      const was = before ? prLinkSchema.parse(JSON.parse(before.payload)) : null;
+      const was = before ? prLinkSchema.parse(JSON.parse(before.payload)) : renamedFrom ?? null;
       if (link.confirmed && !link.excluded && !(was?.confirmed && !was.excluded)) recordPlanDebtEvent(db, link.taskId, `pr:${prIdentity(link)}`);
       touchAttention(db, [link.taskId]);
       return link;
@@ -211,7 +212,7 @@ export function createGitSyncStore(db: Database) {
             ...canonical,
             excluded: next.excluded || canonical.excluded,
           });
-        } else saveLink(next);
+        } else saveLink(next, current);
         if (prIdentity(next) !== prIdentity(current))
           db.prepare<[string, string]>(
             "DELETE FROM task_pr_links WHERE task_id=? AND identity=?",

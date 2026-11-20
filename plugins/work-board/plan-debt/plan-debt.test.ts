@@ -1,11 +1,13 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MANAGER, setup as attentionSetup } from "../attention/fixtures";
 import { registerTasksCli } from "../cli";
 import { initializeTasksSchema } from "../db/schema";
 import { gitSyncService } from "../git-sync/service";
 import { createPlanStore } from "../plans/store";
 import type { PlanAuthor } from "../shared/contract";
-import { receiptPolling } from "../steer";
+import { deliverWithReceipt, historyLimits, receiptPolling } from "../steer";
+import { createGitSyncStore } from "../git-sync/store";
+import { prLinkSchema, prSnapshotSchema } from "../shared/git-sync";
 import { planDebtService } from "./service";
 import { openPlanDebt } from "./store";
 
@@ -15,8 +17,10 @@ const PR = "https://github.com/owner/repo/pull/7";
 const HOUR = 3_600_000;
 
 const fixtures: { dispose: () => unknown }[] = [];
+const limits = { ...historyLimits };
 beforeEach(() => { receiptPolling.tries = 1; receiptPolling.delayMs = 0; });
-afterEach(async () => { await Promise.all(fixtures.splice(0).map((f) => f.dispose())); });
+afterEach(async () => {
+  Object.assign(historyLimits, limits); await Promise.all(fixtures.splice(0).map((f) => f.dispose())); });
 
 function setupDebt() {
   const f = attentionSetup();
@@ -31,9 +35,15 @@ function setupDebt() {
   const fault = (status?: number) => Object.assign(new Error("rejected"), status ? { status } : {});
   /** Fails the sends to one thread: a definite rejection, or (no status) an ambiguous loss. */
   const send = threads.sdk.threads.send;
-  const failSendsTo = (threadId: string, status?: number) => {
+  const failSendsTo = (threadId: string, status?: number, afterLanding?: () => void) => {
     const control = { failing: true, calls: 0, restore: () => { control.failing = false; } };
-    f.harness.sdk.stub("threads.send", async (args: { threadId: string }) => { if (control.failing && args.threadId === threadId) { control.calls++; throw fault(status); } return send(args as never); });
+    f.harness.sdk.stub("threads.send", async (args: { threadId: string }) => {
+      if (!control.failing || args.threadId !== threadId) return send(args as never);
+      control.calls++;
+      // `afterLanding`: the message reaches the thread, the reply is lost.
+      if (afterLanding) { await send(args as never); afterLanding(); }
+      throw fault(status);
+    });
     return control;
   };
   const card = (title: string, status = "in_progress") => store.tasks.createTask({ projectId: tracker.id, title, status });
@@ -126,7 +136,7 @@ describe("episodes", () => {
     expect(f.open(debt.id)).toBeNull();
     expect(f.episodes(debt.id)).toMatchObject([{ ended_at: expect.any(String) }]);
     const version = f.db.prepare<[], { version: number }>("SELECT MAX(version) AS version FROM schema_version").get()!.version;
-    f.db.exec(`DROP TABLE plan_debt_notices; DROP TABLE plan_debt_events; DROP TABLE plan_debt_episodes; DELETE FROM schema_version WHERE version = ${version};`);
+    f.db.exec(`DROP TABLE plan_debt_notices; DROP TABLE plan_debt_events; DROP TABLE plan_debt_episodes; DELETE FROM schema_version WHERE version >= ${version - 1};`);
     initializeTasksSchema(f.db);
     expect(f.db.prepare("SELECT COUNT(*) AS n FROM plan_debt_episodes").get()).toEqual({ n: 0 });
   });
@@ -153,7 +163,7 @@ describe("episodes", () => {
     f.require();
     f.withPlan(fine.id, "approved");
     const version = f.db.prepare<[], { version: number }>("SELECT MAX(version) AS version FROM schema_version").get()!.version;
-    f.db.exec(`DROP TABLE plan_debt_notices; DROP TABLE plan_debt_events; DROP TABLE plan_debt_episodes; DELETE FROM schema_version WHERE version = ${version};`);
+    f.db.exec(`DROP TABLE plan_debt_notices; DROP TABLE plan_debt_events; DROP TABLE plan_debt_episodes; DELETE FROM schema_version WHERE version >= ${version - 1};`);
     const before = Date.now();
     initializeTasksSchema(f.db);
     expect(f.open(debt.id)!.since >= new Date(before).toISOString()).toBe(true);
@@ -413,5 +423,159 @@ describe("surfaces", () => {
     const listed = await f.cli("list", "--plan-debt", "--json");
     expect(listed.tasks.map((task: { key: string }) => task.key)).toEqual([debt.key]);
     expect((await f.cli("list", "--json")).tasks.length).toBeGreaterThan(1);
+  });
+});
+
+describe("reminder delivery", () => {
+  it("never lends a closed episode's reminder to a later episode of the same card", async () => {
+    const f = setupDebt();
+    const task = f.card("Debt");
+    f.executor(task.id);
+    f.require();
+    f.age(25);
+    let release!: () => void;
+    f.threads.sendGate = new Promise<void>((resolve) => { release = resolve; });
+    const scanning = f.service.scan();
+    await vi.waitFor(() => expect(f.threads.sends).toBe(1));
+    // The first destination is slow: meanwhile the episode closes and a new one opens.
+    f.plans.save({ taskId: task.id, op: "replace", baseVersion: 0, body: "# Plan\n", summary: "Plan", author });
+    f.plans.setState(task.id, "approved", owner);
+    f.plans.save({ taskId: task.id, op: "replace", baseVersion: 1, body: "# Plan v2\n", summary: "Edit", author });
+    f.threads.sendGate = undefined;
+    release();
+    await scanning;
+    expect(f.reminders(MANAGER)).toEqual([]);
+    expect(f.episodes(task.id)).toHaveLength(2);
+  });
+
+  it("abandons a queued delivery whose guard no longer holds, before any queue update or send", async () => {
+    const f = setupDebt();
+    let release!: () => void;
+    f.threads.sendGate = new Promise<void>((resolve) => { release = resolve; });
+    let due = true;
+    const first = deliverWithReceipt(f.bb, "thr_worker", "first", "<!-- m1 -->", { fresh: true });
+    await vi.waitFor(() => expect(f.threads.sends).toBe(1));
+    const second = deliverWithReceipt(f.bb, "thr_worker", "second", "<!-- m2 -->", { fresh: true, guard: () => due });
+    due = false;
+    f.threads.sendGate = undefined;
+    release();
+    await first;
+    expect(await second).toMatchObject({ outcome: "failed" });
+    expect(f.threads.sends).toBe(1);
+  });
+
+  it("sends a decision reminder as its own queued message, leaving the answer's intact", async () => {
+    const f = setupDebt();
+    f.threads.sendMode = "queue";
+    const task = f.card("Debt");
+    f.executor(task.id);
+    f.require();
+    const { question } = await f.ask(task.id, { askedByThread: "thr_worker" });
+    await f.answer(question);
+    const rows = f.threads.rows.filter((row) => row.threadId === "thr_worker").map((row) => f.threads.text(row));
+    expect(rows).toHaveLength(2);
+    const answerRow = rows.find((text) => text.includes("**Answer:** A"))!;
+    expect(answerRow).not.toContain("Plan debt");
+    expect(answerRow).not.toContain("work-board-plan-debt");
+    const reminder = rows.find((text) => text.includes("Plan debt"))!;
+    expect(reminder).toContain("<!-- work-board-plan-debt:");
+    expect(reminder).not.toContain("**Answer:**");
+    expect(f.notices()).toMatchObject([{ state: "sent" }]);
+  });
+
+  it("resumes the marker search of an unknown notice from its saved cursor, with one transport call", async () => {
+    const f = setupDebt();
+    const task = f.card("Debt");
+    f.executor(task.id);
+    f.db.prepare("DELETE FROM attention_manager").run();
+    f.require();
+    f.age(25);
+    historyLimits.passPages = 2;
+    // The message lands, the reply is lost, and newer traffic then buries it beyond one search pass.
+    const lost = f.failSendsTo("thr_worker", undefined, () => { for (let i = 0; i < 120; i++) f.threads.dispatch(`noise ${i}`, "thr_worker"); });
+    await f.service.scan();
+    const state = () => f.db.prepare<[], { state: string; cursor: string | null }>("SELECT state, cursor FROM plan_debt_notices").get()!;
+    expect(state().state).toBe("unknown");
+    for (let pass = 0; pass < 8 && state().state !== "sent"; pass++) await f.service.scan();
+    expect(state().state).toBe("sent");
+    expect(state().cursor).not.toBeNull();
+    expect(lost.calls).toBe(1);
+  });
+
+  it("keeps an event retryable while an executor lookup fails, and delivers once the lookup works", async () => {
+    const f = setupDebt();
+    const task = f.card("Debt"), idle = f.card("Idle");
+    f.executor(task.id, "thr_one");
+    f.executor(task.id, "thr_two");
+    f.db.prepare("DELETE FROM attention_manager").run();
+    f.require();
+    const { question } = await f.ask(task.id);
+    const get = f.threads.sdk.threads.get;
+    let outage = true;
+    f.harness.sdk.stub("threads.get", async (args: { threadId: string }) => { if (outage && args.threadId === "thr_two") throw new Error("host unreachable"); return get(args as never); });
+    await f.answer(question);
+    // The thread that could be read was told; the unread one is not lost.
+    expect(f.reminders("thr_one")).toHaveLength(1);
+    expect(f.reminders("thr_two")).toEqual([]);
+    expect(f.db.prepare<[], { expanded: number }>("SELECT expanded FROM plan_debt_events").get()).toEqual({ expanded: 0 });
+    await f.service.scan();
+    expect(f.reminders("thr_one")).toHaveLength(1);
+    outage = false;
+    await f.service.scan();
+    expect(f.reminders("thr_two")).toHaveLength(1);
+    expect(f.reminders("thr_one")).toHaveLength(1);
+    expect(f.db.prepare<[], { expanded: number }>("SELECT expanded FROM plan_debt_events").get()).toEqual({ expanded: 1 });
+    expect(idle.id).toBeTruthy();
+  });
+
+  it("treats a thread the platform reports as gone as inactive, not as a failed lookup", async () => {
+    const f = setupDebt();
+    const task = f.card("Debt");
+    f.executor(task.id, "thr_gone");
+    f.db.prepare("DELETE FROM attention_manager").run();
+    f.require();
+    f.threads.getError = Object.assign(new Error("gone"), { code: "thread_not_found" });
+    f.age(25);
+    await f.service.scan();
+    expect(f.db.prepare<[], { expanded: number }>("SELECT expanded FROM plan_debt_events").get()).toEqual({ expanded: 1 });
+    expect(f.notices()).toEqual([]);
+  });
+});
+
+describe("answer attachments and PR renames", () => {
+  it("does not count an attachment added to an unchanged answer as a new answer", async () => {
+    const f = setupDebt();
+    const task = f.card("Debt");
+    f.executor(task.id);
+    f.require();
+    const { question } = await f.ask(task.id);
+    const answered = (await f.answer(question)).question;
+    expect(f.reminders("thr_worker")).toHaveLength(1);
+    const attachment = f.store.tasks.createAttachment({ taskId: task.id, fileName: "note.txt", mime: "text/plain", sizeBytes: 1, blobPath: "blobs/note", isImage: false });
+    const again = await f.call("answerQuestion", { questionId: answered.id, revision: answered.revision, selectedOptionIds: answered.selectedOptionIds, authorName: "Owner", attachmentIds: [attachment.id] });
+    expect(again.question.revision).toBe(answered.revision + 1);
+    expect(f.store.tasks.listAttachmentsForComment(again.commentId!)).toHaveLength(1);
+    expect(f.reminders("thr_worker")).toHaveLength(1);
+    expect(f.db.prepare("SELECT trigger FROM plan_debt_events").all()).toHaveLength(1);
+  });
+
+  it("keeps a confirmation across a repository rename: a snapshot refresh sends no second reminder", async () => {
+    const f = setupDebt();
+    const task = f.card("Debt");
+    f.executor(task.id);
+    f.require();
+    await f.allowRepository();
+    const first = await f.call("linkPr", { taskId: task.id, url: PR, role: "delivers" });
+    expect(first.note).toContain("Plan debt");
+    expect(f.reminders("thr_worker")).toHaveLength(1);
+    const git = createGitSyncStore(f.db);
+    const date = new Date().toISOString();
+    const link = prLinkSchema.parse((await f.call("listPrLinks", { taskId: task.id })).links[0].link);
+    const snapshot = prSnapshotSchema.parse({ repository: "owner/renamed", number: 7, remoteId: "1", url: "https://github.com/owner/renamed/pull/7", title: "Delivery", state: "open", headSha: "a".repeat(40), mergeSha: null, mergedAt: null, baseBranch: "main", updatedAt: date, observedAt: date, checks: [], requirementsKnown: false, ci: "no_checks", mergeState: null, mergeable: null, review: null, unresolvedThreads: null, coverage: [] });
+    git.saveSnapshot(f.tracker.id, link, snapshot);
+    expect((await f.call("listPrLinks", { taskId: task.id })).links[0].link).toMatchObject({ repository: "owner/renamed", confirmed: true });
+    await f.service.drain();
+    expect(f.db.prepare("SELECT trigger FROM plan_debt_events").all()).toHaveLength(1);
+    expect(f.reminders("thr_worker")).toHaveLength(1);
   });
 });

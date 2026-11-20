@@ -784,6 +784,8 @@ const MIGRATIONS = [
     for (const card of cards)
       if (hasPlanDebt({ planning: card.planning, workflowPolicy: card.workflow_policy ? JSON.parse(card.workflow_policy) : null, statuses: card.statuses ? JSON.parse(card.statuses) : null }, { type: card.type, status: card.status, archivedAt: card.archived_at }, card.plan_state)) open.run(card.id, now);
   },
+  // 0.70.0: the marker search of an unresolved plan-debt notice resumes from its cursor on the next drain.
+  `ALTER TABLE plan_debt_notices ADD COLUMN cursor TEXT;`,
 ] as const;
 
 export function initializeTasksSchema(db: PluginDatabase, log: Log = () => {}): void {

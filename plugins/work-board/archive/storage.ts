@@ -1,7 +1,9 @@
 import { markTrackerDirty } from "../attention/ledger";
 import { assertLinkChangeAllowed } from "../attention/modes";
 import { createGitSyncStore } from "../git-sync/store";
-import { prIdentity } from "../shared/git-sync";
+import { prIdentity, prLinkSchema } from "../shared/git-sync";
+import { planDebtService } from "../plan-debt/service";
+import { recordPlanDebtEvent, syncProjectPlanDebt } from "../plan-debt/store";
 import { DEFAULT_TASK_STATUSES } from "../shared/statuses.js";
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import type { TasksApiStore } from "../api";
@@ -272,6 +274,7 @@ export function restoreProject(
   const projectId = manifest.project.id;
   // An import never touches attention state; the cards it changes reach the ledger through the debounced scan.
   markTrackerDirty(projectId);
+  let confirmedLinks = false;
   store.transaction(() => {
     const localTaskIds = new Set(db.prepare<[string], { id: string }>("SELECT id FROM tasks WHERE project_id=?").all(projectId).map(row => row.id));
     const localDependencies = new Map<string, string[]>();
@@ -617,6 +620,10 @@ export function restoreProject(
       }, ["id"], ["project_id", "schedule_id"]);
     }
     db.pragma("defer_foreign_keys = ON");
+    // The links this import confirms: a plan-debt trigger, unless the same link was confirmed here already.
+    const confirmedNow = (payload: string | undefined) => { const link = payload ? prLinkSchema.parse(JSON.parse(payload)) : null; return Boolean(link?.confirmed && !link.excluded); };
+    const newlyConfirmed = changes.filter(({ table, row }) => table === "task_pr_links" && confirmedNow(row.payload as string) && !confirmedNow(db.prepare<[SqlValue, SqlValue], { payload: string }>("SELECT payload FROM task_pr_links WHERE task_id=? AND identity=?").get(row.task_id!, row.identity!)?.payload))
+      .map(({ row }) => ({ taskId: row.task_id as string, identity: row.identity as string }));
     for (const { table, row, keys } of changes) {
       // An overwrite that gives a link id to another thread must not keep the local authority to archive it.
       const previousThread = table === "task_threads" ? db.prepare<[SqlValue], { thread_id: string }>("SELECT thread_id FROM task_threads WHERE id = ?").get(row.id!)?.thread_id : undefined;
@@ -676,5 +683,9 @@ export function restoreProject(
           "INSERT INTO task_labels (task_id, label_id) VALUES (?, ?)",
         ).run(task.id, labelId);
     }
+    // Tasks, policy and plans are all written: settle plan-debt episodes now, so a scan never sees a stale one, then record the new confirmations against them.
+    syncProjectPlanDebt(db, projectId);
+    for (const { taskId, identity } of newlyConfirmed) if (recordPlanDebtEvent(db, taskId, `pr:${identity}`)) confirmedLinks = true;
   });
+  if (confirmedLinks) void planDebtService(bb, store.tasks).drain();
 }

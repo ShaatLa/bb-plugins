@@ -8,7 +8,7 @@ type Database = ReturnType<BbPluginApi["storage"]["database"]>;
 export type NoticeState = "pending" | "sending" | "sent" | "failed" | "unknown";
 export interface NoticeRow {
   episodeId: number; trigger: string; destination: string; marker: string; state: NoticeState; attempts: number;
-  lastError: string | null; updatedAt: string; taskId: string; projectId: string; eventAt: string;
+  lastError: string | null; cursor: string | null; updatedAt: string; taskId: string; projectId: string; eventAt: string;
 }
 export interface PendingEvent { episodeId: number; trigger: string; taskId: string; projectId: string }
 
@@ -62,6 +62,14 @@ export function openPlanDebts(db: Database, taskIds: readonly string[]): Map<str
   return result;
 }
 
+/** The debt of one episode, as long as that exact episode is open. */
+export function openEpisodeDebt(db: Database, episodeId: number): PlanDebtInfo | null {
+  const row = db.prepare<[number], { since: string; version: number | null; state: PlanState | null }>(
+    "SELECT e.since, pl.version, pl.state FROM plan_debt_episodes e LEFT JOIN task_plans pl ON pl.task_id = e.task_id WHERE e.id = ? AND e.ended_at IS NULL",
+  ).get(episodeId);
+  return row ? { since: row.since, planVersion: row.version, planState: row.state } : null;
+}
+
 /** Records a trigger as an event of the card's open episode, once per episode and key. False when there is no debt or the event is not new. */
 export function recordPlanDebtEvent(db: Database, taskId: string, trigger: string): boolean {
   return db.prepare(
@@ -85,17 +93,17 @@ export function unexpandedEvents(db: Database): PendingEvent[] {
   ).all().map((row) => ({ episodeId: row.episode_id, trigger: row.trigger, taskId: row.task_id, projectId: row.project_id }));
 }
 
-/** One notice row per destination, at most once per event; the event is marked expanded in the same transaction. */
-export function expandEvent(db: Database, episodeId: number, trigger: string, destinations: readonly string[]): void {
+/** One notice row per destination, at most once per event; the event is marked expanded in the same transaction unless `complete` is false (a recipient lookup failed, so the next drain expands it again). */
+export function expandEvent(db: Database, episodeId: number, trigger: string, destinations: readonly string[], complete = true): void {
   db.transaction(() => {
     const insert = db.prepare("INSERT OR IGNORE INTO plan_debt_notices (episode_id, trigger, destination, marker, state, updated_at) VALUES (?, ?, ?, ?, 'pending', ?)");
     for (const destination of destinations) insert.run(episodeId, trigger, destination, `<!-- work-board-plan-debt:${randomUUID()} -->`, new Date().toISOString());
-    db.prepare("UPDATE plan_debt_events SET expanded = 1 WHERE episode_id = ? AND trigger = ?").run(episodeId, trigger);
+    if (complete) db.prepare("UPDATE plan_debt_events SET expanded = 1 WHERE episode_id = ? AND trigger = ?").run(episodeId, trigger);
   })();
 }
 
-type RawNotice = { episode_id: number; trigger: string; destination: string; marker: string; state: NoticeState; attempts: number; last_error: string | null; updated_at: string; task_id: string; project_id: string; event_at: string };
-const fromRaw = (row: RawNotice): NoticeRow => ({ episodeId: row.episode_id, trigger: row.trigger, destination: row.destination, marker: row.marker, state: row.state, attempts: row.attempts, lastError: row.last_error, updatedAt: row.updated_at, taskId: row.task_id, projectId: row.project_id, eventAt: row.event_at });
+type RawNotice = { episode_id: number; trigger: string; destination: string; marker: string; state: NoticeState; attempts: number; last_error: string | null; cursor: string | null; updated_at: string; task_id: string; project_id: string; event_at: string };
+const fromRaw = (row: RawNotice): NoticeRow => ({ episodeId: row.episode_id, trigger: row.trigger, destination: row.destination, marker: row.marker, state: row.state, attempts: row.attempts, lastError: row.last_error, cursor: row.cursor, updatedAt: row.updated_at, taskId: row.task_id, projectId: row.project_id, eventAt: row.event_at });
 const NOTICE = `SELECT n.*, e.task_id, t.project_id, ev.created_at AS event_at FROM plan_debt_notices n
   JOIN plan_debt_episodes e ON e.id = n.episode_id JOIN tasks t ON t.id = e.task_id
   JOIN plan_debt_events ev ON ev.episode_id = n.episode_id AND ev.trigger = n.trigger
@@ -104,6 +112,10 @@ const NOTICE = `SELECT n.*, e.task_id, t.project_id, ev.created_at AS event_at F
 /** Notices still owed on open episodes; the rest stop with their episode. */
 export const unsentNotices = (db: Database): NoticeRow[] => db.prepare<[], RawNotice>(`${NOTICE} ORDER BY ev.created_at, n.rowid`).all().map(fromRaw);
 export const unsentNoticesOf = (db: Database, taskId: string): NoticeRow[] => db.prepare<[string], RawNotice>(`${NOTICE} AND e.task_id = ? ORDER BY ev.created_at, n.rowid`).all(taskId).map(fromRaw);
+
+export const setNoticeCursor = (db: Database, row: Pick<NoticeRow, "episodeId" | "trigger" | "destination">, cursor: string): void => {
+  db.prepare("UPDATE plan_debt_notices SET cursor = ? WHERE episode_id = ? AND trigger = ? AND destination = ?").run(cursor, row.episodeId, row.trigger, row.destination);
+};
 
 export function setNotice(db: Database, row: Pick<NoticeRow, "episodeId" | "trigger" | "destination">, state: NoticeState, options: { error?: string | null; attempt?: boolean } = {}): void {
   db.prepare("UPDATE plan_debt_notices SET state = ?, attempts = attempts + ?, last_error = ?, updated_at = ? WHERE episode_id = ? AND trigger = ? AND destination = ?")

@@ -440,16 +440,27 @@ async function appendMarked(bb: BbPluginApi, threadId: string, text: string, mar
   return { kind: "none" };
 }
 
+export interface DeliverOptions {
+  /** Never merge into a queued notice: the message is its own queue row, so it stays apart from what is already queued. */
+  fresh?: boolean;
+  /** Read inside the per-thread serialization, before any queue update or send; false abandons the delivery as `failed`. */
+  guard?: () => boolean;
+}
+const STALE: Receipt = { outcome: "failed", error: "The message is no longer due; nothing was sent" };
+
 /**
  * Deliver `text` carrying `marker` and report what is provable: `appended` (merged into our queued notice, with its row id),
  * `queued` (a new row), `inline` (accepted-input event seen), `pending` (sent inline, event not yet seen), `failed` (explicitly
  * rejected) or `unknown` (possibly written, never resent). Runs under the same per-thread serialization as the other notice writers.
  */
-export function deliverWithReceipt(bb: BbPluginApi, threadId: string, text: string, marker: string): Promise<Receipt> {
+export function deliverWithReceipt(bb: BbPluginApi, threadId: string, text: string, marker: string, options: DeliverOptions = {}): Promise<Receipt> {
   const body = `${text}\n\n${marker}`;
   return serialPerThread(threadId, async (): Promise<Receipt> => {
-    const appended = await appendMarked(bb, threadId, body, marker);
+    if (options.guard && !options.guard()) return STALE;
+    const appended = options.fresh ? ({ kind: "none" } as AppendResult) : await appendMarked(bb, threadId, body, marker);
     if (appended.kind === "done") return appended.receipt;
+    // The guard is checked again right before the transport call: the wait for the queue read may have outlived the reason to send.
+    if (options.guard && !options.guard()) return STALE;
     try {
       const sent = await bb.sdk.threads.send({ threadId, originPluginId: bb.pluginId, input: [{ type: "text", text: withPluginHeader(bb.pluginId, body), mentions: [] }], mode: "queue-if-active" });
       if (sent.delivery === "queued") return { outcome: "queued", queuedMessageId: sent.queuedMessage.id };

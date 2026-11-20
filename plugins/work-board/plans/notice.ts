@@ -18,19 +18,28 @@ export function cardInWork(tasks: TasksStore, taskId: string): boolean {
   return Boolean(task && project && inWorkNow(project, task.status));
 }
 
-/** The card's linked threads that are executing now. "Active" is read from the live thread, not from the link: a link's name or stored state says nothing about whether it is running. */
-export async function activeExecutors(bb: BbPluginApi, tasks: TasksStore, taskId: string, skip: ReadonlySet<string | null> = new Set()): Promise<string[]> {
-  const threads: string[] = [];
+/**
+ * The card's linked threads that are executing now. "Active" is read from the live thread, not from the link: a link's name or stored state
+ * says nothing about whether it is running. A thread the platform confirms gone, archived or idle is simply not active; any other failed
+ * lookup is reported in `failed`, because that thread's state is unknown, not inactive.
+ */
+export async function lookupExecutors(bb: BbPluginApi, tasks: TasksStore, taskId: string, skip: ReadonlySet<string | null> = new Set()): Promise<{ active: string[]; failed: string[] }> {
+  const active: string[] = [], failed: string[] = [];
   for (const threadId of new Set(tasks.listTaskThreads(taskId).map((link) => link.threadId))) {
     if (skip.has(threadId)) continue;
     try {
       const thread = await bb.sdk.threads.get({ threadId });
-      if (thread.archivedAt == null && thread.deletedAt == null && (thread.status === "active" || thread.status === "starting")) threads.push(threadId);
-    } catch {
-      // A thread that cannot be read cannot be told either.
+      if (thread.archivedAt == null && thread.deletedAt == null && (thread.status === "active" || thread.status === "starting")) active.push(threadId);
+    } catch (error) {
+      if (!(typeof error === "object" && error !== null && "code" in error && error.code === "thread_not_found")) failed.push(threadId);
     }
   }
-  return threads;
+  return { active, failed };
+}
+
+/** The executors that can be told now; a thread whose lookup failed cannot be told either. */
+export async function activeExecutors(bb: BbPluginApi, tasks: TasksStore, taskId: string, skip: ReadonlySet<string | null> = new Set()): Promise<string[]> {
+  return (await lookupExecutors(bb, tasks, taskId, skip)).active;
 }
 
 export async function noticeLeftApproved(

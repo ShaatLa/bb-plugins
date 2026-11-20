@@ -274,7 +274,7 @@ export function createStructuredStore(bb: BbPluginApi, store: TasksApiStore) {
     },
     async answerQuestion(input) {
       let withdrawn = false;
-      let debtEvent = false;
+      let debtEvent = false, sameAnswer = false;
       let notice = "";
       let comment: ReturnType<typeof store.tasks.createComment> | undefined;
       let wake: Wake = null;
@@ -306,12 +306,9 @@ export function createStructuredStore(bb: BbPluginApi, store: TasksApiStore) {
           updatedAt: new Date().toISOString(),
         });
         assertNoSecretsInValue(next, "question");
-        if (
-          JSON.stringify([...current.selectedOptionIds].sort()) ===
-            JSON.stringify([...next.selectedOptionIds].sort()) &&
-          current.answerText === next.answerText && !attachmentIds.length
-        )
-          return current;
+        // Attachments make a save a change, but only options and text make it a new answer.
+        sameAnswer = JSON.stringify([...current.selectedOptionIds].sort()) === JSON.stringify([...next.selectedOptionIds].sort()) && current.answerText === next.answerText;
+        if (sameAnswer && !attachmentIds.length) return current;
         const { id, taskId, createdAt, history, ...snapshot } = current;
         next.history = [...history, snapshot];
         db.prepare<[string, string]>(
@@ -325,7 +322,7 @@ export function createStructuredStore(bb: BbPluginApi, store: TasksApiStore) {
         ].join("; ");
         const answer = answerOf(next), previous = answerOf(current);
         // A saved, non-empty answer to a decision is a plan-debt trigger of the card's open episode.
-        if ((next.kind ?? "decision") === "decision" && answer) debtEvent = recordPlanDebtEvent(db, next.taskId, `answer:${next.id}:${next.revision}`);
+        if ((next.kind ?? "decision") === "decision" && answer && !sameAnswer) debtEvent = recordPlanDebtEvent(db, next.taskId, `answer:${next.id}:${next.revision}`);
         withdrawn = !answer && Boolean(previous);
         comment = store.tasks.createComment({
           taskId: next.taskId,

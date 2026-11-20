@@ -1,11 +1,12 @@
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import { configuredManager } from "../attention/modes";
 import type { TasksStore } from "../db";
-import { activeExecutors } from "../plans/notice";
+import { lookupExecutors } from "../plans/notice";
 import { errorMessage } from "../shared/errors";
 import { planDebtNotice } from "../shared/plan-debt";
 import { deliverWithReceipt, searchAttentionMarker, type Receipt } from "../steer";
-import { expandEvent, openPlanDebt, repairPlanDebt, setNotice, unexpandedEvents, unsentNotices, writeDueReminders, type NoticeRow } from "./store";
+import { expandEvent, openEpisodeDebt, repairPlanDebt, setNotice, setNoticeCursor, unexpandedEvents, unsentNotices, writeDueReminders, type NoticeRow } from "./store";
+import type { HistoryCursor } from "../steer";
 
 const instances = new WeakMap<BbPluginApi, ReturnType<typeof createService>>();
 export function planDebtService(bb: BbPluginApi, tasks: TasksStore): ReturnType<typeof createService> {
@@ -33,15 +34,19 @@ function createService(bb: BbPluginApi, tasks: TasksStore) {
   /** Each committed event becomes one notice row per destination: the card's active executors, plus the manager for the 24 h reminder. */
   async function expand() {
     for (const event of unexpandedEvents(db)) {
-      const destinations = new Set(await activeExecutors(bb, tasks, event.taskId));
+      const { active, failed } = await lookupExecutors(bb, tasks, event.taskId);
+      const destinations = new Set(active);
       const manager = event.trigger === "24h" ? configuredManager(db, event.projectId) : null;
       if (manager) destinations.add(manager);
-      expandEvent(db, event.episodeId, event.trigger, [...destinations]);
+      // A thread whose state could not be read is not "inactive": the event stays open for the next drain, and rows already made are kept.
+      if (failed.length) bb.log.warn(`Plan debt ${event.trigger} reminder of ${event.taskId}: could not read ${failed.join(", ")}; it will be retried`);
+      expandEvent(db, event.episodeId, event.trigger, [...destinations], failed.length === 0);
     }
   }
 
   const textOf = (notice: NoticeRow): string | null => {
-    const task = tasks.getTask(notice.taskId), debt = openPlanDebt(db, notice.taskId);
+    // The notice's own episode: a later episode of the same card never lends its details to an older row.
+    const task = tasks.getTask(notice.taskId), debt = openEpisodeDebt(db, notice.episodeId);
     if (!task || !debt) return null;
     // A manager that is also an executor of the card gets the executor's text.
     const executor = tasks.listTaskThreads(task.id).some((link) => link.threadId === notice.destination);
@@ -51,7 +56,10 @@ function createService(bb: BbPluginApi, tasks: TasksStore) {
   /** A row that may already have been written is never resent: it is searched for, and only a definite `failed` receipt is retried. */
   async function settle(notice: NoticeRow) {
     try {
-      const { receipt } = await searchAttentionMarker(bb, notice.destination, notice.marker, notice.eventAt);
+      const cursor = notice.cursor ? (JSON.parse(notice.cursor) as HistoryCursor) : {};
+      const { receipt, cursor: next } = await searchAttentionMarker(bb, notice.destination, notice.marker, notice.eventAt, cursor);
+      // The pass is bounded: its progress is kept, so the next drain reads on instead of rereading the newest pages.
+      setNoticeCursor(db, notice, JSON.stringify(next));
       if (receipt && isConfirmed(receipt)) setNotice(db, notice, "sent");
       // A miss, complete or not, stays unknown: the send may have succeeded inline and its marker may show up later.
       else if (notice.state === "sending") setNotice(db, notice, "unknown", { error: "Interrupted before the outcome was known" });
@@ -66,7 +74,8 @@ function createService(bb: BbPluginApi, tasks: TasksStore) {
     setNotice(db, notice, "sending", { attempt: true });
     let receipt: Receipt;
     try {
-      receipt = await deliverWithReceipt(bb, notice.destination, text, notice.marker);
+      // Its own queue row, never appended to a notice (an answer, say) that is still queued; and only while this episode is still the one that is open.
+      receipt = await deliverWithReceipt(bb, notice.destination, text, notice.marker, { fresh: true, guard: () => openEpisodeDebt(db, notice.episodeId) !== null });
     } catch (error) {
       // An exception after a possible write is never a failure: the marker search decides later.
       receipt = { outcome: "unknown", error: errorMessage(error) };
