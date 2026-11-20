@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, waitFor, within } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
 import { loadPluginApp, renderSlot } from "@get-bb/plugin-sdk/testing/app";
 import { createFakePluginHost } from "@get-bb/plugin-sdk/testing";
@@ -493,24 +493,75 @@ it("lets the owner pick each planning mode for the selected project, and the cho
   } finally { cleanup(); await harness.dispose(); }
 });
 
-it("lets the owner mark which statuses need an approved plan, never canceled, and keeps the choice", async () => {
+it("shows the plan-gated statuses only when planning is required, and the status editor has no plan checkbox or auto-save sentence", async () => {
   const { bb, harness } = createFakePluginHost({ pluginId: "work-board" });
   try {
     const store = createStore(bb);
     const alpha = store.tasks.createProject({ name: "Alpha", prefix: "A", color: "blue" });
     registerTasksApi(bb, store);
     const settings = renderSlot(app.settingsSections[0]!, {}, { rpc: Object.fromEntries(Object.keys(tasksRpcContract).map(method => [method, (input: unknown) => harness.callRpc(method, input)])) });
-    const box = (name: string) => settings.getByRole("checkbox", { name: `Only with an approved plan: ${name}` }) as HTMLInputElement;
-    await settings.findByRole("checkbox", { name: "Only with an approved plan: Todo" });
-    expect(box("Canceled").disabled).toBe(true);
-    expect(box("Todo").checked).toBe(false);
-    fireEvent.click(box("Todo"));
-    await waitFor(() => expect(store.tasks.getProject(alpha.id)?.statuses?.find(status => status.id === "todo")?.requiresApprovedPlan).toBe(true));
-    // The first manual edit initializes the flags, in any mode.
-    expect(store.tasks.getProject(alpha.id)).toMatchObject({ planning: "off", planFlagsInitialized: true });
-    await waitFor(() => expect(box("Todo").checked).toBe(true));
-    fireEvent.click(box("Todo"));
-    await waitFor(() => expect(store.tasks.getProject(alpha.id)?.statuses?.find(status => status.id === "todo")).not.toHaveProperty("requiresApprovedPlan"));
+    await settings.findByRole("combobox", { name: "Planning" });
+    const block = () => settings.queryByTestId("plan-gated-statuses");
+    expect(block()).toBeNull();
+    expect(settings.queryByText(/Changes save automatically/)).toBeNull();
+    expect(settings.queryByText(/System statuses stay; statuses used by tasks cannot be deleted\./)).not.toBeNull();
+    expect(settings.queryAllByRole("checkbox", { name: /approved plan/ })).toHaveLength(0);
+    expect(settings.queryByText("Plan", { selector: "label" })).toBeNull();
+    for (const [label, value] of [["Optional", "optional"], ["Required", "required"], ["Optional", "optional"]] as const) {
+      fireEvent.click(settings.getByRole("combobox", { name: "Planning" }));
+      fireEvent.click(await settings.findByRole("option", { name: label }));
+      await waitFor(() => expect(store.tasks.getProject(alpha.id)?.planning).toBe(value));
+      await waitFor(() => (value === "required" ? expect(block()).not.toBeNull() : expect(block()).toBeNull()));
+    }
+  } finally { cleanup(); await harness.dispose(); }
+});
+
+it("edits the plan-gated statuses as chips: add and remove save the flag, canceled is never offered, the complement line follows", async () => {
+  const { bb, harness } = createFakePluginHost({ pluginId: "work-board" });
+  try {
+    const store = createStore(bb);
+    const alpha = store.tasks.createProject({ name: "Alpha", prefix: "A", color: "blue" });
+    store.tasks.updateProject(alpha.id, { planning: "required" });
+    registerTasksApi(bb, store);
+    const settings = renderSlot(app.settingsSections[0]!, {}, { rpc: Object.fromEntries(Object.keys(tasksRpcContract).map(method => [method, (input: unknown) => harness.callRpc(method, input)])) });
+    const flag = (id: string) => store.tasks.getProject(alpha.id)?.statuses?.find(status => status.id === id)?.requiresApprovedPlan === true;
+    const chips = () => within(settings.getByTestId("plan-gated-statuses")).queryAllByRole("button", { name: /^Remove / }).map(button => button.getAttribute("aria-label"));
+    const free = () => settings.getByTestId("plan-free-statuses").textContent;
+    await settings.findByTestId("plan-gated-statuses");
+    // The first switch to required marked In progress and every later status; chips follow the project status order.
+    expect(settings.getByRole("heading", { name: "Statuses that need an approved plan" })).toBeTruthy();
+    expect(chips()).toEqual(["Remove In Progress", "Remove In Review", "Remove Done"]);
+    expect(free()).toBe("Without an approved plan a card stays in: Backlog, Todo, Canceled");
+    expect(settings.getByTestId("plan-gated-statuses").querySelectorAll("[data-status-icon]")).toHaveLength(3);
+    // Adding offers the unmarked statuses except canceled.
+    fireEvent.click(settings.getByRole("combobox", { name: "Add status" }));
+    expect((await settings.findAllByRole("option")).map(option => option.textContent)).toEqual(["Backlog", "Todo"]);
+    fireEvent.click(settings.getByRole("option", { name: "Todo" }));
+    await waitFor(() => expect(flag("todo")).toBe(true));
+    await waitFor(() => expect(free()).toBe("Without an approved plan a card stays in: Backlog, Canceled"));
+    expect(chips()).toEqual(["Remove Todo", "Remove In Progress", "Remove In Review", "Remove Done"]);
+    // Removing clears the flag and the status leaves the chips.
+    fireEvent.click(settings.getByRole("button", { name: "Remove Done" }));
+    await waitFor(() => expect(flag("done")).toBe(false));
+    await waitFor(() => expect(free()).toBe("Without an approved plan a card stays in: Backlog, Done, Canceled"));
+    expect(chips()).toEqual(["Remove Todo", "Remove In Progress", "Remove In Review"]);
+    expect(flag("canceled")).toBe(false);
+  } finally { cleanup(); await harness.dispose(); }
+});
+
+it("shows a failed plan-gated status save like the other settings", async () => {
+  const { bb, harness } = createFakePluginHost({ pluginId: "work-board" });
+  try {
+    const store = createStore(bb);
+    const alpha = store.tasks.createProject({ name: "Alpha", prefix: "A", color: "blue" });
+    store.tasks.updateProject(alpha.id, { planning: "required" });
+    registerTasksApi(bb, store);
+    const rpc = Object.fromEntries(Object.keys(tasksRpcContract).map(method => [method, (input: unknown) => harness.callRpc(method, input)]));
+    rpc.updateProject = async () => { throw new Error("Statuses are locked"); };
+    const settings = renderSlot(app.settingsSections[0]!, {}, { rpc });
+    fireEvent.click(await settings.findByRole("button", { name: "Remove Done" }));
+    expect((await settings.findByRole("alert")).textContent).toBe("Statuses are locked");
+    expect(store.tasks.getProject(alpha.id)?.statuses?.find(status => status.id === "done")?.requiresApprovedPlan).toBe(true);
   } finally { cleanup(); await harness.dispose(); }
 });
 

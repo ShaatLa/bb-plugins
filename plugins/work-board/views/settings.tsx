@@ -141,8 +141,7 @@ function ProjectStatuses({ project }: { project: Project }) {
   return (
     <div className="max-w-2xl space-y-2">
       <p className="text-xs text-muted-foreground">
-        Changes save automatically. System statuses stay; statuses used by tasks
-        cannot be deleted.
+        System statuses stay; statuses used by tasks cannot be deleted.
       </p>
       <p id={dragInstructions} className="sr-only">
         Drag to reorder. With the keyboard, press Space to pick up, use arrow
@@ -315,16 +314,6 @@ function ProjectStatuses({ project }: { project: Project }) {
                 }
               }}
             />
-            <label className="flex shrink-0 items-center gap-1 text-2xs text-muted-foreground" title="With planning required, a card enters this status only after its plan is approved">
-              <input
-                type="checkbox"
-                aria-label={`Only with an approved plan: ${status.name}`}
-                checked={status.requiresApprovedPlan === true}
-                disabled={status.id === "canceled" || saving}
-                onChange={(event) => void save(statuses.map((entry) => (entry.id === status.id ? { ...entry, requiresApprovedPlan: event.target.checked } : entry)))}
-              />
-              Plan
-            </label>
             {(TASK_STATUSES as readonly string[]).includes(status.id) ? (
               <span className="size-7 shrink-0" />
             ) : (
@@ -416,6 +405,7 @@ function ProjectAutomationSettings({ project, onSaved }: { project: Project; onS
     staleIdleMinutes?: z.infer<typeof staleIdleThresholdSchema>;
     statusNotifications?: z.infer<typeof statusNotificationsSchema>;
     planning?: z.infer<typeof planningSchema>;
+    statuses?: TaskStatusDefinition[];
   }) => {
     setBusy(true);
     setError(null);
@@ -428,6 +418,10 @@ function ProjectAutomationSettings({ project, onSaved }: { project: Project; onS
       setBusy(false);
     }
   };
+  const statuses: TaskStatusDefinition[] = project.statuses ?? DEFAULT_TASK_STATUSES;
+  const marked = statuses.filter((status) => status.requiresApprovedPlan === true && status.id !== "canceled");
+  const unmarked = statuses.filter((status) => status.requiresApprovedPlan !== true);
+  const setFlag = (id: string, on: boolean) => void save({ statuses: statuses.map((status) => (status.id === id ? { ...status, requiresApprovedPlan: on } : status)) });
   return (
     <section aria-label="Project automation" className="space-y-4 border-t border-border pt-4">
       <h3 className="text-sm font-medium">Archiving and activity</h3>
@@ -486,11 +480,40 @@ function ProjectAutomationSettings({ project, onSaved }: { project: Project; onS
           </SelectContent>
         </Select>
       </label>
-      <p className="text-xs text-muted-foreground">Off hides plans for this project (existing plans are kept). Optional turns on plans and their review. Required also keeps a card out of In progress and later statuses until its plan is approved; epics are exempt. Only you change this; agents cannot.</p>
+      <p className="text-xs text-muted-foreground">Off hides plans for this project (existing plans are kept). Optional turns on plans and their review. Required keeps a card out of the statuses below until its plan is approved; epics are exempt. Only you change this; agents cannot.</p>
       {project.planningChangedAt ? (
         <p className="text-xs text-muted-foreground" data-testid="planning-changed">
           Changed <time dateTime={project.planningChangedAt} title={project.planningChangedAt}>{formatRelativeTime(project.planningChangedAt, Date.now())}</time>, was {project.planningPrevious ?? "off"}
         </p>
+      ) : null}
+      {project.planning === "required" ? (
+        <div className="space-y-2" data-testid="plan-gated-statuses">
+          <h4 className="text-sm font-medium">Statuses that need an approved plan</h4>
+          <div className="flex flex-wrap items-center gap-1.5">
+            {marked.map((status) => (
+              <span key={status.id} className="inline-flex h-7 items-center gap-1.5 rounded-md border border-border pl-2 pr-1 text-xs">
+                <StatusIcon status={status.id} projectId={project.id} icon={status.icon} color={status.color} />
+                {status.name}
+                <Button type="button" variant="ghost" size="icon" className="size-5" disabled={busy} aria-label={`Remove ${status.name}`} onClick={() => setFlag(status.id, false)}>
+                  <Icon name="X" className="size-3" />
+                </Button>
+              </span>
+            ))}
+            {unmarked.some((status) => status.id !== "canceled") ? (
+              <Select value="" disabled={busy} onValueChange={(id) => setFlag(id, true)}>
+                <SelectTrigger aria-label="Add status" className="h-7 w-auto gap-1 text-xs"><SelectValue placeholder="+ Add status" /></SelectTrigger>
+                <SelectContent>
+                  {unmarked.filter((status) => status.id !== "canceled").map((status) => (
+                    <SelectItem key={status.id} value={status.id}>{status.name}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            ) : null}
+          </div>
+          <p className="text-xs text-muted-foreground" data-testid="plan-free-statuses">
+            Without an approved plan a card stays in: {unmarked.map((status) => status.name).join(", ")}
+          </p>
+        </div>
       ) : null}
       {error ? <p role="alert" className="text-xs text-destructive">{error}</p> : null}
     </section>
