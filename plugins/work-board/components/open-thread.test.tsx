@@ -28,45 +28,24 @@ function mount() {
   return clicked;
 }
 
-it("opens bb chat by default", () => {
-  settings.current = {};
+it.each<Record<string, string>>([{}, { openThreadsIn: "answers" }])("opens bb chat by default and for a value no longer offered (%j)", (values) => {
+  settings.current = values;
   expect(mount()).toEqual([]);
   expect(toThread).toHaveBeenCalledWith("thr_example");
   expect(list).not.toHaveBeenCalled();
 });
 
-it("opens the conversation in Answers through a link bb routes, and falls back to bb chat without Answers", async () => {
-  settings.current = { openThreadsIn: "answers" };
-  list.mockResolvedValue({ plugins: [{ id: "answers", enabled: true }] });
+it("opens the conversation in Agent Hub through a link bb routes, and falls back to bb chat without it", async () => {
+  settings.current = { openThreadsIn: "agent-hub" };
+  list.mockResolvedValue({ plugins: [{ id: "agent-hub", enabled: true }] });
   const clicked = mount();
-  await waitFor(() => expect(clicked).toEqual(["/plugins/answers/answers?thread=thr_example"]));
+  await waitFor(() => expect(clicked).toEqual(["/plugins/agent-hub/agent-hub?thread=thr_example"]));
   expect(toThread).not.toHaveBeenCalled();
   expect(document.querySelector("a")).toBeNull();
 
   vi.setSystemTime(clock += 120_000);
   cleanup();
-  list.mockResolvedValue({ plugins: [{ id: "answers", enabled: false }] });
+  list.mockResolvedValue({ plugins: [{ id: "agent-hub", enabled: false }] });
   expect(mount()).toEqual([]);
   await waitFor(() => expect(toThread).toHaveBeenCalledWith("thr_example"));
-});
-
-it("prefers Agent Hub, uses Answers while only it is installed, and accepts either stored value", async () => {
-  settings.current = { openThreadsIn: "agent-hub" };
-  list.mockResolvedValue({ plugins: [{ id: "answers", enabled: true }, { id: "agent-hub", enabled: true }] });
-  const both = mount();
-  await waitFor(() => expect(both).toEqual(["/plugins/agent-hub/agent-hub?thread=thr_example"]));
-
-  cleanup();
-  vi.setSystemTime(clock += 120_000);
-  list.mockResolvedValue({ plugins: [{ id: "answers", enabled: true }] });
-  const answersOnly = mount();
-  await waitFor(() => expect(answersOnly).toEqual(["/plugins/answers/answers?thread=thr_example"]));
-
-  cleanup();
-  vi.setSystemTime(clock += 120_000);
-  settings.current = { openThreadsIn: "answers" };
-  list.mockResolvedValue({ plugins: [{ id: "agent-hub", enabled: true }] });
-  const legacy = mount();
-  await waitFor(() => expect(legacy).toEqual(["/plugins/agent-hub/agent-hub?thread=thr_example"]));
-  expect(toThread).not.toHaveBeenCalled();
 });

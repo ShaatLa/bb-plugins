@@ -2,18 +2,17 @@ import { useCallback, useEffect } from "react";
 import { useBbNavigate, useSdk, useSettings } from "@get-bb/plugin-sdk/app";
 
 type Sdk = ReturnType<typeof useSdk>;
-/** Agent Hub was called Answers before its rename; either id serves the same deep link. */
-const HUB_IDS = ["agent-hub", "answers"] as const;
-type HubId = (typeof HUB_IDS)[number];
+const HUB_ID = "agent-hub";
+type HubId = typeof HUB_ID;
 let hubCheck: { at: number; hub: Promise<HubId | null> } | null = null;
 
-/** The installed and enabled hub plugin, preferring Agent Hub; rechecked at most once a minute. */
+/** Agent Hub when it is installed and enabled; rechecked at most once a minute. */
 function installedHub(sdk: Sdk): Promise<HubId | null> {
   if (!hubCheck || Date.now() - hubCheck.at > 60_000) {
     hubCheck = {
       at: Date.now(),
       hub: sdk.plugins.list().then(
-        ({ plugins }) => HUB_IDS.find((id) => plugins.some((plugin) => plugin.id === id && plugin.enabled)) ?? null,
+        ({ plugins }) => (plugins.some((plugin) => plugin.id === HUB_ID && plugin.enabled) ? HUB_ID : null),
         () => null,
       ),
     };
@@ -38,8 +37,7 @@ function openInHub(hub: HubId, threadId: string, origin: Element | null) {
 export function useOpenThread(): (threadId: string) => void {
   const navigate = useBbNavigate(), sdk = useSdk();
   const setting = useSettings().values?.openThreadsIn;
-  // "answers" is the value stored before the rename.
-  const viaHub = setting === "agent-hub" || setting === "answers";
+  const viaHub = setting === "agent-hub";
   useEffect(() => { if (viaHub) void installedHub(sdk); }, [viaHub, sdk]);
   return useCallback((threadId: string) => {
     if (!viaHub) return navigate.toThread(threadId);
