@@ -141,3 +141,13 @@ it('gives every field on the Agent Hub page 16px text on touch screens, so iOS d
   const slot = renderSlot({ component:AgentHubPanel }, {}, { sdk, rpc:{ recipients:() => ({ recipients:[] }), list:() => ({ items:[], nextCursor:null }), counts:() => ({ unread:0, waiting:0, forMe:0, inbox:0 }) } } as any);
   expect(slot.container.querySelector('section')!.className).toContain('[@media(pointer:coarse)]:[&_:is(input,textarea,select,[contenteditable=true])]:text-[16px]');
 });
+it('drops an open question\'s text above a form of several parts, which already shows each prompt, and keeps it for one part', async () => {
+  const part = (id: string, prompt: string) => ({ id, prompt, shortLabel: id, required: false, multiSelect: false, allowFreeText: true, options: [{ value: 'a', label: 'Alpha' }] });
+  const ask = { ...item, id:'ans_form', kind:'for_me' as const, status:'open' as const, question:'1. First part?\n2. Second part?', answer:null, answerSeq:null, questions:[part('one', 'First part?'), part('two', 'Second part?')] } as any;
+  const many = renderSlot({ component:ItemCard }, { item:ask, chat:true, compact:true }, { sdk } as any);
+  await many.findAllByText('First part?');
+  expect(many.container.textContent).not.toContain('1. First part?');
+  many.unmount();
+  const one = renderSlot({ component:ItemCard }, { item:{ ...ask, question:'Only part?', questions:[part('one', 'Only part?')] }, chat:true, compact:true }, { sdk } as any);
+  await waitFor(() => expect(one.container.textContent).toContain('Only part?'));
+});

@@ -24,7 +24,8 @@ async function questionsSetup(overrides: Record<string, (...args: any[]) => any>
   const app = await loadPluginApp(() => import('./app'));
   const ask = { ...item, id: 'ans_ask', kind: 'for_me' as const, status: 'open' as const, question: 'Choose?', answer: null, ...extra };
   const slot = renderSlot(app.navPanels[0]!, { subPath: '' }, { rpc: { recipients: () => ({ recipients: [] }), list: (input: unknown) => ({ items: (input as { view: string }).view === 'for_me' ? [ask] : [], nextCursor: null }), counts: () => ({ unread: 0, waiting: 0, forMe: 1, inbox: 0 }), ...overrides } });
-  await slot.findByText('Choose?');
+  // A question of several parts shows its prompts only in the form, so wait for the card itself.
+  await waitFor(() => expect(slot.container.querySelector('[data-pending-title="Choose?"]')).toBeTruthy());
   return slot;
 }
 async function setup(overrides: Record<string, (...args: any[]) => any> = {}) {
