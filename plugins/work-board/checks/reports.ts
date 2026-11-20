@@ -15,7 +15,8 @@ export function reportContents(exitCode: number, output: string) {
     if (summaryLine.test(line)) continue;
     const entry = /^(ANSWER|ACTION|WAIT|STATE) (\S.*)$/.exec(line);
     if (!entry) {
-      diagnostics.push(line);
+      // A blank line is no diagnostic: empty output and output that is only worktree lines fingerprint alike.
+      if (line.trim()) diagnostics.push(line);
       continue;
     }
     const [, tag, detail] = entry;

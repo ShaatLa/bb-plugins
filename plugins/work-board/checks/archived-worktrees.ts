@@ -9,8 +9,8 @@ type Candidate = { path: string; threadId: string };
 const PAGE_SIZE = 100;
 const THREAD_BATCH = 200;
 const COMMAND_TIMEOUT_MS = 15_000;
-/** Tests shorten the measurement budget; production uses 30 s. */
-export const scanTuning = { measurementMs: 30_000 };
+/** Tests shorten these; production uses a 30 s measurement budget and a 60 s deadline for the whole scan. */
+export const scanTuning = { measurementMs: 30_000, deadlineMs: 60_000 };
 
 async function existingPath(path: string): Promise<string | null> {
   try { return await realpath(path); }
@@ -24,11 +24,25 @@ async function git(path: string, args: string[], signal: AbortSignal) {
   return result.output;
 }
 
+/** Stops waiting for `promise` when the signal fires: a filesystem call on an unavailable mount ignores the signal and never settles. */
+function untilAborted<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    if (signal.aborted) return reject(signal.reason);
+    const onAbort = () => reject(signal.reason);
+    signal.addEventListener("abort", onAbort, { once: true });
+    promise.then(resolve, reject).finally(() => signal.removeEventListener("abort", onAbort));
+  });
+}
+
 /**
  * Finds worktrees an archived thread left under the thread storage root, measures the ones not reported yet and describes them
  * as `ACTION archived-worktree` lines. Nothing is modified. Returns null when this tick cannot scan (no host, no storage, no readable repository).
  */
-export async function scanArchivedWorktrees(bb: BbPluginApi, project: ScanProject, reported: string[], afterPath: string | undefined, signal: AbortSignal) {
+export function scanArchivedWorktrees(bb: BbPluginApi, project: ScanProject, reported: string[], afterPath: string | undefined, signal: AbortSignal) {
+  return untilAborted(scan(bb, project, reported, afterPath, signal), signal);
+}
+
+async function scan(bb: BbPluginApi, project: ScanProject, reported: string[], afterPath: string | undefined, signal: AbortSignal) {
   const { primaryHostId } = await bb.sdk.system.config({ signal });
   if (!primaryHostId) return null;
   const host = await bb.sdk.hosts.get({ hostId: primaryHostId, signal });

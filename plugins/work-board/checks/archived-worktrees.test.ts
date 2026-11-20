@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { receiptPolling } from "../steer";
@@ -9,12 +9,19 @@ import { reportContents } from "./reports";
 import { checksTuning } from "./service";
 import { binDir, BB_PROJECT, cleanTempDirs, MANAGER, setup, tempDir, type Fixture } from "./fixtures";
 
+// A filesystem call that never settles, for the one path a test names.
+const stall = vi.hoisted(() => ({ path: null as string | null }));
+vi.mock("node:fs/promises", async (original) => {
+  const actual = await original<typeof import("node:fs/promises")>();
+  return { ...actual, realpath: Object.assign((path: string, ...rest: unknown[]) => (path === stall.path ? new Promise<string>(() => {}) : (actual.realpath as (...args: unknown[]) => Promise<string>)(path, ...rest)), actual.realpath) };
+});
+
 const fixtures: Fixture[] = [];
 const make = async (script = "", code = 0) => {
   const f = await setup(); fixtures.push(f); f.standard(); f.output(script, code); f.enable(); f.worktrees.enable(); return f;
 };
 beforeEach(() => { receiptPolling.tries = 1; receiptPolling.delayMs = 0; checksTuning.lateSearchMs = 0; });
-afterEach(async () => { vi.unstubAllEnvs(); scanTuning.measurementMs = 30_000; await Promise.all(fixtures.splice(0).map((f) => f.dispose())); cleanTempDirs(); });
+afterEach(async () => { vi.unstubAllEnvs(); scanTuning.measurementMs = 30_000; scanTuning.deadlineMs = 60_000; stall.path = null; await Promise.all(fixtures.splice(0).map((f) => f.dispose())); cleanTempDirs(); });
 
 /** A definite rejection keeps the staged report pending, so its raw body can be read. */
 const hold = (f: Fixture) => { f.threads.sendMode = "throw"; f.threads.sendError = Object.assign(new Error("forbidden"), { status: 403 }); };
@@ -76,7 +83,12 @@ describe("scan", () => {
     w.scan.environments.push({ path: managed, managed: true, projectId: "proj_other", status: "ready", isGitRepo: true });
     w.add("thr_active", "tree", { archived: false });
     w.add("thr_deleted", "tree", { deleted: true });
-    rmSync(w.add("thr_gone"), { recursive: true }); // still registered, directory missing (prunable)
+    // Registered, but only an ordinary directory is left at the path (prunable). The storage root is a repository, so Git could
+    // still measure that directory: only the prunable check keeps it out.
+    execFileSync("git", ["init", "-q"], { cwd: w.scan.storage });
+    const gone = w.add("thr_gone");
+    rmSync(gone, { recursive: true });
+    mkdirSync(gone);
     w.add("thr_example", "outside", { under: tempDir("checks-elsewhere-") });
     const primary = w.makeRepo(join(w.scan.storage, "thr_primary", "repo"));
     w.scan.sources.push({ hostId: "host_example", path: primary });
@@ -94,6 +106,7 @@ describe("scan", () => {
     const two = f.worktrees.add("thr_example", "two");
     f.worktrees.scan.environments.push({ path: one, managed: false, projectId: BB_PROJECT, status: "ready", isGitRepo: true });
     await f.tick();
+    expect(git().match(/ --git-common-dir$/gm)).toHaveLength(2); // the source and the ready environment are both read
     expect(git().match(/ worktree list /g)).toHaveLength(1);
     expect(git()).toMatch(/^0 -c core\.fsmonitor=false -c core\.hooksPath=\/dev\/null status --porcelain=v1 -z --untracked-files=normal --ignore-submodules=none$/m);
     const lines = worktreeLines(body(f));
@@ -290,6 +303,30 @@ describe("tick", () => {
     expect(f.delivery()).toMatchObject({ pending_exit: 2 });
     expect(body(f)).toMatch(/^ERROR /);
     expect(body(f)).toMatch(/\nACTION archived-worktree thr_example: /);
+  });
+
+  it("treats an exit-2 failure with empty output and a new worktree as one failure: delivered once, not again", async () => {
+    const f = await make("", 2);
+    await f.tick();
+    expect(accepted(f)).toBe(1);
+    f.worktrees.add("thr_example");
+    await f.tick();
+    expect(accepted(f)).toBe(2);
+    await f.tick();
+    expect(accepted(f)).toBe(2);
+    expect(reportContents(2, "").fingerprint).toBe(reportContents(2, 'ACTION archived-worktree thr_example: "/p/a" (4 KiB, clean)').fingerprint);
+  });
+
+  it("stops waiting for a scan that stalls on the filesystem and delivers the script's result", async () => {
+    const f = await make("ACTION idle-thread EXA-1", 1);
+    f.worktrees.add("thr_example");
+    scanTuning.deadlineMs = 300;
+    stall.path = f.worktrees.scan.storage;
+    await f.tick();
+    expect(accepted(f)).toBe(1);
+    expect(f.sent()).toContain("idle thread");
+    expect(f.sent()).not.toContain("archived worktree");
+    expect(reported(f)).toEqual([]);
   });
 
   it("drains an already staged report without scanning, and never scans on a manual run", async () => {

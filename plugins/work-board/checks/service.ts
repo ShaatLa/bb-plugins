@@ -11,7 +11,7 @@ import { errorMessage } from "../shared/errors";
 import { deliverWithReceipt, searchAttentionMarker, type HistoryCursor, type Receipt as SteerReceipt } from "../steer";
 import { CHECK_FIELDS, CHECKS_PREFIX, completeConfig, effectiveConfig, parseField, readDraft, writeEnabled, writeField, type CheckField, type ChecksConfig } from "./config";
 import { checksHistory } from "./history";
-import { scanArchivedWorktrees, type ScanProject } from "./archived-worktrees";
+import { scanArchivedWorktrees, scanTuning, type ScanProject } from "./archived-worktrees";
 import { formatNotification } from "./notification";
 import { assertNoOtherOwner, isDraining, owners, runs, stateMismatch } from "./ownership";
 import { reportContents } from "./reports";
@@ -21,7 +21,6 @@ import { checksStore, type AttemptRow, type State } from "./store";
 type Database = ReturnType<BbPluginApi["storage"]["database"]>;
 
 const MAX_REFRESH_BACKOFF_MS = 3_600_000;
-const WORKTREE_SCAN_MS = 60_000;
 const LATE_SEARCH_BATCH = 20;
 const PUSH_TITLE = "Sweep manager unreachable";
 const repositoryUrl = z.string().min(1).max(2000).refine((url) => !url.startsWith("-"));
@@ -304,7 +303,7 @@ function createService(bb: BbPluginApi) {
       const { result, refreshFailed, project } = await runScript(trackerId, link, config, manager, committed);
       controller.signal.throwIfAborted();
       // Archived worktrees are scanned after the script, also after a failed one; the project is the one the script run read.
-      const worktrees = project ? await scanArchivedWorktrees(bb, project, state.reportedWorktrees ?? [], state.lastMeasuredWorktree, AbortSignal.any([controller.signal, AbortSignal.timeout(WORKTREE_SCAN_MS)])).catch((error) => {
+      const worktrees = project ? await scanArchivedWorktrees(bb, project, state.reportedWorktrees ?? [], state.lastMeasuredWorktree, AbortSignal.any([controller.signal, AbortSignal.timeout(scanTuning.deadlineMs)])).catch((error) => {
         controller.signal.throwIfAborted();
         bb.log.warn(`Archived worktree scan failed for ${trackerId}: ${String(error)}`);
         return null;
