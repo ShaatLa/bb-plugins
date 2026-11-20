@@ -51,7 +51,7 @@ describe("feedback message", () => {
   ];
 
   it("is exactly the approved text", () => {
-    expect(buildFeedbackMessage({ taskKey: "EXA-1", version: 1, notes })).toBe(
+    expect(buildFeedbackMessage({ taskKey: "EXA-1", version: 1, notes, by: "the owner", reviewer: "owner" })).toBe(
       [
         "EXA-1 · plan v1: changes requested by the owner",
         "",
@@ -62,10 +62,10 @@ describe("feedback message", () => {
         '  Then: bb work-board plan edit EXA-1 --section "<heading>" --file part.md --base-version 1 --summary "…"',
         "  (or --find-file / --replace-file for a single passage)",
         '- Answer every note: bb work-board plan reply EXA-1 N1 --body "what changed, or why not" --addressed',
-        "- Do not resubmit the plan unchanged. When every note is answered: bb work-board plan submit EXA-1",
+        "- Do not resubmit the plan unchanged. A resubmit needs a new version. When every note is answered: bb work-board plan submit EXA-1 --reviewer owner",
         "- Plan: [EXA-1 plan](/plugins/work-board/work-board/task/EXA-1/plan)",
         "",
-        "Owner's notes on v1 (3), in plan order:",
+        "Notes on v1 (3), in plan order:",
         "",
         'N1 · Comment · section "Steps"',
         "> Add the new table behind a flag.",
@@ -83,7 +83,7 @@ describe("feedback message", () => {
 
   it("cuts a long quote to 200 characters, joins its lines and omits a missing section", () => {
     const long = `${"word ".repeat(60)}\nend`;
-    const text = buildFeedbackBody({ taskKey: "EXA-1", version: 2, notes: [{ note: note(1, { exact: long, body: "Shorter." }), placement: "anchored" }] });
+    const text = buildFeedbackBody({ taskKey: "EXA-1", version: 2, reviewer: "owner", notes: [{ note: note(1, { exact: long, body: "Shorter." }), placement: "anchored" }] });
     const line = text.split("\n").find((entry) => entry.startsWith("> "))!;
     expect(line).toBe(`> ${"word ".repeat(40)}…`);
     expect(line.length).toBe(2 + 200 + 1);
@@ -92,13 +92,13 @@ describe("feedback message", () => {
   });
 
   it("marks a note whose quote is gone and keeps its original quote", () => {
-    const text = buildFeedbackBody({ taskKey: "EXA-1", version: 3, notes: [{ note: note(4, { exact: "Old sentence.", headingPath: "Steps", madeOnVersion: 2, body: "Fix it." }), placement: "unanchored" }] });
+    const text = buildFeedbackBody({ taskKey: "EXA-1", version: 3, reviewer: "owner", notes: [{ note: note(4, { exact: "Old sentence.", headingPath: "Steps", madeOnVersion: 2, body: "Fix it." }), placement: "unanchored" }] });
     expect(text).toContain('N4 · Comment · section "Steps" · unanchored (made on v2)\n> Old sentence.\nFix it.');
     expect(text).toContain("--base-version 3");
   });
 
   it("lists a remove note without a reason by its quote alone, and details state and reply on demand", () => {
-    const body = buildFeedbackBody({ taskKey: "EXA-1", version: 1, detail: true, notes: [{ note: note(2, { kind: "remove", exact: "Drop it.", state: "addressed", addressedInVersion: 2, reply: "Removed.", replyBy: "agent" }), placement: "anchored" }] });
+    const body = buildFeedbackBody({ taskKey: "EXA-1", version: 1, detail: true, reviewer: "owner", notes: [{ note: note(2, { kind: "remove", exact: "Drop it.", state: "addressed", addressedInVersion: 2, reply: "Removed.", replyBy: "agent" }), placement: "anchored" }] });
     expect(body).toContain("N2 · Remove · addressed in v2\n> Drop it.\nReply from agent: Removed.");
   });
 });
@@ -111,9 +111,9 @@ describe("approval message", () => {
       "Start the work as planned. The approved plan is v1: any new version returns it to draft and needs a new review.",
       "Plan: [EXA-1 plan](/plugins/work-board/work-board/task/EXA-1/plan)",
     ];
-    expect(buildApprovalMessage({ taskKey: "EXA-1", version: 1 })).toBe(base.join("\n"));
-    expect(buildApprovalMessage({ taskKey: "EXA-1", version: 1, note: "  " })).toBe(base.join("\n"));
-    expect(buildApprovalMessage({ taskKey: "EXA-1", version: 1, note: "Go ahead." })).toBe([...base, "", "Owner's note: Go ahead."].join("\n"));
+    expect(buildApprovalMessage({ taskKey: "EXA-1", version: 1, by: "the owner" })).toBe(base.join("\n"));
+    expect(buildApprovalMessage({ taskKey: "EXA-1", version: 1, by: "the owner", note: "  " })).toBe(base.join("\n"));
+    expect(buildApprovalMessage({ taskKey: "EXA-1", version: 1, by: "the owner", note: "Go ahead." })).toBe([...base, "", "Note from the owner: Go ahead."].join("\n"));
   });
 });
 

@@ -4,6 +4,7 @@ import type { BbPluginApi, PluginRpcHandlers } from "@get-bb/plugin-sdk";
 import type { TasksApiStore } from "../api";
 import { createUlid } from "../db/store";
 import { getWorkflowPolicy } from "../shared/workflow-policy";
+import { planningOn } from "../shared/project-settings";
 import { defaultTaskThreadId, deliverCommentToLatestAgent } from "../steer";
 import {
   questionSchema,
@@ -26,8 +27,12 @@ export function createStructuredStore(bb: BbPluginApi, store: TasksApiStore) {
   const requireTask = (id: string) => {
     if (!store.tasks.getTask(id)) throw new Error(`Task not found: ${id}`);
   };
-  const assertNotPlanQuestion = (taskId: string, prompt: string, steps: readonly string[]) =>
-    assertNotPlanApproval(prompt, steps, store.tasks.getTask(taskId)!.key, db.prepare<[string], { found: number }>("SELECT 1 AS found FROM task_plans WHERE task_id = ?").get(taskId) !== undefined);
+  const assertNotPlanQuestion = (taskId: string, prompt: string, steps: readonly string[]) => {
+    const task = store.tasks.getTask(taskId)!;
+    // With planning off the plan has no review, so a question about it is an ordinary question.
+    if (!planningOn(store.tasks.getProject(task.projectId) ?? {})) return;
+    assertNotPlanApproval(prompt, steps, task.key, db.prepare<[string], { found: number }>("SELECT 1 AS found FROM task_plans WHERE task_id = ?").get(taskId) !== undefined);
+  };
   const getQuestion = (id: string) => {
     const row = db
       .prepare<

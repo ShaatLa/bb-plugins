@@ -4,6 +4,7 @@ import { createStore, registerTasksApi } from '../api';
 import { scheduledService } from './service';
 import { registerScheduled } from './index';
 import { scheduledRunMarker } from './acceptance';
+import { createPlanStore } from '../plans/store';
 import type { ScheduleRun } from '../shared/scheduled';
 
 afterEach(()=>vi.useRealTimers());
@@ -52,6 +53,28 @@ describe('Scheduled execution',()=>{
    expect(f.harness.sdk.callsTo('threads.send')).toHaveLength(count);
    await expect(f.service.retry(r.id,'retry')).rejects.toThrow('unknown');
   }finally{await f.harness.dispose();}
+ });
+ it('skips a plan-gated status move at acceptance but keeps the run tracked, and warns the executor once only when the prompt had no advisory',async()=>{
+  for(const warnedInPrompt of [false,true]) {
+   const f=fixture();try{
+    f.store.tasks.updateProject(f.project.id,{planning:warnedInPrompt?'required':'optional'});
+    const s=f.create(),r=await f.service.runNow(s.id,'gated');
+    const author={kind:'agent' as const,threadId:'thr_example',name:'agent (thr_example)'};
+    const plans=createPlanStore(f.bb.storage.database(),f.store.tasks);
+    plans.save({taskId:r.taskId!,op:'replace',baseVersion:0,body:'# Plan\n',summary:'Draft',author});
+    f.store.tasks.updateProject(f.project.id,{planning:'required'});
+    const before=f.store.tasks.getTask(r.taskId!)!.status;
+    f.accept([r],'thread');await f.service.reconcileThread(f.thread.id);
+    // The run is tracked with its start time, the card did not move, and nothing was dispatched twice.
+    expect(f.data.run(r.id)).toMatchObject({state:'running'});expect(f.data.run(r.id).startedAt).not.toBeNull();
+    expect(f.store.tasks.getTask(r.taskId!)!.status).toBe(before);expect(before).not.toBe('in_progress');
+    const texts=(f.harness.sdk.callsTo('threads.send') as Array<[{input:Array<{text:string}>}]>).map(entry=>entry[0].input[0]!.text);
+    expect(texts[0]).toContain(warnedInPrompt?'No plan yet: planning is required in this project':'Daily check');
+    if(warnedInPrompt)expect(texts).toHaveLength(1);
+    else{expect(texts).toHaveLength(2);expect(texts[1]).toContain('Plan v1 is draft (not approved)');expect(texts[1]).toContain('was not moved to In progress');}
+    await f.service.reconcileThread(f.thread.id);expect(f.harness.sdk.callsTo('threads.send')).toHaveLength(texts.length);
+   }finally{await f.harness.dispose();}
+  }
  });
  it.each(['backlog','done'] as const)('requires cancellation evidence and preserves an existing %s result',async status=>{
   const f=fixture();try{

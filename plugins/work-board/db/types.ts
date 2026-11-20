@@ -34,6 +34,7 @@ export interface Project {
   autoArchiveAfterDays?: ProjectContract["autoArchiveAfterDays"];
   staleIdleMinutes?: ProjectContract["staleIdleMinutes"];
   statusNotifications?: ProjectContract["statusNotifications"];
+  planning?: ProjectContract["planning"];
   id: string;
   name: string;
   prefix: string;
@@ -162,6 +163,7 @@ export interface UpdateProjectInput {
   autoArchiveAfterDays?: ProjectContract["autoArchiveAfterDays"];
   staleIdleMinutes?: ProjectContract["staleIdleMinutes"];
   statusNotifications?: ProjectContract["statusNotifications"];
+  planning?: ProjectContract["planning"];
   name?: string;
   prefix?: string;
   color?: string;

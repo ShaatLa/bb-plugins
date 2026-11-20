@@ -123,13 +123,26 @@ describe("task questions", () => {
     expect(reopened.steps).toEqual(["Open https://example.com/a", "Press Save and reload"]);
   });
 
-  it("refuses plan-approval questions: any link to a task plan, and approval wording once the task has a plan", async () => {
-    const { bb, structured, task } = setup();
+  it("refuses plan-approval questions: any link to a task plan, and approval wording once the task has a plan, but only with planning on", async () => {
+    const { bb, structured, task, store, project } = setup();
     const ask = (prompt: string, steps: string[] = []) => structured.handlers.createQuestion({ kind: "decision", askedByThread: null, taskId: task.id, prompt, steps, mode: "single", options: ["Yes", "No"] });
-    expect(() => ask(`Do you accept [the plan](/plugins/work-board/work-board/task/${task.key}/plan)?`)).toThrow(/plan submit/);
-    // Without a plan on the task, approval wording alone is an ordinary question (e.g. a plan of something else).
-    await ask("Do you approve the pricing plan change?");
+    const link = `Do you accept [the plan](/plugins/work-board/work-board/task/${task.key}/plan)?`;
     const now = new Date().toISOString();
+    bb.storage.database().prepare("INSERT INTO task_plans (task_id, format, version, body, state, updated_at, author_kind, author_thread, author_name) VALUES (?, 'markdown', 1, '# Plan', 'in_review', ?, 'agent', NULL, 'agent')").run(task.id, now);
+    // With planning off (the default) the plan has no review: the guard does not apply, plan links included.
+    let current = (await ask(link)).question;
+    await ask("Do you accept the plan so I can start?");
+    const update = async (prompt: string) => {
+      current = (await structured.handlers.updateQuestion({ questionId: current.id, revision: current.revision, prompt, mode: current.mode, options: current.options, authorName: "Owner" })).question;
+    };
+    await update("Do you approve the plan now?");
+    store.tasks.updateProject(project.id, { planning: "optional" });
+    expect(() => ask(link)).toThrow(/plan submit.*--reviewer/);
+    await expect(update("Do you accept the plan so we can go?")).rejects.toThrow(/Plan approval is not an owner question/);
+    // Without a plan on the task, approval wording alone is an ordinary question (e.g. a plan of something else), but a plan link is not.
+    bb.storage.database().prepare("DELETE FROM task_plans WHERE task_id = ?").run(task.id);
+    await ask("Do you approve the pricing plan change?");
+    expect(() => ask(link)).toThrow(/plan submit/);
     bb.storage.database().prepare("INSERT INTO task_plans (task_id, format, version, body, state, updated_at, author_kind, author_thread, author_name) VALUES (?, 'markdown', 1, '# Plan', 'in_review', ?, 'agent', NULL, 'agent')").run(task.id, now);
     expect(() => ask("Do you accept the plan so I can start?")).toThrow(/Plan approval is not an owner question/);
     expect(() => ask("Принимаете план от 19.11?")).toThrow(/plan submit/);

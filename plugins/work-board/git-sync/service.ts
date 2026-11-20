@@ -353,6 +353,8 @@ export function createGitSyncService(
                 if (!task || task.projectId !== projectId || task.archivedAt || !policy.earlyStatuses.includes(task.status) ||
                     [policy.bugfixStatus, policy.doneStatus, "canceled"].includes(task.status) ||
                     target < 0 || statuses.findIndex((status) => status.id === task.status) >= target) continue;
+                // A card whose plan is not approved stays put while the PR and its other cards are processed.
+                if (store.tasks.planGate(task, policy.reviewStatus!)) continue;
                 store.tasks.updateTask(task.id, { status: policy.reviewStatus! });
                 publishTasksChanged(bb, task.id, projectId);
               }

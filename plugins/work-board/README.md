@@ -25,13 +25,13 @@ bb work-board plan edit ABC-12 --find-file old.md --replace-file new.md --base-v
 bb work-board plan restore ABC-12 --version 1 --base-version 3 --summary "Back to v1"
 bb work-board plan log ABC-12          # versions: who, when, what, +/- lines
 bb work-board plan diff ABC-12 [--from N] [--to M]
-bb work-board plan submit ABC-12       # ready for the owner's review
+bb work-board plan submit ABC-12 --reviewer thr_example   # ready for review (owner only when the user asked to approve)
 ```
 
 - Every write passes `--base-version N`, the version you read. If the plan has changed, the command refuses, names the current version and asks you to re-read with `plan show`, so nobody's edit is overwritten. The first version uses `--base-version 0`. `--summary` (up to 300 characters) says what changed.
 - A section is a heading line plus its body up to the next heading of the same or a higher level (headings inside fenced code are ignored). Address it by the heading text, or by `Parent > Child` when the text repeats; a missing or ambiguous heading is refused with the list of headings. `plan edit --section` replaces the whole section including its heading, and an empty replacement deletes it. `--find-file` text must occur exactly once. A write that changes nothing is refused.
 - A plan is at most 256 KB of UTF-8 and goes through the secret guard. Every version keeps its full text. The plan of an archived task is read-only.
-- States: a new plan is `draft`; `plan submit` makes it `in_review`. The owner's approve and request-changes decisions arrive with the review UI; any new version returns an approved or changes-requested plan to `draft`.
+- States: a new plan is `draft`; `plan submit` makes it `in_review`. Approve and request-changes decisions come from the reviewer (see **Plan review**); any new version returns the plan to `draft`.
 - Every version, submit and state change writes a system comment on the task, for example `Plan v4 by <author>: <summary> · section "Steps 1–4" · +12 −4 lines`.
 - `bb work-board show KEY` has a `Plan` line (`v4 · in_review · bb work-board plan show KEY`, or `-`); `show --with-plan` prints the plan after the description, and `show --json` has `plan` (`version`, `state`, `updatedAt`, `updatedBy`, plus `body` with `--with-plan`) or null.
 - RPC: `getTaskPlan`, `listTaskPlanVersions`, `saveTaskPlan`, `diffTaskPlan`, `submitTaskPlan`, `setTaskPlanState` (`in_review | approved | changes_requested` only); the review RPC of 0.58.0 are listed under **Plan review**.
@@ -62,6 +62,17 @@ The owner reviews the current plan version in the Plan tab; the agent answers ea
 - **Plan card.** Next to "Updated by …" the card counts "2 open notes" (sent, not yet answered), "1 draft" and "1 addressed".
 - **CLI for agents.** `bb work-board plan notes KEY [--all] [--json]` prints the sent, unanswered notes in the format of the message (`--all`: every note with state and reply); `plan reply KEY N1 --body TEXT [--addressed]` answers a note; `plan show` and `show` add `· 2 open notes`; `plan submit` lists notes that are still unanswered but does not refuse.
 - **Data.** Notes are kept across plan versions (each remembers the version it was made on) and are exported in format **v19**; imports of v1–v18 work and leave local notes untouched, and importing v19 over different local notes needs `--overwrite`. RPC: `listPlanNotes`, `createPlanNote`, `updatePlanNote`, `deletePlanNote`, `setPlanNoteState`, `replyPlanNote`, `sendPlanFeedback`, `approvePlan`.
+
+### Reviewer threads, planning modes and the status gate (0.59.0)
+
+A plan needs an approval before work starts. The author names the approver when submitting: `plan submit KEY --reviewer owner|thr_x` (owner only when the user asked to approve the plan; otherwise a reviewer thread on a stronger model). The flag is required on the first submit; later it defaults to the reviewer of the latest attempt, and another `--reviewer` takes the review over (one system line, then a wake). Work Board wakes the reviewer thread itself (`KEY · plan vN submitted for your review`, with the commands and, on a resubmission, the diff range and the number of blocking notes); a failed wake is retried by repeating `plan submit`, and an archived reviewer gets the `bb thread unarchive` hint, a deleted one the reassign hint. A thread that wrote the plan cannot review it.
+
+- **A review is bound to one version.** Saving a new version, even during a review, returns the plan to `draft`; `plan submit` accepts only `draft`, so a plan with changes requested needs a new version first.
+- **Reviewer commands (CLI, from the reviewer thread only).** `plan note KEY --version N --body TEXT [--quote TEXT [--section HEADING]] [--kind comment|remove|general]` (the quote must occur exactly once in the section or the plan; the anchor is the UI's own), `plan feedback`, `plan dismiss N1 …`, `plan resolve N1 …`, `plan reopen N1 …` and `plan approve [--note TEXT]`, each with `--version N`, the version the reviewer read. The call is refused unless the caller is the assigned reviewer, the plan is `in_review` and `N` is the submitted version. `plan approve` is refused while any reviewer-thread note is a draft or unresolved (convergence). `plan reviews KEY [--json]` lists the review attempts. The owner can approve or request changes on any plan in the UI; drafts are scoped per author, so a reviewer's drafts never block the owner.
+- **Results go to the waiting author:** the thread that submitted the current attempt gets the actionable message; the author of the decided version gets an informational copy (an archived thread is replaced by its parent). The CLI and the owner UI report each recipient and name any thread that was not reached.
+- **Planning is a per-project setting,** `off` (default) | `optional` | `required`, changed only by the owner in the project settings. Off hides the Plan UI, refuses plan commands and lifts every gate (the data is kept). Optional is plans, review and an advisory (`Plan vN is draft (not approved): …`, shown by `show`, in seed prompts and when attaching a thread). Required also refuses moving a non-epic card into the work zone (In progress and every later status except canceled), or creating it there, until its plan is approved; delegation, scheduled runs and git sync skip the move instead of failing, and executors get one notice when an approved plan of a card in progress changes. Projects that already had a plan start as `optional`.
+- **Data.** Export format **v20** carries the reviewer, note authors, the review history and the planning setting; imports of v1–v19 read a missing reviewer as the owner, never change an existing project's planning, and infer `optional` for a fresh project with plans.
+- Authors and actors that are threads show as clickable thread chips throughout the UI.
 
 ## Task dependencies (0.22.0)
 
@@ -224,7 +235,7 @@ bb work-board question add EXA-8 --prompt 'Which platforms?' --option macOS --op
 
 One question asks one decision or one check: the prompt and all `--step` lines together carry at most one link (Markdown or bare URL), and `question add` and `question update` refuse more. A multi-part acceptance is several `--kind check` questions, each with its own link. `question update --reopen` asks the same thing again, makes the reopening thread the asker so the new answer reaches it, and refuses steps or links the answered revision did not have: a new state is a new question (0.58.2).
 
-A plan is not approved through a question: `question add` and `question update` refuse a question that links a task plan, and, on a task that has a plan, one that asks to accept or approve a plan. The agent runs `plan submit` and the owner approves or sends notes in the Plan tab (0.58.3).
+A plan is not approved through a question: `question add` and `question update` refuse a question that links a task plan, and, on a task that has a plan, one that asks to accept or approve a plan. The agent runs `plan submit KEY --reviewer …` and the reviewer approves or sends notes (0.58.3; reviewer threads 0.59.0). With planning off for the project this guard does not apply.
 
 Each `--step` is one action or one observation in one sentence, shown as its own numbered line: `--step 'Press Retry' --step 'Close the message' --step 'Check that the list appears'`, not one step that does all three. A step with several sentences is refused; a step that chains actions with "then", "and" or a comma before another action gets a warning that names the step and the fix (0.58.4).
 

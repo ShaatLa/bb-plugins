@@ -9,7 +9,7 @@ import { PLAN_FORMATS, PLAN_OPS, PLAN_STATES } from "./plan";
 import { PLAN_NOTE_BODY_MAX, PLAN_NOTE_CONTEXT_MAX, PLAN_NOTE_HEADING_MAX, PLAN_NOTE_KINDS, PLAN_NOTE_QUOTE_MAX, PLAN_NOTE_STATES } from "./plan-notes";
 import type { PluginRpcContract } from "@get-bb/plugin-sdk";
 import { z } from "zod";
-import { autoArchiveAfterDaysSchema, staleIdleThresholdSchema, statusNotificationsSchema, boardPreferencesSchema } from "./project-settings";
+import { autoArchiveAfterDaysSchema, planningSchema, staleIdleThresholdSchema, statusNotificationsSchema, boardPreferencesSchema } from "./project-settings";
 import {
   TASK_SORTS,
   TASKS_PAGE_DEFAULT_LIMIT,
@@ -313,6 +313,7 @@ export const projectSchema = z
     autoArchiveAfterDays: autoArchiveAfterDaysSchema.optional(),
     staleIdleMinutes: staleIdleThresholdSchema.optional(),
     statusNotifications: statusNotificationsSchema.optional(),
+    planning: planningSchema.optional(),
     color: z.string(),
     folderId: idSchema.nullable(),
     linkedBbProjectId: z.string().startsWith("proj_").nullable(),
@@ -577,6 +578,7 @@ const updateProjectInputSchema = z
     autoArchiveAfterDays: autoArchiveAfterDaysSchema.optional(),
     staleIdleMinutes: staleIdleThresholdSchema.optional(),
     statusNotifications: statusNotificationsSchema.optional(),
+    planning: planningSchema.optional(),
     color: nonBlankStringSchema.optional(),
     folderId: idSchema.nullable().optional(),
     linkedBbProjectId: z.string().startsWith("proj_").nullable().optional(),
@@ -589,6 +591,7 @@ const updateProjectInputSchema = z
       input.autoArchiveAfterDays !== undefined ||
       input.staleIdleMinutes !== undefined ||
       input.statusNotifications !== undefined ||
+      input.planning !== undefined ||
       input.name !== undefined ||
       input.color !== undefined ||
       input.folderId !== undefined ||
@@ -689,6 +692,10 @@ export const planVersionSchema = z
     removed: z.number().int().min(0),
   })
   .strict();
+/** Who approves the plan: the owner, or a reviewer thread. A plan stored before reviewers existed has the owner. */
+export const planReviewerSchema = z
+  .object({ kind: z.enum(["owner", "thread"]), threadId: z.string().regex(/^thr_/).nullable().default(null) })
+  .strict();
 export const taskPlanHeadSchema = z
   .object({
     taskId: idSchema,
@@ -697,9 +704,25 @@ export const taskPlanHeadSchema = z
     state: planStateSchema,
     updatedAt: z.string(),
     updatedBy: planAuthorSchema,
+    reviewer: planReviewerSchema,
+    /** The version that was submitted for review; null when the plan was never submitted with a reviewer. */
+    reviewVersion: z.number().int().min(1).nullable(),
   })
   .strict();
-const planErrorCodes = ["plan_conflict", "plan_no_change", "plan_invalid", "plan_archived", "plan_state", "secret_detected"] as const;
+export const PLAN_REVIEW_OUTCOMES = ["pending", "changes_requested", "approved", "superseded", "reassigned"] as const;
+/** One review attempt: a plan version, the reviewer it went to and how that attempt ended. */
+export const planReviewSchema = z
+  .object({
+    version: z.number().int().min(1),
+    reviewer: planReviewerSchema,
+    submittedByThread: z.string().regex(/^thr_/).nullable(),
+    submittedAt: z.string(),
+    outcome: z.enum(PLAN_REVIEW_OUTCOMES),
+    decidedAt: z.string().nullable(),
+    decidedBy: z.string().nullable(),
+  })
+  .strict();
+const planErrorCodes = ["planning_off", "plan_conflict", "plan_no_change", "plan_invalid", "plan_archived", "plan_state", "secret_detected"] as const;
 const planErrorSchema = z
   .object({
     code: z.enum(planErrorCodes),
@@ -708,6 +731,24 @@ const planErrorSchema = z
   .strict();
 const planMutationResultSchema = z.discriminatedUnion("ok", [
   z.object({ ok: z.literal(true), plan: taskPlanHeadSchema, version: planVersionSchema.nullable() }).strict(),
+  z.object({ ok: z.literal(false), error: planErrorSchema }).strict(),
+]);
+/** `owner` or a thread id; the plan author picks it on submit. */
+export const planReviewerInputSchema = z.string().regex(/^(owner|thr_[A-Za-z0-9_-]+)$/, "use owner or a thread id such as thr_example");
+const planSubmitResultSchema = z.discriminatedUnion("ok", [
+  z
+    .object({
+      ok: z.literal(true),
+      plan: taskPlanHeadSchema,
+      version: z.null(),
+      /** `submitted` is a new review, `resent` a repeat to the same reviewer (no new event), `reassigned` a change of reviewer. */
+      outcome: z.enum(["submitted", "resent", "reassigned"]),
+      /** The wake of the reviewer thread; null when the owner reviews. */
+      delivered: z.enum(["sent", "failed"]).nullable(),
+      /** What to do when the wake failed. */
+      deliveryHint: z.string().nullable(),
+    })
+    .strict(),
   z.object({ ok: z.literal(false), error: planErrorSchema }).strict(),
 ]);
 const planWriteBase = { taskId: idSchema, baseVersion: z.number().int().min(0), summary: z.string(), author: planAuthorSchema };
@@ -742,6 +783,9 @@ export const planNoteSchema = z
     repliedAt: z.string().nullable(),
     addressedInVersion: z.number().int().min(1).nullable(),
     authorName: nonBlankStringSchema,
+    /** `person` is the owner; `thread` is a reviewer thread. Older notes are the owner's. */
+    authorKind: z.enum(["person", "thread"]).default("person"),
+    authorThread: z.string().regex(/^thr_/).nullable().default(null),
     createdAt: z.string(),
     updatedAt: z.string(),
   })
@@ -773,7 +817,17 @@ const createPlanNoteInputSchema = z
   .strict();
 const planDeliverySchema = z.enum(["sent", "failed", "no_thread"]);
 const planReviewResultSchema = z.discriminatedUnion("ok", [
-  z.object({ ok: z.literal(true), plan: taskPlanHeadSchema, delivered: planDeliverySchema, threadId: z.string().nullable(), notes: z.number().int().min(0) }).strict(),
+  z
+    .object({
+      ok: z.literal(true),
+      plan: taskPlanHeadSchema,
+      delivered: planDeliverySchema,
+      threadId: z.string().nullable(),
+      /** One entry per recipient: the actor, who gets the actionable message, and an informational copy for the other thread. */
+      deliveries: z.array(z.object({ role: z.enum(["actor", "copy"]), delivered: planDeliverySchema, threadId: z.string().nullable() }).strict()),
+      notes: z.number().int().min(0),
+    })
+    .strict(),
   z.object({ ok: z.literal(false), error: planNoteErrorSchema }).strict(),
 ]);
 
@@ -1103,8 +1157,12 @@ export const tasksRpcContract = {
     output: z.object({ from: z.number().int().min(0), to: z.number().int().min(1), patch: z.string(), added: z.number().int().min(0), removed: z.number().int().min(0) }).strict(),
   },
   submitTaskPlan: {
-    input: z.object({ taskId: idSchema, author: planAuthorSchema }).strict(),
-    output: planMutationResultSchema,
+    input: z.object({ taskId: idSchema, author: planAuthorSchema, reviewer: planReviewerInputSchema.optional() }).strict(),
+    output: planSubmitResultSchema,
+  },
+  listPlanReviews: {
+    input: z.object({ taskId: idSchema }).strict(),
+    output: z.object({ reviews: z.array(planReviewSchema) }).strict(),
   },
   setTaskPlanState: {
     input: z.object({ taskId: idSchema, state: z.enum(SETTABLE_PLAN_STATES), author: planAuthorSchema }).strict(),
@@ -1415,6 +1473,8 @@ export type Attachment = z.infer<typeof attachmentSchema>;
 export type PlanAuthor = z.infer<typeof planAuthorSchema>;
 export type PlanVersion = z.infer<typeof planVersionSchema>;
 export type TaskPlanHead = z.infer<typeof taskPlanHeadSchema>;
+export type PlanReviewer = z.infer<typeof planReviewerSchema>;
+export type PlanReview = z.infer<typeof planReviewSchema>;
 export type PlanNote = z.infer<typeof planNoteSchema>;
 export type PlanNoteCounts = z.infer<typeof planNoteCountsSchema>;
 export type CreatePlanNoteInput = z.input<typeof createPlanNoteInputSchema>;

@@ -511,6 +511,28 @@ const MIGRATIONS = [
      updated_at TEXT NOT NULL,
      UNIQUE (task_id, number)
    );`,
+  // 0.59.0: planning is a project setting (optional only where plans already exist); a plan names its approver (null = the owner, so existing plans stay reviewable by the owner), and every
+  // review attempt is kept. Notes remember whether the owner or a reviewer thread wrote them.
+  `ALTER TABLE task_plans ADD COLUMN reviewer_kind TEXT CHECK (reviewer_kind IS NULL OR reviewer_kind IN ('owner', 'thread'));
+   ALTER TABLE task_plans ADD COLUMN reviewer_thread TEXT;
+   ALTER TABLE task_plans ADD COLUMN review_version INTEGER;
+   ALTER TABLE task_plan_notes ADD COLUMN author_kind TEXT NOT NULL DEFAULT 'person' CHECK (author_kind IN ('person', 'thread'));
+   ALTER TABLE task_plan_notes ADD COLUMN author_thread TEXT;
+   CREATE TABLE task_plan_reviews (
+     id INTEGER PRIMARY KEY AUTOINCREMENT,
+     task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+     version INTEGER NOT NULL CHECK (version >= 1),
+     reviewer_kind TEXT NOT NULL CHECK (reviewer_kind IN ('owner', 'thread')),
+     reviewer_thread TEXT,
+     submitted_by_thread TEXT,
+     submitted_at TEXT NOT NULL,
+     outcome TEXT NOT NULL CHECK (outcome IN ('pending', 'changes_requested', 'approved', 'superseded', 'reassigned')),
+     decided_at TEXT,
+     decided_by TEXT
+   );
+   CREATE INDEX idx_task_plan_reviews_task ON task_plan_reviews(task_id, id);
+   ALTER TABLE projects ADD COLUMN planning TEXT CHECK (planning IN ('off', 'optional', 'required'));
+   UPDATE projects SET planning = 'optional' WHERE id IN (SELECT t.project_id FROM tasks t JOIN task_plans p ON p.task_id = t.id);`,
 ] as const;
 
 export function initializeTasksSchema(db: PluginDatabase): void {

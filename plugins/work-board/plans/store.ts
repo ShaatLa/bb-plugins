@@ -1,11 +1,13 @@
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import type { TasksStore } from "../db";
-import type { PlanAuthor, PlanVersion, SaveTaskPlanInput, TaskPlanHead } from "../shared/contract";
+import type { PlanAuthor, PlanReview, PlanVersion, SaveTaskPlanInput, TaskPlanHead } from "../shared/contract";
 import { assertNoSecrets } from "../shared/secret-guard.js";
+import { planningOffMessage, planningOn, planningRequired } from "../shared/project-settings";
 import { countPlanChanges, diffPlanBodies, type PlanDiff } from "../shared/plan-diff";
 import {
   assertPlanText,
   PlanEditError,
+  planAdvisory,
   replaceFragment,
   replaceSection,
   type PlanOp,
@@ -14,7 +16,7 @@ import {
 
 type Database = ReturnType<BbPluginApi["storage"]["database"]>;
 
-export type PlanErrorCode = "plan_conflict" | "plan_no_change" | "plan_invalid" | "plan_archived" | "plan_state" | "secret_detected";
+export type PlanErrorCode = "planning_off" | "plan_conflict" | "plan_no_change" | "plan_invalid" | "plan_archived" | "plan_state" | "secret_detected";
 
 /** A refused plan write; the message is written for the agent that has to react to it. */
 export class PlanError extends Error {
@@ -39,6 +41,20 @@ interface PlanRow extends AuthorColumns {
   body: string;
   state: PlanState;
   updated_at: string;
+  reviewer_kind: "owner" | "thread" | null;
+  reviewer_thread: string | null;
+  review_version: number | null;
+}
+interface ReviewRow {
+  task_id: string;
+  version: number;
+  reviewer_kind: "owner" | "thread";
+  reviewer_thread: string | null;
+  submitted_by_thread: string | null;
+  submitted_at: string;
+  outcome: PlanReview["outcome"];
+  decided_at: string | null;
+  decided_by: string | null;
 }
 interface VersionRow extends AuthorColumns {
   task_id: string;
@@ -59,6 +75,17 @@ export interface CapturedPlan extends Omit<TaskPlanHead, "taskId"> {
   versions: Array<PlanVersion & { body: string }>;
 }
 
+/** Ends the open review attempt of a task, if there is one. Callers run it inside the transaction that changes the plan. */
+export function closePendingReview(db: Database, taskId: string, outcome: Exclude<PlanReview["outcome"], "pending">, decidedBy: string): void {
+  db.prepare("UPDATE task_plan_reviews SET outcome = ?, decided_at = ?, decided_by = ? WHERE task_id = ? AND outcome = 'pending'").run(outcome, new Date().toISOString(), decidedBy, taskId);
+}
+
+/** Plans are a per-project setting; with planning off every plan operation is refused and the data stays untouched. */
+export function assertPlanning(tasks: TasksStore, task: { projectId: string }): void {
+  const project = tasks.getProject(task.projectId);
+  if (project && !planningOn(project)) throw new PlanError("planning_off", planningOffMessage(project.prefix));
+}
+
 const author = (row: AuthorColumns): PlanAuthor => ({ kind: row.author_kind, threadId: row.author_thread, name: row.author_name });
 const headOf = (row: PlanRow): TaskPlanHead => ({
   taskId: row.task_id,
@@ -67,6 +94,18 @@ const headOf = (row: PlanRow): TaskPlanHead => ({
   state: row.state,
   updatedAt: row.updated_at,
   updatedBy: author(row),
+  // A plan stored before reviewers existed has no reviewer, which means the owner.
+  reviewer: { kind: row.reviewer_kind ?? "owner", threadId: row.reviewer_thread },
+  reviewVersion: row.review_version,
+});
+const reviewOf = (row: ReviewRow): PlanReview => ({
+  version: row.version,
+  reviewer: { kind: row.reviewer_kind, threadId: row.reviewer_thread },
+  submittedByThread: row.submitted_by_thread,
+  submittedAt: row.submitted_at,
+  outcome: row.outcome,
+  decidedAt: row.decided_at,
+  decidedBy: row.decided_by,
 });
 const versionOf = (row: VersionRow): PlanVersion => ({
   version: row.version,
@@ -86,6 +125,8 @@ const capturedOf = (row: PlanRow, versions: VersionRow[]): CapturedPlan => ({
   state: row.state,
   updatedAt: row.updated_at,
   updatedBy: author(row),
+  reviewer: { kind: row.reviewer_kind ?? "owner", threadId: row.reviewer_thread },
+  reviewVersion: row.review_version,
   versions: versions.map((version) => ({ ...versionOf(version), body: version.body })),
 });
 
@@ -93,6 +134,7 @@ export function createPlanStore(db: Database, tasks: TasksStore) {
   function requireTask(taskId: string) {
     const task = tasks.getTask(taskId);
     if (!task) throw new Error(`Task not found: ${taskId}`);
+    assertPlanning(tasks, task);
     return task;
   }
   function requireEditable(taskId: string) {
@@ -181,7 +223,8 @@ export function createPlanStore(db: Database, tasks: TasksStore) {
     const summary = input.summary.trim();
     const { added, removed } = countPlanChanges(current?.body ?? "", body);
     const version = (current?.version ?? 0) + 1;
-    const resetState = current && (current.state === "approved" || current.state === "changes_requested");
+    // Every state but draft goes back to draft: a review, a request for changes or an approval belongs to one version only.
+    const resetState = current && current.state !== "draft";
     const state: PlanState = resetState ? "draft" : (current?.state ?? "draft");
     const createdAt = new Date().toISOString();
     db.prepare(
@@ -195,6 +238,7 @@ export function createPlanStore(db: Database, tasks: TasksStore) {
          updated_at = excluded.updated_at, author_kind = excluded.author_kind, author_thread = excluded.author_thread, author_name = excluded.author_name`,
     ).run(input.taskId, version, body, state, createdAt, by.kind, by.threadId, by.name);
 
+    closePendingReview(db, input.taskId, "superseded", by.name);
     const kind = {
       create: "new plan",
       replace: "full rewrite",
@@ -218,13 +262,47 @@ export function createPlanStore(db: Database, tasks: TasksStore) {
     return { plan: headOf(planRow(taskId)!), version: null };
   }
 
-  const submit = db.transaction((taskId: string, by: PlanAuthor) => {
+  /** Opens a review attempt: the head names the reviewer and the version under review, and the history gets a row. */
+  function startReview(taskId: string, version: number, reviewerThread: string | null, by: PlanAuthor) {
+    const now = new Date().toISOString();
+    db.prepare("UPDATE task_plans SET state = 'in_review', updated_at = ?, reviewer_kind = ?, reviewer_thread = ?, review_version = ? WHERE task_id = ?").run(
+      now,
+      reviewerThread ? "thread" : "owner",
+      reviewerThread,
+      version,
+      taskId,
+    );
+    db.prepare(
+      "INSERT INTO task_plan_reviews (task_id, version, reviewer_kind, reviewer_thread, submitted_by_thread, submitted_at, outcome) VALUES (?, ?, ?, ?, ?, ?, 'pending')",
+    ).run(taskId, version, reviewerThread ? "thread" : "owner", reviewerThread, by.threadId, now);
+  }
+
+  /**
+   * The author submits the plan to a reviewer: a reviewer thread, or null for the owner. A repeat to the same reviewer
+   * changes nothing (`resent`: the caller only wakes the reviewer again); another reviewer takes the review over.
+   * `unusable` says why the reviewer thread cannot be used (archived, deleted); it refuses a new or reassigned review.
+   */
+  const submit = db.transaction((taskId: string, by: PlanAuthor, reviewerThread: string | null, unusable: string | null = null) => {
     const task = requireEditable(taskId);
     const row = planRow(taskId);
     if (!row) throw new PlanError("plan_invalid", `${task.key} has no plan to submit; create it with \`bb work-board plan set ${task.key} --base-version 0\``);
-    if (row.state === "in_review") throw new PlanError("plan_state", `Plan v${row.version} is already in review`);
     if (row.state === "approved") throw new PlanError("plan_state", `Plan v${row.version} is already approved; a new version returns it to draft`);
-    return changeState(taskId, "in_review", by, "submitted for review");
+    if (row.state === "changes_requested")
+      throw new PlanError("plan_state", `Plan v${row.version} has changes requested; revise it and save a new version (\`bb work-board plan edit ${task.key} … --base-version ${row.version}\`), then submit again`);
+    if (reviewerThread) {
+      const wrote = db.prepare("SELECT 1 AS found FROM task_plan_versions WHERE task_id = ? AND author_thread = ? LIMIT 1").get(taskId, reviewerThread);
+      if (wrote || reviewerThread === by.threadId) throw new PlanError("plan_invalid", `${reviewerThread} wrote or submitted this plan; the reviewer must be another thread (or the owner, when the user asked to approve it)`);
+    }
+    const kind = reviewerThread ? "thread" : "owner";
+    if (row.state === "in_review" && (row.reviewer_kind ?? "owner") === kind && row.reviewer_thread === reviewerThread)
+      return { plan: headOf(row), version: null, outcome: "resent" as const };
+    if (unusable) throw new PlanError("plan_invalid", unusable);
+    const label = reviewerThread ?? "the owner";
+    const reassigned = row.state === "in_review";
+    if (reassigned) closePendingReview(db, taskId, "reassigned", by.name);
+    startReview(taskId, row.version, reviewerThread, by);
+    comment(taskId, by, reassigned ? `Plan: review of v${row.version} reassigned to ${label}` : `Plan v${row.version} submitted for review by ${label}`);
+    return { plan: headOf(planRow(taskId)!), version: null, outcome: reassigned ? ("reassigned" as const) : ("submitted" as const) };
   });
 
   /** Owner decisions on the plan; a repeated state is a no-op. */
@@ -234,8 +312,24 @@ export function createPlanStore(db: Database, tasks: TasksStore) {
     if (!row) throw new PlanError("plan_invalid", `${task.key} has no plan`);
     if (row.state === state) return { plan: headOf(row), version: null, changed: false };
     const text = { in_review: "submitted for review", approved: "approved", changes_requested: "changes requested" }[state];
+    if (state === "in_review") startReview(taskId, row.version, null, by);
+    else closePendingReview(db, taskId, state, by.name);
     return { ...changeState(taskId, state, by, text), changed: true };
   });
+
+  /** Review attempts without the planning check, for export and import. */
+  const captureReviews = (taskId: string): PlanReview[] => db.prepare<[string], ReviewRow>("SELECT * FROM task_plan_reviews WHERE task_id = ? ORDER BY id").all(taskId).map(reviewOf);
+  const listReviews = (taskId: string): PlanReview[] => {
+    requireTask(taskId);
+    return captureReviews(taskId);
+  };
+
+  /** The non-blocking plan line for executors of a card; null when planning is off or the plan is approved. */
+  function advisoryFor(task: { id: string; projectId: string; type: string }): string | null {
+    const project = tasks.getProject(task.projectId);
+    if (!project || !planningOn(project)) return null;
+    return planAdvisory(head(task.id), planningRequired(project) && task.type !== "epic");
+  }
 
   /** The thread of the newest agent-written version: the session that is expected to react to a review. */
   function latestAgentThread(taskId: string): string | null {
@@ -245,6 +339,30 @@ export function createPlanStore(db: Database, tasks: TasksStore) {
           "SELECT author_thread FROM task_plan_versions WHERE task_id = ? AND author_kind = 'agent' AND author_thread IS NOT NULL ORDER BY version DESC LIMIT 1",
         )
         .get(taskId)?.author_thread ?? null
+    );
+  }
+
+  /**
+   * The threads a review result of `version` goes to. The actor is the session that submitted the current attempt, or the
+   * agent that wrote the version when there is no attempt or it was submitted without a thread; the copy is the other
+   * one, for information. Never the task's worker thread.
+   */
+  function resultRecipients(taskId: string, version: number): { actor: string | null; copy: string | null } {
+    const written = versionRow(taskId, version);
+    const author = written?.author_kind === "agent" ? written.author_thread : null;
+    const latest = db.prepare<[string], { submitted_by_thread: string | null }>("SELECT submitted_by_thread FROM task_plan_reviews WHERE task_id = ? ORDER BY id DESC LIMIT 1").get(taskId);
+    const submitter = latest?.submitted_by_thread ?? null;
+    return submitter ? { actor: submitter, copy: author !== submitter ? author : null } : { actor: author, copy: null };
+  }
+
+  /** The newest version this reviewer thread itself decided on (asked for changes or approved), for the wake of a resubmission. */
+  function lastDecidedVersion(taskId: string, reviewerThread: string): number | null {
+    return (
+      db
+        .prepare<[string, string, string], { version: number | null }>(
+          "SELECT MAX(version) AS version FROM task_plan_reviews WHERE task_id = ? AND reviewer_thread = ? AND decided_by = ? AND outcome IN ('changes_requested', 'approved')",
+        )
+        .get(taskId, reviewerThread, reviewerThread)?.version ?? null
     );
   }
 
@@ -298,11 +416,34 @@ export function createPlanStore(db: Database, tasks: TasksStore) {
     for (const v of plan.versions)
       insertVersion.run(taskId, v.version, v.body, v.baseVersion, v.op, v.target, v.summary, v.author.kind, v.author.threadId, v.author.name, v.added, v.removed, v.createdAt);
     db.prepare(
-      `INSERT INTO task_plans (task_id, format, version, body, state, updated_at, author_kind, author_thread, author_name) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    ).run(taskId, plan.format, plan.version, plan.body, plan.state, plan.updatedAt, plan.updatedBy.kind, plan.updatedBy.threadId, plan.updatedBy.name);
+      `INSERT INTO task_plans (task_id, format, version, body, state, updated_at, author_kind, author_thread, author_name, reviewer_kind, reviewer_thread, review_version)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run(taskId, plan.format, plan.version, plan.body, plan.state, plan.updatedAt, plan.updatedBy.kind, plan.updatedBy.threadId, plan.updatedBy.name, plan.reviewer.kind, plan.reviewer.threadId, plan.reviewVersion);
   }
 
-  return { head, get, listVersions, save, submit, setState, diff, latestAgentThread, capture, captureProject, restore };
+  /** Every review attempt of a project in one statement, for export. */
+  function captureReviewsProject(projectId: string): Map<string, PlanReview[]> {
+    const result = new Map<string, PlanReview[]>();
+    for (const row of db
+      .prepare<[string], ReviewRow>("SELECT r.* FROM task_plan_reviews r JOIN tasks t ON t.id = r.task_id WHERE t.project_id = ? ORDER BY r.task_id, r.id")
+      .all(projectId)) {
+      const list = result.get(row.task_id) ?? [];
+      list.push(reviewOf(row));
+      result.set(row.task_id, list);
+    }
+    return result;
+  }
+
+  /** Replaces a task's review history with an imported one. */
+  function restoreReviews(taskId: string, reviews: readonly PlanReview[]): void {
+    db.prepare("DELETE FROM task_plan_reviews WHERE task_id = ?").run(taskId);
+    const insert = db.prepare(
+      "INSERT INTO task_plan_reviews (task_id, version, reviewer_kind, reviewer_thread, submitted_by_thread, submitted_at, outcome, decided_at, decided_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    );
+    for (const r of reviews) insert.run(taskId, r.version, r.reviewer.kind, r.reviewer.threadId, r.submittedByThread, r.submittedAt, r.outcome, r.decidedAt, r.decidedBy);
+  }
+
+  return { head, get, listVersions, save, submit, setState, listReviews, captureReviews, advisoryFor, resultRecipients, lastDecidedVersion, diff, latestAgentThread, capture, captureProject, restore, captureReviewsProject, restoreReviews };
 }
 
 export type PlanStore = ReturnType<typeof createPlanStore>;

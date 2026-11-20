@@ -2,7 +2,9 @@ import { withPluginHeader } from "../steer";
 import { threadLiveStatus } from "../lifecycle/thread-links";
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import { z } from "zod";
-import { buildSeedPrompt, presetSpawnEnvironment } from "../delegate";
+import { buildSeedPrompt, noticeSkippedMove, presetSpawnEnvironment } from "../delegate";
+import { createPlanStore } from "../plans/store";
+import { effectiveInProgressStatus } from "../shared/workflow-policy";
 import { publishTasksChanged } from "../api";
 import type { TasksApiStore } from "../api";
 import { createDependencyStore } from "../dependencies/store";
@@ -20,7 +22,7 @@ const pushOutput=z.object({ok:z.literal(true),channels:z.array(z.enum(["web","de
 type AcceptanceTarget={seq:number;requestId:string;before?:number};
 type AcceptanceScan={after:number;before?:number;high?:number;exhausted?:boolean;targets:AcceptanceTarget[]};
 type AcceptanceRecovery={boundary:number;history:AcceptanceScan;complete?:boolean};
-const recoveryPrefix="scheduled-acceptance:",checkpointPrefix="scheduled-acceptance-checkpoint:";
+const advisoryPrefix="scheduled-plan-advisory:",recoveryPrefix="scheduled-acceptance:",checkpointPrefix="scheduled-acceptance-checkpoint:";
 const terminalStates=new Set(["completed","canceled","skipped","failed"]);
 function limiter(max:number) {
  let active=0;const queue:Array<()=>void>=[];
@@ -97,6 +99,15 @@ function createService(bb:BbPluginApi,store:TasksApiStore) {
  }
  const trackRecovery=(id:string)=>{recoveringThreads.add(id);if(recoveringThreads.size>256)recoveringThreads.delete(recoveringThreads.values().next().value!);};
  const failedUnstarted=(threadId:string)=>db.prepare<[string],{id:string}>("SELECT id FROM task_schedule_runs WHERE thread_id=? AND state='failed' AND resolved_at IS NULL AND json_extract(payload,'$.startedAt') IS NULL AND json_extract(payload,'$.requestId') IS NOT NULL AND COALESCE(json_extract(payload,'$.historical'),0)=0 ORDER BY id LIMIT 500").all(threadId).map(({id})=>data.run(id));
+ /** Marks a run started. When the plan gate skipped its status move and the prompt went out without the advisory, the executor gets one notice. */
+ async function startRun(runId:string,input:Parameters<typeof data.markStarted>[1]) {
+  const run=data.run(runId),task=run.taskId?store.tasks.getTask(run.taskId):undefined,project=task&&store.tasks.getProject(task.projectId);
+  const started=data.markStarted(runId,input);
+  const target=project&&effectiveInProgressStatus(project);
+  if(!run.startedAt&&task&&target&&(task.status==="backlog"||task.status==="todo")&&store.tasks.getTask(task.id)!.status===task.status&&store.tasks.planGate(task,target)&&!await bb.storage.kv.get(advisoryPrefix+runId))
+   {await noticeSkippedMove(bb,store.tasks,task,input.threadId);alive();}
+  return started;
+ }
  async function accepted(threadId:string,thread:Thread,rows:ScheduleRun[]) {
   const key=recoveryPrefix+threadId,boundary=Math.min(...rows.map(r=>Date.parse(r.createdAt)));
   let state=await bb.storage.kv.get<AcceptanceRecovery>(key)??await bb.storage.kv.get<AcceptanceRecovery>(checkpointPrefix+threadId);alive();
@@ -143,7 +154,7 @@ function createService(bb:BbPluginApi,store:TasksApiStore) {
      if(terminalStates.has(r.state)&&(r.state!=="failed"||!r.requestId||attribution.retryOfRequestId!==r.requestId))continue;
      if(r.state==="failed"&&["done","canceled","in_review"].includes(store.tasks.getTask(r.taskId)?.status??"canceled"))continue;
      absentSince.delete(r.id);
-     const started=data.markStarted(r.id,{threadId,requestId:target.requestId,title:thread.title??thread.titleFallback??threadId,presetName:"Scheduled",liveStatus:threadLiveStatus(thread)});
+     const started=await startRun(r.id,{threadId,requestId:target.requestId,title:thread.title??thread.titleFallback??threadId,presetName:"Scheduled",liveStatus:threadLiveStatus(thread)});
      note(started,`Scheduled run started · ${r.scheduledFor} · @thread:${threadId}`);refreshStarting(threadId);changed(started,true);
     }
     part.targets.shift();
@@ -285,7 +296,10 @@ function createService(bb:BbPluginApi,store:TasksApiStore) {
    // shortcut: SDK queues return full messages; keep task previews small until ID-only reads exist.
    const seedTask={...task,description:task.description.length>12_000?`${task.description.slice(0,12_000)}\n\nFull description: bb work-board show ${task.key} --json`:task.description};
    const attachments=store.tasks.listAttachmentsForTask(task.id);
-   const prompt=`${scheduledRunMarker(id)}\n${buildSeedPrompt({task:seedTask,project,subtasks:[],attachments:attachments.slice(0,20),recentComments:[],blockedBy:createDependencyStore(db,store.tasks).blockers([task.id]).get(task.id),presetInstructions:preset?.instructions??"",extraInstructions:`Scheduled occurrence: ${r.scheduledFor}. Use the task workflow; completing a turn is not Done.`})}`;
+   const planWarning=createPlanStore(db,store.tasks).advisoryFor(task);
+   // Remembered so that a later skipped status move knows whether the executor was already warned.
+   if(planWarning)await bb.storage.kv.set(advisoryPrefix+id,true);
+   const prompt=`${scheduledRunMarker(id)}\n${buildSeedPrompt({task:seedTask,project,planWarning,subtasks:[],attachments:attachments.slice(0,20),recentComments:[],blockedBy:createDependencyStore(db,store.tasks).blockers([task.id]).get(task.id),presetInstructions:preset?.instructions??"",extraInstructions:`Scheduled occurrence: ${r.scheduledFor}. Use the task workflow; completing a turn is not Done.`})}`;
    try {
     if(thread) {
      const delivery=await bb.sdk.threads.send({threadId:thread.id,mode:"queue-if-active",input:[{type:"text",text:withPluginHeader(bb.pluginId,prompt),mentions:[]}]});
@@ -425,7 +439,7 @@ function createService(bb:BbPluginApi,store:TasksApiStore) {
    let r;try{r=data.run(id);}catch{continue;}
    if(r.threadId!==event.threadId||r.historical||r.resolvedAt||!r.taskId||["completed","canceled","skipped"].includes(r.state))continue;
    const task=store.tasks.getTask(r.taskId);if(!task||["done","canceled","in_review"].includes(task.status))continue;
-   if(event.inputAccepted&&!r.startedAt)r=data.markStarted(id,{threadId:event.threadId,requestId:event.requestId,title:event.threadId,presetName:"Scheduled",liveStatus:"failed"});
+   if(event.inputAccepted&&!r.startedAt)r=await startRun(id,{threadId:event.threadId,requestId:event.requestId,title:event.threadId,presetName:"Scheduled",liveStatus:"failed"});
    else if(!event.inputAccepted&&!r.startedAt&&!r.requestId)data.updateRun(id,{requestId:event.requestId});
    const error=z.object({message:z.string()}).safeParse(event.errorInfo);
    await incident(id,"failed",error.success?error.data.message:"The scheduled request failed");

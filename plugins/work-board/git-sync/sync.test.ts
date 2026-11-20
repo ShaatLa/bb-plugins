@@ -1,3 +1,4 @@
+import { createPlanStore } from "../plans/store";
 import { afterEach, expect, it, vi } from "vitest";
 import { createFakePluginHost, makeThreadResponse } from "@get-bb/plugin-sdk/testing";
 import { createStore, registerTasksApi } from "../api";
@@ -254,7 +255,7 @@ it("exports v8 config and links/exclusions, excludes CI snapshots, and restores 
   await f.service.syncProject(f.project.id);
   const capture = captureProject(f.bb, f.store, f.project.id);
   const records = await archiveRecords(f.store, capture, async () => {});
-  expect(capture.manifest.version).toBe(19);
+  expect(capture.manifest.version).toBe(20);
   expect(capture.manifest.gitSync?.repositories).toEqual(["example/service"]);
   expect(JSON.stringify(records)).not.toContain('"checks":');
   expect(
@@ -901,6 +902,24 @@ it("advances only confirmed delivering open PRs from early statuses", async () =
   f.store.tasks.updateTask(f.tasks[7]!.id, { status: "in_review" });
   await f.service.syncProject(f.project.id);
   expect(f.tasks.slice(0, 8).map(task => f.store.tasks.getTask(task.id)!.status)).toEqual(["in_review", "todo", "todo", "todo", "todo", "done", "canceled", "in_review"]);
+});
+
+it("skips a card whose plan is not approved in a required project while the sync succeeds and the approved card advances", async () => {
+  const f = setup();
+  const url = "https://github.com/example/service/pull/42";
+  f.store.tasks.updateProject(f.project.id, { planning: "required" });
+  const plans = createPlanStore(f.bb.storage.database(), f.store.tasks);
+  const author = { kind: "agent" as const, threadId: "thr_example", name: "agent (thr_example)" };
+  for (const task of f.tasks.slice(0, 2)) {
+    f.store.tasks.updateTask(task.id, { status: "todo" });
+    plans.save({ taskId: task.id, op: "replace", baseVersion: 0, body: "# Plan\n", summary: "Plan", author });
+  }
+  plans.setState(f.tasks[1]!.id, "approved", { kind: "person", threadId: null, name: "Owner" });
+  await f.service.handlers.setGitSyncConfig({ projectId: f.project.id, config: gitSyncConfigSchema.parse({ repositories: ["example/service"], titleDiscovery: false }) });
+  for (const task of f.tasks.slice(0, 2)) await f.service.handlers.linkPr({ taskId: task.id, url, role: "delivers", part: null });
+  const result = await f.service.syncProject(f.project.id);
+  expect(result.errors).toEqual([]);
+  expect(f.tasks.slice(0, 2).map(task => f.store.tasks.getTask(task.id)!.status)).toEqual(["todo", "in_review"]);
 });
 
 it("uses custom workflow status IDs and does not reverse a closed PR", async () => {

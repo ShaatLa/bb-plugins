@@ -22,6 +22,8 @@ function setup(threads: Record<string, Partial<Thread>> = { thr_plan: {} }) {
   const store = createStore(host.bb);
   registerTasksApi(host.bb, store);
   const project = store.tasks.createProject({ name: "Example", prefix: "EXA", color: "blue" });
+  // Plans only work in a project whose planning is on; the setting is the owner's, so the store sets it directly.
+  store.tasks.updateProject(project.id, { planning: "optional" });
   const task = store.tasks.createTask({ projectId: project.id, title: "Planned work" });
   const call = <T = Record<string, any>>(method: string, input: Record<string, unknown>) => host.harness.callRpc(method as never, input as never) as Promise<T & { ok?: boolean; error?: { code: string; message: string } }>;
   const save = (input: Record<string, unknown>) => call("saveTaskPlan", { taskId: task.id, summary: "Edit", author: agent, op: "replace", ...input });
@@ -124,7 +126,8 @@ describe("send feedback and approve", () => {
     const text = input[0]!.text;
     expect(text.startsWith("[bb message from plugin:work-board]\n\nEXA-1 · plan v1: changes requested by the owner\n\nYOUR PLAN WAS NOT APPROVED.")).toBe(true);
     expect(text).not.toContain("[Work Board]");
-    expect(text).toContain("Owner's notes on v1 (3), in plan order:");
+    expect(text).toContain("Notes on v1 (3), in plan order:");
+    expect(text).toContain("bb work-board plan submit EXA-1 --reviewer owner");
     expect(text.indexOf("N3 · Comment")).toBeLessThan(text.indexOf("N2 · Remove"));
     expect(text.indexOf("N2 · Remove")).toBeLessThan(text.indexOf("N1 · General"));
     expect(text).toContain('N3 · Comment · section "Steps"\n> Add the new table.\nBehind a flag.');
@@ -132,12 +135,13 @@ describe("send feedback and approve", () => {
     expect(harness.realtimeSignals).toEqual(expect.arrayContaining([{ channel: "comments:changed", payload: { taskId: task.id } }]));
   });
 
-  it("falls back to the task's own thread when the plan author's thread is archived, and reports no_thread", async () => {
-    const archived = setup({ thr_plan: { archivedAt: 1 }, thr_task: {} });
+  it("goes to the parent when the plan author's thread is archived, never to the task's worker thread, and reports no_thread", async () => {
+    const archived = setup({ thr_plan: { archivedAt: 1, parentThreadId: "thr_parent" }, thr_parent: {}, thr_task: {} });
     await archived.save({ baseVersion: 0, body: BODY });
     archived.store.tasks.upsertTaskThread({ taskId: archived.task.id, threadId: "thr_task", presetName: "Default", title: "Work", liveStatus: "working" });
     await archived.note({ kind: "general", body: "Global." });
-    expect(await archived.call("sendPlanFeedback", { taskId: archived.task.id, author: owner })).toMatchObject({ delivered: "sent", threadId: "thr_task" });
+    expect(await archived.call("sendPlanFeedback", { taskId: archived.task.id, author: owner })).toMatchObject({ delivered: "sent", threadId: "thr_parent" });
+    expect(archived.sent().map((call) => call[0].threadId)).toEqual(["thr_parent"]);
 
     const none = setup();
     await none.save({ baseVersion: 0, body: BODY, author: { kind: "person", threadId: null, name: "Someone" } });
@@ -146,13 +150,14 @@ describe("send feedback and approve", () => {
     expect(none.sent()).toHaveLength(0);
   });
 
-  it("uses the question target (latest agent comment) when no session is linked", async () => {
-    const { save, store, task, note, call, sent } = setup({ thr_other: {} });
+  it("does not fall back to a linked worker thread or the latest agent comment when nobody waits on the plan", async () => {
+    const { save, store, task, note, call, sent } = setup({ thr_other: {}, thr_worker: {} });
     await save({ baseVersion: 0, body: BODY, author: { kind: "person", threadId: null, name: "Someone" } });
     store.tasks.createComment({ taskId: task.id, kind: "agent", authorName: "Agent", threadId: "thr_other", body: "Hello" });
+    store.tasks.upsertTaskThread({ taskId: task.id, threadId: "thr_worker", presetName: "Default", title: "Work", liveStatus: "working" });
     await note({ kind: "general", body: "Global." });
-    expect(await call("sendPlanFeedback", { taskId: task.id, author: owner })).toMatchObject({ delivered: "sent", threadId: "thr_other" });
-    expect(sent()[0]![0].threadId).toBe("thr_other");
+    expect(await call("sendPlanFeedback", { taskId: task.id, author: owner })).toMatchObject({ ok: true, delivered: "no_thread", threadId: null });
+    expect(sent()).toHaveLength(0);
   });
 
   it("keeps the notes sent when delivery fails", async () => {
@@ -178,12 +183,12 @@ describe("send feedback and approve", () => {
     expect(approved).toMatchObject({ ok: true, delivered: "sent", threadId: "thr_plan", plan: { state: "approved" } });
     expect(systemComments()).toContain("Plan v1: approved by Owner · note: Go ahead.");
     expect(sent().at(-1)![0].input[0]!.text).toBe(
-      "[bb message from plugin:work-board]\n\nEXA-1 · plan v1 approved by the owner\n\nStart the work as planned. The approved plan is v1: any new version returns it to draft and needs a new review.\nPlan: [EXA-1 plan](/plugins/work-board/work-board/task/EXA-1/plan)\n\nOwner's note: Go ahead.",
+      "[bb message from plugin:work-board]\n\nEXA-1 · plan v1 approved by the owner\n\nStart the work as planned. The approved plan is v1: any new version returns it to draft and needs a new review.\nPlan: [EXA-1 plan](/plugins/work-board/work-board/task/EXA-1/plan)\n\nNote from the owner: Go ahead.",
     );
     expect(await call("approvePlan", { taskId: task.id, author: owner })).toMatchObject({ ok: false, error: { code: "plan_state" } });
     await save({ baseVersion: 1, body: `${BODY}\nMore.\n` });
     expect((await call<{ plan: { state: string } }>("getTaskPlan", { taskId: task.id })).plan.state).toBe("draft");
     expect(await call("approvePlan", { taskId: task.id, author: owner })).toMatchObject({ ok: true, plan: { state: "approved", version: 2 } });
-    expect(sent().at(-1)![0].input[0]!.text).not.toContain("Owner's note");
+    expect(sent().at(-1)![0].input[0]!.text).not.toContain("Note from");
   });
 });

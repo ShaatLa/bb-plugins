@@ -5,13 +5,14 @@ import { publishProjectsChanged } from "../api";
 import { gitSyncService } from "../git-sync/service";
 import { createGitSyncStore } from "../git-sync/store";
 import { gitSyncConfigSchema } from "../shared/git-sync";
-import { autoArchiveAfterDaysSchema, staleIdleThresholdSchema, statusNotificationsSchema } from "../shared/project-settings";
+import { autoArchiveAfterDaysSchema, PLANNING_OWNER_ONLY, planningSchema, staleIdleThresholdSchema, statusNotificationsSchema } from "../shared/project-settings";
 
 // Per-project settings addressable one key at a time; Git settings carry a "git." prefix.
 const PROJECT_KEYS = {
   autoArchiveAfterDays: autoArchiveAfterDaysSchema,
   staleIdleMinutes: staleIdleThresholdSchema,
   statusNotifications: statusNotificationsSchema,
+  planning: planningSchema,
 } as const;
 type ProjectKey = keyof typeof PROJECT_KEYS;
 const GIT_KEYS = Object.keys(gitSyncConfigSchema.shape) as (keyof z.infer<typeof gitSyncConfigSchema>)[];
@@ -44,6 +45,8 @@ export function projectConfigHandlers(bb: BbPluginApi, store: TasksApiStore) {
     },
     async "config.set"({ projectId, key, value }: { projectId: string; key: string; value?: unknown }) {
       requireKey(key);
+      // The owner changes planning in the project settings (updateProject from the app); no setting call proves the caller is the owner.
+      if (key === "planning") throw new Error(PLANNING_OWNER_ONLY);
       requireProject(projectId);
       if (key.startsWith("git.")) {
         const field = key.slice(4);

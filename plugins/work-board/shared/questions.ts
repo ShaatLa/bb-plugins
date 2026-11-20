@@ -55,7 +55,7 @@ const PLAN_APPROVAL = [
 export function assertNotPlanApproval(prompt: string, steps: readonly string[], taskKey: string, taskHasPlan: boolean): void {
   const text = [prompt, ...steps].join("\n");
   if (PLAN_LINK.test(text) || (taskHasPlan && PLAN_APPROVAL.some((pattern) => pattern.test(text))))
-    throw new Error(`Plan approval is not an owner question: run \`bb work-board plan submit ${taskKey}\` and wait. The owner approves the plan or sends notes in the Plan tab, and you get a message either way. Ask questions only for decisions inside the work.`);
+    throw new Error(`Plan approval is not an owner question: run \`bb work-board plan submit ${taskKey} --reviewer <reviewer thread, or owner only when the user asked to approve the plan>\` and wait. The reviewer approves the plan or sends notes, and you get a message either way. Ask questions only for decisions inside the work.`);
 }
 
 export const STEP_SPLIT_HINT =

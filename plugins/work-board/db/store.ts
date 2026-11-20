@@ -1,10 +1,11 @@
 import { WAITING_ON_OWNER, NEWEST_UNANSWERED } from "./waiting-on-owner";
-import { getWorkflowPolicy, workflowPolicySchema } from "../shared/workflow-policy.js";
+import { getWorkflowPolicy, inWorkZone, workflowPolicySchema } from "../shared/workflow-policy.js";
 import { ordinaryTaskVisibilitySql } from "../scheduled/visibility";
-import { autoArchiveAfterDaysSchema, staleIdleThresholdSchema, statusNotificationsSchema } from "../shared/project-settings";
+import { autoArchiveAfterDaysSchema, planningSchema, staleIdleThresholdSchema, statusNotificationsSchema } from "../shared/project-settings";
 import { taskDateFiltersSchema } from "../shared/task-dates.js";
 import {
   DEFAULT_TASK_STATUSES,
+  statusLabel,
   taskStatusesSchema,
 } from "../shared/statuses.js";
 import { createHash, randomBytes } from "node:crypto";
@@ -15,6 +16,7 @@ import {
   assertNoSecretsInValue,
 } from "../shared/secret-guard.js";
 import { evidenceSchema } from "../shared/contract.js";
+import { noPlanCreateRefusal, noPlanGateRefusal, planGateRefusal, type PlanState } from "../shared/plan.js";
 import { initializeTasksSchema } from "./schema";
 import {
   TASK_SORTS,
@@ -82,6 +84,7 @@ interface ProjectRow {
   auto_archive_after_days: string | null;
   stale_idle_minutes: string | null;
   status_notifications: string | null;
+  planning: string | null;
   statuses: string | null;
   id: string;
   name: string;
@@ -389,6 +392,7 @@ function projectFromRow(row: ProjectRow): Project {
     autoArchiveAfterDays: autoArchiveAfterDaysSchema.parse(row.auto_archive_after_days ?? "off"),
     staleIdleMinutes: staleIdleThresholdSchema.parse(row.stale_idle_minutes ?? "45"),
     statusNotifications: statusNotificationsSchema.parse(row.status_notifications ?? "off"),
+    planning: planningSchema.parse(row.planning ?? "off"),
     statuses:
       row.statuses == null
         ? DEFAULT_TASK_STATUSES.map((status) => ({ ...status }))
@@ -767,12 +771,12 @@ export function createTasksStore(db: PluginDatabase) {
         input.folderId === undefined ? current.folderId : input.folderId;
       if (folderId !== null) requireFolder(folderId);
       db.prepare<
-        [string, string, string, string | null, string | null, string, string | null, string, string, string, string]
+        [string, string, string, string | null, string | null, string, string | null, string, string, string, string, string]
       >(
         `
       UPDATE projects
       SET name = ?, prefix = ?, color = ?, folder_id = ?, linked_bb_project_id = ?, statuses = ?, workflow_policy = ?,
-          auto_archive_after_days = ?, stale_idle_minutes = ?, status_notifications = ?
+          auto_archive_after_days = ?, stale_idle_minutes = ?, status_notifications = ?, planning = ?
       WHERE id = ?
     `,
       ).run(
@@ -794,6 +798,7 @@ export function createTasksStore(db: PluginDatabase) {
         autoArchiveAfterDaysSchema.parse(input.autoArchiveAfterDays ?? current.autoArchiveAfterDays ?? "off"),
         staleIdleThresholdSchema.parse(input.staleIdleMinutes ?? current.staleIdleMinutes ?? "45"),
         statusNotificationsSchema.parse(input.statusNotifications ?? current.statusNotifications ?? "off"),
+        planningSchema.parse(input.planning ?? current.planning ?? "off"),
         id,
       );
       return requireProject(id);
@@ -929,6 +934,9 @@ export function createTasksStore(db: PluginDatabase) {
       validateTaskStatus(project.id, status);
       const parentTaskId = input.parentTaskId ?? null;
       const type = input.type ?? "task";
+      // A new card has no plan yet, so a project that requires one cannot have it created in In progress.
+      if (project.planning === "required" && type !== "epic" && inWorkZone(project, status))
+        throw new Error(noPlanCreateRefusal(project.prefix, statusLabel(status, project.statuses)));
       const epicId = input.epicId ?? null;
       validateTaskEpic(project.id, type, epicId, parentTaskId);
       validateTaskParent(project.id, parentTaskId, id);
@@ -1364,7 +1372,26 @@ export function createTasksStore(db: PluginDatabase) {
       .map(taskFromRow);
   }
 
+  /**
+   * Why a card may not enter the work zone of `destination` as `status`, or null. Only a destination that requires
+   * planning refuses, only an entry from outside the zone (zone membership is read under each project's own status
+   * order), and never an epic. A card already in the zone is never pushed out.
+   */
+  function gateRefusal(task: Task, status: string, source: Project, destination: Project): string | null {
+    if (destination.planning !== "required" || task.type === "epic" || inWorkZone(source, task.status) || !inWorkZone(destination, status)) return null;
+    const project = destination;
+    const target = statusLabel(status, project.statuses);
+    const plan = db.prepare<[string], { version: number; state: PlanState }>("SELECT version, state FROM task_plans WHERE task_id = ?").get(task.id);
+    return plan ? planGateRefusal(task.key, plan, target) : noPlanGateRefusal(task.key, target);
+  }
+  function planGate(task: Task, status: string): string | null {
+    const project = requireProject(task.projectId);
+    return gateRefusal(task, status, project, project);
+  }
+
   function validateWorkflowTransition(task: Task, status: string) {
+    const gate = planGate(task, status);
+    if (gate) throw new Error(gate);
     const policy = getWorkflowPolicy(requireProject(task.projectId));
     if (status !== task.status && policy.bugfixStatus && policy.doneStatus && task.status === policy.bugfixStatus && status === policy.doneStatus)
       throw new Error("Cannot move directly from bugfix to done: failed review or testing must be resolved first");
@@ -1470,6 +1497,11 @@ export function createTasksStore(db: PluginDatabase) {
         ...[root, ...members].flatMap((task) => listSubtasks(task.id)),
       ];
       for (const task of moving) validateTaskStatus(target.id, task.status);
+      // The whole family stays in the source when any non-epic card would enter the destination's gated work zone.
+      for (const task of moving) {
+        const refusal = gateRefusal(task, task.status, source, target);
+        if (refusal) throw new Error(`${refusal}; the whole family stays in ${source.prefix} because of ${task.key}`);
+      }
       const movingIds = new Set(moving.map((task) => task.id));
 
       const allocated = db
@@ -2421,6 +2453,7 @@ export function createTasksStore(db: PluginDatabase) {
     listTasks,
     listSubtasks,
     updateTask,
+    planGate,
     moveTaskToProject,
     updatePosition,
     deleteTask,

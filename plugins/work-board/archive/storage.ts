@@ -22,6 +22,7 @@ import {
   type ArchiveTask,
   type ProjectArchive,
 } from "./contract";
+import { planReviewSchema } from "../shared/contract";
 
 // Imported history is never operational: server-local thread/queue/request IDs must not be resumed on another BB.
 export const historicalRun = (run: ScheduleRun): ScheduleRun => ({ ...run, threadId: null, queueId: null, requestId: null, historical: true });
@@ -64,7 +65,7 @@ export function captureProject(
     const taskIdSet = new Set(tasks.map(task => task.id));
     const manifest = archiveProjectSchema.parse({
       format: "bb-work-board",
-      version: 19,
+      version: 20,
       gitSync: createGitSyncStore(bb.storage.database()).config(projectId),
       project,
       folders,
@@ -115,6 +116,7 @@ export function captureProject(
     const planStore = createPlanStore(bb.storage.database(), store.tasks);
     const plansByTask = planStore.captureProject(projectId);
     const notesByTask = createPlanNoteStore(bb.storage.database(), store.tasks, planStore.head).captureProject(projectId);
+    const reviewsByTask = planStore.captureReviewsProject(projectId);
     const linksByTask = group(createGitSyncStore(db).linksForProject(projectId), (l) => l.taskId);
     const dependenciesByTask = group(db.prepare<[string], { taskId: string; blockingTaskId: string }>(`
       SELECT d.task_id AS taskId, d.blocking_task_id AS blockingTaskId
@@ -156,6 +158,7 @@ export function captureProject(
       questions: questionsByTask.get(task.id) ?? [],
       plan: plansByTask.get(task.id) ?? null,
       planNotes: notesByTask.get(task.id) ?? [],
+      planReviews: reviewsByTask.get(task.id) ?? [],
       attachments: [...(attachmentsByTask.get(task.id) ?? [])].sort(byId),
       threads: [...(threadsByTask.get(task.id) ?? [])].sort(byId),
       aliases: (aliasesByTask.get(task.id) ?? []).map(({ prefix, number }) => ({ prefix, number })),
@@ -279,16 +282,26 @@ export function restoreProject(
     // Archives before v18 cannot carry plans, so they leave local plans untouched.
     const plans = createPlanStore(db, store.tasks);
     const planOf = (record: (typeof records)[number]) => (manifest.version >= 18 ? record.plan ?? null : undefined);
+    // Archives before v20 carry no reviewer (the parser reads it as the owner), so they are compared without it.
+    const planKey = (plan: ReturnType<typeof archivePlanSchema.parse> | null) =>
+      JSON.stringify(manifest.version >= 20 || !plan ? plan : { ...plan, reviewer: undefined, reviewVersion: undefined });
     for (const record of records) if (planOf(record) !== undefined && localTaskIds.has(record.task.id) && !overwrite) {
       const local = plans.capture(record.task.id);
       const imported = planOf(record)!;
-      if (JSON.stringify(local && archivePlanSchema.parse(local)) !== JSON.stringify(imported))
+      if (planKey(local && archivePlanSchema.parse(local)) !== planKey(imported))
         throw new Error(`Import conflict: plan ${record.task.key}; use --overwrite`);
     }
     // Archives before v19 cannot carry plan notes either, so they leave local notes untouched.
     const planNotes = createPlanNoteStore(db, store.tasks, plans.head);
     const notesOf = (record: (typeof records)[number]) => (manifest.version >= 19 ? record.planNotes ?? [] : undefined);
     const localNotes = (taskId: string) => archivePlanNoteSchema.array().parse(planNotes.capture(taskId));
+    // Review history exists from v20; older archives leave the local history untouched.
+    const reviewsOf = (record: (typeof records)[number]) => (manifest.version >= 20 ? record.planReviews ?? [] : undefined);
+    const localReviews = (taskId: string) => planReviewSchema.array().parse(plans.captureReviews(taskId));
+    for (const record of records) if (reviewsOf(record) !== undefined && localTaskIds.has(record.task.id) && !overwrite) {
+      if (JSON.stringify(localReviews(record.task.id)) !== JSON.stringify(reviewsOf(record)))
+        throw new Error(`Import conflict: plan reviews ${record.task.key}; use --overwrite`);
+    }
     for (const record of records) if (notesOf(record) !== undefined && localTaskIds.has(record.task.id) && !overwrite) {
       if (JSON.stringify(localNotes(record.task.id)) !== JSON.stringify(notesOf(record)))
         throw new Error(`Import conflict: plan notes ${record.task.key}; use --overwrite`);
@@ -347,8 +360,12 @@ export function restoreProject(
     ].reduce((max, task) => Math.max(max, task.number), 0);
     if (!Number.isSafeInteger(maxNumber + 1))
       throw new Error("Task number exceeds the supported range");
+    // Planning is the owner's setting: an import never changes an existing project's. A project the import creates takes
+    // the snapshot's value; a snapshot from before v20 has none, so it is inferred from its plans.
+    const { planning: snapshotPlanning, ...manifestProject } = manifest.project;
     const project = {
-      ...manifest.project,
+      ...manifestProject,
+      ...(currentProject ? {} : { planning: snapshotPlanning ?? (records.some((record) => record.plan) ? "optional" : "off") }),
       statuses: manifest.project.statuses ?? DEFAULT_TASK_STATUSES,
       nextTaskNumber: Math.max(
         manifest.project.nextTaskNumber,
@@ -555,11 +572,15 @@ export function restoreProject(
       const imported = planOf(record);
       if (imported === undefined) continue;
       const local = plans.capture(record.task.id);
-      if (JSON.stringify(local && archivePlanSchema.parse(local)) !== JSON.stringify(imported)) plans.restore(record.task.id, imported);
+      if (planKey(local && archivePlanSchema.parse(local)) !== planKey(imported)) plans.restore(record.task.id, imported);
     }
     for (const record of records) {
       const imported = notesOf(record);
       if (imported !== undefined && JSON.stringify(localNotes(record.task.id)) !== JSON.stringify(imported)) planNotes.restore(record.task.id, imported);
+    }
+    for (const record of records) {
+      const imported = reviewsOf(record);
+      if (imported !== undefined && JSON.stringify(localReviews(record.task.id)) !== JSON.stringify(imported)) plans.restoreReviews(record.task.id, imported);
     }
     if (manifest.gitSync) db.prepare<[string]>("DELETE FROM git_pr_snapshots WHERE project_id=?").run(projectId);
     for (const { task } of records) {

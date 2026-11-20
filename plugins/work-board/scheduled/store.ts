@@ -6,6 +6,7 @@ import type { Task as StoredTask } from "../db";
 import { createDependencyStore } from "../dependencies/store";
 import { createScheduleInputSchema, updateScheduleInputSchema, scheduleSchema, scheduleRunSchema, scheduleSourceSchema, type Schedule, type ScheduleRun, type ScheduleSource, type Recurrence } from "../shared/scheduled";
 import { nextOccurrence } from "./recurrence";
+import { effectiveInProgressStatus } from "../shared/workflow-policy";
 
 export { ordinaryTaskVisibilitySql } from "./visibility";
 type Page = { projectId?:string; scheduleId?:string; search?:string; needsAttention?:boolean; limit?:number; cursor?:string };
@@ -142,7 +143,9 @@ export function createScheduledStore(bb:BbPluginApi,store:TasksApiStore) {
    const r=run(runId);if(r.startedAt)return r;
    if(!r.taskId)throw new Error("Run task is missing");
    const task=requireTask(r.taskId);
-   if(task.status==="backlog"||task.status==="todo")store.tasks.updateTask(r.taskId,{status:"in_progress"});
+   // A card whose plan is not approved is tracked and dispatched as usual, but its status stays where it is.
+   const inProgress=effectiveInProgressStatus(store.tasks.getProject(task.projectId)!);
+   if((task.status==="backlog"||task.status==="todo")&&inProgress&&!store.tasks.planGate(task,inProgress))store.tasks.updateTask(r.taskId,{status:inProgress});
    db.prepare("UPDATE task_scheduled_sources SET started_at=? WHERE task_id=?").run(now.toISOString(),r.taskId);
    store.tasks.upsertTaskThread({taskId:r.taskId,threadId:input.threadId,title:input.title,presetName:input.presetName,liveStatus:input.liveStatus??"working"});
    return updateRun(runId,{state:task.status==="done"?"completed":task.status==="canceled"?"canceled":"running",threadId:input.threadId,requestId:input.requestId,startedAt:now.toISOString(),resolvedAt:null,finishedAt:["done","canceled"].includes(task.status)?now.toISOString():null,reason:null},now);

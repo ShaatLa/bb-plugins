@@ -31,6 +31,7 @@ import {
   childrenCards,
   publishProjectsChanged,
   registerHandlers,
+  createPlanReviewFlow,
   type TasksApiStore,
 } from "../api";
 import {
@@ -75,6 +76,9 @@ import { ACTIVITY_LABELS } from "../shared/task-activity.js";
 import { threadHealthJson } from "../shared/thread-health";
 import { scheduledCliCommands } from "../scheduled/cli";
 import { planCommands } from "./plan";
+import { planAdvisory } from "../shared/plan";
+import { planningOn, planningRequired, PLANNING_OWNER_ONLY } from "../shared/project-settings";
+import { createPlanStore } from "../plans/store";
 
 const TASK_KEY_PATTERN = /^([A-Z][A-Z0-9]{0,9})-(\d+)$/;
 const BB_PROJECT_ID_PATTERN = /^proj_[A-Za-z0-9_-]+$/;
@@ -1150,7 +1154,7 @@ export function registerTasksCli(
         }),
         ...templateReadCommands,
         ...lockCommands(domain),
-        ...planCommands({ bb, domain, guard, resolveTask, resolveClientHostId, readTextOption, taskAuthor, keyPositional: KEY_POSITIONAL, jsonOption: JSON_OPTION, machineOption: MACHINE_OPTION }),
+        ...planCommands({ bb, domain, review: createPlanReviewFlow(bb, store), guard, resolveTask, resolveClientHostId, readTextOption, taskAuthor, keyPositional: KEY_POSITIONAL, jsonOption: JSON_OPTION, machineOption: MACHINE_OPTION }),
         template: groupCommand(
           "template",
           "Manage project description templates",
@@ -1930,6 +1934,7 @@ export function registerTasksCli(
                 ["BB project", project.linkedBbProjectId ?? "-"],
                 ["Auto archive (days)", project.autoArchiveAfterDays ?? "off"],
                 ["Idle warning (minutes)", project.staleIdleMinutes ?? "45"],
+                ["Planning", project.planning ?? "off"],
                 ["Next task", `${project.prefix}-${project.nextTaskNumber}`],
                 ["Created", project.createdAt],
               ]);
@@ -1951,6 +1956,7 @@ export function registerTasksCli(
             "auto-archive": { type: "enum", values: ["off", "3", "7", "14", "30"] as const, description: "Project auto-archive interval in days" },
             "stale-idle": { type: "enum", values: ["off", "30", "45", "60", "120"] as const, description: "Project idle warning threshold in minutes" },
             "status-notifications": { type: "enum", values: ["off", "all", "done"] as const, description: "Project status change push notifications" },
+            planning: { type: "enum", values: ["off", "optional", "required"] as const, description: "Owner only, set in the project settings: the CLI refuses it" },
             machine: MACHINE_OPTION,
             name: { type: "string", description: "New project name" },
             color: { type: "string", description: "New accent color name" },
@@ -2012,12 +2018,14 @@ export function registerTasksCli(
                 try { workflowPolicy = workflowPolicySchema.parse(JSON.parse(text!)); }
                 catch { throw new CliError("Invalid workflow policy file"); }
               }
+              if (input.options.planning !== undefined) throw new CliError(PLANNING_OWNER_ONLY, { code: "owner_only" });
               const changes = {
                 workflowPolicy,
                 statuses,
                 autoArchiveAfterDays: input.options["auto-archive"],
                 staleIdleMinutes: input.options["stale-idle"],
                 statusNotifications: input.options["status-notifications"],
+                planning: input.options.planning,
                 name: input.options.name,
                 color: input.options.color,
                 folderId: input.options["no-folder"] ? null : folder?.id,
@@ -2036,6 +2044,7 @@ export function registerTasksCli(
                 changes.autoArchiveAfterDays === undefined &&
                 changes.staleIdleMinutes === undefined &&
                 changes.statusNotifications === undefined &&
+                changes.planning === undefined &&
                 changes.linkedBbProjectId === undefined
               ) {
                 throw new CliError("no project changes were provided", {
@@ -2058,6 +2067,7 @@ export function registerTasksCli(
                 changes.autoArchiveAfterDays !== undefined ||
                 changes.staleIdleMinutes !== undefined ||
                 changes.statusNotifications !== undefined ||
+                changes.planning !== undefined ||
                 changes.linkedBbProjectId !== undefined;
               const updateInput = hasFieldChanges
                 ? tasksRpcContract.updateProject.input.parse({
@@ -2081,6 +2091,7 @@ export function registerTasksCli(
                   autoArchiveAfterDays: updateInput?.autoArchiveAfterDays,
                   staleIdleMinutes: updateInput?.staleIdleMinutes,
                   statusNotifications: updateInput?.statusNotifications,
+                  planning: updateInput?.planning,
                   name: updateInput?.name,
                   color: updateInput?.color,
                   folderId: updateInput?.folderId,
@@ -2833,7 +2844,9 @@ export function registerTasksCli(
                 ? allPrLinks.map((entry) => entry.snapshot ? { ...entry, snapshot: (({ checks: _checks, ...snapshot }) => snapshot)(entry.snapshot) } : entry)
                 : allPrLinks;
               const dependencies = await domain.listTaskDependencies({ taskId: task.id });
-              const taskPlan = (await domain.getTaskPlan({ taskId: task.id })).plan;
+              // With planning off the plan is not part of the card: no read of it, no summary, body or warning.
+              const planning = project.planning ?? "off";
+              const taskPlan = planningOn(project) ? (await domain.getTaskPlan({ taskId: task.id })).plan : null;
               const withPlan = input.options["with-plan"] === true;
               const more: Record<string, string> = {};
               if (omittedComments) more.comments = `bb work-board comment list ${task.key} --kind user --kind agent --kind system`;
@@ -2846,7 +2859,9 @@ export function registerTasksCli(
                   overlaps,
                   task: { ...task, waitingOnOwner: waiting },
                   link: taskMarkdownLink(task.key),
-                  plan: taskPlan ? { version: taskPlan.version, state: taskPlan.state, noteCounts: taskPlan.noteCounts, updatedAt: taskPlan.updatedAt, updatedBy: taskPlan.updatedBy.name, ...(withPlan ? { body: taskPlan.requested.body } : {}) } : null,
+                  planning,
+                  ...(planning !== "off" ? { planWarning: planAdvisory(taskPlan, planningRequired(project) && task.type !== "epic") } : {}),
+                  plan: taskPlan ? { version: taskPlan.version, state: taskPlan.state, reviewer: taskPlan.reviewer, noteCounts: taskPlan.noteCounts, updatedAt: taskPlan.updatedAt, updatedBy: taskPlan.updatedBy.name, ...(withPlan ? { body: taskPlan.requested.body } : {}) } : null,
                   project,
                   labels,
                   subtasks: task.type === "epic" ? [] : subtasks,
@@ -2898,7 +2913,7 @@ export function registerTasksCli(
                     "Labels",
                     labels.map((label) => label.name).join(", ") || "-",
                   ],
-                  ["Plan", taskPlan ? `v${taskPlan.version} · ${taskPlan.state}${taskPlan.noteCounts.open ? ` · ${taskPlan.noteCounts.open} open note${taskPlan.noteCounts.open === 1 ? "" : "s"}` : ""} · bb work-board plan show ${task.key}` : "-"],
+                  ["Plan", taskPlan ? `v${taskPlan.version} · ${taskPlan.state}${taskPlan.noteCounts.open ? ` · ${taskPlan.noteCounts.open} open note${taskPlan.noteCounts.open === 1 ? "" : "s"}` : ""} · reviewer ${taskPlan.reviewer.threadId ?? "owner"} · bb work-board plan show ${task.key}` : planning === "off" ? "planning is off for this project" : "-"],
                   ["Created", task.createdAt],
                   ["Updated", task.updatedAt],
                 ]),
@@ -2910,6 +2925,7 @@ ${activity.diagnostics?.inactiveSessions.map((session) => `@thread:${session.thr
                 ...(activity?.diagnostics?.hasWorked ? [`Activity reports\n${comments.filter((comment) => comment.kind === "agent" && comment.threadId).slice(-5).map((comment) => `${comment.createdAt} · @thread:${comment.threadId} · comment ${comment.id}`).join("\n") || "Previous work is recorded; historical execution details were not retained."}`] : []),
                 ...(waiting ? [`Waiting on you: ${newestQuestion?.prompt.split(/\r?\n/)[0] ?? "Question"}`] : []),
                 `Description\n${task.description || "(none)"}`,
+                ...(planning !== "off" && planAdvisory(taskPlan, planningRequired(project) && task.type !== "epic") ? [`Plan warning\n${planAdvisory(taskPlan, planningRequired(project) && task.type !== "epic")}`] : []),
                 ...(withPlan && taskPlan ? [`Plan v${taskPlan.version} (${taskPlan.state})\n${taskPlan.requested.body}`] : []),
                 task.progressNote ? `Current state (updated ${task.progressUpdatedAt} by ${task.progressUpdatedBy})\n${task.progressNote}` : "Current state\n(none)",
                 `${task.type === "epic" ? "Tasks in epic" : "Sub-tasks"}\n${table(
@@ -4317,6 +4333,7 @@ ${activity.diagnostics?.inactiveSessions.map((session) => `@thread:${session.thr
                 input.options.thread,
                 ctx,
               );
+              const planWarning = createPlanStore(bb.storage.database(), store.tasks).advisoryFor(task);
               const result =
                 delegationRpcContract.taskThreadsAttach.output.parse(
                   await delegationHandlers(bb, store).taskThreadsAttach(
@@ -4327,8 +4344,8 @@ ${activity.diagnostics?.inactiveSessions.map((session) => `@thread:${session.thr
                   ),
                 );
               return input.options.json
-                ? JSON.stringify({ task, ...result })
-                : `Attached ${result.threadId} to ${task.key}`;
+                ? JSON.stringify({ task, ...result, planWarning })
+                : `Attached ${result.threadId} to ${task.key}${planWarning ? `\n${planWarning}` : ""}`;
             });
           },
         }),
