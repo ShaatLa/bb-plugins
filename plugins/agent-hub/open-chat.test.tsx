@@ -32,3 +32,13 @@ it('follows the open chat\'s working state without a refetch until its turn comp
   act(() => setOpenChat('thr_a', true)); expect(view.container.textContent).toBe('thr_a:1:true');
   act(() => setOpenChat('thr_a', false)); expect(view.container.textContent).toBe('thr_a:2:false');
 });
+
+it('reads a thread and message from Agent Hub links, bb message chips and same-origin URLs only', async () => {
+  const { threadLink } = await import('./open-chat');
+  expect(threadLink('/projects/pr_one/threads/thr_example?msg=12')).toEqual({ threadId: 'thr_example', seq: 12 });
+  expect(threadLink('/threads/thr_example#msg=3')).toEqual({ threadId: 'thr_example', seq: 3 });
+  expect(threadLink(`${window.location.origin}/threads/thr_example`)).toEqual({ threadId: 'thr_example', seq: null });
+  expect(threadLink('https://example.com/threads/thr_example')).toBeNull();
+  expect(threadLink('/threads/thr_example/files')).toBeNull();
+  expect(threadLink('/plugins/agent-hub/agent-hub?thread=thr_example')).toBeNull();
+});

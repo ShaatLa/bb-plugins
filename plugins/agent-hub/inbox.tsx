@@ -6,7 +6,7 @@ import { ThreadHeader } from './thread-header';
 import { COMPOSE_KEY, DRAFTS_EVENT } from './drafts';
 import { QuestionStack } from './question-stack';
 import { ContactsList, useContacts } from './contacts';
-import { useContactSelection } from './open-chat';
+import { JUMP_EVENT, takeJump, useContactSelection } from './open-chat';
 import { mentionsForText } from './mentions';
 import { PendingInteractions, usePendingInteractionRows } from './interactions';
 import { Activity, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react';
@@ -484,9 +484,14 @@ function InboxChat({ onBulkRead, bbChat = false, search: searchProp, onSearch, t
   useEffect(() => {
     if (!selected || !pages.length || initialJump.current === selected) return;
     initialJump.current = selected;
-    const seq = permalink.current, saved = restore.current?.threadId === selected ? restore.current.anchor : null;
+    const seq = takeJump(selected)?.toString() ?? permalink.current, saved = restore.current?.threadId === selected ? restore.current.anchor : null;
     permalink.current = null;
     if (seq && /^\d+$/.test(seq)) jumpTo(`seq:${seq}`); else if (saved && !pages.some(p => p.items.some(item => item.id === saved))) jumpTo(saved, restore.current?.offset);
+  }, [selected,pages,jumpTo]);
+  // A message link clicked while its chat is already open and loaded jumps at once; otherwise the effect above takes it.
+  useEffect(() => {
+    const jump = () => { const seq = selected && pages.length && initialJump.current === selected ? takeJump(selected) : null; if (seq !== null) jumpTo(`seq:${seq}`); };
+    window.addEventListener(JUMP_EVENT, jump); return () => window.removeEventListener(JUMP_EVENT, jump);
   }, [selected,pages,jumpTo]);
   const receive = useRef((threadId: string, index: number, data: ListResult) => setLoaded(old => receivePage(old, threadId, index, data))).current;
   // fresh: just opened, start at the top; prepend: Load earlier grew the top, keep the reader's place.

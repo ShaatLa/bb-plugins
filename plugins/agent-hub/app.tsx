@@ -7,11 +7,11 @@ import './touch.css';
 import { MessageCopy, messageLink } from './message-copy';
 import { useThreadCommands, commandMention } from './thread-commands';
 import { AgentHubContacts } from './contacts';
-import { CONTACT_SELECTED, ContactPageProvider, useContactPage, useContactSelection, useSidebarContacts } from './open-chat';
+import { CONTACT_SELECTED, ContactPageProvider, requestJump, threadLink, useContactPage, useContactSelection, useSidebarContacts } from './open-chat';
 import { defaultAnswer } from './contract';
 import { InfoTab, DiffTab, WorkBoardTab } from './chat-tabs';
 import { taskKeyRegex } from './task-links';
-import { Component, Fragment, createContext, useContext, useEffect, useLayoutEffect, useRef, useState, type ErrorInfo, type ReactNode } from 'react';
+import { Component, Fragment, createContext, useContext, useEffect, useLayoutEffect, useRef, useState, type ErrorInfo, type MouseEvent as ReactMouseEvent, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { definePluginApp, experimental_saveFile, experimental_resolveThreadStatus, experimental_Icon as Icon, experimental_PluginIcon as PluginIcon, experimental_describePromptMention, experimental_PromptMentionIcon as PromptMentionIcon, experimental_ThreadTitleText as ThreadTitleText, experimental_ImageLightbox as ImageLightbox, experimental_ThreadStatusGlyph as ThreadStatusGlyph, Markdown, UrlLink, useRpc, useSdk, experimental_useRpcQuery as useQuery, experimental_useSidebarThreads, experimental_useProviders, experimental_useAppPanel, experimental_usePanelTabs, experimental_useRpcRefresh, useComposer } from '@get-bb/plugin-sdk/app';
 import { rpcContract, type AgentHubRpcContract, type Item, type ItemAttachment, type View, type Attachment, type SendOptions } from './contract';
@@ -575,6 +575,16 @@ function AgentHubPanelContent({ threadId }: { threadId?: string }) {
   const questions = questionsTab && !savedTab, setQuestions = (on: boolean) => { setQuestionsTab(on); setSavedTab(false); };
   const section = savedTab ? 'saved' : questions ? 'questions' : 'chats', setSection = (next: typeof section) => { setQuestionsTab(next === 'questions'); setSavedTab(next === 'saved'); };
   const openChat = (id: string) => { selectContact(id); setQuestions(false); };
+  // On the page a thread link or chip opens the conversation here, not bb's chat (data-bb-chat links need bb's own forms); preventDefault alone stops bb's link, so its own onClick still runs.
+  const routeThreadLink = (event: ReactMouseEvent) => {
+    const anchor = (event.target as Element).closest?.('a[href]');
+    if (!anchor || anchor.hasAttribute('data-bb-chat') || event.defaultPrevented || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+    const link = threadLink(anchor.getAttribute('href') ?? '');
+    if (!link) return;
+    event.preventDefault();
+    if (link.seq !== null) requestJump(link.threadId, link.seq);
+    openChat(link.threadId);
+  };
   useEffect(() => {
     if (threadId) return;
     if (page?.open) setQuestions(false);
@@ -598,7 +608,7 @@ function AgentHubPanelContent({ threadId }: { threadId?: string }) {
   const [chatTitleTarget, setChatTitleTarget] = useState<HTMLDivElement | null>(null), [chatSearchTarget, setChatSearchTarget] = useState<HTMLDivElement | null>(null), [chatActionsTarget, setChatActionsTarget] = useState<HTMLDivElement | null>(null);
   const searchable = list && (view !== 'saved' || !!query || (savedPeek.data?.items.length ?? 0) > 1);
   // iOS zooms into a focused field under 16px; bb's phone text-sm is 15px, so every field here reads 16px on touch screens.
-  return <section onPointerDownCapture={activate} onFocusCapture={activate} className="flex h-full flex-col bg-background [@media(pointer:coarse)]:[&_:is(input,textarea,select,[contenteditable=true])]:text-[16px]">
+  return <section onPointerDownCapture={activate} onFocusCapture={activate} onClickCapture={threadId ? undefined : routeThreadLink} className="flex h-full flex-col bg-background [@media(pointer:coarse)]:[&_:is(input,textarea,select,[contenteditable=true])]:text-[16px]">
     {threadId && <Pools threadId={threadId} />}
     {/* Left edge on the chat text column (the history list pl-4 plus its rows px-2), so the title lines up with the messages. */}<div className="space-y-2 border-b border-border-seam bg-background py-2 pl-6 pr-4">
       <div data-page-toolbar className="flex min-h-8 items-center gap-1">

@@ -55,7 +55,7 @@ export function PendingInteractions({ threadId, projectId, pending, status, stac
     if (payload.kind === 'user_question') return wrap(<QuestionCard key={row.id} stacked={stacked} questions={payload.questions} onSubmit={answers => act(row, () => sdk.threads.interactions.resolve({ threadId, interactionId: row.id, resolution: { kind: 'user_answer', answers } }))} onCancel={() => act(row, () => sdk.threads.stop({ threadId }))} />);
     if (payload.kind === CODEX_ELICITATION) return wrap(<ElicitationCard key={row.id} title={payload.title} data={'data' in payload ? payload.data : null} href={`${projectId ? `/projects/${projectId}` : ''}/threads/${threadId}`} onRespond={value => act(row, () => sdk.threads.interactions.respond({ threadId, interactionId: row.id, value }))} />);
     if (payload.kind === 'approval') return wrap(<ApprovalForm key={row.id} row={row as ApprovalRow} onDecide={decision => act(row, () => sdk.threads.interactions.resolve({ threadId, interactionId: row.id, resolution: decision === 'deny' ? { decision } : { decision, grantedPermissions: payload.subject.kind === 'permission_grant' ? payload.subject.permissions : (payload.subject.kind === 'command' || payload.subject.kind === 'file_change') && decision === 'allow_for_session' ? payload.subject.sessionGrant : null } }))} />);
-    return wrap(<div key={row.id} className="rounded-lg border border-border bg-card px-3 py-2 text-xs"><p className="font-medium text-foreground"><UserText text={payload.title} /></p><UrlLink href={`${projectId ? `/projects/${projectId}` : ''}/threads/${threadId}`}>Open in chat to answer</UrlLink></div>);
+    return wrap(<div key={row.id} className="rounded-lg border border-border bg-card px-3 py-2 text-xs"><p className="font-medium text-foreground"><UserText text={payload.title} /></p><UrlLink data-bb-chat href={`${projectId ? `/projects/${projectId}` : ''}/threads/${threadId}`}>Open in chat to answer</UrlLink></div>);
   })}{error && <p role="alert" className="rounded-md border border-surface-destructive-border bg-surface-destructive px-3 py-2 text-xs text-destructive-text">{error}</p>}</div></ComposerThread.Provider>;
 }
 
@@ -148,6 +148,6 @@ function ElicitationCard({ title, data, href, onRespond }: { title: string; data
       {allows.map(([label, value], i) => <Button key={label} size="sm" variant={i === 0 ? 'default' : 'outline'} disabled={busy} onClick={() => void answer(value)}>{label}</Button>)}
       {e.kind === 'url' && e.url && <Button size="sm" disabled={busy} onClick={() => { if (navigate.openUrl(e.url!)) void answer({ action: 'accept' }); }}>Open link</Button>}
       <Button size="sm" variant="ghost" disabled={busy} onClick={() => void answer({ action: 'decline' })}>Decline</Button>
-      {(e.kind === 'form' || !allows.length && e.kind !== 'url') && <UrlLink href={href}>Open in chat to answer</UrlLink>}
+      {(e.kind === 'form' || !allows.length && e.kind !== 'url') && <UrlLink data-bb-chat href={href}>Open in chat to answer</UrlLink>}
     </div></div></div>;
 }

@@ -941,3 +941,22 @@ it.each(['header', 'entry'])('drops files onto the pool %s without creating dupl
     expect(poolUpdate).not.toHaveBeenCalled();
   }
 });
+
+it('opens a thread link from the chat in Agent Hub, while a bb-chat link and a modified click keep bb routing', async () => {
+  const app = await loadPluginApp(() => import('./app'));
+  const incoming = { ...item, id: 'ans_in', kind: 'update' as const, question: '[bb message from thread:thr_two]\n\nHello', answer: 'Thanks', trigger: { kind: 'agent' as const, sourceId: 'thr_two', sourceTitle: 'Two' } } as Item;
+  const list = vi.fn((input: unknown) => ({ items: (input as { threadId?: string }).threadId === 'thr_two' ? [{ ...item, id: 'ans_two', threadId: 'thr_two', question: 'Second question', answer: 'Second answer' }] : [incoming], nextCursor: null }));
+  const contact = (threadId: string, threadTitle: string) => ({ threadId, threadTitle, projectId: 'pr_one', projectName: 'P', unread: 0, lastAt: 1, preview: 'x' });
+  const slot = renderSlot(app.navPanels[0]!, { subPath: '' }, { rpc: { recipients: () => ({ recipients: [contact('thr_one', 'One'), contact('thr_two', 'Two')] }), pools: () => ({ pools: [] }), list, counts: () => ({ unread: 0, waiting: 0, forMe: 0 }), markRead: () => ({ ok: true }), markThreadRead: () => ({ ok: true }) } });
+  fireEvent.click((await slot.findAllByRole('option'))[0]!);
+  const link = (await slot.findByText('Message from')).parentElement!.querySelector('a')!;
+  expect(link.getAttribute('href')).toBe('/projects/pr_one/threads/thr_two');
+  // A modified click is bb's split view, and a data-bb-chat link needs bb's chat, so both stay with bb.
+  expect(fireEvent.click(link, { metaKey: true })).toBe(true);
+  link.setAttribute('data-bb-chat', '');
+  expect(fireEvent.click(link)).toBe(true);
+  link.removeAttribute('data-bb-chat');
+  expect(fireEvent.click(link)).toBe(false);
+  expect(await slot.findByText('Second answer')).toBeTruthy();
+  expect(list).toHaveBeenCalledWith(expect.objectContaining({ threadId: 'thr_two' }));
+});

@@ -88,3 +88,18 @@ export function mountSidebarContacts() {
 export function useSidebarContacts() {
   return useSyncExternalStore(listener => { sidebarListeners.add(listener); return () => { sidebarListeners.delete(listener); }; }, () => sidebarMounts > 0, () => false);
 }
+
+// bb's thread routes; a message is ?msg= in Agent Hub's own links and #msg= in bb's message chips.
+const THREAD_PATH = /^\/(?:projects\/[^/]+\/)?threads\/([\w-]+)\/?$/;
+export function threadLink(href: string): { threadId: string; seq: number | null } | null {
+  let url: URL; try { url = new URL(href, window.location.origin); } catch { return null; }
+  const threadId = url.origin === window.location.origin ? THREAD_PATH.exec(url.pathname)?.[1] : undefined;
+  if (!threadId) return null;
+  const msg = url.searchParams.get('msg') ?? new URLSearchParams(url.hash.slice(1)).get('msg');
+  return { threadId, seq: msg && /^\d+$/.test(msg) ? Number(msg) : null };
+}
+// A message link waits here until the chat it points to has loaded its history.
+export const JUMP_EVENT = 'agent-hub:jump';
+let pendingJump: { threadId: string; seq: number } | null = null;
+export function requestJump(threadId: string, seq: number) { pendingJump = { threadId, seq }; window.dispatchEvent(new Event(JUMP_EVENT)); }
+export function takeJump(threadId: string) { if (pendingJump?.threadId !== threadId) return null; const { seq } = pendingJump; pendingJump = null; return seq; }
