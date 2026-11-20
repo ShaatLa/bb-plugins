@@ -1281,17 +1281,23 @@ describe("archive v20: reviewers, review history and planning", () => {
     expect(await readFile(join(again, "tasks", `${source.task.id}.json`), "utf8")).toBe(await readFile(join(out, "tasks", `${source.task.id}.json`), "utf8"));
   });
 
-  it("never changes the planning of an existing project, with or without --overwrite", async () => {
+  it("never changes the planning of an existing project, or when and from what it changed, with or without --overwrite", async () => {
     const source = await reviewed();
     source.store.tasks.updateProject(source.project.id, { planning: "off" });
     const out = await exported(source, "v20-keep");
+    // The snapshot carries the change record, and a fresh import takes it.
+    const snapshot = JSON.parse(await readFile(join(out, "project.json"), "utf8")).project;
+    expect(snapshot).toMatchObject({ planning: "off", planningPrevious: "optional", planningChangedAt: expect.any(String) });
     const target = setup();
     await importProject(target.bb, target.store, out, false);
+    expect(target.store.tasks.getProject(source.project.id)).toMatchObject({ planning: "off", planningPrevious: "optional", planningChangedAt: snapshot.planningChangedAt });
     target.store.tasks.updateProject(source.project.id, { planning: "required" });
+    const local = target.store.tasks.getProject(source.project.id)!;
+    expect(local.planningPrevious).toBe("off");
     await importProject(target.bb, target.store, out, false);
-    expect(target.store.tasks.getProject(source.project.id)!.planning).toBe("required");
+    expect(target.store.tasks.getProject(source.project.id)).toMatchObject({ planning: "required", planningPrevious: "off", planningChangedAt: local.planningChangedAt });
     await importProject(target.bb, target.store, out, true);
-    expect(target.store.tasks.getProject(source.project.id)!.planning).toBe("required");
+    expect(target.store.tasks.getProject(source.project.id)).toMatchObject({ planning: "required", planningPrevious: "off", planningChangedAt: local.planningChangedAt });
   });
 
   it("reads a v19 snapshot as the owner's, infers optional for a fresh project with a plan, and keeps local review history", async () => {
@@ -1361,6 +1367,8 @@ it("lets the migration turn planning on only for projects that already have a pl
     ALTER TABLE task_plans DROP COLUMN review_version;
     ALTER TABLE task_plan_notes DROP COLUMN author_kind;
     ALTER TABLE task_plan_notes DROP COLUMN author_thread;
+    ALTER TABLE projects DROP COLUMN planning_changed_at;
+    ALTER TABLE projects DROP COLUMN planning_previous;
     ALTER TABLE projects DROP COLUMN planning;
     DELETE FROM schema_version WHERE version = (SELECT MAX(version) FROM schema_version);
   `);

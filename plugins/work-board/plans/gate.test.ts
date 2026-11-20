@@ -370,6 +370,35 @@ describe("planning setting", () => {
     expect(await f.call("getTaskPlan", { taskId: task.id })).toMatchObject({ plan: { version: 1, state: "in_review" } });
   });
 
+  it("records each change of planning with its time and old value, logs it, and records nothing for the same value", async () => {
+    const f = setup("off");
+    expect(f.store.tasks.getProject(f.project.id)).toMatchObject({ planningChangedAt: null, planningPrevious: null });
+    expect((await f.cli("project", "show", "EXA")).stdout).toMatch(/Planning changed\s+-/);
+    await f.call("updateProject", { projectId: f.project.id, planning: "optional" });
+    const first = f.store.tasks.getProject(f.project.id)!;
+    expect(first).toMatchObject({ planning: "optional", planningPrevious: "off" });
+    expect(Date.parse(first.planningChangedAt!)).toBeGreaterThan(Date.now() - 60_000);
+    expect(f.harness.logEntries).toContainEqual({ level: "info", message: "planning for EXA: off → optional" });
+    // The same value, and an update of another field, leave the record alone and log nothing.
+    const logged = f.harness.logEntries.length;
+    await f.call("updateProject", { projectId: f.project.id, planning: "optional" });
+    await f.call("updateProject", { projectId: f.project.id, name: "Renamed" });
+    expect(f.store.tasks.getProject(f.project.id)).toMatchObject({ planningChangedAt: first.planningChangedAt, planningPrevious: "off" });
+    expect(f.harness.logEntries).toHaveLength(logged);
+    await f.call("updateProject", { projectId: f.project.id, planning: "required" });
+    expect(f.store.tasks.getProject(f.project.id)).toMatchObject({ planning: "required", planningPrevious: "optional" });
+    expect(f.harness.logEntries).toContainEqual({ level: "info", message: "planning for EXA: optional → required" });
+    // project show, config get and --json expose it.
+    const when = f.store.tasks.getProject(f.project.id)!.planningChangedAt!;
+    expect((await f.cli("project", "show", "EXA")).stdout).toMatch(new RegExp(`Planning changed\\s+${when}, was optional`));
+    expect(JSON.parse((await f.cli("project", "show", "EXA", "--json")).stdout).project).toMatchObject({ planning: "required", planningChangedAt: when, planningPrevious: "optional" });
+    const get = (await f.cli("config", "get", "planning", "--project", "EXA")).stdout;
+    expect(get).toContain("planning=required");
+    expect(get).toContain(`planningChangedAt=${when}`);
+    expect(get).toContain("planningPrevious=optional");
+    expect(JSON.parse((await f.cli("config", "get", "planning", "--project", "EXA", "--json")).stdout).values).toEqual({ planning: "required", planningChangedAt: when, planningPrevious: "optional" });
+  });
+
   it("is changed by the owner only: project update and config set refuse it, with and without a thread id", async () => {
     const f = setup("off");
     for (const threadId of [undefined, "thr_agent"]) {

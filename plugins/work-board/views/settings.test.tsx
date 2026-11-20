@@ -482,6 +482,10 @@ it("lets the owner pick each planning mode for the selected project, and the cho
       await waitFor(() => expect(store.tasks.getProject(alpha.id)?.planning).toBe(value));
     }
     expect(store.tasks.getProject(beta.id)?.planning).toBe("off");
+    // The control shows when planning last changed and what it was before.
+    const changed = await settings.findByTestId("planning-changed");
+    expect(changed.textContent).toMatch(/^Changed .*, was off$/);
+    expect(changed.querySelector("time")!.getAttribute("datetime")).toBe(store.tasks.getProject(alpha.id)!.planningChangedAt);
     // A fresh render (a reload) reads the saved mode back.
     cleanup();
     const reloaded = renderSlot(app.settingsSections[0]!, {}, { rpc });

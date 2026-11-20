@@ -1935,6 +1935,7 @@ export function registerTasksCli(
                 ["Auto archive (days)", project.autoArchiveAfterDays ?? "off"],
                 ["Idle warning (minutes)", project.staleIdleMinutes ?? "45"],
                 ["Planning", project.planning ?? "off"],
+                ["Planning changed", project.planningChangedAt ? `${project.planningChangedAt}, was ${project.planningPrevious ?? "off"}` : "-"],
                 ["Next task", `${project.prefix}-${project.nextTaskNumber}`],
                 ["Created", project.createdAt],
               ]);

@@ -86,7 +86,7 @@ describe("tasks storage", () => {
       expect(planColumns("task_plans")).toEqual(expect.arrayContaining(["reviewer_kind", "reviewer_thread", "review_version"]));
       expect(planColumns("task_plan_notes")).toEqual(expect.arrayContaining(["author_kind", "author_thread"]));
       expect(planColumns("task_plan_reviews")).toEqual(expect.arrayContaining(["task_id", "version", "reviewer_kind", "reviewer_thread", "submitted_by_thread", "submitted_at", "outcome", "decided_at", "decided_by"]));
-      expect(planColumns("projects")).toContain("planning");
+      expect(planColumns("projects")).toEqual(expect.arrayContaining(["planning", "planning_changed_at", "planning_previous"]));
       expect(planColumns("task_plan_versions")).toEqual(expect.arrayContaining(["task_id", "version", "body", "base_version", "op", "target", "summary", "author_kind", "author_thread", "author_name", "created_at"]));
     } finally {
       await harness.dispose();

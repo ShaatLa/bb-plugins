@@ -985,7 +985,10 @@ export function registerHandlers(
     },
     updateProject(input) {
       const { projectId, ...changes } = input;
+      const before = store.tasks.getProject(projectId)?.planning ?? "off";
       const project = store.tasks.updateProject(projectId, changes);
+      // The platform cannot tell the app from another caller, so a change is only made visible: a log entry.
+      if ((project.planning ?? "off") !== before) bb.log.info(`planning for ${project.prefix}: ${before} → ${project.planning}`);
       publishProjectsChanged(bb, project.id);
       return { project };
     },

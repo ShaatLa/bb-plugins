@@ -314,6 +314,9 @@ export const projectSchema = z
     staleIdleMinutes: staleIdleThresholdSchema.optional(),
     statusNotifications: statusNotificationsSchema.optional(),
     planning: planningSchema.optional(),
+    /** When planning last changed and what it was before; null until the first change. */
+    planningChangedAt: z.string().nullable().optional(),
+    planningPrevious: planningSchema.nullable().optional(),
     color: z.string(),
     folderId: idSchema.nullable(),
     linkedBbProjectId: z.string().startsWith("proj_").nullable(),

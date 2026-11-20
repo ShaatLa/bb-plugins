@@ -362,10 +362,10 @@ export function restoreProject(
       throw new Error("Task number exceeds the supported range");
     // Planning is the owner's setting: an import never changes an existing project's. A project the import creates takes
     // the snapshot's value; a snapshot from before v20 has none, so it is inferred from its plans.
-    const { planning: snapshotPlanning, ...manifestProject } = manifest.project;
+    const { planning: snapshotPlanning, planningChangedAt, planningPrevious, ...manifestProject } = manifest.project;
     const project = {
       ...manifestProject,
-      ...(currentProject ? {} : { planning: snapshotPlanning ?? (records.some((record) => record.plan) ? "optional" : "off") }),
+      ...(currentProject ? {} : { planning: snapshotPlanning ?? (records.some((record) => record.plan) ? "optional" : "off"), ...(planningChangedAt === undefined ? {} : { planningChangedAt, planningPrevious }) }),
       statuses: manifest.project.statuses ?? DEFAULT_TASK_STATUSES,
       nextTaskNumber: Math.max(
         manifest.project.nextTaskNumber,

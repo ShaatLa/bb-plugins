@@ -39,9 +39,12 @@ export function projectConfigHandlers(bb: BbPluginApi, store: TasksApiStore) {
   return {
     "config.get"({ projectId, key }: { projectId: string; key?: string }) {
       const all = values(projectId);
-      if (key === undefined) return { projectId, values: all };
+      const project = requireProject(projectId);
+      // Planning shows when it last changed and what it was before.
+      const planningHistory = { planningChangedAt: project.planningChangedAt ?? null, planningPrevious: project.planningPrevious ?? null };
+      if (key === undefined) return { projectId, values: { ...all, ...planningHistory } };
       requireKey(key);
-      return { projectId, values: { [key]: all[key] ?? null } };
+      return { projectId, values: { [key]: all[key] ?? null, ...(key === "planning" ? planningHistory : {}) } };
     },
     async "config.set"({ projectId, key, value }: { projectId: string; key: string; value?: unknown }) {
       requireKey(key);

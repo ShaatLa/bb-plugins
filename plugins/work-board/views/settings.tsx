@@ -1,4 +1,5 @@
 import { GitSyncSettings } from "./git-sync-settings";
+import { formatRelativeTime } from "./activity/time.js";
 import { StorageSettings } from "./storage-settings";
 import { NavigationBadgeSettings } from "./navigation-badge-settings";
 import { TasksRefreshProvider } from "../shell/refresh.js";
@@ -476,6 +477,11 @@ function ProjectAutomationSettings({ project, onSaved }: { project: Project; onS
         </Select>
       </label>
       <p className="text-xs text-muted-foreground">Off hides plans for this project (existing plans are kept). Optional turns on plans and their review. Required also keeps a card out of In progress and later statuses until its plan is approved; epics are exempt. Only you change this; agents cannot.</p>
+      {project.planningChangedAt ? (
+        <p className="text-xs text-muted-foreground" data-testid="planning-changed">
+          Changed <time dateTime={project.planningChangedAt} title={project.planningChangedAt}>{formatRelativeTime(project.planningChangedAt, Date.now())}</time>, was {project.planningPrevious ?? "off"}
+        </p>
+      ) : null}
       {error ? <p role="alert" className="text-xs text-destructive">{error}</p> : null}
     </section>
   );
