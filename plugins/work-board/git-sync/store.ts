@@ -5,6 +5,7 @@ import {
   prLinkSchema,
   prSnapshotSchema,
   prIdentity,
+  overlapEnabled,
   type GitSyncConfig,
   type PrLink,
   type Overlap,
@@ -69,7 +70,7 @@ export function createGitSyncStore(db: Database) {
           if (!snapshot) { snapshot = prSnapshotSchema.parse(JSON.parse(row.snapshot)); snapshots.set(row.snapshot, snapshot); }
           return { ...row, link: prLinkSchema.parse(JSON.parse(row.link)), snapshot };
         }).filter(row => projectConfig.repositories.includes(row.link.repository));
-        cached = { projectId, token, evaluate: prepareOverlaps(entries, projectConfig.overlapRules ?? []), results: new Map() };
+        cached = { projectId, token, evaluate: prepareOverlaps(entries, overlapEnabled(projectConfig) ? projectConfig.overlapRules ?? [] : []), results: new Map() };
       }
       for (const taskId of ids) {
         let overlaps = cached.results.get(taskId);

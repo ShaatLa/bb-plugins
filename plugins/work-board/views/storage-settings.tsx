@@ -24,14 +24,21 @@ export function StorageSettings() {
     <DisclosureSummary className="px-3 py-2.5 font-medium">Storage</DisclosureSummary>
     <div className="space-y-3 border-t border-border p-3">
       <p className="text-xs text-muted-foreground">Shared by all projects. Daily cleanup removes unreachable cache rows and unreferenced blobs older than 24 hours. Active uploads, imports, archived tasks and accessible history are preserved.</p>
-      {current ? <dl className="grid grid-cols-[1fr_auto] gap-x-3 gap-y-1 text-xs">
-        <dt>Database / WAL</dt><dd>{size(current.databaseBytes)} / {size(current.walBytes)}</dd>
-        <dt>Free database pages</dt><dd>{size(current.freeDatabaseBytes)}</dd>
-        <dt>Blob contents / allocated blocks</dt><dd>{size(current.blobLogicalBytes)} / {size(current.blobPhysicalBytes)}</dd>
-        <dt>Unreferenced blobs older than 24h</dt><dd>{current.orphanFiles} · {size(current.orphanBytes)}</dd>
-        <dt>Missing attachment files</dt><dd>{current.missingAttachments}</dd>
-        <dt>Last cleanup</dt><dd>{current.lastCleanedAt ? new Date(current.lastCleanedAt).toLocaleString() : "Not yet"}</dd>
-      </dl> : <p className="text-xs text-muted-foreground">{query.isFetching ? "Checking storage…" : "Storage usage unavailable."}</p>}
+      {current ? <>
+        <dl className="grid grid-cols-[1fr_auto] gap-x-3 gap-y-1 text-xs">
+          <dt>Blob contents / allocated blocks</dt><dd>{size(current.blobLogicalBytes)} / {size(current.blobPhysicalBytes)}</dd>
+          <dt>Unreferenced blobs older than 24h</dt><dd>{current.orphanFiles} · {size(current.orphanBytes)}</dd>
+          <dt>Missing attachment files</dt><dd>{current.missingAttachments}</dd>
+          <dt>Last cleanup</dt><dd>{current.lastCleanedAt ? new Date(current.lastCleanedAt).toLocaleString() : "Not yet"}</dd>
+        </dl>
+        <details className="text-xs">
+          <DisclosureSummary className="py-1">Database details</DisclosureSummary>
+          <dl className="grid grid-cols-[1fr_auto] gap-x-3 gap-y-1 pl-5 pt-1">
+            <dt>Database / WAL</dt><dd>{size(current.databaseBytes)} / {size(current.walBytes)}</dd>
+            <dt>Free database pages</dt><dd>{size(current.freeDatabaseBytes)}</dd>
+          </dl>
+        </details>
+      </> : <p className="text-xs text-muted-foreground">{query.isFetching ? "Checking storage…" : "Storage usage unavailable."}</p>}
       <p className="text-xs text-muted-foreground">Optimize storage shares identical immutable files without changing their contents or URLs and rebuilds SQLite. It may take time on large boards. Later daily cleanups reclaim free pages in small batches.</p>
       <div className="flex flex-wrap gap-2">
         <Button size="sm" variant="outline" disabled={busy || !current} onClick={() => void maintain(false)}>Clean up</Button>

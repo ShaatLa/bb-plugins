@@ -27,6 +27,9 @@ window.PointerEvent ??= window.MouseEvent as typeof PointerEvent;
 Element.prototype.setPointerCapture ??= () => {};
 
 const app = await loadPluginApp(() => import("../app"));
+const editStatuses = async (settings: ReturnType<typeof renderSlot>) => {
+  fireEvent.click(await settings.findByRole("button", { name: "Edit statuses" }));
+};
 it("loads shared storage statistics only when opened and performs maintenance", async () => {
   const { bb, harness } = createFakePluginHost({ pluginId: "work-board" });
   try {
@@ -34,7 +37,12 @@ it("loads shared storage statistics only when opened and performs maintenance", 
     const settings = renderSlot(app.settingsSections[0]!, {}, { rpc: Object.fromEntries(Object.keys(tasksRpcContract).map(method => [method, (input: unknown) => harness.callRpc(method, input)])) });
     expect(settings.rpcCalls.some(call => call.method === "getStorageStatus")).toBe(false);
     fireEvent.click(settings.getByText("Storage"));
-    await settings.findByText("Database / WAL");
+    // Usage, reclaimable space and missing files lead; database details sit in a nested, closed disclosure.
+    await settings.findByText("Missing attachment files");
+    const database = settings.getByText("Database details").closest("details")!;
+    expect(database.open).toBe(false);
+    expect(database.textContent).toContain("Database / WAL");
+    expect(database.parentElement?.closest("details")?.open).toBe(true);
     fireEvent.click(settings.getByRole("button", { name: "Optimize storage" }));
     await settings.findByText(/Cleanup complete\./);
     expect(settings.rpcCalls.filter(call => call.method === "getStorageStatus")).toHaveLength(1);
@@ -59,14 +67,14 @@ it("switches automation, statuses and Git settings together without changing the
     const settings = renderSlot(app.settingsSections[0]!, {}, { rpc: Object.fromEntries(
       methods.map((method) => [method, (input: unknown) => harness.callRpc(method, input)]),
     ) });
-    const archiveSelect = () => settings.getByRole("combobox", { name: "Automatically archive completed tasks" });
-    const idleSelect = () => settings.getByRole("combobox", { name: "Flag idle threads without task updates" });
-    await waitFor(() => expect(archiveSelect().textContent).toContain("After 7 days"));
-    expect(idleSelect().textContent).toContain("After 30 minutes");
+    const archiveSelect = () => settings.getByRole("combobox", { name: "Archive completed tasks after" });
+    const idleSelect = () => settings.getByRole("combobox", { name: "Flag idle threads after" });
+    await waitFor(() => expect(archiveSelect().textContent).toContain("7 days"));
+    expect(idleSelect().textContent).toContain("30 minutes");
     fireEvent.click(settings.getByRole("combobox", { name: "Settings project" }));
     fireEvent.click(await settings.findByRole("option", { name: "Beta" }));
-    await waitFor(() => expect(archiveSelect().textContent).toContain("After 14 days"));
-    expect(idleSelect().textContent).toContain("After 2 hours");
+    await waitFor(() => expect(archiveSelect().textContent).toContain("14 days"));
+    expect(idleSelect().textContent).toContain("2 hours");
     await waitFor(() => expect(settings.rpcCalls).toContainEqual(expect.objectContaining({ method: "getGitSyncConfig", input: { projectId: second.id } })));
     fireEvent.click(archiveSelect());
     fireEvent.click(await settings.findByRole("option", { name: "Off" }));
@@ -74,7 +82,7 @@ it("switches automation, statuses and Git settings together without changing the
     expect(store.tasks.getProject(first.id)).toMatchObject({ autoArchiveAfterDays: "7", staleIdleMinutes: "30" });
     fireEvent.click(settings.getByRole("combobox", { name: "Settings project" }));
     fireEvent.click(await settings.findByRole("option", { name: "Alpha" }));
-    await waitFor(() => expect(archiveSelect().textContent).toContain("After 7 days"));
+    await waitFor(() => expect(archiveSelect().textContent).toContain("7 days"));
     expect(settings.getAllByRole("combobox", { name: "Settings project" })).toHaveLength(1);
     expect(settings.queryByRole("combobox", { name: "Statuses project" })).toBeNull();
   } finally {
@@ -118,6 +126,8 @@ it.each([false, true])("creates a project directly in settings (existing project
     expect(settings.navigateCalls).toContainEqual({
       method: "toPluginPanel", path: "work-board", options: { subPath: "manage" },
     });
+    // The footer no longer repeats it.
+    expect(settings.getAllByRole("button", { name: "Manage labels and presets" })).toHaveLength(1);
   } finally {
     cleanup();
     await harness.dispose();
@@ -166,6 +176,7 @@ it("saves a project workflow in compact settings and uses it in the list, board 
       ]),
     );
     const settings = renderSlot(app.settingsSections[0]!, {}, { rpc });
+    await editStatuses(settings);
     await settings.findByRole("textbox", { name: "Status name backlog" });
     expect(
       settings.getByRole("button", { name: "Open Work Board" }).className,
@@ -344,6 +355,7 @@ it("autosaves names and removals, hides system removal, and keeps rejected chang
         ),
       },
     );
+    await editStatuses(settings);
     const backlog = await settings.findByRole("textbox", {
       name: "Status name backlog",
     });
@@ -476,23 +488,28 @@ it("lets the owner pick each planning mode for the selected project, and the cho
     const region = () => within(settings.getByRole("region", { name: "Project planning" }));
     const mode = () => region().getByRole("combobox", { name: "Planning" });
     await settings.findByRole("combobox", { name: "Planning" });
-    // Planning is its own section, between automation and task statuses, and no longer part of automation.
+    // The project sections come in this order; the former General block is gone (native fields are rendered by the host).
     const regions = settings.getAllByRole("region").map(node => node.getAttribute("aria-label"));
-    expect(regions.indexOf("Project planning")).toBe(regions.indexOf("Project automation") + 1);
-    expect(regions.indexOf("Project task statuses")).toBe(regions.indexOf("Project planning") + 1);
+    expect(regions.filter(name => name?.startsWith("Project "))).toEqual([
+      "Project task statuses", "Project planning", "Project archiving", "Project activity and notifications", "Project Git and PR sync",
+    ]);
+    expect(settings.queryByText("General")).toBeNull();
+    expect(settings.queryByText("Open by default")).toBeNull();
+    expect(settings.queryByText("Navigation badge")).toBeNull();
     expect(region().getByRole("heading", { name: "Planning" })).toBeTruthy();
-    expect(region().getByText("Plans and their approval for this project. Only you change this; agents cannot.")).toBeTruthy();
-    expect(region().queryByText(/agents cannot\./, { selector: "p" })).not.toBeNull();
-    const automation = within(settings.getByRole("region", { name: "Project automation" }));
-    expect(automation.queryByRole("combobox", { name: "Planning" })).toBeNull();
-    expect(automation.queryByText(/^Off hides plans/)).toBeNull();
-    expect(automation.getAllByRole("combobox").map(box => box.getAttribute("aria-label"))).toEqual(["Automatically archive completed tasks", "Flag idle threads without task updates", "Task status notifications", "Archive threads of closed cards"]);
+    // The owner-only hint covers the mode and the gated statuses, not the reviewer switch.
+    expect(region().getByText("Only you change the planning mode and the statuses that need an approved plan; agents cannot.")).toBeTruthy();
     expect(region().getByText(/^Off hides plans/).textContent).not.toContain("agents cannot");
+    expect(within(settings.getByRole("region", { name: "Project archiving" })).getAllByRole("combobox").map(box => box.getAttribute("aria-label"))).toEqual(["Archive completed tasks after"]);
+    expect(within(settings.getByRole("region", { name: "Project activity and notifications" })).getAllByRole("combobox").map(box => box.getAttribute("aria-label"))).toEqual(["Flag idle threads after", "Notify me of status changes"]);
     expect(mode().textContent).toContain("Off");
+    // The reviewer switch is shown only while planning is not Off.
+    expect(region().queryByRole("switch", { name: "Archive the plan reviewer after approval" })).toBeNull();
     for (const [label, value] of [["Optional", "optional"], ["Required", "required"], ["Off", "off"], ["Required", "required"]] as const) {
       fireEvent.click(mode());
       fireEvent.click(await settings.findByRole("option", { name: label }));
       await waitFor(() => expect(store.tasks.getProject(alpha.id)?.planning).toBe(value));
+      await waitFor(() => expect(region().queryByRole("switch", { name: "Archive the plan reviewer after approval" }) !== null).toBe(value !== "off"));
     }
     expect(store.tasks.getProject(beta.id)?.planning).toBe("off");
     // The control shows when planning last changed and what it was before.
@@ -511,20 +528,63 @@ it("lets the owner switch the two thread-archive settings, each in its own secti
   try {
     const store = createStore(bb);
     const alpha = store.tasks.createProject({ name: "Alpha", prefix: "A", color: "blue" });
+    store.tasks.updateProject(alpha.id, { planning: "optional" });
     registerTasksApi(bb, store);
     const rpc = Object.fromEntries(Object.keys(tasksRpcContract).map(method => [method, (input: unknown) => harness.callRpc(method, input)]));
     const settings = renderSlot(app.settingsSections[0]!, {}, { rpc });
-    const archiveThreads = () => within(settings.getByRole("region", { name: "Project automation" })).getByRole("combobox", { name: "Archive threads of closed cards" });
-    const archiveReviewer = () => within(settings.getByRole("region", { name: "Project planning" })).getByRole("combobox", { name: "Archive the plan reviewer after approval" });
+    const archiveThreads = () => within(settings.getByRole("region", { name: "Project archiving" })).getByRole("switch", { name: "Archive threads of closed cards" });
+    const archiveReviewer = () => within(settings.getByRole("region", { name: "Project planning" })).getByRole("switch", { name: "Archive the plan reviewer after approval" });
     await settings.findByRole("combobox", { name: "Planning" });
-    expect(archiveThreads().textContent).toContain("On");
-    expect(archiveReviewer().textContent).toContain("On");
+    expect(archiveThreads().getAttribute("aria-checked")).toBe("true");
+    expect(archiveReviewer().getAttribute("aria-checked")).toBe("true");
     fireEvent.click(archiveThreads());
-    fireEvent.click(await settings.findByRole("option", { name: "Off" }));
     await waitFor(() => expect(store.tasks.getProject(alpha.id)?.archiveThreadsOnClose).toBe("off"));
     fireEvent.click(archiveReviewer());
-    fireEvent.click(await settings.findByRole("option", { name: "Off" }));
     await waitFor(() => expect(store.tasks.getProject(alpha.id)?.archiveReviewerOnApproval).toBe("off"));
+    expect(store.tasks.getProject(alpha.id)?.archiveThreadsOnClose).toBe("off");
+    fireEvent.click(archiveReviewer());
+    await waitFor(() => expect(store.tasks.getProject(alpha.id)?.archiveReviewerOnApproval).toBe("on"));
+  } finally { cleanup(); await harness.dispose(); }
+});
+
+it("shows a compact status order and opens the full editor only on Edit", async () => {
+  const { bb, harness } = createFakePluginHost({ pluginId: "work-board" });
+  try {
+    const store = createStore(bb);
+    store.tasks.createProject({ name: "Alpha", prefix: "A", color: "blue" });
+    registerTasksApi(bb, store);
+    const settings = renderSlot(app.settingsSections[0]!, {}, { rpc: Object.fromEntries(Object.keys(tasksRpcContract).map(method => [method, (input: unknown) => harness.callRpc(method, input)])) });
+    const edit = await settings.findByRole("button", { name: "Edit statuses" });
+    const order = within(settings.getByRole("list", { name: "Status order" }));
+    expect(order.getAllByRole("listitem").map(item => item.textContent)).toEqual(["Backlog", "Todo", "In Progress", "In Review", "Done", "Canceled"]);
+    expect(settings.container.querySelectorAll('[aria-label="Status order"] [data-status-icon]')).toHaveLength(6);
+    expect(edit.getAttribute("aria-expanded")).toBe("false");
+    expect(settings.queryByRole("textbox", { name: "Status name backlog" })).toBeNull();
+    fireEvent.click(edit);
+    expect(settings.getByRole("button", { name: "Done editing statuses" }).getAttribute("aria-expanded")).toBe("true");
+    expect(settings.getByRole("textbox", { name: "Status name backlog" })).toBeTruthy();
+    expect(settings.queryByRole("list", { name: "Status order" })).toBeNull();
+    fireEvent.click(settings.getByRole("button", { name: "Done editing statuses" }));
+    expect(settings.queryByRole("textbox", { name: "Status name backlog" })).toBeNull();
+    expect(settings.getByRole("list", { name: "Status order" })).toBeTruthy();
+  } finally { cleanup(); await harness.dispose(); }
+});
+
+it.each([false, true])("offers Manage labels and presets above the project sections (existing project: %s)", async (hasProject) => {
+  const { bb, harness } = createFakePluginHost({ pluginId: "work-board" });
+  try {
+    const store = createStore(bb);
+    if (hasProject) store.tasks.createProject({ name: "Alpha", prefix: "A", color: "blue" });
+    registerTasksApi(bb, store);
+    const settings = renderSlot(app.settingsSections[0]!, {}, { rpc: Object.fromEntries(Object.keys(tasksRpcContract).map(method => [method, (input: unknown) => harness.callRpc(method, input)])) });
+    const manage = await settings.findByRole("button", { name: "Manage labels and presets" });
+    if (hasProject) await settings.findByRole("region", { name: "Project planning" });
+    else await settings.findByText("Create a project to configure its workflow.");
+    expect(settings.queryAllByRole("region", { name: /^Project / })).toHaveLength(hasProject ? 5 : 0);
+    const first = settings.container.querySelector("section");
+    if (first) expect(manage.compareDocumentPosition(first) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    fireEvent.click(manage);
+    expect(settings.navigateCalls).toContainEqual({ method: "toPluginPanel", path: "work-board", options: { subPath: "manage" } });
   } finally { cleanup(); await harness.dispose(); }
 });
 
@@ -539,6 +599,8 @@ it("shows the plan-gated statuses only when planning is required, and the status
     const block = () => within(settings.getByRole("region", { name: "Project planning" })).queryByTestId("plan-gated-statuses");
     expect(block()).toBeNull();
     expect(settings.queryByText(/Changes save automatically/)).toBeNull();
+    expect(settings.queryByText(/System statuses stay; statuses used by tasks cannot be deleted\./)).toBeNull();
+    await editStatuses(settings);
     expect(settings.queryByText(/System statuses stay; statuses used by tasks cannot be deleted\./)).not.toBeNull();
     expect(settings.queryAllByRole("checkbox", { name: /approved plan/ })).toHaveLength(0);
     expect(settings.queryByText("Plan", { selector: "label" })).toBeNull();
@@ -563,7 +625,7 @@ it("edits the plan-gated statuses as chips: add and remove save the flag, cancel
     const chips = () => within(settings.getByTestId("plan-gated-statuses")).queryAllByRole("button", { name: /^Remove / }).map(button => button.getAttribute("aria-label"));
     const free = () => settings.getByTestId("plan-free-statuses").textContent;
     await within(await settings.findByRole("region", { name: "Project planning" })).findByTestId("plan-gated-statuses");
-    expect(within(settings.getByRole("region", { name: "Project automation" })).queryByTestId("plan-gated-statuses")).toBeNull();
+    expect(within(settings.getByRole("region", { name: "Project archiving" })).queryByTestId("plan-gated-statuses")).toBeNull();
     // The first switch to required marked In progress and every later status; chips follow the project status order.
     expect(settings.getByRole("heading", { name: "Statuses that need an approved plan" })).toBeTruthy();
     expect(chips()).toEqual(["Remove In Progress", "Remove In Review", "Remove Done"]);
@@ -609,8 +671,9 @@ it("saves notification modes independently for each selected project", async () 
     const beta = store.tasks.createProject({ name: "Beta", prefix: "B", color: "red" });
     registerTasksApi(bb, store);
     const settings = renderSlot(app.settingsSections[0]!, {}, { rpc: Object.fromEntries(Object.keys(tasksRpcContract).map(method => [method, (input: unknown) => harness.callRpc(method, input)])) });
-    const mode = () => settings.getByRole("combobox", { name: "Task status notifications" });
-    await settings.findByRole("combobox", { name: "Task status notifications" });
+    const mode = () => settings.getByRole("combobox", { name: "Notify me of status changes" });
+    await settings.findByRole("combobox", { name: "Notify me of status changes" });
+    expect(settings.getByText(/Status changes you make yourself in the board are not notified\./)).toBeTruthy();
     fireEvent.click(mode());
     fireEvent.click(await settings.findByRole("option", { name: "Done only" }));
     await waitFor(() => expect(store.tasks.getProject(alpha.id)?.statusNotifications).toBe("done"));

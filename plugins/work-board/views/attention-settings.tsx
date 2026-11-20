@@ -4,11 +4,14 @@ import { Button } from "@/components/ui/button";
 import { Command, CommandEmpty, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
 import { Icon } from "@/components/ui/icon";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { DisclosureSummary } from "../components/disclosure.js";
 import { formatRelativeTime } from "./activity/time.js";
 import { useThreadNames } from "../components/thread-names.js";
 import { useTasksQuery, useTasksRpc } from "../shell/data.js";
 import { errorMessage } from "../shared/errors.js";
 
+const MODE_LABEL = { off: "Off: Sweep sends", shadow: "Shadow: compare only, Sweep sends", live: "Live: Work Board sends" };
+const SENDER = { off: "Sweep sends", shadow: "Sweep sends", live: "Work Board sends" };
 const MODE_NOTE = {
   off: "Sweep sends stale-status notices.",
   shadow: "Sweep sends notices while Work Board records what it would send.",
@@ -132,37 +135,42 @@ export function AttentionSettings({ projectId }: { projectId: string }) {
   const gateHours = settings ? Math.ceil(settings.gateRemainingMs / 3_600_000) : 0;
   const previousManager = settings?.managerPrevious;
   const previousNames = useThreadNames(previousManager ? [previousManager] : []);
+  const unresolved = settings?.unresolvedAttempts.length ?? 0;
   return (
-    <section aria-label="Manager attention" className="space-y-3 border-t border-border pt-4">
-      <h3 className="text-sm font-medium">Manager attention</h3>
+    <section aria-label="Manager attention" className="space-y-3">
+      <h4 className="text-sm font-medium">Manager attention</h4>
       {query.error && !settings ? <p className="text-xs text-destructive" data-testid="attention-load-error">{query.error}</p> : null}
       {settings ? (
         <>
-          <div className="divide-y divide-border rounded-lg border border-border">
-            <div className="flex flex-col gap-3 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
-              <div className="min-w-0 space-y-1">
-                <h4 className="text-sm font-medium">Manager thread</h4>
-                <p className="text-xs text-muted-foreground">Receives notices when Work Board is live.</p>
-                {settings.managerChangedAt ? <p className="text-xs text-muted-foreground">
-                  Changed <time dateTime={settings.managerChangedAt}>{formatRelativeTime(settings.managerChangedAt, Date.now())}</time>
-                  {previousManager ? <> from {previousNames.get(previousManager) ?? previousManager}</> : " from no manager"}.
-                </p> : null}
-              </div>
-              <div className="flex min-w-0 items-center gap-2">
-                <ManagerPicker key={settings.linkedBbProjectId} projectId={settings.linkedBbProjectId} value={manager ?? settings.manager ?? ""} disabled={busy} onChange={setManager} />
-                <Button size="sm" className="h-8" disabled={busy || manager === null || manager === (settings.manager ?? "")}
-                  onClick={() => void run(async () => { await rpc.call("updateAttentionManager", { projectId, manager: manager || null }); setManager(null); })}>Save</Button>
-              </div>
+          <div className="flex flex-col gap-3 rounded-lg border border-border px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
+            <div className="min-w-0 space-y-1">
+              <h5 className="text-sm font-medium">Manager thread</h5>
+              <p className="text-xs text-muted-foreground">Receives notices when Work Board is live.</p>
+              {settings.managerChangedAt ? <p className="text-xs text-muted-foreground">
+                Changed <time dateTime={settings.managerChangedAt}>{formatRelativeTime(settings.managerChangedAt, Date.now())}</time>
+                {previousManager ? <> from {previousNames.get(previousManager) ?? previousManager}</> : " from no manager"}.
+              </p> : null}
             </div>
-            <div className="space-y-3 px-4 py-3">
+            <div className="flex min-w-0 items-center gap-2">
+              <ManagerPicker key={settings.linkedBbProjectId} projectId={settings.linkedBbProjectId} value={manager ?? settings.manager ?? ""} disabled={busy} onChange={setManager} />
+              <Button size="sm" className="h-8" disabled={busy || manager === null || manager === (settings.manager ?? "")}
+                onClick={() => void run(async () => { await rpc.call("updateAttentionManager", { projectId, manager: manager || null }); setManager(null); })}>Save</Button>
+            </div>
+          </div>
+          <p className="text-xs text-muted-foreground">Changes follow an owner-only convention and are logged.</p>
+          <details className="rounded-md border border-border text-sm">
+            <DisclosureSummary className="px-3 py-2.5">
+              <span className="min-w-0 space-y-0.5">
+                <span className="block"><span className="font-medium">Stale-status delivery</span> · <span data-testid="attention-sender">{SENDER[mode]}</span></span>
+                {settings.managerWarning ? <span className="block text-xs text-amber-600 dark:text-amber-400" data-testid="attention-manager-warning">{settings.managerWarning}</span> : null}
+                {unresolved ? <span className="block text-xs text-amber-600 dark:text-amber-400" data-testid="attention-unknown-count">{unresolved} {unresolved === 1 ? "notice" : "notices"} with an unknown outcome need your decision</span> : null}
+              </span>
+            </DisclosureSummary>
+            <div className="space-y-3 border-t border-border p-3">
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <div className="space-y-1">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <h4 className="text-sm font-medium">Stale-status delivery</h4>
-                    <span className="rounded-md bg-muted px-1.5 py-0.5 text-xs capitalize" data-testid="attention-mode">{mode}</span>
-                  </div>
+                  <span className="rounded-md bg-muted px-1.5 py-0.5 text-xs" data-testid="attention-mode">{MODE_LABEL[mode]}</span>
                   <p className="text-xs text-muted-foreground">{MODE_NOTE[mode]}</p>
-                  {settings.managerWarning ? <p className="text-xs text-amber-600 dark:text-amber-400" data-testid="attention-manager-warning">{settings.managerWarning}</p> : null}
                 </div>
                 {!pending && (mode === "off"
                   ? <Button size="sm" className="h-8" variant="outline" disabled={busy || !settings.linkedBbProjectId} onClick={() => void setMode("shadow")}>Start shadow</Button>
@@ -183,24 +191,23 @@ export function AttentionSettings({ projectId }: { projectId: string }) {
                 </div>
               ) : null}
               {!settings.linkedBbProjectId && mode === "off" ? <p className="text-xs text-muted-foreground">Link a BB project to start shadow.</p> : null}
-            </div>
-          </div>
-          <p className="text-xs text-muted-foreground">Changes follow an owner-only convention and are logged.</p>
-          {settings.unresolvedAttempts.length ? (
-            <div className="space-y-2" data-testid="attention-unknown">
-              <h4 className="text-sm font-medium">Notices with an unknown outcome</h4>
-              <p className="text-xs text-muted-foreground">Work Board cannot tell whether these reached the manager and never resends them by itself. Going back to shadow waits until you decide.</p>
-              {settings.unresolvedAttempts.map((attempt) => (
-                <div key={attempt.attemptId} className="flex flex-wrap items-center justify-between gap-2 text-xs">
-                  <span>{attempt.occurrenceIds.length} card{attempt.occurrenceIds.length === 1 ? "" : "s"} sent {formatRelativeTime(attempt.startedAt, Date.now())} to {attempt.recipientThreadId}</span>
-                  <span className="flex gap-1">
-                    <Button size="sm" className="h-7 px-2.5" variant="outline" disabled={busy} onClick={() => void run(() => rpc.call("resolveAttentionAttempt", { attemptId: attempt.attemptId, disposition: "retry" }))}>Send again</Button>
-                    <Button size="sm" className="h-7 px-2.5" variant="outline" disabled={busy} onClick={() => void run(() => rpc.call("resolveAttentionAttempt", { attemptId: attempt.attemptId, disposition: "waived_loss" }))}>Accept the loss</Button>
-                  </span>
+              {unresolved ? (
+                <div className="space-y-2" data-testid="attention-unknown">
+                  <h5 className="text-sm font-medium">Notices with an unknown outcome</h5>
+                  <p className="text-xs text-muted-foreground">Work Board cannot tell whether these reached the manager and never resends them by itself. Going back to shadow waits until you decide.</p>
+                  {settings.unresolvedAttempts.map((attempt) => (
+                    <div key={attempt.attemptId} className="flex flex-wrap items-center justify-between gap-2 text-xs">
+                      <span>{attempt.occurrenceIds.length} card{attempt.occurrenceIds.length === 1 ? "" : "s"} sent {formatRelativeTime(attempt.startedAt, Date.now())} to {attempt.recipientThreadId}</span>
+                      <span className="flex gap-1">
+                        <Button size="sm" className="h-7 px-2.5" variant="outline" disabled={busy} onClick={() => void run(() => rpc.call("resolveAttentionAttempt", { attemptId: attempt.attemptId, disposition: "retry" }))}>Send again</Button>
+                        <Button size="sm" className="h-7 px-2.5" variant="outline" disabled={busy} onClick={() => void run(() => rpc.call("resolveAttentionAttempt", { attemptId: attempt.attemptId, disposition: "waived_loss" }))}>Accept the loss</Button>
+                      </span>
+                    </div>
+                  ))}
                 </div>
-              ))}
+              ) : null}
             </div>
-          ) : null}
+          </details>
         </>
       ) : null}
       {error ? <p role="alert" className="text-xs text-destructive">{error}</p> : null}

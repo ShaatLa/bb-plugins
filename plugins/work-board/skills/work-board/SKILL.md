@@ -557,7 +557,7 @@ Scheduled snapshots use archive v13; imports still accept v1–v12. Imported sch
 
 ## Status push notifications
 
-Settings → select a project → Archiving and activity → Task status notifications applies only to that project: Off (default), All status changes, or Done only. Uses the enabled BB Push notifications channels. Only agent and plugin automation status updates notify; owner UI/CLI changes are suppressed. All paths use the same store observer; no-op saves and rolled-back changes do not notify. Rapid changes to the same card are coalesced before delivery. Delivery failures are logged, never roll back work, and are not retried automatically.
+Settings → select a project → Activity and notifications → Notify me of status changes applies only to that project: Off (default), All status changes, or Done only. Uses the enabled BB Push notifications channels. Only agent and plugin automation status updates notify; owner UI/CLI changes are suppressed. All paths use the same store observer; no-op saves and rolled-back changes do not notify. Rapid changes to the same card are coalesced before delivery. Delivery failures are logged, never roll back work, and are not retried automatically.
 
 
 ## Assignment and abandonment

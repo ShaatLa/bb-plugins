@@ -16,6 +16,12 @@ Element.prototype.setPointerCapture ??= () => {};
 const app = await loadPluginApp(() => import("../app"));
 afterEach(() => { cleanup(); window.localStorage.clear(); });
 
+// The delivery controls sit in a disclosure whose summary shows the sender and any warning.
+const openDelivery = (section: HTMLElement) => {
+  const details = section.querySelector("details")!;
+  if (!details.open) fireEvent.click(details.querySelector("summary")!);
+};
+
 function threadSummary(overrides: Parameters<typeof makeThreadResponse>[0]) {
   return {
     ...makeThreadResponse(overrides),
@@ -51,16 +57,26 @@ it("shows the mode with its gate, starts shadow, saves the manager and lets the 
     };
     const settings = renderSlot(app.settingsSections[0]!, {}, slotOptions);
     const section = await settings.findByRole("region", { name: "Manager attention" });
-    await within(section).findByText("off");
+    await waitFor(() => expect(within(section).getByTestId("attention-sender").textContent).toBe("Sweep sends"));
     // The write RPC cannot tell the owner from an agent, so the copy must not promise that agents are kept out.
     expect(section.textContent).toMatch(/owner-only convention/);
     expect(section.textContent).not.toMatch(/agents cannot/i);
+    expect(section.querySelector("details")!.open).toBe(false);
+    openDelivery(section);
+    expect(within(section).getByTestId("attention-mode").textContent).toBe("Off: Sweep sends");
     fireEvent.click(within(section).getByRole("button", { name: "Start shadow" }));
-    await waitFor(() => expect(within(section).getByTestId("attention-mode").textContent, within(section).queryByRole("alert")?.textContent).toContain("shadow"));
+    await waitFor(() => expect(within(section).getByTestId("attention-mode").textContent, within(section).queryByRole("alert")?.textContent).toBe("Shadow: compare only, Sweep sends"));
     // The mode has no "Changed … from …" line, and a missing manager is a warning that names the cause.
     expect(within(section).queryByTestId("attention-changed")).toBeNull();
     expect(section.textContent).not.toMatch(/Changed[^.]*from (off|shadow|live)/);
-    expect((await within(section).findByTestId("attention-manager-warning")).textContent).toBe("No manager chosen; choose one before going live");
+    const warning = await within(section).findByTestId("attention-manager-warning");
+    expect(warning.textContent).toBe("No manager chosen; choose one before going live");
+    // The warning sits in the disclosure summary, so it stays visible while the disclosure is closed.
+    expect(warning.closest("summary")).not.toBeNull();
+    fireEvent.click(section.querySelector("summary")!);
+    expect(section.querySelector("details")!.open).toBe(false);
+    expect(within(section).getByTestId("attention-manager-warning").closest("summary")).not.toBeNull();
+    openDelivery(section);
     expect(within(section).getByTestId("attention-gate").textContent).toMatch(/48 hours/);
     expect(within(section).getByRole("button", { name: "Go live" })).toHaveProperty("disabled", true);
     const picker = within(section).getByRole("button", { name: /^Manager thread:/ });
@@ -83,10 +99,12 @@ it("shows the mode with its gate, starts shadow, saves the manager and lets the 
     db.prepare("INSERT INTO attention_attempts(attempt_id, tracker_id, kind, generation, batch_id, recipient_thread_id, recipient_source, started_at, outcome, rev) VALUES ('a1', ?, 'stale-status', 1, 'b1', 'thr_example', 'manager', ?, 'unknown', 1)").run(project.id, new Date().toISOString());
     db.prepare("INSERT INTO attention_attempt_items(attempt_id, occurrence_id) VALUES ('a1', 'o1')").run();
     fireEvent.click(within(section).getByRole("button", { name: "Switch off" }));
-    await waitFor(() => expect(within(section).getByTestId("attention-mode").textContent).toContain("off"));
+    await waitFor(() => expect(within(section).getByTestId("attention-mode").textContent).toBe("Off: Sweep sends"));
     // The unknown notice appears after the next read; resolving it records the owner's decision.
     fireEvent.click(within(section).getByRole("button", { name: "Start shadow" }));
     await within(section).findByTestId("attention-unknown");
+    // An unresolved delivery is announced in the summary too.
+    expect(within(section).getByTestId("attention-unknown-count").closest("summary")).not.toBeNull();
     fireEvent.click(within(section).getByRole("button", { name: "Accept the loss" }));
     await waitFor(() => expect(db.prepare("SELECT disposition FROM attention_attempts WHERE attempt_id='a1'").get()).toEqual({ disposition: "waived_loss" }));
     fireEvent.click(picker);
@@ -129,7 +147,7 @@ it("follows archive, unarchive and delete events of the manager in the open view
       sdk: { threads: { list: async () => [] } },
     });
     const section = await settings.findByRole("region", { name: "Manager attention" });
-    await within(section).findByText("off");
+    await within(section).findByTestId("attention-sender");
     expect(within(section).queryByTestId("attention-manager-warning")).toBeNull();
     // The host's realtime signals are handed to the mounted view, as the platform does for a subscribed slot.
     let delivered = harness.realtimeSignals.length;

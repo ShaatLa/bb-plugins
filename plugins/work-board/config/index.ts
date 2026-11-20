@@ -5,7 +5,7 @@ import { planGatedStatuses } from "../shared/workflow-policy";
 import { publishProjectsChanged } from "../api";
 import { gitSyncService } from "../git-sync/service";
 import { createGitSyncStore } from "../git-sync/store";
-import { gitSyncConfigSchema } from "../shared/git-sync";
+import { gitSyncConfigSchema, overlapEnabled } from "../shared/git-sync";
 import { ATTENTION_OWNER_ONLY } from "../shared/attention";
 import { getModeRow } from "../attention/modes";
 import { CHECK_FIELDS, CHECKS_CONFIG_KEYS, CHECKS_ENABLED_OWNER_ONLY, CHECKS_PREFIX, type CheckField } from "../checks/config";
@@ -43,6 +43,7 @@ export function projectConfigHandlers(bb: BbPluginApi, store: TasksApiStore) {
     return {
       ...Object.fromEntries((Object.keys(PROJECT_KEYS) as ProjectKey[]).map((key) => [key, project[key]])),
       ...Object.fromEntries(GIT_KEYS.map((key) => [`git.${key}`, git[key] ?? null])),
+      "git.overlapEnabled": overlapEnabled(git),
       ...checksService(bb).configValues(projectId),
       attentionMode: getModeRow(bb.storage.database(), projectId).effective_mode,
       manager: bb.storage.database().prepare<[string], { manager: string | null }>("SELECT manager FROM attention_manager WHERE tracker_id=?").get(projectId)?.manager ?? null,
@@ -81,7 +82,7 @@ export function projectConfigHandlers(bb: BbPluginApi, store: TasksApiStore) {
         if (!parsed.success && typeof value === "string") parsed = next(value.split(",").map((item) => item.trim()).filter(Boolean));
         if (!parsed.success) throw new Error(`Invalid value for ${key}: ${parsed.error.issues.map((issue) => issue.message).join("; ")}`);
         const { config } = await gitSyncService(bb, store).handlers.setGitSyncConfig({ projectId, config: parsed.data });
-        return { projectId, key, value: (config as Record<string, unknown>)[field] ?? null };
+        return { projectId, key, value: field === "overlapEnabled" ? overlapEnabled(config) : (config as Record<string, unknown>)[field] ?? null };
       }
       // Project settings are string enums; "45" parsed as JSON arrives as a number.
       const parsed = PROJECT_KEYS[key as ProjectKey].parse(typeof value === "number" ? String(value) : value);

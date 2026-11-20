@@ -389,6 +389,14 @@ describe("bb work-board CLI", () => {
       expect(stdout(await config("set", "git.pollMinutes", "10"))).toBe("git.pollMinutes=10");
       const all = JSON.parse(stdout(await config("get", "--json"))).values;
       expect(all).toMatchObject({ staleIdleMinutes: "60", autoArchiveAfterDays: "off", "git.pollMinutes": 10, "git.prWaitIgnoredChecks": ["example/ready-check", "example/other"], "git.enabled": false });
+      // The shared-file switch reads as an effective boolean: derived from the rules while the key is absent.
+      expect(stdout(await config("get", "git.overlapEnabled"))).toBe("git.overlapEnabled=false");
+      expect(stdout(await config("set", "git.overlapRules", '[{"pattern":"docs/**","match":"changed"}]'))).toBe('git.overlapRules=[{"pattern":"docs/**","match":"changed"}]');
+      expect(stdout(await config("get", "git.overlapEnabled"))).toBe("git.overlapEnabled=true");
+      expect(JSON.parse(stdout(await harness.runCli(["git-config", "--project", "CFG"]))).config).not.toHaveProperty("overlapEnabled");
+      expect(stdout(await config("set", "git.overlapEnabled", "false"))).toBe("git.overlapEnabled=false");
+      expect(JSON.parse(stdout(await config("get", "--json"))).values).toMatchObject({ "git.overlapEnabled": false, "git.overlapRules": [{ pattern: "docs/**", match: "changed" }] });
+      expect(stdout(await config("set", "git.overlapEnabled", "true"))).toBe("git.overlapEnabled=true");
       // Whole-object Git configuration keeps working beside single keys.
       expect(JSON.parse(stdout(await harness.runCli(["git-config", "--project", "CFG"]))).config).toMatchObject({ pollMinutes: 10 });
       for (const args of [["set", "staleIdleMinutes", "7"], ["set", "git.pollMinutes", "0"], ["get", "unknown"], ["set", "name", "x"]]) {

@@ -1,6 +1,6 @@
 import { useEffect, useId, useRef, useState } from "react";
 import { useTasksQuery, useTasksRpc } from "../shell/data";
-import { gitSyncConfigSchema, type GitSyncConfig } from "../shared/git-sync";
+import { gitSyncConfigSchema, overlapEnabled, type GitSyncConfig } from "../shared/git-sync";
 import { errorMessage } from "../shared/errors";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -8,10 +8,12 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Switch } from "@/components/ui/switch";
 import { Icon } from "@/components/ui/icon";
 import { TagInput } from "../components/tag-input";
+import { DisclosureSummary } from "../components/disclosure";
 import * as Checkbox from "@radix-ui/react-checkbox";
 
 type OverlapRule = NonNullable<GitSyncConfig["overlapRules"]>[number];
 
+const stable = (value: object) => JSON.stringify(Object.entries(value).sort(([a], [b]) => (a < b ? -1 : 1)));
 const lines = (value: string) =>
   value
     .split(/[\n,]+/)
@@ -30,6 +32,7 @@ export function GitSyncSettings({ projectId }: { projectId: string }) {
   const [config, setConfig] = useState<GitSyncConfig>(() =>
     gitSyncConfigSchema.parse({}),
   );
+  const [saved, setSaved] = useState<GitSyncConfig>();
   const [repositories, setRepositories] = useState("");
   const [checks, setChecks] = useState("");
   const [workflows, setWorkflows] = useState("");
@@ -46,14 +49,28 @@ export function GitSyncSettings({ projectId }: { projectId: string }) {
       if (savedSignature.current === signature) return;
       savedSignature.current = signature;
       setConfig(query.data.config);
+      setSaved(query.data.config);
       setRepositories(query.data.config.repositories.join("\n"));
       setChecks(query.data.config.requiredChecks.join("\n"));
       setWorkflows(query.data.config.postMergeWorkflows.join("\n"));
       setIgnored(query.data.config.prWaitIgnoredChecks.join("\n"));
       setOverlapRules(query.data.config.overlapRules ?? []);
-      setOverlapOn((query.data.config.overlapRules ?? []).length > 0);
+      setOverlapOn(overlapEnabled(query.data.config));
     }
   }, [query.data]);
+  // What Save writes; switching shared-file rules off keeps the rows.
+  const formConfig = () => ({
+    ...config,
+    repositories: lines(repositories),
+    requiredChecks: lines(checks),
+    postMergeWorkflows: lines(workflows),
+    prWaitIgnoredChecks: lines(ignored),
+    overlapEnabled: overlapOn,
+    // Rows without a pattern are not rules yet.
+    overlapRules: overlapRules.filter((rule) => rule.pattern.trim()),
+  });
+  const unsaved = saved !== undefined
+    && stable(formConfig()) !== stable({ ...saved, overlapEnabled: overlapEnabled(saved), overlapRules: saved.overlapRules ?? [] });
   const act = async (save: boolean) => {
     setBusy(true);
     setSyncing(!save);
@@ -63,15 +80,7 @@ export function GitSyncSettings({ projectId }: { projectId: string }) {
       if (save) {
         await rpc.call("setGitSyncConfig", {
           projectId,
-          config: gitSyncConfigSchema.parse({
-            ...config,
-            repositories: lines(repositories),
-            requiredChecks: lines(checks),
-            postMergeWorkflows: lines(workflows),
-            prWaitIgnoredChecks: lines(ignored),
-            // Turned off means no rules; rows without a pattern are not rules yet.
-            overlapRules: overlapOn ? overlapRules.filter((rule) => rule.pattern.trim()) : [],
-          }),
+          config: gitSyncConfigSchema.parse(formConfig()),
         });
         setMessage("Git/PR settings saved.");
         query.refresh();
@@ -100,17 +109,19 @@ export function GitSyncSettings({ projectId }: { projectId: string }) {
     (repository) => !available.includes(repository),
   );
   return (
-    <section
-      aria-label="Project Git and PR sync"
-      className="max-w-2xl space-y-3 border-t border-border pt-4"
-    >
-      <div className="space-y-1">
-        <h3 className="text-sm font-medium">Git and pull requests</h3>
-        <p className="text-xs text-muted-foreground">
-          Track pull requests and CI for this project. Task statuses stay
-          unchanged.
-        </p>
-      </div>
+    <section aria-label="Project Git and PR sync">
+    <details className="rounded-md border border-border text-sm">
+      <DisclosureSummary className="px-3 py-2.5">
+        <span className="font-medium">Git and pull requests</span>
+        <span className="text-xs text-muted-foreground" data-testid="git-summary">
+          {config.enabled ? "Sync on" : "Sync off"} · {selected.length === 1 ? "1 repository" : `${selected.length} repositories`}
+        </span>
+      </DisclosureSummary>
+    <div className="space-y-3 border-t border-border p-3">
+      <p className="text-xs text-muted-foreground">
+        Track pull requests and CI for this project. Task statuses stay
+        unchanged.
+      </p>
       <fieldset
         disabled={busy || !query.data}
         className="min-w-0 space-y-3 text-xs"
@@ -202,15 +213,11 @@ export function GitSyncSettings({ projectId }: { projectId: string }) {
               No GitHub repositories found in BB projects.
             </p>
           )}
-          <details className="group border-t border-border-hairline">
-            <summary className="flex cursor-pointer list-none items-center gap-2 rounded-md px-3 py-2.5 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring [&::-webkit-details-marker]:hidden">
-              <Icon
-                name="ChevronRight"
-                className="size-3.5 text-muted-foreground transition-transform group-open:rotate-90"
-              />
+          <details className="border-t border-border-hairline">
+            <DisclosureSummary className="px-3 py-2.5">
               Other repositories
               {otherRepositories.length ? ` · ${otherRepositories.length}` : ""}
-            </summary>
+            </DisclosureSummary>
             <div className="space-y-2 px-3 pb-3">
               {otherRepositories.length ? (
                 <ul
@@ -294,14 +301,8 @@ export function GitSyncSettings({ projectId }: { projectId: string }) {
             }
           />
         </div>
-        <details className="group rounded-md border border-border">
-          <summary className="flex cursor-pointer list-none items-center gap-2 rounded-md px-3 py-2.5 font-medium focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring [&::-webkit-details-marker]:hidden">
-            <Icon
-              name="ChevronRight"
-              className="size-3.5 text-muted-foreground transition-transform group-open:rotate-90"
-            />
-            Advanced settings
-          </summary>
+        <details className="rounded-md border border-border">
+          <DisclosureSummary className="px-3 py-2.5 font-medium">Advanced settings</DisclosureSummary>
           <div className="space-y-3 border-t border-border-hairline p-3">
             <div className="divide-y divide-border-hairline">
               {(
@@ -408,7 +409,7 @@ export function GitSyncSettings({ projectId }: { projectId: string }) {
                 />
               </div>
               <p id={`${id}-overlap-help`} className="text-muted-foreground">
-                Mark files that open PRs of different tasks both touch. A pattern supports *, ** and ?; Changed matches the same path, Added matches new files even with different names. Turning it off removes the rules on save.
+                Mark files that open PRs of different tasks both touch when they match a rule. Other shared files are still listed. A pattern supports *, ** and ?; Changed matches the same path, Added matches new files even with different names. Turning it off keeps the rules.
               </p>
               {overlapOn ? (
                 <ul aria-label="Overlap rules" className="space-y-1.5">
@@ -461,7 +462,7 @@ export function GitSyncSettings({ projectId }: { projectId: string }) {
             </p>
           </div>
         </details>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           <Button
             size="sm"
             className="h-7 px-2.5"
@@ -473,12 +474,14 @@ export function GitSyncSettings({ projectId }: { projectId: string }) {
             size="sm"
             variant="ghost"
             className="h-7 gap-1.5 px-2.5"
+            disabled={unsaved}
             onClick={() => void act(false)}
             aria-busy={syncing}
           >
             <Icon name="RotateCcw" className={`size-3.5${syncing ? " animate-spin" : ""}`} />
             Sync now
           </Button>
+          {unsaved ? <span className="text-muted-foreground">Unsaved changes</span> : null}
         </div>
       </fieldset>
       {error || query.error ? (
@@ -491,6 +494,8 @@ export function GitSyncSettings({ projectId }: { projectId: string }) {
           {message}
         </p>
       ) : null}
+    </div>
+    </details>
     </section>
   );
 }

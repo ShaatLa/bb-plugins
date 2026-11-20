@@ -42,6 +42,8 @@ export type Overlap = z.infer<typeof overlapSchema>;
 export const gitSyncConfigSchema = z
   .object({
     overlapRules: z.array(overlapRuleSchema).max(50).optional(),
+    // Absent means "follow the rules": see `overlapEnabled`.
+    overlapEnabled: z.boolean().optional(),
     enabled: z.boolean().default(false),
     repositories: z.array(repositorySchema).max(30).default([]),
     pollMinutes: z.number().int().min(1).max(60).default(5),
@@ -184,6 +186,9 @@ export const prLinkStateSchema = z
   })
   .strict();
 export type GitSyncConfig = z.infer<typeof gitSyncConfigSchema>;
+/** Whether the shared-file rules apply. An absent key follows the rules, so configs saved before the key existed keep their behaviour. */
+export const overlapEnabled = (config: Pick<GitSyncConfig, "overlapEnabled" | "overlapRules">) =>
+  config.overlapEnabled ?? (config.overlapRules?.length ?? 0) > 0;
 export type PrLink = z.infer<typeof prLinkSchema>;
 export type PrSnapshot = z.infer<typeof prSnapshotSchema>;
 export type PrLinkState = z.infer<typeof prLinkStateSchema>;
