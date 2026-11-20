@@ -212,18 +212,31 @@ const rowText = (row: QueueRow) => row.content.map((part) => (part.type === "tex
 const HISTORY_PAGE = 50;
 /** Pages of history one search pass may read; a longer history takes several passes, resumed from the cursor. */
 export const HISTORY_PASS_PAGES = 40;
+// Within a pass: a stored acceptance scan is served first (at most this many pages), newer traffic gets at most half of the pass
+// whenever older unread ranges are saved, and those ranges, oldest first, get the rest, so fresh traffic cannot starve them.
+const ACCEPTANCE_PAGES = 10;
+const HEAD_SHARE = HISTORY_PASS_PAGES / 2;
 
+type Gap = { from?: number; to?: number };
 /**
  * Where a history search got to, so the next pass continues instead of rereading the newest pages: `high` is the newest request seen
- * (events above it are new), each gap is a stretch of history not yet read, and `hit` is a matching request whose acceptance is
- * still being looked for.
+ * (events above it are new), each gap is a stretch of history not yet read, `hit` is a matching request whose acceptance is still
+ * being looked for, and `errors` counts consecutive passes whose history read failed.
  */
 export interface HistoryCursor {
   high?: number;
-  gaps?: { from?: number; to?: number }[];
+  gaps?: Gap[];
   hit?: { requestIds: string[]; after: number };
+  errors?: { count: number; since: string; last: string };
 }
-export interface MarkerSearch { receipt: Receipt | null; cursor: HistoryCursor; /** False while history older than this pass's budget is still unread. */ complete: boolean }
+export interface MarkerSearch {
+  receipt: Receipt | null;
+  cursor: HistoryCursor;
+  /** False while history older than this pass's budget is still unread, or when the read failed. */
+  complete: boolean;
+  /** Set when the history could not be read at all this pass; the cursor is unchanged. */
+  error?: string;
+}
 
 /**
  * A marker is evidence only in the recipient's own queue or in its accepted-input history, never in a send response. The history is
@@ -238,55 +251,86 @@ export async function searchAttentionMarker(bb: BbPluginApi, threadId: string, m
     }
   } catch { /* An unreadable queue is no evidence either way. */ }
   const floor = since ? Date.parse(since) : Date.now() - 5 * 60_000;
-  const next: HistoryCursor = { ...cursor, gaps: (cursor.gaps ?? []).map((gap) => ({ ...gap })) };
+  const next: HistoryCursor = { ...cursor };
+  delete next.errors;
   let budget = HISTORY_PASS_PAGES;
-  try {
-    // Requests newer than the last pass, then the stretches left unread, newest first.
-    const gaps: { from?: number; to?: number }[] = cursor.high !== undefined ? [{ to: cursor.high }, ...next.gaps!] : next.gaps!.length ? next.gaps! : [{}];
-    const requestIds = new Set(next.hit?.requestIds ?? []);
-    let hitSeq = next.hit?.after;
-    let high = cursor.high;
-    const remaining: { from?: number; to?: number }[] = [];
-    for (const gap of gaps) {
-      let before = gap.from;
-      let reachedEnd = false;
-      let first = gap.from === undefined;
-      while (!reachedEnd) {
-        if (budget <= 0) { remaining.push({ from: before, to: gap.to }); break; }
-        budget--;
-        const events = await bb.sdk.threads.events.list({ threadId, types: ["client/turn/requested"], order: "desc", limit: String(HISTORY_PAGE), ...(before !== undefined ? { beforeSeq: String(before) } : {}), signal: AbortSignal.timeout(5000) });
-        for (const event of events) {
-          if (gap.to !== undefined && event.seq <= gap.to) { reachedEnd = true; break; }
-          if (first) { high = Math.max(high ?? 0, event.seq); first = false; }
-          if (event.type === "client/turn/requested" && JSON.stringify(event.data).includes(marker)) {
-            const requestId = (event.data as { requestId?: string }).requestId;
-            if (requestId) requestIds.add(requestId);
-            hitSeq = Math.min(hitSeq ?? event.seq, event.seq);
-          }
-          before = event.seq;
+  const requestIds = new Set(cursor.hit?.requestIds ?? []);
+  let hitAfter = cursor.hit?.after;
+  let high = cursor.high;
+  let fresh = false;
+
+  // The acceptance follows its request, so page forward from the earliest matching request.
+  const scanAcceptance = async (cap: number): Promise<Receipt | null> => {
+    fresh = false;
+    let after = hitAfter!;
+    next.hit = { requestIds: [...requestIds], after };
+    for (let page = 0; page < cap && budget > 0; page++) {
+      budget--;
+      const accepted = await bb.sdk.threads.events.list({ threadId, types: ["turn/input/accepted"], order: "asc", limit: String(HISTORY_PAGE), afterSeq: String(after), signal: AbortSignal.timeout(5000) });
+      const hit = accepted.find((event) => event.type === "turn/input/accepted" && requestIds.has((event.data as { clientRequestId?: string }).clientRequestId ?? ""));
+      if (hit) return { outcome: "inline", inlineEventRef: `${threadId}:${hit.seq}` };
+      if (accepted.length < HISTORY_PAGE) return null;
+      after = hitAfter = accepted.at(-1)!.seq;
+      next.hit = { requestIds: [...requestIds], after };
+    }
+    return null;
+  };
+
+  // Reads one stretch of requests newest first, spending at most `cap` pages; returns what is left unread of it, if anything.
+  const scanRequests = async (gap: Gap, cap: number): Promise<Gap | null> => {
+    let before = gap.from;
+    let first = gap.from === undefined;
+    for (let page = 0; ; page++) {
+      if (page >= cap || budget <= 0) return { from: before, to: gap.to };
+      budget--;
+      const events = await bb.sdk.threads.events.list({ threadId, types: ["client/turn/requested"], order: "desc", limit: String(HISTORY_PAGE), ...(before !== undefined ? { beforeSeq: String(before) } : {}), signal: AbortSignal.timeout(5000) });
+      for (const event of events) {
+        if (gap.to !== undefined && event.seq <= gap.to) return null;
+        if (first) { high = Math.max(high ?? 0, event.seq); first = false; }
+        if (event.type === "client/turn/requested" && JSON.stringify(event.data).includes(marker)) {
+          const requestId = (event.data as { requestId?: string }).requestId;
+          if (requestId) requestIds.add(requestId);
+          hitAfter = Math.min(hitAfter ?? event.seq, event.seq);
+          fresh = true;
         }
-        if (events.length < HISTORY_PAGE || (events.at(-1)?.createdAt ?? Infinity) < floor) reachedEnd = true;
+        before = event.seq;
       }
+      if (events.length < HISTORY_PAGE || (events.at(-1)?.createdAt ?? Infinity) < floor) return null;
+    }
+  };
+
+  try {
+    if (cursor.hit) {
+      const found = await scanAcceptance(ACCEPTANCE_PAGES);
+      if (found) return { receipt: found, cursor: next, complete: true };
+    }
+    const saved: Gap[] = [...(cursor.gaps ?? [])].sort((a, b) => (a.from ?? Infinity) - (b.from ?? Infinity));
+    if (cursor.high === undefined && !saved.length) saved.push({});
+    const remaining: Gap[] = [];
+    // Requests newer than the last pass first, but only up to their share while older ranges wait.
+    if (cursor.high !== undefined) {
+      const spent = HISTORY_PASS_PAGES - budget;
+      const head = await scanRequests({ to: cursor.high }, saved.length ? Math.max(0, HEAD_SHARE - spent) : budget);
+      if (head) remaining.push(head);
+    }
+    for (const gap of saved) {
+      const left = await scanRequests(gap, budget);
+      if (left) remaining.push(left);
     }
     next.high = high;
     next.gaps = remaining;
-    if (requestIds.size && hitSeq !== undefined) {
-      // The acceptance follows its request, so page forward from the earliest matching request.
-      let after = hitSeq;
-      next.hit = { requestIds: [...requestIds], after };
-      while (budget > 0) {
-        budget--;
-        const accepted = await bb.sdk.threads.events.list({ threadId, types: ["turn/input/accepted"], order: "asc", limit: String(HISTORY_PAGE), afterSeq: String(after), signal: AbortSignal.timeout(5000) });
-        const hit = accepted.find((event) => event.type === "turn/input/accepted" && requestIds.has((event.data as { clientRequestId?: string }).clientRequestId ?? ""));
-        if (hit) return { receipt: { outcome: "inline", inlineEventRef: `${threadId}:${hit.seq}` }, cursor: next, complete: true };
-        if (accepted.length < HISTORY_PAGE) { next.hit = { requestIds: [...requestIds], after }; break; }
-        after = accepted.at(-1)!.seq;
-        next.hit = { requestIds: [...requestIds], after };
+    if (requestIds.size && hitAfter !== undefined) {
+      next.hit = { requestIds: [...requestIds], after: hitAfter };
+      // A request found in this pass: look for its acceptance with whatever pages are left.
+      if (fresh && budget > 0) {
+        const found = await scanAcceptance(budget);
+        if (found) return { receipt: found, cursor: next, complete: true };
       }
     }
-    return { receipt: null, cursor: next, complete: remaining.length === 0 && (budget > 0 || !next.hit) };
-  } catch {
-    return { receipt: null, cursor, complete: false };
+    return { receipt: null, cursor: next, complete: remaining.length === 0 && !fresh };
+  } catch (error) {
+    // A failed read is not unfinished pagination: the cursor stays as it was and the caller decides when to give up.
+    return { receipt: null, cursor, complete: false, error: error instanceof Error ? error.message : String(error) };
   }
 }
 

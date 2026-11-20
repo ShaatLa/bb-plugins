@@ -597,6 +597,8 @@ const MIGRATIONS = [
    );
    CREATE TABLE IF NOT EXISTS attention_handback (
      tracker_id TEXT NOT NULL, kind TEXT NOT NULL, generation INTEGER NOT NULL, occurrence_id TEXT NOT NULL,
+     -- The key the card had when the handback became ready: a published handback never changes under its token.
+     task_key TEXT NOT NULL,
      PRIMARY KEY (tracker_id, kind, generation, occurrence_id)
    );
    CREATE TABLE IF NOT EXISTS attention_acks (
@@ -638,6 +640,8 @@ const MIGRATIONS = [
      disposition TEXT CHECK (disposition IS NULL OR disposition IN ('waived_loss', 'retry')),
      disposition_at TEXT,
      error TEXT,
+     -- Where the history search for this attempt's marker got to, so passes continue instead of restarting.
+     recovery_cursor TEXT,
      rev INTEGER NOT NULL
    );
    CREATE INDEX IF NOT EXISTS idx_attention_attempts_rev ON attention_attempts(tracker_id, kind, rev);
@@ -659,9 +663,6 @@ const MIGRATIONS = [
      tracker_id TEXT PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
      manager TEXT, changed_at TEXT, previous TEXT
    );`,
-  // 0.61.0: a published handback keeps the key each card had when it became ready, and an attempt keeps its history-search cursor.
-  `ALTER TABLE attention_handback ADD COLUMN task_key TEXT;
-   ALTER TABLE attention_attempts ADD COLUMN recovery_cursor TEXT;`,
 ] as const;
 
 export function initializeTasksSchema(db: PluginDatabase): void {

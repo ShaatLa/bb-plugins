@@ -20,6 +20,9 @@ const FAILURE_BACKOFF_CAP_MS = 30 * 60_000;
 const PENDING_INLINE_MS = 10 * 60_000;
 const LATE_SEARCH_MS = 10 * 60_000;
 const LATE_SEARCH_BATCH = 20;
+/** An unreadable history gives an attempt up as unknown after this many failed passes spread over at least this long. */
+const HISTORY_ERROR_PASSES = 5;
+const HISTORY_ERROR_SPAN_MS = 30 * 60_000;
 
 const SIGNAL_TEXT: Record<string, string> = {
   no_active_thread: "in progress with no active thread",
@@ -70,12 +73,23 @@ function createService(bb: BbPluginApi) {
   const updateAttempt = (attemptId: string, trackerId: string, assignments: string, ...values: unknown[]) =>
     db.prepare(`UPDATE attention_attempts SET ${assignments}, rev=? WHERE attempt_id=?`).run(...values, bumpRev(db, trackerId), attemptId);
 
-  /** One bounded pass of the history search for an attempt's marker, resumed from its stored cursor. */
+  /**
+   * One bounded pass of the history search for an attempt's marker, resumed from its stored cursor. A pass whose read failed is
+   * counted in the cursor; after enough failures over enough time the search gives up (`unreadable`), keeping the cursor so later
+   * evidence can still record the receipt.
+   */
   async function search(attempt: AttemptRow) {
     const cursor = attempt.recovery_cursor ? (JSON.parse(attempt.recovery_cursor) as HistoryCursor) : {};
     const result = await searchAttentionMarker(bb, attempt.recipient_thread_id, attentionMarker(attempt.batch_id), attempt.started_at, cursor);
-    db.prepare<[string, string]>("UPDATE attention_attempts SET recovery_cursor=? WHERE attempt_id=?").run(JSON.stringify(result.cursor), attempt.attempt_id);
-    return result;
+    let saved = result.cursor;
+    let unreadable = false;
+    if (result.error !== undefined) {
+      const errors = cursor.errors ?? { count: 0, since: nowIso(), last: "" };
+      saved = { ...cursor, errors: { count: errors.count + 1, since: errors.since, last: result.error } };
+      unreadable = saved.errors!.count >= HISTORY_ERROR_PASSES && Date.now() - Date.parse(saved.errors!.since) >= HISTORY_ERROR_SPAN_MS;
+    }
+    db.prepare<[string, string]>("UPDATE attention_attempts SET recovery_cursor=? WHERE attempt_id=?").run(JSON.stringify(saved), attempt.attempt_id);
+    return { ...result, unreadable, error: saved.errors?.last };
   }
 
   /** A receipt only moves an attempt forward: acceptance is final, and an empty search never overwrites it. */
@@ -194,8 +208,9 @@ function createService(bb: BbPluginApi) {
         advanceAttempt(attempt, ["claimed"], "outcome='failed', error='Interrupted before sending'");
         continue;
       }
-      const { receipt: found, complete } = await search(attempt);
+      const { receipt: found, complete, unreadable, error } = await search(attempt);
       if (found) recordReceipt(attempt, found);
+      else if (unreadable) recordReceipt(attempt, { outcome: "unknown", error: `History unreadable: ${error}` });
       // No evidence is a conclusion only once the whole history back to the attempt's start has been read.
       else if (complete && (!pendingInline.has(attempt.attempt_id) || Date.now() - pendingInline.get(attempt.attempt_id)! > PENDING_INLINE_MS)) recordReceipt(attempt, { outcome: "unknown", error: "No evidence of acceptance after a restart or timeout" });
     }

@@ -186,6 +186,75 @@ describe("C2.2 receipt search across passes", () => {
   });
 });
 
+describe("C3.1 an unreadable history", () => {
+  const cursorOf = (f: ReturnType<typeof setup>, id: string) => JSON.parse((f.db.prepare("SELECT recovery_cursor FROM attention_attempts WHERE attempt_id=?").get(id) as { recovery_cursor: string }).recovery_cursor);
+  const backdate = (f: ReturnType<typeof setup>, id: string, minutes: number) => {
+    const cursor = cursorOf(f, id);
+    cursor.errors.since = new Date(Date.now() - minutes * 60_000).toISOString();
+    f.db.prepare("UPDATE attention_attempts SET recovery_cursor=? WHERE attempt_id=?").run(JSON.stringify(cursor), id);
+  };
+
+  it("gives a sending attempt up as unknown after five failed passes over thirty minutes, keeping the cursor for late evidence", async () => {
+    const f = await make("live");
+    f.card("Unreadable");
+    unknownAttempt(f, "mute", new Date(Date.now() - 3_600_000).toISOString(), "sending");
+    f.db.prepare("INSERT INTO attention_attempt_items(attempt_id, occurrence_id) VALUES ('mute', ?)").run(f.occurrences()[0].id);
+    f.threads.eventsFail = true;
+    const rollback = await f.setMode("shadow");
+    expect(rollback.transition).toMatchObject({ state: "preparing" });
+    expect(cursorOf(f, "mute").errors.count).toBe(1);
+    backdate(f, "mute", 31);
+    for (let pass = 0; pass < 3; pass++) await f.service.recover(f.tracker.id);
+    // Four failed passes are not enough, however long they span.
+    expect(f.attempts()[0].outcome).toBe("sending");
+    await f.service.recover(f.tracker.id);
+    expect(f.attempts()[0]).toMatchObject({ outcome: "unknown", error: expect.stringContaining("History unreadable") });
+    expect((await modes(f)).transition.state).toBe("preparing");
+    // The owner can now resolve it, and the rollback goes on.
+    await f.call("resolveAttentionAttempt", { attemptId: "mute", disposition: "waived_loss" });
+    expect((await modes(f)).transition.state).toBe("ready");
+    // Later evidence still becomes the attempt's receipt.
+    f.threads.eventsFail = false;
+    f.threads.dispatch(`late ${attentionMarker("batch-mute")}`);
+    await f.service.recoverLate(f.tracker.id);
+    expect(f.attempts()[0]).toMatchObject({ outcome: "inline", disposition: "waived_loss" });
+  });
+
+  it("does not give up while the failed passes span less than thirty minutes", async () => {
+    const f = await make("live");
+    f.card("Briefly unreadable");
+    unknownAttempt(f, "brief", new Date(Date.now() - 3_600_000).toISOString(), "sending");
+    f.db.prepare("INSERT INTO attention_attempt_items(attempt_id, occurrence_id) VALUES ('brief', ?)").run(f.occurrences()[0].id);
+    f.threads.eventsFail = true;
+    for (let pass = 0; pass < 7; pass++) await f.service.recover(f.tracker.id);
+    expect(cursorOf(f, "brief").errors.count).toBe(7);
+    expect(f.attempts()[0].outcome).toBe("sending");
+    f.threads.eventsFail = false;
+    await f.service.recover(f.tracker.id);
+    expect(f.attempts()[0].outcome).toBe("unknown");
+    expect(cursorOf(f, "brief").errors).toBeUndefined();
+  });
+});
+
+describe("C3.2 fresh traffic between passes", () => {
+  it("still reaches an older acceptance when thousands of new requests arrive before every pass", async () => {
+    const f = await make("live");
+    f.card("Buried and busy");
+    unknownAttempt(f, "buried", new Date(Date.now() - 3_600_000).toISOString(), "sending");
+    f.db.prepare("INSERT INTO attention_attempt_items(attempt_id, occurrence_id) VALUES ('buried', ?)").run(f.occurrences()[0].id);
+    f.threads.dispatch(`notice ${attentionMarker("batch-buried")}`);
+    for (let index = 0; index < 4100; index++) f.threads.dispatch(`old ${index}`);
+    let passes = 0;
+    while (f.attempts()[0].outcome === "sending" && passes < 12) {
+      await f.service.recover(f.tracker.id);
+      passes++;
+      for (let index = 0; index < 2100; index++) f.threads.dispatch(`fresh ${passes}-${index}`);
+    }
+    expect(f.attempts()[0]).toMatchObject({ outcome: "inline", inline_event_ref: expect.any(String) });
+    expect(passes).toBeLessThanOrEqual(6);
+  });
+});
+
 describe("C1.10 monotonic receipts", () => {
   it("does not let a stale empty search overwrite an acceptance another search recorded", async () => {
     const f = await make("live");

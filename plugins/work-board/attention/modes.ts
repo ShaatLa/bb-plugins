@@ -60,7 +60,7 @@ export function getModeRow(db: Database, trackerId: string, kind = ATTENTION_KIN
 
 export function handbackOf(db: Database, trackerId: string, kind: string, generation: number): HandbackEntry[] {
   return db.prepare<[string, string, number], { occurrenceId: string; taskId: string; taskKey: string; signal: string; firstSeenAt: string; eligibleAt: string }>(
-    `SELECT o.id AS occurrenceId, o.task_id AS taskId, COALESCE(h.task_key, ${CURRENT_KEY_SQL}) AS taskKey, o.signal, o.first_seen_at AS firstSeenAt, o.eligible_at AS eligibleAt
+    `SELECT o.id AS occurrenceId, o.task_id AS taskId, h.task_key AS taskKey, o.signal, o.first_seen_at AS firstSeenAt, o.eligible_at AS eligibleAt
      FROM attention_handback h JOIN manager_attention o ON o.id=h.occurrence_id
      WHERE h.tracker_id=? AND h.kind=? AND h.generation=? ORDER BY o.created_rev`,
   ).all(trackerId, kind, generation);

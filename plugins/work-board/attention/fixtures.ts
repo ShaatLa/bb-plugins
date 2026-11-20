@@ -21,6 +21,8 @@ export function createFakeThreads() {
     updates: 0,
     requests: [] as { seq: number; requestId: string; text: string; at: number }[],
     listCalls: 0,
+    /** Every history read fails, as when the recipient's history is inaccessible. */
+    eventsFail: false,
     accepted: [] as { seq: number; clientRequestId: string; at: number }[],
     /** queue: a queued row; inline: dispatched at once; throw: the send fails with `sendError`. */
     sendMode: "queue" as "queue" | "inline" | "throw",
@@ -85,16 +87,24 @@ export function createFakeThreads() {
         return { ok: true, delivery: "sent" };
       },
       events: {
-        // Honors the paging the real list has: type filter, order, limit and the seq bounds.
+        // Honors the paging the real list has: type filter, order, limit and the seq bounds. Both arrays grow in seq order.
         list: async ({ types, order = "desc", limit = "50", beforeSeq, afterSeq }: { types: string[]; order?: string; limit?: string; beforeSeq?: string; afterSeq?: string }) => {
           state.listCalls++;
-          const all = [
-            ...state.requests.map((request) => ({ seq: request.seq, type: "client/turn/requested", createdAt: request.at, data: { requestId: request.requestId, input: [{ type: "text", text: request.text }] } })),
-            ...state.accepted.map((event) => ({ seq: event.seq, type: "turn/input/accepted", createdAt: event.at, data: { clientRequestId: event.clientRequestId } })),
-          ]
-            .filter((event) => types.includes(event.type) && (beforeSeq === undefined || event.seq < Number(beforeSeq)) && (afterSeq === undefined || event.seq > Number(afterSeq)))
-            .sort((a, b) => (order === "asc" ? a.seq - b.seq : b.seq - a.seq));
-          return all.slice(0, Number(limit));
+          if (state.eventsFail) throw fault("history unavailable");
+          const requests = types.includes("client/turn/requested");
+          const source = requests ? state.requests : state.accepted;
+          const wanted = Number(limit);
+          const out: unknown[] = [];
+          const indices = order === "asc" ? source.map((_, index) => index) : source.map((_, index) => source.length - 1 - index);
+          for (const index of indices) {
+            const event = source[index]!;
+            if ((beforeSeq !== undefined && event.seq >= Number(beforeSeq)) || (afterSeq !== undefined && event.seq <= Number(afterSeq))) continue;
+            out.push(requests
+              ? { seq: event.seq, type: "client/turn/requested", createdAt: event.at, data: { requestId: (event as { requestId: string }).requestId, input: [{ type: "text", text: (event as { text: string }).text }] } }
+              : { seq: event.seq, type: "turn/input/accepted", createdAt: event.at, data: { clientRequestId: (event as { clientRequestId: string }).clientRequestId } });
+            if (out.length >= wanted) break;
+          }
+          return out;
         },
       },
     },
