@@ -457,6 +457,37 @@ describe("Task embed panel", () => {
     }
   });
 
+  it("restores a card whose move was refused and shows the reason, for example an unapproved plan", async () => {
+    const reason = "TSK-1 plan v2 is draft; with planning required a card enters In Progress only after its plan is approved (`bb work-board plan show TSK-1`)";
+    const target = makeTask({ id: "01HZZZZZZZZZZZZZZZZZZZZZT3", projectId: PROJECT_ID, key: "TSK-3", title: "Neighbour", status: "todo", priority: "high", position: 200 });
+    const boardMove = vi.fn(async () => { throw new Error(reason); });
+    const listTasks = vi.fn((raw: unknown) => ({ tasks: rpcInput(raw).activeOnly ? [] : [target, task], nextCursor: null }));
+    const slot = renderSlot(taskTab(app), { threadId: "thr_1", environment: null }, {
+      sdk: { threads: { get: async () => makeThreadResponse({ id: "thr_1", projectId: "proj_thread" }) } },
+      rpc: { ...boardRpc(), boardMove, listTasks },
+    });
+    const dragged = (await slot.findByText(task.title)).closest<HTMLElement>("[data-task-key]")!;
+    const targetCard = slot.getByText(target.title).closest<HTMLElement>("[data-task-key]")!;
+    const column = slot.container.querySelector<HTMLElement>('[data-board-column="todo"]')!;
+    const rect = { x: 0, y: 0, left: 0, top: 0, right: 230, bottom: 300, width: 230, height: 300, toJSON() {} };
+    const rectSpy = vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+      if (this.hasAttribute("data-board-column") && this !== column) return { ...rect, left: 300, right: 530 };
+      return this === targetCard ? { ...rect, top: 80, bottom: 120, height: 40 } : rect;
+    });
+    try {
+      fireEvent.pointerDown(dragged, { button: 0, clientX: 10, clientY: 150 });
+      fireEvent.pointerMove(window, { clientX: 10, clientY: 40 });
+      fireEvent.pointerUp(window, { clientX: 10, clientY: 40 });
+      await waitFor(() => expect(boardMove).toHaveBeenCalledTimes(1));
+      await slot.findByText(reason);
+      // The card was moved on screen first; the board is read again, so it is back where the server has it.
+      await waitFor(() => expect(Array.from(column.querySelectorAll("[data-task-key]"), (card) => card.getAttribute("data-task-key"))).toEqual([target.key]));
+      expect(slot.container.querySelector(`[data-board-column="${task.status}"] [data-task-key="${task.key}"]`)).not.toBeNull();
+    } finally {
+      rectSpy.mockRestore();
+    }
+  });
+
   it("keeps task links from messages working and offers a return to the thread's board", async () => {
     const slot = renderSlot(taskTab(app), { threadId: "thr_1", environment: null }, {
       sdk: { threads: { get: async () => makeThreadResponse({ id: "thr_1", projectId: "proj_thread" }) } },

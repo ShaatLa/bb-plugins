@@ -17,7 +17,8 @@ import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
-import { useScheduledQuery, useScheduledRpc, useTasksById, useThreadNames } from "./data.js";
+import { useThreadNames } from "../../components/thread-names.js";
+import { useScheduledQuery, useScheduledRpc, useTasksById } from "./data.js";
 import {
   RUN_STATE_LABELS,
   describePush,

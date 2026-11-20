@@ -61,6 +61,7 @@ import {
 
 import { ThreadHealthMarkers } from "../../components/thread-health-markers";
 import { DetailToasts, useDetailToasts } from "../detail/toast";
+import { errorMessage } from "../../shared/errors";
 
 const DRAG_THRESHOLD_PX = 5;
 
@@ -548,7 +549,11 @@ export function BoardView({ projectId, highlightKeys }: BoardViewProps) {
         (result) => {
           if (!result.ok) board.refresh();
         },
-        () => board.refresh(),
+        (error: unknown) => {
+          // A refused move (for example a card whose plan is not approved) goes back to its column and says why.
+          push(errorMessage(error));
+          board.refresh();
+        },
       );
   };
 

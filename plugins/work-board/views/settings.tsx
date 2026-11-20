@@ -29,7 +29,7 @@ import {
 } from "../shared/statuses.js";
 import type { Project } from "../shared/contract.js";
 import { errorMessage } from "../shared/errors.js";
-import { DEFAULT_BOARD_PREFERENCES, boardPreferencesSchema, type autoArchiveAfterDaysSchema, type statusNotificationsSchema, type staleIdleThresholdSchema } from "../shared/project-settings";
+import { DEFAULT_BOARD_PREFERENCES, boardPreferencesSchema, type autoArchiveAfterDaysSchema, type planningSchema, type statusNotificationsSchema, type staleIdleThresholdSchema } from "../shared/project-settings";
 import type { z } from "zod";
 import { NewProjectDialog } from "./manage/new-project-dialog.js";
 
@@ -404,6 +404,7 @@ function ProjectAutomationSettings({ project, onSaved }: { project: Project; onS
     autoArchiveAfterDays?: z.infer<typeof autoArchiveAfterDaysSchema>;
     staleIdleMinutes?: z.infer<typeof staleIdleThresholdSchema>;
     statusNotifications?: z.infer<typeof statusNotificationsSchema>;
+    planning?: z.infer<typeof planningSchema>;
   }) => {
     setBusy(true);
     setError(null);
@@ -462,6 +463,19 @@ function ProjectAutomationSettings({ project, onSaved }: { project: Project; onS
         </Select>
       </label>
       <p className="text-xs text-muted-foreground">Applies only to this project. Uses the enabled channels in BB Push notifications.</p>
+      <label className="flex flex-wrap items-center justify-between gap-2 text-sm">
+        Planning
+        <Select value={project.planning ?? "off"} disabled={busy}
+          onValueChange={(value) => void save({ planning: value as z.infer<typeof planningSchema> })}>
+          <SelectTrigger aria-label="Planning" className="h-8 w-48"><SelectValue /></SelectTrigger>
+          <SelectContent>
+            <SelectItem value="off">Off</SelectItem>
+            <SelectItem value="optional">Optional</SelectItem>
+            <SelectItem value="required">Required</SelectItem>
+          </SelectContent>
+        </Select>
+      </label>
+      <p className="text-xs text-muted-foreground">Off hides plans for this project (existing plans are kept). Optional turns on plans and their review. Required also keeps a card out of In progress and later statuses until its plan is approved; epics are exempt. Only you change this; agents cannot.</p>
       {error ? <p role="alert" className="text-xs text-destructive">{error}</p> : null}
     </section>
   );

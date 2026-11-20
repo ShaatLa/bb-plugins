@@ -464,6 +464,31 @@ it("autosaves names and removals, hides system removal, and keeps rejected chang
   }
 });
 
+it("lets the owner pick each planning mode for the selected project, and the choice survives a reload", async () => {
+  const { bb, harness } = createFakePluginHost({ pluginId: "work-board" });
+  try {
+    const store = createStore(bb);
+    const alpha = store.tasks.createProject({ name: "Alpha", prefix: "A", color: "blue" });
+    const beta = store.tasks.createProject({ name: "Beta", prefix: "B", color: "red" });
+    registerTasksApi(bb, store);
+    const rpc = Object.fromEntries(Object.keys(tasksRpcContract).map(method => [method, (input: unknown) => harness.callRpc(method, input)]));
+    const settings = renderSlot(app.settingsSections[0]!, {}, { rpc });
+    const mode = () => settings.getByRole("combobox", { name: "Planning" });
+    await settings.findByRole("combobox", { name: "Planning" });
+    expect(mode().textContent).toContain("Off");
+    for (const [label, value] of [["Optional", "optional"], ["Required", "required"], ["Off", "off"], ["Required", "required"]] as const) {
+      fireEvent.click(mode());
+      fireEvent.click(await settings.findByRole("option", { name: label }));
+      await waitFor(() => expect(store.tasks.getProject(alpha.id)?.planning).toBe(value));
+    }
+    expect(store.tasks.getProject(beta.id)?.planning).toBe("off");
+    // A fresh render (a reload) reads the saved mode back.
+    cleanup();
+    const reloaded = renderSlot(app.settingsSections[0]!, {}, { rpc });
+    await waitFor(() => expect(reloaded.getByRole("combobox", { name: "Planning" }).textContent).toContain("Required"));
+  } finally { cleanup(); await harness.dispose(); }
+});
+
 it("saves notification modes independently for each selected project", async () => {
   const { bb, harness } = createFakePluginHost({ pluginId: "work-board" });
   try {

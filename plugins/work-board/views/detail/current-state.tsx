@@ -3,6 +3,7 @@ import { Markdown } from "@get-bb/plugin-sdk/app";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import type { Task } from "../../shared/contract";
+import { ActorLabel } from "../../components/thread-chip";
 import { errorMessage } from "../../shared/errors";
 import { useTasksRpc } from "../../shell/data";
 
@@ -54,7 +55,7 @@ export function CurrentState({ task }: { task: Task }) {
         </>
       ) : task.progressNote ? (
         <>
-          <p className="text-xs text-muted-foreground">updated {task.progressUpdatedAt} by {task.progressUpdatedBy}</p>
+          <p className="text-xs text-muted-foreground">updated {task.progressUpdatedAt} by <ActorLabel name={task.progressUpdatedBy ?? "You"} /></p>
           <Markdown content={task.progressNote} className="text-sm [overflow-wrap:anywhere]" />
         </>
       ) : (

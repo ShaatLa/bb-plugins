@@ -1,4 +1,5 @@
 import { isQuestionOpen } from "../../shared/questions";
+import { ActorLabel } from "../../components/thread-chip";
 import { useEffect, useMemo, useState, useRef } from "react";
 import { experimental_ImageLightbox as ImageLightbox } from "@get-bb/plugin-sdk/app";
 import { Icon } from "@/components/ui/icon";
@@ -237,7 +238,7 @@ function QuestionAnswer({
       {question.answerCommentId ? <AnswerAttachments commentId={question.answerCommentId} /> : null}
       {question.answeredBy ? (
         <p className="text-xs text-muted-foreground">
-          Answered by {question.answeredBy}
+          Answered by <ActorLabel name={question.answeredBy} />
         </p>
       ) : null}
       {!question.answeredBy &&

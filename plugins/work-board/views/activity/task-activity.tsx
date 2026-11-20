@@ -267,7 +267,7 @@ export function CommentCard({ entry, nowMs }: { entry: FeedEntry; nowMs: number 
       {/* Host Markdown tables size their breakout from the nearest query container. */}
       <div className="@container min-w-0 flex-1">
         <div className="mb-0.5 flex items-baseline gap-1.5 text-xs">
-          <CommentAuthor comment={comment} onOpenThread={openThread} />
+          <CommentAuthor comment={comment} />
           {agent && comment.presetName ? (
             <span className="rounded-sm bg-secondary px-1 py-px text-2xs font-semibold text-muted-foreground">
               {comment.presetName}

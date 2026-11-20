@@ -9,7 +9,8 @@ import { useOpenThread } from "../../components/open-thread.js";
 import { TASK_TAB } from "../embed/index.js";
 import { formatRelativeTime } from "../activity/time.js";
 import { ACTIVE_NOTE_HIGHLIGHT, NOTE_HIGHLIGHT, NOTE_HIGHLIGHT_CSS, paintHighlight, rangeOfSpan, useBodyText } from "./anchors.js";
-import { planDrafts, usePlanBody, usePlanOverview } from "./data.js";
+import { ActorLabel, ThreadChip } from "../../components/thread-chip.js";
+import { planDrafts, usePlanBody, usePlanning, usePlanOverview } from "./data.js";
 import { PlanDiffView } from "./diff-view.js";
 import { PlanEditor } from "./editor.js";
 import { useActiveHeading, useRenderedHeadings } from "./headings.js";
@@ -104,6 +105,16 @@ function PlanSkeleton() {
  * It is the content of the Plan side panel tab (`panel`) and of the plan route in the main area (`page`).
  */
 export function PlanView({ taskKey, surface }: { taskKey: string; surface: "panel" | "page" }) {
+  // Every way into the plan (a persisted tab, an old link, a setting changed while it is open) passes this check.
+  const task = useTasksQuery(async (rpc) => (await rpc.call("getTaskByKey", { taskKey })).task, ["tasks:changed"], [taskKey]);
+  const planning = usePlanning(task.data?.projectId ?? null);
+  // The body mounts once, after the setting is known, so a pending "Write plan" request is not lost to a remount.
+  if (task.data === undefined || (task.data !== null && planning === undefined)) return <PlanSkeleton />;
+  if (planning === "off") return <p role="status" className="p-4 text-sm text-muted-foreground">Planning is off for this project</p>;
+  return <PlanViewBody taskKey={taskKey} surface={surface} />;
+}
+
+function PlanViewBody({ taskKey, surface }: { taskKey: string; surface: "panel" | "page" }) {
   const navigate = useBbNavigate();
   const navigation = useTasksNavigation();
   const panel = experimental_useAppPanel();
@@ -179,7 +190,8 @@ export function PlanView({ taskKey, surface }: { taskKey: string; surface: "pane
   // Owner notes: anchored by quote in the text on screen, highlighted without touching the editor DOM.
   const notesQuery = usePlanNotes(taskId);
   const allNotes = useMemo(() => notesQuery.data?.notes ?? [], [notesQuery.data]);
-  const draftCount = allNotes.filter((note) => note.state === "draft").length;
+  // Drafts are scoped per author: the owner sends and counts only their own; a reviewer thread's drafts are not theirs to send.
+  const draftCount = allNotes.filter((note) => note.state === "draft" && note.authorKind === "person").length;
   const showsBody = mode === "read" && display !== null;
   const bodyText = useBodyText(bodyRef, `${mode}:${display?.version}`);
   const placements = usePlacements(allNotes, bodyText, showsBody);
@@ -269,12 +281,12 @@ export function PlanView({ taskKey, surface }: { taskKey: string; surface: "pane
     setSending(true);
     const result = await actions.send();
     setSending(false);
-    setReview(result.ok ? deliveryNotice(result.delivered, "Feedback") : { tone: "warn", text: result.message });
+    setReview(result.ok ? deliveryNotice(result, "Feedback") : { tone: "warn", text: result.message });
   };
   const approve = async (note: string) => {
     const result = await actions.approve(note);
     if (!result.ok) return result.message;
-    setReview(deliveryNotice(result.delivered, "Approval"));
+    setReview(deliveryNotice(result, "Approval"));
     return null;
   };
 
@@ -307,7 +319,7 @@ export function PlanView({ taskKey, surface }: { taskKey: string; surface: "pane
 
   const versionNumbers = versions.map((version) => version.version);
   const shownVersion = versions.find((version) => version.version === (target ?? headVersion));
-  const meta = shownVersion ? { name: shownVersion.author.name, at: shownVersion.createdAt } : head ? { name: head.updatedBy.name, at: head.updatedAt } : null;
+  const meta = shownVersion ? { name: shownVersion.author.name, threadId: shownVersion.author.threadId, at: shownVersion.createdAt } : head ? { name: head.updatedBy.name, threadId: head.updatedBy.threadId, at: head.updatedAt } : null;
   const menu = (
     <DropdownMenu>
       <TooltipProvider delayDuration={300}>
@@ -388,7 +400,8 @@ export function PlanView({ taskKey, surface }: { taskKey: string; surface: "pane
       </div>
       {head && mode !== "edit" && meta ? (
         <p className="mt-1 text-xs text-muted-foreground">
-          Updated by {meta.name} · <time dateTime={meta.at} title={meta.at}>{formatRelativeTime(meta.at, Date.now())}</time>
+          Updated by <ActorLabel name={meta.name} threadId={meta.threadId} /> · <time dateTime={meta.at} title={meta.at}>{formatRelativeTime(meta.at, Date.now())}</time>
+          {head ? <span> · Reviewer: {head.reviewer.kind === "thread" && head.reviewer.threadId ? <ThreadChip threadId={head.reviewer.threadId} /> : "owner"}</span> : null}
           {copied ? <span role="status"> · {copied}</span> : null}
         </p>
       ) : (
