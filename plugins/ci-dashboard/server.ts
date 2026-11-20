@@ -1,4 +1,5 @@
 import { legacyRegistered, migrateId } from "./id-migration";
+import { sendOrAppend } from "./queued-notice";
 import { defaultDraftRules, draftRules, draftNameSchema, draftSettingLabels } from "./draft-deferrals";
 import { createHash } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
@@ -498,7 +499,7 @@ export default async function plugin(bb: BbPluginApi) {
   // Marks the sender for the receiving agent, like bb's own thread-message header.
   const withHeader = (text: string) => `[bb message from plugin:${bb.pluginId}]\n\n${text}`;
   async function notify(threadId: string, text: string) {
-    try { await bb.sdk.threads.send({ threadId, mode: "queue-if-active", originPluginId: bb.pluginId, input: [{ type: "text", text: withHeader(text), mentions: [] }] }); }
+    try { await sendOrAppend(bb, { threadId, text }); }
     catch (error) {
       // Logged once per thread; the event is not retried (it is already marked sent), and a thread that no longer exists is dropped.
       logOnce(`CI observer: message to ${threadId} failed: ${describe(error)}`);

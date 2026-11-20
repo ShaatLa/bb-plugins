@@ -2516,3 +2516,21 @@ test("PR subscription capacity refuses new entries without evicting earlier subs
     expect(stored.map((entry) => entry.number)).toEqual([...entries.slice(1).map((entry) => entry.number), 201]);
   } finally { await harness.lifecycle.dispose(); }
 });
+
+test.each([["ci-dashboard", true], ["someone-else", false]])("observer: a notice extends the last queued row when it is ours: %s", async (origin, merges) => {
+  ciScenario();
+  const row = { id: "q1", content: [{ type: "text", text: "Earlier notice", mentions: [] }], originPluginId: origin, state: "queued", editable: true, updatedAt: 42 };
+  const list = vi.fn(async (_args: unknown) => [row]), update = vi.fn(async (_args: unknown) => row);
+  const { bb, harness, send } = observerHost({}, { queuedMessages: { list, update } });
+  try {
+    await plugin(bb);
+    await signalsPass(harness, 0);
+    expect(send).toHaveBeenCalledTimes(merges ? 0 : 1);
+    expect(update).toHaveBeenCalledTimes(merges ? 1 : 0);
+    if (merges) {
+      const [args] = update.mock.calls[0] as [{ threadId: string; queuedMessageId: string; expectedUpdatedAt: number; input: { text: string }[] }];
+      expect(args).toMatchObject({ threadId: "thr_observer", queuedMessageId: "q1", expectedUpdatedAt: 42 });
+      expect(args.input[0].text).toMatch(/^Earlier notice\n\n---\n\nSubscribed to CI events for acme\/widgets/);
+    }
+  } finally { await harness.lifecycle.dispose(); }
+});
