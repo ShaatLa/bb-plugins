@@ -4,7 +4,7 @@ import { ATTENTION_KIND, ATTENTION_SIGNALS, staleStatusObservations, type Attent
 
 type Database = ReturnType<BbPluginApi["storage"]["database"]>;
 
-/** A condition must hold this long before its first notice (BP-3). */
+/** A condition must hold this long before its first notice (the pilot grace period). */
 export const GRACE_MS = 10 * 60_000;
 export const ACCEPTED_OUTCOMES = ["appended", "queued", "inline"] as const;
 const ACCEPTED_SQL = ACCEPTED_OUTCOMES.map((outcome) => `'${outcome}'`).join(", ");

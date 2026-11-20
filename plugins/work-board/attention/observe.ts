@@ -5,7 +5,7 @@ import { getWorkflowPolicy, type WorkflowPolicy } from "../shared/workflow-polic
 type Database = ReturnType<BbPluginApi["storage"]["database"]>;
 
 export const ATTENTION_KIND = "stale-status";
-/** Statuses the pilot covers (BP-3 §1); a custom workflow's other statuses stay out of scope. */
+/** Statuses the pilot covers (the pilot scope); a custom workflow's other statuses stay out of scope. */
 export const PILOT_STATUSES: readonly string[] = ["in_progress", "in_review", "in_testing", "bugfix"];
 export const PILOT_SIGNALS = ["no_active_thread", "no_open_pr", "pr_state_unavailable", "closed_unmerged_pr"] as const;
 export const ATTENTION_SIGNALS = [...PILOT_SIGNALS, "no_merge_or_outcome"] as const;

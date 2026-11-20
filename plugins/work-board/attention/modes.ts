@@ -5,7 +5,7 @@ import { ATTENTION_KIND, PILOT_SIGNALS } from "./observe";
 
 type Database = ReturnType<BbPluginApi["storage"]["database"]>;
 
-/** The shadow observation the owner must have seen before the first live switch (BP-3 gate length). */
+/** The shadow observation the owner must have seen before the first live switch (the pilot gate length). */
 export const SHADOW_GATE_MS = 48 * 3_600_000;
 export type AttentionMode = "off" | "shadow" | "live";
 
