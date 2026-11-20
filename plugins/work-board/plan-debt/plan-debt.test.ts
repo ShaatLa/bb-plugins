@@ -136,7 +136,7 @@ describe("episodes", () => {
     expect(f.open(debt.id)).toBeNull();
     expect(f.episodes(debt.id)).toMatchObject([{ ended_at: expect.any(String) }]);
     const version = f.db.prepare<[], { version: number }>("SELECT MAX(version) AS version FROM schema_version").get()!.version;
-    f.db.exec(`DROP TABLE plan_debt_notices; DROP TABLE plan_debt_events; DROP TABLE plan_debt_episodes; DELETE FROM schema_version WHERE version >= ${version - 2};`);
+    f.db.exec(`DROP TABLE plan_debt_notices; DROP TABLE plan_debt_events; DROP TABLE plan_debt_episodes; DELETE FROM schema_version WHERE version >= ${version - 3};`);
     initializeTasksSchema(f.db);
     expect(f.db.prepare("SELECT COUNT(*) AS n FROM plan_debt_episodes").get()).toEqual({ n: 0 });
   });
@@ -163,7 +163,7 @@ describe("episodes", () => {
     f.require();
     f.withPlan(fine.id, "approved");
     const version = f.db.prepare<[], { version: number }>("SELECT MAX(version) AS version FROM schema_version").get()!.version;
-    f.db.exec(`DROP TABLE plan_debt_notices; DROP TABLE plan_debt_events; DROP TABLE plan_debt_episodes; DELETE FROM schema_version WHERE version >= ${version - 2};`);
+    f.db.exec(`DROP TABLE plan_debt_notices; DROP TABLE plan_debt_events; DROP TABLE plan_debt_episodes; DELETE FROM schema_version WHERE version >= ${version - 3};`);
     const before = Date.now();
     initializeTasksSchema(f.db);
     expect(f.open(debt.id)!.since >= new Date(before).toISOString()).toBe(true);
