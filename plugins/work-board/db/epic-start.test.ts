@@ -82,12 +82,27 @@ describe("an epic follows its first started task", () => {
     const third = f.epic("todo");
     const other = f.task("Other");
     const sub2 = f.task("Sub2", { parentTaskId: other.id, status: "in_progress" });
-    f.store.tasks.updateTask(sub2.id, { parentTaskId: parent.id });
-    expect(f.status(third.id)).toBe("todo");
+    const thirdParent = f.task("Third parent", { epicId: third.id });
+    f.store.tasks.updateTask(sub2.id, { parentTaskId: thirdParent.id });
+    expect(f.status(third.id)).toBe("in_progress");
+    expect(f.history(third.id).map((comment) => comment.body)).toEqual([`Status changed to In Progress automatically: ${sub2.key} started (In Progress)`]);
     const fourth = f.epic();
     f.task("Born started", { epicId: fourth.id, status: "in_progress" });
     expect(f.status(fourth.id)).toBe("in_progress");
     expect(started.status).toBe("in_progress");
+  });
+
+  it("does not re-advance an epic the owner moved back when a started sub-task moves between two tasks of that epic", () => {
+    const f = setup();
+    const epic = f.epic();
+    const first = f.task("First", { epicId: epic.id });
+    const second = f.task("Second", { epicId: epic.id });
+    const sub = f.task("Sub", { parentTaskId: first.id });
+    f.store.tasks.updateTask(sub.id, { status: "in_progress" });
+    f.store.tasks.updateTask(epic.id, { status: "todo" });
+    f.store.tasks.updateTask(sub.id, { parentTaskId: second.id });
+    expect(f.status(epic.id)).toBe("todo");
+    expect(f.history(epic.id)).toHaveLength(1);
   });
 
   it("leaves an epic that is in progress, in review, done, canceled or archived", () => {
@@ -167,6 +182,18 @@ describe("the epic move is published after the commit", () => {
     const child = f.task("Work", { epicId: epic.id });
     await f.call("updateTask", { taskId: child.id, status: "in_progress", authorName: "You" });
     await flush();
+    expect(f.signals("tasks:changed", epic.id).length).toBeGreaterThan(0);
+    expect(f.signals("comments:changed", epic.id)).toHaveLength(1);
+  });
+
+  it("publishes the epic's own events when an inherited sub-task starts (the child's publication does not reach the epic)", async () => {
+    const f = setup();
+    const epic = f.epic();
+    const parent = f.task("Parent", { epicId: epic.id });
+    const sub = f.task("Sub", { parentTaskId: parent.id });
+    await f.call("updateTask", { taskId: sub.id, status: "in_progress", authorName: "You" });
+    await flush();
+    expect(f.status(epic.id)).toBe("in_progress");
     expect(f.signals("tasks:changed", epic.id).length).toBeGreaterThan(0);
     expect(f.signals("comments:changed", epic.id)).toHaveLength(1);
   });

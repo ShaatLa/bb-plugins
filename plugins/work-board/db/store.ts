@@ -1054,7 +1054,8 @@ export function createTasksStore(db: PluginDatabase, log: (message: string) => v
   function advanceEpicFor(task: Task, before: Task | null): void {
     if (task.type === "epic") return;
     const project = requireProject(task.projectId);
-    const epicChanged = before !== null && (before.epicId !== task.epicId || before.parentTaskId !== task.parentTaskId);
+    // Compared by effective epic: moving a sub-task between two tasks of the same epic changes nothing for the epic.
+    const epicChanged = before !== null && effectiveEpicId(before) !== effectiveEpicId(task);
     const startedNow = before === null || !isStarted(project, before.status);
     if (isStarted(project, task.status) && (startedNow || epicChanged)) startEpicOf(task, project);
     // Sub-tasks inherit the epic: a task joining one brings its started sub-tasks with it.
