@@ -130,7 +130,7 @@ function start(bb: BbPluginApi, migrationError: string | null) {
     return db.prepare(`SELECT
       count(CASE WHEN kind IN ('mine','update') AND status='answered' AND read_at IS NULL AND snoozed_until IS NULL THEN 1 END) AS unread,
       count(CASE WHEN kind='mine' AND status IN ('waiting','deferred') THEN 1 END) AS waiting,
-      count(CASE WHEN kind='for_me' AND status='open' THEN 1 END) AS forMe,
+      count(CASE WHEN kind='for_me' AND status='open' AND declined_at IS NULL THEN 1 END) AS forMe,
       count(CASE WHEN ${ATTENTION_SQL} THEN 1 END) AS inbox
       FROM items WHERE dismissed_at IS NULL AND thread_deleted=0 AND ${ACTIVE_THREAD_SQL} AND ${OWNER_ITEM_SQL}`).get() as Counts;
   }
@@ -200,7 +200,7 @@ function start(bb: BbPluginApi, migrationError: string | null) {
     const items: Item[] = rows.map(row => {
       const value: Row = {};
       for (const [key,v] of Object.entries(row)) if (key !== 'dedupe_key' && key !== 'list_at') value[key.replace(/_([a-z])/g,(_,c:string)=>c.toUpperCase())]=v;
-      return itemSchema.parse({...value,attachments:JSON.parse(row.attachments),snoozedUntil:row.snoozed_until,failedAt:row.failed_at,failureReason:row.failure_reason,interruptedAt:row.interrupted_at,likelyInterim:!!row.likely_interim,asks:!!row.asks,chatAsked:!!row.chat_asked,options:row.options===null ? null : JSON.parse(row.options),questions:row.questions===null ? null : JSON.parse(row.questions),recommended:row.recommended,recommendReason:row.recommend_reason,taskKey:row.task_key,trigger:row.trigger_kind ? {kind:row.trigger_kind,sourceId:row.trigger_source,sourceTitle:row.trigger_source ? titles.get(row.trigger_source) ?? null : null} : null,pinned:!!row.pinned,threadDeleted:!!row.thread_deleted,threadTitle:titles.get(row.thread_id) ?? null,projectName:names.get(row.project_id) ?? null});
+      return itemSchema.parse({...value,attachments:JSON.parse(row.attachments),snoozedUntil:row.snoozed_until,declinedAt:row.declined_at,failedAt:row.failed_at,failureReason:row.failure_reason,interruptedAt:row.interrupted_at,likelyInterim:!!row.likely_interim,asks:!!row.asks,chatAsked:!!row.chat_asked,options:row.options===null ? null : JSON.parse(row.options),questions:row.questions===null ? null : JSON.parse(row.questions),recommended:row.recommended,recommendReason:row.recommend_reason,taskKey:row.task_key,trigger:row.trigger_kind ? {kind:row.trigger_kind,sourceId:row.trigger_source,sourceTitle:row.trigger_source ? titles.get(row.trigger_source) ?? null : null} : null,pinned:!!row.pinned,threadDeleted:!!row.thread_deleted,threadTitle:titles.get(row.thread_id) ?? null,projectName:names.get(row.project_id) ?? null});
     });
     const last = rows.at(-1);
     const first = rows[0], newer = first && (p.anchor !== undefined || p.after) && db.prepare(`SELECT 1 FROM items WHERE thread_id=? AND (${at}>? OR (${at}=? AND id>?)) LIMIT 1`).get(p.threadId,first.list_at,first.list_at,first.id);
@@ -241,7 +241,7 @@ function start(bb: BbPluginApi, migrationError: string | null) {
     const count=db.transaction(()=>db.prepare('UPDATE items SET snoozed_until=NULL,read_at=NULL,notify_state=1 WHERE snoozed_until<=?').run(Date.now()).changes)();
     if (count) {invalidate(); onAttention();}
     if(remindHours>0) {
-      const reminders=db.prepare("UPDATE items SET notify_state=1,reminded_at=?,reminders=reminders+1 WHERE kind='for_me' AND urgency='blocking' AND status='open' AND dismissed_at IS NULL AND thread_deleted=0 AND reminders<3 AND coalesce(reminded_at,created_at)+?<=? AND (deadline_at IS NULL OR deadline_at>?)").run(Date.now(),remindHours*3600000,Date.now(),Date.now()).changes;
+      const reminders=db.prepare("UPDATE items SET notify_state=1,reminded_at=?,reminders=reminders+1 WHERE kind='for_me' AND urgency='blocking' AND status='open' AND dismissed_at IS NULL AND thread_deleted=0 AND declined_at IS NULL AND reminders<3 AND coalesce(reminded_at,created_at)+?<=? AND (deadline_at IS NULL OR deadline_at>?)").run(Date.now(),remindHours*3600000,Date.now(),Date.now()).changes;
       if(reminders) {invalidate();onAttention();}
     }
     const due=db.prepare("SELECT * FROM items WHERE kind='for_me' AND status='open' AND dismissed_at IS NULL AND thread_deleted=0 AND deadline_at<=?").all(Date.now()) as Row[];
@@ -258,7 +258,7 @@ function start(bb: BbPluginApi, migrationError: string | null) {
         } catch(e) {bb.log.warn(`Agent Hub deadline: ${String(e)}`); commit('UPDATE items SET deadline_at=NULL WHERE id=?',item.id);}
       }).finally(()=>{deadlinePending.delete(row.id);wakeDue();});
     }
-    const next=db.prepare("SELECT min(at) AS at FROM (SELECT CASE WHEN ?>0 THEN coalesce(reminded_at,created_at)+? END AS at FROM items WHERE kind='for_me' AND urgency='blocking' AND status='open' AND dismissed_at IS NULL AND thread_deleted=0 AND reminders<3 UNION ALL SELECT snoozed_until AS at FROM items WHERE snoozed_until IS NOT NULL UNION ALL SELECT deadline_at FROM items WHERE kind='for_me' AND status='open' AND dismissed_at IS NULL AND thread_deleted=0 AND deadline_at IS NOT NULL)").get(remindHours,remindHours*3600000) as {at:number|null};
+    const next=db.prepare("SELECT min(at) AS at FROM (SELECT CASE WHEN ?>0 THEN coalesce(reminded_at,created_at)+? END AS at FROM items WHERE kind='for_me' AND urgency='blocking' AND status='open' AND dismissed_at IS NULL AND thread_deleted=0 AND declined_at IS NULL AND reminders<3 UNION ALL SELECT snoozed_until AS at FROM items WHERE snoozed_until IS NOT NULL UNION ALL SELECT deadline_at FROM items WHERE kind='for_me' AND status='open' AND dismissed_at IS NULL AND thread_deleted=0 AND deadline_at IS NOT NULL)").get(remindHours,remindHours*3600000) as {at:number|null};
     if (next.at!==null) {wakeTimer=setTimeout(wakeDue,Math.min(Math.max(1000,next.at-Date.now()),2147483647)); wakeTimer.unref();}
   }
   async function guarded<T>(threadId:string, send:()=>Promise<T>): Promise<T> {
@@ -312,7 +312,7 @@ function start(bb: BbPluginApi, migrationError: string | null) {
       const p=inputs.snooze.parse(raw),item=get(p.id),now=Date.now();
       if (item.kind==='saved') throw new Error('saved items cannot be snoozed');
       if (p.until!==null && (p.until<=now || p.until>now+30*86400000)) throw new Error('Snooze must be within the next 30 days');
-      const result=commit('UPDATE items SET snoozed_until=?,read_at=NULL,notify_state=?,updated_at=? WHERE id=?',p.until,p.until===null ? 1 : 0,now,p.id);
+      const result=commit('UPDATE items SET snoozed_until=?,declined_at=NULL,read_at=NULL,notify_state=?,updated_at=? WHERE id=?',p.until,p.until===null ? 1 : 0,now,p.id);
       if (p.until===null) onAttention(); wakeDue(); return result;
     },
     async retryTurn(raw:z.infer<typeof inputs.retryTurn>) {
@@ -407,7 +407,7 @@ function start(bb: BbPluginApi, migrationError: string | null) {
       // Another thread's message previews as "Sender: text", as its chat card names the sender instead of the [bb message from …] header.
       const plain=(text:string)=>unquote(text.replace(/^\[bb message from thread:(thr_[A-Za-z0-9_-]+)\]\s*/,(_,id:string)=>threadMap.get(id)?.title ? `${threadMap.get(id)!.title}: ` : '').replace(/^\[bb message from plugin:([\w.-]+)\]\s*/,'$1: ')).replace(/^\s*(?:#{1,6}|[-*+]|\d+[.)])\s+/gm,'').replace(/@thread:(thr_[A-Za-z0-9_-]+)(?:#msg=\d+)?/g,(_,id:string)=>'@'+(threadMap.get(id)?.title ?? 'thread')).replace(/\[([^\]]+)\]\([^)\s]+\)/g,'$1').replace(/\*\*|`/g,'').replace(/\s+/g,' ').trim();
       // Threads with an open question to the owner, so contacts can surface a sub-session that asks under its collapsed parent.
-      const asking=(db.prepare(`SELECT DISTINCT thread_id FROM items WHERE kind='for_me' AND status='open' AND dismissed_at IS NULL AND thread_deleted=0 AND ${ACTIVE_THREAD_SQL} AND ${OWNER_ITEM_SQL}`).all() as {thread_id:string}[]).map(r=>r.thread_id);
+      const asking=(db.prepare(`SELECT DISTINCT thread_id FROM items WHERE kind='for_me' AND status='open' AND dismissed_at IS NULL AND declined_at IS NULL AND thread_deleted=0 AND ${ACTIVE_THREAD_SQL} AND ${OWNER_ITEM_SQL}`).all() as {thread_id:string}[]).map(r=>r.thread_id);
       return {asking,recipients:rows.map(r=>{const t=threadMap.get(r.thread_id),projectId=t?.projectId ?? r.project_id ?? null; return {threadId:r.thread_id,threadTitle:t?.title ?? null,projectId,projectName:projectMap.get(projectId)?.name ?? null,unread:r.unread,questions:r.questions,lastAt:r.last_at,preview:plain(inlineCommentPreview(((r.preview ?? '') as string).replace(/<!--[\s\S]*?-->\s*/g,''))).slice(0,160)};})};
     },
     // A UI crash caught by the app's CrashGuard, so its stack reaches `bb plugin logs agent-hub`.
@@ -489,7 +489,11 @@ function start(bb: BbPluginApi, migrationError: string | null) {
         : commit('UPDATE items SET dismissed_at=?,wait_children=NULL,updated_at=? WHERE id=?',now,now,p.id);
     },
     setPinned(raw: z.infer<typeof inputs.setPinned>) {const p=inputs.setPinned.parse(raw); get(p.id); return commit('UPDATE items SET pinned=?,updated_at=? WHERE id=?',Number(p.pinned),Date.now(),p.id);},
-    setDismissed(raw: z.infer<typeof inputs.setDismissed>) {const p=inputs.setDismissed.parse(raw); get(p.id); return commit('UPDATE items SET dismissed_at=?,wait_children=CASE WHEN ? THEN NULL ELSE wait_children END,updated_at=? WHERE id=?',p.dismissed ? Date.now() : null,Number(p.dismissed),Date.now(),p.id);},
+    setDismissed(raw: z.infer<typeof inputs.setDismissed>) {
+      const p=inputs.setDismissed.parse(raw), item=get(p.id), now=Date.now();
+      // Won't reply is not an answer: the question stays open and listed for the agent; only the owner's attention is quieted.
+      if (p.dismissed && item.kind==='for_me' && item.status==='open' && !item.chat_asked && item.dismissed_at===null) return commit('UPDATE items SET declined_at=?,notify_state=0,snoozed_until=NULL,updated_at=? WHERE id=?',now,now,p.id);
+      return commit('UPDATE items SET dismissed_at=?,wait_children=CASE WHEN ? THEN NULL ELSE wait_children END,updated_at=? WHERE id=?',p.dismissed ? Date.now() : null,Number(p.dismissed),Date.now(),p.id);},
     async reply(raw: z.infer<typeof inputs.reply>) {
       const p=inputs.reply.parse(raw), threadId=get(p.id).thread_id as string;
       return guarded(threadId,async()=>{
@@ -548,8 +552,8 @@ function start(bb: BbPluginApi, migrationError: string | null) {
               const merged=[...parts,...added].map((q,i)=>({...q,id:`q${i+1}`})), rank=(v:string|null|undefined)=>v==='blocking' ? 2 : v==='low' ? 0 : 1;
               const urgency=rank(ask.urgency)>rank(old.urgency) ? ask.urgency! : old.urgency, raised=urgency==='blocking' && old.urgency!=='blocking';
               const due=old.deadline_at===null ? deadline : deadline===null ? old.deadline_at : Math.min(old.deadline_at,deadline);
-              commit("UPDATE items SET question=?,questions=?,options=NULL,recommended=NULL,recommend_reason=NULL,urgency=?,deadline_at=?,notify_state=CASE WHEN ? THEN 1 ELSE notify_state END,updated_at=? WHERE id=? AND status='open'",(intro ? intro+'\n\n' : '')+partsText(merged),JSON.stringify(merged),urgency,due,Number(raised),now,old.id);
-              if(raised) onAttention(); wakeDue();
+              commit("UPDATE items SET question=?,questions=?,options=NULL,recommended=NULL,recommend_reason=NULL,urgency=?,deadline_at=?,declined_at=NULL,notify_state=CASE WHEN ? OR declined_at IS NOT NULL THEN 1 ELSE notify_state END,updated_at=? WHERE id=? AND status='open'",(intro ? intro+'\n\n' : '')+partsText(merged),JSON.stringify(merged),urgency,due,Number(raised),now,old.id);
+              if(raised || old.declined_at!==null) onAttention(); wakeDue();
               return `${old.id}\nMerged into your earlier question from this turn; the user answers all parts in one form.`;
             }
             commit("INSERT INTO items(id,kind,thread_id,project_id,status,question,options,questions,recommended,recommend_reason,deadline_at,urgency,notify_state,turn_id,created_at,updated_at) VALUES (?,'for_me',?,?,'open',?,?,?,?,?,?,?,?,?,?,?)",id,ctx.threadId,ctx.projectId ?? null,text,JSON.stringify(form ? null : ask.options ?? null),form && JSON.stringify(form),ask.recommended ?? null,ask.reason ?? null,deadline,ask.urgency ?? null,ask.urgency==='low' ? 0 : 1,turn,now,now);

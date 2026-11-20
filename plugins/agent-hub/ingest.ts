@@ -9,7 +9,7 @@ export const QUESTION_SQL = "(instr(question,'?')>0 OR instr(question,'？')>0)"
 export const ACTIVE_THREAD_SQL = "thread_id NOT IN (SELECT thread_id FROM archived_threads)";
 // Explicit asks still reach the owner when a sub-agent calls agent_hub_ask.
 export const OWNER_ITEM_SQL = "(thread_id NOT IN (SELECT thread_id FROM sub_threads) OR (kind='for_me' AND chat_asked=0))";
-export const ATTENTION_SQL = OWNER_ITEM_SQL + " AND thread_id NOT IN (SELECT thread_id FROM archived_threads) AND dismissed_at IS NULL AND read_at IS NULL AND snoozed_until IS NULL AND ((kind IN ('mine','update') AND status='answered') OR (kind='for_me' AND status='open') OR (kind='mine' AND status IN ('waiting','deferred') AND failed_at IS NOT NULL))";
+export const ATTENTION_SQL = OWNER_ITEM_SQL + " AND thread_id NOT IN (SELECT thread_id FROM archived_threads) AND dismissed_at IS NULL AND declined_at IS NULL AND read_at IS NULL AND snoozed_until IS NULL AND ((kind IN ('mine','update') AND status='answered') OR (kind='for_me' AND status='open') OR (kind='mine' AND status IN ('waiting','deferred') AND failed_at IS NOT NULL))";
 // A question the agent put to the owner as plain text: the last sentence ending in '?' outside code, links, blockquotes and
 // quoted phrases, that does not name the channel it was asked through (a card, Agent Hub). A short one ("Хотите?") keeps the
 // sentence before it for context; table rows only list.

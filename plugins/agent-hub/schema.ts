@@ -143,4 +143,7 @@ ALTER TABLE items ADD COLUMN snap TEXT;
 ALTER TABLE items ADD COLUMN snap_seq INTEGER;`,
   // turn_updates.tail: the last top-level item of the turn was an assistant message, so the next one continues the reply as one run.
   `ALTER TABLE turn_updates ADD COLUMN tail INTEGER NOT NULL DEFAULT 0;`,
+  // declined_at: Won't reply quiets an open question without closing it; old owner dismissals of agent questions close as withdrawn.
+  `ALTER TABLE items ADD COLUMN declined_at INTEGER;
+UPDATE items SET answer_source='agent',note='Closed without an answer: the owner chose Won’t reply.' WHERE kind='for_me' AND status='open' AND dismissed_at IS NOT NULL AND answer_source IS NULL AND chat_asked=0;`,
 ];
