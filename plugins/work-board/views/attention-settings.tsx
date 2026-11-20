@@ -11,7 +11,7 @@ import { useTasksQuery, useTasksRpc } from "../shell/data.js";
 import { errorMessage } from "../shared/errors.js";
 
 const MODE_LABEL = { off: "Off: Sweep sends", shadow: "Shadow: compare only, Sweep sends", live: "Live: Work Board sends" };
-const SENDER = { off: "Sweep sends", shadow: "Sweep sends", live: "Work Board sends" };
+const SENDER = { off: "Off · Sweep sends", shadow: "Shadow · comparing, Sweep sends", live: "Live · Work Board sends" };
 const MODE_NOTE = {
   off: "Sweep sends stale-status notices.",
   shadow: "Sweep sends notices while Work Board records what it would send.",

@@ -57,7 +57,7 @@ it("shows the mode with its gate, starts shadow, saves the manager and lets the 
     };
     const settings = renderSlot(app.settingsSections[0]!, {}, slotOptions);
     const section = await settings.findByRole("region", { name: "Manager attention" });
-    await waitFor(() => expect(within(section).getByTestId("attention-sender").textContent).toBe("Sweep sends"));
+    await waitFor(() => expect(within(section).getByTestId("attention-sender").textContent).toBe("Off · Sweep sends"));
     // The write RPC cannot tell the owner from an agent, so the copy must not promise that agents are kept out.
     expect(section.textContent).toMatch(/owner-only convention/);
     expect(section.textContent).not.toMatch(/agents cannot/i);
@@ -66,6 +66,8 @@ it("shows the mode with its gate, starts shadow, saves the manager and lets the 
     expect(within(section).getByTestId("attention-mode").textContent).toBe("Off: Sweep sends");
     fireEvent.click(within(section).getByRole("button", { name: "Start shadow" }));
     await waitFor(() => expect(within(section).getByTestId("attention-mode").textContent, within(section).queryByRole("alert")?.textContent).toBe("Shadow: compare only, Sweep sends"));
+    // The closed summary names the mode too, so comparison is visible without opening the actions.
+    expect(within(section).getByTestId("attention-sender").textContent).toBe("Shadow · comparing, Sweep sends");
     // The mode has no "Changed … from …" line, and a missing manager is a warning that names the cause.
     expect(within(section).queryByTestId("attention-changed")).toBeNull();
     expect(section.textContent).not.toMatch(/Changed[^.]*from (off|shadow|live)/);

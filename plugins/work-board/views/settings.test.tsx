@@ -486,8 +486,8 @@ it("lets the owner pick each planning mode for the selected project, and the cho
     const rpc = Object.fromEntries(Object.keys(tasksRpcContract).map(method => [method, (input: unknown) => harness.callRpc(method, input)]));
     const settings = renderSlot(app.settingsSections[0]!, {}, { rpc });
     const region = () => within(settings.getByRole("region", { name: "Project planning" }));
-    const mode = () => region().getByRole("combobox", { name: "Planning" });
-    await settings.findByRole("combobox", { name: "Planning" });
+    const mode = () => region().getByRole("combobox", { name: "Mode" });
+    await settings.findByRole("combobox", { name: "Mode" });
     // The project sections come in this order; the former General block is gone (native fields are rendered by the host).
     const regions = settings.getAllByRole("region").map(node => node.getAttribute("aria-label"));
     expect(regions.filter(name => name?.startsWith("Project "))).toEqual([
@@ -519,7 +519,7 @@ it("lets the owner pick each planning mode for the selected project, and the cho
     // A fresh render (a reload) reads the saved mode back.
     cleanup();
     const reloaded = renderSlot(app.settingsSections[0]!, {}, { rpc });
-    await waitFor(() => expect(reloaded.getByRole("combobox", { name: "Planning" }).textContent).toContain("Required"));
+    await waitFor(() => expect(reloaded.getByRole("combobox", { name: "Mode" }).textContent).toContain("Required"));
   } finally { cleanup(); await harness.dispose(); }
 });
 
@@ -534,7 +534,7 @@ it("lets the owner switch the two thread-archive settings, each in its own secti
     const settings = renderSlot(app.settingsSections[0]!, {}, { rpc });
     const archiveThreads = () => within(settings.getByRole("region", { name: "Project archiving" })).getByRole("switch", { name: "Archive threads of closed cards" });
     const archiveReviewer = () => within(settings.getByRole("region", { name: "Project planning" })).getByRole("switch", { name: "Archive the plan reviewer after approval" });
-    await settings.findByRole("combobox", { name: "Planning" });
+    await settings.findByRole("combobox", { name: "Mode" });
     expect(archiveThreads().getAttribute("aria-checked")).toBe("true");
     expect(archiveReviewer().getAttribute("aria-checked")).toBe("true");
     fireEvent.click(archiveThreads());
@@ -544,6 +544,35 @@ it("lets the owner switch the two thread-archive settings, each in its own secti
     expect(store.tasks.getProject(alpha.id)?.archiveThreadsOnClose).toBe("off");
     fireEvent.click(archiveReviewer());
     await waitFor(() => expect(store.tasks.getProject(alpha.id)?.archiveReviewerOnApproval).toBe("on"));
+  } finally { cleanup(); await harness.dispose(); }
+});
+
+it("keeps the status editor open over a rejected draft and lets Done close it once corrected", async () => {
+  const { bb, harness } = createFakePluginHost({ pluginId: "work-board" });
+  try {
+    const store = createStore(bb);
+    const alpha = store.tasks.createProject({ name: "Alpha", prefix: "A", color: "blue" });
+    registerTasksApi(bb, store);
+    const settings = renderSlot(app.settingsSections[0]!, {}, { rpc: Object.fromEntries(Object.keys(tasksRpcContract).map(method => [method, (input: unknown) => harness.callRpc(method, input)])) });
+    await editStatuses(settings);
+    const name = await settings.findByRole("textbox", { name: "Status name backlog" }) as HTMLInputElement;
+    // An empty name is rejected on blur; Done must not discard the draft or the error.
+    fireEvent.change(name, { target: { value: "" } });
+    fireEvent.blur(name);
+    await settings.findByRole("alert");
+    const done = settings.getByRole("button", { name: "Done editing statuses" });
+    expect(done.hasAttribute("disabled")).toBe(true);
+    fireEvent.click(done);
+    expect((settings.getByRole("textbox", { name: "Status name backlog" }) as HTMLInputElement).value).toBe("");
+    expect(settings.getByRole("alert")).toBeTruthy();
+    expect(store.tasks.getProject(alpha.id)?.statuses?.[0]?.name ?? "Backlog").toBe("Backlog");
+    // Correcting the name saves it and releases Done.
+    fireEvent.change(settings.getByRole("textbox", { name: "Status name backlog" }), { target: { value: "Incoming" } });
+    fireEvent.blur(settings.getByRole("textbox", { name: "Status name backlog" }));
+    await waitFor(() => expect(settings.queryByRole("alert")).toBeNull());
+    await waitFor(() => expect(settings.getByRole("button", { name: "Done editing statuses" }).hasAttribute("disabled")).toBe(false));
+    fireEvent.click(settings.getByRole("button", { name: "Done editing statuses" }));
+    expect(settings.getByRole("list", { name: "Status order" })).toBeTruthy();
   } finally { cleanup(); await harness.dispose(); }
 });
 
@@ -595,7 +624,7 @@ it("shows the plan-gated statuses only when planning is required, and the status
     const alpha = store.tasks.createProject({ name: "Alpha", prefix: "A", color: "blue" });
     registerTasksApi(bb, store);
     const settings = renderSlot(app.settingsSections[0]!, {}, { rpc: Object.fromEntries(Object.keys(tasksRpcContract).map(method => [method, (input: unknown) => harness.callRpc(method, input)])) });
-    await settings.findByRole("combobox", { name: "Planning" });
+    await settings.findByRole("combobox", { name: "Mode" });
     const block = () => within(settings.getByRole("region", { name: "Project planning" })).queryByTestId("plan-gated-statuses");
     expect(block()).toBeNull();
     expect(settings.queryByText(/Changes save automatically/)).toBeNull();
@@ -605,7 +634,7 @@ it("shows the plan-gated statuses only when planning is required, and the status
     expect(settings.queryAllByRole("checkbox", { name: /approved plan/ })).toHaveLength(0);
     expect(settings.queryByText("Plan", { selector: "label" })).toBeNull();
     for (const [label, value] of [["Optional", "optional"], ["Required", "required"], ["Optional", "optional"]] as const) {
-      fireEvent.click(settings.getByRole("combobox", { name: "Planning" }));
+      fireEvent.click(settings.getByRole("combobox", { name: "Mode" }));
       fireEvent.click(await settings.findByRole("option", { name: label }));
       await waitFor(() => expect(store.tasks.getProject(alpha.id)?.planning).toBe(value));
       await waitFor(() => (value === "required" ? expect(block()).not.toBeNull() : expect(block()).toBeNull()));

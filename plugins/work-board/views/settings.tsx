@@ -11,7 +11,7 @@ import {
   SelectContent,
   SelectItem,
 } from "@/components/ui/select";
-import { useId, useLayoutEffect, useRef, useState, type ComponentType, type ReactNode } from "react";
+import { useEffect, useId, useLayoutEffect, useRef, useState, type ComponentType, type ReactNode } from "react";
 import { useBbNavigate } from "@get-bb/plugin-sdk/app";
 import { Button } from "@/components/ui/button";
 import { Popover, PopoverTrigger, PopoverContent } from "@/components/ui/popover";
@@ -36,7 +36,8 @@ import type { archiveSettingSchema, autoArchiveAfterDaysSchema, planningSchema, 
 import type { z } from "zod";
 import { NewProjectDialog } from "./manage/new-project-dialog.js";
 
-function ProjectStatuses({ project }: { project: Project }) {
+/** `onBusy` reports a save in flight or a rejected draft, so the editor is not closed over a draft or an error. */
+function ProjectStatuses({ project, onBusy }: { project: Project; onBusy: (busy: boolean) => void }) {
   const rpc = useTasksRpc();
   const [statuses, setStatuses] = useState<TaskStatusDefinition[]>(
     () => project.statuses ?? DEFAULT_TASK_STATUSES,
@@ -65,6 +66,12 @@ function ProjectStatuses({ project }: { project: Project }) {
         )
         ?.focus({ preventScroll: true });
   }, [draggedId, statuses]);
+  // A rejection with nothing left to correct (a refused removal) does not hold the editor open.
+  const failedDraft = error !== null && (adding || JSON.stringify(statuses) !== JSON.stringify(saved));
+  useEffect(() => {
+    onBusy(saving || failedDraft);
+    return () => onBusy(false);
+  }, [saving, failedDraft]);
   const save = async (next: TaskStatusDefinition[]) => {
     if (JSON.stringify(next) === JSON.stringify(saved)) return;
     setSaving(true);
@@ -465,17 +472,18 @@ function SwitchRow({ label, checked, disabled, onChange, hint }: {
 
 function StatusesSection({ project }: SectionProps) {
   const [editing, setEditing] = useState(false);
+  const [busy, setBusy] = useState(false);
   const statuses: TaskStatusDefinition[] = project.statuses ?? DEFAULT_TASK_STATUSES;
   return (
     <section aria-label="Project task statuses" className="space-y-3 border-t border-border pt-4">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <h3 className="text-sm font-medium">Statuses</h3>
-        <Button size="sm" variant="outline" className="h-7 px-2.5" aria-expanded={editing}
+        <Button size="sm" variant="outline" className="h-7 px-2.5" aria-expanded={editing} disabled={editing && busy}
           aria-label={editing ? "Done editing statuses" : "Edit statuses"} onClick={() => setEditing(!editing)}>
           {editing ? "Done" : "Edit"}
         </Button>
       </div>
-      {editing ? <ProjectStatuses key={`${project.id}:${JSON.stringify(project.statuses)}`} project={project} /> : (
+      {editing ? <ProjectStatuses key={`${project.id}:${JSON.stringify(project.statuses)}`} project={project} onBusy={setBusy} /> : (
         <ol aria-label="Status order" className="flex flex-wrap items-center gap-x-1 gap-y-1.5 text-xs">
           {statuses.map((status, index) => (
             <li key={status.id} className="inline-flex items-center gap-1">
@@ -502,7 +510,7 @@ function PlanningSection({ project, onSaved }: SectionProps) {
   return (
     <section aria-label="Project planning" className="space-y-3 border-t border-border pt-4">
       <h3 className="text-sm font-medium">Planning</h3>
-      <SelectRow label="Planning" value={planning} disabled={busy} onChange={(value) => void update({ planning: value })}
+      <SelectRow label="Mode" value={planning} disabled={busy} onChange={(value) => void update({ planning: value })}
         options={[["off", "Off"], ["optional", "Optional"], ["required", "Required"]]}
         hint="Off hides plans for this project (existing plans are kept). Optional turns on plans and their review. Required keeps a card out of the statuses below until its plan is approved; epics are exempt." />
       <p className="text-xs text-muted-foreground">Only you change the planning mode and the statuses that need an approved plan; agents cannot.</p>

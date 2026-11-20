@@ -150,13 +150,15 @@ it("configures repositories and enables background sync from compact project set
   // The section is collapsed; its summary shows the sync state and the repository count.
   const section = (await slot.findByText("Git and pull requests")).closest("details")!;
   expect(section.open).toBe(false);
-  await slot.findByRole("checkbox", { name: "example/service" });
-  expect(slot.getByTestId("git-summary").textContent).toBe("Sync off · 0 repositories");
+  await waitFor(() => expect(slot.getByTestId("git-summary").textContent).toBe("Sync off · 0 repositories"));
+  // Open the section before reaching for anything inside it, as a user must.
   fireEvent.click(slot.getByText("Git and pull requests"));
   expect(section.open).toBe(true);
+  await slot.findByRole("checkbox", { name: "example/service" });
   expect(slot.queryByText("Unsaved changes")).toBeNull();
   fireEvent.click(slot.getByRole("checkbox", { name: "example/service" }));
-  expect(slot.getByTestId("git-summary").textContent).toBe("Sync off · 1 repository");
+  // The summary shows the saved state and flags the draft.
+  expect(slot.getByTestId("git-summary").textContent).toBe("Sync off · 0 repositories · unsaved changes");
   expect(slot.getByText("Unsaved changes")).toBeTruthy();
   expect(slot.getByRole("button", { name: "Sync now" }).hasAttribute("disabled")).toBe(true);
   fireEvent.click(slot.getByRole("checkbox", { name: "example/available" }));
@@ -236,6 +238,7 @@ it("keeps the shared-file switch derived from the rules when overlapEnabled is a
   data.setConfig(f.project.id, gitSyncConfigSchema.parse({ overlapRules: rules }));
   expect(data.config(f.project.id).overlapEnabled).toBeUndefined();
   const withRules = renderSlot(app.settingsSections[0]!, {}, { rpc: f.rpc });
+  fireEvent.click(await withRules.findByText("Git and pull requests"));
   fireEvent.click(await withRules.findByText("Advanced settings"));
   await waitFor(() => expect(withRules.getByRole("switch", { name: "Highlight shared files between PRs" }).getAttribute("aria-checked")).toBe("true"));
   expect((withRules.getByRole("textbox", { name: "Rule 1 pattern" }) as HTMLInputElement).value).toBe("migrations/**");
@@ -243,6 +246,7 @@ it("keeps the shared-file switch derived from the rules when overlapEnabled is a
   cleanup();
   data.setConfig(f.project.id, gitSyncConfigSchema.parse({}));
   const empty = renderSlot(app.settingsSections[0]!, {}, { rpc: f.rpc });
+  fireEvent.click(await empty.findByText("Git and pull requests"));
   fireEvent.click(await empty.findByText("Advanced settings"));
   await waitFor(() => expect(empty.getByRole("switch", { name: "Highlight shared files between PRs" })).toBeTruthy());
   expect(empty.getByRole("switch", { name: "Highlight shared files between PRs" }).getAttribute("aria-checked")).toBe("false");
@@ -251,10 +255,67 @@ it("keeps the shared-file switch derived from the rules when overlapEnabled is a
   cleanup();
   data.setConfig(f.project.id, gitSyncConfigSchema.parse({ overlapRules: rules, overlapEnabled: false }));
   const off = renderSlot(app.settingsSections[0]!, {}, { rpc: f.rpc });
+  fireEvent.click(await off.findByText("Git and pull requests"));
   fireEvent.click(await off.findByText("Advanced settings"));
   await waitFor(() => expect(off.getByRole("switch", { name: "Highlight shared files between PRs" }).getAttribute("aria-checked")).toBe("false"));
   fireEvent.click(off.getByRole("switch", { name: "Highlight shared files between PRs" }));
   expect((off.getByRole("textbox", { name: "Rule 1 pattern" }) as HTMLInputElement).value).toBe("migrations/**");
+});
+
+it("writes the shared-file switch only once the owner touches it and keeps an explicit off winning", async () => {
+  const f = setup();
+  const data = createGitSyncStore(f.bb.storage.database());
+  const rules = [{ pattern: "docs/**", match: "changed" as const }];
+  const effective = async () => (await f.harness.callRpc("config.get", { projectId: f.project.id, key: "git.overlapEnabled" }) as { values: Record<string, unknown> }).values["git.overlapEnabled"];
+  const setRules = () => f.harness.callRpc("config.set", { projectId: f.project.id, key: "git.overlapRules", value: rules });
+  // A legacy project: an unrelated save and a no-op save leave the key absent, so an older rules-only write still applies.
+  data.setConfig(f.project.id, gitSyncConfigSchema.parse({}));
+  const slot = renderSlot(app.settingsSections[0]!, {}, { rpc: f.rpc });
+  fireEvent.click(await slot.findByText("Git and pull requests"));
+  const interval = await slot.findByRole("spinbutton", { name: "Interval (minutes)" });
+  await waitFor(() => expect((interval.closest("fieldset") as HTMLFieldSetElement).disabled).toBe(false));
+  fireEvent.click(slot.getByRole("button", { name: "Save Git/PR settings" }));
+  await slot.findByText("Git/PR settings saved.");
+  fireEvent.change(interval, { target: { value: "9" } });
+  fireEvent.click(slot.getByRole("button", { name: "Save Git/PR settings" }));
+  await waitFor(() => expect(data.config(f.project.id).pollMinutes).toBe(9));
+  expect(data.config(f.project.id).overlapEnabled).toBeUndefined();
+  await setRules();
+  expect(await effective()).toBe(true);
+  expect(data.config(f.project.id).overlapEnabled).toBeUndefined();
+  cleanup();
+  // The owner turning the switch off writes an explicit false that later rules-only writes do not override.
+  const owner = renderSlot(app.settingsSections[0]!, {}, { rpc: f.rpc });
+  fireEvent.click(await owner.findByText("Git and pull requests"));
+  fireEvent.click(await owner.findByText("Advanced settings"));
+  const control = await owner.findByRole("switch", { name: "Highlight shared files between PRs" });
+  await waitFor(() => expect(control.getAttribute("aria-checked")).toBe("true"));
+  fireEvent.click(control);
+  fireEvent.click(owner.getByRole("button", { name: "Save Git/PR settings" }));
+  await waitFor(() => expect(data.config(f.project.id).overlapEnabled).toBe(false));
+  await setRules();
+  expect(await effective()).toBe(false);
+  expect(data.config(f.project.id).overlapRules).toEqual(rules);
+});
+
+it("reconciles the Git form with the stored values after a save, so a trimmed pattern is not unsaved", async () => {
+  const f = setup();
+  const data = createGitSyncStore(f.bb.storage.database());
+  data.setConfig(f.project.id, gitSyncConfigSchema.parse({ overlapEnabled: true, overlapRules: [{ pattern: "docs/**", match: "changed" }] }));
+  const slot = renderSlot(app.settingsSections[0]!, {}, { rpc: f.rpc });
+  fireEvent.click(await slot.findByText("Git and pull requests"));
+  fireEvent.click(await slot.findByText("Advanced settings"));
+  const pattern = await slot.findByRole("textbox", { name: "Rule 1 pattern" }) as HTMLInputElement;
+  await waitFor(() => expect(pattern.value).toBe("docs/**"));
+  fireEvent.change(pattern, { target: { value: "docs/** " } });
+  expect(slot.queryByText("Unsaved changes")).toBeNull();
+  fireEvent.click(slot.getByRole("button", { name: "Save Git/PR settings" }));
+  await slot.findByText("Git/PR settings saved.");
+  expect(data.config(f.project.id).overlapRules).toEqual([{ pattern: "docs/**", match: "changed" }]);
+  await waitFor(() => expect((slot.getByRole("textbox", { name: "Rule 1 pattern" }) as HTMLInputElement).value).toBe("docs/**"));
+  expect(slot.queryByText("Unsaved changes")).toBeNull();
+  expect(slot.getByRole("button", { name: "Sync now" }).hasAttribute("disabled")).toBe(false);
+  expect(slot.getByTestId("git-summary").textContent).toBe("Sync off · 0 repositories");
 });
 
 it.each(["main", "side"])(
