@@ -58,18 +58,19 @@ export function GitSyncSettings({ projectId }: { projectId: string }) {
   useEffect(() => {
     if (query.data && savedSignature.current !== JSON.stringify(query.data.config)) load(query.data.config);
   }, [query.data]);
-  // What Save writes. The switch is written only while it differs from the stored effective value, so a stored
-  // configuration without the key stays derivable from its rules (a toggle reverted before Save counts as untouched);
-  // switching rules off keeps the rows.
+  // What Save writes. One rule for the switch: a stored value is kept, an absent key stays absent while the switch
+  // matches what the rules being saved imply (non-empty means on), and otherwise the choice is written explicitly.
+  // Switching rules off keeps the rows.
+  const rulesToSave = overlapRules.filter((rule) => rule.pattern.trim());
   const formConfig = (): GitSyncConfig => ({
     ...config,
     repositories: lines(repositories),
     requiredChecks: lines(checks),
     postMergeWorkflows: lines(workflows),
     prWaitIgnoredChecks: lines(ignored),
-    ...(saved && overlapOn !== overlapEnabled(saved) ? { overlapEnabled: overlapOn } : {}),
+    ...(overlapOn !== (config.overlapEnabled ?? rulesToSave.length > 0) ? { overlapEnabled: overlapOn } : {}),
     // Rows without a pattern are not rules yet.
-    overlapRules: overlapRules.filter((rule) => rule.pattern.trim()),
+    overlapRules: rulesToSave,
   });
   // Compared the way Save stores it (trimmed, normalized), with the effective switch.
   const canonical = (value: GitSyncConfig) => {

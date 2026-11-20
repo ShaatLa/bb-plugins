@@ -206,7 +206,9 @@ it("configures repositories and enables background sync from compact project set
     { pattern: "migrations/**", match: "changed" },
     { pattern: "docs/*.json", match: "changed" },
   ];
-  expect(createGitSyncStore(f.bb.storage.database()).config(f.project.id)).toMatchObject({ overlapEnabled: true, overlapRules: rules });
+  // On with rules is what an absent key already means, so the key stays absent.
+  expect(createGitSyncStore(f.bb.storage.database()).config(f.project.id)).toMatchObject({ overlapRules: rules });
+  expect(createGitSyncStore(f.bb.storage.database()).config(f.project.id).overlapEnabled).toBeUndefined();
   // Saved: the unsaved marker is gone and Sync now works again.
   await waitFor(() => expect(slot.queryByText("Unsaved changes")).toBeNull());
   expect(slot.getByRole("button", { name: "Sync now" }).hasAttribute("disabled")).toBe(false);
@@ -316,6 +318,41 @@ it("treats a switch toggled back to its stored value as untouched, so the key st
   await f.harness.callRpc("config.set", { projectId: f.project.id, key: "git.overlapRules", value: [{ pattern: "docs/**", match: "changed" }] });
   const result = await f.harness.callRpc("config.get", { projectId: f.project.id, key: "git.overlapEnabled" }) as { values: Record<string, unknown> };
   expect(result.values["git.overlapEnabled"]).toBe(true);
+});
+
+it("writes an explicit switch value only when it differs from what the saved rules imply", async () => {
+  const f = setup();
+  const data = createGitSyncStore(f.bb.storage.database());
+  data.setConfig(f.project.id, gitSyncConfigSchema.parse({}));
+  const open = async () => {
+    const slot = renderSlot(app.settingsSections[0]!, {}, { rpc: f.rpc });
+    fireEvent.click(await slot.findByText("Git and pull requests"));
+    fireEvent.click(await slot.findByText("Advanced settings"));
+    const control = await slot.findByRole("switch", { name: "Highlight shared files between PRs" });
+    await waitFor(() => expect((control.closest("fieldset") as HTMLFieldSetElement).disabled).toBe(false));
+    return { slot, control };
+  };
+  // Legacy with no rules: on, add a rule, off, save writes an explicit false, and the switch reopens off.
+  const first = await open();
+  fireEvent.click(first.control);
+  fireEvent.change(first.slot.getByRole("textbox", { name: "Rule 1 pattern" }), { target: { value: "docs/**" } });
+  fireEvent.click(first.control);
+  fireEvent.click(first.slot.getByRole("button", { name: "Save Git/PR settings" }));
+  await first.slot.findByText("Git/PR settings saved.");
+  expect(data.config(f.project.id)).toMatchObject({ overlapEnabled: false, overlapRules: [{ pattern: "docs/**", match: "changed" }] });
+  cleanup();
+  const reopened = await open();
+  await waitFor(() => expect(reopened.control.getAttribute("aria-checked")).toBe("false"));
+  cleanup();
+  // Legacy with rules: a toggle reverted without rule edits keeps the key absent.
+  data.setConfig(f.project.id, gitSyncConfigSchema.parse({ overlapRules: [{ pattern: "docs/**", match: "changed" }] }));
+  const legacy = await open();
+  await waitFor(() => expect(legacy.control.getAttribute("aria-checked")).toBe("true"));
+  fireEvent.click(legacy.control);
+  fireEvent.click(legacy.control);
+  fireEvent.click(legacy.slot.getByRole("button", { name: "Save Git/PR settings" }));
+  await legacy.slot.findByText("Git/PR settings saved.");
+  expect(data.config(f.project.id).overlapEnabled).toBeUndefined();
 });
 
 it("shows Unavailable in the collapsed Git summary when the configuration cannot be loaded", async () => {
