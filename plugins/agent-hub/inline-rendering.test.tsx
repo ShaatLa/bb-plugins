@@ -115,6 +115,11 @@ it('previews the quoted message of a background update that has no reply yet', (
   const slot = renderSlot({ component:UpdateGroup }, { items:[{ ...plugin, id:'ans_first', answer:'Earlier' }, plugin], children:(i: any) => <ItemCard item={i} chat /> }, { sdk } as any);
   expect(slot.container.querySelector('[data-update-group]')?.textContent).toContain('New comment on EXA-1');
 });
+it('previews a bb notice in a background update that has no reply yet', () => {
+  const notice = { ...item, id:'ans_notice', kind:'update' as const, status:'answered' as const, question:'[bb system]\n\n@thread:thr_example completed:\n\nAPPROVE v2', answer:'', answerSeq:null, trigger:{ kind:'system' as const, sourceId:null, sourceTitle:null } } as any;
+  const slot = renderSlot({ component:UpdateGroup }, { items:[{ ...notice, id:'ans_first', answer:'Earlier' }, notice], children:(i: any) => <ItemCard item={i} chat /> }, { sdk } as any);
+  expect(slot.container.querySelector('[data-update-group] p')?.textContent).toContain('APPROVE v2');
+});
 it('gives a message with no reply of its own only its expand and link icons, without the More menu', () => {
   const update = { ...item, id:'ans_bare', kind:'update' as const, status:'answered' as const, question:'[bb message from plugin:example-plugin]\n\nNotice', answer:null, answerSeq:null, trigger:{ kind:'plugin' as const, sourceId:'example-plugin', sourceTitle:null } } as any;
   const slot = renderSlot({ component:ItemCard }, { item:update, chat:true }, { sdk } as any);

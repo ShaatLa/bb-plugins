@@ -202,8 +202,9 @@ function IncomingHeader({ item, time }: { item: Item; time: ReactNode }) {
 // latest on bb's nested-rows rail; expanded, each shows as usual. reveal: a jump or search target that opens the group.
 const OPEN_GROUPS = 'bb-plugin-answers:open-update-groups';
 const openGroups = (): string[] => { try { const ids = JSON.parse(localStorage.getItem(OPEN_GROUPS) ?? '[]'); return Array.isArray(ids) ? ids : []; } catch { return []; } };
-// An update with no reply yet (still being worked on, or one that joined a running turn) previews the message it quotes.
-const groupPreview = (item: Item) => item.answer?.trim() ? item.answer : item.trigger?.kind === 'agent' || item.trigger?.kind === 'plugin' ? unlabel(item.question) : '';
+// An update with no reply yet (still being worked on, or one that joined a running turn) previews the message it quotes,
+// whoever sent it: another thread, a plugin, a bb notice or a script.
+const groupPreview = (item: Item) => item.answer?.trim() ? item.answer : item.trigger ? unlabel(item.question) : '';
 export function UpdateGroup({ items, reveal, children }: { items: Item[]; reveal?: string | null; children: (item: Item) => ReactNode }) {
   // A group is known by its first update, which a newer update joining it does not change; an opened group stays open
   // across chats, screens and reloads (the last 200 are remembered).
