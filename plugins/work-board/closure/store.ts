@@ -215,10 +215,14 @@ export function createClosureStore(db: Database) {
     return found && fromRow(found);
   }
 
-  /** The sessions that hold a card: every link except a parent fallback (by recorded origin, or the legacy label of an old one). */
+  /**
+   * The one holder predicate: every link holds the card except a parent fallback, and only the recorded origin says
+   * so. A legacy or imported link (no origin) counts as a holder whatever its label, which is the conservative side:
+   * its child becomes a helper, never an independent worker. The preset name is never evidence.
+   */
   function holders(taskId: string): string[] {
     return db.prepare<[string], { thread_id: string }>(
-      "SELECT thread_id FROM task_threads WHERE task_id = ? AND NOT (link_origin = 'parent' OR (link_origin IS NULL AND preset_name = 'Parent thread'))",
+      "SELECT thread_id FROM task_threads WHERE task_id = ? AND link_origin IS NOT 'parent'",
     ).all(taskId).map((link) => link.thread_id);
   }
 

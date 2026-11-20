@@ -561,8 +561,8 @@ export function ownQuestionRefusal(kind: ReportKind, taskKey: string): string {
 /** How a calling thread stands on a card: its own session, or a helper whose parent already holds the card. */
 export async function cardRole(bb: BbPluginApi, store: TasksApiStore, taskId: string, threadId: string) {
   const thread = await bb.sdk.threads.get({ threadId });
-  // The parent fallback link only marks a card nobody works on; it makes no one a helper.
-  const sessions = store.tasks.listTaskThreads(taskId).filter((link) => link.presetName !== "Parent thread").map((link) => link.threadId);
+  // The parent fallback link only marks a card nobody works on; it makes no one a helper. One predicate, shared with the attach path.
+  const sessions = store.tasks.closures.holders(taskId);
   const parentThreadId = thread.parentThreadId ?? null;
   return { parentThreadId, attached: sessions.includes(threadId), helper: parentThreadId !== null && sessions.includes(parentThreadId) };
 }

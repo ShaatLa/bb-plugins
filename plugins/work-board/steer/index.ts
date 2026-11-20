@@ -53,7 +53,7 @@ async function appendToQueuedNotice(
   threadId: string,
   text: string,
   wanted?: () => boolean,
-): Promise<boolean> {
+): Promise<"appended" | "skipped" | "none"> {
   // A conflict means the row changed under us, so list once more before giving up.
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
@@ -68,21 +68,21 @@ async function appendToQueuedNotice(
         (last.state !== "queued" && last.state !== "waiting") ||
         !last.editable
       )
-        return false;
-      // Dropped notices count as handled: the caller learns it from `wanted` having said no.
-      if (wanted && !wanted()) return true;
+        return "none";
+      // Right before the transport call: a notice that went stale is dropped, and said so.
+      if (wanted && !wanted()) return "skipped";
       await bb.sdk.threads.queuedMessages.update({
         threadId,
         queuedMessageId: last.id,
         expectedUpdatedAt: last.updatedAt,
         input: [{ ...part, text: part.text + QUEUED_NOTICE_SEPARATOR + text }],
       });
-      return true;
+      return "appended";
     } catch {
       // Retry once, then fall back to a normal send.
     }
   }
-  return false;
+  return "none";
 }
 
 // Concurrent deliveries to one thread would both see the same last row, so each thread's append-or-send runs in turn.
@@ -109,8 +109,10 @@ function appendOrSend(
     // The check runs inside the serialized job, right before each transport call, so a notice that went stale while it
     // waited for its turn or for the queue read is dropped.
     if (wanted && !wanted()) return false;
-    if (await appendToQueuedNotice(bb, threadId, text, wanted)) return !wanted || wanted();
-    if (wanted && !wanted()) return false;
+    // The outcome is the transport's own: once the update or send has started, its success is a delivery.
+    const appended = await appendToQueuedNotice(bb, threadId, text, wanted);
+    if (appended === "appended") return true;
+    if (appended === "skipped" || (wanted && !wanted())) return false;
     await bb.sdk.threads.send({
       threadId,
       originPluginId: bb.pluginId,

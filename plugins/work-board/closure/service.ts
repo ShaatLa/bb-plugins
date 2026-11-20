@@ -159,7 +159,7 @@ export function createClosureService(bb: BbPluginApi, tasks: TasksStore) {
       if (entry.action === "archived") return { threadId: entry.threadId, action: "archived", reason: null };
       if (entry.action === "kept") return { threadId: entry.threadId, action: "kept", reason: entry.reason };
       // A decision still running is not yet a promise: it is reported as pending and the agent is not told to start fresh.
-      return { threadId: entry.threadId, action: "on_idle", reason: entry.action === "on_idle" || entry.action === "candidate" ? null : PENDING };
+      return { threadId: entry.threadId, action: "on_idle", reason: entry.action === "on_idle" ? null : PENDING };
     });
   }
 
