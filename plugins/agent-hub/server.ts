@@ -194,13 +194,15 @@ function start(bb: BbPluginApi, migrationError: string | null) {
     const first = rows[0], newer = first && (p.anchor !== undefined || p.after) && db.prepare(`SELECT 1 FROM items WHERE thread_id=? AND (${at}>? OR (${at}=? AND id>?)) LIMIT 1`).get(p.threadId,first.list_at,first.list_at,first.id);
     return {items,nextCursor:more && last ? `${last.list_at}|${last.id}` : null,...(p.anchor !== undefined || p.after ? {newerCursor:newer ? `${first!.list_at}|${first!.id}` : null} : {})};
   }
+  // Reading an archived chat's rows must stick (the chat shows them as unread), though they stay out of the counts.
+  const READABLE_SQL = ATTENTION_SQL.replace(' AND thread_id NOT IN (SELECT thread_id FROM archived_threads)','');
   function markRead(raw: {all:true;threadId?:string}): {ok:true;batch:string|null;count:number};
   function markRead(raw: z.infer<typeof inputs.markRead>): {ok:true;batch?:string|null;count?:number};
   function markRead(raw: z.infer<typeof inputs.markRead>) {
     const p=inputs.markRead.parse(raw), now=Date.now();
-    if ('ids' in p) return commit(`UPDATE items SET read_at=?,read_batch=NULL WHERE id IN (${p.ids.map(()=>'?').join(',')}) AND ${ATTENTION_SQL}`,now,...p.ids);
+    if ('ids' in p) return commit(`UPDATE items SET read_at=?,read_batch=NULL WHERE id IN (${p.ids.map(()=>'?').join(',')}) AND ${READABLE_SQL}`,now,...p.ids);
     // Reading does not answer an open agent question; it stays counted until answered.
-    const batch=randomUUID(), count=db.prepare(`UPDATE items SET read_at=?,read_batch=? WHERE ${ATTENTION_SQL} AND NOT (kind='for_me' AND status='open')${p.threadId ? ' AND thread_id=?' : ''}`).run(now,batch,...(p.threadId ? [p.threadId] : [])).changes;
+    const batch=randomUUID(), count=db.prepare(`UPDATE items SET read_at=?,read_batch=? WHERE ${p.threadId ? READABLE_SQL : ATTENTION_SQL} AND NOT (kind='for_me' AND status='open')${p.threadId ? ' AND thread_id=?' : ''}`).run(now,batch,...(p.threadId ? [p.threadId] : [])).changes;
     invalidate(); return {ok:true as const,batch:count ? batch : null,count};
   }
   // Reads made in Agent Hub's UI also clear bb's own unread mark on a thread once nothing there is left unread here,

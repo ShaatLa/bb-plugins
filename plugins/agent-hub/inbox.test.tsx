@@ -305,6 +305,28 @@ it('puts a message that joined the turn answering the owner above the owner\'s m
   const replied = { ...joined, id:'ans_replied', answer:'Steer reply', answeredAt:done.answeredAt };
   expect(shape(conversation([[done], [replied]] as any, false, [], true, null, false).entries)).toEqual(['ans_mine', 'ans_replied']);
 });
+it('keeps a message that joined the owner\'s turn at its own time when other messages came after the question, so the New divider is not far above them', async () => {
+  const { conversation } = await import('./inbox');
+  const mine = { ...base, id:'ans_mine', turnId:'turn-1', status:'answered', answer:'Answer', answerSeq:9, createdAt:asked, answeredAt:asked + 9 * minute, readAt:1 };
+  const other = { ...between, id:'ans_other', turnId:'turn-2', answer:null, createdAt:asked + minute, answeredAt:asked + minute, readAt:1 };
+  const joined = { ...between, id:'ans_joined', turnId:'turn-1', answer:null, createdAt:asked + 5 * minute, answeredAt:asked + 5 * minute, readAt:null };
+  const shape = (entries: any[]) => entries.map(e => `${e.part ?? ''}${e.group.map((i: any) => i.id).join('+')}`);
+  expect(shape(conversation([[other], [mine], [joined]] as any, false, [], false, null, false).entries)).toEqual(['question' + 'ans_mine', 'ans_other', 'ans_joined', 'answerans_mine']);
+  // Still waiting (no split), and a message with no turn blocks like one of another turn.
+  const waiting = { ...mine, status:'waiting', answer:null, answerSeq:null, answeredAt:null };
+  expect(shape(conversation([[waiting], [other], [joined]] as any, false, [], false, null, false).entries)).toEqual(['ans_mine', 'ans_other', 'ans_joined']);
+  expect(shape(conversation([[waiting], [{ ...other, turnId:null }], [joined]] as any, false, [], false, null, false).entries)).toEqual(['ans_mine', 'ans_other', 'ans_joined']);
+});
+it('opens a chat with the New divider right above the unread message that joined the owner\'s turn, below the read messages that came before it', async () => {
+  const mine = { ...base, id:'ans_mine', turnId:'turn-1', status:'answered', answer:'Answer', answerSeq:9, createdAt:asked, answeredAt:asked + 9 * minute, readAt:1 };
+  const other = { ...base, id:'ans_other', question:'Other question', questionSeq:3, turnId:'turn-2', answer:'Other answer', answerSeq:4, createdAt:asked + minute, answeredAt:asked + minute, readAt:1 };
+  const joined = { ...between, id:'ans_joined', turnId:'turn-1', answer:null, createdAt:asked + 5 * minute, answeredAt:asked + 5 * minute, readAt:null };
+  const { slot, recipients } = setup({ list: () => ({ items:[mine, joined, other], nextCursor:null }) }); fireEvent.click(await recipients.findByRole('option'));
+  await slot.findByRole('list', { name:'History' });
+  await waitFor(() => expect(document.querySelector('[data-new]')).not.toBeNull());
+  const order = Array.from(document.querySelectorAll('[data-new], [data-history-ids]')).flatMap(node => node.hasAttribute('data-new') ? ['new'] : node.getAttribute('data-history-ids')!.split(' '));
+  expect(order.indexOf('new')).toBe(order.indexOf('ans_joined') - 1); expect(order.indexOf('ans_other')).toBeLessThan(order.indexOf('new'));
+});
 it('does not fold the last update shown in full back into its group when a turn starts (a queued message sent)', async () => {
   const { conversation } = await import('./inbox');
   const run = [[quiet(1, 'One')], [quiet(2, 'Two')], [quiet(3, 'Long final report')]] as any;

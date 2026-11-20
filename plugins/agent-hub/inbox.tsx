@@ -58,7 +58,13 @@ export function conversation(groups: Item[][], more: boolean, carried: Item[][] 
   // A message that joined the turn answering the owner (a child's completion, another thread's or a plugin's message) stands
   // above the owner's message, so the question and its answer stay together.
   const asked = new Map(groups.filter(group => group[0].kind === 'mine' && group[0].turnId).map(group => [group[0].turnId!, group[0].createdAt] as const));
-  const above = (group: Item[]) => { const item = group[0]; return item.kind === 'update' && !item.answer && item.turnId ? asked.get(item.turnId) ?? null : null; };
+  // Only while no message of another turn came in between: displaced over others, a late unread update would sit far above
+  // the new messages, and the New divider with it.
+  const above = (group: Item[]) => {
+    const item = group[0], from = item.kind === 'update' && !item.answer && item.turnId ? asked.get(item.turnId) : undefined; if (from === undefined) return null;
+    const to = activityAt(item);
+    return groups.some(other => other[0].turnId !== item.turnId && [activityAt(other.at(-1)!), ...(other[0].kind === 'mine' ? [other[0].createdAt] : [])].some(time => time > from && time < to)) ? null : from;
+  };
   // One the agent answered in that turn follows the owner's answer instead, without splitting the owner's message from it.
   const after = (group: Item[]) => { const item = group[0]; return item.kind === 'update' && !!item.answer && !!item.turnId && asked.has(item.turnId); };
   const rank = (group: Item[]) => above(group) !== null ? -1 : after(group) ? 1 : 0;

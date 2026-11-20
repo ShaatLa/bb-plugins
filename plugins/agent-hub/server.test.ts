@@ -37,6 +37,28 @@ describe('server',()=>{
    expect(threads).toHaveBeenCalledTimes(4);
   } finally {now.mockRestore();}
  });
+ describe('archived chat',()=>{
+  const archived=()=>{const r=setup(); seed(r.db,'ans_old','mine','t'); seed(r.db,'ans_old2','mine','t'); r.db.prepare("UPDATE items SET status='answered',answer='a',answered_at=1").run(); r.db.prepare("INSERT INTO archived_threads VALUES ('t')").run(); return r;};
+  const unread=(db:Database.Database)=>db.prepare("SELECT id FROM items WHERE read_at IS NULL ORDER BY id").all().map((r:any)=>r.id);
+  it('marks a row read by id, so it stops being the New divider at every open',async()=>{
+   const {harness,db}=archived(); await harness.behavior.callRpc('markRead',{ids:['ans_old']}); expect(unread(db)).toEqual(['ans_old2']);
+  });
+  it('marks its rows read by thread',async()=>{
+   const {harness,db}=archived(); await harness.behavior.callRpc('markRead',{all:true,threadId:'t'}); expect(unread(db)).toEqual([]);
+  });
+  it('stays out of the counts, keeps the first read time, and does not come back in the badge after an unarchive',async()=>{
+   const {harness,db}=archived(); expect((await harness.behavior.callRpc('counts',{}) as any).unread).toBe(0);
+   await harness.behavior.callRpc('markRead',{ids:['ans_old']}); const first=db.prepare("SELECT read_at FROM items WHERE id='ans_old'").get();
+   await new Promise(r=>setTimeout(r,5)); await harness.behavior.callRpc('markRead',{ids:['ans_old']}); expect(db.prepare("SELECT read_at FROM items WHERE id='ans_old'").get()).toEqual(first);
+   await harness.behavior.callRpc('markRead',{all:true,threadId:'t'}); db.prepare("DELETE FROM archived_threads").run();
+   expect((await harness.behavior.callRpc('counts',{}) as any).unread).toBe(0);
+  });
+  it('is left alone by Mark all read, and the read guard differs from the attention rule only by the archived clause',async()=>{
+   const {harness,db}=archived(); await harness.behavior.callRpc('markRead',{all:true}); expect(unread(db)).toEqual(['ans_old','ans_old2']);
+   db.prepare("DELETE FROM archived_threads").run(); seed(db,'ans_sub','mine','s'); db.prepare("INSERT INTO sub_threads VALUES ('s')").run(); db.prepare("UPDATE items SET status='answered',answer='a' WHERE id='ans_sub'").run();
+   await harness.behavior.callRpc('markRead',{ids:['ans_sub']}); expect(unread(db)).toContain('ans_sub');
+  });
+ });
  it('clears bb\'s unread mark when a thread has nothing left unread in Answers, and restores it on undo',async()=>{
   const {harness,db}=setup(), read=vi.fn(async(_a:unknown)=>({})), unread=vi.fn(async(_a:unknown)=>({}));
   harness.sdk.stub('threads.markRead',read as any); harness.sdk.stub('threads.markUnread',unread as any);
