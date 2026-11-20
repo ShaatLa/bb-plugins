@@ -160,6 +160,8 @@ describe("task questions", () => {
     expect(() => assertStepsSingleAction(joined)).toThrow(/^Steps 1, 3 may join several actions.*Nothing was saved\..*separate --step values, in order/);
     expect(() => assertStepsSingleAction(["Open Settings and Storage", "Check the list"])).not.toThrow();
     expect(() => assertStepsSingleAction(joined, [joined[0]!, joined[2]!])).not.toThrow();
+    // Each kept entry covers one occurrence: a second copy of a legacy step is new.
+    expect(() => assertStepsSingleAction([joined[0]!, joined[0]!], [joined[0]!])).toThrow(/^Step 2 may join/);
   });
 
   it("refuses joined steps through the registered RPCs and the CLI without saving anything", async () => {
@@ -176,14 +178,18 @@ describe("task questions", () => {
     // A legacy joined step that is kept does not block an edit of the prompt.
     bb.storage.database().prepare("UPDATE task_questions SET payload = json_set(payload, '$.steps', json_array(?)) WHERE id = ?").run(joined, question.id);
     await update([joined], "Does Retry reload the list?");
-    expect(structured.listQuestions(task.id)[0]).toMatchObject({ prompt: "Does Retry reload the list?", steps: [joined] });
+    const kept = structured.listQuestions(task.id)[0]!;
+    expect(kept).toMatchObject({ prompt: "Does Retry reload the list?", steps: [joined] });
+    // A second copy of the legacy step is a new step and is refused.
+    await expect(harness.callRpc("updateQuestion", { questionId: question.id, revision: kept.revision, prompt: kept.prompt, steps: [joined, joined], mode: "single", options: [{ label: "Yes" }] })).rejects.toThrow(/Step 2 may join several actions/);
+    expect(structured.listQuestions(task.id)[0]?.revision).toBe(kept.revision);
   });
 
   it("refuses joined steps in question add and question update with a non-zero exit", async () => {
     const { harness, task, structured } = setup();
     const add = await harness.runCli(["question", "add", task.key, "--kind", "check", "--prompt", "Does it reload?", "--step", "Press Retry and press Reload"]);
     expect(add.exitCode).not.toBe(0);
-    expect(add.stderr + add.stdout).toMatch(/Nothing was saved/);
+    expect(add.stderr).toMatch(/Nothing was saved/);
     expect(JSON.parse((await harness.runCli(["question", "list", task.key, "--json"])).stdout).questions).toEqual([]);
     const created = await harness.runCli(["question", "add", task.key, "--kind", "check", "--prompt", "Does it reload?", "--step", "Press Retry", "--json"]);
     expect(created.exitCode).toBe(0);

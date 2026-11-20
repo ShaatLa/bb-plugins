@@ -72,6 +72,7 @@ describe("an agent cannot close a card while an owner question is open", () => {
     const refusal = f.harness.callRpc("boardMove", { ...f.agent, status: "done" });
     await expect(refusal).rejects.toThrow("2 owner questions are still open");
     await expect(refusal).rejects.toThrow(`${decision.id} rev ${decision.revision} (decision) "Which database?"; ${check.id} rev ${check.revision} (check) "Does Retry reload the list?"`);
+    for (const q of [decision, check]) await expect(refusal).rejects.toThrow(`question delete ${f.task.key} --question ${q.id} --revision ${q.revision}`);
     expect(f.status()).toBe("in_progress");
     expect(f.store.tasks.getTask(f.task.id)!.position).toBe(positionBefore);
     expect(f.store.tasks.listComments(f.task.id).filter((c) => c.kind === "system")).toEqual([]);

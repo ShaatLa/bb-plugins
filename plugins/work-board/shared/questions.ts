@@ -66,10 +66,22 @@ const SENTENCE_BREAK = /[.!?…]["»”)]?\s+(?=["«“(]?[A-ZА-ЯЁ0-9])/u;
 // Common abbreviations end in a dot without ending the sentence.
 const ABBREVIATION = /\b(?:e\.g|i\.e|etc|vs|т\.е|т\.к|т\.д|т\.п|напр|см|стр)\.$/i;
 
-/** Each "How to check" step is a single sentence; several sentences are several steps. Steps in `kept` are not checked. */
+/** A step that matches an unused kept step is untouched; each kept entry covers one occurrence, so a duplicate of a legacy step is new. */
+function keptMatcher(kept: readonly string[]): (step: string) => boolean {
+  const unused = [...kept];
+  return (step) => {
+    const at = unused.indexOf(step);
+    if (at < 0) return false;
+    unused.splice(at, 1);
+    return true;
+  };
+}
+
+/** Each "How to check" step is a single sentence; several sentences are several steps. Steps in `kept` are not checked, once each. */
 export function assertStepsAtomic(steps: readonly string[], kept: readonly string[] = []): void {
+  const isKept = keptMatcher(kept);
   steps.forEach((step, index) => {
-    if (kept.includes(step)) return;
+    if (isKept(step)) return;
     const parts = step.trim().split(SENTENCE_BREAK);
     let sentences = 1;
     for (let i = 0; i < parts.length - 1; i++) if (!ABBREVIATION.test(parts[i]!.trim())) sentences++;
@@ -82,9 +94,10 @@ const ACTION = String.raw`(?:press|click|tap|open|close|select|choose|type|enter
 // Actions chained inside one sentence: "then", or a comma or "and" followed by another action verb.
 const CHAINED = new RegExp(String.raw`\b(?:then|after that|afterwards)\b|затем|потом|после чего|,\s*(?:and\s+|и\s+)?${ACTION}|\s(?:and|и)\s+${ACTION}`, "iu");
 
-/** Each new or changed step is one action: a step that chains actions ("then", or a comma or "and" before another verb) is refused. Steps in `kept` are not checked. */
+/** Each new or changed step is one action: a step that chains actions ("then", or a comma or "and" before another verb) is refused. Steps in `kept` are not checked, once each. */
 export function assertStepsSingleAction(steps: readonly string[], kept: readonly string[] = []): void {
-  const numbers = steps.flatMap((step, index) => (!kept.includes(step) && CHAINED.test(step) ? [index + 1] : []));
+  const isKept = keptMatcher(kept);
+  const numbers = steps.flatMap((step, index) => (!isKept(step) && CHAINED.test(step) ? [index + 1] : []));
   if (numbers.length)
     throw new Error(`Step${numbers.length > 1 ? "s" : ""} ${numbers.join(", ")} may join several actions ("then", or a comma or "and" before another action). Nothing was saved. ${STEP_SPLIT_HINT}`);
 }

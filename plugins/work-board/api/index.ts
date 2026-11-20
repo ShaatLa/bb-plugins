@@ -375,7 +375,7 @@ function assertNoOpenOwnerQuestions(
   const list = open.map((q) => `${q.id} rev ${q.revision} (${q.kind ?? "decision"}) "${q.prompt.length > 60 ? `${q.prompt.slice(0, 60)}…` : q.prompt}"`).join("; ");
   throw new Error(
     `${task.key} cannot move to ${statusLabel(targetStatus, project.statuses)}: ${open.length} owner question${open.length > 1 ? "s are" : " is"} still open: ${list}. ` +
-    `Wait for the answers, or withdraw a question that is no longer needed with \`bb work-board question delete ${task.key} --question ${open[0]!.id} --revision ${open[0]!.revision}\`, then move the card.`,
+    `Wait for the answers, or withdraw a question that is no longer needed (${open.map((q) => `\`bb work-board question delete ${task.key} --question ${q.id} --revision ${q.revision}\``).join("; ")}), then move the card.`,
   );
 }
 
