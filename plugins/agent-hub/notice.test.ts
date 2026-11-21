@@ -237,8 +237,13 @@ describe('notice RPC', () => {
       await vi.advanceTimersByTimeAsync(6 * 60000);
       expect(h.pushes).toEqual([{ title: 'Agent Hub', body: 'While you were away: 1 new in 1 threads' }]);
     });
-    it.each(['asked', 'off'])('sends nothing at level %s', async level => {
-      vi.useFakeTimers(); const h = setup({ settings: { notify: level } }); await vi.advanceTimersByTimeAsync(100);
+    it('pushes at level asked', async () => {
+      vi.useFakeTimers(); const h = setup({ settings: { notify: 'asked' } }); await vi.advanceTimersByTimeAsync(100);
+      await notice(h); await flushAll();
+      expect(h.pushes).toHaveLength(1);
+    });
+    it('sends nothing at level off', async () => {
+      vi.useFakeTimers(); const h = setup({ settings: { notify: 'off' } }); await vi.advanceTimersByTimeAsync(100);
       await notice(h); await flushAll();
       expect(h.pushes).toEqual([]);
     });

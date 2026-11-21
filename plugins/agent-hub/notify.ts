@@ -31,7 +31,8 @@ export function createNotifier(bb:BbPluginApi,db:Database.Database) {
   return until.getTime();
  };
  // An update that asks nothing is never pushed (it collapses into a quiet group); one that asks counts as a question.
- const matches=(r:Row)=>r.urgency!=='low' && (r.kind!=='update' || !!r.asks) && (level==='all' || (level==='asked' && r.kind==='for_me') || (level==='questions' && (r.kind==='for_me' || r.kind==='update' || (r.kind==='mine' && (r.question.includes('?') || r.question.includes('？'))))));
+ // A notice counts as a question to the owner: only the owner can fix a manager that could not take its report.
+ const matches=(r:Row)=>r.urgency!=='low' && (r.kind!=='update' || !!r.asks) && (level==='all' || (level==='asked' && (r.kind==='for_me' || !!r.notice)) || (level==='questions' && (r.kind==='for_me' || r.kind==='update' || (r.kind==='mine' && (r.question.includes('?') || r.question.includes('？'))))));
  const rows=(ids:string[])=>ids.length ? db.prepare(`SELECT ${COLS} FROM items WHERE id IN (${ids.map(()=>'?').join(',')}) AND ${ATTENTION_SQL}`).all(...ids) as Row[] : [];
  const held=(end:number,ids:string[])=>db.transaction(()=>{
   const old=db.prepare("SELECT value FROM notify_meta WHERE key='held_for'").get() as {value:number}|undefined;
