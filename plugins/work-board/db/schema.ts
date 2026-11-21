@@ -798,6 +798,29 @@ const MIGRATIONS = [
      received_id TEXT,
      updated_at TEXT NOT NULL
    );`,
+  // Repository checks: a notice is a second delivery route for the staged report, recorded like a manager attempt (checks/notice.ts).
+  // `tick_id` is the original staged tick and the idempotency key at the receiver; `ticks.notices` counts reports delivered as a notice.
+  (db: PluginDatabase) => {
+    db.exec(`CREATE TABLE IF NOT EXISTS checks_notice_attempts (
+     attempt_id TEXT PRIMARY KEY,
+     tracker_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+     report_id TEXT NOT NULL,
+     tick_id TEXT NOT NULL,
+     bb_project_id TEXT NOT NULL,
+     manager_thread_id TEXT,
+     started_at TEXT NOT NULL,
+     outcome TEXT NOT NULL CHECK (outcome IN ('sending', 'accepted', 'refused', 'unavailable', 'unknown', 'superseded')),
+     notice_id TEXT,
+     accepted_at TEXT,
+     error TEXT,
+     passes INTEGER NOT NULL DEFAULT 0,
+     first_error_at TEXT
+   );
+   CREATE INDEX IF NOT EXISTS idx_checks_notice_attempts_report ON checks_notice_attempts(tracker_id, report_id, started_at);
+   `);
+    // Guarded so a re-run of the migrations (a partly reset version table) stays harmless.
+    if (!db.prepare<[], { name: string }>("PRAGMA table_info(checks_ticks)").all().some((column) => column.name === "notices")) db.exec("ALTER TABLE checks_ticks ADD COLUMN notices INTEGER NOT NULL DEFAULT 0");
+  },
 ] as const;
 
 export function initializeTasksSchema(db: PluginDatabase, log: Log = () => {}): void {

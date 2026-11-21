@@ -69,11 +69,12 @@ export function checksCliCommands(bb: BbPluginApi, host: ChecksCliHost) {
           ["Unconfirmed send", status.unconfirmedSend ?? "-"],
           ["Pending", status.pending ? `${status.pending.reportId} (exit ${status.pending.exitCode}, tick ${status.pending.tickId})` : "-"],
           ["Last delivery", status.lastDelivery ? `${when(status.lastDelivery.at)} to ${status.lastDelivery.to} (${status.lastDelivery.receipt?.mode ?? "-"})` : "-"],
+          ["Fallback reason", status.fallbackReason ?? "-"],
           ["Archived worktrees", `${status.reportedWorktrees} reported, ${status.pendingWorktrees} pending`],
           ["Manager error", status.managerError ?? "-"],
           ["Push error", status.pushError ?? "-"],
           ["State", status.stateMismatch ?? "ok"],
-          ["Today", `${status.stats.ticks} ticks, ${status.stats.executed} executed, ${status.stats.deliveries} delivered`],
+          ["Today", `${status.stats.ticks} ticks, ${status.stats.executed} executed, ${status.stats.deliveries} delivered (${status.stats.notices} as notice)`],
         ]);
       }),
     }),
@@ -94,7 +95,7 @@ export function checksCliCommands(bb: BbPluginApi, host: ChecksCliHost) {
         const project = await host.project(ctx, input.options.project);
         const stats = service.stats(project.id, input.options.days ?? 1);
         return input.options.json ? JSON.stringify(stats) : detail([
-          ["Window", `${stats.days} day(s)`], ["Ticks", String(stats.ticks)], ["Executed", String(stats.executed)], ["Deliveries", String(stats.deliveries)],
+          ["Window", `${stats.days} day(s)`], ["Ticks", String(stats.ticks)], ["Executed", String(stats.executed)], ["Deliveries", String(stats.deliveries)], ["Delivered as notice", String(stats.notices)],
           ["Repeats", String(stats.repeats)], ["Suppressed reports", String(stats.suppressedReports)], ["Refresh failures", String(stats.refreshFailures)],
           ["Script failures", String(stats.scriptFailures)], ["Delivery failures", String(stats.deliveryFailures)], ["Delivery unknown", String(stats.deliveryUnknown)], ["New items", JSON.stringify(stats.newItems)],
         ]);

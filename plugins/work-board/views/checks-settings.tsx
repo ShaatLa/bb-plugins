@@ -83,7 +83,7 @@ export function ChecksSettings({ projectId }: { projectId: string }) {
               </p>
             ) : null}
             {status.awaitingRetry ? (
-              <p className="flex flex-wrap items-center gap-2" data-testid="checks-retry">{status.blocked}. Work Board cannot tell whether the report reached the manager. Retry sends it again and may duplicate it.
+              <p className="flex flex-wrap items-center gap-2" data-testid="checks-retry">{status.blocked}. Work Board cannot tell whether the report reached the manager / Agent Hub. Retry sends it to the manager and may duplicate it.
                 <Button size="sm" className="h-7 px-2.5" variant="outline" disabled={busy} onClick={() => void run(() => rpc.call("retryChecksReport", { projectId }))}>Retry</Button>
               </p>
             ) : null}

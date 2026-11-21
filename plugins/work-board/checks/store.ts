@@ -4,7 +4,7 @@ import type { ReportChanges } from "./reports";
 
 type Database = ReturnType<BbPluginApi["storage"]["database"]>;
 
-export interface Receipt { mode: "inline" | "queued" | "appended"; id: string }
+export interface Receipt { mode: "inline" | "queued" | "appended" | "notice"; id: string }
 interface Baseline { fingerprint: string; manager?: string }
 
 /** The status of one tracker's runner. JSON in one row; every writer runs under the tracker's single-flight tick. */
@@ -32,6 +32,8 @@ export interface State {
   receipt?: Receipt;
   /** Why the last delivery attempt failed; stored apart from the push failure. */
   managerError?: string | null;
+  /** Why the report went out as a notice instead of to the manager; cleared when a manager receipt delivers a report. */
+  fallbackReason?: string | null;
   pushError?: string | null;
   /** Archived-worktree paths already delivered; a path leaves only after a complete scan finds it gone. */
   reportedWorktrees?: string[];
@@ -72,6 +74,24 @@ export interface AttemptRow {
   accepted_at: string | null;
   error: string | null;
   recovery_cursor: string | null;
+}
+
+export type NoticeOutcome = "sending" | "accepted" | "refused" | "unavailable" | "unknown" | "superseded";
+/** One send of a staged report as a notice, written before the call; `tick_id` is the staged tick, the receiver's idempotency key. */
+export interface NoticeRow {
+  attempt_id: string;
+  tracker_id: string;
+  report_id: string;
+  tick_id: string;
+  bb_project_id: string;
+  manager_thread_id: string | null;
+  started_at: string;
+  outcome: NoticeOutcome;
+  notice_id: string | null;
+  accepted_at: string | null;
+  error: string | null;
+  passes: number;
+  first_error_at: string | null;
 }
 
 export type { HistoryCursor };
@@ -121,13 +141,32 @@ export function checksStore(db: Database) {
       return db.prepare(`UPDATE checks_attempts SET ${assignments} WHERE attempt_id = ? AND outcome IN (${marks})`).run(...values, attemptId, ...from).changes > 0;
     },
     /** Every other open attempt of the report is closed: the report is delivered. */
-    supersedeOpen(trackerId: string, reportId: string, exceptAttemptId: string) {
+    supersedeOpen(trackerId: string, reportId: string, exceptAttemptId = "") {
       db.prepare("UPDATE checks_attempts SET outcome = 'superseded' WHERE tracker_id = ? AND report_id = ? AND attempt_id <> ? AND outcome IN ('sending', 'unknown')").run(trackerId, reportId, exceptAttemptId);
+    },
+    notices(trackerId: string, reportId: string, outcomes?: NoticeOutcome[]): NoticeRow[] {
+      const rows = db.prepare<[string, string], NoticeRow>("SELECT * FROM checks_notice_attempts WHERE tracker_id = ? AND report_id = ? ORDER BY started_at, rowid").all(trackerId, reportId);
+      return outcomes ? rows.filter((row) => outcomes.includes(row.outcome)) : rows;
+    },
+    notice: (attemptId: string) => db.prepare<[string], NoticeRow>("SELECT * FROM checks_notice_attempts WHERE attempt_id = ?").get(attemptId),
+    /** Persisted before the call; `outcome` is `sending`, or `refused` for a payload that cannot be sent at all. */
+    openNotice(row: Pick<NoticeRow, "attempt_id" | "tracker_id" | "report_id" | "tick_id" | "bb_project_id" | "manager_thread_id">, outcome: "sending" | "refused" = "sending", error: string | null = null) {
+      db.prepare("INSERT INTO checks_notice_attempts (attempt_id, tracker_id, report_id, tick_id, bb_project_id, manager_thread_id, started_at, outcome, error) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
+        .run(row.attempt_id, row.tracker_id, row.report_id, row.tick_id, row.bb_project_id, row.manager_thread_id, new Date().toISOString(), outcome, error);
+    },
+    /** Moves a notice row only forward from one of `from`; returns whether it moved. */
+    advanceNotice(attemptId: string, from: NoticeOutcome[], assignments: string, ...values: unknown[]): boolean {
+      const marks = from.map(() => "?").join(", ");
+      return db.prepare(`UPDATE checks_notice_attempts SET ${assignments} WHERE attempt_id = ? AND outcome IN (${marks})`).run(...values, attemptId, ...from).changes > 0;
+    },
+    /** Every open notice row of the report is closed: the report is delivered, or the owner chose Retry. */
+    supersedeOpenNotices(trackerId: string, reportId: string) {
+      db.prepare("UPDATE checks_notice_attempts SET outcome = 'superseded' WHERE tracker_id = ? AND report_id = ? AND outcome IN ('sending', 'unknown')").run(trackerId, reportId);
     },
     /** Drops the stored state of a tracker: used by the owner's reset. */
     reset(trackerId: string) {
       db.transaction(() => {
-        for (const table of ["checks_state", "checks_delivery", "checks_attempts"]) db.prepare(`DELETE FROM ${table} WHERE tracker_id = ?`).run(trackerId);
+        for (const table of ["checks_state", "checks_delivery", "checks_attempts", "checks_notice_attempts"]) db.prepare(`DELETE FROM ${table} WHERE tracker_id = ?`).run(trackerId);
       })();
     },
   };

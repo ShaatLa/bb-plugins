@@ -23,6 +23,8 @@ export interface ChecksStats {
   scriptFailures: number;
   /** Failed deliveries, counted at the tick that staged the report. */
   deliveryFailures: number;
+  /** Of those, the reports delivered as a notice because the manager could not take them. */
+  notices: number;
   /** Reports whose delivery ended unknown (Retry needed), counted at the staged tick and apart from failures. */
   deliveryUnknown: number;
   /** Items first seen inside the window, by kind. */
@@ -39,10 +41,11 @@ export function checksHistory(db: Database) {
   const result = db.prepare<[number, number, number, string]>("UPDATE checks_ticks SET executed = 1, repeated = ?, refresh_failed = ?, script_failed = ? WHERE tick = ?");
   const suppress = db.prepare<[string]>("UPDATE checks_ticks SET suppressed = 1 WHERE tick = ?");
   const delivery = db.prepare<[string]>("UPDATE checks_ticks SET delivered = delivered + 1 WHERE tick = ?");
+  const noticed = db.prepare<[string]>("UPDATE checks_ticks SET notices = notices + 1 WHERE tick = ?");
   const failed = db.prepare<[string]>("UPDATE checks_ticks SET delivery_failed = 1 WHERE tick = ?");
   const unknown = db.prepare<[string]>("UPDATE checks_ticks SET delivery_unknown = 1 WHERE tick = ?");
   const counts = db.prepare<[string, string, number], Omit<ChecksStats, "trackerId" | "projectId" | "days" | "since" | "newItems">>(`SELECT count(*) AS ticks, coalesce(sum(executed),0) AS executed,
-    coalesce(sum(delivered),0) AS deliveries, coalesce(sum(repeated),0) AS repeats, coalesce(sum(suppressed),0) AS suppressedReports,
+    coalesce(sum(delivered),0) AS deliveries, coalesce(sum(notices),0) AS notices, coalesce(sum(repeated),0) AS repeats, coalesce(sum(suppressed),0) AS suppressedReports,
     coalesce(sum(refresh_failed),0) AS refreshFailures, coalesce(sum(script_failed),0) AS scriptFailures,
     coalesce(sum(delivery_failed),0) AS deliveryFailures, coalesce(sum(delivery_unknown),0) AS deliveryUnknown
     FROM checks_ticks WHERE tracker_id = ? AND project = ? AND at >= ?`);
@@ -66,6 +69,7 @@ export function checksHistory(db: Database) {
     }),
     suppress(tick: string) { suppress.run(tick); },
     delivered(tick: string) { delivery.run(tick); },
+    noticed(tick: string) { noticed.run(tick); },
     deliveryFailed(tick: string) { failed.run(tick); },
     deliveryUnknown(tick: string) { unknown.run(tick); },
     stats(trackerId: string, projectId: string, days: number): ChecksStats {

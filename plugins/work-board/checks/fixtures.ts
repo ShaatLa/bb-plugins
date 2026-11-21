@@ -58,7 +58,32 @@ export async function setup(options: { settings?: Record<string, string> } = {})
   const threads = createFakeThreads();
   const repo = createRepo();
   const pushes: { title: string; body: string }[] = [];
-  const control = { pushFail: false, remote: repo.url as string | null, projectFail: false, onProject: undefined as (() => void) | undefined, /** The installed Sweep, when a test installs one: its RPC handler. */ sweep: undefined as undefined | ((method: string, input: unknown) => Promise<unknown>) };
+  /** A fake Agent Hub `notice` receiver with the real one's idempotency on (source, tickId) and its input limits. Off until a test enables it. */
+  const hub = {
+    enabled: false,
+    calls: [] as Record<string, unknown>[],
+    items: new Map<string, { id: string }>(),
+    /** Throws to refuse a call before anything is stored. */
+    before: undefined as undefined | ((input: Record<string, unknown>) => void),
+    /** Runs after the item is stored: throw to lose the reply, or return a malformed one. */
+    after: undefined as undefined | ((reply: { id: string; created: boolean }, signal?: AbortSignal) => unknown),
+    /** Replaces the in-memory receiver altogether (the opt-in live test forwards to a real Agent Hub). */
+    forward: undefined as undefined | ((input: Record<string, unknown>) => Promise<unknown>),
+  };
+  const noticeCall = async (input: Record<string, unknown>, signal?: AbortSignal) => {
+    hub.calls.push(input);
+    if (hub.forward) return hub.forward(input);
+    hub.before?.(input);
+    const markdown = String(input.markdown ?? "");
+    if (!input.source || !input.tickId || !input.projectId || !markdown || Buffer.byteLength(markdown) > 1024 * 1024 || String(input.title ?? "").length > 200) throw Object.assign(new Error("invalid input"), { code: "invalid_input", status: 400 });
+    const key = `${input.source}:${input.tickId}`;
+    const found = hub.items.get(key);
+    const item = found ?? { id: `ans_example${hub.items.size + 1}` };
+    hub.items.set(key, item);
+    const reply = { id: item.id, created: !found };
+    return hub.after ? hub.after(reply, signal) : reply;
+  };
+  const control = { hub, pushFail: false, remote: repo.url as string | null, projectFail: false, onProject: undefined as (() => void) | undefined, /** The installed Sweep, when a test installs one: its RPC handler. */ sweep: undefined as undefined | ((method: string, input: unknown) => Promise<unknown>) };
   /** The archived-worktree scan's view of the host. Off (no primary host) until a test calls `worktrees.enable()`. */
   const scan = {
     calls: 0, primaryHostId: null as string | null, storage: "" as string, sources: [] as { hostId: string; path: string }[],
@@ -78,8 +103,13 @@ export async function setup(options: { settings?: Record<string, string> } = {})
       }),
     },
     plugins: {
-      list: async () => ({ plugins: control.sweep ? [{ id: "sweep", enabled: true }] : [] }),
-      callRpc: async ({ pluginId, method, input, outputSchema }: { pluginId: string; method: string; input: { title: string; body: string }; outputSchema?: { parse(value: unknown): unknown } }) => {
+      list: async () => ({ plugins: [...(control.sweep ? [{ id: "sweep", enabled: true }] : []), { id: "agent-hub", enabled: hub.enabled }] }),
+      callRpc: async ({ pluginId, method, input, outputSchema, signal }: { pluginId: string; method: string; input: { title: string; body: string }; outputSchema?: { parse(value: unknown): unknown }; signal?: AbortSignal }) => {
+        if (pluginId === "agent-hub") {
+          if (!hub.enabled || method !== "notice") throw new Error(`Plugin agent-hub cannot serve ${method}`);
+          const value = await noticeCall(input as unknown as Record<string, unknown>, signal);
+          return outputSchema ? outputSchema.parse(value) : value;
+        }
         if (pluginId === "sweep") {
           if (!control.sweep) throw new Error("Plugin sweep is not installed");
           const value = await control.sweep(method, input);

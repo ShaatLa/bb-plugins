@@ -13,10 +13,11 @@ import { CHECK_FIELDS, CHECKS_PREFIX, completeConfig, effectiveConfig, parseFiel
 import { checksHistory } from "./history";
 import { scanArchivedWorktrees, scanTuning, type ScanProject } from "./archived-worktrees";
 import { formatNotification } from "./notification";
+import { agentHubEnabled, callNotice, choosePayload, classifyNoticeError, noticeTitle, type NoticeReply } from "./notice";
 import { assertNoOtherOwner, isDraining, owners, runs, stateMismatch } from "./ownership";
 import { reportContents } from "./reports";
 import { CheckoutRefreshError, execute, KILL_GRACE_MS, GIT_TIMEOUT_MS } from "./runner";
-import { checksStore, type AttemptRow, type State } from "./store";
+import { checksStore, type AttemptRow, type NoticeRow, type State } from "./store";
 import { createTransfer } from "./transfer";
 
 type Database = ReturnType<BbPluginApi["storage"]["database"]>;
@@ -26,6 +27,8 @@ const LATE_SEARCH_BATCH = 20;
 const PUSH_TITLE = "Sweep manager unreachable";
 const repositoryUrl = z.string().min(1).max(2000).refine((url) => !url.startsWith("-"));
 const MANAGER_UNSET = "Manager is unset. Set the manager field to an available thread ID.";
+const NOTICE_WAITING = "Waiting for Agent Hub to confirm the notice";
+const NOTICE_UNKNOWN = "Notice outcome unknown: Agent Hub may already have it. Choose Retry to send the report to the manager; it may duplicate.";
 export const checksMarker = (reportId: string, attemptId: string) => `<!-- work-board-checks:${reportId}:${attemptId} -->`;
 
 /** Tests shorten these; production uses the defaults of the 0.61 recovery and the 60 s Git limit. */
@@ -109,6 +112,7 @@ function createService(bb: BbPluginApi) {
       store.advance(attempt.attempt_id, ["sending", "unknown", "superseded"], "outcome=?, queued_message_id=?, inline_event_ref=?, accepted_at=COALESCE(accepted_at, ?)",
         receipt.outcome, receipt.outcome === "inline" ? null : receipt.queuedMessageId, receipt.outcome === "inline" ? receipt.inlineEventRef : null, at);
       store.supersedeOpen(attempt.tracker_id, row.report_id, attempt.attempt_id);
+      store.supersedeOpenNotices(attempt.tracker_id, row.report_id);
       const code = row.pending_exit ?? 0;
       const { fingerprint, changes } = reportContents(code, row.pending_body ?? "");
       next = structuredClone(state);
@@ -121,14 +125,53 @@ function createService(bb: BbPluginApi) {
       if (next.pendingWorktrees) { next.reportedWorktrees = [...new Set([...(next.reportedWorktrees ?? []), ...next.pendingWorktrees])]; next.pendingWorktrees = undefined; }
       next.receipt = { mode: receipt.outcome, id: receipt.outcome === "inline" ? receipt.inlineEventRef : receipt.queuedMessageId };
       // The delivery problem this acceptance resolves goes; an execution failure (script or refresh) stays.
-      next.deliveryError = null; next.managerError = null; next.pushError = null;
+      next.deliveryError = null; next.managerError = null; next.pushError = null; next.fallbackReason = null;
       store.promote(attempt.tracker_id, row.report_id);
       history.delivered(tickId);
       store.save(attempt.tracker_id, next);
       return true;
     })();
+    return publish(accepted, next, state);
+  }
+
+  /** Publishes a committed state into the caller's object. */
+  function publish(accepted: boolean, next: State | undefined, state: State): boolean {
     if (accepted && next) { for (const key of Object.keys(state)) delete (state as Record<string, unknown>)[key]; Object.assign(state, next); }
     return accepted;
+  }
+
+  /**
+   * The notice route's acceptance, guarded by the report id like `accept`: any valid `{ id, created }` reply counts, since a replay can be the
+   * call that creates the item. The baseline belongs to the manager at the first call (none when it was unset), and no Work Board push goes out.
+   */
+  function acceptNotice(notice: NoticeRow, reply: NoticeReply, state: State, tickId: string): boolean {
+    let next: State | undefined;
+    const accepted = db.transaction(() => {
+      const row = store.delivery(notice.tracker_id);
+      if (!row?.report_id || row.report_id !== notice.report_id) {
+        store.advanceNotice(notice.attempt_id, ["sending", "unknown"], "outcome='superseded'");
+        return false;
+      }
+      if (!store.advanceNotice(notice.attempt_id, ["sending", "unknown"], "outcome='accepted', notice_id=?, accepted_at=?", reply.id, new Date().toISOString())) return false;
+      store.supersedeOpen(notice.tracker_id, row.report_id);
+      const code = row.pending_exit ?? 0;
+      const { fingerprint, changes } = reportContents(code, row.pending_body ?? "");
+      const manager = notice.manager_thread_id ? { manager: notice.manager_thread_id } : {};
+      next = structuredClone(state);
+      if (code >= 2) next.lastFailure = { fingerprint, ...manager };
+      else next.lastReport = { fingerprint, changes, at: Date.now(), ...manager };
+      next.deliveredAt = Date.now(); next.deliveredTickId = row.pending_tick ?? undefined; next.deliveredReportId = row.report_id;
+      next.deliveredTo = "agent-hub";
+      if (next.pendingWorktrees) { next.reportedWorktrees = [...new Set([...(next.reportedWorktrees ?? []), ...next.pendingWorktrees])]; next.pendingWorktrees = undefined; }
+      next.receipt = { mode: "notice", id: reply.id };
+      next.deliveryError = null; next.pushError = null;
+      store.promote(notice.tracker_id, row.report_id);
+      history.delivered(tickId);
+      history.noticed(tickId);
+      store.save(notice.tracker_id, next);
+      return true;
+    })();
+    return publish(accepted, next, state);
   }
 
   /** One bounded pass of the history search for an attempt's marker; a pass that cannot read is counted, and enough of them give up. */
@@ -188,11 +231,99 @@ function createService(bb: BbPluginApi) {
     }
   }
 
-  async function deliveryFailed(link: string, state: State, pendingTick: string, error: unknown): Promise<Outcome> {
+  /** The report stays pending on this pass: counted on its staged tick and pushed, with the notice route's problem (if any) in the alert. */
+  async function deliveryFailed(link: string, state: State, pendingTick: string, error: unknown, note?: string): Promise<Outcome> {
     state.managerError = String(error);
     history.deliveryFailed(pendingTick);
-    await push(link, state, error);
+    await push(link, state, note ? `${String(error)} (${note})` : error);
     return { status: "blocked", error: String(error) };
+  }
+
+  // ---- notice route ---------------------------------------------------------------------------------------------
+
+  /** One call of the receiver for a stored row. Only the first call can prove a refusal; a replay that fails proves nothing. */
+  async function tryNotice(notice: NoticeRow, markdown: string, state: State, tickId: string, first: boolean):
+    Promise<{ kind: "reply"; accepted: boolean } | { kind: "refused" | "unavailable" | "possible"; error: string }> {
+    let reply: NoticeReply;
+    try {
+      reply = await callNotice(bb, controller.signal, { tickId: notice.tick_id, projectId: notice.bb_project_id, threadId: notice.manager_thread_id, title: noticeTitle(tracker(notice.tracker_id).prefix), markdown });
+    } catch (error) {
+      if (controller.signal.aborted) throw error;
+      const kind = first ? classifyNoticeError(error) : "possible";
+      if (kind !== "possible") store.advanceNotice(notice.attempt_id, ["sending"], "outcome=?, error=?", kind, errorMessage(error));
+      return { kind, error: errorMessage(error) };
+    }
+    return { kind: "reply", accepted: acceptNotice(notice, reply, state, tickId) };
+  }
+
+  /** A call that proved nothing is a pass; enough of them over enough time end the row as unknown, with one count and one push. */
+  async function recordPass(notice: NoticeRow, error: string, state: State, link: string) {
+    const firstErrorAt = notice.first_error_at ?? new Date().toISOString();
+    const passes = notice.passes + 1;
+    const exhausted = passes >= HISTORY_ERROR_PASSES && Date.now() - Date.parse(firstErrorAt) >= HISTORY_ERROR_SPAN_MS;
+    const marked = db.transaction(() => {
+      if (!store.advanceNotice(notice.attempt_id, ["sending"], "outcome=?, error=?, passes=?, first_error_at=?", exhausted ? "unknown" : "sending", error, passes, firstErrorAt)) return false;
+      if (exhausted) history.deliveryUnknown(notice.tick_id);
+      return exhausted;
+    })();
+    if (!marked) return;
+    state.deliveryError = NOTICE_UNKNOWN;
+    await push(link, state, new Error(NOTICE_UNKNOWN));
+  }
+
+  /** Replays a stored row with its original key; the receiver keeps the first body, so only the staged bytes are needed again. */
+  async function replayNotice(notice: NoticeRow, state: State, tickId: string) {
+    const row = store.delivery(notice.tracker_id)!;
+    const payload = choosePayload(formatNotification(row.pending_exit ?? 0, row.pending_body ?? ""), row.pending_body ?? "");
+    return "tooLarge" in payload ? { kind: "possible" as const, error: payload.tooLarge } : tryNotice(notice, payload.markdown, state, tickId, false);
+  }
+
+  /** Open notice rows of the report: `sending` ones every pass, `unknown` ones as late evidence. */
+  async function settleNotices(trackerId: string, link: string, reportId: string, state: State, tickId: string) {
+    const stillPending = () => store.delivery(trackerId)?.report_id === reportId;
+    for (const listed of store.notices(trackerId, reportId, ["sending"])) {
+      if (!stillPending()) return;
+      const notice = store.notice(listed.attempt_id);
+      if (!notice || notice.outcome !== "sending") continue;
+      const result = await replayNotice(notice, state, tickId);
+      if (result.kind === "possible") await recordPass(notice, result.error, state, link);
+    }
+    for (const listed of store.notices(trackerId, reportId, ["unknown"])) {
+      if (!stillPending()) return;
+      if (Date.now() - (lateSearchedAt.get(listed.attempt_id) ?? 0) < checksTuning.lateSearchMs) continue;
+      lateSearchedAt.set(listed.attempt_id, Date.now());
+      await replayNotice(listed, state, tickId);
+    }
+  }
+
+  /**
+   * The fresh manager attempt failed for certain: the same staged report goes to Agent Hub as a notice, written before the call. Without
+   * Agent Hub, after a refusal, or when the report is too large, it stays pending and is pushed.
+   */
+  async function fallback(trackerId: string, link: string, state: State, tickId: string, error: unknown, manager: string | null): Promise<Outcome> {
+    const row = store.delivery(trackerId)!;
+    const stagedTick = row.pending_tick ?? tickId;
+    state.managerError = String(error);
+    // A refusal suppresses the payload (a same-key replay is refused the same way); `unavailable` rows do not, so an upgraded receiver is tried again.
+    if (store.notices(trackerId, row.report_id!).some((notice) => ["sending", "unknown", "accepted", "refused"].includes(notice.outcome))) return deliveryFailed(link, state, stagedTick, error);
+    if (!(await agentHubEnabled(bb, controller.signal))) return deliveryFailed(link, state, stagedTick, error);
+    const payload = choosePayload(formatNotification(row.pending_exit ?? 0, row.pending_body ?? ""), row.pending_body ?? "");
+    const attemptId = randomUUID();
+    const base = { attempt_id: attemptId, tracker_id: trackerId, report_id: row.report_id!, tick_id: stagedTick, bb_project_id: link, manager_thread_id: manager };
+    state.fallbackReason = String(error);
+    if ("tooLarge" in payload) {
+      db.transaction(() => { store.openNotice(base, "refused", payload.tooLarge); store.save(trackerId, state); })();
+      return deliveryFailed(link, state, stagedTick, error, `notice not sent: ${payload.tooLarge}`);
+    }
+    db.transaction(() => { store.openNotice(base); store.save(trackerId, state); })();
+    const notice = store.notice(attemptId)!;
+    const result = await tryNotice(notice, payload.markdown, state, tickId, true);
+    if (result.kind === "reply") return result.accepted ? { status: "cleared" } : { status: "blocked" };
+    if (result.kind === "possible") {
+      await recordPass(notice, result.error, state, link);
+      return { status: "blocked", error: `${NOTICE_WAITING} (${result.error})` };
+    }
+    return deliveryFailed(link, state, stagedTick, error, `Agent Hub ${result.kind === "refused" ? "refused the notice" : "cannot take notices"}: ${result.error}`);
   }
 
   /** A fresh attempt to the current manager: persisted before any transport call, then judged by its receipt. */
@@ -204,7 +335,7 @@ function createService(bb: BbPluginApi) {
       await usableManager(manager);
     } catch (error) {
       if (controller.signal.aborted) throw error;
-      return deliveryFailed(link, state, row.pending_tick ?? tickId, error);
+      return fallback(trackerId, link, state, tickId, error, manager);
     }
     const attemptId = randomUUID();
     store.openAttempt({ attempt_id: attemptId, tracker_id: trackerId, report_id: row.report_id!, tick_id: row.pending_tick ?? tickId, bb_project_id: link, manager_thread_id: manager, marker: checksMarker(row.report_id!, attemptId) });
@@ -219,7 +350,7 @@ function createService(bb: BbPluginApi) {
     if (isConfirmed(receipt)) return accept(attempt, receipt, state, tickId) ? { status: "cleared" } : { status: "blocked" };
     if (receipt.outcome === "failed") {
       store.advance(attemptId, ["sending"], "outcome='failed', error=?", receipt.error);
-      return deliveryFailed(link, state, row.pending_tick ?? tickId, new Error(receipt.error));
+      return fallback(trackerId, link, state, tickId, new Error(receipt.error), manager);
     }
     if (receipt.outcome === "pending") {
       store.advance(attemptId, ["sending"], "pending_since=?", new Date().toISOString());
@@ -235,8 +366,14 @@ function createService(bb: BbPluginApi) {
     if (!row?.report_id) return { status: "none" };
     await settle(trackerId, link, row.report_id, state, tickId);
     if (store.delivery(trackerId)?.report_id !== row.report_id) return { status: "cleared" };
+    await settleNotices(trackerId, link, row.report_id, state, tickId);
+    if (store.delivery(trackerId)?.report_id !== row.report_id) return { status: "cleared" };
     const open = store.attempts(trackerId, row.report_id, ["sending", "unknown"]);
     if (open.some((attempt) => attempt.outcome === "unknown")) return { status: "blocked", error: state.deliveryError ?? "Delivery outcome unknown. Choose Retry in the repository checks settings." };
+    // A notice that may exist fences the manager route: no automatic dispatch while its outcome is uncertain.
+    const notices = store.notices(trackerId, row.report_id, ["sending", "unknown"]);
+    if (notices.some((notice) => notice.outcome === "unknown")) return { status: "blocked", error: state.deliveryError ?? NOTICE_UNKNOWN };
+    if (notices.length) return { status: "blocked", error: NOTICE_WAITING };
     // An open attempt keeps the report: no second attempt starts while its receipt may still arrive.
     if (open.length) return { status: "blocked", error: "Waiting for evidence that the manager received the report" };
     return dispatch(trackerId, link, state, tickId);
@@ -377,7 +514,9 @@ function createService(bb: BbPluginApi) {
         // An error with a report pending is that report's delivery error, cleared by its acceptance; otherwise it is the run's.
         if (store.delivery(trackerId)?.report_id) state.deliveryError = String(error); else state.error = String(error);
         store.save(trackerId, state);
-        await push(link, state, error);
+        // A notice that may exist is Agent Hub's own alert; a second push from here would duplicate it.
+        const reportId = store.delivery(trackerId)?.report_id;
+        if (!reportId || !store.notices(trackerId, reportId, ["sending", "unknown"]).length) await push(link, state, error);
         store.save(trackerId, state);
       }
       throw error;
@@ -463,9 +602,10 @@ function createService(bb: BbPluginApi) {
     if (running(trackerId)) throw new Error("A check is running for this project; retry in a moment.");
     const row = store.delivery(trackerId);
     if (!row?.report_id || !link || row.pending_project !== link) throw new Error("No report is pending for this project.");
-    if (!store.attempts(trackerId, row.report_id, ["unknown"]).length) throw new Error("Retry applies only to a report whose delivery outcome is unknown.");
+    if (!store.attempts(trackerId, row.report_id, ["unknown"]).length && !store.notices(trackerId, row.report_id, ["unknown"]).length) throw new Error("Retry applies only to a report whose delivery outcome is unknown.");
     db.transaction(() => {
-      db.prepare("UPDATE checks_attempts SET outcome='superseded' WHERE tracker_id=? AND report_id=? AND outcome IN ('sending', 'unknown')").run(trackerId, row.report_id);
+      store.supersedeOpen(trackerId, row.report_id!);
+      store.supersedeOpenNotices(trackerId, row.report_id!);
       const state = store.state(trackerId);
       state.deliveryError = null; state.nextRun = Date.now();
       store.save(trackerId, state);
@@ -508,7 +648,9 @@ function createService(bb: BbPluginApi) {
       reportId: delivery.report_id, tickId: delivery.pending_tick, exitCode: delivery.pending_exit, stagedAt: delivery.pending_at, projectId: delivery.pending_project,
       raw: delivery.pending_body, hasCandidate: delivery.pending_snapshot !== null,
       attempts: store.attempts(trackerId, delivery.report_id).map((a) => ({ attemptId: a.attempt_id, manager: a.manager_thread_id, outcome: a.outcome, startedAt: a.started_at, error: a.error })),
+      notices: store.notices(trackerId, delivery.report_id).map((n) => ({ attemptId: n.attempt_id, manager: n.manager_thread_id, outcome: n.outcome, startedAt: n.started_at, error: n.error, passes: n.passes })),
     } : null;
+    const unknownOutcome = !!pending && (pending.attempts.some((a) => a.outcome === "unknown") || pending.notices.some((n) => n.outcome === "unknown"));
     const mismatch = link ? stateMismatch(db, trackerId, link) : null;
     const other = link ? owners(db, link).find((id) => id !== trackerId) : undefined;
     return {
@@ -519,12 +661,12 @@ function createService(bb: BbPluginApi) {
       // A report that cannot be delivered is the current problem, whatever the last run did; an unknown outcome blocks until Retry.
       failureStage: pending && state.deliveryError ? ("delivery" as const) : state.failureStage ?? null,
       deliveryError: pending ? state.deliveryError ?? null : null,
-      blocked: pending?.attempts.some((a) => a.outcome === "unknown") ? "blocked: delivery unknown, Retry needed" : null,
+      blocked: unknownOutcome ? "blocked: delivery unknown, Retry needed" : null,
       refreshFailures: state.refreshFailures ?? 0, refreshRetryAt: state.refreshRetryAt ?? null,
       reportedWorktrees: state.reportedWorktrees?.length ?? 0, pendingWorktrees: state.pendingWorktrees?.length ?? 0,
-      managerError: state.managerError ?? null, pushError: state.pushError ?? null,
+      managerError: state.managerError ?? null, fallbackReason: state.fallbackReason ?? null, pushError: state.pushError ?? null,
       lastDelivery: state.deliveredAt ? { at: state.deliveredAt, to: state.deliveredTo ?? null, receipt: state.receipt ?? null, reportId: state.deliveredReportId ?? null, tickId: state.deliveredTickId ?? null } : null,
-      pending, awaitingRetry: !!pending?.attempts.some((a) => a.outcome === "unknown"),
+      pending, awaitingRetry: unknownOutcome,
       stateMismatch: mismatch ? `State belongs to ${mismatch}; reset it` : null,
       stats: stats(trackerId, 1),
     };

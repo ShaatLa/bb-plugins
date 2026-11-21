@@ -184,6 +184,29 @@ describe("the transfer document", () => {
   });
 });
 
+describe("a report delivered as a notice", () => {
+  it("leaves a baseline without a manager when none was set, then drains, disables and exports under the handoff schema", async () => {
+    const { f, sweep } = await make();
+    await imported(f, sweep);
+    await f.enable();
+    f.threads.threads.set(MANAGER, { archived: true });
+    await f.tick(); // the report is staged and stays pending: the manager is unusable and Agent Hub is off
+    expect(f.delivery()?.report_id).toBeTruthy();
+    f.control.hub.enabled = true;
+    f.setManager(null);
+    await f.tick(); // delivered as a notice, with no manager to attribute the baseline to
+    expect(f.delivery()?.report_id).toBeNull();
+    expect(f.state().lastReport).toMatchObject({ fingerprint: expect.any(String) });
+    expect("manager" in f.state().lastReport).toBe(false);
+    await f.service.setEnabled(f.tracker.id, false);
+    const returned = await exportTo(f);
+    expect(returned).toMatchObject({ outcome: "returned" });
+    expect(sweep.committed?.toString()).toBe('{"n":2}');
+    expect("manager" in (sweep.baselines.lastReport as object)).toBe(false);
+    expect(row(f)).toMatchObject({ owner: "sweep" });
+  });
+});
+
 describe("both directions", () => {
   it("imports Sweep's state, runs from it, hands the advanced bytes back, and refuses a replayed older handoff", async () => {
     const { f, sweep } = await make();
