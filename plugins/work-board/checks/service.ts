@@ -256,18 +256,25 @@ function createService(bb: BbPluginApi) {
     return { kind: "reply", accepted: acceptNotice(notice, reply, state, tickId) };
   }
 
-  /** A call that proved nothing is a pass; enough of them over enough time end the row as unknown, with one count and one push. */
+  /** A replay that proved nothing is a pass; enough of them over enough time end the row as unknown, with one count and one push. */
   async function recordPass(notice: NoticeRow, error: string, state: State, link: string) {
     const firstErrorAt = notice.first_error_at ?? new Date().toISOString();
     const passes = notice.passes + 1;
     const exhausted = passes >= HISTORY_ERROR_PASSES && Date.now() - Date.parse(firstErrorAt) >= HISTORY_ERROR_SPAN_MS;
+    // The terminal diagnostic is saved with the outcome and its count, on a copy published after the commit: a stop in between never leaves Retry with the old message.
+    let next: State | undefined;
     const marked = db.transaction(() => {
       if (!store.advanceNotice(notice.attempt_id, ["sending"], "outcome=?, error=?, passes=?, first_error_at=?", exhausted ? "unknown" : "sending", error, passes, firstErrorAt)) return false;
-      if (exhausted) history.deliveryUnknown(notice.tick_id);
-      return exhausted;
+      if (!exhausted) return false;
+      history.deliveryUnknown(notice.tick_id);
+      next = structuredClone(state); next.deliveryError = NOTICE_UNKNOWN;
+      store.save(notice.tracker_id, next);
+      return true;
     })();
     if (!marked) return;
-    state.deliveryError = NOTICE_UNKNOWN;
+    publish(true, next, state);
+    // The late-evidence interval starts at the transition: the row is not replayed again in this pass.
+    lateSearchedAt.set(notice.attempt_id, Date.now());
     await push(link, state, new Error(NOTICE_UNKNOWN));
   }
 
@@ -281,6 +288,8 @@ function createService(bb: BbPluginApi) {
   /** Open notice rows of the report: `sending` ones every pass, `unknown` ones as late evidence. */
   async function settleNotices(trackerId: string, link: string, reportId: string, state: State, tickId: string) {
     const stillPending = () => store.delivery(trackerId)?.report_id === reportId;
+    // Read before the replays below, so a row that becomes unknown in this pass is not replayed again in it.
+    const late = store.notices(trackerId, reportId, ["unknown"]);
     for (const listed of store.notices(trackerId, reportId, ["sending"])) {
       if (!stillPending()) return;
       const notice = store.notice(listed.attempt_id);
@@ -288,7 +297,7 @@ function createService(bb: BbPluginApi) {
       const result = await replayNotice(notice, state, tickId);
       if (result.kind === "possible") await recordPass(notice, result.error, state, link);
     }
-    for (const listed of store.notices(trackerId, reportId, ["unknown"])) {
+    for (const listed of late) {
       if (!stillPending()) return;
       if (Date.now() - (lateSearchedAt.get(listed.attempt_id) ?? 0) < checksTuning.lateSearchMs) continue;
       lateSearchedAt.set(listed.attempt_id, Date.now());
@@ -303,24 +312,28 @@ function createService(bb: BbPluginApi) {
   async function fallback(trackerId: string, link: string, state: State, tickId: string, error: unknown, manager: string | null): Promise<Outcome> {
     const row = store.delivery(trackerId)!;
     const stagedTick = row.pending_tick ?? tickId;
-    state.managerError = String(error);
     // A refusal suppresses the payload (a same-key replay is refused the same way); `unavailable` rows do not, so an upgraded receiver is tried again.
     if (store.notices(trackerId, row.report_id!).some((notice) => ["sending", "unknown", "accepted", "refused"].includes(notice.outcome))) return deliveryFailed(link, state, stagedTick, error);
     if (!(await agentHubEnabled(bb, controller.signal))) return deliveryFailed(link, state, stagedTick, error);
     const payload = choosePayload(formatNotification(row.pending_exit ?? 0, row.pending_body ?? ""), row.pending_body ?? "");
     const attemptId = randomUUID();
     const base = { attempt_id: attemptId, tracker_id: trackerId, report_id: row.report_id!, tick_id: stagedTick, bb_project_id: link, manager_thread_id: manager };
-    state.fallbackReason = String(error);
+    // The opening state is built on a copy, saved with the row and published after the commit: a failed insert leaves no fallback reason behind.
+    const opening = structuredClone(state);
+    opening.managerError = String(error); opening.fallbackReason = String(error);
     if ("tooLarge" in payload) {
-      db.transaction(() => { store.openNotice(base, "refused", payload.tooLarge); store.save(trackerId, state); })();
+      db.transaction(() => { store.openNotice(base, "refused", payload.tooLarge); store.save(trackerId, opening); })();
+      publish(true, opening, state);
       return deliveryFailed(link, state, stagedTick, error, `notice not sent: ${payload.tooLarge}`);
     }
-    db.transaction(() => { store.openNotice(base); store.save(trackerId, state); })();
+    db.transaction(() => { store.openNotice(base); store.save(trackerId, opening); })();
+    publish(true, opening, state);
     const notice = store.notice(attemptId)!;
     const result = await tryNotice(notice, payload.markdown, state, tickId, true);
     if (result.kind === "reply") return result.accepted ? { status: "cleared" } : { status: "blocked" };
     if (result.kind === "possible") {
-      await recordPass(notice, result.error, state, link);
+      // The first call is not a replay: nothing is counted yet, the next tick's replay starts the bounds.
+      store.advanceNotice(notice.attempt_id, ["sending"], "error=?", result.error);
       return { status: "blocked", error: `${NOTICE_WAITING} (${result.error})` };
     }
     return deliveryFailed(link, state, stagedTick, error, `Agent Hub ${result.kind === "refused" ? "refused the notice" : "cannot take notices"}: ${result.error}`);

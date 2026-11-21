@@ -7,7 +7,8 @@ export const NOTICE_SOURCE = "work-board";
 export const NOTICE_MAX_BYTES = 1024 * 1024;
 export const NOTICE_TIMEOUT_MS = 5000;
 
-const reply = z.object({ id: z.string().min(1), created: z.boolean() });
+/** The receiver's id format (agent-hub contract.ts idSchema): any other string is not a receipt. */
+const reply = z.object({ id: z.string().regex(/^ans_[A-Za-z0-9_-]+$/), created: z.boolean() });
 export type NoticeReply = z.infer<typeof reply>;
 
 export type NoticePayload = { markdown: string } | { tooLarge: string };
@@ -23,14 +24,14 @@ export function choosePayload(formatted: string, raw: string): NoticePayload {
 export const noticeTitle = (prefix: string) => `Repository checks report · manager unavailable (${prefix})`;
 
 /**
- * What a failed call proves. Only a coded refusal of the first call is definite: `invalid_input` (the receiver rejected the payload, and a
- * same-key replay would be rejected the same way) and `unknown_method` (an older receiver). Everything else, a caller-side parse error,
- * `invalid_output`, a 5xx, an uncoded 404, an abort or a timeout, may have stored the notice.
+ * What a failed call proves. Only the SDK's matching status and code pair of the first call is definite: 400 `invalid_input` (the receiver
+ * rejected the payload, and a same-key replay would be rejected the same way) and 404 `unknown_method` (an older receiver). Everything else,
+ * including a 5xx that carries either code, a caller-side parse error, `invalid_output`, an uncoded 404, an abort or a timeout, may have stored the notice.
  */
 export function classifyNoticeError(error: unknown): "refused" | "unavailable" | "possible" {
-  const code = typeof error === "object" && error !== null ? Reflect.get(error, "code") : undefined;
-  if (code === "invalid_input") return "refused";
-  if (code === "unknown_method") return "unavailable";
+  const field = (name: string) => (typeof error === "object" && error !== null ? Reflect.get(error, name) : undefined);
+  if (field("code") === "invalid_input" && field("status") === 400) return "refused";
+  if (field("code") === "unknown_method" && field("status") === 404) return "unavailable";
   return "possible";
 }
 

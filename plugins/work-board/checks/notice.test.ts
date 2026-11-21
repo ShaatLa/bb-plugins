@@ -49,13 +49,17 @@ describe("classifying a failed call", () => {
   it("counts only a coded invalid_input or unknown_method as definite", () => {
     expect(classifyNoticeError(coded("invalid_input", 400))).toBe("refused");
     expect(classifyNoticeError(coded("unknown_method", 404))).toBe("unavailable");
+    // The code alone is not enough: a 5xx that carries either code, or a code without its status, may have stored the notice.
+    for (const error of [coded("invalid_input", 503), coded("unknown_method", 500), Object.assign(new Error("invalid_input"), { code: "invalid_input" }), coded("invalid_input", 404), coded("unknown_method", 400)]) {
+      expect(classifyNoticeError(error)).toBe("possible");
+    }
     for (const error of [coded("invalid_output", 502), coded("handler_error", 500), coded("transport_error", 503), Object.assign(new Error("not found"), { status: 404 }), new Error("503"), new ZodError([]), new DOMException("aborted", "AbortError"), new DOMException("timed out", "TimeoutError")]) {
       expect(classifyNoticeError(error)).toBe("possible");
     }
   });
 
   it("keeps the row open for an uncoded 404 and a 5xx on the first call", async () => {
-    for (const error of [Object.assign(new Error("not found"), { status: 404 }), coded("handler_error", 500)]) {
+    for (const error of [Object.assign(new Error("not found"), { status: 404 }), coded("handler_error", 500), coded("invalid_input", 503), coded("unknown_method", 500)]) {
       const f = await make();
       archive(f);
       f.control.hub.before = () => { throw error; };
@@ -182,13 +186,14 @@ describe("crash and lost reply", () => {
     archive(f);
     f.control.hub.after = lose;
     await f.tick();
-    expect(rows(f.db)).toMatchObject([{ outcome: "sending", passes: 1 }]);
+    // The first call is not a replay: nothing is counted and no clock has started.
+    expect(rows(f.db)).toMatchObject([{ outcome: "sending", passes: 0, first_error_at: null }]);
     expect(f.pushes).toHaveLength(0);
     expect(ticks(f.db)[0]).toMatchObject({ delivery_failed: 0 });
     recover(f);
     await f.tick(); // still failing: the fence holds although the manager is usable again
     expect(f.threads.sends).toBe(0);
-    expect(rows(f.db)).toMatchObject([{ outcome: "sending", passes: 2 }]);
+    expect(rows(f.db)).toMatchObject([{ outcome: "sending", passes: 1, first_error_at: expect.any(String) }]);
     f.control.hub.after = undefined;
     await f.tick();
     expect(rows(f.db)).toMatchObject([{ outcome: "accepted" }]);
@@ -197,24 +202,84 @@ describe("crash and lost reply", () => {
     expect(f.service.status(f.tracker.id).stats).toMatchObject({ deliveries: 1, notices: 1 });
   });
 
-  it("rolls back a local commit failure after acceptance without a push, and accepts the replay once", async () => {
-    const f = await make();
+  it("accepts only a receipt id in Agent Hub's format: a malformed string keeps the row sending and the candidate pending", async () => {
+    const f = await make({ snapshots: true });
+    f.output("ACTION idle EXA-1", 1, '{"c":1}');
+    archive(f);
+    f.control.hub.after = () => ({ id: "missing", created: false });
+    await f.tick();
+    expect(rows(f.db)).toMatchObject([{ outcome: "sending", notice_id: null }]);
+    expect(pending(f)).toBeTruthy();
+    expect(f.db.prepare("SELECT committed FROM checks_delivery").get()).toEqual({ committed: null });
+    expect(f.state().receipt).toBeUndefined();
+    f.control.hub.after = undefined;
+    await f.tick();
+    expect(rows(f.db)).toMatchObject([{ outcome: "accepted", notice_id: "ans_example1" }]);
+  });
+
+  it("rolls back a local commit failure after acceptance without a push or an early publication, and accepts the replay once", async () => {
+    const f = await make({ snapshots: true });
+    f.output("ACTION idle EXA-1", 1, '{"c":1}');
+    await f.tick(); // a first report reaches the manager: this is the prior receipt, baseline and committed state
+    const prior = f.state();
+    expect(prior).toMatchObject({ receipt: { mode: "queued" }, deliveredTo: MANAGER });
+    f.output("ACTION idle EXA-2", 1, '{"c":2}');
     archive(f);
     f.db.exec("CREATE TRIGGER block_promote BEFORE UPDATE ON checks_delivery WHEN NEW.report_id IS NULL BEGIN SELECT RAISE(ABORT, 'disk full'); END;");
     await expect(f.tick()).rejects.toThrow(/disk full/);
+    // Right after the failed promotion nothing of the acceptance is visible.
+    const after = f.state();
+    expect(after.receipt).toEqual(prior.receipt);
+    expect(after.lastReport).toEqual(prior.lastReport);
+    expect([after.deliveredTo, after.deliveredReportId, after.deliveredTickId, after.deliveredAt]).toEqual([prior.deliveredTo, prior.deliveredReportId, prior.deliveredTickId, prior.deliveredAt]);
+    expect(f.db.prepare("SELECT committed, pending_snapshot FROM checks_delivery").get()).toEqual({ committed: Buffer.from('{"c":1}'), pending_snapshot: Buffer.from('{"c":2}') });
+    expect(ticks(f.db).at(-1)).toMatchObject({ delivered: 0, notices: 0 });
+    expect(f.service.status(f.tracker.id).stats).toMatchObject({ deliveries: 1, notices: 0 });
     expect(rows(f.db)).toMatchObject([{ outcome: "sending" }]);
     expect(f.control.hub.items.size).toBe(1);
     expect(f.pushes).toHaveLength(0);
     expect(pending(f)).toBeTruthy();
-    expect(f.state().deliveryError).toMatch(/disk full/);
+    expect(after.deliveryError).toMatch(/disk full/);
     f.db.exec("DROP TRIGGER block_promote");
     recover(f);
     await f.tick();
     expect(rows(f.db)).toMatchObject([{ outcome: "accepted" }]);
     expect(f.control.hub.items.size).toBe(1);
-    expect(f.threads.sends).toBe(0);
-    expect(f.state()).toMatchObject({ receipt: { mode: "notice" }, deliveryError: null });
-    expect(f.service.status(f.tracker.id).stats).toMatchObject({ deliveries: 1, notices: 1 });
+    expect(f.threads.sends).toBe(1); // only the first report ever reached the manager
+    expect(f.db.prepare("SELECT committed FROM checks_delivery").get()).toEqual({ committed: Buffer.from('{"c":2}') });
+    expect(f.state()).toMatchObject({ receipt: { mode: "notice" }, deliveredTo: "agent-hub", deliveryError: null });
+    expect(f.service.status(f.tracker.id).stats).toMatchObject({ deliveries: 2, notices: 1 });
+  });
+
+  it("publishes nothing of the opening when the row insert fails", async () => {
+    const f = await make();
+    archive(f);
+    f.db.exec("CREATE TRIGGER block_insert BEFORE INSERT ON checks_notice_attempts BEGIN SELECT RAISE(ABORT, 'insert failed'); END;");
+    await expect(f.tick()).rejects.toThrow(/insert failed/);
+    expect(rows(f.db)).toHaveLength(0);
+    expect(f.control.hub.calls).toHaveLength(0);
+    expect(f.state().fallbackReason ?? null).toBeNull();
+    expect(f.state().managerError ?? null).toBeNull();
+    f.db.exec("DROP TRIGGER block_insert");
+    await f.tick();
+    expect(rows(f.db)).toMatchObject([{ outcome: "accepted" }]);
+    expect(f.state().fallbackReason).toBeTruthy();
+  });
+
+  it("counts every delivery of a tick: one recovered notice and a second report staged and accepted on the same tick", async () => {
+    const f = await make();
+    archive(f);
+    f.control.hub.after = () => { throw new Error("connection reset"); };
+    await f.tick(); // report 1: stored, reply lost
+    f.control.hub.after = undefined;
+    f.output("ACTION idle EXA-2", 1);
+    await f.tick(); // replay accepts report 1, then report 2 is staged and delivered as a second notice
+    expect(rows(f.db)).toMatchObject([{ outcome: "accepted" }, { outcome: "accepted" }]);
+    expect(rows(f.db)[0]!.tick_id).not.toBe(rows(f.db)[1]!.tick_id);
+    expect(f.control.hub.items.size).toBe(2);
+    expect(ticks(f.db)[1]).toMatchObject({ delivered: 2, notices: 2 });
+    expect(ticks(f.db)[0]).toMatchObject({ delivered: 0, notices: 0 });
+    expect(f.service.status(f.tracker.id).stats).toMatchObject({ deliveries: 2, notices: 2 });
   });
 });
 
@@ -223,27 +288,36 @@ describe("replays that prove nothing", () => {
     const f = await make();
     archive(f);
     f.control.hub.after = () => { throw new Error("connection reset"); };
-    await f.tick(); // pass 1: stored, reply lost
-    f.db.prepare("UPDATE checks_notice_attempts SET first_error_at=?").run(new Date(Date.now() - 3_600_000).toISOString());
+    await f.tick(); // the first call: stored, reply lost; not a replay
+    expect(rows(f.db)).toMatchObject([{ outcome: "sending", passes: 0, first_error_at: null }]);
     f.control.hub.after = undefined; recover(f);
-    for (const refuse of [() => { throw coded("unknown_method", 404); }, () => { throw coded("invalid_input", 400); }]) {
-      f.control.hub.before = refuse;
-      await f.tick();
-      expect(rows(f.db)).toMatchObject([{ outcome: "sending" }]);
-    }
+    f.control.hub.before = () => { throw coded("unknown_method", 404); };
+    await f.tick(); // replay 1 starts the clock
+    f.db.prepare("UPDATE checks_notice_attempts SET first_error_at=?").run(new Date(Date.now() - 3_600_000).toISOString());
+    f.control.hub.before = () => { throw coded("invalid_input", 400); };
+    await f.tick(); // replay 2
     f.control.hub.before = undefined; f.control.hub.enabled = false;
-    await f.tick(); // pass 4
-    expect(rows(f.db)).toMatchObject([{ outcome: "sending", passes: 4 }]);
+    await f.tick(); // replay 3
+    expect(rows(f.db)).toMatchObject([{ outcome: "sending", passes: 3 }]);
     expect(f.threads.sends).toBe(0);
     expect(f.pushes).toHaveLength(0);
 
     const next = await restart(f);
-    await next.tick(); // pass 5 reaches the bounds, on the new runner
+    await next.tick(); // replay 4: the span is met long ago, the pass bound is not
+    expect(rows(next.db)).toMatchObject([{ outcome: "sending", passes: 4 }]);
+    f.control.hub.enabled = true;
+    f.control.hub.before = () => { throw new Error("connection reset"); };
+    const calls = f.control.hub.calls.length;
+    await next.tick(); // replay 5 reaches both bounds, on the new runner
+    expect(f.control.hub.calls.length - calls).toBe(1); // the exhausted row is not replayed again in the same pass
     expect(rows(next.db)).toMatchObject([{ outcome: "unknown", passes: 5 }]);
     expect(ticks(next.db)[0]).toMatchObject({ delivery_unknown: 1, delivery_failed: 0 });
     expect(f.pushes).toHaveLength(1);
+    // The terminal diagnostic is saved with the outcome, not after it.
+    expect(JSON.parse((next.db.prepare("SELECT value FROM checks_state").get() as { value: string }).value).deliveryError).toContain("Agent Hub may already have it");
     expect(next.service.status(f.tracker.id)).toMatchObject({ awaitingRetry: true, blocked: expect.stringContaining("Retry"), deliveryError: expect.stringContaining("Agent Hub may already have it") });
     await next.tick(); // an unknown row is replayed as late evidence: nothing is counted or pushed again
+    expect(f.control.hub.calls.length - calls).toBe(2);
     expect(f.pushes).toHaveLength(1);
     expect(f.threads.sends).toBe(0);
     expect(ticks(next.db).reduce((sum, t) => sum + t.delivery_unknown, 0)).toBe(1);
@@ -255,6 +329,55 @@ describe("replays that prove nothing", () => {
     expect(f.threads.text(f.threads.rows[0]!)).toContain("Needs attention");
     expect(next.db.prepare("SELECT report_id FROM checks_delivery").get()).toEqual({ report_id: null });
     expect(next.db.prepare("SELECT outcome FROM checks_attempts").all()).toEqual([{ outcome: "queued" }]);
+  });
+
+  it("applies the pass bound and the span bound independently", async () => {
+    const f = await make();
+    archive(f);
+    f.control.hub.after = () => { throw new Error("connection reset"); };
+    await f.tick();
+    const old = new Date(Date.now() - 3_600_000).toISOString();
+    const set = (passes: number, firstErrorAt: string) => f.db.prepare("UPDATE checks_notice_attempts SET passes=?, first_error_at=?").run(passes, firstErrorAt);
+    set(4, new Date().toISOString()); // enough passes, but the span has not elapsed
+    await f.tick();
+    expect(rows(f.db)).toMatchObject([{ outcome: "sending", passes: 5 }]);
+    set(1, old); // the span has elapsed, but too few passes
+    await f.tick();
+    expect(rows(f.db)).toMatchObject([{ outcome: "sending", passes: 2 }]);
+    set(4, old); // both
+    await f.tick();
+    expect(rows(f.db)).toMatchObject([{ outcome: "unknown", passes: 5 }]);
+  });
+
+  it.each([
+    ["the manager recovers", true],
+    ["the manager stays unusable", false],
+  ])("Retry after an unknown outcome when %s: the report is promoted once", async (_name, recovered) => {
+    const f = await make();
+    archive(f);
+    f.control.hub.after = () => { throw new Error("connection reset"); };
+    await f.tick();
+    f.db.prepare("UPDATE checks_notice_attempts SET passes=4, first_error_at=?").run(new Date(Date.now() - 3_600_000).toISOString());
+    await f.tick();
+    expect(rows(f.db)).toMatchObject([{ outcome: "unknown" }]);
+    const key = rows(f.db)[0]!.tick_id;
+    const id = [...f.control.hub.items.values()][0]!.id;
+    if (recovered) recover(f);
+    f.control.hub.after = undefined;
+    await f.harness.callRpc("retryChecksReport", { projectId: f.tracker.id });
+    await f.tick();
+    expect(pending(f)).toBeNull();
+    if (recovered) {
+      expect(f.threads.sends).toBe(1);
+      expect(f.service.status(f.tracker.id).stats).toMatchObject({ deliveries: 1, notices: 0 });
+    } else {
+      // The new row reuses the original key, so the receiver answers with the item it already has.
+      expect(rows(f.db)).toMatchObject([{ outcome: "superseded", tick_id: key }, { outcome: "accepted", tick_id: key, notice_id: id }]);
+      expect(f.control.hub.calls.at(-1)).toMatchObject({ tickId: key });
+      expect(f.control.hub.items.size).toBe(1);
+      expect(f.threads.sends).toBe(0);
+      expect(f.service.status(f.tracker.id).stats).toMatchObject({ deliveries: 1, notices: 1 });
+    }
   });
 
   it("accepts an unknown row when a later replay is answered", async () => {
