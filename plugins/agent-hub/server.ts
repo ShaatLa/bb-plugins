@@ -5,16 +5,17 @@ import { createHash, randomUUID } from 'node:crypto';
 import type { BbPluginApi } from '@get-bb/plugin-sdk';
 import { z } from 'zod';
 import { deliveryError } from './delivery';
-import { rpcContract, inputs, itemSchema, ITEMS_TAG, COUNTS_TAG, RECIPIENTS_TAG, RECIPIENTS_THROTTLE_MS, POOLS_TAG, QUEUE_TAG, CONTEXT_TAG, inlinePreviewSchema, tokenomosThreads, tokenomosSum, type Item, type ListInput, type Counts, type Attachment, type SendOptions, type FormQuestion, YOUR_CALL, defaultAnswer } from './contract';
+import { NOTICE_THREAD, rpcContract, inputs, itemSchema, ITEMS_TAG, COUNTS_TAG, RECIPIENTS_TAG, RECIPIENTS_THROTTLE_MS, POOLS_TAG, QUEUE_TAG, CONTEXT_TAG, inlinePreviewSchema, tokenomosThreads, tokenomosSum, type Item, type ListInput, type Counts, type Attachment, type SendOptions, type FormQuestion, YOUR_CALL, defaultAnswer } from './contract';
 import { migrations } from './schema';
 import { cap, ATTENTION_SQL, ACTIVE_THREAD_SQL, OWNER_ITEM_SQL, failRequest } from './ingest';
-import { createDriver } from './driver';
+import { createDriver, notFound } from './driver';
 import { registerCli } from './cli';
 import { createNotifier } from './notify';
 import { buildReplyMessage } from './reply-message';
 export { buildReplyMessage };
 import { inlineCommentPreview } from './inline-comments';
 
+const NOTICE_PREVIEW = 20000;
 export const INSTRUCTIONS = "Agent Hub tracks the owner's messages and your final replies. For a later answer, call agent_hub_defer; when it arrives, call agent_hub_list, then agent_hub_resolve with the listed id. You must ask the owner a decision with agent_hub_ask, then end the turn; never put the question in chat text. With no pending question, you must call agent_hub_report to deliver a result the owner awaits or to hand work to the owner (ready for review, decisions awaiting them). A script waking its own thread via `bb thread tell` must start the text with a [tag], e.g. `[example-watcher] done`.";
 const optionsSchema=z.array(z.string({error:'options must be a list of strings'}).trim().min(1,'an option is empty; give it text or remove it').max(200,'an option is longer than 200 characters; shorten it'),{error:'options must be a list of 1–6 strings'}).min(1,'options is empty; give 1–6 options or leave options out').max(6,'options has more than 6 entries; keep at most 6').refine(v=>new Set(v).size===v.length,'options must be unique after trimming; remove the duplicate');
 // A session started before a tool gained a flag sends it as a string; read 'true'/'false' as the boolean.
@@ -138,12 +139,14 @@ function start(bb: BbPluginApi, migrationError: string | null) {
   // page loads contacts. Counting first applies bb's lastReadAt to threads with unread answers (at most every 15 s).
   // Agent questions stay: reading the thread in bb does not answer them.
   let bbReadSyncedAt = 0;
+  const NOT_NOTICE_SQL = 'id NOT IN (SELECT id FROM notices)';
   // bb also counts sending a message as reading its thread (lastReadAt = the send time, to the millisecond), even a queued
   // message it sends by itself when a turn ends, while nobody is looking; taking that as a read would hide the answer that
   // just arrived. So a lastReadAt that falls right on one of the owner's sends is not a read; only bb's real reads count.
   const sendReads = new Map<string, number>();
   async function applyBbRead(threadId: string, readAt: number) {
-    const sql = `FROM items WHERE thread_id=? AND ${ATTENTION_SQL} AND kind<>'for_me' AND coalesce(answered_at,created_at)<=?`;
+    // A notice is not in bb's chat, so bb's lastReadAt says nothing about it.
+    const sql = `FROM items WHERE thread_id=? AND ${ATTENTION_SQL} AND kind<>'for_me' AND ${NOT_NOTICE_SQL} AND coalesce(answered_at,created_at)<=?`;
     if (sendReads.get(threadId) === readAt || !(db.prepare(`SELECT count(*) AS n ${sql}`).get(threadId,readAt) as {n:number}).n) return 0;
     const sent = await bb.sdk.threads.events.list({threadId,types:['client/turn/requested'],order:'desc',limit:'5'}) as {createdAt:number;data?:{initiator?:string}}[];
     if (sent.some(e => e.data?.initiator === 'user' && readAt >= e.createdAt && readAt - e.createdAt < 1000)) { sendReads.set(threadId, readAt); return 0; }
@@ -151,7 +154,7 @@ function start(bb: BbPluginApi, migrationError: string | null) {
   }
   async function syncReadFromBb() {
     if (Date.now() - bbReadSyncedAt < 15000) return; bbReadSyncedAt = Date.now();
-    const ids = threadsOf(`${ATTENTION_SQL} AND kind<>'for_me' AND thread_deleted=0`);
+    const ids = threadsOf(`${ATTENTION_SQL} AND kind<>'for_me' AND ${NOT_NOTICE_SQL} AND thread_deleted=0`);
     if (!ids.length) return;
     try {
       let n = 0;
@@ -170,6 +173,7 @@ function start(bb: BbPluginApi, migrationError: string | null) {
     };
     const where = [views[p.view]], args: (string | number)[] = [];
     if (!p.threadId) where.push(OWNER_ITEM_SQL);
+    if (p.notices) where.push('id IN (SELECT id FROM notices)');
     if (!['all','pinned','saved'].includes(p.view)) where.push('dismissed_at IS NULL',ACTIVE_THREAD_SQL);
     for (const [key,value] of [['thread_id',p.threadId],['project_id',p.projectId]] as const) {
       if (value !== undefined) {where.push(`${key}=?`); args.push(value);}
@@ -189,7 +193,7 @@ function start(bb: BbPluginApi, migrationError: string | null) {
     const rows = db.prepare(`SELECT *,${at} AS list_at FROM items WHERE ${where.join(' AND ')} ORDER BY ${at} ${direction},id ${direction} LIMIT ?`).all(...args,limit+1) as Row[];
     const more = rows.length>limit; rows.splice(limit); if (p.after) rows.reverse();
     const titles = new Map<string,string>();
-    const ids = [...new Set(rows.filter(r=>!r.thread_deleted).map(r=>r.thread_id as string))];
+    const ids = [...new Set(rows.filter(r=>!r.thread_deleted && r.thread_id!==NOTICE_THREAD).map(r=>r.thread_id as string))];
     if (ids.length) for (const t of await displayThreads(ids)) titles.set(t.id,t.title ?? t.id);
     // Update captions name the child or sender thread; one that left the sidebar (archived) is looked up by id.
     const sources = [...new Set(rows.filter(r=>r.trigger_kind==='system' || r.trigger_kind==='agent').map(r=>r.trigger_source as string|null).filter((id):id is string=>!!id && !titles.has(id)))];
@@ -197,10 +201,11 @@ function start(bb: BbPluginApi, migrationError: string | null) {
     await Promise.all(sources.filter(id=>!titles.has(id)).map(id=>bb.sdk.threads.get({threadId:id}).then(t=>{titles.set(id,t.title ?? id); threadCache.set(id,{expires:Date.now()+30000,thread:{id:t.id,title:t.title,projectId:t.projectId}});},()=>{})));
     const names = new Map<string,string>();
     if (rows.some(r=>r.project_id)) for (const p of await displayProjects()) names.set(p.id,p.name);
+    const notices = new Map((rows.length ? db.prepare(`SELECT id,source,manager_thread_id,bytes,length(body) AS chars FROM notices WHERE id IN (${rows.map(()=>'?').join(',')})`).all(...rows.map(r=>r.id)) as {id:string;source:string;manager_thread_id:string|null;bytes:number;chars:number}[] : []).map(n=>[n.id,{source:n.source,managerThreadId:n.manager_thread_id,bytes:n.bytes,truncated:n.chars>NOTICE_PREVIEW}]));
     const items: Item[] = rows.map(row => {
       const value: Row = {};
       for (const [key,v] of Object.entries(row)) if (key !== 'dedupe_key' && key !== 'list_at') value[key.replace(/_([a-z])/g,(_,c:string)=>c.toUpperCase())]=v;
-      return itemSchema.parse({...value,attachments:JSON.parse(row.attachments),snoozedUntil:row.snoozed_until,declinedAt:row.declined_at,failedAt:row.failed_at,failureReason:row.failure_reason,interruptedAt:row.interrupted_at,likelyInterim:!!row.likely_interim,asks:!!row.asks,chatAsked:!!row.chat_asked,options:row.options===null ? null : JSON.parse(row.options),questions:row.questions===null ? null : JSON.parse(row.questions),recommended:row.recommended,recommendReason:row.recommend_reason,taskKey:row.task_key,trigger:row.trigger_kind ? {kind:row.trigger_kind,sourceId:row.trigger_source,sourceTitle:row.trigger_source ? titles.get(row.trigger_source) ?? null : null} : null,pinned:!!row.pinned,threadDeleted:!!row.thread_deleted,threadTitle:titles.get(row.thread_id) ?? null,projectName:names.get(row.project_id) ?? null});
+      return itemSchema.parse({...value,notice:notices.get(row.id) ?? null,attachments:JSON.parse(row.attachments),snoozedUntil:row.snoozed_until,declinedAt:row.declined_at,failedAt:row.failed_at,failureReason:row.failure_reason,interruptedAt:row.interrupted_at,likelyInterim:!!row.likely_interim,asks:!!row.asks,chatAsked:!!row.chat_asked,options:row.options===null ? null : JSON.parse(row.options),questions:row.questions===null ? null : JSON.parse(row.questions),recommended:row.recommended,recommendReason:row.recommend_reason,taskKey:row.task_key,trigger:row.trigger_kind ? {kind:row.trigger_kind,sourceId:row.trigger_source,sourceTitle:row.trigger_source ? titles.get(row.trigger_source) ?? null : null} : null,pinned:!!row.pinned,threadDeleted:!!row.thread_deleted,threadTitle:titles.get(row.thread_id) ?? null,projectName:names.get(row.project_id) ?? null});
     });
     const last = rows.at(-1);
     const first = rows[0], newer = first && (p.anchor !== undefined || p.after) && db.prepare(`SELECT 1 FROM items WHERE thread_id=? AND (${at}>? OR (${at}=? AND id>?)) LIMIT 1`).get(p.threadId,first.list_at,first.list_at,first.id);
@@ -214,13 +219,14 @@ function start(bb: BbPluginApi, migrationError: string | null) {
     const p=inputs.markRead.parse(raw), now=Date.now();
     if ('ids' in p) return commit(`UPDATE items SET read_at=?,read_batch=NULL WHERE id IN (${p.ids.map(()=>'?').join(',')}) AND ${READABLE_SQL}`,now,...p.ids);
     // Reading does not answer an open agent question; it stays counted until answered.
-    const batch=randomUUID(), count=db.prepare(`UPDATE items SET read_at=?,read_batch=? WHERE ${p.threadId ? READABLE_SQL : ATTENTION_SQL} AND NOT (kind='for_me' AND status='open')${p.threadId ? ' AND thread_id=?' : ''}`).run(now,batch,...(p.threadId ? [p.threadId] : [])).changes;
+    const batch=randomUUID(), count=db.prepare(`UPDATE items SET read_at=?,read_batch=? WHERE ${p.threadId ? READABLE_SQL : ATTENTION_SQL} AND NOT (kind='for_me' AND status='open')${p.threadId ? ` AND thread_id=? AND ${NOT_NOTICE_SQL}` : ''}`).run(now,batch,...(p.threadId ? [p.threadId] : [])).changes;
     invalidate(); return {ok:true as const,batch:count ? batch : null,count};
   }
   // Reads made in Agent Hub's UI also clear bb's own unread mark on a thread once nothing there is left unread here,
   // and an undo restores it. The CLI path (`bb agent-hub read`) is not a person reading, so it leaves bb alone.
   async function syncBbRead(threadIds: Iterable<string>, read: boolean) {
     for (const threadId of new Set(threadIds)) {
+      if (threadId===NOTICE_THREAD) continue;
       if (read && db.prepare(`SELECT 1 FROM items WHERE thread_id=? AND ${ATTENTION_SQL} LIMIT 1`).get(threadId)) continue;
       try { await (read ? bb.sdk.threads.markRead({threadId}) : bb.sdk.threads.markUnread({threadId})); }
       catch (e) { bb.log.warn(`Agent Hub read sync: ${String(e)}`); }
@@ -293,6 +299,12 @@ function start(bb: BbPluginApi, migrationError: string | null) {
       db.prepare("UPDATE items SET status='replied',answer=?,answer_source='user',updated_at=? WHERE id=? AND thread_id=? AND kind='for_me' AND status='open'").run(answer,Date.now(),id,threadId);
     }
   }
+  async function noticeThread(id?: string) {
+    if (!id || id===NOTICE_THREAD) return NOTICE_THREAD;
+    if (db.prepare('SELECT 1 FROM archived_threads WHERE thread_id=? UNION ALL SELECT 1 FROM sub_threads WHERE thread_id=?').get(id,id)) return NOTICE_THREAD;
+    try {const thread=await bb.sdk.threads.get({threadId:id}); return thread.archivedAt || thread.deletedAt || thread.parentThreadId ? NOTICE_THREAD : id;}
+    catch (e) {if (notFound(e)) return NOTICE_THREAD; throw e;}
+  }
   const handlers = {
     'notifier.beat': notifier.beat,
     'config.get':config.get,
@@ -358,13 +370,13 @@ function start(bb: BbPluginApi, migrationError: string | null) {
     async createTask(raw:z.infer<typeof inputs.createTask>) {
       const p=inputs.createTask.parse(raw),item=get(p.id);
       const outputSchema=z.discriminatedUnion('ok',[z.object({ok:z.literal(true),task:z.object({key:z.string().min(1)})}),z.object({ok:z.literal(false),error:z.object({message:z.string()})})]);
-      const path=item.project_id ? '/projects/'+item.project_id+'/threads/'+item.thread_id : '/threads/'+item.thread_id;
-      const result=outputSchema.parse(await bb.sdk.plugins.callRpc({pluginId:'work-board',method:'createTask',input:{projectId:p.projectId,title:(inlineCommentPreview(item.question).split('\n').find((line:string)=>line.trim()) ?? '').trim().slice(0,120),description:[item.question,item.answer,`[Open thread](${path})`].filter(Boolean).join('\n\n'),requesterThreadId:item.thread_id},outputSchema}));
+      const real=item.thread_id!==NOTICE_THREAD, path=item.project_id ? '/projects/'+item.project_id+'/threads/'+item.thread_id : '/threads/'+item.thread_id;
+      const result=outputSchema.parse(await bb.sdk.plugins.callRpc({pluginId:'work-board',method:'createTask',input:{projectId:p.projectId,title:(inlineCommentPreview(item.question).split('\n').find((line:string)=>line.trim()) ?? '').trim().slice(0,120),description:[item.question,item.answer,real ? `[Open thread](${path})` : ''].filter(Boolean).join('\n\n'),...(real ? {requesterThreadId:item.thread_id} : {})},outputSchema}));
       if (!result.ok) throw new Error(result.error.message);
       commit('UPDATE items SET task_key=? WHERE id=?',result.task.key,p.id); return {key:result.task.key};
     },
     async recipients(raw:z.infer<typeof inputs.recipients>) {
-      const p=inputs.recipients.parse(raw);
+      const p={...inputs.recipients.parse(raw)}; if (p.selected===NOTICE_THREAD) delete p.selected;
       if (!migrationPending && p.selected && !db.prepare('SELECT 1 FROM threads_state WHERE thread_id=? AND (last_seq>0 OR ingested_thread_updated_at IS NOT NULL)').get(p.selected)) await driver.schedule(p.selected);
       // A contact counts its own open agent questions too; explicit sub-agent asks live only in Questions.
       const contactAttention = ATTENTION_SQL;
@@ -372,7 +384,7 @@ function start(bb: BbPluginApi, migrationError: string | null) {
       // shortcut: show at most 200 conversations; paginate when larger inboxes need it.
       const rows=db.prepare(`WITH grouped AS (
         SELECT thread_id,sum(CASE WHEN ${contactAttention} THEN 1 ELSE 0 END) AS unread,sum(CASE WHEN ${contactAttention} AND kind='for_me' THEN 1 ELSE 0 END) AS questions,max(updated_at) AS last_at
-        FROM items WHERE thread_deleted=0 AND ${ACTIVE_THREAD_SQL} AND thread_id NOT IN (SELECT thread_id FROM sub_threads)
+        FROM items WHERE thread_deleted=0 AND thread_id<>'${NOTICE_THREAD}' AND ${ACTIVE_THREAD_SQL} AND thread_id NOT IN (SELECT thread_id FROM sub_threads)
         GROUP BY thread_id
         -- A thread with only agent questions lives in Questions; an open top-level chat stays listed.
         HAVING sum(kind<>'for_me')>0 OR thread_id=?
@@ -504,6 +516,27 @@ function start(bb: BbPluginApi, migrationError: string | null) {
         if (item.kind==='for_me') commit("UPDATE items SET status='replied',answer=?,answer_source='user',updated_at=? WHERE id=? AND status='open'",p.text,Date.now(),p.id);
         return result;
       });
+    },
+    // The manager thread when it can show the notice; otherwise the placeholder, so the report still reaches the owner.
+    async notice(raw: z.infer<typeof inputs.notice>) {
+      const p=inputs.notice.parse(raw);
+      if (migrationPending) throw new Error('Agent Hub migration failed; restart to retry before writing');
+      const id='ans_'+createHash('sha256').update(JSON.stringify([p.source,p.tickId])).digest('hex');
+      if (db.prepare('SELECT 1 FROM notices WHERE id=?').get(id)) return {id,created:false};
+      const threadId=await noticeThread(p.threadId), now=Date.now();
+      // The insert is re-checked here: a concurrent call with the same key may have committed during the lookup above.
+      const created=db.transaction(()=>{
+        if (!db.prepare('INSERT OR IGNORE INTO notices(id,source,tick_id,project_id,manager_thread_id,body,bytes,created_at) VALUES (?,?,?,?,?,?,?,?)').run(id,p.source,p.tickId,p.projectId,p.threadId ?? null,p.markdown,Buffer.byteLength(p.markdown),now).changes) return false;
+        db.prepare("INSERT INTO items(id,kind,thread_id,project_id,status,question,answer,answer_source,answered_at,asks,notify_state,trigger_kind,trigger_source,created_at,updated_at) VALUES (?,'update',?,?,'answered',?,?,'agent',?,1,1,'plugin',?,?,?)").run(id,threadId,p.projectId,p.title,p.markdown.length>NOTICE_PREVIEW ? p.markdown.slice(0,NOTICE_PREVIEW)+'\n\n… (truncated)' : p.markdown,now,p.source,now,now);
+        return true;
+      })();
+      if (created) {invalidate(); onAttention();}
+      return {id,created};
+    },
+    noticeBody(raw: z.infer<typeof inputs.noticeBody>) {
+      const row=db.prepare('SELECT body FROM notices WHERE id=?').get(inputs.noticeBody.parse(raw).id) as {body:string}|undefined;
+      if (!row) throw new Error('notice not found');
+      return {markdown:row.body};
     },
     async save(raw: z.infer<typeof inputs.save>) {
       const p=inputs.save.parse(raw);

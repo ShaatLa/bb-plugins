@@ -146,4 +146,25 @@ ALTER TABLE items ADD COLUMN snap_seq INTEGER;`,
   // declined_at: Won't reply quiets an open question without closing it; old owner dismissals of agent questions close as withdrawn.
   `ALTER TABLE items ADD COLUMN declined_at INTEGER;
 UPDATE items SET answer_source='agent',note='Closed without an answer: the owner chose Won’t reply.' WHERE kind='for_me' AND status='open' AND dismissed_at IS NOT NULL AND answer_source IS NULL AND chat_asked=0;`,
+  // Notices other plugins send through the notice RPC: the full report is kept here, the item carries a preview. A notice
+  // whose thread is archived or becomes a sub thread moves to the placeholder thread so it is never hidden.
+  `CREATE TABLE notices (
+  id                TEXT PRIMARY KEY,
+  source            TEXT NOT NULL,
+  tick_id           TEXT NOT NULL,
+  project_id        TEXT NOT NULL,
+  manager_thread_id TEXT,
+  body              TEXT NOT NULL,
+  bytes             INTEGER NOT NULL,
+  created_at        INTEGER NOT NULL,
+  UNIQUE(source, tick_id)
+);
+CREATE TRIGGER notices_rehome_archived AFTER INSERT ON archived_threads
+BEGIN
+  UPDATE items SET thread_id='thr_notice_inbox' WHERE thread_id=NEW.thread_id AND id IN (SELECT id FROM notices);
+END;
+CREATE TRIGGER notices_rehome_sub AFTER INSERT ON sub_threads
+BEGIN
+  UPDATE items SET thread_id='thr_notice_inbox' WHERE thread_id=NEW.thread_id AND id IN (SELECT id FROM notices);
+END;`,
 ];

@@ -81,11 +81,11 @@ describe('Won’t reply', () => {
 
 describe('questions the owner dismissed before this release', () => {
   it('close as withdrawn with a reason, and withdrawals and chat-asked ones stay as they were', () => {
-    const db = new Database(':memory:'); db.exec(migrations.slice(0, -1).join('\n'));
+    const db = new Database(':memory:'), at = migrations.findIndex(m => m.includes('ADD COLUMN declined_at')); db.exec(migrations.slice(0, at).join('\n'));
     const add = (id: string, column: string, value: string) => db.prepare(`INSERT INTO items(id,kind,thread_id,status,question,dismissed_at,${column},created_at,updated_at) VALUES (?,'for_me','t','open','Q?',5,${value},1,1)`).run(id);
     add('owner', 'answer_source', 'NULL'); add('agent', 'answer_source', "'agent'"); add('chat', 'chat_asked', '1');
     db.prepare("UPDATE items SET note='Found it' WHERE id='agent'").run();
-    db.exec(migrations.at(-1)!);
+    db.exec(migrations[at]!);
     const rows = db.prepare('SELECT id,status,answer_source,dismissed_at,note FROM items ORDER BY id').all() as { id: string; note: string | null }[];
     expect(rows.find(r => r.id === 'owner')).toMatchObject({ status: 'open', answer_source: 'agent', dismissed_at: 5 }); expect(rows.find(r => r.id === 'owner')!.note).toMatch(/Won’t reply/);
     expect(rows.find(r => r.id === 'agent')).toMatchObject({ answer_source: 'agent', note: 'Found it' }); expect(rows.find(r => r.id === 'chat')).toMatchObject({ answer_source: null, note: null });

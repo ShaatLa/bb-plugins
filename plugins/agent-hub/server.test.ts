@@ -331,7 +331,7 @@ describe('reply pools and inbox',()=>{
   expect(db.prepare('SELECT question FROM items').get()).toEqual({question:'Question'});
   expect(db.prepare('SELECT * FROM pool_entries').all()).toEqual([]); db.close();
  });
- it('adds empty attachments to existing items',()=>{ const db=new Database(':memory:'); migrations.slice(0,-2).forEach(m=>db.exec(m)); seed(db); db.exec(migrations.at(-2)!); expect(db.prepare('SELECT attachments FROM items').get()).toEqual({attachments:'[]'}); db.close(); });
+ it('adds empty attachments to existing items',()=>{ const db=new Database(':memory:'); const at=migrations.findIndex(m=>m.startsWith('ALTER TABLE items ADD COLUMN attachments')); migrations.slice(0,at).forEach(m=>db.exec(m)); seed(db); db.exec(migrations[at]!); expect(db.prepare('SELECT attachments FROM items').get()).toEqual({attachments:'[]'}); db.close(); });
  it('uses wake and pending notification indexes',()=>{
   const db=new Database(':memory:'); db.exec(migrations.join('\n'));
   const insert=db.prepare("INSERT INTO items(id,kind,thread_id,status,question,created_at,updated_at,notify_state,snoozed_until) VALUES (?,'mine','t','waiting','q',1,1,?,?)");

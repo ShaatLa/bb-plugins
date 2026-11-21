@@ -1,10 +1,11 @@
 import { getProjectConfig } from './project-config';
+import { NOTICE_THREAD } from './contract';
 import { sendOrAppend } from './queued-notice';
 import type { BbPluginApi } from '@get-bb/plugin-sdk';
 import type Database from 'better-sqlite3';
 import { applyEvents, COMPACTED_EVENT, CONTEXT_EVENT, QUIET_SQL, RELEVANT, type Event } from './ingest';
 
-const notFound = (e: unknown) => {
+export const notFound = (e: unknown) => {
   const error = e as { status?: number; statusCode?: number; code?: string };
   return error?.status === 404 || error?.statusCode === 404 || error?.code === 'not_found';
 };
@@ -45,8 +46,11 @@ export function createDriver(bb: BbPluginApi, db: Database.Database, invalidate:
     } catch { return false; }
   }
   function remove(id: string) {
+    if (id === NOTICE_THREAD) return;
     const hadItems = !!db.prepare('SELECT 1 FROM items WHERE thread_id=? LIMIT 1').get(id);
     db.transaction(() => {
+      // A notice outlives its thread: it moves to the placeholder before the thread's items go.
+      db.prepare('UPDATE items SET thread_id=? WHERE thread_id=? AND id IN (SELECT id FROM notices)').run(NOTICE_THREAD,id);
       db.prepare("DELETE FROM items WHERE thread_id=? AND kind!='saved'").run(id);
       db.prepare('DELETE FROM pool_entries WHERE thread_id=?').run(id);
       db.prepare('DELETE FROM request_aliases WHERE thread_id=?').run(id);
@@ -145,6 +149,7 @@ export function createDriver(bb: BbPluginApi, db: Database.Database, invalidate:
     }
   }
   function schedule(id: string, listed?: Thread) {
+    if (id === NOTICE_THREAD) return Promise.resolve();
     const existing = scheduled.get(id);
     if (existing) {existing.dirty=true; if (listed) existing.listed=listed; return existing.promise;}
     const entry: { dirty: boolean; listed?: Thread; promise: Promise<void> } = {dirty:false,listed,promise:Promise.resolve()};
@@ -154,7 +159,7 @@ export function createDriver(bb: BbPluginApi, db: Database.Database, invalidate:
     scheduled.set(id,entry); return entry.promise;
   }
   async function reconcile() {
-    const tracked = db.prepare('SELECT ids.thread_id,s.last_seq,s.last_error,s.ingested_thread_updated_at FROM (SELECT thread_id FROM threads_state UNION SELECT thread_id FROM pool_entries) ids LEFT JOIN threads_state s USING(thread_id)').all() as (State & {thread_id:string})[];
+    const tracked = db.prepare('SELECT ids.thread_id,s.last_seq,s.last_error,s.ingested_thread_updated_at FROM (SELECT thread_id FROM threads_state UNION SELECT thread_id FROM pool_entries) ids LEFT JOIN threads_state s USING(thread_id)').all().filter((r) => (r as {thread_id:string}).thread_id !== NOTICE_THREAD) as (State & {thread_id:string})[];
     for (let i=0;i<tracked.length && !signal.aborted;i+=200) {
       const ids = tracked.slice(i,i+200).map(r=>r.thread_id);
       try {
@@ -183,6 +188,7 @@ export function createDriver(bb: BbPluginApi, db: Database.Database, invalidate:
   return {
     schedule, reconcile,
     withThread: <T>(id: string, mutate: () => T | Promise<T>) => locked(id,async () => {
+      if (id === NOTICE_THREAD) throw new Error('thread not found');
       await attempt(id);
       if (!db.prepare('SELECT 1 FROM threads_state WHERE thread_id=?').get(id)) throw new Error('thread not found');
       return mutate();

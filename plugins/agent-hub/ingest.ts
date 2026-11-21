@@ -80,7 +80,7 @@ export function applyEvents(db: Database.Database, threadId: string, events: Eve
    // bb deleted this thread's events from the edited message on; the chat drops what they made, as bb's does.
    const cut = d.metadata.cutoffSequence, removed = d.metadata.removedTurnId ?? null;
    const from = (db.prepare("SELECT created_at FROM items WHERE thread_id=? AND kind='mine' AND question_seq=?").get(threadId,cut) as {created_at:number}|undefined)?.created_at ?? null;
-   const gone = `thread_id=? AND kind IN ('mine','update','for_me') AND (coalesce(question_seq,answer_seq,interim_seq,-1)>=? OR (kind='update' AND question_seq IS NULL AND answer_seq IS NULL AND created_at>=coalesce(?,9e15)))`;
+   const gone = `thread_id=? AND id NOT IN (SELECT id FROM notices) AND kind IN ('mine','update','for_me') AND (coalesce(question_seq,answer_seq,interim_seq,-1)>=? OR (kind='update' AND question_seq IS NULL AND answer_seq IS NULL AND created_at>=coalesce(?,9e15)))`;
    db.prepare(`UPDATE items SET dismissed_at=coalesce(dismissed_at,?),updated_at=? WHERE ${gone} AND id IN (SELECT item_id FROM pool_entries WHERE item_id IS NOT NULL)`).run(now,now,threadId,cut,from);
    db.prepare(`DELETE FROM items WHERE ${gone} AND id NOT IN (SELECT item_id FROM pool_entries WHERE item_id IS NOT NULL)`).run(threadId,cut,from);
    // shortcut: an earlier question answered by a removed turn keeps that answer; reopen it if edits of deferred threads matter.

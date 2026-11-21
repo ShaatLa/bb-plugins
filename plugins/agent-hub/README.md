@@ -144,6 +144,23 @@ Focused Agent Hub chats register rebindable Focus composer (Mod+Alt+L), Search c
 
 Changing provider prepares a Handoff to new thread. Exit handoff restores the source provider. The next send creates and selects a thread in the same project and environment, using the selected provider/model and a `Continue from @thread:<source-id>` mention followed by a blank line and your message. The source thread is unchanged.
 
+## Notices from other plugins
+
+A plugin that cannot reach its manager thread can hand a report to Agent Hub with the RPC `notice` (`bb.sdk.plugins.callRpc({ pluginId: 'agent-hub', method: 'notice', input })`).
+
+| Input | |
+|---|---|
+| `source` | Caller plugin id, 1–200 characters. |
+| `tickId` | Stable key of the original report, 1–500 characters. |
+| `projectId` | bb project id, 1–200 characters. |
+| `threadId` | Optional, the intended manager thread, up to 200 characters. |
+| `title` | 1–200 characters after trimming. |
+| `markdown` | The report, 1 byte to 1 MiB of UTF-8. |
+
+The result is `{ id, created }`. A repeat with the same `(source, tickId)` returns the same `id` with `created: false` and keeps the first body. A returned `id` means the notice is stored. Unknown input fields are ignored. A validation error (an empty or too long field, a body over 1 MiB) is a definite refusal: the report was not stored and a retry with the same input fails the same way. Any other error may mean the notice was stored, so retry with the same `tickId`.
+
+The notice is an unread update that needs attention, like an `agent_hub_report`: it counts in the Inbox total and the badge, and is pushed at the `questions` and `all` notification levels (not at `asked`), held in quiet hours. With a usable `threadId` it shows in that thread's chat. If that thread is archived, deleted, a sub-session or unknown, or no `threadId` is given, the notice is kept without a thread and shows in the **Questions** section under its project, with a link to the intended manager when there is one; a thread that is archived or deleted later moves its notices there the same way. A notice is also listed in **Questions** while it is unhandled. Long reports show a preview first: **Show full report** loads the rest. **Mark read** is "handled". Opening the manager thread in bb does not mark a notice read. Reports are kept until handled and are not deleted automatically.
+
 ## Settings
 
 Open **Settings → Plugins → Agent Hub**. Notifications controls push activity, quiet hours (local From/To times), and blocking reminders. Chat chooses Agent Hub or bb chat. Contacts can group conversations by project and reset the dragged project order. Agents controls warnings about handoffs and questions made without Agent Hub tools. Changes apply live across clients. All seven preferences are stored in plugin KV under `preferences`; existing settings are copied once, without replacing later choices. Legacy Configuration controls may remain for the migration load; reload the plugin once to remove them.

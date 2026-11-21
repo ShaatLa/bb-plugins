@@ -53,6 +53,15 @@ it('rolls back a failure, leaves an empty usable store and retries', async () =>
  const db = new Database(join(dir, 'plugins/agent-hub/data.db')); cleanups.push(() => db.close());
  expect(migrationStatus(host.bb, db, null).ran).toBe(true);
 });
+it('refuses a notice with a retryable error, not a validation error, while the store is read-only', async () => {
+ const { dir, host } = setup();
+ writeFileSync(join(dir, 'bb.db'), 'invalid database');
+ host.harness.sdk.stub('threads.list', async () => []);
+ await plugin(host.bb);
+ await expect(host.harness.behavior.callRpc('notice', { source: 'example-plugin', tickId: 'tick-1', projectId: 'proj_example', threadId: 'thr_manager', title: 'Report', markdown: 'body' })).rejects.toMatchObject({ code: 'handler_error', message: expect.stringContaining('migration failed') });
+ expect(host.harness.inspection.sdk.callsTo('threads.get')).toHaveLength(0);
+ expect(host.bb.storage.database().prepare('SELECT count(*) AS n FROM notices').get()).toEqual({ n: 0 });
+});
 it('registers migration status under the main CLI', async () => {
  const host = createFakePluginHost({ pluginId: 'agent-hub' }); cleanups.push(() => host.harness.lifecycle.dispose()); await plugin(host.bb);
  expect(host.harness.registrations.cli?.name).toBe('agent-hub');
