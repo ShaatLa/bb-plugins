@@ -29,7 +29,9 @@ describe.skipIf(!live)("live notice, lost reply", () => {
     f.control.hub.enabled = true;
     f.setManager(null);
     const tick = `${f.tracker.id}:live-${randomUUID()}`;
-    const body = "ACTION idle EXA-1\n";
+    // A unique alphanumeric marker (the formatter escapes punctuation) lets the readback find this report among all notices of the receiver.
+    const marker = `livemarker${randomUUID().replaceAll("-", "")}`;
+    const body = `ACTION idle EXA-1\nSTATE ${marker}\n`;
     const candidate = Buffer.from(`{"live":"${randomUUID()}"}`);
     f.db.transaction(() => checksStore(f.db).stage(f.tracker.id, { reportId: randomUUID(), project: BB_PROJECT, exit: 1, tick, body, snapshot: candidate }))();
     // Both outgoing requests and both remote replies are kept: the first reply is discarded at the sender boundary, the second is the replay's.
@@ -58,8 +60,8 @@ describe.skipIf(!live)("live notice, lost reply", () => {
     // The item and the receipt belong to the staged report: the key is its tick, the id is the remote one, and the committed bytes are its candidate.
     expect(row).toEqual({ outcome: "accepted", notice_id: id, tick_id: tick });
     expect(f.db.prepare("SELECT committed FROM checks_delivery").get()).toEqual({ committed: candidate });
-    const items = hubCall("list", { view: "all", notices: true, limit: 50 }).items as { id: string }[];
-    expect(items.filter((item) => item.id === id)).toHaveLength(1);
+    const items = hubCall("list", { view: "all", notices: true, projectId: BB_PROJECT, query: marker, limit: 50 }).items as { id: string }[];
+    expect(items.map((item) => item.id)).toEqual([id]);
     expect(f.state()).toMatchObject({ receipt: { mode: "notice", id }, deliveredTickId: tick });
     // The acceptance tick has its own history row and counts one delivery and one notice, whatever the synthetic staged tick has.
     expect(tickRows().map((t) => [t.delivered, t.notices])).toEqual([[0, 0], [1, 1]]);

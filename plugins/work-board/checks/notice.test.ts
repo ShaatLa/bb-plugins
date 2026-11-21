@@ -331,6 +331,27 @@ describe("replays that prove nothing", () => {
     expect(next.db.prepare("SELECT outcome FROM checks_attempts").all()).toEqual([{ outcome: "queued" }]);
   });
 
+  it("keeps the row sending, uncounted and unpushed when the terminal state save fails, then ends as unknown once", async () => {
+    const f = await make();
+    archive(f);
+    f.control.hub.after = () => { throw new Error("connection reset"); };
+    await f.tick();
+    f.db.prepare("UPDATE checks_notice_attempts SET passes=4, first_error_at=?").run(new Date(Date.now() - 3_600_000).toISOString());
+    // The save of the terminal diagnostic fails once, inside the transaction that marks the row unknown and counts it.
+    f.db.exec("CREATE TRIGGER block_terminal BEFORE UPDATE ON checks_state WHEN NEW.value LIKE '%Agent Hub may already have it%' BEGIN SELECT RAISE(ABORT, 'save failed'); END;");
+    await expect(f.tick()).rejects.toThrow(/save failed/);
+    expect(rows(f.db)).toMatchObject([{ outcome: "sending", passes: 4 }]);
+    expect(ticks(f.db).reduce((sum, t) => sum + t.delivery_unknown, 0)).toBe(0);
+    expect(f.pushes).toHaveLength(0);
+    expect(f.state().deliveryError ?? "").not.toContain("Agent Hub may already have it");
+    f.db.exec("DROP TRIGGER block_terminal");
+    await f.tick();
+    expect(rows(f.db)).toMatchObject([{ outcome: "unknown", passes: 5 }]);
+    expect(ticks(f.db).reduce((sum, t) => sum + t.delivery_unknown, 0)).toBe(1);
+    expect(f.pushes).toHaveLength(1);
+    expect(f.state().deliveryError).toContain("Agent Hub may already have it");
+  });
+
   it("applies the pass bound and the span bound independently", async () => {
     const f = await make();
     archive(f);
