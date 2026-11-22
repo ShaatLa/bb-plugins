@@ -25,7 +25,7 @@ import {
 
 const readFlights = new Map<string, Promise<unknown>>();
 // Shared reads are only safe while nothing changed: any event or mutation starts a fresh generation.
-export function forgetReads() {
+function forgetReads() {
   readFlights.clear();
   forgetTaskReads();
 }
@@ -56,6 +56,8 @@ export function useTasksRpc() {
     const flights = readFlights;
     return {
       ...rpc,
+      // The raw client, for reads that must not join another in-flight request with the same arguments.
+      callUncached: rpc.call,
       call: ((method: keyof TasksRpcContract, ...args: unknown[]) => {
         if (freshReads.has(method)) return (rpc.call as (...args: unknown[]) => Promise<unknown>)(method, ...args);
         if (!readMethods.has(method)) {
@@ -79,7 +81,8 @@ export function useTasksRpc() {
   }, [rpc]);
 }
 
-export type TasksRpc = ReturnType<typeof useTasksRpc>;
+type UseTasksRpc = ReturnType<typeof useTasksRpc>;
+export type TasksRpc = Omit<UseTasksRpc, "callUncached"> & Partial<Pick<UseTasksRpc, "callUncached">>;
 
 interface TaskListQuery {
   archive?: "active" | "archived" | "all";

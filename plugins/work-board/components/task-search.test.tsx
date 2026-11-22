@@ -475,6 +475,65 @@ describe("task search", () => {
       expect(slot.getByRole("option", { name: /EXA-8/ })).toBeDefined();
     });
 
+    it("keeps a new multi-page body read independent of an abandoned one that fails on page two", async () => {
+      const { store, project, rpc } = setup();
+      store.transaction(() => { for (let index = 0; index < 520; index++) store.tasks.createTask({ projectId: project.id, title: `Bulk ${index}` }); });
+      const listTasks = rpc.listTasks!;
+      const held: Array<{ cursor: unknown; resolve: () => void; reject: (error: Error) => void }> = [];
+      rpc.listTasks = (input) => rpcInput(input).omitBodies === true ? listTasks(input)
+        : new Promise((resolve, reject) => { held.push({ cursor: rpcInput(input).cursor, resolve: () => void listTasks(input).then(resolve), reject }); });
+      const slot = openMain(project, rpc);
+      const input = await slot.findByRole("combobox", { name: "Search tasks" });
+      await waitFor(() => expect(slot.rpcCalls.some((call) => call.method === "listTasks" && rpcInput(call.input).cursor)).toBe(true));
+      await settle();
+      fireEvent.change(input, { target: { value: "Acceptance criteria" } });
+      await waitFor(() => expect(held).toHaveLength(1));              // A page 1
+      fireEvent.change(input, { target: { value: "" } });
+      fireEvent.change(input, { target: { value: "Acceptance" } });
+      await waitFor(() => expect(held).toHaveLength(2));              // B page 1 is its own request
+      held[0]!.resolve();
+      await waitFor(() => expect(held).toHaveLength(3));              // A page 2
+      held[1]!.resolve();
+      await waitFor(() => expect(held).toHaveLength(4));              // B page 2 does not join A's page 2
+      held[2]!.reject(new Error("abandoned failure"));
+      await settle();
+      expect(slot.queryByText("abandoned failure")).toBeNull();
+      expect(slot.queryByText("Searching descriptions…") ?? slot.queryByText("Searching tasks…")).not.toBeNull();
+      held[3]!.resolve();
+      await slot.findByRole("option", { name: /EXA-8/ });
+    });
+
+    it("never shows an abandoned read's failure that arrived while the search was cleared", async () => {
+      const { project, rpc } = setup();
+      const listTasks = rpc.listTasks!;
+      const held: Array<{ resolve: () => void; reject: (error: Error) => void }> = [];
+      rpc.listTasks = (input) => rpcInput(input).omitBodies === true ? listTasks(input)
+        : new Promise((resolve, reject) => { held.push({ resolve: () => void listTasks(input).then(resolve), reject }); });
+      const slot = openMain(project, rpc);
+      const input = await slot.findByRole("combobox", { name: "Search tasks" });
+      // Record every node the page ever renders: a stale error can flash between a render and its effects.
+      let leaked = false;
+      const observer = new MutationObserver((records) => {
+        for (const record of records) for (const node of record.addedNodes) if (node.textContent?.includes("stale failure")) leaked = true;
+      });
+      observer.observe(document.body, { subtree: true, childList: true, characterData: true });
+      fireEvent.change(input, { target: { value: "Acceptance criteria" } });
+      await waitFor(() => expect(held).toHaveLength(1));
+      fireEvent.change(input, { target: { value: "" } });
+      held[0]!.reject(new Error("stale failure"));
+      await settle();
+      fireEvent.change(input, { target: { value: "Acceptance" } });
+      await waitFor(() => expect(held).toHaveLength(2));
+      expect(slot.queryByText("stale failure")).toBeNull();
+      expect(slot.queryByRole("button", { name: "Retry" })).toBeNull();
+      expect(slot.queryByText("Searching descriptions…") ?? slot.queryByText("Searching tasks…")).not.toBeNull();
+      held[1]!.resolve();
+      await slot.findByRole("option", { name: /EXA-8/ });
+      observer.takeRecords().forEach((record) => record.addedNodes.forEach((node) => { if (node.textContent?.includes("stale failure")) leaked = true; }));
+      observer.disconnect();
+      expect(leaked).toBe(false);
+    });
+
     it.each(["A rejects after B resolved", "B rejects before A resolves"])("only the latest of two body reads reports its outcome (%s)", async (order) => {
       const { project, rpc } = setup();
       const listTasks = rpc.listTasks!;

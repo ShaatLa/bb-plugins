@@ -3,7 +3,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import * as Popover from "@radix-ui/react-popover";
 import { Command as CommandPrimitive } from "cmdk";
 import { usePortalScopeProps } from "@/lib/portal-scope";
-import { forgetReads, patchTasks, useTasksQuery } from "../shell/data.js";
+import { patchTasks, useTasksQuery } from "../shell/data.js";
 import { evictFullTaskDataset, loadTaskDataset, taskDatasetSnapshot } from "../shell/task-dataset";
 import { signalTaskIds } from "../shell/signal-scheduler.js";
 import { type Task } from "../shared/contract.js";
@@ -86,7 +86,7 @@ export function TaskSearch({ projectId }: { projectId: string | null }) {
     if (!term) {
       bodyRun.current++;
       setBody(BODY_PENDING);
-      if (wantBodies) { evictFullTaskDataset(projectId); forgetReads(); } // the abandoned read must not be joined at the dataset or RPC layer
+      if (wantBodies) evictFullTaskDataset(projectId); // the next lookup starts its own read instead of joining the abandoned one
       setWantBodies(false);
       return;
     }

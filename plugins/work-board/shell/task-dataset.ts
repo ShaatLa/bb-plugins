@@ -59,7 +59,9 @@ export function loadTaskDataset(rpc: TasksRpc, projectId: string | null, publish
     let tasks: Task[] = [];
     let cursor: string | undefined;
     do {
-      const page = await rpc.call("listTasks", {
+      // A description read shares only at the dataset level: joining another read's in-flight page would
+      // inherit its failure after the search that started it was cleared.
+      const page = await (full && rpc.callUncached ? rpc.callUncached : rpc.call)("listTasks", {
         archive: "active", allowStaleCursor: true, ...(full ? {} : { omitBodies: true }), ...(projectId ? { projectId } : {}), limit: TASKS_PAGE_MAX_LIMIT,
         ...(cursor ? { cursor } : {}),
       });
