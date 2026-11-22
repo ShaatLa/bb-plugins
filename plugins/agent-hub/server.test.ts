@@ -1026,6 +1026,15 @@ it('jumps directly to a stored sequence and pages newer history only on demand',
   expect(db.prepare('SELECT count(*) n FROM items WHERE read_at IS NOT NULL').get()).toEqual({n:0});
 });
 
+it('jumps from a message stored only under the reply to the item that holds it', async () => {
+  const {harness,db} = setup();
+  seed(db,'ans_example_a','update','thr_example'); db.prepare('UPDATE items SET created_at=1,answer_seq=10 WHERE id=?').run('ans_example_a');
+  seed(db,'ans_example_b','update','thr_example'); db.prepare('UPDATE items SET created_at=2,answer_seq=30 WHERE id=?').run('ans_example_b');
+  const page = await harness.behavior.callRpc('list',{view:'all',threadId:'thr_example',order:'activity',anchor:25,limit:3}) as any;
+  expect(page.items[0].id).toBe('ans_example_b');
+  expect((await harness.behavior.callRpc('list',{view:'all',threadId:'thr_example',order:'activity',anchor:31,limit:3}) as any).items).toEqual([]);
+});
+
 it('keeps Work Board rules out of Answers instructions',()=>{expect(INSTRUCTIONS).not.toMatch(/Work Board|work-board/);});
 
 it('reads and writes scoped config through RPC and CLI',async()=>{

@@ -183,7 +183,10 @@ function start(bb: BbPluginApi, migrationError: string | null) {
     const at = p.order === 'activity' ? 'coalesce(answered_at,created_at)' : 'created_at';
     if ((p.anchor !== undefined || p.after) && (!p.threadId || p.view !== 'all' || p.order !== 'activity' || p.cursor || p.query)) throw new Error('Anchored history requires one thread and activity order');
     if (p.anchor !== undefined) {
-      const target = db.prepare(`SELECT *,${at} AS list_at FROM items WHERE thread_id=? AND ${typeof p.anchor === 'number' ? '(question_seq=? OR answer_seq=? OR interim_seq=? OR candidate_seq=?)' : 'id=?'} LIMIT 1`).get(p.threadId, ...(typeof p.anchor === 'number' ? [p.anchor,p.anchor,p.anchor,p.anchor] : [p.anchor])) as Row | undefined;
+      const last = 'max(coalesce(question_seq,-1),coalesce(answer_seq,-1),coalesce(interim_seq,-1),coalesce(candidate_seq,-1))';
+      // A message from another thread or plugin is stored under the agent's reply, not its own seq: land on the first item that ends at or after it.
+      const target = db.prepare(`SELECT *,${at} AS list_at FROM items WHERE thread_id=? AND ${typeof p.anchor === 'number' ? `(question_seq=? OR answer_seq=? OR interim_seq=? OR candidate_seq=?)` : 'id=?'} LIMIT 1`).get(p.threadId, ...(typeof p.anchor === 'number' ? [p.anchor,p.anchor,p.anchor,p.anchor] : [p.anchor])) as Row | undefined
+        ?? (typeof p.anchor === 'number' ? db.prepare(`SELECT *,${at} AS list_at FROM items WHERE thread_id=? AND ${last}>=? ORDER BY ${last} LIMIT 1`).get(p.threadId,p.anchor) as Row | undefined : undefined);
       if (!target) return {items:[],nextCursor:null,newerCursor:null};
       where.push(`(${at}<? OR (${at}=? AND id<=?))`); args.push(target.list_at,target.list_at,target.id);
     }
