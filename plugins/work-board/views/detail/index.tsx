@@ -33,6 +33,7 @@ import {
   useTasksRpc,
 } from "../../shell/data.js";
 import { useTasksNavigation } from "../../shell/routes.js";
+import { useTasksRefresh } from "../../shell/refresh.js";
 import { TasksEditor } from "../../editor/tasks-editor.js";
 import { TaskActivity } from "../activity/task-activity.js";
 import { QuestionsSection } from "./questions";
@@ -397,11 +398,18 @@ function TaskDetail({
   // Loads that begin without one (first load, first attachment) are covered by the PR query becoming enabled.
   const hasThreadsRef = useRef(false);
   const reloadedWithThreads = useRef(new WeakSet<object>());
+  // A "Refresh tasks" generation reloads the PR query itself, so the thread reload it causes needs no follow-up.
+  const { generation } = useTasksRefresh();
+  const generationRef = useRef(generation);
+  generationRef.current = generation;
+  const threadsGeneration = useRef(generation);
   const threads = useTasksQuery<TaskThread[]>(
     async (query, publish) => {
       const cached = await query.call("listTaskThreads", { taskId: task.id, reconcile: false });
       publish(cached.taskThreads);
-      const startedWithThreads = hasThreadsRef.current;
+      const coveredByRefresh = threadsGeneration.current !== generationRef.current;
+      threadsGeneration.current = generationRef.current;
+      const startedWithThreads = hasThreadsRef.current && !coveredByRefresh;
       const list = (await query.call("listTaskThreads", { taskId: task.id })).taskThreads;
       if (startedWithThreads) reloadedWithThreads.current.add(list);
       return list;

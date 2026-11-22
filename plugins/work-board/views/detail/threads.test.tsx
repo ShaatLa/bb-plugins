@@ -441,6 +441,27 @@ describe("task detail pull request pills", () => {
     expect(lookups).toBe(1);
   });
 
+  it("one global Refresh tasks click costs one pull-request lookup on a task with a thread", async () => {
+    let slow = false;
+    let lookups = 0;
+    const slot = renderSlot(app.navPanels[0]!, { subPath: "task/TSK-5" }, {
+      rpc: detailRpc({
+        listTaskThreads: async (input: unknown) => {
+          if (slow && rpcInput(input).reconcile !== false) await new Promise((resolve) => setTimeout(resolve, 200));
+          return { taskThreads: [taskThreadRow(THREAD_ROW_ID, "thr_worker000", "Worker")] };
+        },
+        listTaskPullRequests: () => { lookups += 1; return { pullRequests: [], unavailableThreadIds: [] }; },
+      }),
+    });
+    await waitFor(() => expect(lookups).toBe(1));
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    slow = true;
+    fireEvent.click(await slot.findByRole("button", { name: "Refresh tasks" }));
+    await waitFor(() => expect(lookups).toBe(2));
+    await new Promise((resolve) => setTimeout(resolve, 450));
+    expect(lookups).toBe(2);
+  });
+
   it("a thread reload that finishes after the view is closed starts no pull-request lookup", async () => {
     let hold: Promise<void> | null = null;
     let release!: () => void;
