@@ -3,6 +3,8 @@ import * as TabsPrimitive from "@radix-ui/react-tabs";
 
 import { cn } from "../../lib/utils";
 
+// Track color: bb's recessed surface (lighter than solid muted), with a softened muted where a host lacks it.
+
 const Tabs = TabsPrimitive.Root;
 
 const TabsList = React.forwardRef<
@@ -12,7 +14,7 @@ const TabsList = React.forwardRef<
   <TabsPrimitive.List
     ref={ref}
     className={cn(
-      "inline-flex h-9 items-center justify-center rounded-lg bg-muted p-1 text-muted-foreground",
+      "inline-flex h-9 items-center justify-center rounded-lg bg-[var(--surface-recessed,color-mix(in_oklab,var(--muted)_55%,transparent))] p-1 text-muted-foreground",
       className,
     )}
     {...props}

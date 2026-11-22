@@ -11,6 +11,8 @@ export function prune(db: Database, { rawRetentionDays, rollupRetentionDays, now
   const run = (sql: string, cutoff: number) => db.prepare(sql).run(cutoff).changes;
   const deleted = db.transaction(() =>
     run(`DELETE FROM usage_raw WHERE ts < ?`, now - rawRetentionDays * DAY_MS) +
+    // Replay guard for compaction effects; it lives as long as the raw rows it deduplicates.
+    run(`DELETE FROM compaction_seen WHERE at < ?`, now - rawRetentionDays * DAY_MS) +
     run(`DELETE FROM usage_hourly WHERE hour < ?`, now - rollupRetentionDays * DAY_MS) +
     run(`DELETE FROM requests WHERE at < ?`, shortCutoff) +
     // ext_pending is not pruned here: ingest/ext.ts deletes an entry only after its row is durable.

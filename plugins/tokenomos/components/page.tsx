@@ -1,9 +1,20 @@
 import { useState } from "react";
-import { experimental_useRpcQuery as useQuery, useBbNavigate } from "@get-bb/plugin-sdk/app";
+import { experimental_Icon as Icon, experimental_useRpcQuery as useQuery, useBbNavigate, useSettings } from "@get-bb/plugin-sdk/app";
+import { Button } from "./ui/button";
 import { rpcContract } from "../contract";
 import { Tabs, TabsList, TabsTrigger } from "./ui/tabs";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "./ui/select";
 import { METRICS, RANGE_SEGMENTS, parseSubPath, toSubPath, type By, type Metric } from "./format";
+import type { Range } from "../contract";
+
+const RANGE_KEY = "tokenomos:range", METRIC_KEY = "tokenomos:metric";
+const readMetric = (): Metric => {
+  try { const m = localStorage.getItem(METRIC_KEY); return (METRICS as readonly string[]).includes(m ?? "") ? (m as Metric) : "cost"; } catch { return "cost"; }
+};
+const remember = (key: string, value: string) => { try { localStorage.setItem(key, value); } catch { /* storage unavailable: the choice lasts this visit */ } };
+const readRange = (): Range => {
+  try { const r = localStorage.getItem(RANGE_KEY); return (RANGE_SEGMENTS as readonly string[]).includes(r ?? "") ? (r as Range) : "week"; } catch { return "week"; }
+};
 import { ActivityHeatmap } from "./activity";
 import { BackfillBanner, useBackfilling } from "./backfill";
 import { useT } from "./i18n";
@@ -12,6 +23,7 @@ import { TokenMix } from "./mix";
 import { Card, Muted, SkeletonBlock, scope, useHeld } from "./shared";
 import { Compactions, Threads } from "./tables";
 import { Watchlist } from "./watchlist";
+import { Limits } from "./limits";
 import { UsageChart } from "./usage-chart";
 
 // Radix Select forbids an empty item value, so "all projects" gets a sentinel.
@@ -38,9 +50,16 @@ export function TokenomosPage({ subPath }: { subPath: string }) {
   const nav = useBbNavigate();
   const t = useT();
   const backfill = useBackfilling();
-  const [metric, setMetric] = useState<Metric>("cost");
-  const { range, by, project } = parseSubPath(subPath);
-  const go = (r: typeof range, b: By, p?: string) => nav.toPluginPanel("tokenomos", { subPath: toSubPath(r, b, p), replace: true });
+  // The metric is remembered in this browser too.
+  const [metric, setMetricState] = useState<Metric>(readMetric);
+  const setMetric = (m: Metric) => { setMetricState(m); remember(METRIC_KEY, m); };
+  const defaultBy: By = useSettings().values?.defaultGrouping === "model" ? "model" : "provider";
+  // The last range the user picked is remembered in this browser and used when the link names none.
+  const { range, by, project } = parseSubPath(subPath, defaultBy, readRange());
+  const go = (r: typeof range, b: By, p?: string) => {
+    remember(RANGE_KEY, r);
+    nav.toPluginPanel("tokenomos", { subPath: toSubPath(r, b, p), replace: true });
+  };
   const query = useQuery({ contract: rpcContract, method: "summary", input: { range, by, ...scope(project) } });
   // Reads keep old data during refresh; a range switch dims the held page instead of showing skeletons.
   const { value: summary, stale, key } = useHeld(query.data, `${range}/${by}/${project ?? ""}`);
@@ -61,15 +80,24 @@ export function TokenomosPage({ subPath }: { subPath: string }) {
               <TabsTrigger value="model">{t("by.model")}</TabsTrigger>
             </TabsList>
           </Tabs>
+          <Button asChild variant="ghost" size="icon" className="ml-auto size-8 text-muted-foreground hover:text-foreground">
+            <a href="/settings/plugins/tokenomos" aria-label={t("settings.open")} title={t("settings.open")}>
+              <Icon name="Settings" className="size-4" aria-hidden />
+            </a>
+          </Button>
         </div>
         {!summary ? (query.error ? <Card><Muted>{t("loadError")}</Muted></Card> : <SkeletonBlock rows={5} />) : (
           <div className={stale ? "space-y-4 opacity-60 transition-opacity" : "space-y-4 transition-opacity"}>
             <Kpis summary={summary} incomplete={!!backfill} />
             <UsageChart summary={summary} by={key.split("/")[1] === "model" ? "model" : "provider"} metric={metric} stale={false} />
-            <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-              <TokenMix summary={summary} />
-              <ActivityHeatmap summary={summary} metric={metric} range={summary.range} />
-            </div>
+          </div>
+        )}
+        {/* Limits matter more than the token mix and hours, and do not depend on the range, so they sit between. */}
+        <Limits />
+        {summary && (
+          <div className={stale ? "grid grid-cols-1 gap-4 opacity-60 transition-opacity lg:grid-cols-2" : "grid grid-cols-1 gap-4 transition-opacity lg:grid-cols-2"}>
+            <TokenMix summary={summary} />
+            <ActivityHeatmap summary={summary} metric={metric} range={summary.range} />
           </div>
         )}
         <Watchlist />

@@ -6,14 +6,15 @@ import { cleanup, fireEvent, waitFor, within } from "@testing-library/react";
 import { loadPluginApp, renderSlot } from "@get-bb/plugin-sdk/testing/app";
 import type { Cost } from "./contract";
 import { buildChart } from "./components/series";
-import { bucketLabel, fmtCost, fmtTokens, fmtUsd, parseSubPath, toSubPath } from "./components/format";
+import { bucketLabel, fmtCost, fmtSpan, fmtTokens, fmtUsd, parseSubPath, toSubPath } from "./components/format";
 import { delta } from "./components/kpis";
 import { DICTIONARIES, makeT, translate, type Lang } from "./components/i18n";
 
 // jsdom has no scrollIntoView; the host Select calls it on open.
 Element.prototype.scrollIntoView ??= () => {};
 
-afterEach(() => cleanup());
+// Remembered view choices (range, metric, widget time mode) must not leak from one test into the next.
+afterEach(() => { cleanup(); localStorage.removeItem("tokenomos:range"); localStorage.removeItem("tokenomos:metric"); localStorage.removeItem("tokenomos:footer:time"); });
 
 const cost = (usd: number | null, freshIn = 1000, cacheRead = 8000, output = 500, flags: Partial<Cost> = {}): Cost => ({
   usd, tokens: { freshIn, cacheRead, cacheWrite: 200, output }, estimated: false, partial: false, ...flags,
@@ -54,7 +55,7 @@ function summary({ range, by }: Input, over: Record<string, unknown> = {}) {
       reasoningTokens: 400_000,
     },
     heatmap: { cells: HEAT, busiest: HEAT[1] },
-    breakdown: keys.map((k) => ({ key: k, label: k === "claude-code" ? "Claude Code" : k, cost: cost(3), calls: 42 })),
+    breakdown: keys.map((k) => ({ key: k, label: k === "claude-code" ? "Claude Code" : k, provider: k.startsWith("gpt") || k === "codex" ? "codex" : "claude-code", cost: cost(3), calls: 42 })),
     compactionSavings: { usd: 1.5, tokens: 340_000, partial: true, excludesOwnCost: true },
     localSavings: { usd: 0.8, tokens: 1_200_000, partial: false, excludesOwnCost: false, referenceModel: "claude-sonnet-4" },
     ...over,
@@ -108,9 +109,9 @@ function handlers(over: Record<string, (input: any) => unknown> = {}): Record<st
   };
 }
 
-async function page(subPath = "week/provider", over: Record<string, (input: any) => unknown> = {}, lang: Lang = "en") {
+async function page(subPath = "week/provider", over: Record<string, (input: any) => unknown> = {}, lang: Lang = "en", settings: Record<string, string> = {}) {
   const app = await loadPluginApp(() => import("./app"));
-  const slot = renderSlot(app.navPanels[0]!, { subPath }, { rpc: handlers(over), settings: settingsFor(lang) });
+  const slot = renderSlot(app.navPanels[0]!, { subPath }, { rpc: handlers(over), settings: { ...settingsFor(lang), ...settings } });
   return { app, slot };
 }
 
@@ -122,16 +123,104 @@ describe("registration", () => {
   });
 });
 
+describe.each(LANGS)("sidebar footer limits (%s)", (lang) => {
+  it("lists each window with its forecast and the account's heavy share", async () => {
+    const app = await loadPluginApp(() => import("./app"));
+    const item = app.experimentalSidebarFooterItems.find((i) => i.id === "limits")!;
+    expect(item).toMatchObject({ kind: "disclosure", icon: "tokenomos/mark" });
+    const now = Date.now(), H = 3_600_000;
+    const win = (over: Record<string, unknown>) => ({ id: "w", label: "Weekly limit", kind: "weekly", model: null, usedPercent: 13, resetsAt: now + 157.5 * H, startsAt: now - 11 * H,
+      elapsedShare: 0.06, forecastPercent: 200, runsOutAt: now + 71.5 * H, usage: { heavy: { usd: 84, calls: 2 }, other: { usd: 16, calls: 1 }, heavyShare: 0.84, usdPerPercent: 23, partial: false }, ...over });
+    const limits = () => ({ heavyModels: ["opus"], heavyTarget: 0.5, accounts: [
+      { providerId: "claude-code", label: "Claude Code", plan: "Ultra", status: "ok", message: null, observedAt: 1,
+        windows: [win({}), win({ id: "f", label: "Fable", model: "fable", usedPercent: 0, forecastPercent: 0, runsOutAt: null, usage: null })] },
+      { providerId: "codex", label: "Codex", plan: "Pro", status: "ok", message: null, observedAt: 1, windows: [win({ id: "c", usedPercent: 100, runsOutAt: now, resetsAt: now + 46.5 * H, usage: null })] },
+    ] });
+    const slot = renderSlot(item as never, { dismiss: () => {} }, { rpc: { limits }, settings: settingsFor(lang) });
+    // A row reads as label, percent and the time it shows (the reserved-width copies are hidden).
+    const rows = (await slot.findAllByRole("meter")).map((m) => { const li = m.closest("li")!; return norm(li.firstElementChild) + norm(li.children[2]!) + norm(li.querySelector("[data-time]")); });
+    expect(rows).toEqual(lang === "en"
+      ? ["7d13%out in 2 d 23 h", "7d · Fable0%6 d 13 h", "7d100%1 d 22 h"]
+      : ["7d13 %хватит на 2 д 23 ч", "7d · Fable0 %6 д 13 ч", "7d100 %1 д 22 ч"]);
+    // Each row switches on its own, and the choice is remembered per row.
+    const times = () => slot.getAllByRole("meter").map((m) => m.closest("li")!.querySelector("[data-time]")!.textContent);
+    const button = (i: number) => slot.getAllByRole("meter")[i]!.closest("li")!.querySelector("button")!;
+    fireEvent.click(button(0));
+    expect(times()).toEqual(lang === "en" ? ["6 d 13 h", "6 d 13 h", "1 d 22 h"] : ["6 д 13 ч", "6 д 13 ч", "1 д 22 ч"]);
+    expect(JSON.parse(localStorage.getItem("tokenomos:footer:time")!)).toEqual({ "claude-code:w": "reset" });
+    fireEvent.click(button(0));
+    expect(times()[0]).toMatch(lang === "en" ? /^out in/ : /^хватит на/);
+    // A row with no forecast says it is fine for a moment, alone, then shows its reset again.
+    fireEvent.click(button(1));
+    expect(times()[1]).not.toMatch(/\d/);
+    expect(times()[0]).toMatch(lang === "en" ? /^out in/ : /^хватит на/);
+    await waitFor(() => expect(times()[1]).toBe(lang === "en" ? "6 d 13 h" : "6 д 13 ч"), { timeout: 4000 });
+    fireEvent.click(button(1));
+    expect(times()[1]).not.toMatch(/\d/);
+    fireEvent.click(button(1)); // a second click does not wait for the timer
+    expect(times()[1]).toBe(lang === "en" ? "6 d 13 h" : "6 д 13 ч");
+    localStorage.removeItem("tokenomos:footer:time");
+
+    // The heavy share lives in the row's hover hint, next to the time tick explained.
+    fireEvent.pointerMove(slot.getAllByRole("meter")[0]!.closest("li")!, { pointerType: "mouse" });
+    const tip = norm(await slot.findByRole("tooltip"));
+    expect(tip).toContain(lang === "en" ? "Heavy models: 84%" : "Тяжёлые модели: 84 %");
+    expect(tip).toContain(lang === "en" ? "Usage runs ahead of time" : "Расход идёт быстрее времени");
+    expect(tip).toContain(lang === "en" ? "(target under 50%)" : "(цель — меньше 50 %)");
+  });
+
+  it("drops the target from the hint when the user turned it off", async () => {
+    const app = await loadPluginApp(() => import("./app"));
+    const item = app.experimentalSidebarFooterItems.find((i) => i.id === "limits")!;
+    const usage = { heavy: { usd: 84, calls: 2 }, other: { usd: 16, calls: 1 }, heavyShare: 0.84, usdPerPercent: 23, partial: false };
+    const limits = () => ({ heavyModels: ["opus"], heavyTarget: null, accounts: [{ providerId: "claude-code", label: "Claude Code", plan: null, status: "ok", message: null, observedAt: 1,
+      windows: [{ id: "w", label: "Weekly limit", kind: "weekly", model: null, usedPercent: 13, resetsAt: Date.now() + 9e7, startsAt: 0, elapsedShare: 0.5, forecastPercent: 26, runsOutAt: null, usage }] }] });
+    const slot = renderSlot(item as never, { dismiss: () => {} }, { rpc: { limits }, settings: settingsFor(lang) });
+    fireEvent.pointerMove((await slot.findByRole("meter")).closest("li")!, { pointerType: "mouse" });
+    const tip = await slot.findByRole("tooltip");
+    expect(norm(tip)).toContain(lang === "en" ? "Heavy models: 84%" : "Тяжёлые модели: 84 %");
+    expect(norm(tip)).not.toMatch(lang === "en" ? /target/ : /цель/);
+    expect(within(tip).getByText(/84/).getAttribute("style")).toBeNull(); // no orange without a target
+  });
+});
+
 describe.each(LANGS)("page (%s)", (lang) => {
   const x = L[lang];
   const open = (subPath = "week/provider", over: Record<string, (input: any) => unknown> = {}) => page(subPath, over, lang);
 
-  it("starts with the range tabs and no longer shows or requests limits", async () => {
-    const { slot } = await open();
+  it("starts with the range tabs and shows no limits when no plugin reports them", async () => {
+    const { slot } = await open("week/provider", { limits: () => ({ heavyModels: ["opus"], heavyTarget: 0.5, accounts: [] }) });
     await slot.findByText(x.money);
     expect(slot.getAllByRole("tab")[0]!.textContent).toBe(x.tabs[0]);
+    await waitFor(() => expect(slot.inspection.rpcCalls.some((c) => c.method === "limits")).toBe(true));
     expect(slot.queryByRole("meter")).toBeNull();
-    expect(slot.inspection.rpcCalls.some((c) => c.method === "limits")).toBe(false);
+  });
+
+  it("shows each limit window with its pace and the heavy-model share of its cost", async () => {
+    localStorage.clear();
+    const part = (usd: number, calls: number) => ({ usd, calls });
+    const win = (over: Record<string, unknown>) => ({
+      id: "0:Weekly", label: "Weekly limit", kind: "weekly", model: null, usedPercent: 40, resetsAt: Date.UTC(2026, 10, 25), startsAt: Date.UTC(2026, 10, 18),
+      elapsedShare: 0.25, forecastPercent: 160, runsOutAt: Date.UTC(2026, 10, 22), usage: { heavy: part(60, 10), other: part(40, 30), heavyShare: 0.6, usdPerPercent: 2.5, partial: false }, ...over,
+    });
+    const { slot } = await open("week/provider", { limits: () => ({ heavyModels: ["opus"], heavyTarget: 0.5, accounts: [
+      { providerId: "claude-code", label: "Claude Code", plan: "Max", status: "ok", message: null, observedAt: 1, windows: [win({})] },
+      { providerId: "codex", label: "Codex", plan: null, status: "ok", message: "timeout", observedAt: Date.UTC(2026, 10, 18, 9), stale: true, windows: [win({ id: "c", label: "Codex week", usedPercent: 100, runsOutAt: 1, usage: null })] },
+      { providerId: "antigravity", label: "Antigravity", plan: null, status: "unauthenticated", message: null, observedAt: null, windows: [] },
+    ] }) });
+    const meters = await slot.findAllByRole("meter");
+    expect(meters).toHaveLength(2);
+    expect(meters[0]!.getAttribute("aria-valuenow")).toBe("40");
+    expect(within(meters[0]!).getByRole("img").getAttribute("aria-label")!.replace(/\s/g, " ")).toContain(lang === "en" ? "25% of the window has passed. Usage runs ahead of time" : "прошло 25 % окна. Расход идёт быстрее времени");
+    const claude = norm(meters[0]!.closest("li"));
+    expect(claude).toContain(lang === "en" ? "Heavy models60%of cost25% of calls" : "Тяжёлые модели60 %стоимости25 % вызовов");
+    // 40% used at a quarter of the window projects 160% at reset: far ahead, so the bar is red.
+    expect((meters[0]!.firstElementChild as HTMLElement).style.background).toContain("destructive");
+    expect(claude).toContain(lang === "en" ? "Runs out in ~" : "Закончится через ~");
+    expect(norm(meters[1]!.closest("li"))).toContain(lang === "en" ? "Limit exhausted" : "Лимит исчерпан");
+    expect(within(meters[1]!).queryByRole("img")).toBeNull(); // nothing to forecast once exhausted: no pace tick
+    expect(slot.queryByText(lang === "en" ? /^data from / : /^данные на /)).toBeNull(); // a failed source shows its last numbers unmarked
+    expect(slot.getByText(lang === "en" ? "no data: unauthenticated" : "нет данных: unauthenticated")).toBeTruthy();
   });
 
   it("renders KPI tiles with the cache-read share and estimated money", async () => {
@@ -221,7 +310,9 @@ describe.each(LANGS)("page (%s)", (lang) => {
     const grid = slot.getByRole("grid");
     expect(within(grid).getAllByRole("row")).toHaveLength(7);
     expect(within(grid).getAllByRole("gridcell")).toHaveLength(7 * 24);
-    const cell = within(grid).getAllByRole("gridcell")[6 * 24 + 9]!;
+    // Week rows start at the range's first local weekday, so Sunday's row index follows the test timezone.
+    const first = (new Date(Date.UTC(2026, 10, 1)).getDay() + 6) % 7;
+    const cell = within(grid).getAllByRole("gridcell")[((6 - first + 7) % 7) * 24 + 9]!;
     expect(cell.getAttribute("data-level")).toBe("4"); // the busiest cell is the strongest tint
     fireEvent.pointerEnter(cell);
     expect(norm(slot.getByRole("tooltip"))).toContain(x.tip);
@@ -231,15 +322,24 @@ describe.each(LANGS)("page (%s)", (lang) => {
     expect(norm((await slot.findByText(x.activity)).parentElement)).toContain(x.busiestCalls);
   });
 
+  it("leaves the hours after now blank on today's row", async () => {
+    const from = new Date(2026, 10, 1).getTime(), to = new Date(2026, 10, 7, 12, 30).getTime();
+    const { slot } = await open("week/provider", { summary: (i: Input) => summary(i, { from, to }) });
+    await slot.findByText(x.activity);
+    expect(within(slot.getByRole("grid")).getAllByRole("gridcell")).toHaveLength(7 * 24 - 11); // 13:00..23:00 not yet
+  });
+
   it("shows a single row when the day range covers one weekday", async () => {
-    const { slot } = await open("day/provider", { summary: (i: Input) => summary(i, { heatmap: { cells: [HEAT[2]], busiest: HEAT[2] } }) });
+    const from = new Date(2026, 10, 4, 0).getTime(), to = new Date(2026, 10, 4, 23).getTime(); // a Wednesday
+    const { slot } = await open("day/provider", { summary: (i: Input) => summary(i, { from, to, heatmap: { cells: [HEAT[2]], busiest: HEAT[2] } }) });
     await slot.findByText(x.activity);
     expect(within(slot.getByRole("grid")).getAllByRole("row")).toHaveLength(1);
     expect(within(slot.getByRole("grid")).getAllByRole("row")[0]!.textContent).toContain(x.wk === "Mon" ? "Wed" : "ср");
   });
 
-  it("draws both weekdays the last 24 hours span, Sunday before Monday", async () => {
-    const { slot } = await open("day/provider", { summary: (i: Input) => summary(i, { heatmap: { cells: [HEAT[0], HEAT[1]], busiest: HEAT[1] } }) });
+  it("draws both weekdays the last 24 hours span, Sunday before Monday, even with no calls on one of them", async () => {
+    const from = new Date(2026, 10, 1, 18).getTime(), to = new Date(2026, 10, 2, 17).getTime(); // Sunday 18:00 to Monday 17:00
+    const { slot } = await open("day/provider", { summary: (i: Input) => summary(i, { from, to, heatmap: { cells: [HEAT[1]], busiest: HEAT[1] } }) });
     await slot.findByText(x.activity);
     const rows = within(slot.getByRole("grid")).getAllByRole("row").map((r) => r.textContent);
     expect(rows).toHaveLength(2);
@@ -262,6 +362,26 @@ describe.each(LANGS)("page (%s)", (lang) => {
     fireEvent.click(slot.getByRole("button", { name: x.table }));
     const table = (await slot.findAllByRole("table"))[0]!;
     expect(within(table).getAllByRole("row")).toHaveLength(count + 1);
+  });
+
+  it("remembers the last range and metric and opens with them", async () => {
+    localStorage.clear();
+    const first = await page("week/provider", {}, lang);
+    await first.slot.findByText(x.money);
+    fireEvent.mouseDown(first.slot.getByRole("tab", { name: x.month }), { button: 0 });
+    expect(localStorage.getItem("tokenomos:range")).toBe("month");
+    fireEvent.mouseDown(first.slot.getByRole("tab", { name: x.metrics[2] }), { button: 0 });
+    expect(localStorage.getItem("tokenomos:metric")).toBe("calls");
+    cleanup();
+    const { slot } = await page("", {}, lang);
+    await waitFor(() => expect(slot.inspection.rpcCalls.find((c) => c.method === "summary")?.input).toMatchObject({ range: "month" }));
+    expect((await slot.findByRole("tab", { name: x.metrics[2] })).getAttribute("aria-selected")).toBe("true");
+    localStorage.clear();
+  });
+
+  it("opens with the default grouping from the settings when the URL has none", async () => {
+    const { slot } = await page("", {}, lang, { defaultGrouping: "model" });
+    await waitFor(() => expect(slot.inspection.rpcCalls.find((c) => c.method === "summary")?.input).toMatchObject({ range: "week", by: "model" }));
   });
 
   it("offers exactly four ranges and writes range and grouping to the URL", async () => {
@@ -332,6 +452,29 @@ describe.each(LANGS)("backfill banner (%s)", (lang) => {
 
 describe.each(LANGS)("settings (%s)", (lang) => {
   const x = L[lang];
+  it("groups the settings and saves each one on its own, hiding bb's flat list", async () => {
+    const app = await loadPluginApp(() => import("./app"));
+    // Stand-in for bb's own native list, which the grouped settings replace.
+    const native = document.createElement("div");
+    native.innerHTML = '<h3>Configuration</h3><div id="card"><div id="native"><input aria-label="Language"><input aria-label="Count usage outside BB"></div></div>';
+    document.body.append(native);
+    const slot = renderSlot(app.settingsSections![0]!, {}, {
+      settings: { ...settingsFor(lang), contextWatchTokens: 300000, includeOutsideBb: false },
+      rpc: { "config.set": () => ({ ok: true }), status: () => ({ sources: [], degradedThreads: 0, disk: { bytes: 0, pages: 0, freePages: 0, rows: {} } }), prices: () => ({ version: "v1", entries: [] }) },
+    });
+    const groups = lang === "en" ? ["General", "Provider limits", "Watchlist", "Savings and prices", "Data"] : ["Общие", "Лимиты провайдеров", "Под наблюдением", "Экономия и цены", "Данные"];
+    for (const g of groups) expect(await slot.findByRole("heading", { name: g })).toBeTruthy();
+    await waitFor(() => expect((document.getElementById("card") as HTMLElement).style.display).toBe("none")); // the empty host card goes too
+    fireEvent.click(slot.getByRole("switch", { name: lang === "en" ? "Count usage outside bb" : "Учитывать использование вне bb" }));
+    const threshold = slot.getByLabelText(lang === "en" ? "Context threshold, tokens" : "Порог контекста, токенов");
+    fireEvent.change(threshold, { target: { value: "400000" } });
+    fireEvent.blur(threshold);
+    await waitFor(() => expect(slot.inspection.rpcCalls.filter((c) => c.method === "config.set").map((c) => c.input)).toEqual([
+      { key: "includeOutsideBb", value: true }, { key: "contextWatchTokens", value: 400000 },
+    ]));
+    native.remove();
+  });
+
   it("renders sources and saves or resets a price override", async () => {
     const app = await loadPluginApp(() => import("./app"));
     const setPriceOverride = vi.fn(() => ({ ok: true as const }));
@@ -353,11 +496,12 @@ describe.each(LANGS)("settings (%s)", (lang) => {
     expect(slot.getByText(x.degraded)).toBeTruthy();
     expect(slot.getByText(/usage_hourly: 77/)).toBeTruthy();
 
-    const save = await slot.findByRole("button", { name: x.save });
-    expect((save as HTMLButtonElement).disabled).toBe(true);
-    fireEvent.change(slot.getByLabelText(x.input), { target: { value: "4.5" } });
-    expect((save as HTMLButtonElement).disabled).toBe(false);
-    fireEvent.click(save);
+    // No Save button: a rate saves itself when its field loses focus; an unchanged field sends nothing.
+    const input = await slot.findByLabelText(x.input);
+    expect(slot.queryByRole("button", { name: x.save })).toBeNull();
+    fireEvent.blur(input);
+    fireEvent.change(input, { target: { value: "4.5" } });
+    fireEvent.blur(input);
     await waitFor(() => expect(slot.inspection.rpcCalls.filter((c) => c.method === "setPriceOverride")).toEqual([{ method: "setPriceOverride", input: { model: "claude-opus-4", rates: { input: 4.5 } } }]));
 
     fireEvent.click(slot.getByRole("button", { name: x.reset }));
@@ -420,6 +564,10 @@ describe("helpers", () => {
 
   it("round-trips the sub path and falls back to week/provider", () => {
     expect(parseSubPath(toSubPath("3m", "model"))).toEqual({ range: "3m", by: "model" });
+    expect(parseSubPath("month", "model")).toMatchObject({ range: "month", by: "model" }); // a URL without grouping takes the default
+    expect(parseSubPath("month/provider", "model").by).toBe("provider");
+    expect([fmtSpan(87 * 3_600_000 + 59_000, en), fmtSpan(15 * 3_600_000, ru), fmtSpan(48 * 3_600_000, en), fmtSpan(10_000, en)]).toEqual(["3 d 15 h", "15 ч", "2 d", "<1 min"]);
+    expect([fmtSpan(4 * 3_600_000 + 59 * 60_000, en), fmtSpan(12 * 60_000 + 5_000, ru)]).toEqual(["4 h 59 min", "12 мин"]);
     expect(parseSubPath(toSubPath("day", "provider", "~outside"))).toEqual({ range: "day", by: "provider", project: "~outside" });
     expect(toSubPath("day", "provider", "a/b")).toBe("day/provider/a%2Fb");
     expect(parseSubPath("nonsense")).toEqual({ range: "week", by: "provider" });
@@ -434,14 +582,25 @@ describe("helpers", () => {
     expect(delta(cost(1), null, en)).toBeNull();
   });
 
-  it("keeps provider colors fixed and folds models beyond the top four into Others", () => {
+  it("keeps provider colors fixed and groups models by provider, each provider's rest last", () => {
     const s = summary({ range: "week", by: "provider" }, {});
     const byProvider = buildChart(s as never, "provider", "week", en);
     expect(byProvider.slots.map((x) => [x.id, x.label])).toEqual([["s1", "Claude Code"], ["s2", "Codex"]]);
-    const byModel = buildChart(summary({ range: "week", by: "model" }) as never, "model", "week", en);
-    expect(byModel.slots.map((x) => x.n)).toEqual([1, 2, 3, 4, 5]);
-    expect(byModel.slots.at(-1)!.label).toBe("Others");
-    expect(buildChart(summary({ range: "week", by: "model" }) as never, "model", "week", ru).slots.at(-1)!.label).toBe("Другие");
+    const keys = ["gpt-5", "claude-sonnet-4", "other:claude-code", "claude-opus-4"];
+    const provider = (k: string) => (k.startsWith("gpt") ? "codex" : "claude-code");
+    const base = summary({ range: "week", by: "model" });
+    const m = {
+      ...base,
+      buckets: base.buckets.map((b, i) => ({ ...b, series: Object.fromEntries(keys.map((k, j) => [k, { ...cost(k === "claude-opus-4" ? 50 : j + i + 1), calls: 1 }])) })),
+      breakdown: keys.map((k) => ({ key: k, label: k, provider: provider(k), cost: cost(1), calls: 1 })),
+    };
+    const byModel = buildChart(m as never, "model", "week", en);
+    expect(byModel.slots.map((x) => [x.label, x.group])).toEqual([
+      ["claude-opus-4", "claude-code"], ["claude-sonnet-4", "claude-code"], ["Other", "claude-code"], ["gpt-5", "codex"],
+    ]);
+    expect(byModel.slots[0]!.color).not.toBe(byModel.slots[1]!.color); // shades of one provider color
+    expect(byModel.slots[2]!.title).toBe("Claude Code · Other");
+    expect(buildChart(m as never, "model", "week", ru).slots[2]!.title).toBe("Claude Code · Другое");
     expect(byModel.rows).toHaveLength(7);
   });
 });

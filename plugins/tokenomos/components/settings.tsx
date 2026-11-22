@@ -10,6 +10,7 @@ import { fmtBytes, fmtInt, fmtWhen } from "./format";
 import { useT } from "./i18n";
 import { Muted, Section, SkeletonBlock } from "./shared";
 import type { PricesOutput } from "./types";
+import { Configuration, useHideNativeSettings } from "./config";
 
 const SOURCE_KEYS = ["claude-file", "codex-file", "local-log", "agy-log", "bb-events"] as const;
 const FIELDS = ["input", "output", "cacheRead", "cacheWriteShort", "cacheWriteLong"] as const satisfies readonly (keyof Rates)[];
@@ -55,9 +56,14 @@ function PriceRow({ entry }: { entry: Entry }) {
   const t = useT();
   const [draft, setDraft] = useState<Partial<Record<keyof Rates, string>>>({});
   const save = useMutation({ contract: rpcContract, method: "setPriceOverride" });
-  const changed = FIELDS.filter((k) => draft[k] !== undefined && draft[k] !== "" && Number(draft[k]) !== entry.rates[k]);
+  // Each rate saves itself when its field loses focus (or on Enter), like bb's own settings; only reset is a button.
   const run = (rates: Partial<Rates> | null) =>
-    save.mutate({ model: entry.model, rates }).then(() => { setDraft({}); toast.success(t(rates ? "prices.saved" : "prices.resetDone")); }, (e) => toast.error(errorText(e)));
+    save.mutate({ model: entry.model, rates }).then(() => { setDraft({}); if (!rates) toast.success(t("prices.resetDone")); }, (e) => { setDraft({}); toast.error(errorText(e)); });
+  const commit = (k: keyof Rates) => {
+    const v = draft[k];
+    if (v === undefined || v === "" || Number(v) === entry.rates[k] || !(Number(v) >= 0)) { setDraft((d) => ({ ...d, [k]: undefined })); return; }
+    void run({ [k]: Number(v) });
+  };
   return (
     <TableRow>
       <TableCell className="whitespace-nowrap font-medium">
@@ -67,13 +73,13 @@ function PriceRow({ entry }: { entry: Entry }) {
       </TableCell>
       {FIELDS.map((k) => (
         <TableCell key={k}>
-          <Input type="number" min={0} step="any" aria-label={`${entry.model}: ${t(`prices.${k}`)}`} className="h-8 w-24 text-right tabular-nums"
-            value={draft[k] ?? String(entry.rates[k])} onChange={(e) => setDraft({ ...draft, [k]: e.target.value })} />
+          <Input type="number" min={0} step="any" aria-label={`${entry.model}: ${t(`prices.${k}`)}`} className="h-7 w-full px-2 text-right tabular-nums [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
+            value={draft[k] ?? String(entry.rates[k])} onChange={(e) => setDraft({ ...draft, [k]: e.target.value })}
+            onBlur={() => commit(k)} onKeyDown={(e) => { if (e.key === "Enter") e.currentTarget.blur(); }} />
         </TableCell>
       ))}
       <TableCell className="whitespace-nowrap text-right">
-        <Button size="sm" variant="outline" disabled={!changed.length || save.isPending} onClick={() => run(Object.fromEntries(changed.map((k) => [k, Number(draft[k])])))}>{t("prices.save")}</Button>
-        {entry.overridden && <Button size="sm" variant="ghost" className="ml-1" disabled={save.isPending} onClick={() => run(null)}>{t("prices.reset")}</Button>}
+        {entry.overridden && <Button size="sm" variant="ghost" className="h-7" disabled={save.isPending} onClick={() => run(null)}>{t("prices.reset")}</Button>}
       </TableCell>
     </TableRow>
   );
@@ -88,7 +94,8 @@ function Prices() {
       <div className="max-h-96 overflow-auto">
         <Table>
           <TableHeader>
-            <TableRow><TableHead>{t("prices.model")}</TableHead>{FIELDS.map((k) => <TableHead key={k} className="text-right">{t(`prices.${k}`)}</TableHead>)}<TableHead /></TableRow>
+            <TableRow><TableHead>{t("prices.model")}</TableHead>{/* Fixed rate columns; the header text ends where the field's value does (cell 8px + border 1px + field 8px). */}
+            {FIELDS.map((k) => <TableHead key={k} className="w-20 pr-[17px] text-right align-bottom leading-tight">{t(`prices.${k}`)}</TableHead>)}<TableHead /></TableRow>
           </TableHeader>
           <TableBody>{data.entries.map((e) => <PriceRow key={e.model} entry={e} />)}</TableBody>
         </Table>
@@ -98,5 +105,6 @@ function Prices() {
 }
 
 export function TokenomosSettings() {
-  return <div className="space-y-6"><Sources /><Prices /></div>;
+  useHideNativeSettings();
+  return <div data-tokenomos-settings className="space-y-6"><Configuration /><Sources /><Prices /></div>;
 }

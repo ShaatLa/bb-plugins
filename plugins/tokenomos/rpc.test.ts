@@ -18,6 +18,11 @@ describe('RPC and CLI', () => {
       for (const [method,input] of Object.entries({ 'costs.threads':{ threadIds:['missing'],includeDescendants:true }, 'costs.sum':{ threadIds:['missing'],includeDescendants:true },summary:{ range:'week',by:'provider' },topThreads:{ range:'week',offset:0,limit:50 },compactions:{ range:'week' },status:{},prices:{},prune:{} })) await expect(harness.behavior.callRpc(method,input)).resolves.toBeDefined();
       await expect(harness.behavior.callRpc('costs.sum',{ spans:[{ threadId:'missing',from:0,to:null }],includeDescendants:true })).resolves.toMatchObject({ threadCount:0,cost:{ partial:true } });
       await expect(harness.behavior.callRpc('costs.sum',{ spans:[{ threadId:'x',from:5,to:1 }],includeDescendants:false })).rejects.toThrow();
+      // Other plugins get the public methods only; the refusal names them.
+      const asPlugin={ experimental_caller:{ kind:'plugin' as const,pluginId:'example-plugin' } };
+      await expect(harness.behavior.callRpc('costs.threads',{ threadIds:['missing'],includeDescendants:true },asPlugin)).resolves.toBeDefined();
+      for (const [method,input] of Object.entries({ prune:{},'config.set':{ key:'language',value:'en' },summary:{ range:'week',by:'provider' } }))
+        await expect(harness.behavior.callRpc(method,input,asPlugin)).rejects.toThrow(/internal to its page and CLI.*costs\.sum/);
       await harness.behavior.callRpc('setPriceOverride',{ model:'claude-sonnet-5-5',rates:{ input:7 } });
       expect(JSON.parse((await settings.get()).priceOverrides)['claude-sonnet-5-5'].input).toBe(7);
       await harness.behavior.callRpc('setPriceOverride',{ model:'claude-sonnet-5-5',rates:{ output:17 } });
@@ -44,6 +49,79 @@ describe('RPC and CLI', () => {
       const status=await harness.behavior.callRpc('status',{}) as { sources:{ id:string }[] };
       expect(status.sources.some(s => s.id==='priceOverrides')).toBe(false);
     } finally { await harness.lifecycle.dispose(); }
+  });
+  it('joins provider limit windows with the window spend and prints them', async () => {
+    const resetsAt=new Date(Date.now()+6*86_400_000).toISOString();
+    const rpc=vi.fn(async ({ method }: { method:string }) => method.endsWith('listResources')
+      ? { resources:[{ id:'r',providerId:'claude-code',label:'Claude Code',accountKey:'acct' }] }
+      : { accountKey:'acct',observedAt:1,usage:{ status:'ok',planLabel:'Max',windows:[{ kind:'weekly',id:'w',label:'Weekly limit',usedPercent:50,resetsAt,model:null }] } });
+    const { bb,harness }=createFakePluginHost({ pluginId:'tokenomos',sdk:{ projects:{ list: async () => [] },
+      plugins:{ experimental_discoverRpc: async () => [{ pluginId:'provider-claude-code' }],callRpc: rpc } } as never });
+    const db=bb.storage.database(); bb.storage.migrate(db,MIGRATIONS);
+    const settings=bb.settings.define({ rawRetentionDays:{ type:'number',default:30,label:'Raw' },rollupRetentionDays:{ type:'number',default:200,label:'Rollups' },referenceModel:{ type:'string',default:'claude-sonnet-5-5',label:'Reference' },includeOutsideBb:{ type:'boolean',default:false,label:'Outside' },priceOverrides:{ type:'string',default:'{}',label:'Overrides' },heavyTargetPercent:{ type:'number',default:50,label:'Target' } });
+    registerCli(bb,registerRpc(bb,db,settings));
+    try {
+      const r=await harness.behavior.callRpc('limits',{}) as { heavyModels:string[];accounts:{ windows:{ elapsedShare:number;runsOutAt:number|null;usage:unknown }[] }[] };
+      expect(r.heavyModels).toContain('opus');
+      expect((r as unknown as { heavyTarget:number|null }).heavyTarget).toBe(0.5);
+      expect(r.accounts[0]!.windows[0]).toMatchObject({ runsOutAt:expect.any(Number),usage:{ heavy:{ usd:0,calls:0 },heavyShare:null } });
+      expect(r.accounts[0]!.windows[0]!.elapsedShare).toBeCloseTo(1/7);
+      await harness.behavior.callRpc('limits',{});
+      expect(rpc).toHaveBeenCalledTimes(2); // cached for a minute: one list and one get
+      const text=(await harness.behavior.runCli(['limits'])).stdout;
+      expect(text).toContain('Weekly limit: 50% used'); expect(text).toContain('runs out');
+      expect(text).toContain('target: under 50% of cost');
+      await settings.experimental_set({ heavyTargetPercent: 0 });
+      expect(await harness.behavior.callRpc('limits',{})).toMatchObject({ heavyTarget:null });
+    } finally { await harness.lifecycle.dispose(); }
+  });
+  it('offers the priced models of bb providers as reference models, with the built-in list as fallback', async () => {
+    const models: Record<string,string[]> = { 'claude-code':['claude-opus-5-5','claude-sonnet-5-5','mystery-model'], codex:['gpt-6.2-sol'], 'local-models':['qwen-local'] };
+    const { bb,harness }=createFakePluginHost({ pluginId:'tokenomos',sdk:{ projects:{ list: async () => [] },
+      providers:{ list: async () => Object.keys(models).map(id => ({ id })),models: async ({ providerId }: { providerId:string }) => ({ models:models[providerId]!.map(model => ({ model,displayName:model.toUpperCase() })),modelLoadError:null }) } } as never });
+    const db=bb.storage.database(); bb.storage.migrate(db,MIGRATIONS);
+    const settings=bb.settings.define({ rawRetentionDays:{ type:'number',default:30,label:'Raw' },rollupRetentionDays:{ type:'number',default:200,label:'Rollups' },referenceModel:{ type:'string',default:'claude-sonnet-5-5',label:'Reference' },includeOutsideBb:{ type:'boolean',default:false,label:'Outside' },priceOverrides:{ type:'string',default:'{}',label:'Overrides' } });
+    registerRpc(bb,db,settings);
+    try {
+      const r=await harness.behavior.callRpc('config.options',{}) as { referenceModels:{ model:string;provider:string|null }[] };
+      // Unpriced and local models are left out: they cannot price a saving.
+      expect(r.referenceModels.map(m => [m.provider,m.model])).toEqual([['claude-code','claude-opus-5-5'],['claude-code','claude-sonnet-5-5'],['codex','gpt-6.2-sol']]);
+      await harness.behavior.callRpc('config.set',{ key:'referenceModel',value:'gpt-6.2-sol' });
+      expect((await settings.get()).referenceModel).toBe('gpt-6.2-sol');
+      await expect(harness.behavior.callRpc('config.set',{ key:'referenceModel',value:'mystery-model' })).rejects.toThrow();
+      // Providers gone: the last list they gave is offered, not the built-in one.
+      for (const k of Object.keys(models)) models[k]=[];
+      expect(((await harness.behavior.callRpc('config.options',{})) as { referenceModels:{ model:string }[] }).referenceModels.map(m => m.model)).toEqual(['claude-opus-5-5','claude-sonnet-5-5','gpt-6.2-sol']);
+    } finally { await harness.lifecycle.dispose(); }
+    const fallback=setup();
+    try { expect(((await fallback.harness.behavior.callRpc('config.options',{})) as { referenceModels:{ model:string }[] }).referenceModels.map(m => m.model)).toContain('claude-sonnet-5-5'); }
+    finally { await fallback.harness.lifecycle.dispose(); }
+  });
+  it('reads and sets one global setting at a time, validated by that setting', async () => {
+    const { harness,settings }=setup();
+    try {
+      await harness.behavior.callRpc('config.set',{ key:'rawRetentionDays',value:45 });
+      expect((await settings.get()).rawRetentionDays).toBe(45);
+      expect((await harness.behavior.callRpc('config.get',{}) as { values:Record<string,unknown> }).values.rawRetentionDays).toBe(45);
+      await expect(harness.behavior.callRpc('config.set',{ key:'rawRetentionDays',value:3 })).rejects.toThrow();
+      await expect(harness.behavior.callRpc('config.set',{ key:'priceOverrides',value:'not json' })).rejects.toThrow();
+      await expect(harness.behavior.callRpc('config.set',{ key:'nope',value:1 })).rejects.toThrow();
+      expect((await settings.get()).rawRetentionDays).toBe(45);
+    } finally { await harness.lifecycle.dispose(); }
+  });
+  it('answers limits at once from the last known accounts while providers are slow, and marks them stale', async () => {
+    const never=new Promise<never>(() => {});
+    const { bb,harness }=createFakePluginHost({ pluginId:'tokenomos',sdk:{ projects:{ list: async () => [] },
+      plugins:{ experimental_discoverRpc: async () => [{ pluginId:'provider-claude-code' }],callRpc: () => never } } as never });
+    const db=bb.storage.database(); bb.storage.migrate(db,MIGRATIONS);
+    const account={ providerId:'claude-code',label:'Claude Code',plan:null,status:'ok',message:null,observedAt:1,windows:[] };
+    // A window whose reset has passed belongs to a period that is over: dropped, not shown with old numbers.
+    const over={ id:'w',label:'5h',kind:'session',usedPercent:80,resetsAt:1000,model:null };
+    db.prepare("INSERT INTO cursor(name,value) VALUES ('limits-last',?)").run(JSON.stringify({ at:1,accounts:[{ ...account,windows:[over] }] }));
+    const settings=bb.settings.define({ rawRetentionDays:{ type:'number',default:30,label:'Raw' },rollupRetentionDays:{ type:'number',default:200,label:'Rollups' },referenceModel:{ type:'string',default:'claude-sonnet-5-5',label:'Reference' },includeOutsideBb:{ type:'boolean',default:false,label:'Outside' },priceOverrides:{ type:'string',default:'{}',label:'Overrides' } });
+    registerRpc(bb,db,settings);
+    try { expect((await harness.behavior.callRpc('limits',{}) as { accounts:unknown[] }).accounts).toEqual([{ ...account,message:'reset, no fresh report yet',stale:true }]); }
+    finally { await harness.lifecycle.dispose(); }
   });
   it('runs status and summary with JSON and bounded text output', async () => {
     const { harness }=setup();

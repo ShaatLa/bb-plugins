@@ -81,6 +81,17 @@ export function bucketTitle(range: Range, start: number, t: T): string {
 }
 
 export const fmtWhen = (ms: number, t: T) => `${ddmm(new Date(ms), t)} ${hhmm(new Date(ms), t)}`;
+/** A moment with its weekday: "Sat, 11/21 11:51". */
+export const fmtDay = (ms: number, t: T) => `${weekday(new Date(ms), t)}, ${fmtWhen(ms, t)}`;
+/** A span in its two largest units: "3 d 15 h", "4 h 59 min", "12 min", "<1 min". */
+export function fmtSpan(ms: number, t: T): string {
+  const minutes = Math.floor(Math.max(0, ms) / 60_000), hours = Math.floor(minutes / 60), d = Math.floor(hours / 24);
+  if (minutes === 0) return t("span.lessThanMinute");
+  const parts = d ? [t("span.days", { n: d }), hours % 24 ? t("span.hours", { n: hours % 24 }) : ""]
+    : hours ? [t("span.hours", { n: hours }), minutes % 60 ? t("span.minutes", { n: minutes % 60 }) : ""]
+    : [t("span.minutes", { n: minutes })];
+  return parts.filter(Boolean).join(" ");
+}
 
 /** Brand names stay as they are; only the generic provider is translated. */
 const BRAND_NAMES: Record<string, string> = { "claude-code": "Claude Code", codex: "Codex", antigravity: "Antigravity" };
@@ -107,8 +118,10 @@ export const weekdayName = (index: number, t: T) => weekday(new Date(2024, 0, 1 
 export const hourLabel = (hour: number) => `${pad(hour)}:00`;
 
 /** subPath `week/model/<projectId>` ↔ { range, by, project }; anything unknown falls back to week/provider, all projects. */
-export function parseSubPath(subPath: string): { range: Range; by: By; project?: string } {
+/** The view in the URL; a range or grouping missing from it falls back to the given defaults. */
+export function parseSubPath(subPath: string, defaultBy: By = "provider", defaultRange: Range = "week"): { range: Range; by: By; project?: string } {
   const [r, b, p] = subPath.split("/").map((part) => { try { return decodeURIComponent(part); } catch { return part; } });
-  return { range: (RANGE_SEGMENTS as readonly string[]).includes(r!) ? (r as Range) : "week", by: b === "model" ? "model" : "provider", project: p || undefined };
+  const by: By = b === "model" || b === "provider" ? b : defaultBy;
+  return { range: (RANGE_SEGMENTS as readonly string[]).includes(r!) ? (r as Range) : defaultRange, by, project: p || undefined };
 }
 export const toSubPath = (range: Range, by: By, project?: string) => `${range}/${by}${project ? `/${encodeURIComponent(project)}` : ""}`;

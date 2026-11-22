@@ -51,14 +51,14 @@ it('includes the current partial hour and uses inclusive now for every range', (
   db.prepare('INSERT INTO compactions(id,thread_id,at) VALUES (?,?,?)').run('future','a',at+1);
   expect(compactionsInRange(db,'day',overrides,at).items.map(i=>i.id)).toEqual(['current']);
 });
-it('groups top four models plus other and preserves unknown, recovered and estimated flags', () => {
+it('groups the top three models per provider plus other and preserves unknown, recovered and estimated flags', () => {
   const store=createStore(db);
   const models=['claude-sonnet-5-5','claude-opus-5-5','claude-haiku-5-5','claude-sonnet-5','claude-opus-5','claude-haiku-4-5'];
   store.applyRows(Array.from({ length: 6 },(_,i) => row(`m${i}`,{ model:models[i],freshIn: (i+1)*1000 })));
   const os=Object.fromEntries(Array.from({ length: 6 },(_,i) => [models[i],overrides['claude-sonnet-5-5']]));
   const s=summary(db,{ ...opts,by:'model',overrides:os });
-  expect(s.breakdown.map(b => b.key).sort()).toEqual([...models.slice(2),'other'].sort());
-  expect(s.breakdown.find(b => b.key==='other')?.calls).toBe(2);
+  expect(s.breakdown.map(b => b.key).sort()).toEqual([...models.slice(3),'other:claude-code'].sort());
+  expect(s.breakdown.find(b => b.key==='other:claude-code')).toMatchObject({ calls: 3, provider: 'claude-code' });
   expect(s.buckets.flatMap(b => Object.values(b.series)).reduce((n,c) => n+(c.usd ?? 0),0)).toBeCloseTo(s.totals.usd!);
   store.applyRows([row('unknown',{ model:'unpriced',flags:RECOVERED|ESTIMATED })]);
   const u=summary(db,opts); expect(u.totals.partial).toBe(true); expect(u.totals.estimated).toBe(true);

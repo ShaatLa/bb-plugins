@@ -112,6 +112,12 @@ describe("resolveModel", () => {
     expect(resolveModel("gemini-pro-orchestrator-g1-pro")).toBe("gemini-4-argon");
   });
 
+  test("reasoning-level suffix is stripped only when the full id has no price", () => {
+    expect(resolveModel("gemini-4-argon-high")).toBe("gemini-4-argon");
+    expect(resolveModel("gemini-3.8-flash-medium")).toBe("gemini-3.8-flash");
+    expect(resolveModel("some-future-model-high")).toBeNull();
+  });
+
   test("unknown model → null", () => {
     expect(resolveModel("some-future-model")).toBeNull();
     // The Codex reviewer has no public price: it resolves, but as an unverified estimate.

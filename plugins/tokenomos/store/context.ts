@@ -21,7 +21,7 @@ export function currentContext(db:Database,threadId:string) {
 }
 export function wakeCost(db:Database,threadId:string,now:number,overrides:Overrides={}) {
   const thread=db.prepare('SELECT provider_id FROM threads WHERE id=?').get(threadId) as {provider_id:string}|undefined;
-  if (!thread) throw new experimental_PluginRpcRefusal({code:'not_found',message:'Unknown thread'});
+  if (!thread) throw new experimental_PluginRpcRefusal({code:'not_found',message:`Unknown thread: ${threadId}. Pass a BB thread id (thr_...) as listed by \`bb thread list\`.`});
   const c=currentContext(db,threadId),claude=thread.provider_id==='claude-code';
   let ttlMinutes=claude?60:30,ttlSource:'observed'|'assumed'='assumed',kind=c?.session ? c.writeKind : null;
   if (c?.session) {

@@ -20,17 +20,10 @@ function describe(c: Cell, t: T, estimated: boolean) {
   return `${money} · ${t("tokShort", { value: fmtTokens(c.tokens, t) })} · ${t("calls.count", { n: c.calls })}`;
 }
 
-function dayRows(cells: { weekday: number }[]): number[] {
-  const present = [...new Set(cells.map((c) => c.weekday))].sort((a, b) => a - b);
-  if (present.length === 0) return [(new Date().getDay() + 6) % 7];
-  // Sunday (6) followed by Monday (0) wraps the week.
-  return present.length === 2 && present[0] === 0 && present[1] === 6 ? [6, 0] : present;
-}
-
 /** Weekday × hour grid in one hue: tint = the chosen metric relative to the busiest cell. */
 export function ActivityHeatmap({ summary, metric, range }: { summary: SummaryOutput; metric: Metric; range: Range }) {
   const t = useT();
-  const [hover, setHover] = useState<{ cell: Cell | null; weekday: number; hour: number; left: number; top: number } | null>(null);
+  const [hover, setHover] = useState<{ cell: Cell | null; weekday: number; hour: number; left: number; top: number; align: "start" | "center" | "end" } | null>(null);
   const grid = useRef<HTMLDivElement>(null);
   const { cells } = summary.heatmap;
   const estimated = summary.kpis.estimated || summary.kpis.partial;
@@ -38,9 +31,19 @@ export function ActivityHeatmap({ summary, metric, range }: { summary: SummaryOu
   const byKey = new Map(cells.map((c) => [c.weekday * 24 + c.hour, c]));
   const max = Math.max(0, ...cells.map((c) => valueOf(c, shown)));
   const busiest = cells.reduce<Cell | null>((best, c) => (valueOf(c, shown) > (best ? valueOf(best, shown) : 0) ? c : best), null);
-  // The day range is the last 24 hours, so it spans up to two weekdays: draw only those rows, oldest first.
-  const days = range === "day" ? dayRows(cells) : [0, 1, 2, 3, 4, 5, 6];
-  const show = (weekday: number, hour: number, el: HTMLElement) => setHover({ cell: byKey.get(weekday * 24 + hour) ?? null, weekday, hour, left: el.offsetLeft + el.offsetWidth / 2, top: el.offsetTop });
+  // The day range is the last 24 hours, so it spans up to two weekdays: draw those rows, oldest first.
+  // The week range is the last 7 calendar days: start at its first day so today is the bottom row.
+  const end = new Date(summary.to), today = (end.getDay() + 6) % 7, start = new Date(summary.from), first = (start.getDay() + 6) % 7;
+  const days = range === "day" ? (first === today ? [today] : [first, today]) : Array.from({ length: 7 }, (_, i) => ((range === "week" ? first : 0) + i) % 7);
+  // Hours after now on today's row have not happened yet, and on the day range the hours before its start on
+  // yesterday's row are outside it: leave both blank instead of grey "0 calls".
+  const future = (wd: number, h: number) => (range === "day" || range === "week") && wd === today && wd === days[days.length - 1] && h > end.getHours();
+  const before = (wd: number, h: number) => range === "day" && wd !== today && wd === first && h < start.getHours();
+  // A tooltip is up to ~220 px wide: near either edge of the grid it opens inward so it stays inside the card.
+  const show = (weekday: number, hour: number, el: HTMLElement) => {
+    const left = el.offsetLeft + el.offsetWidth / 2, width = grid.current?.clientWidth ?? 0;
+    setHover({ cell: byKey.get(weekday * 24 + hour) ?? null, weekday, hour, left, top: el.offsetTop, align: left < 112 ? "start" : width - left < 112 ? "end" : "center" });
+  };
   const money = (v: number) => (shown === "usd" ? `${estimated ? "~" : ""}${fmtMetric(shown, v, t)}` : shown === "calls" ? t("calls.count", { n: v }) : fmtMetric(shown, v, t));
   return (
     <Card className="space-y-3">
@@ -57,6 +60,7 @@ export function ActivityHeatmap({ summary, metric, range }: { summary: SummaryOu
               <div key={wd} role="row" className="contents">
                 <span className="pr-1 text-xs text-muted-foreground">{weekdayName(wd, t)}</span>
                 {Array.from({ length: 24 }, (_, h) => {
+                  if (future(wd, h) || before(wd, h)) return <span key={h} aria-hidden className="h-5" />;
                   const cell = byKey.get(wd * 24 + h);
                   const lv = cell ? level(valueOf(cell, shown), max) : -1;
                   return (
@@ -70,7 +74,7 @@ export function ActivityHeatmap({ summary, metric, range }: { summary: SummaryOu
               </div>
             ))}
             {hover && (
-              <div role="tooltip" className="pointer-events-none absolute z-10 -translate-x-1/2 -translate-y-full whitespace-nowrap rounded-md border border-border bg-popover px-2 py-1 text-xs text-popover-foreground shadow-md" style={{ left: hover.left, top: hover.top - 4 }}>
+              <div role="tooltip" className={`pointer-events-none absolute z-10 ${hover.align === "start" ? "-translate-x-4" : hover.align === "end" ? "-translate-x-[calc(100%-1rem)]" : "-translate-x-1/2"} -translate-y-full whitespace-nowrap rounded-md border border-border bg-popover px-2 py-1 text-xs text-popover-foreground shadow-md`} style={{ left: hover.left, top: hover.top - 4 }}>
                 <div className="text-muted-foreground">{weekdayName(hover.weekday, t)} {hourLabel(hover.hour)}</div>
                 <div className="tabular-nums">{hover.cell ? describe(hover.cell, t, estimated) : t("calls.count", { n: 0 })}</div>
               </div>
