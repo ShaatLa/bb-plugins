@@ -32,8 +32,7 @@ export function PlanToc({
         <Icon name={open ? "ChevronDown" : "ChevronRight"} className="size-3.5" />
         Contents ({headings.length})
       </button>
-      <p className="mb-1 hidden text-xs font-medium text-muted-foreground @[56rem]:block">Contents</p>
-      <ol className={cn("mt-1 space-y-0.5 @[56rem]:mt-0 @[56rem]:block @[56rem]:max-h-[calc(100vh-8rem)] @[56rem]:overflow-y-auto", !open && "hidden")}>
+      <ol className={cn("mt-1 space-y-0.5 @[56rem]:mt-0 @[56rem]:block @[56rem]:pl-3 @[56rem]:max-h-[calc(100vh-8rem)] @[56rem]:overflow-y-auto", !open && "hidden")}>
         {headings.map((heading, index) => (
           <li key={index} style={{ paddingLeft: (heading.level - top) * 12 }}>
             <button
