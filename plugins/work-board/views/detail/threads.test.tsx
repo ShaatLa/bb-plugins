@@ -418,6 +418,52 @@ describe("task detail pull request pills", () => {
     expect(lookups).toBe(1);
   });
 
+  it("attaching the first thread costs one pull-request lookup, not one per thread-list phase", async () => {
+    let attached = false;
+    let lookups = 0;
+    const slot = renderSlot(app.navPanels[0]!, { subPath: "task/TSK-5" }, {
+      rpc: detailRpc({
+        listTaskThreads: async (input: unknown) => {
+          // The cached list is instant; the reconciled one arrives 200 ms later.
+          if (attached && rpcInput(input).reconcile !== false) await new Promise((resolve) => setTimeout(resolve, 200));
+          return { taskThreads: attached ? [taskThreadRow(THREAD_ROW_ID, "thr_worker000", "Worker")] : [] };
+        },
+        listTaskPullRequests: () => { lookups += 1; return { pullRequests: [], unavailableThreadIds: [] }; },
+      }),
+    });
+    await slot.findByRole("textbox", { name: "Task title" });
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(lookups).toBe(0);
+    attached = true;
+    await slot.behavior.emitRealtime("threads:changed", { taskId: TASK_ID });
+    await waitFor(() => expect(lookups).toBe(1));
+    await new Promise((resolve) => setTimeout(resolve, 450));
+    expect(lookups).toBe(1);
+  });
+
+  it("a thread reload that finishes after the view is closed starts no pull-request lookup", async () => {
+    let hold: Promise<void> | null = null;
+    let release!: () => void;
+    let lookups = 0;
+    const slot = renderSlot(app.navPanels[0]!, { subPath: "task/TSK-5" }, {
+      rpc: detailRpc({
+        listTaskThreads: async (input: unknown) => {
+          if (hold && rpcInput(input).reconcile !== false) await hold;
+          return { taskThreads: [taskThreadRow(THREAD_ROW_ID, "thr_worker000", "Worker")] };
+        },
+        listTaskPullRequests: () => { lookups += 1; return { pullRequests: [], unavailableThreadIds: [] }; },
+      }),
+    });
+    await waitFor(() => expect(lookups).toBe(1));
+    hold = new Promise<void>((resolve) => { release = resolve; });
+    await slot.behavior.emitRealtime("threads:changed", { taskId: TASK_ID });
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    slot.unmount();
+    release();
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    expect(lookups).toBe(1);
+  });
+
   it("refreshes pull requests after a thread event once the thread list has reloaded", async () => {
     let lookups = 0;
     const slot = renderSlot(app.navPanels[0]!, { subPath: "task/TSK-5" }, {

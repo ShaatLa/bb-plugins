@@ -393,14 +393,17 @@ function TaskDetail({
     [task.id],
     { relevantTaskIds: [task.id] },
   );
-  // Set below: a thread event refreshes pull requests once the reloaded list is in (see onThreadsLoaded).
-  const onThreadsLoaded = useRef<(list: readonly TaskThread[]) => void>(() => {});
+  // Reloads that began with an attachment on screen; the PR follow-up reads the accepted result below.
+  // Loads that begin without one (first load, first attachment) are covered by the PR query becoming enabled.
+  const hasThreadsRef = useRef(false);
+  const reloadedWithThreads = useRef(new WeakSet<object>());
   const threads = useTasksQuery<TaskThread[]>(
     async (query, publish) => {
       const cached = await query.call("listTaskThreads", { taskId: task.id, reconcile: false });
       publish(cached.taskThreads);
+      const startedWithThreads = hasThreadsRef.current;
       const list = (await query.call("listTaskThreads", { taskId: task.id })).taskThreads;
-      onThreadsLoaded.current(list);
+      if (startedWithThreads) reloadedWithThreads.current.add(list);
       return list;
     },
     ["threads:changed"],
@@ -425,6 +428,7 @@ function TaskDetail({
   );
   // Pull-request lookups only matter for a task with attached threads.
   const hasThreads = (threads.data?.length ?? 0) > 0;
+  hasThreadsRef.current = hasThreads;
   // Written inside the fetcher, so every start counts (mount, signal, poll, focus), however React batches state.
   const pullRequestLookup = useRef({ startedAt: 0, outstanding: 0 });
   const pullRequestsQuery = useTasksQuery(
@@ -452,17 +456,14 @@ function TaskDetail({
     if (outstanding > 0 || Date.now() - startedAt < PR_FOCUS_STALE_MS) return;
     refreshPullRequests();
   }, [refreshPullRequests]);
-  // A thread event is acted on after the thread list has reloaded and only if an attachment remains.
-  // The first load is covered by the query becoming enabled. Read from the fetcher, not render state,
-  // so a fast reload cannot be batched away.
-  const threadsSettledFor = useRef<string | null>(null);
-  onThreadsLoaded.current = (list) => {
-    if (threadsSettledFor.current !== task.id) {
-      threadsSettledFor.current = task.id;
-      return;
-    }
-    if (list.length > 0) refreshPullRequests();
-  };
+  // A thread event is acted on once the reloaded list is the accepted result (an unmounted or superseded
+  // fetch never gets here), and only if an attachment remains.
+  const refreshPullRequestsRef = useRef(refreshPullRequests);
+  refreshPullRequestsRef.current = refreshPullRequests;
+  useEffect(() => {
+    const list = threads.data;
+    if (list !== undefined && list.length > 0 && reloadedWithThreads.current.has(list)) refreshPullRequestsRef.current();
+  }, [threads.data]);
   const hasActivePullRequest = (pullRequests.data?.pullRequests ?? []).some(
     (pullRequest) =>
       pullRequest.state === "open" || pullRequest.state === "draft",
