@@ -211,7 +211,9 @@ it("checks the actual weekly pace against role-eligible providers before mint, a
     "claude-code": [window("Weekly limit", 64, 0.65)],
     antigravity: [window("7d", 90, 0.5, "custom"), window("7d · Argon", 0, 0.5, "custom")],
   };
-  f.harness.sdk.stub("projects.get", async () => ({ gitRemoteUrl: f.repo, sources: [{ isDefault: true, hostId }] }));
+  f.harness.sdk.stub("projects.get", async () => ({ gitRemoteUrl: f.repo, sources: [{ isDefault: true, hostId: "host_default" }] }));
+  f.harness.sdk.stub("threads.get", async () => makeThreadResponse({ projectId: "proj_example", environmentId: "env_parent" }));
+  f.harness.sdk.stub("environments.get", async () => ({ hostId }));
   f.harness.sdk.stub("providers.list", async options => {
     expect(options).toEqual({ hostId, capability: "usage" });
     return eligible.map(({ providerId: id }) => ({ id, pluginId: id === "antigravity" ? id : `provider-${id}` }));

@@ -181,11 +181,16 @@ export function createStart(bb: BbPluginApi, mint: (request: { projectId: string
       let providerPace: z.infer<typeof paceReport> | undefined;
       if (build.providerPolicy && selected) {
         reason = "host_error";
-        const hostId = target?.type === "reuse"
-          ? (await bb.sdk.environments.get({ environmentId: target.environmentId })).hostId
-          : target?.type === "host"
-            ? target.hostId ?? (await bb.sdk.system.config()).primaryHostId
-            : defaultHost;
+        let hostId: string | null | undefined = defaultHost;
+        if (target?.type === "reuse") {
+          hostId = (await bb.sdk.environments.get({ environmentId: target.environmentId })).hostId;
+        } else if (target?.type === "host") {
+          hostId = target.hostId ?? (await bb.sdk.system.config()).primaryHostId;
+        } else if (parent.archivedAt == null) {
+          // BB places project-default children on the active parent's host.
+          if (!parent.environmentId) throw new Error("Wait for the parent environment to be ready, or specify an explicit child environment.");
+          hostId = (await bb.sdk.environments.get({ environmentId: parent.environmentId })).hostId;
+        }
         reason = "over_pace";
         const { report, summary } = await assessPace(bb, build.providerPolicy, { providerId: selected, model: build.spawn.model },
           hostId ?? undefined, await paceThreshold(), signal);
