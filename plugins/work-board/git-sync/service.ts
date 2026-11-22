@@ -11,7 +11,12 @@ import {
   parsePrUrl,
   prIdentity,
   prLinkSchema,
+  observationDue,
+  observationStale,
+  observationTtl,
+  settledSpreadMs,
   type PrLink,
+  type PrSnapshot,
 } from "../shared/git-sync";
 import { createGitSyncStore } from "./store";
 import { planDebtService } from "../plan-debt/service";
@@ -24,6 +29,13 @@ import {
 } from "./github";
 
 const SYNC_DEADLINE_MS = 4 * 60_000;
+// No new PR starts after this, so the pass ends on its own before the hard deadline cuts a fetch.
+const SYNC_BUDGET_MS = SYNC_DEADLINE_MS - 60_000;
+// Open/draft PRs lead, but a due PR that has waited this long goes first, oldest first.
+const LEAD_MS = 15 * 60_000;
+
+/** `failures`: required PR snapshot requests that failed for a non-permission reason; `tolerated`: optional lookups and permission refusals. */
+type SyncResult = { checked: number; errors: string[]; deferred: number; failures: number; tolerated: number; timedOut: boolean };
 
 const services = new WeakMap<
   TasksApiStore,
@@ -62,15 +74,14 @@ export function createGitSyncService(
       return tokenPromise;
     },
   });
-  const pending = new Map<
-    string,
-    Promise<{ checked: number; errors: string[] }>
-  >();
+  const pending = new Map<string, Promise<SyncResult>>();
   const discovery = new Map<
     string,
     { at: number; promise: ReturnType<GithubClient["discover"]> }
   >();
   const deadlineWarnings = new Map<string, number>();
+  // When a forced pass first left a PR unread, by project and PR, so repeated forced passes promote it in bounded time.
+  const forcedWaiting = new Map<string, number>();
   const requireTask = (taskId: string) => {
     const task = store.tasks.getTask(taskId);
     if (!task) throw new Error("Task not found");
@@ -129,29 +140,56 @@ export function createGitSyncService(
   async function syncProject(
     projectId: string,
     force = false,
-  ): Promise<{ checked: number; errors: string[] }> {
+  ): Promise<SyncResult> {
     if (pending.has(projectId)) return pending.get(projectId)!;
     // A run that never settles (an SDK or network await that hangs) must not block every later sync.
     const run = new AbortController();
     const client = clientOverride ?? github.withSignal(run.signal);
+    const startedAt = Date.now();
     let phase = "start";
+    let fingerprint: string | undefined;
+    let checked = 0, deferred = 0, failures = 0, tolerated = 0, filesChanged = false, published = false;
+    const errors: string[] = [];
+    // A changed head can change other tasks' overlaps; otherwise only refreshed PRs need an update.
+    const refreshed = new Set<string>();
+    let projectLinks: PrLink[] = [];
+    const linksByPr = new Map<string, PrLink[]>();
+    // Our own deadline abort does not block publishing committed work; dispose, deletion and config changes do.
+    const live = () =>
+      !controller.signal.aborted &&
+      fingerprint !== undefined &&
+      Boolean(store.tasks.getProject(projectId)) &&
+      JSON.stringify(data.config(projectId)) === fingerprint;
+    const current = () => live() && !run.signal.aborted;
+    const finish = (extra: string[] = []): SyncResult => ({ checked, errors: [...new Set([...extra, ...errors])], deferred, failures, tolerated, timedOut: false });
+    const flush = () => {
+      if (published || !live()) return;
+      published = true;
+      if (filesChanged) publishPrs(projectId, projectLinks.map((link) => link.taskId));
+      else {
+        const linked = new Set([...refreshed].flatMap((identity) => (linksByPr.get(identity) ?? []).filter((link) => !link.excluded).map((link) => link.taskId)));
+        if (linked.size) publishPrs(projectId, linked);
+      }
+    };
     const operation = (async () => {
       const project = requireProject(projectId);
       let config = data.config(projectId);
-      let fingerprint = JSON.stringify(config);
+      fingerprint = JSON.stringify(config);
       if (force)
         for (const repository of config.repositories)
           discovery.delete(`${repository}:${config.lookbackDays}`);
-      const current = () =>
-        !controller.signal.aborted &&
-        !run.signal.aborted &&
-        Boolean(store.tasks.getProject(projectId)) &&
-        JSON.stringify(data.config(projectId)) === fingerprint;
-      if (!current()) return { checked: 0, errors: [] };
+      if (!current()) return finish();
       data.attempted(projectId);
-      const errors: string[] = [];
       const report = (repository: string, error: unknown) =>
         `${repository}: ${error instanceof GithubError ? error.message : "GitHub synchronization unavailable; retry later"}`;
+      // Pairs already linked need no remember() call: it would only re-read the card's links to return them.
+      const known = data.linkKeys(projectId);
+      const discovered = (taskId: string, url: string, source: PrLink["source"]) => {
+        const key = `${taskId} ${prIdentity(parsePrUrl(url))}`;
+        if (known.has(key)) return;
+        remember(taskId, url, source);
+        known.add(key);
+      };
       const tasks = store.tasks.listTasks({ projectId });
       const aliases = db
         .prepare<[string], { prefix: string }>(
@@ -191,21 +229,18 @@ export function createGitSyncService(
               }, () => {});
             }
             const pulls = await scan.promise;
-            if (!current())
-              return {
-                checked: 0,
-                errors: ["Configuration changed; retry sync"],
-              };
+            if (!current()) return finish(["Configuration changed; retry sync"]);
             for (const pr of pulls)
               for (const taskId of referencedTaskIds(pr.title))
-                remember(taskId, pr.html_url, "title");
+                discovered(taskId, pr.html_url, "title");
           } catch (error) {
-            if (!current()) return { checked: 0, errors };
+            if (!current()) return finish();
             discovery.delete(`${repository}:${config.lookbackDays}`);
+            tolerated++;
             errors.push(report(repository, error));
           }
         }
-      if (!current()) return { checked: 0, errors };
+      if (!current()) return finish();
       const environmentTasks = new Map<string, Set<string>>();
       if (config.repositories.length === 1) {
         const evidence = db.prepare<[string], { taskId: string; pr: number }>(
@@ -213,7 +248,7 @@ export function createGitSyncService(
            FROM comments c JOIN tasks t ON t.id=c.task_id
            WHERE t.project_id=? AND c.evidence IS NOT NULL AND json_extract(c.evidence, '$.pr') > 0`,
         ).all(projectId);
-        for (const row of evidence) remember(row.taskId, `https://github.com/${config.repositories[0]}/pull/${row.pr}`, "evidence");
+        for (const row of evidence) discovered(row.taskId, `https://github.com/${config.repositories[0]}/pull/${row.pr}`, "evidence");
       }
       phase = "worker thread lookup";
       // Resolve each attached thread once, in bounded batches, while retaining persistent links on failure.
@@ -228,6 +263,7 @@ export function createGitSyncService(
           for (const thread of threads)
             if (thread.environmentId) environments.set(thread.id, thread.environmentId);
         } catch {
+          tolerated++;
           /* Unavailable workers must not erase persistent links. */
         }
       }
@@ -238,10 +274,10 @@ export function createGitSyncService(
         members.add(link.taskId);
         environmentTasks.set(environmentId, members);
       }
-      if (!current()) return { checked: 0, errors };
+      if (!current()) return finish();
       phase = "environment PR read";
       const lookups = await environmentPullRequests(bb, environmentTasks.keys(), () => current());
-      if (!current()) return { checked: 0, errors };
+      if (!current()) return finish();
       const references = new Map<string, Promise<string>>();
       for (const [environmentId, members] of environmentTasks) {
         const result = lookups.get(environmentId)!;
@@ -256,23 +292,19 @@ export function createGitSyncService(
             references.set(identity, text);
           }
           const matching = referencedTaskIds(await text);
-          if (!current()) return { checked: 0, errors };
+          if (!current()) return finish();
           // Shared workers are not evidence that a PR belongs to every attached task.
           for (const taskId of members)
             if (matching.has(taskId))
-              remember(taskId, result.pullRequest.url, "environment");
+              discovered(taskId, result.pullRequest.url, "environment");
         } catch {
+          tolerated++;
           /* Environment discovery is optional; direct PR links keep working. */
         }
       }
       phase = "PR snapshots";
-      let checked = 0;
-      const refreshed = new Set<string>();
-      // A changed head can change other tasks' overlaps; otherwise only refreshed PRs need an update.
-      let filesChanged = false;
       const unique = new Map<string, PrLink>();
-      const projectLinks = data.linksForProject(projectId);
-      const linksByPr = new Map<string, PrLink[]>();
+      projectLinks = data.linksForProject(projectId);
       for (const link of projectLinks) {
         const identity = prIdentity(link);
         if (!linksByPr.has(identity)) linksByPr.set(identity, []);
@@ -280,33 +312,54 @@ export function createGitSyncService(
         if (!link.excluded && config.repositories.includes(link.repository)) unique.set(identity, link);
       }
       const attempts = data.attempts(projectId);
-      const ordered = [...unique.values()].sort((left, right) =>
-        (attempts.get(prIdentity(left))?.lastAttemptAt ?? 0) - (attempts.get(prIdentity(right))?.lastAttemptAt ?? 0));
-      for (const link of ordered) {
-        if (!current()) break;
+      const now = Date.now(), poll = config.pollMinutes * 60_000;
+      // A PR that left eligibility (excluded, unlinked, repository removed) starts a fresh wait if it comes back.
+      for (const key of forcedWaiting.keys())
+        if (key.startsWith(`${projectId} `) && !unique.has(key.slice(projectId.length + 1))) forcedWaiting.delete(key);
+      type Seen = { state: PrSnapshot["state"]; mergedAt: string | null; updatedAt: string; observedAt: string; coverage: { workflow: string; state: string }[] };
+      const due: { link: PrLink; tier: number; order: number; seen: Seen | null }[] = [];
+      // Skips and order come from lightweight rows; full payloads are parsed only for PRs actually fetched.
+      for (const link of unique.values()) {
         const attempt = attempts.get(prIdentity(link));
         const delay = [300_000, 900_000, 3_600_000, 21_600_000][Math.min((attempt?.failureCount ?? 0) - 1, 3)];
-        if (!force && attempt?.failureCount && attempt.lastAttemptAt && Date.now() - attempt.lastAttemptAt < delay) continue;
-        const previous = data.snapshot(projectId, link);
-        if (!force && !previous.error && previous.snapshot) {
-          const value = previous.snapshot;
-          if (
-            value.state === "merged" &&
-            value.mergedAt &&
-            Date.now() - Date.parse(value.mergedAt) >
-              config.postMergeDays * 86400000
-          )
-            continue;
-          if (
-            value.state === "closed" &&
-            Date.now() - Date.parse(value.updatedAt) >
-              config.lookbackDays * 86400000 &&
-            Date.now() - Date.parse(value.observedAt) < 3600000
-          )
-            continue;
+        if (!force && attempt?.failureCount && attempt.lastAttemptAt && now - attempt.lastAttemptAt < delay) continue;
+        const seen: Seen | null = attempt?.state && attempt.observedAt && !attempt.error
+          ? { state: attempt.state, mergedAt: attempt.mergedAt, updatedAt: attempt.updatedAt ?? "", observedAt: attempt.observedAt, coverage: JSON.parse(attempt.coverage ?? "[]") }
+          : null;
+        const ttl = seen ? observationTtl(seen, config, now) : null;
+        // Only settled merges spread; old closed PRs keep their plain hourly due time.
+        const advance = seen?.state === "merged" && ttl !== null && ttl > poll ? settledSpreadMs(prIdentity(link)) : 0;
+        if (!force && seen && !observationDue(seen.observedAt, ttl === null ? null : ttl - advance, config, now)) continue;
+        const cutoffIn = seen?.state === "merged" && seen.mergedAt ? Date.parse(seen.mergedAt) + config.postMergeDays * 86_400_000 - now : null;
+        const lead = !seen || seen.state === "open" || seen.state === "draft" || (cutoffIn !== null && cutoffIn >= 0 && cutoffIn <= poll);
+        const lastAttemptAt = attempt?.lastAttemptAt ?? 0;
+        if (force) {
+          // Everything is due, so a scheduled due time means nothing: order by last attempt, and count waiting from the
+          // first forced pass that left the PR unread, so old history neither jumps open work at once nor starves.
+          // Seeded here, not at the budget stop, so a pass cut by the hard deadline still starts the clock.
+          const key = `${projectId} ${prIdentity(link)}`;
+          if (!forcedWaiting.has(key)) forcedWaiting.set(key, now);
+          const waitingSince = forcedWaiting.get(key)!;
+          const overdue = now - waitingSince >= LEAD_MS;
+          due.push({ link, tier: overdue ? 0 : lead ? 1 : 2, order: overdue ? waitingSince : lastAttemptAt, seen });
+          continue;
         }
+        // Waiting counts from when a PR became due; once it reaches LEAD_MS the PR goes first, oldest first.
+        const dueAt = ttl !== null && ttl > poll ? Date.parse(seen!.observedAt) + ttl - poll - advance : lastAttemptAt;
+        due.push({ link, tier: now - dueAt >= LEAD_MS ? 0 : lead ? 1 : 2, order: dueAt, seen });
+      }
+      due.sort((left, right) => left.tier - right.tier || left.order - right.order);
+      for (let index = 0; index < due.length; index++) {
+        if (!current()) break;
+        if (Date.now() - startedAt >= SYNC_BUDGET_MS) {
+          deferred = due.length - index;
+          break;
+        }
+        const { link, seen } = due[index]!;
+        const previous = data.snapshot(projectId, link);
         try {
           data.markAttempt(projectId, link);
+          forcedWaiting.delete(`${projectId} ${prIdentity(link)}`);
           const snapshot = await client.snapshot(
             link.repository,
             link.number,
@@ -364,35 +417,39 @@ export function createGitSyncService(
           }
           const { observedAt: _previousObservedAt, ...oldVisible } = previous.snapshot ?? { observedAt: undefined };
           const { observedAt: _observedAt, ...visible } = snapshot;
-          if (previous.error || JSON.stringify(oldVisible) !== JSON.stringify(visible)) refreshed.add(prIdentity(link));
+          // A stale-to-current refresh is visible even when the facts are identical. Freshness is judged at commit time,
+          // and a terminal observation older than one poll renews merged-delivery advisory evidence, which is also visible.
+          const committedAt = Date.now(), previousTtl = seen ? observationTtl(seen, config, committedAt) : null;
+          // Evidence expires at exactly its TTL (advisories need validUntil > now), so renewal uses >=.
+          const renewed = !seen || committedAt - Date.parse(seen.observedAt) >= (previousTtl ?? poll);
+          if (previous.error || renewed || JSON.stringify(oldVisible) !== JSON.stringify(visible)) refreshed.add(prIdentity(link));
           if (snapshot.headSha !== previous.snapshot?.headSha || snapshot.baseSha !== previous.snapshot?.baseSha) filesChanged = true;
           checked++;
         } catch (error) {
           if (!current()) break;
           const message = report(link.repository, error);
+          // Counted per PR before messages are deduplicated; a permission refusal is not a sync failure.
+          if (error instanceof GithubError && [401, 403, 404].includes(error.status)) tolerated++;
+          else failures++;
           if (previous.error !== message) refreshed.add(prIdentity(link));
           data.fail(projectId, link, message);
           errors.push(message);
         }
       }
-      if (current()) {
-        if (filesChanged) publishPrs(projectId, projectLinks.map((link) => link.taskId));
-        else {
-          const linked = new Set([...refreshed].flatMap((identity) => (linksByPr.get(identity) ?? []).filter((link) => !link.excluded).map((link) => link.taskId)));
-          if (linked.size) publishPrs(projectId, linked);
-        }
-      }
-      return { checked, errors: [...new Set(errors)] };
+      flush();
+      return finish();
     })();
     let timer: ReturnType<typeof setTimeout> | undefined;
-    const deadline = new Promise<{ checked: number; errors: string[] }>((resolve) => {
+    const deadline = new Promise<SyncResult>((resolve) => {
       timer = setTimeout(() => {
         run.abort();
         if (!deadlineWarnings.has(projectId) || Date.now() - deadlineWarnings.get(projectId)! >= 3_600_000) {
           deadlineWarnings.set(projectId, Date.now());
           bb.log.warn(`Git sync for project ${projectId} exceeded ${SYNC_DEADLINE_MS / 60_000} min during ${phase}; abandoned`);
         }
-        resolve({ checked: 0, errors: [`Git synchronization timed out during ${phase}; retry later`] });
+        // The cut operation may never resume, so its committed snapshots are published from here, once.
+        flush();
+        resolve({ checked, errors: [`Git synchronization timed out during ${phase}; retry later`], deferred, failures, tolerated, timedOut: true });
       }, SYNC_DEADLINE_MS);
     });
     const guarded = Promise.race([operation, deadline]).finally(() => clearTimeout(timer));
@@ -483,8 +540,7 @@ export function createGitSyncService(
               !config.repositories.includes(link.repository) ||
               Boolean(cached.error) ||
               !cached.snapshot ||
-              Date.now() - Date.parse(cached.snapshot.observedAt) >
-                config.pollMinutes * 60_000,
+              observationStale(cached.snapshot.observedAt, observationTtl(cached.snapshot, config, Date.now()), Date.now()),
           };
         }),
       };
@@ -523,18 +579,27 @@ export function createGitSyncService(
       publishProjectPrs(task.projectId);
       return { excluded: true };
     },
-    syncGit({ projectId }) {
-      return syncProject(projectId, true);
+    async syncGit({ projectId }) {
+      const { checked, errors, deferred } = await syncProject(projectId, true);
+      return { checked, errors: deferred ? [...errors, `${deferred} PRs deferred to the next pass`] : errors };
     },
   };
   return {
     handlers,
     remember,
     syncProject,
+    /** Deferral is load management and stays ok; a hard timeout or failed GitHub requests fail the scheduled run. */
     async runDue() {
-      for (const project of store.tasks.listProjects())
-        if (data.config(project.id).enabled && data.due(project.id))
-          await syncProject(project.id);
+      const problems: string[] = [];
+      for (const project of store.tasks.listProjects()) {
+        if (!data.config(project.id).enabled || !data.due(project.id)) continue;
+        const outcome = await syncProject(project.id);
+        if (outcome.deferred) bb.log.info(`Git sync for project ${project.id} checked ${outcome.checked} PRs and deferred ${outcome.deferred} to the next pass`);
+        if (outcome.tolerated) bb.log.warn(`Git sync for project ${project.id} tolerated ${outcome.tolerated} optional lookup or permission failures`);
+        if (outcome.timedOut) problems.push(`project ${project.id}: ${outcome.errors[0]} (${outcome.checked} PRs checked)`);
+        else if (outcome.failures) problems.push(`project ${project.id}: ${outcome.failures} GitHub request failures (${outcome.checked} PRs checked)`);
+      }
+      if (problems.length) throw new Error(`Git sync incomplete: ${problems.join("; ")}`);
     },
   };
 }

@@ -4,11 +4,11 @@ import type { DependencyTask, TaskThread } from "../shared/contract";
 import type { TaskActivity } from "../shared/task-activity";
 import type { TaskAdvisory } from "../shared/task-advisories";
 import { createGitSyncStore } from "../git-sync/store";
-import { prLinkSchema, prSnapshotSchema } from "../shared/git-sync";
+import { observationTtl, prLinkSchema, prSnapshotSchema } from "../shared/git-sync";
 import { getWorkflowPolicy } from "../shared/workflow-policy";
 import { openPlanDebts } from "../plan-debt/store";
 
-const deliverySnapshot = prSnapshotSchema.pick({ repository: true, number: true, url: true, state: true, mergeSha: true, mergedAt: true, observedAt: true });
+const deliverySnapshot = prSnapshotSchema.pick({ repository: true, number: true, url: true, state: true, mergeSha: true, mergedAt: true, observedAt: true, updatedAt: true, coverage: true });
 
 export function taskAdvisories(bb: BbPluginApi, tasks: ReturnType<TasksApiStore["tasks"]["listTaskActivity"]>, blockers: Map<string, DependencyTask[]>, activities: Map<string, TaskActivity>, threads: Map<string, TaskThread[]>) {
   const now = Date.now(), db = bb.storage.database(), git = createGitSyncStore(db);
@@ -23,7 +23,8 @@ export function taskAdvisories(bb: BbPluginApi, tasks: ReturnType<TasksApiStore[
       json_object('repository', json_extract(s.payload, '$.repository'), 'number', json_extract(s.payload, '$.number'),
         'url', json_extract(s.payload, '$.url'), 'state', json_extract(s.payload, '$.state'),
         'mergeSha', json_extract(s.payload, '$.mergeSha'), 'mergedAt', json_extract(s.payload, '$.mergedAt'),
-        'observedAt', json_extract(s.payload, '$.observedAt')) AS snapshot, s.error
+        'observedAt', json_extract(s.payload, '$.observedAt'), 'updatedAt', json_extract(s.payload, '$.updatedAt'),
+        'coverage', json_extract(s.payload, '$.coverage')) AS snapshot, s.error
       FROM tasks t JOIN projects p ON p.id=t.project_id JOIN task_pr_links l ON l.task_id=t.id
       JOIN git_pr_snapshots s ON s.project_id=t.project_id AND s.identity=l.identity
       WHERE t.id IN (${ids.map(() => "?").join(",")}) AND t.status <> 'done' AND s.payload IS NOT NULL
@@ -34,7 +35,8 @@ export function taskAdvisories(bb: BbPluginApi, tasks: ReturnType<TasksApiStore[
       const link = prLinkSchema.parse(JSON.parse(row.link)), snapshot = deliverySnapshot.parse(JSON.parse(row.snapshot));
       let config = configs.get(row.projectId);
       if (!config) { config = git.config(row.projectId); configs.set(row.projectId, config); }
-      const observed = Date.parse(snapshot.observedAt), validUntil = observed + config.pollMinutes * 60_000;
+      // Evidence lasts as long as polling keeps the observation current; a terminal merge keeps the short poll validity.
+      const observed = Date.parse(snapshot.observedAt), validUntil = observed + (observationTtl(snapshot, config, now) ?? config.pollMinutes * 60_000);
       // Suggestions, unrelated/design PRs and stale/error snapshots never establish delivery evidence.
       if (!config.enabled || !config.repositories.includes(link.repository) || link.excluded || !link.confirmed || link.role !== "delivers" || row.error || snapshot.state !== "merged" || !/^[a-f0-9]{40}$/i.test(snapshot.mergeSha ?? "") || !Number.isFinite(Date.parse(snapshot.mergedAt ?? "")) || observed > now || !(validUntil > now)) continue;
       const group = merged.get(row.id) ?? [];

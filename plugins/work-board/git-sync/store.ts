@@ -6,6 +6,8 @@ import {
   prSnapshotSchema,
   prIdentity,
   overlapEnabled,
+  observationStale,
+  observationTtl,
   type GitSyncConfig,
   type PrLink,
   type Overlap,
@@ -96,11 +98,14 @@ export function createGitSyncStore(db: Database) {
       const rows = db.prepare<string[], {
         taskId: string; projectId: string; repository: string; state: string | null;
         ci: string | null; observedAt: string | null; error: string | null;
+        mergedAt: string | null; updatedAt: string | null; coverage: string | null;
       }>(`SELECT l.task_id AS taskId, t.project_id AS projectId,
         json_extract(l.payload, '$.repository') AS repository,
         json_extract(s.payload, '$.state') AS state,
         json_extract(s.payload, '$.ci') AS ci,
-        json_extract(s.payload, '$.observedAt') AS observedAt, s.error
+        json_extract(s.payload, '$.observedAt') AS observedAt, s.error,
+        json_extract(s.payload, '$.mergedAt') AS mergedAt, json_extract(s.payload, '$.updatedAt') AS updatedAt,
+        json_extract(s.payload, '$.coverage') AS coverage
         FROM task_pr_links l JOIN tasks t ON t.id=l.task_id
         LEFT JOIN git_pr_snapshots s ON s.project_id=t.project_id AND s.identity=l.identity
         WHERE l.task_id IN (${taskIds.map(() => "?").join(",")})
@@ -116,8 +121,8 @@ export function createGitSyncStore(db: Database) {
         if (row.state === "merged") summary.merged++;
         if (row.ci === "failing") summary.failing++;
         if (row.ci === "pending") summary.pending++;
-        summary.stale ||= !row.observedAt || Boolean(row.error) || !settings.repositories.includes(row.repository)
-          || now - Date.parse(row.observedAt) > settings.pollMinutes * 60_000;
+        summary.stale ||= !row.observedAt || !row.state || Boolean(row.error) || !settings.repositories.includes(row.repository)
+          || observationStale(row.observedAt, observationTtl({ ...row, state: row.state as PrSnapshot["state"], updatedAt: row.updatedAt ?? "", observedAt: row.observedAt, coverage: JSON.parse(row.coverage ?? "[]") }, settings, now), now);
         summaries.set(row.taskId, summary);
       }
       return [...new Set(taskIds)].flatMap((id) => summaries.has(id) ? [summaries.get(id)!] : []);
@@ -127,10 +132,24 @@ export function createGitSyncStore(db: Database) {
         "SELECT l.payload FROM task_pr_links l JOIN tasks t ON t.id=l.task_id WHERE t.project_id=? ORDER BY l.task_id, l.identity",
       ).all(projectId).map((row) => prLinkSchema.parse(JSON.parse(row.payload)));
     },
+    /** Attempt bookkeeping plus the few observation fields a pass needs to skip or order a PR without parsing its payload. */
     attempts(projectId: string) {
-      return new Map(db.prepare<[string], { identity: string; lastAttemptAt: number | null; failureCount: number }>(
-        "SELECT identity, last_attempt_at AS lastAttemptAt, failure_count AS failureCount FROM git_pr_snapshots WHERE project_id=?",
+      return new Map(db.prepare<[string], {
+        identity: string; lastAttemptAt: number | null; failureCount: number; error: string | null;
+        state: PrSnapshot["state"] | null; mergedAt: string | null; updatedAt: string | null; observedAt: string | null; coverage: string | null;
+      }>(
+        `SELECT identity, last_attempt_at AS lastAttemptAt, failure_count AS failureCount, error,
+          json_extract(payload, '$.state') AS state, json_extract(payload, '$.mergedAt') AS mergedAt,
+          json_extract(payload, '$.updatedAt') AS updatedAt, json_extract(payload, '$.observedAt') AS observedAt,
+          json_extract(payload, '$.coverage') AS coverage
+        FROM git_pr_snapshots WHERE project_id=?`,
       ).all(projectId).map((row) => [row.identity, row]));
+    },
+    /** Existing (task, PR) pairs of a project, so discovery skips links it already has. */
+    linkKeys(projectId: string) {
+      return new Set(db.prepare<[string], { key: string }>(
+        "SELECT l.task_id || ' ' || l.identity AS key FROM task_pr_links l JOIN tasks t ON t.id=l.task_id WHERE t.project_id=?",
+      ).all(projectId).map((row) => row.key));
     },
     config,
     links,

@@ -192,6 +192,37 @@ export const overlapEnabled = (config: Pick<GitSyncConfig, "overlapEnabled" | "o
 export type PrLink = z.infer<typeof prLinkSchema>;
 export type PrSnapshot = z.infer<typeof prSnapshotSchema>;
 export type PrLinkState = z.infer<typeof prLinkStateSchema>;
+type Observation = Pick<PrSnapshot, "state" | "mergedAt" | "updatedAt" | "observedAt"> & { coverage: readonly { workflow: string; state: string }[] };
+type FreshnessConfig = Pick<GitSyncConfig, "pollMinutes" | "postMergeDays" | "lookbackDays" | "postMergeWorkflows">;
+const SETTLED_TTL_MS = 3_600_000;
+/** How long a successful observation stays current; null once polling has stopped for good. Shared by polling, stale flags and advisories. */
+export function observationTtl(value: Observation, config: FreshnessConfig, now: number): number | null {
+  const poll = config.pollMinutes * 60_000;
+  if (value.state === "merged" && value.mergedAt) {
+    const cutoff = Date.parse(value.mergedAt) + config.postMergeDays * 86_400_000;
+    if (now > cutoff) return null;
+    const settled = config.postMergeWorkflows.every((workflow) =>
+      value.coverage.some((entry) => entry.workflow === workflow && ["passed", "failed", "skipped"].includes(entry.state)));
+    // The clamp gives a settled PR one last in-window read before its cutoff, so a late rerun is not lost.
+    return settled ? Math.max(poll, Math.min(SETTLED_TTL_MS, cutoff - Date.parse(value.observedAt))) : poll;
+  }
+  if (value.state === "closed" && now - Date.parse(value.updatedAt) > config.lookbackDays * 86_400_000) return Math.max(poll, SETTLED_TTL_MS);
+  return poll;
+}
+export const observationStale = (observedAt: string, ttl: number | null, now: number) =>
+  ttl !== null && now - Date.parse(observedAt) > ttl;
+// Hourly PRs come due up to this much early, by a fixed per-PR amount, so PRs observed together drift apart.
+const SETTLED_SPREAD_MS = 30 * 60_000;
+export function settledSpreadMs(identity: string) {
+  let hash = 2166136261;
+  for (let index = 0; index < identity.length; index++) hash = Math.imul(hash ^ identity.charCodeAt(index), 16777619);
+  return (hash >>> 0) % SETTLED_SPREAD_MS;
+}
+/** Per-pass states are always due; longer-lived ones are due when they would go stale before the next pass. */
+export function observationDue(observedAt: string, ttl: number | null, config: Pick<GitSyncConfig, "pollMinutes">, now: number) {
+  const poll = config.pollMinutes * 60_000;
+  return ttl !== null && (ttl <= poll || now - Date.parse(observedAt) >= ttl - poll);
+}
 export const gitSyncMethods = {
   prSummaries: {
     input: z.object({ taskIds: z.array(z.string()).max(500) }).strict(),
