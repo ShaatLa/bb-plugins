@@ -1407,20 +1407,22 @@ describe("tasks app shell", () => {
     expect(projectCalls).toBe(settled);
   });
 
-  it("does not refetch sidebar data on a settings-only signal", async () => {
-    let projectCalls = 0;
+  it("reloads an open project board on projects:changed but not on a settings-only signal", async () => {
+    let listTaskCalls = 0;
     const slot = renderSlot(
-      navigationRegistration,
-      { subPath: "all" },
-      { rpc: seededRpc({ listProjects: () => { projectCalls += 1; return { projects: [project] }; } }) },
+      app.navPanels[0]!,
+      { subPath: `${PROJECT_ID}?view=board` },
+      { rpc: seededRpc({ listLabels: () => ({ labels: [] }), listTasks: () => { listTaskCalls += 1; return { tasks: [] }; } }) },
     );
-    await slot.findByText("Tasks Plugin");
-    const before = projectCalls;
+    await waitFor(() => expect(listTaskCalls).toBeGreaterThan(0));
+    const settle = () => act(async () => { await new Promise((resolve) => setTimeout(resolve, 400)); });
+    await settle();
+    const settled = listTaskCalls;
     await slot.emitRealtime("settings:changed", { projectId: PROJECT_ID });
-    await act(async () => {
-      await new Promise((resolve) => setTimeout(resolve, 300));
-    });
-    expect(projectCalls).toBe(before);
+    await settle();
+    expect(listTaskCalls).toBe(settled);
+    await slot.emitRealtime("projects:changed", { projectId: PROJECT_ID });
+    await waitFor(() => expect(listTaskCalls).toBeGreaterThan(settled));
   });
 });
 

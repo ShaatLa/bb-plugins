@@ -280,7 +280,10 @@ describe("retry", () => {
     await unknownReport(f);
     const staged = f.delivery()!;
     const first = f.attempts()[0]!;
+    const mark = f.harness.realtimeSignals.length;
     await expect(f.harness.callRpc("retryChecksReport", { projectId: f.tracker.id })).resolves.toEqual({ ok: true });
+    // An explicit command keeps the wide channel and never uses the settings-only one.
+    expect(f.harness.realtimeSignals.slice(mark).map((signal: { channel: string }) => signal.channel)).toEqual(["projects:changed"]);
     expect(f.attempts()[0]).toMatchObject({ outcome: "superseded" });
     await f.tick();
     expect(accepted(f)).toMatchObject([{ report_id: staged.report_id, outcome: "queued" }]);

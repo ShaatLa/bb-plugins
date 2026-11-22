@@ -834,8 +834,12 @@ describe("the commands", () => {
   it("run from the CLI with --project and --json, and the status shows the runner owner", async () => {
     const { f, sweep } = await make();
     sweep.seed();
+    // Explicit commands keep the wide channel and never use the settings-only one.
+    const channels = (from: number) => f.harness.realtimeSignals.slice(from).map((signal: { channel: string }) => signal.channel);
+    let mark = f.harness.realtimeSignals.length;
     const imported = await f.harness.runCli(["checks", "import-from-sweep", "--project", "CHK", "--json"]);
     expect(imported.exitCode).toBe(0);
+    expect(channels(mark)).toEqual(["projects:changed"]);
     expect(JSON.parse(imported.stdout)).toMatchObject({ outcome: "imported" });
     const status = await f.harness.runCli(["checks", "status", "--project", "CHK"]);
     expect(status.stdout).toMatch(/Runner owner\s+Work Board \(CHK\)/);
@@ -843,7 +847,9 @@ describe("the commands", () => {
     expect(again.exitCode).toBe(0);
     const returned = await f.harness.runCli(["checks", "export-to-sweep", "--project", "CHK", "--json"]);
     expect(JSON.parse(returned.stdout)).toMatchObject({ outcome: "returned" });
+    mark = f.harness.realtimeSignals.length;
     expect((await f.harness.runCli(["checks", "release", "--project", "CHK"])).exitCode).toBe(0);
+    expect(channels(mark)).toEqual(["projects:changed"]);
     expect((await f.harness.runCli(["checks", "abort-send", "--project", "CHK"])).stdout).toMatch(/No unconfirmed send/);
     expect((await f.harness.runCli(["checks", "cancel-sweep-send", "--project", "CHK"])).exitCode).toBe(0);
     expect(await f.harness.callRpc("getChecksStatus", { projectId: f.tracker.id })).toMatchObject({ runnerOwner: "Sweep", unconfirmedSend: null });

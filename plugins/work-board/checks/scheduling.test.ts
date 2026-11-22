@@ -204,15 +204,14 @@ describe("stats and status", () => {
     expect(f.state().error).toMatch(/State belongs to/);
     expect(count("settings:changed")).toBe(1);
     expect(count("projects:changed")).toBe(0);
-    // Explicit changes keep the wide channel: config set, the UI's enabled switch, a transfer command, reset.
+    // Explicit changes keep the wide channel: config set, the UI's enabled switch, reset (transfer and retry: their own tests).
     const explicit = async (action: () => Promise<unknown>) => {
       f.harness.realtimeSignals.length = 0;
-      await action().catch(() => undefined);
+      await action();
       return [count("projects:changed"), count("settings:changed")];
     };
     expect(await explicit(() => f.harness.callRpc("config.set", { projectId: f.tracker.id, key: "checks.intervalMinutes", value: 30 }))).toEqual([1, 0]);
     expect(await explicit(() => f.harness.callRpc("updateChecksEnabled", { projectId: f.tracker.id, enabled: false }))).toEqual([1, 0]);
-    expect(await explicit(() => f.service.transfer.importFromSweep(f.tracker.id))).toEqual([1, 0]);
     expect(await explicit(() => f.harness.callRpc("resetChecksState", { projectId: f.tracker.id }))).toEqual([1, 0]);
   });
 
