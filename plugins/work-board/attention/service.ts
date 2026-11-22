@@ -3,7 +3,7 @@ import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import { deliverWithReceipt, searchAttentionMarker, type HistoryCursor, type Receipt } from "../steer";
 import { errorMessage } from "../shared/errors";
 import { managerProblemText, type ManagerLookup } from "../shared/attention";
-import { publishProjectsChanged } from "../api";
+import { publishSettingsChanged } from "../api";
 import { isSideChatShapedThread } from "../shared/side-chat";
 import { bumpRev, CURRENT_KEY_SQL, onAttentionChanged, onTrackerDirty, scanTracker } from "./ledger";
 import { configuredManager, finishToShadow, getModeRow, kindState, requestMode, type AttentionMode, type KindState } from "./modes";
@@ -166,7 +166,7 @@ function createService(bb: BbPluginApi) {
     await lookupManager(manager);
     // The setting may have moved while the read was outstanding: that read says nothing about the current manager.
     if (configuredManager(db, trackerId) !== manager) return;
-    publishProjectsChanged(bb, trackerId);
+    publishSettingsChanged(bb, trackerId);
   }
 
   /** Occurrences a drain may claim now: open, unbaselined, valid, past grace and with no blocking attempt or recent failure. */
@@ -414,7 +414,7 @@ function createService(bb: BbPluginApi) {
       bb.events.on(type, ({ thread }) => {
         invalidateLookups();
         if (type === "thread.deleted") recordDeletion(thread.id);
-        for (const { tracker_id } of db.prepare<[string], { tracker_id: string }>("SELECT tracker_id FROM attention_manager WHERE manager=?").all(thread.id)) publishProjectsChanged(bb, tracker_id);
+        for (const { tracker_id } of db.prepare<[string], { tracker_id: string }>("SELECT tracker_id FROM attention_manager WHERE manager=?").all(thread.id)) publishSettingsChanged(bb, tracker_id);
       });
     }
     bb.background.schedule("attention-reconcile", RECONCILE_CRON, () => reconcileAll());

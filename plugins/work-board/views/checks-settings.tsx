@@ -17,7 +17,7 @@ const when = (ms: number | null) => (ms === null ? "–" : formatRelativeTime(ne
 /** Owner-only `enabled`: the platform cannot tell the app from an agent, so a change is only recorded and shown here. */
 export function ChecksSettings({ projectId }: { projectId: string }) {
   const rpc = useTasksRpc();
-  const query = useTasksQuery((client) => client.call("getChecksStatus", { projectId }), ["projects:changed"], [projectId]);
+  const query = useTasksQuery((client) => client.call("getChecksStatus", { projectId }), ["projects:changed", "settings:changed"], [projectId]);
   const [drafts, setDrafts] = useState<Partial<Record<Key, string>>>({});
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);

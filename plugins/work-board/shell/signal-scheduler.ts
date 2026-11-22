@@ -1,6 +1,7 @@
 const INVALIDATION_CHANNELS = [
   "tasks:changed",
   "projects:changed",
+  "settings:changed",
   "comments:changed",
   "threads:changed",
   "prs:changed",

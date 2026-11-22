@@ -188,6 +188,34 @@ describe("stats and status", () => {
     expect(f.service.stats(f.tracker.id, 1)).toMatchObject({ suppressedReports: 1 });
   });
 
+  it("publishes background tick changes on the settings channel only, and explicit commands on projects:changed", async () => {
+    const f = await make();
+    f.output(idle("EXA-1"), 1);
+    const count = (channel: string) => f.harness.realtimeSignals.filter((signal: { channel: string }) => signal.channel === channel).length;
+    f.harness.realtimeSignals.length = 0;
+    await f.tick();
+    expect(count("settings:changed")).toBe(1);
+    expect(count("projects:changed")).toBe(0);
+    expect(f.harness.realtimeSignals.find((signal: { channel: string }) => signal.channel === "settings:changed")?.payload).toEqual({ projectId: f.tracker.id });
+    // An admission refusal (state recorded for another bb project) is a background outcome too.
+    f.db.prepare("UPDATE checks_state SET value = json_set(value, '$.bbProjectId', 'proj_other')").run();
+    f.harness.realtimeSignals.length = 0;
+    await f.tick();
+    expect(f.state().error).toMatch(/State belongs to/);
+    expect(count("settings:changed")).toBe(1);
+    expect(count("projects:changed")).toBe(0);
+    // Explicit changes keep the wide channel: config set, the UI's enabled switch, a transfer command, reset.
+    const explicit = async (action: () => Promise<unknown>) => {
+      f.harness.realtimeSignals.length = 0;
+      await action().catch(() => undefined);
+      return [count("projects:changed"), count("settings:changed")];
+    };
+    expect(await explicit(() => f.harness.callRpc("config.set", { projectId: f.tracker.id, key: "checks.intervalMinutes", value: 30 }))).toEqual([1, 0]);
+    expect(await explicit(() => f.harness.callRpc("updateChecksEnabled", { projectId: f.tracker.id, enabled: false }))).toEqual([1, 0]);
+    expect(await explicit(() => f.service.transfer.importFromSweep(f.tracker.id))).toEqual([1, 0]);
+    expect(await explicit(() => f.harness.callRpc("resetChecksState", { projectId: f.tracker.id }))).toEqual([1, 0]);
+  });
+
   it("serves status and stats through the CLI", async () => {
     const f = await make();
     f.output(idle("EXA-1"), 1);

@@ -18,7 +18,7 @@ const setManager = (f: Fixture, manager: string | null) => f.call("updateAttenti
 const event = (f: Fixture, type: "thread.archived" | "thread.unarchived" | "thread.deleted", id = MANAGER) =>
   f.harness.emitThreadEvent(type, { thread: makeThreadResponse({ id }) as never });
 const notFound = () => Object.assign(new Error("no such thread"), { code: "thread_not_found" });
-const signals = (f: Fixture) => f.harness.realtimeSignals.filter((signal: { channel: string }) => signal.channel === "projects:changed").length;
+const signals = (f: Fixture, channel = "settings:changed") => f.harness.realtimeSignals.filter((signal: { channel: string }) => signal.channel === channel).length;
 const tick = () => new Promise((resolve) => setTimeout(resolve, 5));
 const gate = () => { let release!: () => void; const promise = new Promise<void>((resolve) => { release = resolve; }); return { promise, release }; };
 const eligibleCard = (f: Fixture, title = "Stale") => { const task = f.card(title); f.makeEligible(); return task; };
@@ -395,6 +395,13 @@ describe("settings refresh", () => {
     expect(second).toBeGreaterThan(first);
     await f.service.reconcileAll();
     expect(signals(f)).toBeGreaterThan(second);
+    // The background pass and the manager-thread events never reach the board's wide channel; the owner's own edit still does.
+    const wide = signals(f, "projects:changed");
+    await f.service.reconcileAll();
+    await event(f, "thread.archived");
+    expect(signals(f, "projects:changed")).toBe(wide);
+    await setManager(f, null);
+    expect(signals(f, "projects:changed")).toBe(wide + 1);
   });
 
   it("publishes nothing for a pass whose manager was replaced while its read was outstanding", async () => {

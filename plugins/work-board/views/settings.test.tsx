@@ -4,6 +4,8 @@ import { afterEach, expect, it, vi } from "vitest";
 import { loadPluginApp, renderSlot } from "@get-bb/plugin-sdk/testing/app";
 import { createFakePluginHost } from "@get-bb/plugin-sdk/testing";
 import { createStore, registerTasksApi } from "../api";
+import { registerAttention } from "../attention/rpc";
+import { registerChecks } from "../checks/rpc";
 import { navTab } from "../test-fixtures";
 import { tasksRpcContract } from "../shared/contract";
 
@@ -714,5 +716,31 @@ it("saves notification modes independently for each selected project", async () 
     fireEvent.click(await settings.findByRole("option", { name: "All status changes" }));
     await waitFor(() => expect(store.tasks.getProject(beta.id)?.statusNotifications).toBe("all"));
     expect(store.tasks.getProject(alpha.id)?.statusNotifications).toBe("done");
+  } finally { cleanup(); await harness.dispose(); }
+});
+
+it("refreshes only the checks and attention getters on a settings signal, whichever tracker it names, and the wider set on projects:changed", async () => {
+  const { bb, harness } = createFakePluginHost({ pluginId: "work-board" });
+  try {
+    const store = createStore(bb);
+    registerTasksApi(bb, store); registerAttention(bb, store); registerChecks(bb);
+    store.tasks.createProject({ name: "Alpha", prefix: "ALP", color: "blue", linkedBbProjectId: "proj_example" });
+    const settings = renderSlot(app.settingsSections[0]!, {}, {
+      rpc: Object.fromEntries(Object.keys(tasksRpcContract).map((method) => [method, (input: unknown) => harness.callRpc(method, input)])),
+      sdk: { threads: { list: async () => [] } },
+    });
+    await settings.findByRole("region", { name: "Manager attention" });
+    await settings.findByRole("region", { name: "Repository checks" });
+    const burst = async (channel: "settings:changed" | "projects:changed", projectId: string | null) => {
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      const from = settings.rpcCalls.length;
+      await settings.behavior.emitRealtime(channel, { projectId });
+      await new Promise((resolve) => setTimeout(resolve, 600));
+      return settings.rpcCalls.slice(from).map((call) => call.method).sort();
+    };
+    expect(await burst("settings:changed", store.tasks.listProjects()[0]!.id)).toEqual(["getAttentionSettings", "getChecksStatus"]);
+    // A signal naming another tracker still refreshes both: a shared runner can change this tracker's status.
+    expect(await burst("settings:changed", "tracker_other")).toEqual(["getAttentionSettings", "getChecksStatus"]);
+    expect(await burst("projects:changed", null)).toEqual(["getAttentionSettings", "getChecksStatus", "getGitSyncConfig", "listProjects"]);
   } finally { cleanup(); await harness.dispose(); }
 });

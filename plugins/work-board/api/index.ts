@@ -248,6 +248,12 @@ export function publishProjectsChanged(
   bb.realtime.publish("projects:changed", payload);
 }
 
+/** Background status changes (a check tick, a manager re-read): only the settings views read these, so the board is not reloaded. */
+export function publishSettingsChanged(bb: BbPluginApi, projectId: string): void {
+  const payload: ProjectsChangedEvent = { projectId };
+  bb.realtime.publish("settings:changed", payload);
+}
+
 export function publishCommentsChanged(bb: BbPluginApi, taskId: string): void {
   const payload: CommentsChangedEvent = { taskId };
   bb.realtime.publish("comments:changed", payload);

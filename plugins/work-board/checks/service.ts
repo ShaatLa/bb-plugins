@@ -3,7 +3,7 @@ import { dirname } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import { z } from "zod";
-import { publishProjectsChanged } from "../api";
+import { publishProjectsChanged, publishSettingsChanged } from "../api";
 import { HISTORY_ERROR_PASSES, HISTORY_ERROR_SPAN_MS, LATE_SEARCH_MS, PENDING_INLINE_MS } from "../attention/service";
 import { configuredManager } from "../attention/modes";
 import { getChecksEnvironment } from "../global-settings";
@@ -62,7 +62,9 @@ function createService(bb: BbPluginApi) {
     if (!file) throw new Error("Repository checks need a file-backed database");
     return dirname(file);
   };
+  /** Explicit commands (UI, CLI, config, transfer) keep the wide channel; only the scheduled tick uses the settings-only one. */
   const changed = (trackerId: string) => publishProjectsChanged(bb, trackerId);
+  const tickChanged = (trackerId: string) => publishSettingsChanged(bb, trackerId);
 
   /** The manager as a recipient, with Sweep's rules: a missing, archived, deleted, failed or unreachable thread cannot receive a report. */
   async function usableManager(manager: string) {
@@ -434,7 +436,7 @@ function createService(bb: BbPluginApi) {
       const refused = store.state(trackerId);
       refused.error = errorMessage(error); refused.nextRun = Date.now() + 60_000;
       store.save(trackerId, refused);
-      changed(trackerId);
+      tickChanged(trackerId);
       return;
     }
     const state = store.state(trackerId);
@@ -535,7 +537,7 @@ function createService(bb: BbPluginApi) {
       throw error;
     } finally {
       runs.delete(link);
-      changed(trackerId);
+      tickChanged(trackerId);
     }
   }
 

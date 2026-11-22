@@ -1406,6 +1406,22 @@ describe("tasks app shell", () => {
     });
     expect(projectCalls).toBe(settled);
   });
+
+  it("does not refetch sidebar data on a settings-only signal", async () => {
+    let projectCalls = 0;
+    const slot = renderSlot(
+      navigationRegistration,
+      { subPath: "all" },
+      { rpc: seededRpc({ listProjects: () => { projectCalls += 1; return { projects: [project] }; } }) },
+    );
+    await slot.findByText("Tasks Plugin");
+    const before = projectCalls;
+    await slot.emitRealtime("settings:changed", { projectId: PROJECT_ID });
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 300));
+    });
+    expect(projectCalls).toBe(before);
+  });
 });
 
 

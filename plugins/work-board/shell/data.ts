@@ -40,6 +40,10 @@ const readMethods = new Set<string>([
   "sidebarOpenTaskCount", "sidebarSummary", "prSummaries",
 ]);
 
+// Pure reads of the settings views: never shared between callers (a refresh after an event must not join a read that started
+// before it) and never clearing the shared read caches.
+const freshReads = new Set<string>(["getChecksStatus", "getAttentionSettings"]);
+
 export function useTasksRpc() {
   const rpc = useRpc<TasksRpcContract>();
   useEffect(() => {
@@ -53,6 +57,7 @@ export function useTasksRpc() {
     return {
       ...rpc,
       call: ((method: keyof TasksRpcContract, ...args: unknown[]) => {
+        if (freshReads.has(method)) return (rpc.call as (...args: unknown[]) => Promise<unknown>)(method, ...args);
         if (!readMethods.has(method)) {
           forgetReads();
           const write = (rpc.call as (...args: unknown[]) => Promise<unknown>)(method, ...args);
@@ -399,6 +404,8 @@ export function useTasksQuery<T>(
     invalidateTaskDatasets();
     scheduler.push("projects:changed", payload);
   });
+  // Settings-only signal: no forgetReads, so it never clears reads other views share; only hooks that list the channel react.
+  useRealtime("settings:changed", (payload) => scheduler.push("settings:changed", payload));
   useRealtime("comments:changed", (payload) => { forgetReads(); scheduler.push("comments:changed", payload); });
   useRealtime("threads:changed", (payload) => { forgetReads(); scheduler.push("threads:changed", payload); });
   useRealtime("prs:changed", (payload) => { forgetReads(); scheduler.push("prs:changed", payload); });

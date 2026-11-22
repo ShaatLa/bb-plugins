@@ -154,7 +154,7 @@ it("follows archive, unarchive and delete events of the manager in the open view
     // The host's realtime signals are handed to the mounted view, as the platform does for a subscribed slot.
     let delivered = harness.realtimeSignals.length;
     const deliver = async () => {
-      for (const signal of harness.realtimeSignals.slice(delivered)) if (signal.channel === "projects:changed") await settings.behavior.emitRealtime("projects:changed", signal.payload as never);
+      for (const signal of harness.realtimeSignals.slice(delivered)) if (signal.channel === "projects:changed" || signal.channel === "settings:changed") await settings.behavior.emitRealtime(signal.channel, signal.payload as never);
       delivered = harness.realtimeSignals.length;
     };
     const event = (type: "thread.archived" | "thread.unarchived" | "thread.deleted") => harness.emitThreadEvent(type, { thread: makeThreadResponse({ id: "thr_example" }) as never });

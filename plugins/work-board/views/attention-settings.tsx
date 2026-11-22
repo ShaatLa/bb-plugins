@@ -109,7 +109,7 @@ function ManagerPicker({ projectId, value, disabled, onChange }: {
 /** Owner-only setting: the platform cannot tell the app from an agent, so a change is only recorded and shown here. */
 export function AttentionSettings({ projectId }: { projectId: string }) {
   const rpc = useTasksRpc();
-  const query = useTasksQuery((client) => client.call("getAttentionSettings", { projectId }), ["projects:changed"], [projectId]);
+  const query = useTasksQuery((client) => client.call("getAttentionSettings", { projectId }), ["projects:changed", "settings:changed"], [projectId]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [parityGeneration, setParityGeneration] = useState<number>();
