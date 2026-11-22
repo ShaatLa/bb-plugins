@@ -208,11 +208,9 @@ describe("activity feed over realtime events", () => {
 });
 
 describe("shared reads across a refresh generation", () => {
-  it("a reconnect does not join a read that began before the disconnect", async () => {
-    let served = "old";
-    let release: () => void = () => {};
-    let holdNext = false;
-    const calls: string[] = [];
+  /** A probe query over a read RPC whose responses can be held; each call records the value it read. */
+  function mountProbe() {
+    const state = { served: "old", holdNext: false, release: () => {}, calls: [] as string[] };
     function Probe() {
       const query = useTasksQuery<string>(async (rpc) => ((await rpc.call("getTask", { taskId: "T1" } as never)) as unknown as { value: string }).value, ["tasks:changed"], []);
       return <p>shown: {query.data ?? "none"}</p>;
@@ -223,27 +221,52 @@ describe("shared reads across a refresh generation", () => {
       {
         rpc: {
           getTask: async () => {
-            calls.push(served);
-            const value = served;
-            if (holdNext) { holdNext = false; await new Promise<void>((resolve) => (release = resolve)); }
+            const value = state.served;
+            state.calls.push(value);
+            if (state.holdNext) { state.holdNext = false; await new Promise<void>((resolve) => (state.release = resolve)); }
             return { value };
           },
         } as never,
       },
     );
+    const reconnect = async () => {
+      await slot.behavior.setRealtimeConnectionState("reconnecting");
+      await slot.behavior.setRealtimeConnectionState("connected");
+      await settle();
+    };
+    return { slot, state, reconnect };
+  }
+
+  it("a reconnect does not join a read that began before the disconnect", async () => {
+    const { slot, state } = mountProbe();
     await slot.findByText("shown: old");
     await settle();
-    holdNext = true;
+    state.holdNext = true;
     await slot.behavior.emitRealtime("tasks:changed", { taskId: "T1", projectId: "P1" });
     await settle(150);
     await slot.behavior.setRealtimeConnectionState("reconnecting");
-    served = "new";
+    state.served = "new";
     await slot.behavior.setRealtimeConnectionState("connected");
     await settle();
-    release();
+    state.release();
     await settle();
     await slot.findByText("shown: new");
-    expect(calls).toEqual(["old", "old", "new"]);
+    expect(state.calls).toEqual(["old", "old", "new"]);
+    cleanup();
+  });
+
+  it("a second reconnect during a running refresh still reads fresh rows", async () => {
+    const { slot, state, reconnect } = mountProbe();
+    await slot.findByText("shown: old");
+    await settle();
+    state.holdNext = true;
+    await reconnect(); // the refresh it starts stays held on its response
+    state.served = "new"; // overwritten between the two reconnects
+    await reconnect();
+    state.release();
+    await settle();
+    await slot.findByText("shown: new");
+    expect(state.calls).toEqual(["old", "old", "new"]);
     cleanup();
   });
 });
