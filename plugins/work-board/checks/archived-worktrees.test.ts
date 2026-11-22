@@ -483,6 +483,35 @@ describe("unreadable roots and the inventory", () => {
     expect(failures(f)).toEqual([`error:${damaged}`]);
   });
 
+  it("does not skip a damaged bare repository whose linked worktree is alive", async () => {
+    const f = await make();
+    const path = await reportedThenGone(f);
+    const bare = realpathSync(tempDir("checks-bare-"));
+    execFileSync("git", ["init", "-q", "--bare", "-b", "main"], { cwd: bare });
+    execFileSync("git", ["--git-dir", bare, "worktree", "add", "-q", "--orphan", join(tempDir("checks-linked-"), "tree")], { cwd: bare });
+    rmSync(join(bare, "HEAD"));
+    f.worktrees.scan.environments.push(readyEnv(bare));
+    await f.tick();
+    expect(reported(f)).toEqual([path]);
+    expect(failures(f)).toEqual([`error:${bare}`]);
+  });
+
+  it("does not announce a recovery for a root that only changed its kind of failure", async () => {
+    const f = await make();
+    const warn = vi.spyOn(f.bb.log, "warn"), info = vi.spyOn(f.bb.log, "info");
+    f.worktrees.add("thr_example");
+    const root = join(tempDir("checks-changing-"), "source");
+    f.worktrees.scan.sources.push({ hostId: host, path: root });
+    await f.tick();
+    expect(failures(f)).toEqual([`missing:${root}`]);
+    mkdirSync(root);
+    writeFileSync(join(root, ".git"), "gitdir: /nonexistent/example\n");
+    await f.tick();
+    expect(failures(f)).toEqual([`error:${root}`]);
+    expect(warn).toHaveBeenCalledTimes(2);
+    expect(info).not.toHaveBeenCalled();
+  });
+
   it("announces a root transition once even when the scan fails after it", async () => {
     const f = await make();
     const warn = vi.spyOn(f.bb.log, "warn");

@@ -62,6 +62,16 @@ export function scanArchivedWorktrees(bb: BbPluginApi, project: ScanProject, rep
   return untilAborted(scanning, signal);
 }
 
+/** Entries of a worktree's `.git` or of a bare repository (including its linked-worktree registry); any one of them rules out a plain directory. */
+const REPOSITORY_MARKERS = [".git", "worktrees", "objects", "refs"];
+async function hasRepositoryMarker(dir: string) {
+  for (const marker of REPOSITORY_MARKERS) {
+    try { await lstat(join(dir, marker)); return true; }
+    catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+  }
+  return false;
+}
+
 /** Pages the host inventory until a short page; with a filter, a host that ignores it still yields the same rows for the caller's own checks. */
 async function pageInventory(bb: BbPluginApi, hostId: string, signal: AbortSignal, filter?: { projectId: string; status: "ready" }) {
   const rows: Awaited<ReturnType<BbPluginApi["sdk"]["environments"]["list"]>> = [];
@@ -112,8 +122,8 @@ async function scan(bb: BbPluginApi, project: ScanProject, reported: string[], a
       catch (error) {
         signal.throwIfAborted();
         // Only the discovery of a plain directory that is not a repository any more is skipped; a source stays a hard failure.
-        // A surviving `.git` entry means damaged metadata, not a plain directory; an inspection error is not proof of absence either.
-        if (!sources.has(root) && PLAIN_DIRECTORY.test(String((error as Error).message)) && !(await lstat(join(checkout, ".git")).then(() => true, (inspect: NodeJS.ErrnoException) => { if (inspect.code === "ENOENT") return false; throw inspect; }))) {
+        // A surviving repository marker means damaged metadata, not a plain directory; an inspection error is not proof of absence either.
+        if (!sources.has(root) && PLAIN_DIRECTORY.test(String((error as Error).message)) && !(await hasRepositoryMarker(checkout))) {
           fail("plain", root, "not a git repository", false);
           continue;
         }
@@ -138,7 +148,10 @@ async function scan(bb: BbPluginApi, project: ScanProject, reported: string[], a
     }
   }
   const failed = [...failures].sort();
-  for (const key of knownFailures) if (!failures.has(key)) notes.push({ level: "info", message: `Archived worktree root recovered: ${key.slice(key.indexOf(":") + 1)}` });
+  // A root that only changed its kind of failure has not recovered.
+  const rootOf = (key: string) => key.slice(key.indexOf(":") + 1);
+  const failing = new Set([...failures].map(rootOf));
+  for (const key of knownFailures) if (!failing.has(rootOf(key))) notes.push({ level: "info", message: `Archived worktree root recovered: ${rootOf(key)}` });
 
   // Nothing could be read: a diagnostic-only result keeps the history and the cursor and lets the failure keys follow the pass.
   if (!repositories.size) {
