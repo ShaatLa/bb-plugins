@@ -1322,8 +1322,9 @@ export function registerHandlers(
         allowStaleCursor: input.allowStaleCursor,
       });
       const flags = store.tasks.staleStatusFlags(page.tasks.map((task) => task.id));
+      const tasks = apiTasks(store, page.tasks);
       return {
-        tasks: apiTasks(store, page.tasks),
+        tasks: input.omitBodies ? tasks.map((task) => ({ ...task, description: "", progressNote: null })) : tasks,
         staleStatusFlags: page.tasks.map((task) => ({ taskId: task.id, flags: flags.get(task.id) ?? [] })),
         nextCursor: page.nextCursor,
       };

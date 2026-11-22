@@ -1258,6 +1258,8 @@ export const tasksRpcContract = {
           .default(TASKS_PAGE_DEFAULT_LIMIT),
         cursor: nonBlankStringSchema.optional(),
         allowStaleCursor: z.boolean().default(false),
+        // List projection: rows come back with description "" and progressNote null (full text stays on getTask*).
+        omitBodies: z.boolean().default(false),
       })
       .strict(),
     output: z

@@ -25,7 +25,7 @@ import {
 
 const readFlights = new Map<string, Promise<unknown>>();
 // Shared reads are only safe while nothing changed: any event or mutation starts a fresh generation.
-function forgetReads() {
+export function forgetReads() {
   readFlights.clear();
   forgetTaskReads();
 }
@@ -94,6 +94,7 @@ interface TaskListQuery {
   epicId?: string | null;
   search?: string;
   sort?: TaskSort;
+  omitBodies?: boolean;
 }
 
 export async function listAllTasks(
@@ -148,13 +149,15 @@ export async function patchTasks(
   current: readonly Task[],
   taskIds: readonly string[],
   belongs: (task: Task) => boolean,
+  keepBodies = false,
 ): Promise<Task[] | null> {
   if (taskIds.length === 0) return [...current];
   if (taskIds.length > 25) return null;
   const fetched = await Promise.all(
     taskIds.map(async (taskId) => {
       const task = await getSharedTask(rpc, taskId);
-      return [taskId, task] as const;
+      // Dataset rows are list rows: keep them light so snapshots do not regrow with edited bodies.
+      return [taskId, task && !keepBodies ? { ...task, description: "", progressNote: null } : task] as const;
     }),
   );
   const updates = new Map(fetched);

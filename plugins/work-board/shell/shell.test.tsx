@@ -1131,6 +1131,19 @@ describe("tasks app shell", () => {
     expect(slot.queryByText("No agents working right now")).toBeNull();
   });
 
+  it("reads the active-only list without task bodies", async () => {
+    const inputs: Array<{ activeOnly?: boolean; omitBodies?: boolean }> = [];
+    const rpc = seededRpc({
+      listLabels: () => ({ labels: [] }),
+      listTasks: (input: { activeOnly?: boolean; omitBodies?: boolean }) => { inputs.push(input); return { tasks: [], nextCursor: null }; },
+    });
+    const slot = renderSlot(app.navPanels[0]!, { subPath: "active" }, { rpc });
+    await slot.findByText("No agents working right now");
+    const active = inputs.filter((input) => input.activeOnly === true);
+    expect(active.length).toBeGreaterThan(0);
+    expect(active.every((input) => input.omitBodies === true)).toBe(true);
+  });
+
   it("shows the empty state and opens the New project dialog", async () => {
     const slot = renderSlot(
       app.navPanels[0]!,
