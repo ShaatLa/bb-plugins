@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { UNANSWERED_QUESTION } from "../db/waiting-on-owner";
 import { getWorkflowPolicy, isClosedStatus } from "../shared/workflow-policy";
 import { observeStatusNotifications } from "../status-notifications";
@@ -473,6 +474,8 @@ async function resolveAgentThreadInfo(
 ): Promise<{ infos: Map<string, AgentThreadInfo>; complete: boolean }> {
   const infos = new Map<string, AgentThreadInfo>();
   let pending = [...threadIds];
+  // A failed batched list makes the result incomplete even when the per-id reads recover every id: it is retried.
+  let complete = true;
   for (const archived of [false, true]) {
     if (pending.length === 0) break;
     for (let offset = 0; offset < pending.length; offset += THREAD_LIST_CHUNK) {
@@ -486,12 +489,11 @@ async function resolveAgentThreadInfo(
         });
         for (const row of rows) infos.set(row.id, agentThreadInfo(row));
       } catch {
-        // The ids stay pending and fall through to the per-id read below.
+        complete = false; // the ids stay pending and fall through to the per-id read below
       }
     }
     pending = pending.filter((id) => !infos.has(id));
   }
-  let complete = true;
   let next = 0;
   await Promise.all(
     Array.from({ length: Math.min(THREAD_GET_CONCURRENCY, pending.length) }, async () => {
@@ -567,20 +569,23 @@ function commentsRevisionPart(bb: BbPluginApi, taskId: string): string {
   const row = bb.storage
     .database()
     .prepare<[string], { n: number; last: string | null; notified: number | null }>(
-      "SELECT COUNT(*) AS n, MAX(id) AS last, SUM(notified_count) AS notified FROM comments WHERE task_id = ?",
+      "/* comments revision */ SELECT COUNT(*) AS n, MAX(id) AS last, SUM(notified_count) AS notified FROM comments WHERE task_id = ?",
     )
     .get(taskId)!;
   return `${row.n}:${row.last ?? ""}:${row.notified ?? 0}`;
 }
 
+/** Count plus a digest of the whole ordered id set: a replaced non-maximum attachment still changes the token. */
 function attachmentsRevisionPart(bb: BbPluginApi, taskId: string): string {
-  const row = bb.storage
+  const ids = bb.storage
     .database()
-    .prepare<[string], { n: number; last: string | null }>(
-      "SELECT COUNT(*) AS n, MAX(id) AS last FROM attachments WHERE comment_id IN (SELECT id FROM comments WHERE task_id = ?)",
+    .prepare<[string], { id: string }>(
+      "/* attachments revision */ SELECT id FROM attachments WHERE comment_id IN (SELECT id FROM comments WHERE task_id = ?) ORDER BY id",
     )
-    .get(taskId)!;
-  return `${row.n}:${row.last ?? ""}`;
+    .all(taskId);
+  const digest = createHash("sha1");
+  for (const { id } of ids) digest.update(id).update("\n");
+  return `${ids.length}:${digest.digest("hex")}`;
 }
 
 interface CreateCommentInput {

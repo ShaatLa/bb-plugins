@@ -23,11 +23,12 @@ function setup(options: Options = {}) {
     sdk: {
       threads: {
         // Like the host: list serves live threads (archived only on request) and omits deleted/unknown ids.
-        list: async (args?: { threadIds?: readonly string[]; archived?: boolean }) => {
+        list: async (args?: { threadIds?: readonly string[]; archived?: boolean; includeHidden?: boolean }) => {
           if (options.listFails?.()) throw new Error("list unavailable");
           return (args?.threadIds ?? []).flatMap((id) => {
             const thread = threads[id];
             if (!thread || thread.deletedAt != null) return [];
+            if (thread.visibility === "hidden" && !args?.includeHidden) return [];
             return (thread.archivedAt != null) === (args?.archived === true) ? [makeThreadResponse({ id, ...thread })] : [];
           });
         },
@@ -101,6 +102,39 @@ describe("comment feed RPCs", () => {
     expect(await joined()).toBe(await token());
   });
 
+  it("changes the attachment token when a non-maximum attachment is replaced and the count and maximum stay equal", async () => {
+    const { task, store, comment, call, host } = setup();
+    const parent = comment("user", null);
+    const input = { commentId: parent.id, mime: "text/plain", sizeBytes: 1, isImage: false };
+    const older = store.tasks.createAttachment({ ...input, fileName: "a.txt", blobPath: "a" });
+    store.tasks.createAttachment({ ...input, fileName: "b.txt", blobPath: "b" });
+    const token = async () => (await call("commentsRevision", { taskId: task.id })).revision as string;
+    const before = await token();
+    host.bb.storage.database().prepare("UPDATE attachments SET id = ? WHERE id = ?").run("0".repeat(26), older.id);
+    expect(await token()).not.toBe(before);
+  });
+
+  it("runs revision queries only for opt-in calls", async () => {
+    const { task, comment, call, host } = setup();
+    comment("user", null);
+    const db = host.bb.storage.database();
+    const prepared: string[] = [];
+    const original = db.prepare.bind(db);
+    (db as { prepare: unknown }).prepare = (sql: string) => { prepared.push(sql); return original(sql); };
+    const revisionQueries = () => prepared.filter((sql) => sql.includes("revision */")).length;
+    const measure = async (method: string, input: unknown) => {
+      const before = revisionQueries();
+      await call(method, input);
+      return revisionQueries() - before;
+    };
+    expect(await measure("listComments", { taskId: task.id })).toBe(0);
+    expect(await measure("listComments", { taskId: task.id, resolveMetadata: false })).toBe(0);
+    expect(await measure("listAttachments", { commentsOfTaskId: task.id })).toBe(0);
+    expect(await measure("listComments", { taskId: task.id, withRevision: true })).toBe(1);
+    expect(await measure("listAttachments", { commentsOfTaskId: task.id, withRevision: true })).toBe(1);
+    expect(await measure("commentsRevision", { taskId: task.id })).toBe(2);
+  });
+
   it("resolves thread metadata with batched lists and matches the default listComments", async () => {
     const { task, comment, call, host } = setup({
       threads: {
@@ -159,6 +193,17 @@ describe("comment feed RPCs", () => {
     const recovered = await call("listCommentThreads", { taskId: task.id });
     expect(recovered.complete).toBe(true);
     expect(recovered.threads[0]).toMatchObject({ threadId: "thr_a", threadTitle: "Worker" });
+  });
+
+  it("reports a failed batched list as incomplete even when the per-id reads recover every thread", async () => {
+    let listDown = true;
+    const { task, comment, call } = setup({ threads: { thr_a: { title: "Worker", providerId: "codex" } }, listFails: () => listDown });
+    comment("agent", "thr_a");
+    const degraded = await call("listCommentThreads", { taskId: task.id });
+    expect(degraded.threads[0]).toMatchObject({ threadId: "thr_a", threadTitle: "Worker" });
+    expect(degraded.complete).toBe(false);
+    listDown = false;
+    expect((await call("listCommentThreads", { taskId: task.id })).complete).toBe(true);
   });
 
   it("chunks a large thread set into lists of at most 200", async () => {

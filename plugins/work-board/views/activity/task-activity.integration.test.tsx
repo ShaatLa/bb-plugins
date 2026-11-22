@@ -131,6 +131,19 @@ describe("activity feed over realtime events", () => {
     await t.dispose();
   });
 
+  it("a reconnect after a missed overwrite reloads the feed without a replayed event", async () => {
+    const t = await mount();
+    await t.slot.findByText("Progress 5");
+    await settle();
+    // The overwrite happens while the view is disconnected: no event reaches it.
+    await t.slot.behavior.setRealtimeConnectionState("reconnecting");
+    t.bb.storage.database().prepare("UPDATE comments SET body = 'Overwritten body' WHERE id = ?").run(t.comments[5]!.id);
+    await t.slot.behavior.setRealtimeConnectionState("connected");
+    await settle();
+    await t.slot.findByText("Overwritten body");
+    await t.dispose();
+  });
+
   it("a failed forced reload leaves no stale snapshot for the next ordinary refresh", async () => {
     const t = await mount();
     await t.slot.findByText("Progress 5");

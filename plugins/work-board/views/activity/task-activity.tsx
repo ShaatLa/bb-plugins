@@ -20,6 +20,7 @@ import {
   useTasksQuery,
   useTasksRpc,
 } from "../../shell/data.js";
+import { useTasksRefresh } from "../../shell/refresh.js";
 import { Lightbox } from "../detail/attachments.js";
 import {
   AttachmentChip,
@@ -174,6 +175,13 @@ function useActivityFeed(taskId: string) {
   const state = useRef<FeedLoadState>({ cache: null, seq: 0, force: false });
   const taskIdRef = useRef(taskId);
   taskIdRef.current = taskId;
+  // A reconnect or manual refresh may follow a missed `comments:changed`: take a full load, not the token shortcut.
+  const { generation } = useTasksRefresh();
+  const generationRef = useRef(generation);
+  if (generationRef.current !== generation) {
+    generationRef.current = generation;
+    state.current.force = true;
+  }
   useRealtime("comments:changed", (payload) => {
     if ((payload as { taskId?: string }).taskId === taskIdRef.current) state.current.force = true;
   });
