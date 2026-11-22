@@ -35,6 +35,7 @@ export const checksStatusSchema = z.object({
   refreshRetryAt: z.number().nullable(),
   reportedWorktrees: count,
   pendingWorktrees: count,
+  worktreeRootFailures: count,
   managerError: z.string().nullable(),
   /** Why the last report went to Agent Hub as a notice instead of to the manager. */
   fallbackReason: z.string().nullable(),

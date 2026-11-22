@@ -86,7 +86,7 @@ export async function setup(options: { settings?: Record<string, string> } = {})
   const control = { hub, pushFail: false, remote: repo.url as string | null, projectFail: false, onProject: undefined as (() => void) | undefined, /** The installed Sweep, when a test installs one: its RPC handler. */ sweep: undefined as undefined | ((method: string, input: unknown) => Promise<unknown>) };
   /** The archived-worktree scan's view of the host. Off (no primary host) until a test calls `worktrees.enable()`. */
   const scan = {
-    calls: 0, primaryHostId: null as string | null, storage: "" as string, sources: [] as { hostId: string; path: string }[],
+    calls: 0, listCalls: 0, primaryHostId: null as string | null, storage: "" as string, sources: [] as { hostId: string; path: string }[],
     environments: [] as Record<string, unknown>[], threads: new Map<string, { archivedAt: number | null; deletedAt: number | null }>(),
   };
   const sdk = {
@@ -94,7 +94,12 @@ export async function setup(options: { settings?: Record<string, string> } = {})
     projects: { get: async () => { control.onProject?.(); if (control.projectFail) throw new Error("projects unavailable"); return { id: BB_PROJECT, gitRemoteUrl: control.remote, sources: scan.sources }; } },
     system: { config: async () => { scan.calls++; return { primaryHostId: scan.primaryHostId }; } },
     hosts: { get: async () => ({ threadStorageRootPath: scan.storage || null }) },
-    environments: { list: async ({ limit, offset }: { limit: number; offset: number }) => scan.environments.slice(offset, offset + limit) },
+    environments: {
+      list: async ({ limit, offset, projectId, status, path }: { limit: number; offset: number; projectId?: string; status?: string; path?: string }) => {
+        scan.listCalls++;
+        return scan.environments.filter((e) => (!projectId || e.projectId === projectId) && (!status || e.status === status) && (!path || e.path === path)).slice(offset, offset + limit);
+      },
+    },
     threads: {
       ...threads.sdk.threads,
       list: async ({ threadIds, archived }: { threadIds: string[]; archived?: boolean }) => threadIds.flatMap((id) => {

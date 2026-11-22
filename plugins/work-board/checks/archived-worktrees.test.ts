@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { receiptPolling } from "../steer";
@@ -410,5 +410,185 @@ describe("status and state", () => {
     f.service.reset(f.tracker.id);
     expect(f.state()).toEqual({});
     expect(counts(f)).toEqual({ reportedWorktrees: 0, pendingWorktrees: 0 });
+  });
+});
+
+describe("unreadable roots and the inventory", () => {
+  const host = "host_example";
+  const readyEnv = (path: string, extra: Record<string, unknown> = {}) => ({ path, managed: false, projectId: BB_PROJECT, status: "ready", isGitRepo: true, ...extra });
+  const failures = (f: Fixture): string[] => f.state().worktreeRootFailures ?? [];
+  const plainDirectory = () => tempDir("checks-notgit-");
+  const brokenGitfile = () => { const dir = tempDir("checks-gitfile-"); writeFileSync(join(dir, ".git"), "gitdir: /nonexistent/example\n"); return dir; };
+  /** The first tick reports the worktree; the tree is then removed so only a complete scan can clear it. */
+  const reportedThenGone = async (f: Fixture) => { const path = f.worktrees.add("thr_example"); await f.tick(); f.worktrees.remove(path); return path; };
+
+  it("skips a plain non-repository environment root: history clears, one warning across ticks, one note on recovery", async () => {
+    const f = await make();
+    const warn = vi.spyOn(f.bb.log, "warn"), info = vi.spyOn(f.bb.log, "info");
+    const path = await reportedThenGone(f);
+    const root = plainDirectory();
+    f.worktrees.scan.environments.push(readyEnv(root));
+    await f.tick();
+    expect(reported(f)).toEqual([]);
+    expect(failures(f)).toEqual([`plain:${root}`]);
+    f.worktrees.add("thr_example");
+    await f.tick(); await f.tick();
+    expect(reported(f)).toEqual([path]);
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(f.service.status(f.tracker.id)).toMatchObject({ worktreeRootFailures: 1 });
+    f.worktrees.scan.environments.pop();
+    await f.tick();
+    expect(failures(f)).toEqual([]);
+    expect(info).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps the history for a broken gitfile and for a listing failure after a successful discovery", async () => {
+    const f = await make();
+    const warn = vi.spyOn(f.bb.log, "warn");
+    const path = await reportedThenGone(f);
+    const root = brokenGitfile();
+    f.worktrees.scan.environments.push(readyEnv(root));
+    await f.tick(); await f.tick();
+    expect(reported(f)).toEqual([path]);
+    expect(failures(f)).toEqual([`error:${root}`]);
+    expect(warn).toHaveBeenCalledTimes(1);
+    f.worktrees.scan.environments.pop();
+    await f.tick();
+    expect(reported(f)).toEqual([]);
+    // The plain-directory message from the listing stage is not the exception: only the discovery stage qualifies.
+    const real = execFileSync("which", ["git"]).toString().trim();
+    vi.stubEnv("PATH", `${binDir({ git: `case "$*" in *"worktree list"*) echo "fatal: not a git repository (or any of the parent directories): .git" >&2; exit 128;; esac\nexec "${real}" "$@"` })}:${process.env.PATH}`);
+    f.worktrees.add("thr_example");
+    await f.tick();
+    expect(reported(f)).toEqual([]);
+    expect(failures(f)).toEqual([`error:${f.worktrees.source}`]);
+  });
+
+  it("keeps the history and the cursor while no root can be read, then recovers", async () => {
+    const f = await make();
+    const warn = vi.spyOn(f.bb.log, "warn"), info = vi.spyOn(f.bb.log, "info");
+    const path = f.worktrees.add("thr_example");
+    await f.tick();
+    const cursor = f.state().lastMeasuredWorktree;
+    expect(cursor).toBe(path);
+    const source = f.worktrees.source;
+    const root = plainDirectory();
+    f.worktrees.scan.sources = [{ hostId: host, path: root }];
+    for (let tick = 0; tick < 2; tick++) {
+      await f.tick();
+      expect(f.service.status(f.tracker.id)).toMatchObject({ worktreeRootFailures: 1, reportedWorktrees: 1 });
+      expect(f.state().lastMeasuredWorktree).toBe(cursor);
+    }
+    expect(warn).toHaveBeenCalledTimes(1);
+    f.worktrees.scan.sources = [{ hostId: host, path: source }];
+    await f.tick();
+    expect(f.service.status(f.tracker.id)).toMatchObject({ worktreeRootFailures: 0, reportedWorktrees: 1 });
+    expect(info).toHaveBeenCalledTimes(1);
+  });
+
+  it("clears obsolete keys when the failing root leaves the inventory, warns again when it returns, and keeps a missing source counted", async () => {
+    const f = await make();
+    const warn = vi.spyOn(f.bb.log, "warn");
+    const path = f.worktrees.add("thr_example");
+    await f.tick();
+    const source = f.worktrees.source;
+    f.worktrees.scan.sources = [];
+    const broken = readyEnv(brokenGitfile());
+    f.worktrees.scan.environments.push(broken);
+    await f.tick();
+    expect(failures(f)).toHaveLength(1);
+    f.worktrees.scan.environments.pop();
+    await f.tick(); // zero roots, zero failures
+    expect(failures(f)).toEqual([]);
+    f.worktrees.scan.environments.push(broken);
+    await f.tick();
+    expect(warn).toHaveBeenCalledTimes(2);
+    expect(reported(f)).toEqual([path]);
+    expect(f.state().lastMeasuredWorktree).toBe(path);
+    const absent = join(tempDir("checks-none-"), "absent");
+    f.worktrees.scan.environments.pop();
+    f.worktrees.scan.sources = [{ hostId: host, path: source }, { hostId: host, path: absent }];
+    await f.tick(); await f.tick();
+    expect(failures(f)).toEqual([`missing:${absent}`]);
+    expect(warn).toHaveBeenCalledTimes(3);
+    f.worktrees.remove(path);
+    await f.tick();
+    expect(reported(f)).toEqual([path]);
+    f.worktrees.scan.sources.pop();
+    await f.tick();
+    expect(reported(f)).toEqual([]);
+    expect(failures(f)).toEqual([]);
+  });
+
+  it("clears a reported path another project's managed environment holds, and reports it again once released", async () => {
+    const f = await make();
+    const path = f.worktrees.add("thr_example");
+    await f.tick();
+    expect(reported(f)).toEqual([path]);
+    const holder = { path, managed: true, projectId: "proj_other", status: "ready", isGitRepo: false };
+    f.worktrees.scan.environments.push(holder);
+    await f.tick();
+    expect(reported(f)).toEqual([]);
+    f.worktrees.scan.environments.pop();
+    await f.tick();
+    expect(reported(f)).toEqual([path]);
+    expect(accepted(f)).toBe(2);
+  });
+
+  it("protects a tree whose managed environment is stored under an alias, even beyond the first inventory page", async () => {
+    const f = await make();
+    const path = f.worktrees.add("thr_example");
+    const alias = join(tempDir("checks-alias-"), "alias");
+    symlinkSync(path, alias);
+    for (let i = 0; i < 250; i++) f.worktrees.scan.environments.push({ path: join(f.worktrees.scan.storage, `thr_other${i}`, "tree"), managed: true, projectId: "proj_other", status: "ready", isGitRepo: false });
+    f.worktrees.scan.environments.push({ path: alias, managed: true, projectId: "proj_other", status: "destroyed", isGitRepo: false });
+    await f.tick();
+    expect(reported(f)).toEqual([]);
+    expect(accepted(f)).toBe(0);
+  });
+
+  it("pages the whole inventory only when an archived candidate exists or is expected", async () => {
+    const f = await make();
+    const w = f.worktrees;
+    for (let i = 0; i < 250; i++) w.scan.environments.push({ path: join(w.scan.storage, `thr_other${i}`, "tree"), managed: true, projectId: "proj_other", status: "ready", isGitRepo: false });
+    const calls = async () => { const before = w.scan.listCalls; await f.tick(); return w.scan.listCalls - before; };
+    const seen = [await calls()]; // nothing archived: only this project's ready environments
+    const path = w.add("thr_example");
+    seen.push(await calls()); // a new candidate: the filtered pass, then one whole pass
+    seen.push(await calls()); // reported: one whole pass
+    w.remove(path);
+    seen.push(await calls()); // still expected, and the clearing tick
+    seen.push(await calls()); // nothing archived any more
+    expect(seen).toEqual([1, 4, 3, 3, 1]);
+    expect(reported(f)).toEqual([]);
+  });
+
+  it("finds a repository reachable only through a ready environment root on a host that ignores the filters", async () => {
+    const f = await make();
+    const w = f.worktrees;
+    const other = w.makeRepo(join(tempDir("checks-second-"), "repo"));
+    const tree = join(w.scan.storage, "thr_second", "tree");
+    mkdirSync(join(w.scan.storage, "thr_second"), { recursive: true });
+    execFileSync("git", ["worktree", "add", "-q", "--detach", tree], { cwd: other });
+    w.scan.threads.set("thr_second", { archivedAt: 1, deletedAt: null });
+    w.scan.environments.push(readyEnv(other), { path: join(w.scan.storage, "thr_x", "tree"), managed: true, projectId: "proj_other", status: "destroyed", isGitRepo: true });
+    f.harness.sdk.stub("environments.list", async ({ limit, offset }: { limit: number; offset: number }) => w.scan.environments.slice(offset, offset + limit));
+    await f.tick();
+    expect(reported(f)).toEqual([realpathSync(tree)]);
+  });
+
+  it("reads state without the field as zero and drops it on reset", async () => {
+    const f = await make();
+    f.worktrees.scan.sources = [{ hostId: host, path: plainDirectory() }];
+    await f.tick();
+    expect(failures(f)).toHaveLength(1);
+    expect(JSON.parse((await f.harness.runCli(["checks", "status", "--project", "CHK", "--json"])).stdout!)).toMatchObject({ worktreeRootFailures: 1 });
+    expect((await f.harness.runCli(["checks", "status", "--project", "CHK"])).stdout).toMatch(/Archived worktrees\s+0 reported, 0 pending, 1 unreadable roots/);
+    f.service.setEnabled(f.tracker.id, false);
+    f.db.prepare("UPDATE checks_state SET value = json_remove(value, '$.worktreeRootFailures')").run();
+    expect(f.service.status(f.tracker.id)).toMatchObject({ worktreeRootFailures: 0 });
+    f.db.prepare("UPDATE checks_state SET value = json_set(value, '$.worktreeRootFailures', json_array('error:/p/a'))").run();
+    f.service.reset(f.tracker.id);
+    expect(f.state()).toEqual({});
   });
 });

@@ -41,6 +41,8 @@ export interface State {
   pendingWorktrees?: string[];
   /** The last path the scan tried to measure; the next scan resumes after it. */
   lastMeasuredWorktree?: string;
+  /** Keys (`kind:root`) of the roots the last scan could not read; a warning is logged only when a key is new. */
+  worktreeRootFailures?: string[];
 }
 
 export interface DeliveryRow {

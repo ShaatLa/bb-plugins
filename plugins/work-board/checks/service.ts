@@ -470,12 +470,12 @@ function createService(bb: BbPluginApi) {
       const { result, refreshFailed, project } = await runScript(trackerId, link, config, manager, committed);
       controller.signal.throwIfAborted();
       // Archived worktrees are scanned after the script, also after a failed one; the project is the one the script run read.
-      const worktrees = project ? await scanArchivedWorktrees(bb, project, state.reportedWorktrees ?? [], state.lastMeasuredWorktree, AbortSignal.any([controller.signal, AbortSignal.timeout(scanTuning.deadlineMs)])).catch((error) => {
+      const worktrees = project ? await scanArchivedWorktrees(bb, project, state.reportedWorktrees ?? [], state.lastMeasuredWorktree, state.worktreeRootFailures ?? [], AbortSignal.any([controller.signal, AbortSignal.timeout(scanTuning.deadlineMs)])).catch((error) => {
         controller.signal.throwIfAborted();
         bb.log.warn(`Archived worktree scan failed for ${trackerId}: ${String(error)}`);
         return null;
       }) : null;
-      if (worktrees) state.lastMeasuredWorktree = worktrees.lastMeasuredPath;
+      if (worktrees) { state.lastMeasuredWorktree = worktrees.lastMeasuredPath; state.worktreeRootFailures = worktrees.failures.length ? worktrees.failures : undefined; }
       // Only a complete observation of absence clears history.
       if (worktrees?.complete && state.reportedWorktrees) { const present = new Set(worktrees.present); state.reportedWorktrees = state.reportedWorktrees.filter((path) => present.has(path)); }
       const newWorktrees = worktrees?.newPaths.length ? worktrees.newPaths : undefined;
@@ -678,7 +678,7 @@ function createService(bb: BbPluginApi) {
       deliveryError: pending ? state.deliveryError ?? null : null,
       blocked: unknownOutcome ? "blocked: delivery unknown, Retry needed" : null,
       refreshFailures: state.refreshFailures ?? 0, refreshRetryAt: state.refreshRetryAt ?? null,
-      reportedWorktrees: state.reportedWorktrees?.length ?? 0, pendingWorktrees: state.pendingWorktrees?.length ?? 0,
+      reportedWorktrees: state.reportedWorktrees?.length ?? 0, pendingWorktrees: state.pendingWorktrees?.length ?? 0, worktreeRootFailures: state.worktreeRootFailures?.length ?? 0,
       managerError: state.managerError ?? null, fallbackReason: state.fallbackReason ?? null, pushError: state.pushError ?? null,
       lastDelivery: state.deliveredAt ? { at: state.deliveredAt, to: state.deliveredTo ?? null, receipt: state.receipt ?? null, reportId: state.deliveredReportId ?? null, tickId: state.deliveredTickId ?? null } : null,
       pending, awaitingRetry: unknownOutcome,

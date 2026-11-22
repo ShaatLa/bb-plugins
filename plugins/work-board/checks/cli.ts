@@ -70,7 +70,7 @@ export function checksCliCommands(bb: BbPluginApi, host: ChecksCliHost) {
           ["Pending", status.pending ? `${status.pending.reportId} (exit ${status.pending.exitCode}, tick ${status.pending.tickId})` : "-"],
           ["Last delivery", status.lastDelivery ? `${when(status.lastDelivery.at)} to ${status.lastDelivery.to} (${status.lastDelivery.receipt?.mode ?? "-"})` : "-"],
           ["Fallback reason", status.fallbackReason ?? "-"],
-          ["Archived worktrees", `${status.reportedWorktrees} reported, ${status.pendingWorktrees} pending`],
+          ["Archived worktrees", `${status.reportedWorktrees} reported, ${status.pendingWorktrees} pending, ${status.worktreeRootFailures} unreadable roots`],
           ["Manager error", status.managerError ?? "-"],
           ["Push error", status.pushError ?? "-"],
           ["State", status.stateMismatch ?? "ok"],
