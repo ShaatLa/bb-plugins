@@ -442,7 +442,7 @@ describe("unreadable roots and the inventory", () => {
     expect(info).toHaveBeenCalledTimes(1);
   });
 
-  it("keeps the history for a broken gitfile and for a listing failure after a successful discovery", async () => {
+  it("keeps the history for a broken gitfile", async () => {
     const f = await make();
     const warn = vi.spyOn(f.bb.log, "warn");
     const path = await reportedThenGone(f);
@@ -455,13 +455,68 @@ describe("unreadable roots and the inventory", () => {
     f.worktrees.scan.environments.pop();
     await f.tick();
     expect(reported(f)).toEqual([]);
+  });
+
+  it("keeps the history when the listing of a second repository fails after its discovery succeeded", async () => {
+    const f = await make();
+    const warn = vi.spyOn(f.bb.log, "warn");
+    const path = await reportedThenGone(f);
+    const second = f.worktrees.makeRepo(join(tempDir("checks-second-"), "repo"));
+    f.worktrees.scan.environments.push(readyEnv(second));
     // The plain-directory message from the listing stage is not the exception: only the discovery stage qualifies.
     const real = execFileSync("which", ["git"]).toString().trim();
-    vi.stubEnv("PATH", `${binDir({ git: `case "$*" in *"worktree list"*) echo "fatal: not a git repository (or any of the parent directories): .git" >&2; exit 128;; esac\nexec "${real}" "$@"` })}:${process.env.PATH}`);
-    f.worktrees.add("thr_example");
+    vi.stubEnv("PATH", `${binDir({ git: `case "$*" in *"worktree list"*) case "$(pwd -P)" in "${second}") echo "fatal: not a git repository (or any of the parent directories): .git" >&2; exit 128;; esac;; esac\nexec "${real}" "$@"` })}:${process.env.PATH}`);
+    await f.tick(); await f.tick();
+    expect(reported(f)).toEqual([path]);
+    expect(failures(f)).toEqual([`error:${second}`]);
+    expect(warn).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not skip a repository whose metadata is damaged: a surviving .git entry keeps the history", async () => {
+    const f = await make();
+    const path = await reportedThenGone(f);
+    const damaged = f.worktrees.makeRepo(join(tempDir("checks-damaged-"), "repo"));
+    rmSync(join(damaged, ".git", "HEAD"));
+    f.worktrees.scan.environments.push(readyEnv(damaged));
     await f.tick();
-    expect(reported(f)).toEqual([]);
-    expect(failures(f)).toEqual([`error:${f.worktrees.source}`]);
+    expect(reported(f)).toEqual([path]);
+    expect(failures(f)).toEqual([`error:${damaged}`]);
+  });
+
+  it("announces a root transition once even when the scan fails after it", async () => {
+    const f = await make();
+    const warn = vi.spyOn(f.bb.log, "warn");
+    const unreadable = () => warn.mock.calls.filter(([message]) => String(message).includes("could not be read")).length;
+    f.worktrees.add("thr_example");
+    const threads = f.worktrees.scan.threads;
+    const list = async ({ threadIds, archived }: { threadIds: string[]; archived?: boolean }) => threadIds.flatMap((id) => {
+      const row = threads.get(id);
+      return row && (!archived || row.archivedAt != null) ? [{ id, ...row }] : [];
+    });
+    f.worktrees.scan.environments.push(readyEnv(brokenGitfile()));
+    f.harness.sdk.stub("threads.list", async () => { throw new Error("threads unavailable"); });
+    await f.tick();
+    expect(unreadable()).toBe(0);
+    expect(failures(f)).toEqual([]);
+    f.harness.sdk.stub("threads.list", list);
+    await f.tick(); await f.tick();
+    expect(unreadable()).toBe(1);
+    expect(failures(f)).toHaveLength(1);
+  });
+
+  it("forgets the full-inventory hint when the last repository root disappears", async () => {
+    const f = await make();
+    const w = f.worktrees;
+    const path = w.add("thr_example");
+    for (let i = 0; i < 250; i++) w.scan.environments.push({ path: join(w.scan.storage, `thr_other${i}`, "tree"), managed: true, projectId: "proj_other", status: "ready", isGitRepo: false });
+    w.scan.environments.push({ path, managed: true, projectId: "proj_other", status: "ready", isGitRepo: false });
+    const source = w.source;
+    const calls = async () => { const before = w.scan.listCalls; await f.tick(); return w.scan.listCalls - before; };
+    await calls(); // a managed archived tree: nothing reported, the hint is set
+    w.scan.sources = [];
+    const seen = [await calls(), await calls()];
+    w.scan.sources = [{ hostId: host, path: source }];
+    expect(seen).toEqual([3, 1]);
   });
 
   it("keeps the history and the cursor while no root can be read, then recovers", async () => {

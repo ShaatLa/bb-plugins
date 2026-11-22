@@ -1,10 +1,11 @@
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
-import { realpath } from "node:fs/promises";
-import { isAbsolute, relative, sep } from "node:path";
+import { lstat, realpath } from "node:fs/promises";
+import { isAbsolute, join, relative, sep } from "node:path";
 import { command } from "./runner";
 import { archivedWorktreeKind } from "./reports";
 
 export type ScanProject = NonNullable<Awaited<ReturnType<BbPluginApi["sdk"]["projects"]["get"]>>>;
+export type ScanNote = { level: "warn" | "info"; message: string };
 type Candidate = { path: string; threadId: string };
 const PAGE_SIZE = 100;
 const THREAD_BATCH = 200;
@@ -93,12 +94,14 @@ async function scan(bb: BbPluginApi, project: ScanProject, reported: string[], a
   const candidates = new Map<string, Candidate>();
   let complete = true;
   const failures = new Set<string>();
+  // Transitions are logged by the caller once it keeps the failure keys: a scan that fails later is repeated and must not announce them twice.
+  const notes: ScanNote[] = [];
   /** A root that could not be read: warned once per transition; `blocks` keeps the scan incomplete so reported paths are not cleared. */
   const fail = (kind: "plain" | "error" | "missing", root: string, detail: string, blocks: boolean) => {
     const key = `${kind}:${root}`;
     failures.add(key);
     if (blocks) complete = false;
-    if (!knownFailures.includes(key)) bb.log.warn(`Archived worktree registry could not be read for ${root}: ${detail}`);
+    if (!knownFailures.includes(key)) notes.push({ level: "warn", message: `Archived worktree registry could not be read for ${root}: ${detail}` });
   };
   for (const root of roots) {
     try {
@@ -109,7 +112,11 @@ async function scan(bb: BbPluginApi, project: ScanProject, reported: string[], a
       catch (error) {
         signal.throwIfAborted();
         // Only the discovery of a plain directory that is not a repository any more is skipped; a source stays a hard failure.
-        if (!sources.has(root) && PLAIN_DIRECTORY.test(String((error as Error).message))) { fail("plain", root, "not a git repository", false); continue; }
+        // A surviving `.git` entry means damaged metadata, not a plain directory; an inspection error is not proof of absence either.
+        if (!sources.has(root) && PLAIN_DIRECTORY.test(String((error as Error).message)) && !(await lstat(join(checkout, ".git")).then(() => true, (inspect: NodeJS.ErrnoException) => { if (inspect.code === "ENOENT") return false; throw inspect; }))) {
+          fail("plain", root, "not a git repository", false);
+          continue;
+        }
         throw error;
       }
       if (repositories.has(common)) continue;
@@ -131,10 +138,13 @@ async function scan(bb: BbPluginApi, project: ScanProject, reported: string[], a
     }
   }
   const failed = [...failures].sort();
-  for (const key of knownFailures) if (!failures.has(key)) bb.log.info(`Archived worktree root recovered: ${key.slice(key.indexOf(":") + 1)}`);
+  for (const key of knownFailures) if (!failures.has(key)) notes.push({ level: "info", message: `Archived worktree root recovered: ${key.slice(key.indexOf(":") + 1)}` });
 
   // Nothing could be read: a diagnostic-only result keeps the history and the cursor and lets the failure keys follow the pass.
-  if (!repositories.size) return failed.length || knownFailures.length ? { complete: false, present: [], newPaths: [], lastMeasuredPath: afterPath, lines: [], failures: failed } : null;
+  if (!repositories.size) {
+    sawArchived.get(bb)?.set(project.id, false);
+    return failed.length || knownFailures.length ? { complete: false, present: [], newPaths: [], lastMeasuredPath: afterPath, lines: [], failures: failed, notes } : null;
+  }
   const ids = [...new Set([...candidates.values()].map((item) => item.threadId))];
   const archived = new Set<string>();
   for (let offset = 0; offset < ids.length; offset += THREAD_BATCH) {
@@ -180,6 +190,6 @@ async function scan(bb: BbPluginApi, project: ScanProject, reported: string[], a
       bb.log.warn(`Archived worktree inspection failed for ${threadId}: ${String(error)}`);
     }
   }
-  return { complete, present: present.map(({ path }) => path), newPaths, lastMeasuredPath, failures: failed,
+  return { complete, present: present.map(({ path }) => path), newPaths, lastMeasuredPath, failures: failed, notes,
     lines: [...lines].map(([threadId, items]) => `${archivedWorktreeKind} ${threadId}: ${items.join(", ")}`) };
 }

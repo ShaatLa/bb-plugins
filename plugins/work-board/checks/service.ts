@@ -475,7 +475,7 @@ function createService(bb: BbPluginApi) {
         bb.log.warn(`Archived worktree scan failed for ${trackerId}: ${String(error)}`);
         return null;
       }) : null;
-      if (worktrees) { state.lastMeasuredWorktree = worktrees.lastMeasuredPath; state.worktreeRootFailures = worktrees.failures.length ? worktrees.failures : undefined; }
+      if (worktrees) { state.lastMeasuredWorktree = worktrees.lastMeasuredPath; state.worktreeRootFailures = worktrees.failures.length ? worktrees.failures : undefined; for (const { level, message } of worktrees.notes) bb.log[level](message); }
       // Only a complete observation of absence clears history.
       if (worktrees?.complete && state.reportedWorktrees) { const present = new Set(worktrees.present); state.reportedWorktrees = state.reportedWorktrees.filter((path) => present.has(path)); }
       const newWorktrees = worktrees?.newPaths.length ? worktrees.newPaths : undefined;
