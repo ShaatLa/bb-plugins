@@ -36,7 +36,7 @@ export interface StaleRow {
 /** The raw per-card facts behind the stale-status flags; one query for a task list or a whole project. */
 export function staleRows(db: Database, taskIds?: readonly string[], projectId?: string): StaleRow[] {
   const ids = taskIds ? JSON.stringify(taskIds) : null;
-  return db.prepare<[string | null, string | null, string | null, string | null], StaleRow>(`
+  return db.prepare<(string | null)[], StaleRow>(`
       SELECT t.id, t.project_id, p.prefix || '-' || t.number AS key, t.status, t.type,
         CASE WHEN t.archived_at IS NULL THEN 0 ELSE 1 END AS archived,
         CASE WHEN ${ordinaryTaskVisibilitySql("t")} THEN 1 ELSE 0 END AS visible,
@@ -55,8 +55,9 @@ export function staleRows(db: Database, taskIds?: readonly string[], projectId?:
         , EXISTS(SELECT 1 FROM task_pr_links l JOIN git_pr_snapshots s ON s.project_id=t.project_id AND s.identity=l.identity
           WHERE l.task_id=t.id AND COALESCE(json_extract(l.payload,'$.excluded'),0)=0 AND s.error IS NULL AND json_extract(s.payload,'$.state')='closed') AS closed_known
       FROM tasks t JOIN projects p ON p.id=t.project_id
-      WHERE (? IS NULL OR t.project_id=?) AND (? IS NULL OR t.id IN (SELECT value FROM json_each(?))) ORDER BY t.id`)
-    .all(projectId ?? null, projectId ?? null, ids, ids);
+      ${ids === null ? "WHERE (? IS NULL OR t.project_id=?)" : "WHERE t.id IN (SELECT value FROM json_each(?)) AND (? IS NULL OR t.project_id=?)"} ORDER BY t.id`)
+    // An ID-scoped read must seek by key: an `? IS NULL OR` arm on the ID predicate forces a scan of every task.
+    .all(...(ids === null ? [projectId ?? null, projectId ?? null] : [ids, projectId ?? null, projectId ?? null]));
 }
 
 export function projectPolicies(db: Database): Map<string, WorkflowPolicy> {

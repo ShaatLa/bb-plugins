@@ -821,6 +821,8 @@ const MIGRATIONS = [
     // Guarded so a re-run of the migrations (a partly reset version table) stays harmless.
     if (!db.prepare<[], { name: string }>("PRAGMA table_info(checks_ticks)").all().some((column) => column.name === "notices")) db.exec("ALTER TABLE checks_ticks ADD COLUMN notices INTEGER NOT NULL DEFAULT 0");
   },
+  // Reverse PR-link lookups (snapshot writes, orphan cleanup) start from the identity; the primary key starts with task_id.
+  `CREATE INDEX IF NOT EXISTS idx_task_pr_links_identity ON task_pr_links(identity, task_id);`,
 ] as const;
 
 export function initializeTasksSchema(db: PluginDatabase, log: Log = () => {}): void {

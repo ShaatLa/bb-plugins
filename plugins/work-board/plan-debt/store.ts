@@ -34,9 +34,9 @@ export function syncProjectPlanDebt(db: Database, projectId: string): void {
   for (const row of db.prepare<[string], { id: string }>("SELECT id FROM tasks WHERE project_id = ?").all(projectId)) syncPlanDebt(db, row.id);
 }
 
-/** The scan's repair: every card of a required-planning project, plus every card that still has an open episode. */
+/** The scan's repair: every unarchived card of a required-planning project (an archived card has no debt), plus every card that still has an open episode so it is closed. */
 export function repairPlanDebt(db: Database): void {
-  const ids = db.prepare<[], { id: string }>("SELECT t.id FROM tasks t JOIN projects p ON p.id = t.project_id WHERE p.planning = 'required' UNION SELECT task_id FROM plan_debt_episodes WHERE ended_at IS NULL").all();
+  const ids = db.prepare<[], { id: string }>("SELECT t.id FROM tasks t JOIN projects p ON p.id = t.project_id WHERE p.planning = 'required' AND t.archived_at IS NULL UNION SELECT task_id FROM plan_debt_episodes WHERE ended_at IS NULL").all();
   for (const { id } of ids) syncPlanDebt(db, id);
 }
 

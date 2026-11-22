@@ -3,6 +3,8 @@ import { createFakePluginHost } from "@get-bb/plugin-sdk/testing";
 import { createStore, registerTasksApi } from ".";
 import { registerTasksCli } from "../cli";
 import { initializeTasksSchema } from "../db/schema";
+import { staleRows } from "../attention/observe";
+import { captureStatements } from "../test-capture";
 
 it("reports recorded diagnostics, filters before pagination, and never moves tasks", async () => {
   const { bb, harness } = createFakePluginHost({ pluginId: "work-board" });
@@ -99,5 +101,32 @@ it("uses configured status IDs and distinguishes unavailable and closed PR snaps
   const done = store.tasks.createTask({ projectId: project.id, title: "Merged", status: "done" });
   store.tasks.createComment({ taskId: done.id, kind: "agent", authorName: "Agent", body: "Merged", evidence: { kind: "merge", pr: 1, head: "a".repeat(40), merge: "b".repeat(40) } });
   expect(store.tasks.staleStatusFlags([done.id]).has(done.id)).toBe(false);
+  await harness.dispose();
+});
+
+it("scopes the raw rows by ids and by project together, and an empty id list selects nothing", async () => {
+  const { bb, harness } = createFakePluginHost({ pluginId: "work-board" });
+  const store = createStore(bb);
+  const a = store.tasks.createProject({ name: "First", prefix: "FST", color: "blue" });
+  const b = store.tasks.createProject({ name: "Second", prefix: "SND", color: "red" });
+  const inA = store.tasks.createTask({ projectId: a.id, title: "A", status: "in_progress" });
+  const inB = store.tasks.createTask({ projectId: b.id, title: "B", status: "in_progress" });
+  const db = bb.storage.database();
+  const ids = (rows: { id: string }[]) => rows.map((row) => row.id);
+  expect(ids(staleRows(db, [inA.id, inB.id]))).toEqual([inA.id, inB.id].sort());
+  expect(ids(staleRows(db, [inA.id, inB.id], a.id))).toEqual([inA.id]);
+  expect(ids(staleRows(db, [inA.id], b.id))).toEqual([]);
+  expect(staleRows(db, [])).toEqual([]);
+  expect(ids(staleRows(db, undefined, b.id))).toEqual([inB.id]);
+  expect(ids(staleRows(db))).toEqual([inA.id, inB.id].sort());
+  // The ID-scoped read seeks tasks by key instead of scanning them: EXPLAIN the statement the call itself runs, with its own bindings.
+  const capture = captureStatements(db);
+  try {
+    staleRows(db, [inA.id], a.id);
+    const [call, ...rest] = capture.take().filter((statement) => /^\s*SELECT t\.id, t\.project_id/.test(statement.sql));
+    expect(rest).toEqual([]);
+    expect(capture.plan(call!)).toMatch(/SEARCH t USING .*\(id=\?\)/);
+    expect(capture.plan(call!)).not.toMatch(/SCAN t\b/);
+  } finally { capture.restore(); }
   await harness.dispose();
 });

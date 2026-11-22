@@ -53,7 +53,7 @@ export function createGitSyncStore(db: Database) {
   // A snapshot write changes the PR facts of every card linked to that PR, so those cards are recomputed in its transaction.
   const touchLinked = (projectId: string, identities: readonly string[]) =>
     touchAttention(db, db.prepare<[string, string], { task_id: string }>(
-      "SELECT l.task_id FROM task_pr_links l JOIN tasks t ON t.id=l.task_id WHERE t.project_id=? AND l.identity IN (SELECT value FROM json_each(?))",
+      "SELECT l.task_id FROM task_pr_links l CROSS JOIN tasks t ON t.id=l.task_id WHERE t.project_id=? AND l.identity IN (SELECT value FROM json_each(?))",
     ).all(projectId, JSON.stringify(identities)).map((row) => row.task_id));
   let cached: { projectId: string; token: string; evaluate: (taskId: string) => Overlap[]; results: Map<string, Overlap[]> } | undefined;
   // One project scan per call, not per task: board summaries arrive in batches of hundreds.

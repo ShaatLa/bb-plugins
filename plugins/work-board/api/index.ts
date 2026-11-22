@@ -1535,14 +1535,15 @@ export function registerHandlers(
         `SELECT task_id, COUNT(*) AS count FROM attachments WHERE task_id IN (${ids.map(() => "?").join(",")}) GROUP BY task_id`,
       ).all(...ids).map((row) => [row.task_id, row.count]));
       const threads = new Map<string, TaskThread[]>();
-      for (const thread of store.tasks.listTaskThreadsForTasks(ids)) {
+      const allLinks = store.tasks.listTaskThreadsForTasks(ids);
+      for (const thread of allLinks) {
         const entries = threads.get(thread.taskId) ?? [];
         entries.push(thread);
         threads.set(thread.taskId, entries);
       }
       const flags = store.tasks.staleStatusFlags(ids);
       const activity = store.tasks.listTaskActivity(ids);
-      const scopedActivity = await activityService(bb, store).metadata(ids, discoveryComplete);
+      const scopedActivity = await activityService(bb, store).metadata(ids, discoveryComplete, allLinks);
       const blockedBy = dependencies.blockers(ids);
       const advisories = taskAdvisories(bb, activity, blockedBy, scopedActivity, threads);
       const projects = store.tasks.listProjects();

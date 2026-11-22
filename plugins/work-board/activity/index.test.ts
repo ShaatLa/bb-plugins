@@ -348,3 +348,39 @@ it("bounds sampling concurrency, list batches and cache growth", async () => {
     expect(f.state.history).toBe(n + 20);
   } finally { await f.host.harness.dispose(); }
 });
+
+it("reads the task-thread links of a card-meta request once", async () => {
+  const host = createFakePluginHost({ pluginId: "work-board" });
+  try {
+    const store = createStore(host.bb);
+    registerTasksApi(host.bb, store);
+    const project = store.tasks.createProject({ name: "Activity", prefix: "PRE", color: "blue" });
+    const task = store.tasks.createTask({ projectId: project.id, title: "A" });
+    store.tasks.upsertTaskThread({ taskId: task.id, threadId: "thr_example", title: "Worker", presetName: "Attached", liveStatus: "idle" });
+    host.harness.sdk.stub("threads.list", async () => [makeThreadResponse({ id: "thr_example", status: "active", runtime: { displayStatus: "active" } })] as never);
+    const reads = vi.spyOn(store.tasks, "listTaskThreadsForTasks");
+    const result = await host.harness.callRpc("listTaskCardMeta", { taskIds: [task.id] }) as { metadata: { taskId: string; activity?: { sessions?: unknown[] } }[] };
+    expect(reads).toHaveBeenCalledTimes(1);
+    expect(reads).toHaveBeenCalledWith([task.id]);
+    expect(result.metadata.map((entry) => entry.taskId)).toEqual([task.id]);
+  } finally { await host.harness.dispose(); }
+});
+
+it("uses the links a caller already read, with the same result as reading them itself", async () => {
+  const host = createFakePluginHost({ pluginId: "work-board" });
+  try {
+    const store = createStore(host.bb);
+    const project = store.tasks.createProject({ name: "Activity", prefix: "PRE", color: "blue" });
+    const task = store.tasks.createTask({ projectId: project.id, title: "A" });
+    store.tasks.upsertTaskThread({ taskId: task.id, threadId: "thr_example", title: "Worker", presetName: "Attached", liveStatus: "idle" });
+    host.harness.sdk.stub("threads.list", async () => [makeThreadResponse({ id: "thr_example", status: "active", runtime: { displayStatus: "active" } })] as never);
+    const service = uncached(activityService(host.bb, store));
+    const own = await service.metadata([task.id]);
+    const given = await service.metadata([task.id], true, store.tasks.listTaskThreadsForTasks([task.id]));
+    const stable = (value: unknown) => JSON.parse(JSON.stringify(value, (key, item) => (key === "checkedAt" ? undefined : item)));
+    expect(stable(given.get(task.id))).toEqual(stable(own.get(task.id)));
+    expect(own.get(task.id)?.sessions.length).toBeGreaterThan(0);
+    // An explicit empty list means no links, not "read them yourself".
+    expect((await service.metadata([task.id], true, [])).get(task.id)?.sessions ?? []).toHaveLength(0);
+  } finally { await host.harness.dispose(); }
+});

@@ -18,9 +18,10 @@ import { TASK_LINK_INSTRUCTIONS } from "./shared/task-link";
 import { registerMentions } from "./mentions";
 import { planDebtService } from "./plan-debt/service";
 import { autoArchiveTasks } from "./lifecycle/task-archive";
+import pkg from "./package.json" with { type: "json" };
 
 const WORK_BOARD_PLUGIN_NAME = "Work Board";
-export const WORK_BOARD_PLUGIN_VERSION = "0.71.0";
+export const WORK_BOARD_PLUGIN_VERSION: string = pkg.version;
 
 const tasksRpcContract = defineRpcContract({
   ping: {

@@ -135,8 +135,7 @@ describe("episodes", () => {
     f.store.tasks.updatePosition(debt.id, { status: "done" });
     expect(f.open(debt.id)).toBeNull();
     expect(f.episodes(debt.id)).toMatchObject([{ ended_at: expect.any(String) }]);
-    const version = f.db.prepare<[], { version: number }>("SELECT MAX(version) AS version FROM schema_version").get()!.version;
-    f.db.exec(`DROP TABLE plan_debt_notices; DROP TABLE plan_debt_events; DROP TABLE plan_debt_episodes; DELETE FROM schema_version WHERE version >= ${version - 4};`);
+    f.db.exec("DROP TABLE plan_debt_notices; DROP TABLE plan_debt_events; DROP TABLE plan_debt_episodes; DELETE FROM schema_version WHERE version IN (41, 42, 43);");
     initializeTasksSchema(f.db);
     expect(f.db.prepare("SELECT COUNT(*) AS n FROM plan_debt_episodes").get()).toEqual({ n: 0 });
   });
@@ -162,13 +161,26 @@ describe("episodes", () => {
     const debt = f.card("Debt"), fine = f.card("Fine"), early = f.card("Early", "todo");
     f.require();
     f.withPlan(fine.id, "approved");
-    const version = f.db.prepare<[], { version: number }>("SELECT MAX(version) AS version FROM schema_version").get()!.version;
-    f.db.exec(`DROP TABLE plan_debt_notices; DROP TABLE plan_debt_events; DROP TABLE plan_debt_episodes; DELETE FROM schema_version WHERE version >= ${version - 4};`);
+    f.db.exec("DROP TABLE plan_debt_notices; DROP TABLE plan_debt_events; DROP TABLE plan_debt_episodes; DELETE FROM schema_version WHERE version IN (41, 42, 43);");
     const before = Date.now();
     initializeTasksSchema(f.db);
     expect(f.open(debt.id)!.since >= new Date(before).toISOString()).toBe(true);
     expect(f.open(fine.id)).toBeNull();
     expect(f.open(early.id)).toBeNull();
+  });
+
+  it("leaves archived cards out of the repair but still closes an episode they kept open", async () => {
+    const f = setupDebt();
+    const kept = f.card("Archived with a stale episode"), plain = f.card("Archived"), live = f.card("Live");
+    f.require();
+    for (const card of [kept, plain]) { f.store.tasks.updatePosition(card.id, { status: "done" }); f.store.tasks.setTaskArchived(card.id, true); }
+    f.db.prepare("DELETE FROM plan_debt_episodes WHERE task_id IN (?, ?, ?)").run(kept.id, plain.id, live.id);
+    f.db.prepare("INSERT INTO plan_debt_episodes (task_id, since) VALUES (?, ?)").run(kept.id, "2026-01-01T00:00:00.000Z");
+    await f.service.scan();
+    expect(f.open(kept.id)).toBeNull();
+    expect(f.episodes(kept.id)).toMatchObject([{ ended_at: expect.any(String) }]);
+    expect(f.episodes(plain.id)).toEqual([]);
+    expect(f.open(live.id)).not.toBeNull();
   });
 
   it("repairs a missed sync on the scan", async () => {

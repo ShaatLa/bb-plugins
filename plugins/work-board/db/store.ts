@@ -1888,6 +1888,8 @@ export function createTasksStore(db: PluginDatabase, log: (message: string) => v
     const changed: Task[] = [];
     for (const task of listTasks({ projectId, archive: "active", parentTaskId: null })) {
       if (task.scheduledRole === "template") continue;
+      // The root is part of its own family, so a root that is not done or canceled can never archive; skip before building the family.
+      if (!["done", "canceled"].includes(task.status)) continue;
       const family = archiveFamily(task.id);
       if (inactiveBefore && family.some(member => !member.archivedAt && (
         member.updatedAt > inactiveBefore ||

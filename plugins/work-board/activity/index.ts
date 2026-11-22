@@ -67,13 +67,14 @@ export function activityService(bb: BbPluginApi, store: TasksApiStore) {
       // A queue sample taken before this row existed must not be used to delete it.
       reads.queues.delete(threadId);
     },
-    async metadata(taskIds: readonly string[], discoveryComplete = true): Promise<Map<string, TaskActivity>> {
+    async metadata(taskIds: readonly string[], discoveryComplete = true, prefetchedLinks?: ReturnType<typeof store.tasks.listTaskThreadsForTasks>): Promise<Map<string, TaskActivity>> {
       const ids = [...new Set(taskIds)];
       if (!ids.length) return new Map();
       const placeholders = ids.map(() => "?").join(",");
       const history = new Set(db.prepare<string[], { task_id: string }>(`SELECT task_id FROM task_activity_history WHERE task_id IN (${placeholders})`).all(...ids).map((row) => row.task_id));
       const queues = db.prepare<string[], { thread_id: string; task_id: string; queue_id: string }>(`SELECT thread_id, task_id, queue_id FROM task_activity_queue WHERE task_id IN (${placeholders})`).all(...ids);
-      const links = store.tasks.listTaskThreadsForTasks(ids);
+      // A caller that already read the links of these same ids passes them, so one poll reads them once.
+      const links = prefetchedLinks ?? store.tasks.listTaskThreadsForTasks(ids);
       // Group once so metadata work scales with links and queued messages, not cards times those rows.
       const linksByTask = new Map<string, typeof links>();
       for (const link of links) {
