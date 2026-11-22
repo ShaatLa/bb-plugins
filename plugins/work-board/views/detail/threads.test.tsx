@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { loadPluginApp, renderSlot } from "@get-bb/plugin-sdk/testing/app";
 import { makeThreadResponse } from "@get-bb/plugin-sdk/testing";
@@ -267,7 +267,8 @@ describe("task detail pull request pills", () => {
     );
 
     await slot.findByRole("button", { name: "Detach Offline worker" });
-    expect(slot.getAllByText("PR unavailable")).toHaveLength(1);
+    // The label comes from the PR lookup that follows the thread list.
+    await waitFor(() => expect(slot.getAllByText("PR unavailable")).toHaveLength(1));
     expect(slot.queryAllByRole("link").filter((link) => link.getAttribute("href")?.startsWith("https://github.com/"))).toHaveLength(0);
   });
 
@@ -391,6 +392,54 @@ describe("task detail pull request pills", () => {
     window.dispatchEvent(new Event("focus"));
     await new Promise((resolve) => setTimeout(resolve, 150));
     expect(lookups).toBe(0);
+  });
+
+  it("does not look up pull requests when the last thread is detached", async () => {
+    let detached = false;
+    let lookups = 0;
+    const slot = renderSlot(app.navPanels[0]!, { subPath: "task/TSK-5" }, {
+      rpc: detailRpc({
+        listTaskThreads: () => ({ taskThreads: detached ? [] : [taskThreadRow(THREAD_ROW_ID, "thr_worker000", "Worker")] }),
+        taskThreadsDetach: () => { detached = true; return { threadId: "thr_worker000" }; },
+        listTaskPullRequests: () => { lookups += 1; return { pullRequests: [], unavailableThreadIds: [] }; },
+      }),
+    });
+    fireEvent.click(await slot.findByRole("button", { name: "Detach Worker" }));
+    await waitFor(() => expect(lookups).toBe(1));
+    fireEvent.click(await slot.findByRole("button", { name: "Detach" }));
+    await waitFor(() => expect(slot.queryByRole("button", { name: "Detach Worker" })).toBeNull());
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    expect(lookups).toBe(1);
+  });
+
+  it("does not start a stale-focus lookup while any earlier lookup is still pending", async () => {
+    let detached = false;
+    const pending: (() => void)[] = [];
+    const slot = renderSlot(app.navPanels[0]!, { subPath: "task/TSK-5" }, {
+      rpc: detailRpc({
+        listTaskThreads: () => ({ taskThreads: [taskThreadRow(THREAD_ROW_ID, "thr_worker000", "Worker"), ...(detached ? [] : [taskThreadRow(OFFLINE_ROW_ID, "thr_offline00", "Offline worker")])] }),
+        taskThreadsDetach: () => { detached = true; return { threadId: "thr_offline00" }; },
+        listTaskPullRequests: () => new Promise((resolve) => { pending.push(() => resolve({ pullRequests: [], unavailableThreadIds: [] })); }),
+      }),
+    });
+    fireEvent.click(await slot.findByRole("button", { name: "Detach Offline worker" }));
+    await waitFor(() => expect(pending).toHaveLength(1));
+    // A realtime event drops the shared RPC flight, so the refresh after detaching one of two threads
+    // starts a second lookup while the first is still pending: two overlap.
+    await slot.behavior.emitRealtime("projects:changed", {});
+    fireEvent.click(await slot.findByRole("button", { name: "Detach" }));
+    await waitFor(() => expect(pending).toHaveLength(2));
+    pending[0]!();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    // Another event clears the shared flight again, so only the outstanding count can hold the focus back.
+    await slot.behavior.emitRealtime("projects:changed", {});
+    const realNow = Date.now.bind(Date);
+    vi.spyOn(Date, "now").mockImplementation(() => realNow() + PR_FOCUS_STALE_MS + 1);
+    window.dispatchEvent(new Event("focus"));
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(pending).toHaveLength(2);
+    pending[1]!();
+    vi.restoreAllMocks();
   });
 });
 
@@ -594,7 +643,9 @@ it.each(["main", "side"])("keeps editors and navigation usable during a backgrou
   const syncButton = slot.getByRole("button", { name: "Sync PRs" });
   // Wait on the pending lookup itself; the PR-link query is idle, so the Sync PRs spinner stays off.
   await started;
-  await waitFor(() => expect(syncButton.getAttribute("aria-busy")).toBe("false"));
+  // Commit the refresh render while the lookup is still pending, then the PR-link spinner must be idle.
+  await act(async () => { await new Promise((resolve) => setTimeout(resolve, 50)); });
+  expect(syncButton.getAttribute("aria-busy")).toBe("false");
   expect(slot.getByRole("textbox", { name: "Task title" })).toBe(title);
   expect(document.activeElement).toBe(title);
   expect(title.textContent).toBe("Unsaved title draft");

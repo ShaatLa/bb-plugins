@@ -422,14 +422,17 @@ function TaskDetail({
   // Pull-request lookups only matter for a task with attached threads.
   const hasThreads = (threads.data?.length ?? 0) > 0;
   // Written inside the fetcher, so every start counts (mount, signal, poll, focus), however React batches state.
-  const pullRequestLookup = useRef({ startedAt: 0, inFlight: false });
+  const pullRequestLookup = useRef({ startedAt: 0, outstanding: 0 });
   const pullRequestsQuery = useTasksQuery(
     async (query) => {
-      pullRequestLookup.current = { startedAt: Date.now(), inFlight: true };
+      const lookup = pullRequestLookup.current;
+      lookup.startedAt = Date.now();
+      // A count, not a flag: overlapping lookups (poll + refresh) must all settle before focus may start another.
+      lookup.outstanding += 1;
       try {
         return await query.call("listTaskPullRequests", { taskId: task.id });
       } finally {
-        pullRequestLookup.current.inFlight = false;
+        lookup.outstanding -= 1;
       }
     },
     ["threads:changed"],
@@ -440,8 +443,8 @@ function TaskDetail({
   const pullRequests = hasThreads ? pullRequestsQuery : { ...pullRequestsQuery, data: undefined };
   const refreshPullRequests = pullRequests.refresh;
   const refreshPullRequestsOnFocus = useCallback(() => {
-    const { startedAt, inFlight } = pullRequestLookup.current;
-    if (inFlight || Date.now() - startedAt < PR_FOCUS_STALE_MS) return;
+    const { startedAt, outstanding } = pullRequestLookup.current;
+    if (outstanding > 0 || Date.now() - startedAt < PR_FOCUS_STALE_MS) return;
     refreshPullRequests();
   }, [refreshPullRequests]);
   const hasActivePullRequest = (pullRequests.data?.pullRequests ?? []).some(
@@ -726,8 +729,10 @@ function TaskDetail({
                     taskId: task.id,
                     threadId: thread.threadId,
                   });
+                  const wasLast = (threads.data?.length ?? 0) <= 1;
                   threads.refresh();
-                  pullRequests.refresh();
+                  // Detaching the last thread leaves nothing to look up (the gate closes once the list reloads).
+                  if (!wasLast) pullRequests.refresh();
                 }}
                 onError={(message) => push(message)}
               />

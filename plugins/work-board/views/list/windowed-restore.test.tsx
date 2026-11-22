@@ -70,6 +70,8 @@ describe("windowed list scroll restoration", () => {
     // A cold load: the data arrives settled (not loading) in one commit, over the unmeasured fallback DOM.
     resetTaskDatasetCachesForTest();
     resetQuerySnapshotStateForTest();
+    // The first mount persisted its task snapshot; remove it so the second mount really loads cold.
+    window.localStorage.clear();
 
     const second = renderList();
     await waitFor(() => expect(second.container.querySelectorAll("[data-task-key]").length).toBeGreaterThan(0));
