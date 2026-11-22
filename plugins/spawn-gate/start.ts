@@ -4,6 +4,7 @@ import { delimiter, dirname, isAbsolute, join, relative } from "node:path";
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import { z } from "zod";
 import type { RecordMetric } from "./metrics";
+import { assessPace, defaultPaceThreshold, paceReport, providerPolicy } from "./pace";
 
 const text = z.string().min(1).max(1000);
 const projectId = z.string().regex(/^proj_[a-z0-9]+$/);
@@ -23,14 +24,14 @@ export const briefInput = z.string().max(1_000_000)
   .refine(brief => !brief.split("\n").some(line => line.startsWith("agent-admission ")),
     "Remove the agent-admission line and supply the plain task brief.");
 export const buildSchema = z.object({
-  version: z.literal(1), brief: briefInput,
+  version: z.literal(1), brief: briefInput, providerPolicy: providerPolicy.optional(),
   spawn: z.object({
     parentThreadId, title: text.optional(), providerId: text.optional(), model: text.optional(), reasoningLevel: text.optional(), serviceTier: text.optional(),
     permissionMode: z.enum(["accept-edits", "auto", "full"]).optional(), parentNotifications: z.enum(["auto", "stuck", "off"]).optional(), environment: environment.optional(),
   }).strict(),
 }).strict();
 export const startInput = z.object({ projectId, parentThreadId, args: z.array(z.string().max(100_000)).max(256), dryRun: z.boolean().optional() }).strict();
-const resultFields = { projectId, parentThreadId, sourceCommit: z.string().regex(/^[a-f0-9]{40,64}$/) };
+const resultFields = { projectId, parentThreadId, sourceCommit: z.string().regex(/^[a-f0-9]{40,64}$/), providerPace: paceReport.optional() };
 export const startOutput = z.discriminatedUnion("dryRun", [
   z.object({ dryRun: z.literal(true), ...resultFields, build: buildSchema }).strict(),
   z.object({ dryRun: z.literal(false), ...resultFields, threadId: text }).strict(),
@@ -105,7 +106,7 @@ function builderCard(args: string[]) {
   return null;
 }
 
-export function createStart(bb: BbPluginApi, mint: (request: { projectId: string; parentThreadId: string; brief: string }) => Promise<{ prompt: string; token: string }>, policy: (id: string) => { method: string; script: string }, revoke: (token: string) => void, record: RecordMetric) {
+export function createStart(bb: BbPluginApi, mint: (request: { projectId: string; parentThreadId: string; brief: string }) => Promise<{ prompt: string; token: string }>, policy: (id: string) => { method: string; script: string }, revoke: (token: string) => void, record: RecordMetric, paceThreshold = async () => defaultPaceThreshold) {
   const controller = new AbortController();
   bb.onDispose(() => controller.abort());
   const queues = new Map<string, Promise<unknown>>();
@@ -163,15 +164,38 @@ export function createStart(bb: BbPluginApi, mint: (request: { projectId: string
       try { parsed = JSON.parse(stdout); } catch { throw new Error("Builder stdout must be one JSON object (v1); send logs to stderr"); }
       const build = buildSchema.parse(parsed);
       if (build.spawn.parentThreadId !== request.parentThreadId) throw new Error("Builder parent must match the requested parent. Copy parentThreadId from the builder stdin into spawn.parentThreadId");
+      const selected = build.spawn.providerId;
+      if (build.providerPolicy && (!selected || !build.providerPolicy.eligible.some(item => item.providerId === selected))) {
+        reason = "provider_not_allowed";
+        throw new Error("Set spawn.providerId to one of the providers eligible for the requested role. A pace reason cannot override role restrictions.");
+      }
       const target = build.spawn.environment;
+      const defaultHost = project.sources?.find(source => source.isDefault)?.hostId;
       if (target?.type === "host" && !target.hostId && target.workspace.type !== "personal") {
         reason = "host_error";
         const parentEnvironment = parent.environmentId ? await bb.sdk.environments.get({ environmentId: parent.environmentId }) : null;
-        const hostId = parentEnvironment?.hostId ?? project.sources.find(source => source.isDefault)?.hostId;
+        const hostId = parentEnvironment?.hostId ?? defaultHost;
         if (!hostId) throw new Error("Cannot resolve execution host: set hostId or configure a project default source");
         target.hostId = hostId;
       }
-      const common = { projectId: request.projectId, parentThreadId: request.parentThreadId, sourceCommit };
+      let providerPace: z.infer<typeof paceReport> | undefined;
+      if (build.providerPolicy && selected) {
+        reason = "host_error";
+        const hostId = target?.type === "reuse"
+          ? (await bb.sdk.environments.get({ environmentId: target.environmentId })).hostId
+          : target?.type === "host"
+            ? target.hostId ?? (await bb.sdk.system.config()).primaryHostId
+            : defaultHost;
+        reason = "over_pace";
+        const { report, summary } = await assessPace(bb, build.providerPolicy, { providerId: selected, model: build.spawn.model },
+          hostId ?? undefined, await paceThreshold(), signal);
+        providerPace = report;
+        const override = report.overridden ? "\nPace override accepted for the requested provider." : "";
+        build.brief = briefInput.parse(`${build.brief}\n\n## Provider pace\n${summary}${override}`);
+      }
+      signal.throwIfAborted();
+      const common = { projectId: request.projectId, parentThreadId: request.parentThreadId, sourceCommit,
+        ...(providerPace ? { providerPace } : {}) };
       if (request.dryRun) return { dryRun: true as const, ...common, build };
       signal.throwIfAborted();
       reason = "admission_error";

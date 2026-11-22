@@ -4,6 +4,7 @@ import { z } from "zod";
 import { registerGateCli } from "./cli";
 import { createMetrics, reportContract } from "./metrics";
 import { migrateLegacyGate } from "./migration";
+import { defaultPaceThreshold } from "./pace";
 import { briefInput, createStart, startInput, startOutput } from "./start";
 
 const hash = (text: string) => createHash("sha256").update(text).digest("hex");
@@ -32,6 +33,13 @@ export const rpcContract = defineRpcContract({
 
 export default async function plugin(bb: BbPluginApi) {
   await migrateLegacyGate(bb);
+  const settings = bb.settings.define({
+    paceThreshold: {
+      type: "number", label: "Weekly provider pace threshold", default: defaultPaceThreshold,
+      description: "At this ratio or higher, require a reason if another provider eligible for the role is below pace and has quota remaining.",
+      experimental_schema: z.number().min(1),
+    },
+  });
   let config = await bb.storage.kv.get<Record<string, string | number | boolean>>("project-settings-v1") ?? {};
   const policy = (projectId: string) => ({
     enabled: config[`enabled_${projectId}`] === true,
@@ -112,7 +120,7 @@ Use the configured workflow. Changing gate settings to get a child started chang
   };
   const start = createStart(bb, mint, policy, token => {
     db.prepare("DELETE FROM tokens WHERE digest = ?").run(hash(token));
-  }, metrics.record);
+  }, metrics.record, async () => (await settings.get()).paceThreshold);
   registerGateCli(bb, { start, report: metrics.report, configGet, configSet });
   bb.rpc.register(rpcContract, {
     async "settings.read"() {

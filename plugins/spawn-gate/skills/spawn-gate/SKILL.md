@@ -25,6 +25,12 @@ spawn parameters. It must never mint or spawn. Absolute builder input paths
 must be readable on the bb server. See START-CONTRACT.md for builder arguments
 and output, and RPC `start` with `{projectId,parentThreadId,args,dryRun?}`.
 
+When the builder supplies its role's eligible providers, the admission and
+dry-run show their weekly pace and usage sources. If start refuses an ahead-of-
+pace provider, choose the suggested eligible alternative or give an explicit
+reason through the builder's request interface. A reason only waives the pace
+check. The role's provider list still applies.
+
 ## Instruction mode and existing mint integrations
 
 Follow the configured instructions first. If Instruction mode has empty

@@ -36,6 +36,45 @@ Builder stdout (strict object; omit optional fields, do not emit null):
 
 Required: version=1, nonempty plain brief without an `agent-admission ` line, spawn object, spawn.parentThreadId (must equal the request's resolved parent). Optional spawn fields: title, providerId, model, reasoningLevel, serviceTier, permissionMode (accept-edits|auto|full), parentNotifications (auto|stuck|off), environment. No arbitrary argv/flags/projectId/prompt/input/origin/token fields.
 
+Optional builder output field for role-aware provider admission:
+
+```json
+{
+  "providerPolicy": {
+    "eligible": [
+      {"providerId":"codex"},
+      {"providerId":"claude-code"},
+      {"providerId":"antigravity","model":"gemini-4-argon"}
+    ],
+    "reason":"This task must use the same provider as the preceding review."
+  }
+}
+```
+
+- Include each provider eligible for this role and tier once, up to 16 entries.
+  Use the repository's role policy to build this list. Never derive it from a
+  caller-supplied allowlist. Set `spawn.providerId` to one of the entries.
+- Use the optional candidate `model` for alternatives with model-specific
+  windows. The selected provider is measured using `spawn.model`. For
+  Antigravity the default is the shared Gemini pool, and an Argon model uses
+  the separate Argon pool.
+- Set `reason` only when the caller gave an explicit reason. Omit it otherwise.
+  An empty or whitespace-only reason does not waive a refusal. Neither a
+  reason nor any pace result can open a provider excluded by the role.
+- Spawn Gate reads `provider-usage.v1.listResources` and `getResource` from
+  each eligible provider's usage plugin for the target host. It compares the
+  highest pace among applicable weekly windows, observed within the last hour
+  with a current reset. Room means below 1.0 with quota remaining.
+- The native `paceThreshold` setting defaults to 1.25 and accepts a ratio of
+  at least 1.0. The selected provider reaching it causes a refusal when an
+  eligible alternative has room. These refusals are tracked as `over_pace`.
+- A successful result includes `providerPace: {threshold,overridden,providers}`
+  when the builder supplied the policy. Provider rows identify the source,
+  window, percentage used, elapsed share and pace. Missing values are null.
+  The admitted brief and the dry-run's brief include a Provider pace section.
+- Builders omitting `providerPolicy` retain v1 behavior. The legacy mint
+  payload has no provider choice or eligible set.
+
 Environment is the bb SDK environment object, not a list of CLI flags:
 - Omit: {type:"project-default"} is used.
 - Reuse: {type:"reuse",environmentId:"env_..."}.

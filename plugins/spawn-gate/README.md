@@ -116,6 +116,35 @@ and a combined 1 MiB stdout/stderr limit. Starts serialize per project.
 The builder is trusted repository code: it must only build the brief and spawn
 parameters. It must not mint or spawn children itself.
 
+## Weekly provider pace
+
+A role-aware Script builder supplies `providerPolicy` in its v1 output. The
+policy lists the providers eligible for the requested role and, optionally, an
+explicit reason supplied by the caller. Spawn Gate enforces the list, reads the
+weekly windows from the providers' usage RPCs on the target host, and records
+each provider's pace and source in the admitted brief and `start` result.
+Antigravity uses the weekly pool for the candidate's model.
+
+Pace is the share used divided by the share of the window elapsed at the
+measurement. If the selected provider is at or above the threshold and an
+eligible alternative is below 1.0 with quota remaining, start refuses before
+minting. Choose the suggested provider or give a reason through the builder's
+request interface. A reason only overrides the pace refusal. Unknown, stale,
+expired or exhausted readings cannot establish room. The same check runs
+during dry-run.
+
+The default threshold is 1.25. Read or change the native setting:
+
+```sh
+bb plugin config spawn-gate
+bb plugin config spawn-gate set paceThreshold 1.4
+bb plugin config spawn-gate unset paceThreshold
+```
+
+See [START-CONTRACT.md](START-CONTRACT.md) for an example builder payload.
+Builders without `providerPolicy` and the legacy `mint` RPC lack role
+eligibility data and keep their existing behavior.
+
 ## Activity report
 
 Open **Spawn Gate** in the bb sidebar to filter activity by project and period,
