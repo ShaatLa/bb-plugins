@@ -462,6 +462,36 @@ describe("task detail pull request pills", () => {
     expect(lookups).toBe(2);
   });
 
+  it("one Refresh tasks click costs one lookup even while an older thread read is pending", async () => {
+    let holds: Promise<void>[] = [];
+    let calls = 0;
+    const gates: (() => void)[] = [];
+    let lookups = 0;
+    const slot = renderSlot(app.navPanels[0]!, { subPath: "task/TSK-5" }, {
+      rpc: detailRpc({
+        listTaskThreads: async (input: unknown) => {
+          if (holds.length > 0 && rpcInput(input).reconcile === false) await holds[calls++];
+          return { taskThreads: [taskThreadRow(THREAD_ROW_ID, "thr_worker000", "Worker")] };
+        },
+        listTaskPullRequests: () => { lookups += 1; return { pullRequests: [], unavailableThreadIds: [] }; },
+      }),
+    });
+    await waitFor(() => expect(lookups).toBe(1));
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    holds = [0, 1].map(() => new Promise<void>((resolve) => { gates.push(resolve); }));
+    // An older thread read (event-driven) is pending when the global refresh starts its own read.
+    await slot.behavior.emitRealtime("threads:changed", { taskId: TASK_ID });
+    await waitFor(() => expect(calls).toBe(1));
+    fireEvent.click(await slot.findByRole("button", { name: "Refresh tasks" }));
+    await waitFor(() => expect(calls).toBe(2));
+    gates[0]!();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    gates[1]!();
+    await waitFor(() => expect(lookups).toBe(2));
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(lookups).toBe(2);
+  });
+
   it("a thread reload that finishes after the view is closed starts no pull-request lookup", async () => {
     let hold: Promise<void> | null = null;
     let release!: () => void;

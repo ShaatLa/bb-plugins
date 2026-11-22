@@ -405,11 +405,12 @@ function TaskDetail({
   const threadsGeneration = useRef(generation);
   const threads = useTasksQuery<TaskThread[]>(
     async (query, publish) => {
-      const cached = await query.call("listTaskThreads", { taskId: task.id, reconcile: false });
-      publish(cached.taskThreads);
+      // Captured on entry, before any await, so an older overlapping read cannot record a newer generation.
       const coveredByRefresh = threadsGeneration.current !== generationRef.current;
       threadsGeneration.current = generationRef.current;
       const startedWithThreads = hasThreadsRef.current && !coveredByRefresh;
+      const cached = await query.call("listTaskThreads", { taskId: task.id, reconcile: false });
+      publish(cached.taskThreads);
       const list = (await query.call("listTaskThreads", { taskId: task.id })).taskThreads;
       if (startedWithThreads) reloadedWithThreads.current.add(list);
       return list;
