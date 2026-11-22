@@ -95,7 +95,7 @@ describe('server',()=>{
   expect(inputs.list.safeParse({view:'all',limit:51}).success).toBe(false);
   expect(inputs.reply.safeParse({id:'ans_a',text:' '}).success).toBe(false);
   expect(rpcContract.list.tags).toBeDefined(); expect(rpcContract.counts.tags).toBeDefined();
-  expect(INSTRUCTIONS.length).toBeLessThanOrEqual(600);
+  expect(INSTRUCTIONS.length).toBeLessThanOrEqual(750);
  });
  it('orders a conversation by latest activity, so a late answer pages in at its answer time',async()=>{
   const {harness,db}=setup();

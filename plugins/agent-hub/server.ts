@@ -16,7 +16,11 @@ export { buildReplyMessage };
 import { inlineCommentPreview } from './inline-comments';
 
 const NOTICE_PREVIEW = 20000;
-export const INSTRUCTIONS = "Agent Hub tracks the owner's messages and your final replies. For a later answer, call agent_hub_defer; when it arrives, call agent_hub_list, then agent_hub_resolve with the listed id. You must ask the owner a decision with agent_hub_ask, then end the turn; never put the question in chat text. With no pending question, you must call agent_hub_report to deliver a result the owner awaits or to hand work to the owner (ready for review, decisions awaiting them). A script waking its own thread via `bb thread tell` must start the text with a [tag], e.g. `[example-watcher] done`.";
+export const INSTRUCTIONS = [
+  "Call agent_hub_defer for later answers. On arrival, call agent_hub_list, then agent_hub_resolve with the id. You must ask the owner a decision with agent_hub_ask, then end the turn. Keep the question out of chat. With no pending question, you must call agent_hub_report for awaited results or handoffs.",
+  "For messages to other threads, open with one short sentence with the request or result. Use short paragraphs or bullets, one point each. Use inline code for commands, IDs and fields. Put JSON objects in fenced json blocks. Leave blank lines between paragraphs and around code blocks.",
+  "A script waking its own thread via `bb thread tell` must start the text with a [tag], e.g. `[example-watcher] done`.",
+].join('\n\n');
 const optionsSchema=z.array(z.string({error:'options must be a list of strings'}).trim().min(1,'an option is empty; give it text or remove it').max(200,'an option is longer than 200 characters; shorten it'),{error:'options must be a list of 1–6 strings'}).min(1,'options is empty; give 1–6 options or leave options out').max(6,'options has more than 6 entries; keep at most 6').refine(v=>new Set(v).size===v.length,'options must be unique after trimming; remove the duplicate');
 // A session started before a tool gained a flag sends it as a string; read 'true'/'false' as the boolean.
 const flag=z.preprocess(v=>v==='true' ? true : v==='false' ? false : v,z.boolean({error:'multiSelect must be true or false'}));

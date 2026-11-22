@@ -126,6 +126,12 @@ The chat’s Owed card lets you jump to, confirm or dismiss older deferred answe
 
 Owner messages remain plain text: links, Work Board tasks, thread mentions, and known commands or skills after `/` and `$` appear as pills, as in the input field. This also applies to quotes, reply echoes, the queue, and owed answers. The Background updates preview keeps a two-line clamp and preserves thread pills; agent replies and plugin messages use BB Markdown.
 
+For messages to other threads, Agent Hub instructs agents to open with one short
+sentence, put each point in its own short paragraph or bullet, use inline code
+for commands, IDs and field names, and fence JSON objects. Blank lines separate
+paragraphs and code blocks. See [the Agent Hub skill](skills/agent-hub/SKILL.md)
+for an example.
+
 Agent and owner messages offer Copy (Markdown) and Copy link beside the message actions, with brief inline clipboard feedback. Links use the native thread route and message sequence when available.
 
 Coarse-pointer controls have at least 40×40px targets, with desktop spacing and glyphs unchanged. Questions and approvals collapse together, with per-thread state in memory; stacks taller than 40% of the viewport start collapsed on touch devices. Attachments use bb’s save/share path.

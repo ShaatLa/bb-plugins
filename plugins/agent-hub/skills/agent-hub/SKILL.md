@@ -21,6 +21,26 @@ Where the plugin can check a rule it does, and the refusal or warning names the 
 - **Scripts.** A script that wakes its own thread with `bb thread tell` must start the text with a `[tag]` (see below). The plugin cannot enforce it: bb records the message as the owner's.
 - **Old names.** `answers_*` tools are deprecated aliases of `agent_hub_*` with the same rules; call the `agent_hub_*` name.
 
+### Messages to other threads
+
+Start with one short sentence that says what you need or report. Use short
+paragraphs or bullets with one point each. Put commands, IDs and field names
+in inline code. Put JSON objects in fenced `json` blocks. Leave a blank line
+between paragraphs and before and after code blocks. With `bb thread tell`,
+pass `--message-file -` to keep the line breaks.
+
+For example, send this message body:
+
+> Please verify the new launch contract.
+>
+> - The request uses the `providerId` field.
+> - To check it, run `bb provider list`.
+>
+> ```json
+> {"providerId":"example-provider"}
+> ```
+
+
 As a safety net, a turn that answers while sub-sessions it started itself are still running is deferred automatically, and once the last of them reports, the plugin keeps waiting if sub-sessions started by the turns their reports woke (a later wave) still run, otherwise your latest report answers the question; explicit `agent_hub_defer`/`agent_hub_resolve` calls always win.
 
 With `handoffWarnings` enabled (default), a live top-level completion that misses the matching explicit channel receives an `[agent-hub]` plugin warning in the same thread. Archived threads and backfilled completions never warn. The warning-triggered reply never warns again and stays read without push unless you call `agent_hub_report` or `agent_hub_ask`. Existing handoff guessing and **Asked in chat** filing remain as a safety net.

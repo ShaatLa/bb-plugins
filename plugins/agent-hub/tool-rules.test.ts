@@ -82,6 +82,8 @@ it('keeps the injected instructions short, with must-rules and one neutral tag e
  expect(INSTRUCTIONS).toMatch(/You must ask the owner a decision with agent_hub_ask/);
  expect(INSTRUCTIONS).toMatch(/you must call agent_hub_report/);
  expect(INSTRUCTIONS).toMatch(/must start the text with a \[tag\], e\.g\. `\[example-watcher\] done`/);
+ expect(INSTRUCTIONS).toContain('For messages to other threads, open with one short sentence');
+ expect(INSTRUCTIONS).toContain('Put JSON objects in fenced json blocks. Leave blank lines between paragraphs and around code blocks.');
  expect(INSTRUCTIONS).not.toMatch(/\bshould\b/);
 });
 it('deprecated answers_* aliases carry the agent_hub_* description unchanged, behind a pointer', () => {
