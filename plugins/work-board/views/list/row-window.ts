@@ -34,12 +34,16 @@ export function rowWindows({
   // hundreds of offscreen rows. Small lists keep rendering in full.
   const windowed = counts.reduce((sum, count) => sum + count, 0) >= ROW_WINDOW_THRESHOLD;
   let top = 0;
+  // Before the viewport is measured, the fallback budget is shared by the whole list.
+  let fallbackLeft = ROW_WINDOW_FALLBACK_ROWS;
   for (const count of counts) {
     top += headerHeight;
     if (!windowed) {
       ranges.push([0, count]);
     } else if (viewportHeight <= 0 || rowHeight <= 0) {
-      ranges.push([0, Math.min(count, ROW_WINDOW_FALLBACK_ROWS)]);
+      const take = Math.min(count, fallbackLeft);
+      fallbackLeft -= take;
+      ranges.push([0, take]);
     } else {
       const from = scrollTop - ROW_WINDOW_OVERSCAN_PX - top;
       const to = scrollTop + viewportHeight + ROW_WINDOW_OVERSCAN_PX - top;
@@ -50,6 +54,11 @@ export function rowWindows({
     top += count * rowHeight;
   }
   return ranges;
+}
+
+/** True once spacer heights are real: short lists render in full, windowed ones need a measured row height. */
+export function rowWindowSettled(totalRows: number, rowHeight: number): boolean {
+  return totalRows < ROW_WINDOW_THRESHOLD || rowHeight > 0;
 }
 
 interface Viewport {

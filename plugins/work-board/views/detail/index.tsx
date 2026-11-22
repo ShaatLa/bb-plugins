@@ -10,6 +10,7 @@ import { PrLinksProvider, PullRequestsSection } from "../../components/pr-links"
 import { ArchiveTaskControl } from "../../components/archive-task-control";
 import { useTaskStatuses } from "../../shell/task-statuses.js";
 import {
+  useCallback,
   useEffect,
   useRef,
   useState,
@@ -72,6 +73,8 @@ interface DetailViewProps {
 
 const DESCRIPTION_SAVE_DELAY_MS = 800;
 const ACTIVE_PULL_REQUEST_REFRESH_MS = 60_000;
+/** Window focus revalidates PR state only when the last lookup began longer ago than this. */
+export const PR_FOCUS_STALE_MS = 15_000;
 
 function SubTaskDonut({
   subtasks,
@@ -416,21 +419,39 @@ function TaskDetail({
     async (query) => (await query.call("listPresets")).presets,
     ["projects:changed"],
   );
-  const pullRequests = useTasksQuery(
-    async (query) => query.call("listTaskPullRequests", { taskId: task.id }),
+  // Pull-request lookups only matter for a task with attached threads.
+  const hasThreads = (threads.data?.length ?? 0) > 0;
+  // Written inside the fetcher, so every start counts (mount, signal, poll, focus), however React batches state.
+  const pullRequestLookup = useRef({ startedAt: 0, inFlight: false });
+  const pullRequestsQuery = useTasksQuery(
+    async (query) => {
+      pullRequestLookup.current = { startedAt: Date.now(), inFlight: true };
+      try {
+        return await query.call("listTaskPullRequests", { taskId: task.id });
+      } finally {
+        pullRequestLookup.current.inFlight = false;
+      }
+    },
     ["threads:changed"],
     [task.id],
-    { relevantTaskIds: [task.id] },
+    { enabled: hasThreads, relevantTaskIds: [task.id] },
   );
+  // Without threads the last result is stale (e.g. the final thread was detached): show nothing.
+  const pullRequests = hasThreads ? pullRequestsQuery : { ...pullRequestsQuery, data: undefined };
   const refreshPullRequests = pullRequests.refresh;
+  const refreshPullRequestsOnFocus = useCallback(() => {
+    const { startedAt, inFlight } = pullRequestLookup.current;
+    if (inFlight || Date.now() - startedAt < PR_FOCUS_STALE_MS) return;
+    refreshPullRequests();
+  }, [refreshPullRequests]);
   const hasActivePullRequest = (pullRequests.data?.pullRequests ?? []).some(
     (pullRequest) =>
       pullRequest.state === "open" || pullRequest.state === "draft",
   );
   useEffect(() => {
-    window.addEventListener("focus", refreshPullRequests);
-    return () => window.removeEventListener("focus", refreshPullRequests);
-  }, [refreshPullRequests]);
+    window.addEventListener("focus", refreshPullRequestsOnFocus);
+    return () => window.removeEventListener("focus", refreshPullRequestsOnFocus);
+  }, [refreshPullRequestsOnFocus]);
   useEffect(() => {
     if (!hasActivePullRequest) return;
     const timer = window.setInterval(() => {
@@ -744,7 +765,7 @@ function TaskDetail({
         >
           <TaskCostSection key={`cost-${task.id}`} taskId={task.id} epic={task.type === "epic"} />
           <ClaimsLine key={`claims-${task.id}`} taskId={task.id} />
-          <PullRequestsSection key={task.id} taskId={task.id} projectId={task.projectId} loading={pullRequests.isFetching} />
+          <PullRequestsSection key={task.id} taskId={task.id} projectId={task.projectId} />
         </PropertiesRail>
       </div>
       <DetailToasts toasts={toasts} onDismiss={dismiss} />

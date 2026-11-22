@@ -18,6 +18,11 @@ export function TaskStatusesProvider({ children }: { children: ReactNode }) {
   );
 }
 
+/** The project list the shell already keeps current; closed dialogs read it instead of running their own query. */
+export function useProjectList(): readonly Project[] {
+  return useContext(TaskStatusesContext);
+}
+
 export function useTaskStatuses(projectId?: string | null) {
   const projects = useContext(TaskStatusesContext);
   return useMemo(() => {

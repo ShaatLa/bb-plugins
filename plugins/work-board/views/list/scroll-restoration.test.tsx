@@ -145,6 +145,7 @@ function Harness({
   contentReady,
   scrollHeight,
   loading = false,
+  measured,
   revision = 0,
   onReady,
 }: {
@@ -152,11 +153,12 @@ function Harness({
   contentReady: boolean;
   scrollHeight: number;
   loading?: boolean;
+  measured?: boolean;
   revision?: number;
   onReady: (el: HTMLDivElement) => void;
 }) {
   const ref = useRef<HTMLDivElement>(null);
-  useListScrollRestoration(ref, scopeKey, { contentReady, loading, revision });
+  useListScrollRestoration(ref, scopeKey, { contentReady, loading, measured, revision });
   return (
     <div
       ref={(el) => {
@@ -175,6 +177,37 @@ function Harness({
 
 describe("useListScrollRestoration", () => {
   beforeEach(() => window.sessionStorage.clear());
+
+  it("keeps a deep offset pending until a windowed list is measured, then applies it", () => {
+    writeListScroll("deep|", 5000);
+    let el: HTMLDivElement | null = null;
+    const capture = (node: HTMLDivElement) => { el = node; };
+    // Cold fallback DOM: short content (60 rows, zero spacers), not yet measured.
+    const view = render(<Harness scopeKey="deep|" contentReady measured={false} scrollHeight={2600} onReady={capture} />);
+    const node = el as unknown as HTMLDivElement;
+    expect(node.scrollTop).toBe(2100);
+    // Spacers are sized and the row height is known: the full height holds the saved offset.
+    view.rerender(<Harness scopeKey="deep|" contentReady measured scrollHeight={20000} onReady={capture} />);
+    expect(node.scrollTop).toBe(5000);
+  });
+
+  it("drops the pending offset when the user scrolls before the list is measured", () => {
+    writeListScroll("user|", 5000);
+    let el: HTMLDivElement | null = null;
+    const capture = (node: HTMLDivElement) => { el = node; };
+    const view = render(<Harness scopeKey="user|" contentReady measured={false} scrollHeight={2600} onReady={capture} />);
+    const node = el as unknown as HTMLDivElement;
+    act(() => { node.scrollTop = 300; node.dispatchEvent(new Event("scroll")); });
+    view.rerender(<Harness scopeKey="user|" contentReady measured scrollHeight={20000} onReady={capture} />);
+    expect(node.scrollTop).toBe(300);
+  });
+
+  it("restores at once when the list is not windowed (measured defaults to true)", () => {
+    writeListScroll("short|", 400);
+    let el: HTMLDivElement | null = null;
+    render(<Harness scopeKey="short|" contentReady scrollHeight={2000} onReady={(node) => { el = node; }} />);
+    expect((el as unknown as HTMLDivElement).scrollTop).toBe(400);
+  });
 
   it("persists on scroll and restores on remount, clamped to content", () => {
     let el: HTMLDivElement | null = null;

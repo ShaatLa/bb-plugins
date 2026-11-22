@@ -1,10 +1,11 @@
 // @vitest-environment jsdom
 import { cleanup, fireEvent, waitFor, within } from "@testing-library/react";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { loadPluginApp, renderSlot } from "@get-bb/plugin-sdk/testing/app";
 import { makeThreadResponse } from "@get-bb/plugin-sdk/testing";
 import { makeTask, rpcInput, taskTab } from "../../test-fixtures.js";
 import { storeDefaultThread } from "./thread-preference.js";
+import { PR_FOCUS_STALE_MS } from "./index.js";
 
 if (!window.matchMedia) {
   window.matchMedia = (query: string) => ({
@@ -336,6 +337,9 @@ describe("task detail pull request pills", () => {
       name: "Pull request #12: Ship the PR pill (Open)",
     });
 
+    // A focus right after the lookup is coalesced; one after the freshness window revalidates.
+    const realNow = Date.now.bind(Date);
+    vi.spyOn(Date, "now").mockImplementation(() => realNow() + PR_FOCUS_STALE_MS + 1);
     window.dispatchEvent(new Event("focus"));
 
     await waitFor(() => {
@@ -345,6 +349,48 @@ describe("task detail pull request pills", () => {
         }),
       ).toBeTruthy();
     });
+    vi.restoreAllMocks();
+  });
+
+  it("coalesces a burst of focus events behind one stale revalidation", async () => {
+    let lookups = 0;
+    const slot = renderSlot(app.navPanels[0]!, { subPath: "task/TSK-5" }, {
+      rpc: detailRpc({ listTaskPullRequests: () => { lookups += 1; return { pullRequests: [], unavailableThreadIds: [] }; } }),
+    });
+    await waitFor(() => expect(lookups).toBe(1));
+    // Inside the window after mount: no lookups.
+    for (let i = 0; i < 3; i++) window.dispatchEvent(new Event("focus"));
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(lookups).toBe(1);
+    // Stale focus: one lookup, resolved at once; the following burst inside 15 s adds nothing.
+    const realNow = Date.now.bind(Date);
+    let skew = PR_FOCUS_STALE_MS + 1;
+    vi.spyOn(Date, "now").mockImplementation(() => realNow() + skew);
+    window.dispatchEvent(new Event("focus"));
+    await waitFor(() => expect(lookups).toBe(2));
+    for (let i = 0; i < 3; i++) window.dispatchEvent(new Event("focus"));
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(lookups).toBe(2);
+    // Another full window later it revalidates again.
+    skew += PR_FOCUS_STALE_MS + 1;
+    window.dispatchEvent(new Event("focus"));
+    await waitFor(() => expect(lookups).toBe(3));
+    vi.restoreAllMocks();
+    void slot;
+  });
+
+  it("does not look up pull requests for a task without attached threads, on mount or focus", async () => {
+    let lookups = 0;
+    const slot = renderSlot(app.navPanels[0]!, { subPath: "task/TSK-5" }, {
+      rpc: detailRpc({
+        listTaskThreads: () => ({ taskThreads: [] }),
+        listTaskPullRequests: () => { lookups += 1; return { pullRequests: [], unavailableThreadIds: [] }; },
+      }),
+    });
+    await slot.findByRole("textbox", { name: "Task title" });
+    window.dispatchEvent(new Event("focus"));
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    expect(lookups).toBe(0);
   });
 });
 
@@ -521,13 +567,15 @@ it.each(["main", "side"])("keeps editors and navigation usable during a backgrou
   let refreshing = false;
   let finishRefresh!: () => void;
   const pending = new Promise<void>((resolve) => { finishRefresh = resolve; });
+  let lookupStarted!: () => void;
+  const started = new Promise<void>((resolve) => { lookupStarted = resolve; });
   const options = { rpc: detailRpc({
     getTaskByKey: async () => {
       if (refreshing) await pending;
       return { task: { ...task, title: refreshing ? "Updated by another worker" : task.title } };
     },
     listTaskPullRequests: async () => {
-      if (refreshing) await pending;
+      if (refreshing) { lookupStarted(); await pending; }
       return { pullRequests: [], unavailableThreadIds: [] };
     },
     listPrLinks: () => ({ links: [] }),
@@ -544,7 +592,9 @@ it.each(["main", "side"])("keeps editors and navigation usable during a backgrou
   await slot.behavior.emitRealtime("tasks:changed", { taskId: TASK_ID });
   await slot.behavior.emitRealtime("threads:changed", { taskId: TASK_ID });
   const syncButton = slot.getByRole("button", { name: "Sync PRs" });
-  await waitFor(() => expect(syncButton.getAttribute("aria-busy")).toBe("true"));
+  // Wait on the pending lookup itself; the PR-link query is idle, so the Sync PRs spinner stays off.
+  await started;
+  await waitFor(() => expect(syncButton.getAttribute("aria-busy")).toBe("false"));
   expect(slot.getByRole("textbox", { name: "Task title" })).toBe(title);
   expect(document.activeElement).toBe(title);
   expect(title.textContent).toBe("Unsaved title draft");

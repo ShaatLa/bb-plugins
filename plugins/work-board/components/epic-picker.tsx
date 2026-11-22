@@ -39,7 +39,8 @@ export function EpicPicker({
     ["tasks:changed"],
     [projectId],
     // Closed: only the selected epic matters; the list is re-read when opened.
-    { relevantTaskIds: open ? undefined : value ? [value] : [] },
+    // A task without an epic reads nothing until the picker opens.
+    { enabled: open || value !== null, relevantTaskIds: open ? undefined : value ? [value] : [] },
   );
   const epics = (query.data ?? []).filter(
     (task) => task.type === "epic" && task.projectId === projectId,

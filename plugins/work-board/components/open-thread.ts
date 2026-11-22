@@ -43,7 +43,7 @@ export function useOpenThread(): (threadId: string) => void {
     if (!viaHub) return navigate.toThread(threadId);
     // The clicked element's plugin root, read before the await below ends the click event.
     const target = window.event?.target;
-    const origin = target instanceof Element ? target.closest("[data-bb-plugin-root]") : null;
+    const origin = target instanceof Element ? target.closest('[data-bb-plugin-root][data-bb-plugin="work-board"]') : null;
     void installedHub(sdk).then((hub) => hub ? openInHub(hub, threadId, origin) : navigate.toThread(threadId));
   }, [navigate, sdk, viaHub]);
 }

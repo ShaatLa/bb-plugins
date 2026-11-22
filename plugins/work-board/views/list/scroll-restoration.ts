@@ -70,6 +70,8 @@ export function resolveRestoreTarget(
 interface ListScrollState {
   contentReady: boolean;
   loading: boolean;
+  /** False while a windowed list still renders its short fallback DOM (spacers not yet sized). */
+  measured?: boolean;
   revision: number;
 }
 
@@ -79,6 +81,7 @@ export function useListScrollRestoration(
   state: ListScrollState,
 ): void {
   const { contentReady, loading, revision } = state;
+  const measured = state.measured ?? true;
   const restoredScope = useRef<string | null>(null);
   const pending = useRef<number | null>(null);
   const lastApplied = useRef<number | null>(null);
@@ -107,7 +110,7 @@ export function useListScrollRestoration(
     );
     el.scrollTop = clamped;
     lastApplied.current = clamped;
-    pending.current = clamped < saved && loading ? saved : null;
+    pending.current = clamped < saved && (loading || !measured) ? saved : null;
   }, [ref, scopeKey, contentReady, loading]);
 
   useLayoutEffect(() => {
@@ -122,8 +125,8 @@ export function useListScrollRestoration(
     );
     el.scrollTop = clamped;
     lastApplied.current = clamped;
-    if (clamped >= pending.current || !loading) pending.current = null;
-  }, [ref, scopeKey, revision, loading]);
+    if (clamped >= pending.current || (!loading && measured)) pending.current = null;
+  }, [ref, scopeKey, revision, loading, measured]);
 
   useEffect(() => {
     const el = ref.current;

@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { experimental_copyToClipboard, experimental_useAppPanel, useBbNavigate } from "@get-bb/plugin-sdk/app";
+import type { Task } from "../../shared/contract.js";
 import { parseHeadings } from "../../shared/plan.js";
 import { taskPlanMarkdownLink } from "../../shared/task-link.js";
 import { useTasksQuery } from "../../shell/data.js";
@@ -106,29 +107,35 @@ function PlanSkeleton() {
  */
 export function PlanView({ taskKey, surface }: { taskKey: string; surface: "panel" | "page" }) {
   // Every way into the plan (a persisted tab, an old link, a setting changed while it is open) passes this check.
-  const task = useTasksQuery(async (rpc) => (await rpc.call("getTaskByKey", { taskKey })).task, ["tasks:changed"], [taskKey]);
+  // One read serves both this gate and the body; once the task id is known, only its own changes refetch.
+  const [loaded, setLoaded] = useState<{ key: string; id: string } | undefined>();
+  const task = useTasksQuery(
+    async (rpc) => (await rpc.call("getTaskByKey", { taskKey })).task,
+    ["tasks:changed"],
+    [taskKey],
+    { relevantTaskIds: loaded?.key === taskKey ? [loaded.id] : undefined },
+  );
+  const taskId = task.data?.id;
+  useEffect(() => setLoaded(taskId === undefined ? undefined : { key: taskKey, id: taskId }), [taskKey, taskId]);
   const planning = usePlanning(task.data?.projectId ?? null);
+  if (task.error && task.data === undefined) return <PlanError message={task.error} onRetry={task.refresh} />;
   // The body mounts once, after the setting is known, so a pending "Write plan" request is not lost to a remount.
   if (task.data === undefined || (task.data !== null && planning === undefined)) return <PlanSkeleton />;
   if (planning === "off") return <p role="status" className="p-4 text-sm text-muted-foreground">Planning is off for this project</p>;
-  return <PlanViewBody taskKey={taskKey} surface={surface} />;
+  return <PlanViewBody taskKey={taskKey} surface={surface} task={task} />;
 }
 
-function PlanViewBody({ taskKey, surface }: { taskKey: string; surface: "panel" | "page" }) {
+function PlanError({ message, onRetry }: { message: string; onRetry: () => void }) {
+  return <div role="alert" className="space-y-3 p-4 text-sm"><p className="text-destructive">{message}</p><Button variant="outline" size="sm" onClick={onRetry}>Retry</Button></div>;
+}
+
+function PlanViewBody({ taskKey, surface, task }: { taskKey: string; surface: "panel" | "page"; task: ReturnType<typeof useTasksQuery<Task | null>> }) {
   const navigate = useBbNavigate();
   const navigation = useTasksNavigation();
   const panel = experimental_useAppPanel();
   const openThread = useOpenThread();
 
-  const [loadedId, setLoadedId] = useState<string | undefined>();
-  const task = useTasksQuery(
-    async (rpc) => (await rpc.call("getTaskByKey", { taskKey })).task,
-    ["tasks:changed"],
-    [taskKey],
-    { relevantTaskIds: loadedId ? [loadedId] : undefined },
-  );
   const taskId = task.data?.id ?? null;
-  useEffect(() => setLoadedId(taskId ?? undefined), [taskId]);
   const overview = usePlanOverview(taskId);
   const head = overview.data?.plan ?? null;
   const versions = overview.data?.versions ?? [];
@@ -438,9 +445,7 @@ function PlanViewBody({ taskKey, surface }: { taskKey: string; surface: "panel" 
   );
 
   let content;
-  if (task.error && task.data === undefined) {
-    content = <div role="alert" className="space-y-3 p-4 text-sm"><p className="text-destructive">{task.error}</p><Button variant="outline" size="sm" onClick={task.refresh}>Retry</Button></div>;
-  } else if (task.data === undefined) {
+  if (task.data === undefined) {
     content = <PlanSkeleton />;
   } else if (task.data === null) {
     content = (

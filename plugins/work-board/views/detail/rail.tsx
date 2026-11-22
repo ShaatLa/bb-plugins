@@ -431,18 +431,24 @@ function ProjectMenu({
 
 function DispatchTargetMenu({
   project,
-  bbProjects,
   onError,
   triggerClassName,
 }: {
   project: Project;
-  bbProjects: readonly BbProjectOption[];
   onError: (message: string) => void;
   triggerClassName: string;
 }) {
   const rpc = useTasksRpc();
   const [open, setOpen] = useState(false);
   const [selection, setSelection] = useState<string | null>(null);
+  // Read on open, or at once when a linked project's name is shown in the trigger.
+  const bbProjectsQuery = useTasksQuery(
+    async (query) => (await query.call("listBbProjects")).bbProjects,
+    ["projects:changed"],
+    [],
+    { enabled: open || project.linkedBbProjectId !== null },
+  );
+  const bbProjects: readonly BbProjectOption[] = bbProjectsQuery.data ?? [];
   const [saving, setSaving] = useState(false);
   const linkedBbProjectId = project.linkedBbProjectId;
   const linkedName = bbProjects.find(
@@ -551,10 +557,6 @@ export function PropertiesRail({
   const taskLabels = (labels ?? []).filter((label) =>
     task.labelIds.includes(label.id),
   );
-  const bbProjects = useTasksQuery(
-    async (query) => (await query.call("listBbProjects")).bbProjects,
-    ["projects:changed"],
-  );
   const navigation = useTasksNavigation();
   return (
     <aside
@@ -642,7 +644,6 @@ export function PropertiesRail({
             {project !== undefined ? (
               <DispatchTargetMenu
                 project={project}
-                bbProjects={bbProjects.data ?? []}
                 onError={onError}
                 triggerClassName={RAIL_ROW_CLASS}
               />

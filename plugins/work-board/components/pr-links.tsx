@@ -50,11 +50,9 @@ export function usePrLinks(taskId: string | undefined): PrLinksQuery {
 export function PullRequestsSection({
   taskId,
   projectId,
-  loading = false,
 }: {
   taskId: string;
   projectId: string;
-  loading?: boolean;
 }) {
   const rpc = useTasksRpc();
   const query = usePrLinks(taskId);
@@ -271,7 +269,7 @@ export function PullRequestsSection({
             <TooltipTrigger asChild>
               <Button
                 aria-label="Sync PRs"
-                aria-busy={syncing || loading || query.isFetching}
+                aria-busy={syncing || query.isFetching}
                 size="icon"
                 variant="ghost"
                 className="size-6 shrink-0 text-muted-foreground"
@@ -296,10 +294,10 @@ export function PullRequestsSection({
                   })();
                 }}
               >
-                <Icon name="RotateCcw" className={`size-3.5${syncing || loading || query.isFetching ? " animate-spin" : ""}`} />
+                <Icon name="RotateCcw" className={`size-3.5${syncing || query.isFetching ? " animate-spin" : ""}`} />
               </Button>
             </TooltipTrigger>
-            <TooltipContent>{syncing || loading || query.isFetching ? "Updating Git information…" : "Sync PRs"}</TooltipContent>
+            <TooltipContent>{syncing || query.isFetching ? "Updating Git information…" : "Sync PRs"}</TooltipContent>
           </Tooltip>
           <Tooltip>
             <TooltipTrigger asChild>

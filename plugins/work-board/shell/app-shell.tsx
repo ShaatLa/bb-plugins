@@ -251,10 +251,9 @@ function TasksAppShellContent({ subPath }: PluginNavPanelProps) {
         onOpenChange={setNewTaskOpen}
         projectId={newTaskProjectId}
       />
-      <NewProjectDialog
-        open={newProjectOpen}
-        onOpenChange={setNewProjectOpen}
-      />
+      {newProjectOpen ? (
+        <NewProjectDialog open onOpenChange={setNewProjectOpen} />
+      ) : null}
     </DialogScope>
   );
 }
