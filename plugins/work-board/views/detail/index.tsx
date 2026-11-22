@@ -393,11 +393,15 @@ function TaskDetail({
     [task.id],
     { relevantTaskIds: [task.id] },
   );
+  // Set below: a thread event refreshes pull requests once the reloaded list is in (see onThreadsLoaded).
+  const onThreadsLoaded = useRef<(list: readonly TaskThread[]) => void>(() => {});
   const threads = useTasksQuery<TaskThread[]>(
     async (query, publish) => {
       const cached = await query.call("listTaskThreads", { taskId: task.id, reconcile: false });
       publish(cached.taskThreads);
-      return (await query.call("listTaskThreads", { taskId: task.id })).taskThreads;
+      const list = (await query.call("listTaskThreads", { taskId: task.id })).taskThreads;
+      onThreadsLoaded.current(list);
+      return list;
     },
     ["threads:changed"],
     [task.id],
@@ -435,7 +439,8 @@ function TaskDetail({
         lookup.outstanding -= 1;
       }
     },
-    ["threads:changed"],
+    // No channel of its own: thread events refresh it below, once the updated thread list is in.
+    [],
     [task.id],
     { enabled: hasThreads, relevantTaskIds: [task.id] },
   );
@@ -447,6 +452,17 @@ function TaskDetail({
     if (outstanding > 0 || Date.now() - startedAt < PR_FOCUS_STALE_MS) return;
     refreshPullRequests();
   }, [refreshPullRequests]);
+  // A thread event is acted on after the thread list has reloaded and only if an attachment remains.
+  // The first load is covered by the query becoming enabled. Read from the fetcher, not render state,
+  // so a fast reload cannot be batched away.
+  const threadsSettledFor = useRef<string | null>(null);
+  onThreadsLoaded.current = (list) => {
+    if (threadsSettledFor.current !== task.id) {
+      threadsSettledFor.current = task.id;
+      return;
+    }
+    if (list.length > 0) refreshPullRequests();
+  };
   const hasActivePullRequest = (pullRequests.data?.pullRequests ?? []).some(
     (pullRequest) =>
       pullRequest.state === "open" || pullRequest.state === "draft",
@@ -729,10 +745,8 @@ function TaskDetail({
                     taskId: task.id,
                     threadId: thread.threadId,
                   });
-                  const wasLast = (threads.data?.length ?? 0) <= 1;
+                  // The pull requests refresh once the reloaded list is in, and only if a thread is left.
                   threads.refresh();
-                  // Detaching the last thread leaves nothing to look up (the gate closes once the list reloads).
-                  if (!wasLast) pullRequests.refresh();
                 }}
                 onError={(message) => push(message)}
               />

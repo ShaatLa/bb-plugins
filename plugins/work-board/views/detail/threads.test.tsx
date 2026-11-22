@@ -399,7 +399,11 @@ describe("task detail pull request pills", () => {
     let lookups = 0;
     const slot = renderSlot(app.navPanels[0]!, { subPath: "task/TSK-5" }, {
       rpc: detailRpc({
-        listTaskThreads: () => ({ taskThreads: detached ? [] : [taskThreadRow(THREAD_ROW_ID, "thr_worker000", "Worker")] }),
+        // The reloaded thread list is slow, so the realtime event lands while the old attachment is still shown.
+        listTaskThreads: async () => {
+          if (detached) await new Promise((resolve) => setTimeout(resolve, 300));
+          return { taskThreads: detached ? [] : [taskThreadRow(THREAD_ROW_ID, "thr_worker000", "Worker")] };
+        },
         taskThreadsDetach: () => { detached = true; return { threadId: "thr_worker000" }; },
         listTaskPullRequests: () => { lookups += 1; return { pullRequests: [], unavailableThreadIds: [] }; },
       }),
@@ -407,9 +411,21 @@ describe("task detail pull request pills", () => {
     fireEvent.click(await slot.findByRole("button", { name: "Detach Worker" }));
     await waitFor(() => expect(lookups).toBe(1));
     fireEvent.click(await slot.findByRole("button", { name: "Detach" }));
+    await waitFor(() => expect(detached).toBe(true));
+    await slot.behavior.emitRealtime("threads:changed", { taskId: TASK_ID });
     await waitFor(() => expect(slot.queryByRole("button", { name: "Detach Worker" })).toBeNull());
-    await new Promise((resolve) => setTimeout(resolve, 150));
+    await new Promise((resolve) => setTimeout(resolve, 200));
     expect(lookups).toBe(1);
+  });
+
+  it("refreshes pull requests after a thread event once the thread list has reloaded", async () => {
+    let lookups = 0;
+    const slot = renderSlot(app.navPanels[0]!, { subPath: "task/TSK-5" }, {
+      rpc: detailRpc({ listTaskPullRequests: () => { lookups += 1; return { pullRequests: [], unavailableThreadIds: [] }; } }),
+    });
+    await waitFor(() => expect(lookups).toBe(1));
+    await slot.behavior.emitRealtime("threads:changed", { taskId: TASK_ID });
+    await waitFor(() => expect(lookups).toBe(2));
   });
 
   it("does not start a stale-focus lookup while any earlier lookup is still pending", async () => {
