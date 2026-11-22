@@ -1332,16 +1332,36 @@ export const tasksRpcContract = {
     output: z.object({ comment: commentSchema }).strict(),
   },
   listComments: {
-    input: z.object({ taskId: idSchema, resolveMetadata: z.boolean().optional() }).strict(),
-    output: z.object({ comments: z.array(displayCommentSchema) }).strict(),
+    // `withRevision` is opt-in: legacy callers get the exact old response (no `revision` key, no extra query).
+    input: z.object({ taskId: idSchema, resolveMetadata: z.boolean().optional(), withRevision: z.boolean().optional() }).strict(),
+    output: z.object({ comments: z.array(displayCommentSchema), revision: z.string().optional() }).strict(),
+  },
+  /** Cheap change token of a task's comments and their attachments: `<comments part>|<attachments part>`. */
+  commentsRevision: {
+    input: z.object({ taskId: idSchema }).strict(),
+    output: z.object({ revision: z.string() }).strict(),
+  },
+  /** Thread title/provider of the agent comments of a task; `complete: false` when a lookup failed (retry later). */
+  listCommentThreads: {
+    input: z.object({ taskId: idSchema }).strict(),
+    output: z
+      .object({
+        threads: z.array(
+          z
+            .object({ threadId: z.string(), threadTitle: z.string().nullable(), provider: commentProviderSchema.nullable() })
+            .strict(),
+        ),
+        complete: z.boolean(),
+      })
+      .strict(),
   },
   listAttachments: {
     input: z.union([
       z.object({ taskId: idSchema }).strict(),
       z.object({ commentId: idSchema }).strict(),
-      z.object({ commentsOfTaskId: idSchema }).strict(),
+      z.object({ commentsOfTaskId: idSchema, withRevision: z.boolean().optional() }).strict(),
     ]),
-    output: z.object({ attachments: z.array(attachmentSchema) }).strict(),
+    output: z.object({ attachments: z.array(attachmentSchema), revision: z.string().optional() }).strict(),
   },
   deleteAttachment: {
     input: z

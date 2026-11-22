@@ -21,6 +21,8 @@ import {
   agentNotificationTarget,
   CommentCard,
   CommentComposer,
+  fetchActivityFeed,
+  type FeedLoadState,
 } from "./task-activity.js";
 
 const { rpcCall } = vi.hoisted(() => ({ rpcCall: vi.fn() }));
@@ -475,5 +477,98 @@ describe("CommentComposer", () => {
       releaseSend();
       await harness.dispose();
     }
+  });
+});
+
+describe("fetchActivityFeed", () => {
+  const stored = (body: string) => ({ ...comment("agent", "thr_a"), body });
+  function fakeRpc(handlers: Record<string, (input: unknown) => unknown>) {
+    const calls: string[] = [];
+    return {
+      calls,
+      call: async (method: string, input: unknown) => {
+        calls.push(method);
+        return handlers[method]!(input);
+      },
+    };
+  }
+  const freshState = (): FeedLoadState => ({ cache: null, seq: 0, force: false });
+  const threads = (title: string) => ({ threads: [{ threadId: "thr_a", threadTitle: title, provider: null }], complete: true });
+
+  it("returns the cached entries while the token is unchanged and keeps system rows free of thread metadata", async () => {
+    const state = freshState();
+    const system = { ...comment("system", "thr_a"), id: "01HZZZZZZZZZZZZZZZZZZZZZS1" };
+    const rpc = fakeRpc({
+      listComments: () => ({ comments: [stored("one"), system], revision: "c1" }),
+      listAttachments: () => ({ attachments: [], revision: "a1" }),
+      listCommentThreads: () => threads("Worker"),
+      commentsRevision: () => ({ revision: "c1|a1" }),
+    });
+    const published: unknown[] = [];
+    const first = await fetchActivityFeed(rpc, (entries) => published.push(entries), "T1", state);
+    expect(first.map((entry) => entry.comment.threadTitle)).toEqual(["Worker", null]);
+    expect(published).toHaveLength(1);
+    const again = await fetchActivityFeed(rpc, () => undefined, "T1", state);
+    expect(again).toBe(first);
+    expect(rpc.calls).toEqual(["listComments", "listAttachments", "listCommentThreads", "commentsRevision"]);
+  });
+
+  it("reloads on a new token and on a forced load, and drops the snapshot when a forced load fails", async () => {
+    const state = freshState();
+    let token = "c1";
+    let failAttachments = false;
+    const rpc = fakeRpc({
+      listComments: () => ({ comments: [stored(`body ${token}`)], revision: token }),
+      listAttachments: () => { if (failAttachments) throw new Error("down"); return { attachments: [], revision: "a1" }; },
+      listCommentThreads: () => threads("Worker"),
+      commentsRevision: () => ({ revision: `${token}|a1` }),
+    });
+    await fetchActivityFeed(rpc, () => undefined, "T1", state);
+    token = "c2";
+    expect((await fetchActivityFeed(rpc, () => undefined, "T1", state))[0]!.comment.body).toBe("body c2");
+    state.force = true;
+    failAttachments = true;
+    await expect(fetchActivityFeed(rpc, () => undefined, "T1", state)).rejects.toThrow("down");
+    expect(state.cache).toBeNull();
+    failAttachments = false;
+    expect((await fetchActivityFeed(rpc, () => undefined, "T1", state))[0]!.comment.body).toBe("body c2");
+  });
+
+  it("retries only the metadata while it is incomplete", async () => {
+    const state = freshState();
+    let complete = false;
+    const rpc = fakeRpc({
+      listComments: () => ({ comments: [stored("one")], revision: "c1" }),
+      listAttachments: () => ({ attachments: [], revision: "a1" }),
+      listCommentThreads: () => ({ ...threads("Worker"), threads: complete ? threads("Worker").threads : [], complete }),
+      commentsRevision: () => ({ revision: "c1|a1" }),
+    });
+    expect((await fetchActivityFeed(rpc, () => undefined, "T1", state))[0]!.comment.threadTitle).toBeNull();
+    complete = true;
+    expect((await fetchActivityFeed(rpc, () => undefined, "T1", state))[0]!.comment.threadTitle).toBe("Worker");
+    expect(rpc.calls).toEqual(["listComments", "listAttachments", "listCommentThreads", "commentsRevision", "listCommentThreads"]);
+  });
+
+  it("does not let an older load restore a snapshot a newer load replaced", async () => {
+    const state = freshState();
+    let release: () => void = () => undefined;
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    let generation = 0;
+    const rpc = fakeRpc({
+      listComments: () => ({ comments: [stored(`body ${generation}`)], revision: `c${generation}` }),
+      listAttachments: () => ({ attachments: [], revision: "a1" }),
+      listCommentThreads: async () => { if (generation === 1) await gate; return threads("Worker"); },
+      commentsRevision: () => ({ revision: `c${generation}|a1` }),
+    });
+    generation = 1;
+    const older = fetchActivityFeed(rpc, () => undefined, "T1", state); // stalls on its metadata
+    await vi.waitFor(() => expect(rpc.calls).toContain("listCommentThreads"));
+    generation = 2;
+    state.force = true;
+    await fetchActivityFeed(rpc, () => undefined, "T1", state);
+    release();
+    await older;
+    expect(state.cache?.token).toBe("c2|a1");
+    expect(state.cache?.entries[0]!.comment.body).toBe("body 2");
   });
 });

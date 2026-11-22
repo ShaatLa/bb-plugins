@@ -34,7 +34,7 @@ const readMethods = new Set<string>([
   "listTaskDependencies", "listSequences", "listTaskClaims", "listFolders",
   "getBoardPreferences", "listProjects", "listQuestions", "questionCounts",
   "listTemplates", "getTask", "getTaskByKey", "listTasks", "listLabels",
-  "listComments", "listAttachments", "listTaskThreads", "listTaskCardMeta",
+  "listComments", "commentsRevision", "listCommentThreads", "listAttachments", "listTaskThreads", "listTaskCardMeta",
   "listTaskPullRequests", "listPresets", "listMachines", "searchThreads",
   "listBbProjects", "getTaskPlan", "listTaskPlanVersions", "listPlanNotes", "getNavigationBadgeCriteria", "navigationBadge",
   "sidebarOpenTaskCount", "sidebarSummary", "prSummaries",

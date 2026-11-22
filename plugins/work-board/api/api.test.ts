@@ -11,6 +11,22 @@ import { tasksRpcContract } from "../shared/contract";
 import { createComment, createStore, registerTasksApi } from ".";
 import { prStatusPlugin } from "../test-fixtures.js";
 
+/** Host fakes where `list` serves the active threads `read` resolves and `get` also resolves archived/deleted ones, as the host does. */
+function threadFakes(read: (threadId: string) => ReturnType<typeof makeThreadResponse> | undefined) {
+  return {
+    get: async ({ threadId }: { threadId: string }) => {
+      const thread = read(threadId);
+      if (!thread) throw Object.assign(new Error("thread_not_found"), { code: "thread_not_found" });
+      return thread;
+    },
+    list: async (args?: { threadIds?: readonly string[]; archived?: boolean }) =>
+      (args?.threadIds ?? []).flatMap((id) => {
+        const thread = read(id);
+        return thread && thread.deletedAt == null && (thread.archivedAt != null) === (args?.archived === true) ? [thread] : [];
+      }),
+  };
+}
+
 describe("Tasks RPC domain API", () => {
   it("serves task content, saved workers and comments within 2 s without metadata lookups", async () => {
     const { bb, harness } = createFakePluginHost({ pluginId: "work-board" });
@@ -305,8 +321,7 @@ describe("Tasks RPC domain API", () => {
     const { bb, harness } = createFakePluginHost({
       pluginId: "work-board",
       sdk: {
-        threads: {
-          get: async ({ threadId }: { threadId: string }) => {
+        threads: threadFakes((threadId) => {
             if (threadId === "thr_titled") {
               return makeThreadResponse({
                 id: threadId,
@@ -336,9 +351,8 @@ describe("Tasks RPC domain API", () => {
                 visibility: "hidden",
               });
             }
-            throw new Error("thread_not_found");
-          },
-        },
+            return undefined;
+          }),
       },
     });
     const store = createStore(bb);
@@ -415,7 +429,9 @@ describe("Tasks RPC domain API", () => {
     expect(titleByBody.get("Missing thread")).toBeNull();
     expect(titleByBody.get("Legacy")).toBeNull();
     expect(titleByBody.get("Human note")).toBeNull();
-    expect(harness.sdk.callsTo("threads.get")).toHaveLength(5);
+    // One batched list per pass (active, archived); only the id no list returns is read with get.
+    expect(harness.sdk.callsTo("threads.list")).toHaveLength(2);
+    expect(harness.sdk.callsTo("threads.get")).toEqual([[{ threadId: "thr_missing" }]]);
     await harness.dispose();
   });
 
@@ -423,8 +439,7 @@ describe("Tasks RPC domain API", () => {
     const { bb, harness } = createFakePluginHost({
       pluginId: "work-board",
       sdk: {
-        threads: {
-          get: async ({ threadId }: { threadId: string }) => {
+        threads: threadFakes((threadId) => {
             if (threadId === "thr_codex") {
               return makeThreadResponse({ id: threadId, providerId: "codex" });
             }
@@ -450,9 +465,8 @@ describe("Tasks RPC domain API", () => {
                 providerId: "acp-gone",
               });
             }
-            throw new Error("thread_not_found");
-          },
-        },
+            return undefined;
+          }),
         providers: {
           list: async () => [
             {

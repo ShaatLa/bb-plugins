@@ -433,51 +433,95 @@ interface AgentThreadInfo {
   providerId: string;
 }
 
+function sdkErrorCode(error: unknown): string | undefined {
+  return typeof error === "object" && error !== null && "code" in error && typeof error.code === "string" ? error.code : undefined;
+}
+
+const THREAD_LIST_CHUNK = 200; // SDK `threads.list` limit
+const THREAD_GET_CONCURRENCY = 5;
+
+/** Distinct worker threads of agent comments; system comments may reuse a thread id but never show its metadata. */
+function agentThreadIds(comments: readonly StoredComment[]): Set<string> {
+  const ids = new Set<string>();
+  for (const comment of comments) {
+    if (comment.kind === "agent" && comment.threadId !== null) ids.add(comment.threadId);
+  }
+  return ids;
+}
+
+type SdkThreadRow = Awaited<ReturnType<BbPluginApi["sdk"]["threads"]["get"]>>;
+
+function agentThreadInfo(
+  thread: Pick<SdkThreadRow, "title" | "titleFallback" | "providerId" | "originKind" | "originPluginId" | "visibility">,
+): AgentThreadInfo {
+  const title = isSideChatShapedThread(thread)
+    ? undefined
+    : [thread.title, thread.titleFallback].find(
+        (candidate) => candidate !== null && candidate.trim() !== "",
+      );
+  return { title: title ?? null, providerId: thread.providerId };
+}
+
+/**
+ * Titles and providers of worker threads, same reach as one `threads.get` per id: a batched `list` (active, then
+ * archived; `list` omits deleted and unknown ids), then `get` for every id still missing, a few at a time. A
+ * not-found `get` is an authoritative absence; any other failure leaves the result `complete: false` so it is retried.
+ */
 async function resolveAgentThreadInfo(
   bb: BbPluginApi,
-  comments: readonly StoredComment[],
-): Promise<Map<string, AgentThreadInfo>> {
-  const threadIds = new Set<string>();
-  for (const comment of comments) {
-    if (comment.kind === "agent" && comment.threadId !== null) {
-      threadIds.add(comment.threadId);
-    }
-  }
+  threadIds: Iterable<string>,
+): Promise<{ infos: Map<string, AgentThreadInfo>; complete: boolean }> {
   const infos = new Map<string, AgentThreadInfo>();
-  await Promise.all(
-    [...threadIds].map(async (threadId) => {
+  let pending = [...threadIds];
+  for (const archived of [false, true]) {
+    if (pending.length === 0) break;
+    for (let offset = 0; offset < pending.length; offset += THREAD_LIST_CHUNK) {
+      const chunk = pending.slice(offset, offset + THREAD_LIST_CHUNK);
       try {
-        const thread = await bb.sdk.threads.get({ threadId });
-        const isSideChat = isSideChatShapedThread(thread);
-        const title = isSideChat
-          ? undefined
-          : [thread.title, thread.titleFallback].find(
-              (candidate) => candidate !== null && candidate.trim() !== "",
-            );
-        infos.set(threadId, {
-          title: title ?? null,
-          providerId: thread.providerId,
+        const rows = await bb.sdk.threads.list({
+          threadIds: chunk,
+          limit: chunk.length,
+          includeHidden: true,
+          ...(archived ? { archived: true } : {}),
         });
-      } catch {}
+        for (const row of rows) infos.set(row.id, agentThreadInfo(row));
+      } catch {
+        // The ids stay pending and fall through to the per-id read below.
+      }
+    }
+    pending = pending.filter((id) => !infos.has(id));
+  }
+  let complete = true;
+  let next = 0;
+  await Promise.all(
+    Array.from({ length: Math.min(THREAD_GET_CONCURRENCY, pending.length) }, async () => {
+      while (next < pending.length) {
+        const threadId = pending[next++]!;
+        try {
+          infos.set(threadId, agentThreadInfo(await bb.sdk.threads.get({ threadId })));
+        } catch (error) {
+          if (sdkErrorCode(error) !== "thread_not_found") complete = false;
+        }
+      }
     }),
   );
-  return infos;
+  return { infos, complete };
 }
 
 async function resolveProviderBadges(
   bb: BbPluginApi,
   threadInfo: ReadonlyMap<string, AgentThreadInfo>,
-): Promise<Map<string, CommentProvider>> {
+): Promise<{ badges: Map<string, CommentProvider>; complete: boolean }> {
   const providerIds = new Set(
     [...threadInfo.values()].map((info) => info.providerId),
   );
   const badges = new Map<string, CommentProvider>();
-  if (providerIds.size === 0) return badges;
+  if (providerIds.size === 0) return { badges, complete: true };
   let providers: Awaited<ReturnType<typeof bb.sdk.providers.list>>;
   try {
     providers = await bb.sdk.providers.list();
   } catch {
-    return badges;
+    return { badges, complete: false };
   }
   for (const provider of providers) {
     if (providerIds.has(provider.id)) {
@@ -490,7 +534,53 @@ async function resolveProviderBadges(
       });
     }
   }
-  return badges;
+  return { badges, complete: true };
+}
+
+/** Title and provider badge per thread id; a provider missing from the catalog falls back to its id. */
+async function resolveCommentThreads(
+  bb: BbPluginApi,
+  threadIds: Iterable<string>,
+): Promise<{
+  byThread: Map<string, { threadTitle: string | null; provider: CommentProvider }>;
+  complete: boolean;
+}> {
+  const { infos, complete: threadsComplete } = await resolveAgentThreadInfo(bb, threadIds);
+  const { badges, complete: providersComplete } = await resolveProviderBadges(bb, infos);
+  const byThread = new Map<string, { threadTitle: string | null; provider: CommentProvider }>();
+  for (const [threadId, info] of infos) {
+    byThread.set(threadId, {
+      threadTitle: info.title,
+      provider: badges.get(info.providerId) ?? {
+        id: info.providerId,
+        name: info.providerId,
+        logoUrl: null,
+        icon: null,
+        strings: { iconTint: null },
+      },
+    });
+  }
+  return { byThread, complete: threadsComplete && providersComplete };
+}
+
+function commentsRevisionPart(bb: BbPluginApi, taskId: string): string {
+  const row = bb.storage
+    .database()
+    .prepare<[string], { n: number; last: string | null; notified: number | null }>(
+      "SELECT COUNT(*) AS n, MAX(id) AS last, SUM(notified_count) AS notified FROM comments WHERE task_id = ?",
+    )
+    .get(taskId)!;
+  return `${row.n}:${row.last ?? ""}:${row.notified ?? 0}`;
+}
+
+function attachmentsRevisionPart(bb: BbPluginApi, taskId: string): string {
+  const row = bb.storage
+    .database()
+    .prepare<[string], { n: number; last: string | null }>(
+      "SELECT COUNT(*) AS n, MAX(id) AS last FROM attachments WHERE comment_id IN (SELECT id FROM comments WHERE task_id = ?)",
+    )
+    .get(taskId)!;
+  return `${row.n}:${row.last ?? ""}`;
 }
 
 interface CreateCommentInput {
@@ -1429,32 +1519,38 @@ export function registerHandlers(
     },
     async listComments(input) {
       const comments = store.tasks.listComments(input.taskId);
+      // Taken in the same synchronous step as the rows, so the token is never newer than the data it came with.
+      const revision = input.withRevision ? { revision: commentsRevisionPart(bb, input.taskId) } : {};
       if (input.resolveMetadata === false) {
-        return { comments: comments.map((comment) => ({ ...comment, threadTitle: null, provider: null })) };
+        return { comments: comments.map((comment) => ({ ...comment, threadTitle: null, provider: null })), ...revision };
       }
-      const threadInfo = await resolveAgentThreadInfo(bb, comments);
-      const providerBadges = await resolveProviderBadges(bb, threadInfo);
+      const { byThread } = await resolveCommentThreads(bb, agentThreadIds(comments));
       return {
         comments: comments.map((comment) => {
-          const info =
+          const meta =
             comment.kind === "agent" && comment.threadId !== null
-              ? threadInfo.get(comment.threadId)
+              ? byThread.get(comment.threadId)
               : undefined;
-          return {
-            ...comment,
-            threadTitle: info?.title ?? null,
-            provider:
-              info === undefined
-                ? null
-                : (providerBadges.get(info.providerId) ?? {
-                    id: info.providerId,
-                    name: info.providerId,
-                    logoUrl: null,
-                    icon: null,
-                    strings: { iconTint: null },
-                  }),
-          };
+          return { ...comment, threadTitle: meta?.threadTitle ?? null, provider: meta?.provider ?? null };
         }),
+        ...revision,
+      };
+    },
+    commentsRevision(input) {
+      return { revision: `${commentsRevisionPart(bb, input.taskId)}|${attachmentsRevisionPart(bb, input.taskId)}` };
+    },
+    async listCommentThreads(input) {
+      const ids = bb.storage
+        .database()
+        .prepare<[string], { id: string }>(
+          "SELECT DISTINCT thread_id AS id FROM comments WHERE task_id = ? AND kind = 'agent' AND thread_id IS NOT NULL",
+        )
+        .all(input.taskId)
+        .map((row) => row.id);
+      const { byThread, complete } = await resolveCommentThreads(bb, ids);
+      return {
+        threads: [...byThread].map(([threadId, meta]) => ({ threadId, ...meta })),
+        complete,
       };
     },
     listAttachments(input) {
@@ -1468,6 +1564,9 @@ export function registerHandlers(
               );
       return {
         attachments: attachments.map(attachmentMetadata),
+        ...("commentsOfTaskId" in input && input.withRevision
+          ? { revision: attachmentsRevisionPart(bb, input.commentsOfTaskId) }
+          : {}),
       };
     },
     async deleteAttachment(input) {
