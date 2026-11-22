@@ -16,7 +16,7 @@ import {
   writeQuerySnapshot,
 } from "./query-snapshot.js";
 import { forgetTaskReads, getSharedTask, invalidateTaskDatasets } from "./task-dataset";
-import { useTasksRefresh } from "./refresh.js";
+import { onRefreshRequested, useTasksRefresh } from "./refresh.js";
 import {
   createTaskSignalScheduler,
   type InvalidationChannel,
@@ -24,6 +24,8 @@ import {
 } from "./signal-scheduler.js";
 
 const readFlights = new Map<string, Promise<unknown>>();
+// A read still in flight from before a reconnect or manual refresh may carry stale rows: no later query may join it.
+onRefreshRequested(() => readFlights.clear());
 // Shared reads are only safe while nothing changed: any event or mutation starts a fresh generation.
 function forgetReads() {
   readFlights.clear();

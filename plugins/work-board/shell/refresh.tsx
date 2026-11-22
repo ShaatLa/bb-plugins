@@ -62,9 +62,17 @@ function endGenerationWork() {
   }
 }
 
+const refreshRequestHooks = new Set<() => void>();
+
+/** Runs `hook` each time a refresh generation is requested, before the generation advances. */
+export function onRefreshRequested(hook: () => void) {
+  refreshRequestHooks.add(hook);
+}
+
 function requestRefresh() {
   if (sharedSnapshot.isRefreshing) return;
   invalidateTaskDatasets(true);
+  for (const hook of refreshRequestHooks) hook();
   const generation = sharedSnapshot.generation + 1;
   updateSharedSnapshot({ generation, isRefreshing: true });
   queueMicrotask(() => {

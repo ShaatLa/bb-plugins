@@ -8,6 +8,8 @@ import { afterEach, describe, expect, it } from "vitest";
 import { createStore, registerTasksApi } from "../../api/index.js";
 import { publishAttachmentChanged } from "../../attachments/index.js";
 import { tasksRpcContract } from "../../shared/contract.js";
+import { TasksRefreshProvider } from "../../shell/refresh.js";
+import { useTasksQuery } from "../../shell/data.js";
 
 if (!window.matchMedia) {
   window.matchMedia = (query: string) =>
@@ -53,13 +55,17 @@ async function mount(options: { block?: string } = {}) {
   );
   const log: Array<{ method: string; input: any }> = [];
   const failNext = new Set<string>();
+  const hold: { gate: Promise<void> | null } = { gate: null };
   const rpc: Record<string, (input: unknown) => Promise<unknown>> = {};
   for (const method of Object.keys(tasksRpcContract)) {
     rpc[method] = async (input) => {
       log.push({ method, input });
       if (method === options.block) await blocked;
       if (failNext.delete(method)) throw new Error(`${method} failed`);
-      return harness.callRpc(method as never, input as never);
+      const result = await harness.callRpc(method as never, input as never);
+      // Holds the first matching response after the database was read, as a slow link would.
+      if (method === "listComments" && hold.gate) { const gate = hold.gate; hold.gate = null; await gate; }
+      return result;
     };
   }
   const slot = renderSlot(app.navPanels[0]!, { subPath: `task/${task.key}` }, { rpc: rpc as never });
@@ -73,7 +79,7 @@ async function mount(options: { block?: string } = {}) {
     return log.slice(before).filter((entry) => FEED_METHODS.includes(entry.method) || (entry.method === "listAttachments" && "commentsOfTaskId" in entry.input)).map((entry) => entry.method);
   };
   return {
-    bb, harness, store, task, comments, slot, log, failNext, replay, feedCalls, release,
+    bb, harness, store, task, comments, slot, log, failNext, hold, replay, feedCalls, release,
     setThreadsDown: (down: boolean) => { threadsDown = down; },
     emit: async (...channels: string[]) => { for (const channel of channels) await slot.behavior.emitRealtime(channel, { taskId: task.id, projectId: project.id }); await settle(); },
     dispose: async () => { cleanup(); await harness.dispose(); },
@@ -144,6 +150,25 @@ describe("activity feed over realtime events", () => {
     await t.dispose();
   });
 
+  it("a reconnect reloads the feed even while a read from before the disconnect is held", async () => {
+    const t = await mount();
+    await t.slot.findByText("Progress 5");
+    await settle();
+    let release: () => void = () => {};
+    t.hold.gate = new Promise<void>((resolve) => (release = resolve));
+    // A load reads the old body and its response stays pending.
+    await t.slot.behavior.emitRealtime("comments:changed", { taskId: t.task.id });
+    await settle(150);
+    await t.slot.behavior.setRealtimeConnectionState("reconnecting");
+    t.bb.storage.database().prepare("UPDATE comments SET body = 'Overwritten body' WHERE id = ?").run(t.comments[5]!.id);
+    await t.slot.behavior.setRealtimeConnectionState("connected");
+    await settle();
+        release();
+    await settle();
+    await t.slot.findByText("Overwritten body");
+    await t.dispose();
+  });
+
   it("a failed forced reload leaves no stale snapshot for the next ordinary refresh", async () => {
     const t = await mount();
     await t.slot.findByText("Progress 5");
@@ -179,5 +204,46 @@ describe("activity feed over realtime events", () => {
     t.release();
     await t.slot.findAllByText(/Worker thr_a/);
     await t.dispose();
+  });
+});
+
+describe("shared reads across a refresh generation", () => {
+  it("a reconnect does not join a read that began before the disconnect", async () => {
+    let served = "old";
+    let release: () => void = () => {};
+    let holdNext = false;
+    const calls: string[] = [];
+    function Probe() {
+      const query = useTasksQuery<string>(async (rpc) => ((await rpc.call("getTask", { taskId: "T1" } as never)) as unknown as { value: string }).value, ["tasks:changed"], []);
+      return <p>shown: {query.data ?? "none"}</p>;
+    }
+    const slot = renderSlot(
+      { id: "probe", component: () => <TasksRefreshProvider><Probe /></TasksRefreshProvider> } as never,
+      {},
+      {
+        rpc: {
+          getTask: async () => {
+            calls.push(served);
+            const value = served;
+            if (holdNext) { holdNext = false; await new Promise<void>((resolve) => (release = resolve)); }
+            return { value };
+          },
+        } as never,
+      },
+    );
+    await slot.findByText("shown: old");
+    await settle();
+    holdNext = true;
+    await slot.behavior.emitRealtime("tasks:changed", { taskId: "T1", projectId: "P1" });
+    await settle(150);
+    await slot.behavior.setRealtimeConnectionState("reconnecting");
+    served = "new";
+    await slot.behavior.setRealtimeConnectionState("connected");
+    await settle();
+    release();
+    await settle();
+    await slot.findByText("shown: new");
+    expect(calls).toEqual(["old", "old", "new"]);
+    cleanup();
   });
 });
