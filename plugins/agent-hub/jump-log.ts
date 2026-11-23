@@ -7,7 +7,7 @@ export function watchJumps(node: HTMLElement, threadId: string, state: () => Rec
   // Reads and writes go through the prototype chain at call time, so anything else hooked there still applies.
   const proto = Object.getPrototypeOf(node), own = { get: () => Reflect.get(proto, 'scrollTop', node) as number, set: (to: number) => { Reflect.set(proto, 'scrollTop', to, node); } };
   const writes: { at: number; to: number; from: number; stack: string }[] = [];
-  let last = own.get(), input = 0, height = node.scrollHeight;
+  let last = own.get(), input = -Infinity, height = node.scrollHeight;
   const now = () => Math.round(performance.now());
   Object.defineProperty(node, 'scrollTop', { configurable: true, get: () => own.get(), set: (to: number) => {
     writes.push({ at: now(), to: Math.round(to), from: Math.round(own.get()), stack: (new Error().stack ?? '').split('\n').slice(2, 6).map(line => line.trim().replace(/^at /, '').replace(/https?:\/\/[^/]+/, '')).join(' < ') });
@@ -23,7 +23,7 @@ export function watchJumps(node: HTMLElement, threadId: string, state: () => Rec
       sent++;
       const recent = writes.filter(write => t - write.at < KEEP).map(write => `${t - write.at}ms ago ${write.from}->${write.to} ${write.stack}`);
       const active = document.activeElement, focus = active ? `${active.tagName.toLowerCase()}${active.getAttribute('aria-label') ? `[${active.getAttribute('aria-label')}]` : ''}` : 'none';
-      const message = `jump ${threadId} ${Math.round(last)}->${Math.round(top)} height ${height}->${node.scrollHeight} client ${node.clientHeight} input ${input ? `${t - input}ms ago` : 'none'} focus ${focus} state ${JSON.stringify(state())}`;
+      const message = `jump ${threadId} ${Math.round(last)}->${Math.round(top)} height ${height}->${node.scrollHeight} client ${node.clientHeight} input ${Number.isFinite(input) ? `${t - input}ms ago` : 'none'} focus ${focus} state ${JSON.stringify(state())}`;
       void fetch('/api/v1/plugins/agent-hub/rpc/logClientError', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ where: 'jump', message: message.slice(0, 2000), stack: (recent.join('\n') || 'no scroll writes: the browser moved it').slice(0, 8000) }) }).catch(() => {});
     }
     last = top; height = node.scrollHeight;
