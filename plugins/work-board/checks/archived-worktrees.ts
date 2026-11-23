@@ -53,7 +53,8 @@ export function scanArchivedWorktrees(bb: BbPluginApi, project: ScanProject, rep
   const running = inFlight.get(bb) ?? inFlight.set(bb, new Set()).get(bb)!;
   if (running.has(project.id)) {
     bb.log.warn("previous archived-worktree scan still running");
-    return Promise.resolve(null);
+    // Incomplete, not absent: nothing was observed, so history, cursor and failures stay as they are and the pass proves nothing.
+    return Promise.resolve({ complete: false, present: [] as string[], newPaths: [] as string[], lastMeasuredPath: afterPath, lines: [] as string[], failures: knownFailures, notes: [] as ScanNote[] });
   }
   running.add(project.id);
   const scanning = scan(bb, project, reported, afterPath, knownFailures, signal);

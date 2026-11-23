@@ -823,6 +823,13 @@ const MIGRATIONS = [
   },
   // Reverse PR-link lookups (snapshot writes, orphan cleanup) start from the identity; the primary key starts with task_id.
   `CREATE INDEX IF NOT EXISTS idx_task_pr_links_identity ON task_pr_links(identity, task_id);`,
+  // 0.74.0: the latest return from live to shadow (a `to_shadow` acknowledgement) whose stale-status lines the checks runner has resent
+  // (checks/service.ts). Local only, never exported. Seeded with every existing return, so the upgrade alone resends nothing. Acknowledgements
+  // that no current mode row has reached go first: a deleted tracker (restored or not) starts its generations over and must not inherit them.
+  `CREATE TABLE IF NOT EXISTS checks_stale_rollback (tracker_id TEXT PRIMARY KEY, consumed_generation INTEGER NOT NULL);
+   DELETE FROM attention_acks WHERE NOT EXISTS (SELECT 1 FROM attention_modes m WHERE m.tracker_id=attention_acks.tracker_id AND m.kind=attention_acks.kind AND m.effective_generation >= attention_acks.generation);
+   INSERT OR IGNORE INTO checks_stale_rollback (tracker_id, consumed_generation)
+   SELECT tracker_id, MAX(generation) FROM attention_acks WHERE kind='stale-status' AND direction='to_shadow' GROUP BY tracker_id;`,
 ] as const;
 
 export function initializeTasksSchema(db: PluginDatabase, log: Log = () => {}): void {

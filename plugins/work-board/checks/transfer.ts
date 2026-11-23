@@ -145,6 +145,12 @@ export function createTransfer(deps: TransferDeps) {
     if (mismatch) throw new Error(`The tracker's state belongs to ${mismatch}. Reset it first.`);
   }
 
+  /** Live (or changing) attention may have been acknowledged by Work Board itself, which only holds while it keeps the runner. */
+  function assertAttentionNotLive(trackerId: string) {
+    const mode = getModeRow(db, trackerId);
+    if (mode.effective_mode === "live" || isPending(mode)) throw new Error("Manager attention is live or changing for this project. Switch it off in the project settings first.");
+  }
+
   // ---- admission ------------------------------------------------------------------------------------------------
 
   /** Positive evidence that Sweep neither runs nor holds state for this project; anything else, including an old Sweep, is inconclusive. */
@@ -373,8 +379,7 @@ export function createTransfer(deps: TransferDeps) {
         if (current?.owner !== "work-board" || current.tracker_id !== trackerId) throw new Error("This tracker does not own the runner of its bb project, so there is nothing to hand to Sweep.");
         if (unconfirmedSend(current)) throw new Error("A send is already unconfirmed. Rerun bb work-board checks export-to-sweep.");
         assertProjectIdle(link, trackerId);
-        const mode = getModeRow(db, trackerId);
-        if (mode.effective_mode === "live" || isPending(mode)) throw new Error("Manager attention is live or changing for this project. Switch it off in the project settings first.");
+        assertAttentionNotLive(trackerId);
         return current;
       };
       const first = check();
@@ -443,6 +448,7 @@ export function createTransfer(deps: TransferDeps) {
       const row = readOwner(db, link);
       if (!row || row.owner !== "work-board" || row.tracker_id !== trackerId) return done("nothing-to-release", "This tracker does not own the runner row.");
       if (hasLineage(row)) throw new Error("The runner row has transfer lineage, so it is never deleted. Hand the runner back with bb work-board checks export-to-sweep.");
+      assertAttentionNotLive(trackerId);
       assertProjectIdle(link, trackerId);
       releaseOwner(db, trackerId, link);
       return done("released", "Work Board no longer owns the runner of this bb project.");

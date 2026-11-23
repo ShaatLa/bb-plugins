@@ -5,7 +5,8 @@ import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import { z } from "zod";
 import { publishProjectsChanged, publishSettingsChanged } from "../api";
 import { HISTORY_ERROR_PASSES, HISTORY_ERROR_SPAN_MS, LATE_SEARCH_MS, PENDING_INLINE_MS } from "../attention/service";
-import { configuredManager } from "../attention/modes";
+import { configuredManager, getModeRow } from "../attention/modes";
+import { ATTENTION_KIND } from "../attention/observe";
 import { getChecksEnvironment } from "../global-settings";
 import { errorMessage } from "../shared/errors";
 import { deliverWithReceipt, searchAttentionMarker, type HistoryCursor, type Receipt as SteerReceipt } from "../steer";
@@ -15,7 +16,7 @@ import { scanArchivedWorktrees, scanTuning, type ScanProject } from "./archived-
 import { formatNotification } from "./notification";
 import { agentHubEnabled, callNotice, choosePayload, classifyNoticeError, noticeTitle, type NoticeReply } from "./notice";
 import { assertNoOtherOwner, isDraining, owners, runs, stateMismatch } from "./ownership";
-import { reportContents } from "./reports";
+import { reportContents, staleStatusKind } from "./reports";
 import { CheckoutRefreshError, execute, KILL_GRACE_MS, GIT_TIMEOUT_MS } from "./runner";
 import { checksStore, type AttemptRow, type NoticeRow, type State } from "./store";
 import { createTransfer } from "./transfer";
@@ -396,6 +397,16 @@ function createService(bb: BbPluginApi) {
 
   // ---- running --------------------------------------------------------------------------------------------------
 
+  /** The generation of the latest return to shadow whose current stale-status lines the runner has not sent since, or null. */
+  const unconsumedRollback = (trackerId: string): number | null => db.prepare<[string, string, string], { generation: number | null }>(
+    `SELECT MAX(generation) AS generation FROM attention_acks WHERE tracker_id=? AND kind=? AND direction='to_shadow'
+     AND generation > COALESCE((SELECT consumed_generation FROM checks_stale_rollback WHERE tracker_id=?), 0)`,
+  ).get(trackerId, ATTENTION_KIND, trackerId)?.generation ?? null;
+  // Conditional, so two overlapping ticks cannot both consume one return.
+  const consumeRollback = (trackerId: string, generation: number) => db.prepare<[string, number]>(
+    "INSERT INTO checks_stale_rollback (tracker_id, consumed_generation) VALUES (?, ?) ON CONFLICT(tracker_id) DO UPDATE SET consumed_generation=excluded.consumed_generation WHERE consumed_generation < excluded.consumed_generation",
+  ).run(trackerId, generation);
+
   /** Runs the script; also returns the bb project it read (null when the lookup failed), which the worktree scan reuses. */
   async function runScript(trackerId: string, link: string, config: ChecksConfig, manager: string, committed: Buffer | null) {
     let project: ScanProject | null = null;
@@ -470,24 +481,39 @@ function createService(bb: BbPluginApi) {
       const { result, refreshFailed, project } = await runScript(trackerId, link, config, manager, committed);
       controller.signal.throwIfAborted();
       // Archived worktrees are scanned after the script, also after a failed one; the project is the one the script run read.
+      let scanFailed = false;
       const worktrees = project ? await scanArchivedWorktrees(bb, project, state.reportedWorktrees ?? [], state.lastMeasuredWorktree, state.worktreeRootFailures ?? [], AbortSignal.any([controller.signal, AbortSignal.timeout(scanTuning.deadlineMs)])).catch((error) => {
         controller.signal.throwIfAborted();
         bb.log.warn(`Archived worktree scan failed for ${trackerId}: ${String(error)}`);
+        scanFailed = true;
         return null;
       }) : null;
       if (worktrees) { state.lastMeasuredWorktree = worktrees.lastMeasuredPath; state.worktreeRootFailures = worktrees.failures.length ? worktrees.failures : undefined; for (const { level, message } of worktrees.notes) bb.log[level](message); }
       // Only a complete observation of absence clears history.
       if (worktrees?.complete && state.reportedWorktrees) { const present = new Set(worktrees.present); state.reportedWorktrees = state.reportedWorktrees.filter((path) => present.has(path)); }
       const newWorktrees = worktrees?.newPaths.length ? worktrees.newPaths : undefined;
-      const output = worktrees?.lines.length ? [result.output.trimEnd(), ...worktrees.lines].filter(Boolean).join("\n") : result.output;
-      const code = newWorktrees && result.code === 0 ? 1 : result.code;
+      const raw = worktrees?.lines.length ? [result.output.trimEnd(), ...worktrees.lines].filter(Boolean).join("\n") : result.output;
+      let code = newWorktrees && result.code === 0 ? 1 : result.code;
+      // Read only now, so a run that crossed a mode switch is judged by the mode in force when its output is. While live, Work Board's
+      // attention sends stale-status notices, so the script's own lines are dropped.
+      const live = getModeRow(db, trackerId).effective_mode === "live";
+      let report = reportContents(code, raw, live ? { drop: staleStatusKind } : {});
+      // A dropped finding is no diagnostic: exit 1 with nothing else left is a quiet run.
+      if (code === 1 && report.dropped && !report.items.size && !report.diagnostics) { code = 0; report = reportContents(0, report.body); }
+      const output = report.body;
+      // After a return from live, the current stale-status lines are sent as new: live kept them from the manager, while the baseline may still hold them.
+      const rollback = live ? null : unconsumedRollback(trackerId);
+      // Only a successful judgement resends and consumes the return; a failed run, or a scan that failed, timed out, is still outstanding
+      // or was incomplete, leaves both to the next tick, so a lasting failure wakes the manager once, on recovery. A scan that cannot
+      // run here (no host or storage) returns null and does not block it.
+      const consume = rollback !== null && code < 2 && !scanFailed && worktrees?.complete !== false;
+      const resendStale = consume && [...report.items.values()].includes(staleStatusKind);
       state.exitCode = code;
       state.refreshFailures = refreshFailed ? (state.refreshFailures ?? 0) + 1 : 0;
       state.refreshRetryAt = refreshFailed ? Date.now() + Math.min(interval * 2 ** Math.min(state.refreshFailures - 1, 6), Math.max(interval, MAX_REFRESH_BACKOFF_MS)) : undefined;
       state.failureStage = refreshFailed ? "refresh" : code >= 2 ? "script" : null;
       // The execution diagnostic is part of the state the staging transaction saves, so a restart shows the right one.
       state.error = code >= 2 ? result.output : null;
-      const report = reportContents(code, output);
       history.result(trackerId, link, tickId, now, report.items, refreshFailed ? "refresh" : code >= 2 ? "script" : undefined);
 
       const candidateChanged = result.snapshot !== null && (!committed || !result.snapshot.equals(committed));
@@ -503,7 +529,7 @@ function createService(bb: BbPluginApi) {
       const changedDiagnostic = code === 1 && !report.items.size && lastReport?.fingerprint !== report.fingerprint;
       // An unknown baseline (a report that crossed a transfer without its item hashes): a different fingerprint is news, and an empty Waiting list is never suppressed.
       const fingerprintChanged = !!lastReport && !previous && code < 2 && lastReport.fingerprint !== report.fingerprint;
-      const notify = !!newWorktrees || (code >= 2 ? changedFailure : waitingChanged || newItem || candidateChanged || answerWithoutCandidate || changedDiagnostic || fingerprintChanged);
+      const notify = !!newWorktrees || (code >= 2 ? changedFailure : waitingChanged || newItem || candidateChanged || answerWithoutCandidate || changedDiagnostic || fingerprintChanged || resendStale);
       // Any run below 2 ends a failure streak, even when it sends nothing: the same failure after a quiet success notifies again.
       if (code < 2) state.lastFailure = undefined;
       let delivery: Outcome = { status: "none" };
@@ -515,11 +541,16 @@ function createService(bb: BbPluginApi) {
         db.transaction(() => {
           store.stage(trackerId, { reportId: randomUUID(), project: link, exit: code, tick: tickId, body, snapshot: result.snapshot });
           store.save(trackerId, staged);
+          if (consume) consumeRollback(trackerId, rollback!);
         })();
         state.pendingWorktrees = newWorktrees;
         delivery = await processPending(trackerId, link, state, tickId);
         controller.signal.throwIfAborted();
-      } else if (code !== 0 || report.changes.waiting || result.snapshot !== null) history.suppress(tickId);
+      } else {
+        if (code !== 0 || report.changes.waiting || result.snapshot !== null) history.suppress(tickId);
+        // Nothing staged: no stale-status line is current, so there is nothing to resend.
+        if (consume) consumeRollback(trackerId, rollback!);
+      }
       // A report still pending is retried at the normal cadence, whatever the refresh deadline says.
       if (state.refreshRetryAt && !store.delivery(trackerId)?.report_id) state.nextRun = state.refreshRetryAt;
       if (delivery.status === "blocked") state.deliveryError = delivery.error ?? state.deliveryError ?? null;

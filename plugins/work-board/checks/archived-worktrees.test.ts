@@ -2,6 +2,7 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { requestMode, selfAckTransition } from "../attention/modes";
 import { receiptPolling } from "../steer";
 import { scanTuning, scansRunning } from "./archived-worktrees";
 import { formatNotification } from "./notification";
@@ -350,6 +351,35 @@ describe("tick", () => {
     await f.tick();
     expect(f.worktrees.scan.calls).toBe(2);
     expect(reported(f)).toEqual([path]);
+  });
+
+  it("keeps a return to shadow unconsumed while a timed-out scan is still outstanding, and resends the unchanged stale line once it settles", async () => {
+    const stale = "ACTION stale-status EXA-1: in progress with no active thread";
+    const f = await make(stale, 1);
+    const trackerId = f.tracker.id;
+    requestMode(f.db, { trackerId, mode: "shadow" });
+    await f.tick();
+    f.db.prepare("UPDATE attention_modes SET shadow_started_at=? WHERE tracker_id=?").run(new Date(Date.now() - 49 * 3_600_000).toISOString(), trackerId);
+    requestMode(f.db, { trackerId, mode: "live", parityReviewed: true });
+    expect(selfAckTransition(f.db, trackerId)).toMatchObject({ ok: true });
+    requestMode(f.db, { trackerId, mode: "shadow" });
+    const back = selfAckTransition(f.db, trackerId) as { generation: number };
+    const consumed = () => (f.db.prepare("SELECT consumed_generation AS g FROM checks_stale_rollback WHERE tracker_id=?").get(trackerId) as { g: number } | undefined)?.g;
+    const staleSent = () => f.sent().split("`stale status`").length - 1;
+    expect(staleSent()).toBe(1);
+    scanTuning.deadlineMs = 300;
+    stall.path = f.worktrees.scan.storage;
+    f.output("", 0); // nothing stale: a judgement that counted as complete would consume the return
+    await f.tick(); // the scan times out
+    await f.tick(); // the stalled scan is still outstanding
+    expect(stall.calls).toBe(1);
+    expect(consumed()).not.toBe(back.generation);
+    scanTuning.deadlineMs = 60_000; stall.release(); stall.path = null;
+    await vi.waitFor(() => expect(scansRunning(f.bb)).toBe(0));
+    f.output(stale, 1); // the same line as the last delivered report
+    await f.tick();
+    expect(staleSent()).toBe(2);
+    expect(consumed()).toBe(back.generation);
   });
 
   it("drains an already staged report without scanning, and never scans on a manual run", async () => {

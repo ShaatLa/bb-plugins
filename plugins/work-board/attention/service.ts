@@ -3,10 +3,10 @@ import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import { deliverWithReceipt, searchAttentionMarker, type HistoryCursor, type Receipt } from "../steer";
 import { errorMessage } from "../shared/errors";
 import { managerProblemText, type ManagerLookup } from "../shared/attention";
-import { publishSettingsChanged } from "../api";
+import { publishProjectsChanged, publishSettingsChanged } from "../api";
 import { isSideChatShapedThread } from "../shared/side-chat";
 import { bumpRev, CURRENT_KEY_SQL, onAttentionChanged, onTrackerDirty, scanTracker } from "./ledger";
-import { configuredManager, finishToShadow, getModeRow, kindState, requestMode, type AttentionMode, type KindState } from "./modes";
+import { configuredManager, finishToShadow, getModeRow, kindState, requestMode, selfAckTransition, type AttentionMode, type KindState } from "./modes";
 import { ATTENTION_KIND, PILOT_SIGNALS } from "./observe";
 
 type Database = ReturnType<BbPluginApi["storage"]["database"]>;
@@ -289,11 +289,20 @@ function createService(bb: BbPluginApi) {
     await Promise.allSettled([...inflight.values()]);
     await recover(trackerId);
     const ready = finishToShadow(db, trackerId);
-    if (ready) notifyChanged(trackerId);
+    if (ready) { selfAck(trackerId); notifyChanged(trackerId); }
     return ready;
   }
 
+  /** Completes a ready transition when Work Board runs the project's checks, and tells open views like an `attention.ack` does. */
+  function selfAck(trackerId: string): void {
+    const result = selfAckTransition(db, trackerId);
+    if (!result?.ok) return;
+    bb.log.info(`attention ${ATTENTION_KIND} for ${trackerId}: ${result.direction} acknowledged by Work Board`);
+    publishProjectsChanged(bb, trackerId);
+  }
+
   async function drainTracker(trackerId: string): Promise<void> {
+    selfAck(trackerId);
     const row = getModeRow(db, trackerId);
     if (row.effective_mode !== "live") return;
     if (row.requested_mode !== null) {

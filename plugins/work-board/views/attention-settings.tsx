@@ -10,13 +10,18 @@ import { useThreadNames } from "../components/thread-names.js";
 import { useTasksQuery, useTasksRpc } from "../shell/data.js";
 import { errorMessage } from "../shared/errors.js";
 
-const MODE_LABEL = { off: "Off: Sweep sends", shadow: "Shadow: compare only, Sweep sends", live: "Live: Work Board sends" };
-const SENDER = { off: "Off · Sweep sends", shadow: "Shadow · comparing, Sweep sends", live: "Live · Work Board sends" };
-const MODE_NOTE = {
-  off: "Sweep sends stale-status notices.",
-  shadow: "Sweep sends notices while Work Board records what it would send.",
-  live: "Work Board sends stale-status notices to the manager.",
-};
+// Outside live the repository checks send stale-status findings: Sweep's runner, or Work Board's when it owns the project's checks.
+const texts = (sender: string) => ({
+  label: { off: `Off: ${sender} sends`, shadow: `Shadow: compare only, ${sender} sends`, live: "Live: Work Board sends" },
+  sender: { off: `Off · ${sender} sends`, shadow: `Shadow · comparing, ${sender} sends`, live: "Live · Work Board sends" },
+  note: {
+    off: `${sender} sends stale-status notices.`,
+    shadow: `${sender} sends notices while Work Board records what it would send.`,
+    live: "Work Board sends stale-status notices to the manager.",
+  },
+});
+const SWEEP_TEXTS = texts("Sweep");
+const RUNNER_TEXTS = texts("Work Board's checks runner");
 
 type ManagerThread = Awaited<ReturnType<ReturnType<typeof useSdk>["threads"]["list"]>>[number];
 const threadTitle = (thread: ManagerThread) => thread.title || thread.titleFallback || "Untitled thread";
@@ -136,6 +141,7 @@ export function AttentionSettings({ projectId }: { projectId: string }) {
   const previousManager = settings?.managerPrevious;
   const previousNames = useThreadNames(previousManager ? [previousManager] : []);
   const unresolved = settings?.unresolvedAttempts.length ?? 0;
+  const { label: MODE_LABEL, sender: SENDER, note: MODE_NOTE } = settings?.workBoardRunsChecks ? RUNNER_TEXTS : SWEEP_TEXTS;
   return (
     <section aria-label="Manager attention" className="space-y-3">
       <h4 className="text-sm font-medium">Manager attention</h4>
@@ -178,7 +184,7 @@ export function AttentionSettings({ projectId }: { projectId: string }) {
               </div>
               {pending ? (
                 <p className="rounded-md bg-muted/50 px-3 py-2 text-xs" data-testid="attention-pending">
-                  {pending.direction === "to_live" ? "Going live" : "Going back to shadow"} · {pending.state === "ready" ? "Waiting for Sweep to acknowledge" : "Settling in-flight notices"}
+                  {pending.direction === "to_live" ? "Going live" : "Going back to shadow"} · {pending.state !== "ready" ? "Settling in-flight notices" : settings.checksFence ?? (settings.workBoardRunsChecks ? "Completing on the next attention pass" : "Waiting for Sweep to acknowledge")}
                 </p>
               ) : mode === "shadow" ? (
                 <div className="flex flex-wrap items-center justify-between gap-2 rounded-md bg-muted/50 px-3 py-2">

@@ -1,5 +1,7 @@
 import { createHash } from "node:crypto";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { attentionService } from "../attention/service";
+import { getModeRow, requestMode } from "../attention/modes";
 import { writeEnabled } from "./config";
 import { runs } from "./ownership";
 import { reportContents } from "./reports";
@@ -511,6 +513,20 @@ describe("release, relink and delete", () => {
     expect(row(f)).toBeUndefined();
   });
 
+  it("refuses a release while manager attention is live or a transition is pending, and allows it in shadow or off", async () => {
+    const { f } = await make();
+    await f.enable(); f.service.setEnabled(f.tracker.id, false);
+    f.db.prepare("INSERT INTO attention_modes (tracker_id, kind, effective_mode) VALUES (?, 'stale-status', 'live')").run(f.tracker.id);
+    await expect(f.service.transfer.release(f.tracker.id)).rejects.toThrow(/attention is live or changing/);
+    f.db.prepare("UPDATE attention_modes SET effective_mode='shadow', requested_mode='live', transition_token='tok' WHERE tracker_id=?").run(f.tracker.id);
+    await expect(f.service.transfer.release(f.tracker.id)).rejects.toThrow(/attention is live or changing/);
+    f.db.prepare("UPDATE attention_modes SET requested_mode=NULL, transition_token=NULL WHERE tracker_id=?").run(f.tracker.id);
+    await expect(f.service.transfer.release(f.tracker.id)).resolves.toMatchObject({ outcome: "released" });
+    await f.enable(); f.service.setEnabled(f.tracker.id, false);
+    f.db.prepare("UPDATE attention_modes SET effective_mode='off' WHERE tracker_id=?").run(f.tracker.id);
+    await expect(f.service.transfer.release(f.tracker.id)).resolves.toMatchObject({ outcome: "released" });
+  });
+
   it("never gives up a row with lineage: release, relink and delete of the owner are refused, and after a rollback the tracker is free", async () => {
     const { f, sweep } = await make();
     await imported(f, sweep);
@@ -689,6 +705,43 @@ describe("the unconfirmed send", () => {
     expect(f.db.prepare("SELECT COUNT(*) AS n FROM attention_modes WHERE requested_mode IS NOT NULL OR effective_mode<>'off'").get()).toEqual({ n: 0 });
     sweep.refuse.clear();
     await exportTo(f);
+  });
+
+  it("keeps a ready attention transition pending while an import waits for Sweep's confirmation, and completes it once the import has finished", async () => {
+    const { f, sweep } = await make();
+    const attention = attentionService(f.bb);
+    const age = () => f.db.prepare("UPDATE attention_modes SET shadow_started_at=? WHERE tracker_id=?").run(new Date(Date.now() - 49 * 3_600_000).toISOString(), f.tracker.id);
+    requestMode(f.db, { trackerId: f.tracker.id, mode: "shadow" }); age();
+    const transition = requestMode(f.db, { trackerId: f.tracker.id, mode: "live", parityReviewed: true }).transition!;
+    sweep.seed();
+    const gate = deferred();
+    sweep.gateMethod = "transfer.confirm"; sweep.gate = gate.promise;
+    const running = importFrom(f);
+    await vi.waitFor(() => expect(row(f)?.received_id).toBeTruthy());
+    await attention.drainTracker(f.tracker.id);
+    expect(getModeRow(f.db, f.tracker.id)).toMatchObject({ effective_mode: "shadow", transition_token: transition.token, transition_state: "ready" });
+    gate.release();
+    await expect(running).resolves.toMatchObject({ outcome: "imported" });
+    await attention.drainTracker(f.tracker.id);
+    expect(getModeRow(f.db, f.tracker.id)).toMatchObject({ effective_mode: "live", effective_generation: transition.generation, requested_mode: null });
+    expect(f.db.prepare("SELECT token, fence_id FROM attention_acks WHERE tracker_id=?").all(f.tracker.id)).toEqual([{ token: transition.token, fence_id: "work-board" }]);
+    expect(row(f)).toMatchObject({ owner: "work-board", tracker_id: f.tracker.id, received_id: expect.any(String) });
+  });
+
+  it("hands the runner back with an unconsumed return to shadow, in a document Sweep accepts", async () => {
+    const { f, sweep } = await make();
+    await imported(f, sweep);
+    const attention = attentionService(f.bb);
+    requestMode(f.db, { trackerId: f.tracker.id, mode: "shadow" });
+    f.db.prepare("UPDATE attention_modes SET shadow_started_at=? WHERE tracker_id=?").run(new Date(Date.now() - 49 * 3_600_000).toISOString(), f.tracker.id);
+    requestMode(f.db, { trackerId: f.tracker.id, mode: "live", parityReviewed: true });
+    await attention.drainTracker(f.tracker.id);
+    requestMode(f.db, { trackerId: f.tracker.id, mode: "shadow" });
+    await attention.drainTracker(f.tracker.id);
+    expect(getModeRow(f.db, f.tracker.id)).toMatchObject({ effective_mode: "shadow", requested_mode: null });
+    expect(f.db.prepare("SELECT consumed_generation FROM checks_stale_rollback WHERE tracker_id=?").get(f.tracker.id)).toBeUndefined();
+    await expect(exportTo(f)).resolves.toMatchObject({ outcome: "returned" });
+    expect(sweep.applied).toBe(1);
   });
 
   it("serializes concurrent commands on the lock, and a stale completion changes nothing", async () => {

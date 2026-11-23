@@ -6,6 +6,7 @@ import type { tasksRpcContract } from "../shared/contract";
 import { CURRENT_KEY_SQL, currentRev } from "./ledger";
 import { ackTransition, boundTrackerOf, getModeRow, kindState, SHADOW_GATE_MS } from "./modes";
 import { ATTENTION_KIND } from "./observe";
+import { fenceMessage, readOwner } from "../checks/transfer";
 import { attentionService } from "./service";
 
 type Database = ReturnType<BbPluginApi["storage"]["database"]>;
@@ -118,9 +119,12 @@ export function attentionUiHandlers(bb: BbPluginApi, store: TasksApiStore): Pick
         : !manager?.manager ? { status: "unusable", cause: "none", detectedAt: new Date().toISOString() } : { status: "unavailable", error: "The manager changed while it was read" };
       const row = getModeRow(db, projectId);
       const started = row.shadow_started_at ? Date.parse(row.shadow_started_at) : null;
+      const runner = project.linkedBbProjectId ? readOwner(db, project.linkedBbProjectId) : undefined;
       return {
         trackerId: projectId, linkedBbProjectId: project.linkedBbProjectId ?? null, state: kindState(db, projectId), changedAt: row.changed_at, previousMode: row.previous_mode, shadowStartedAt: row.shadow_started_at,
         gateRemainingMs: row.effective_mode === "shadow" && started !== null ? Math.max(0, Math.round(SHADOW_GATE_MS - (Date.now() - started))) : SHADOW_GATE_MS,
+        workBoardRunsChecks: runner?.owner === "work-board" && runner.tracker_id === projectId,
+        checksFence: fenceMessage(db, projectId, project.linkedBbProjectId ?? null),
         manager: manager?.manager ?? null, managerChangedAt: manager?.changed_at ?? null, managerPrevious: manager?.previous ?? null,
         managerLookup: lookup.status === "usable" ? { status: "usable" as const } : lookup.status === "unusable" ? { status: "unusable" as const, cause: lookup.cause, detectedAt: lookup.detectedAt } : { status: "unavailable" as const },
         managerWarning: managerProblemText(lookup, row.effective_mode),

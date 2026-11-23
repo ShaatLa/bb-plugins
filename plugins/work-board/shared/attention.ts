@@ -75,6 +75,10 @@ const settingsSchema = z.object({
   shadowStartedAt: z.string().nullable(),
   /** Milliseconds of shadow observation still missing before live may be requested; 0 when the gate is open. */
   gateRemainingMs: z.number().int().min(0),
+  /** Work Board runs this project's repository checks: its runner, not Sweep, sends outside live and Work Board acknowledges transitions. */
+  workBoardRunsChecks: z.boolean(),
+  /** Why a transfer of the repository checks holds the project right now (no transition can start or complete); null when nothing does. */
+  checksFence: z.string().nullable(),
   manager: z.string().nullable(),
   managerChangedAt: z.string().nullable(),
   managerPrevious: z.string().nullable(),

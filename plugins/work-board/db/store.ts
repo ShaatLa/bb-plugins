@@ -903,6 +903,9 @@ export function createTasksStore(db: PluginDatabase, log: (message: string) => v
       throw new Error("Switch manager attention off in the project settings before deleting this project");
     return db.transaction(() => {
       releaseOwner(db, id, db.prepare<[string], { link: string | null }>("SELECT linked_bb_project_id AS link FROM projects WHERE id = ?").get(id)?.link ?? null);
+      // Not cascaded: a restore of the same id starts its generations over, so stale rows would hide its first return to shadow.
+      db.prepare<[string]>("DELETE FROM attention_acks WHERE tracker_id = ?").run(id);
+      db.prepare<[string]>("DELETE FROM checks_stale_rollback WHERE tracker_id = ?").run(id);
       return db.prepare<[string]>("DELETE FROM projects WHERE id = ?").run(id).changes > 0;
     })();
   }

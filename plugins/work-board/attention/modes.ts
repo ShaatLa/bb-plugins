@@ -3,7 +3,7 @@ import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import { bumpRev, CURRENT_KEY_SQL, currentRev, invalidateAttentionCache, retireOpenOccurrences, scanTracker, ACCEPTED_OUTCOMES } from "./ledger";
 import { ATTENTION_KIND, PILOT_SIGNALS } from "./observe";
 import { assertChecksLinkChangeAllowed } from "../checks/ownership";
-import { fenceMessage } from "../checks/transfer";
+import { fenceMessage, readOwner } from "../checks/transfer";
 
 type Database = ReturnType<BbPluginApi["storage"]["database"]>;
 
@@ -129,7 +129,7 @@ export function requestMode(db: Database, input: RequestInput): KindState {
     const fence = fenceMessage(db, tracker.id, tracker.linked);
     if (fence) throw new Error(fence);
     const row = getModeRow(db, tracker.id, kind);
-    if (isPending(row)) throw new Error("A mode transition is pending; wait for Sweep to acknowledge it");
+    if (isPending(row)) throw new Error("A mode transition is pending; wait for it to complete");
     db.prepare<[string, string]>("INSERT OR IGNORE INTO attention_modes(tracker_id, kind) VALUES (?, ?)").run(tracker.id, kind);
     if (input.mode === row.effective_mode) throw new Error(`Attention is already ${row.effective_mode}`);
     const at = nowIso();
@@ -240,5 +240,23 @@ export function ackTransition(db: Database, input: AckInput): AckResult {
     db.prepare<[string, string, string, number, string, string, string, string]>("INSERT INTO attention_acks(tracker_id, kind, token, generation, direction, fence_id, ids_hash, result_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
       .run(input.trackerId, input.kind, input.token, input.generation, input.direction, input.fenceId, hash, JSON.stringify(result));
     return result;
+  })();
+}
+
+/**
+ * Work Board's own acknowledgement of a ready transition, for a tracker whose repository checks Work Board runs: Sweep never runs
+ * that project, so it would never send one. Everything is read in this transaction; any other runner owner, a transfer in progress
+ * or an unconfirmed send leaves the transition waiting for Sweep. Nothing is baselined: report hashes do not prove delivery.
+ */
+export function selfAckTransition(db: Database, trackerId: string, kind = ATTENTION_KIND): AckResult | null {
+  return db.transaction((): AckResult | null => {
+    const link = db.prepare<[string], { link: string | null }>("SELECT linked_bb_project_id AS link FROM projects WHERE id=?").get(trackerId)?.link ?? null;
+    if (!link) return null;
+    const owner = readOwner(db, link);
+    // A received_id stays as import lineage after a confirmed import: the migrated runner's normal state.
+    if (owner?.owner !== "work-board" || owner.tracker_id !== trackerId || fenceMessage(db, trackerId, link)) return null;
+    const row = getModeRow(db, trackerId, kind);
+    if (!isPending(row) || row.transition_state !== "ready") return null;
+    return ackTransition(db, { trackerId, kind, token: row.transition_token!, generation: row.requested_generation!, direction: row.transition_direction!, fenceId: "work-board" });
   })();
 }

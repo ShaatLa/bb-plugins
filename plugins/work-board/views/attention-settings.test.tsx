@@ -5,6 +5,7 @@ import { loadPluginApp, renderSlot } from "@get-bb/plugin-sdk/testing/app";
 import { createFakePluginHost, makeThreadResponse } from "@get-bb/plugin-sdk/testing";
 import { createStore, registerTasksApi } from "../api";
 import { registerAttention } from "../attention/rpc";
+import { transfers } from "../checks/transfer";
 import { tasksRpcContract } from "../shared/contract";
 
 window.matchMedia ??= (media: string) => ({ matches: false, media, onchange: null, addListener() {}, removeListener() {}, addEventListener() {}, removeEventListener() {}, dispatchEvent: () => false });
@@ -172,4 +173,28 @@ it("follows archive, unarchive and delete events of the manager in the open view
     await deliver();
     await waitFor(() => expect(warning()).toBe("The manager session was deleted; choose another before going live"));
   } finally { cleanup(); await harness.dispose(); }
+});
+
+it("names Work Board's checks runner as the sender when it owns the checks, and shows why a transfer holds a ready transition", async () => {
+  const { bb, harness } = createFakePluginHost({ pluginId: "work-board" });
+  // Set before registration, so no attention pass can acknowledge the transition while the view is read.
+  transfers.set("proj_example", "import-from-sweep");
+  try {
+    const store = createStore(bb);
+    registerTasksApi(bb, store);
+    const db = bb.storage.database();
+    const project = store.tasks.createProject({ name: "Alpha", prefix: "ALP", color: "blue", linkedBbProjectId: "proj_example" });
+    db.prepare("INSERT INTO checks_runner_owner (bb_project_id, owner, tracker_id, sent_id, sent_confirmed, received_id, updated_at) VALUES ('proj_example', 'work-board', ?, NULL, 0, NULL, ?)").run(project.id, new Date().toISOString());
+    db.prepare("INSERT INTO attention_modes (tracker_id, kind, bound_tracker_id, bound_bb_project_id, effective_mode, effective_generation, requested_mode, requested_generation, transition_token, transition_direction, transition_state, ready_at) VALUES (?, 'stale-status', ?, 'proj_example', 'shadow', 1, 'live', 2, 'tok_example', 'to_live', 'ready', ?)")
+      .run(project.id, project.id, new Date().toISOString());
+    registerAttention(bb, store);
+    const settings = renderSlot(app.settingsSections[0]!, {}, {
+      rpc: Object.fromEntries(Object.keys(tasksRpcContract).map((method) => [method, (input: unknown) => harness.callRpc(method, input)])),
+      sdk: { threads: { list: async () => [] } },
+    });
+    const section = await settings.findByRole("region", { name: "Manager attention" });
+    await waitFor(() => expect(within(section).getByTestId("attention-sender").textContent).toBe("Shadow · comparing, Work Board's checks runner sends"));
+    openDelivery(section);
+    expect(within(section).getByTestId("attention-pending").textContent).toBe("Going live · A transfer (import-from-sweep) is running for this bb project. Wait for it to finish.");
+  } finally { transfers.clear(); cleanup(); await harness.dispose(); }
 });
