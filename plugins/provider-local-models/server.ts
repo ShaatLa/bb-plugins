@@ -167,7 +167,7 @@ export function createPlugin(bb: BbPluginApi, testing: Pick<Parameters<typeof sp
       ].join('\n'))+'\n'};
     }}),
     'install-splash':cliCommand({summary:'Explicitly install or update Splash with Homebrew',async run(){
-      const report=await controls.detect(),command=report.splash.outdated?SPLASH_UPDATE:SPLASH_INSTALL;
+      const report=await controls.detect(true),command=report.splash.outdated?SPLASH_UPDATE:SPLASH_INSTALL;
       const output=await controls.install(command,true);
       return {exitCode:0,stdout:command+'\n'+output+'\n'};
     }}),
