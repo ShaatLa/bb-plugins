@@ -1,6 +1,6 @@
 {
   "name": "bb-plugin-agent-hub",
-  "version": "0.3.245",
+  "version": "0.3.246",
   "type": "module",
   "license": "MIT",
   "engines": {
