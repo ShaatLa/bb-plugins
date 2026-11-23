@@ -3,10 +3,11 @@ import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import type { TasksStore } from "../db";
 import { attentionService } from "../attention/service";
 import { configuredManager } from "../attention/modes";
-import { deliverWithReceipt, resolveTaskRecipient, searchAttentionMarker, type HistoryCursor, type Receipt } from "../steer";
+import { deliverWithReceipt, resolvePrRecipient, searchAttentionMarker, type HistoryCursor, type Receipt } from "../steer";
 import { errorMessage } from "../shared/errors";
 import { isClosedStatus } from "../shared/workflow-policy";
-import { prIdentity, prLinkSchema, type GitSyncConfig, type PrSnapshot } from "../shared/git-sync";
+import { parsePrUrl, prIdentity, prLinkSchema, type GitSyncConfig, type PrLink, type PrSnapshot } from "../shared/git-sync";
+import { environmentPullRequests, type EnvironmentPullRequest } from "./environment-prs";
 import type { DeployRun, GithubClient, QueueRemoval } from "./github";
 import { createGitSyncStore } from "./store";
 
@@ -24,6 +25,10 @@ const FINAL_PASSES = 3;
 /** A claim not renewed for `ms` is abandoned (a crash or a dead instance); a live attempt renews it every `renewMs`. Tests shorten both. */
 export const claimLease = { ms: 15 * 60_000, renewMs: 5 * 60_000 };
 const BACKOFF_MS = 60_000, BACKOFF_CAP_MS = 3_600_000;
+// A message no single session can be told apart for waits for an owner, rechecked this often, and ends unsent after a day.
+const HOLD_RECHECK_MS = 30 * 60_000, HOLD_MS = DAY;
+/** The deadline of a drain's one environment-PR lookup; tests shorten it. */
+export const environmentLookup = { deadlineMs: 5_000 };
 // GitHub may list a run a little after creating it, so the search never freezes a range that ends closer to now than this.
 const LISTING_LAG_MS = 60_000;
 /** Per-pass search budgets: run-list pages, compare calls and kept-run rechecks. The final pass after the deadline gets more. */
@@ -45,8 +50,12 @@ type WaitRow = {
 type DeliveryRow = {
   id: string; event_id: string; task_id: string; role: "session" | "manager"; state: string; thread_id: string | null; attempts: number;
   transport_started_at: string | null; marker: string | null; cursor: string | null; lookup_failures: number; claim_owner: string | null;
-  project_id: string; remote_id: string; identity: string; kind: PrEventKind; payload: string;
+  project_id: string; remote_id: string; identity: string; kind: PrEventKind; payload: string; created_at: string; held_until: string | null;
 };
+type Environments = { seen: Set<string>; environmentOf: Map<string, string>; prs: Map<string, EnvironmentPullRequest> };
+/** The drain's environment lookup; `wait` false throws `LOOKUP_PENDING` while it is still running. */
+type EnvironmentRead = (wait: boolean) => Promise<Environments | null>;
+const LOOKUP_PENDING = new Error("Environment lookup still running");
 
 export function prEventSettings(db: Database, projectId: string): PrEventSettings {
   return db.prepare<[string], PrEventSettings>("SELECT events, manager FROM pr_event_settings WHERE project_id=?").get(projectId) ?? { events: "on", manager: "off" };
@@ -71,6 +80,13 @@ export function ciVerdict(snapshot: PrSnapshot, config: Pick<GitSyncConfig, "prW
 }
 
 const short = (sha: string) => sha.slice(0, 7);
+const identityOf = (url: string) => {
+  try {
+    return prIdentity(parsePrUrl(url));
+  } catch {
+    return null;
+  }
+};
 const utc = (iso: string) => `${iso.slice(0, 10)} ${iso.slice(11, 16)} UTC`;
 export function prEventText(kind: PrEventKind, payload: Payload, taskKey: string): string {
   const head = `${taskKey} · PR #${payload.number}`;
@@ -461,12 +477,14 @@ export function createPrEventService(bb: BbPluginApi, tasks: TasksStore) {
     }
   }
 
-  async function deliver(listed: DeliveryRow) {
-    // The claim rechecks the backoff and returns the counters it claimed, so a stale listing never reuses an attempt number.
-    const claimed = db.prepare<[string, string, string, string, string], { attempts: number; lookup_failures: number }>(
-      "UPDATE pr_event_deliveries SET state='claimed', claim_owner=?, claimed_at=?, transport_started_at=NULL, updated_at=? WHERE id=? AND state='pending' AND (next_attempt_at IS NULL OR next_attempt_at <= ?) RETURNING attempts, lookup_failures",
-    ).get(owner, iso(), iso(), listed.id, iso());
-    if (!claimed) return;
+  /** One attempt at a listed row; true when it needed the unfinished environment lookup and was put back for later in the drain. */
+  async function deliver(listed: DeliveryRow, environments: EnvironmentRead): Promise<boolean> {
+    // The claim rechecks the listed state and the backoff and returns the counters and hold deadline it claimed, so a stale listing
+    // never reuses an attempt number or misses a deadline another drainer set meanwhile.
+    const claimed = db.prepare<[string, string, string, string, string, string], { attempts: number; lookup_failures: number; held_until: string | null }>(
+      "UPDATE pr_event_deliveries SET state='claimed', claim_owner=?, claimed_at=?, transport_started_at=NULL, woken_at=NULL, updated_at=? WHERE id=? AND state=? AND (next_attempt_at IS NULL OR next_attempt_at <= ?) RETURNING attempts, lookup_failures, held_until",
+    ).get(owner, iso(), iso(), listed.id, listed.state, iso());
+    if (!claimed) return false;
     const row = { ...listed, ...claimed };
     // The lease is renewed for as long as this attempt is active, however long a lookup or a queued send takes.
     const renewal = setInterval(() => {
@@ -476,39 +494,116 @@ export function createPrEventService(bb: BbPluginApi, tasks: TasksStore) {
     }, claimLease.renewMs);
     renewal.unref?.();
     try {
-      await attemptDelivery(row);
+      return (await attemptDelivery(row, environments)) === true;
     } finally {
       clearInterval(renewal);
     }
   }
 
-  async function attemptDelivery(row: DeliveryRow) {
-    /** A recipient read failed for a transient reason: offer the row again after a growing delay. */
-    const retryLater = (error: string) =>
-      own(row.id, ["claimed"], "pending", { error, claim_owner: null, lookup_failures: row.lookup_failures + 1, next_attempt_at: backoff(row.lookup_failures + 1) });
+  async function attemptDelivery(row: DeliveryRow, environments: EnvironmentRead): Promise<boolean | void> {
+    const ambiguous = () => void own(row.id, ["claimed"], "no_recipient:ambiguous", { claim_owner: null });
+    // A row that was held ends at its deadline wherever it is, through retries, recovery and a resolution that crossed it.
+    const expired = () => row.held_until !== null && Date.now() >= Date.parse(row.held_until);
+    /** A recipient read failed for a transient reason: offer the row again after a growing delay, never past its hold deadline. */
+    const retryLater = (error: string) => {
+      if (expired()) return ambiguous();
+      const next = backoff(row.lookup_failures + 1);
+      own(row.id, ["claimed"], "pending", {
+        error, claim_owner: null, lookup_failures: row.lookup_failures + 1, next_attempt_at: row.held_until !== null && Date.parse(row.held_until) < Date.parse(next) ? row.held_until : next,
+      });
+    };
     const reason = stale(row);
     if (reason) return void own(row.id, ["claimed"], `skipped:${reason}`);
-    let threadId: string | undefined;
-    if (row.role === "session") {
-      try {
-        threadId = await resolveTaskRecipient(bb, tasks, row.task_id);
-      } catch (error) {
-        return void retryLater(errorMessage(error));
-      }
-      if (!threadId) return void own(row.id, ["claimed"], "no_recipient");
-    } else {
-      const lookup = await attentionService(bb).lookupManager(configuredManager(db, row.project_id));
-      if (lookup.status === "unavailable") return void retryLater(lookup.error);
-      if (lookup.status === "unusable") return void own(row.id, ["claimed"], `skipped:${lookup.cause}`);
-      threadId = lookup.threadId;
-    }
-    // One card's session and manager copies to the same thread make one message.
-    if (db.prepare("SELECT 1 FROM pr_event_deliveries WHERE event_id=? AND task_id=? AND id<>? AND thread_id=? AND state IN ('sending', 'sent', 'unknown')").get(row.event_id, row.task_id, row.id, threadId))
-      return void own(row.id, ["claimed"], "skipped:same_thread", { thread_id: threadId });
-    const task = tasks.getTask(row.task_id)!;
     const attempt = row.attempts + 1, marker = prEventMarker(row.id, attempt);
-    // `sending` and its start time are written before transport, so a restart can tell a claim from a send that may have gone out.
-    if (!own(row.id, ["claimed"], "sending", { thread_id: threadId, attempts: attempt, transport_started_at: iso(), marker, cursor: null, searched_at: null })) return;
+    const linkOf = () => {
+      const saved = db.prepare<[string, string, string], { payload: string }>(
+        "SELECT payload FROM task_pr_links WHERE task_id=? AND (json_extract(payload, '$.remoteId')=? OR (json_extract(payload, '$.remoteId') IS NULL AND identity=?))",
+      ).get(row.task_id, row.remote_id, row.identity);
+      return saved ? prLinkSchema.parse(JSON.parse(saved.payload)) : undefined;
+    };
+    let threadId: string;
+    for (let tries = 1; ; tries++) {
+      /** Whether the link still has the identity and owner this resolution used; checked in the transaction that moves the row. */
+      let unchanged = () => true;
+      if (row.role === "session") {
+        if (expired()) return ambiguous();
+        const link = linkOf();
+        // The link's current identity only: the event's older path may belong to another repository after a rename.
+        const owner = link?.ownerThreadId, identity = link ? prIdentity(link) : row.identity;
+        unchanged = () => {
+          const now = linkOf();
+          return now?.ownerThreadId === owner && (now ? prIdentity(now) : row.identity) === identity;
+        };
+        const onPr = async (threadIds: string[]) => {
+          const found = await environments(false);
+          if (!found) return null;
+          const on = new Set<string>();
+          for (const id of threadIds) {
+            // A thread the lookup did not read, or an environment it could not, leaves the lookup incomplete.
+            if (!found.seen.has(id)) return null;
+            const environmentId = found.environmentOf.get(id);
+            if (!environmentId) continue;
+            const pr = found.prs.get(environmentId);
+            if (!pr || pr.outcome === "unavailable") return null;
+            if (pr.outcome === "available" && identityOf(pr.pullRequest.url) === identity) on.add(id);
+          }
+          return on;
+        };
+        let recipient: Awaited<ReturnType<typeof resolvePrRecipient>>;
+        try {
+          recipient = await resolvePrRecipient(bb, tasks, row.task_id, { ownerThreadId: owner, onPr });
+        } catch (error) {
+          // The lookup is still running: give the row back so the rows that need no lookup go first.
+          if (error === LOOKUP_PENDING) return own(row.id, ["claimed"], row.state, { claim_owner: null });
+          // An owner named during the failed read is resolved now, not after the backoff (`wake` skipped this claimed row).
+          const recorded = db.transaction(() => {
+            if (!unchanged()) return false;
+            retryLater(errorMessage(error));
+            return true;
+          })();
+          if (recorded) return;
+          if (tries === 3) return void retryLater("The PR link kept changing during delivery");
+          continue;
+        }
+        if (recipient === "hold" || !recipient) {
+          const settled = db.transaction(() => {
+            if (!unchanged()) return false;
+            if (!recipient) return void own(row.id, ["claimed"], "no_recipient"), true;
+            const until = row.held_until ? Date.parse(row.held_until) : Date.parse(row.created_at) + HOLD_MS;
+            if (Date.now() >= until) return ambiguous(), true;
+            own(row.id, ["claimed"], "awaiting_owner", {
+              claim_owner: null, held_until: new Date(until).toISOString(), next_attempt_at: new Date(Math.min(Date.now() + HOLD_RECHECK_MS, until)).toISOString(),
+              error: "Several sessions could take this message; name the one that opened the PR with `bb work-board pr link KEY --url URL --owner thr_…`",
+            });
+            return true;
+          })();
+          if (settled) return;
+          if (tries === 3) return void retryLater("The PR link kept changing during delivery");
+          continue;
+        }
+        threadId = recipient.threadId;
+      } else {
+        const lookup = await attentionService(bb).lookupManager(configuredManager(db, row.project_id));
+        if (lookup.status === "unavailable") return void retryLater(lookup.error);
+        if (lookup.status === "unusable") return void own(row.id, ["claimed"], `skipped:${lookup.cause}`);
+        threadId = lookup.threadId;
+      }
+      const target = threadId;
+      // An owner named or a repository renamed while the recipient was being resolved sends the row back to resolution.
+      const moved = db.transaction(() => {
+        if (!unchanged()) return "changed";
+        if (expired()) return ambiguous(), "done";
+        // One card's session and manager copies to the same thread make one message.
+        if (db.prepare("SELECT 1 FROM pr_event_deliveries WHERE event_id=? AND task_id=? AND id<>? AND thread_id=? AND state IN ('sending', 'sent', 'unknown')").get(row.event_id, row.task_id, row.id, target))
+          return void own(row.id, ["claimed"], "skipped:same_thread", { thread_id: target }), "done";
+        // `sending` and its start time are written before transport, so a restart can tell a claim from a send that may have gone out.
+        return own(row.id, ["claimed"], "sending", { thread_id: target, attempts: attempt, transport_started_at: iso(), marker, cursor: null, searched_at: null }) ? "sending" : "done";
+      })();
+      if (moved === "sending") break;
+      if (moved === "done") return;
+      if (tries === 3) return void retryLater("The PR link kept changing during delivery");
+    }
+    const task = tasks.getTask(row.task_id)!;
     let dropped: string | null = null;
     let receipt: Receipt;
     try {
@@ -529,17 +624,77 @@ export function createPrEventService(bb: BbPluginApi, tasks: TasksStore) {
     else own(row.id, ["sending"], "unknown", { error: receipt.outcome === "unknown" ? receipt.error : "Awaiting the accepted-input event" });
   }
 
+  /**
+   * The environment PR of every thread linked to these cards, read once and within the deadline; null when it failed or ran out of
+   * time, so a slow GitHub PR Status never delays delivery.
+   */
+  function readEnvironments(taskIds: string[]): Promise<Environments | null> {
+    const controller = new AbortController();
+    const read = async (): Promise<Environments> => {
+      const ids = [...new Set(tasks.listTaskThreadsForTasks(taskIds).map((link) => link.threadId))];
+      const seen = new Set<string>(), environmentOf = new Map<string, string>();
+      for (let offset = 0; offset < ids.length; offset += 200) {
+        const batch = ids.slice(offset, offset + 200);
+        for (const thread of await bb.sdk.threads.list({ threadIds: batch, limit: batch.length, includeHidden: true, signal: controller.signal })) {
+          seen.add(thread.id);
+          if (thread.environmentId) environmentOf.set(thread.id, thread.environmentId);
+        }
+      }
+      const prs = await environmentPullRequests(bb, environmentOf.values(), () => !controller.signal.aborted);
+      if (controller.signal.aborted) throw new Error("Environment lookup timed out");
+      return { seen, environmentOf, prs };
+    };
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const deadline = new Promise<null>((resolve) => {
+      timer = setTimeout(() => { controller.abort(); resolve(null); }, environmentLookup.deadlineMs);
+      timer.unref?.();
+    });
+    return Promise.race([read().catch(() => null), deadline]).finally(() => clearTimeout(timer));
+  }
+
+  /** Make this card's held messages about the PR due now, after an owner was named; true when there were any. */
+  function wake(link: PrLink) {
+    // A held row back in `pending` after a retry or a recovered claim still counts: its deadline marks it.
+    return db.prepare("UPDATE pr_event_deliveries SET next_attempt_at=NULL, woken_at=?, updated_at=? WHERE task_id=? AND held_until IS NOT NULL AND state IN ('pending', 'awaiting_owner') AND event_id IN (SELECT id FROM pr_events WHERE remote_id=? OR identity=?)")
+      .run(iso(), iso(), link.taskId, link.remoteId ?? "", prIdentity(link)).changes > 0;
+  }
+
   async function drainOnce() {
     await reconcile();
-    const rows = db.prepare<[string], DeliveryRow>(
-      "SELECT d.*, e.project_id, e.remote_id, e.identity, e.kind, e.payload FROM pr_event_deliveries d JOIN pr_events e ON e.id=d.event_id WHERE d.state='pending' AND (d.next_attempt_at IS NULL OR d.next_attempt_at <= ?) ORDER BY d.created_at, d.role DESC LIMIT 200",
+    // Rows woken by an owner designation go first; new and retried rows and due hold rechecks each get their own batch after them,
+    // so held rows never crowd out a ready one.
+    const batch = (where: string) => db.prepare<[string], DeliveryRow>(
+      `SELECT d.*, e.project_id, e.remote_id, e.identity, e.kind, e.payload FROM pr_event_deliveries d JOIN pr_events e ON e.id=d.event_id WHERE ${where} AND (d.next_attempt_at IS NULL OR d.next_attempt_at <= ?) ORDER BY d.created_at, d.role DESC LIMIT 200`,
     ).all(iso());
-    for (const row of rows) {
+    const woken = () => batch("d.woken_at IS NOT NULL AND d.state IN ('pending', 'awaiting_owner')");
+    let rows = [...woken(), ...batch("d.woken_at IS NULL AND d.state='pending'"), ...batch("d.woken_at IS NULL AND d.state='awaiting_owner'")];
+    // At most one environment lookup per drain, for every session row that needs it. Rows that need it wait for a second pass,
+    // so a slow lookup never delays the rows that resolve without it.
+    let lookup: Promise<Environments | null> | undefined, settled = false;
+    const sessionTasks = [...new Set(rows.filter((row) => row.role === "session").map((row) => row.task_id))];
+    const environments = (wait: boolean) => {
+      lookup ??= readEnvironments(sessionTasks).finally(() => { settled = true; });
+      if (!wait && !settled) throw LOOKUP_PENDING;
+      return lookup;
+    };
+    const attempt = async (row: DeliveryRow, read: EnvironmentRead) => {
       try {
-        await deliver(row);
+        return await deliver(row, read);
       } catch (error) {
         bb.log.warn(`PR event delivery ${row.id} failed: ${errorMessage(error)}`);
+        return false;
       }
+    };
+    const seen = new Set<string>();
+    // A claim clears `woken_at`, so each further batch of woken rows is new; `seen` still bounds the loop if a claim is lost.
+    while (rows.length) {
+      const waiting: DeliveryRow[] = [];
+      for (const row of rows) {
+        seen.add(row.id);
+        if (await attempt(row, environments)) waiting.push(row);
+      }
+      for (const row of waiting) await attempt(row, () => environments(true));
+      rows = woken().filter((row) => !seen.has(row.id));
     }
   }
   // Drains in this process run one after another; the conditional claim keeps any other drainer from sending a row twice.
@@ -572,5 +727,5 @@ export function createPrEventService(bb: BbPluginApi, tasks: TasksStore) {
     });
   }
 
-  return { sweep, drain, prune, list, reconcile };
+  return { sweep, drain, prune, list, reconcile, wake };
 }

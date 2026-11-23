@@ -208,15 +208,39 @@ async function firstReachable(bb: BbPluginApi, candidates: string[], at: { threa
   return undefined;
 }
 
+/** The session a PR message goes to, `hold` when no single session can be told apart, undefined when the card has none. */
+export type PrRecipient = { threadId: string } | "hold" | undefined;
+
 /**
- * The session a message about a card goes to, in the order answer notifications use: the default thread (first pinned work thread,
- * else the latest agent comment's), then the other linked workers, then the parents of archived ones. A thread that no longer exists
- * is skipped; undefined when none can take it; throws when a thread read fails for another reason.
+ * The session a PR message goes to: the explicitly designated owner when reachable (an archived one hands over to its parent), else
+ * the one linked thread whose environment is on the PR after a complete lookup, else the card's only linked thread. Anything else
+ * holds: a reviewer that checked out the branch, or a lookup that could not finish, must not take the author's messages.
+ * `onPr` returns the linked threads on the PR, or null when the lookup is incomplete. Throws when a thread read fails.
  */
-export async function resolveTaskRecipient(bb: BbPluginApi, store: TasksStore, taskId: string): Promise<string | undefined> {
-  const preferred = defaultTaskThreadId(store, taskId);
-  const links = await reconcileTaskThreads(bb, store, taskId);
-  return firstReachable(bb, [...new Set([...(preferred ? [preferred] : []), ...links.map((link) => link.threadId)])], {}, true);
+export async function resolvePrRecipient(
+  bb: BbPluginApi,
+  store: TasksStore,
+  taskId: string,
+  pr: { ownerThreadId?: string; onPr: (threadIds: string[]) => Promise<Set<string> | null> },
+): Promise<PrRecipient> {
+  if (pr.ownerThreadId) {
+    const owner = await firstReachable(bb, [pr.ownerThreadId], {}, true);
+    if (owner) return { threadId: owner };
+  }
+  // Reconciling first detaches archived threads (and attaches the parent fallback), so the count below is of live links.
+  const reachable = (await reconcileTaskThreads(bb, store, taskId)).map((link) => link.threadId);
+  const linked = store.listTaskThreads(taskId).map((link) => link.threadId);
+  if (!linked.length) return undefined;
+  let chosen = linked.length === 1 ? linked[0] : undefined;
+  if (!chosen) {
+    const on = await pr.onPr(linked);
+    if (on?.size === 1) chosen = [...on][0];
+  }
+  if (!chosen) return "hold";
+  // A stopping session is still the one the message belongs to, so the row waits for it instead of going elsewhere.
+  if (!reachable.includes(chosen)) throw new Error(`Thread ${chosen} is stopping`);
+  const threadId = await firstReachable(bb, [chosen], {}, true);
+  return threadId ? { threadId } : undefined;
 }
 
 export type Receipt =

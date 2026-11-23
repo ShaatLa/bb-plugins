@@ -1148,12 +1148,14 @@ export function registerTasksCli(
         }),
         ...Object.fromEntries((["link", "list", "unlink"] as const).map(action => [`pr ${action}`, cliCommand({
           summary: action === "list" ? "List persistent PR links and their cached status" : action === "link" ? "Link or confirm a PR with an explicit role" : "Exclude a PR (survives discovery)",
-          positionals: [KEY_POSITIONAL], options: { json: JSON_OPTION, ...(action === "list" ? {} : { url: { type: "string" as const, required: true as const, description: "Full GitHub PR URL" } }), ...(action === "link" ? { role: { type: "enum" as const, values: ["delivers", "design", "related"] as const, default: "delivers" as const, description: "Relationship to task delivery" }, part: { type: "string" as const, description: "Delivery part k/m" } } : {}) },
-          run(input) { return guard(async () => {
+          positionals: [KEY_POSITIONAL], options: { json: JSON_OPTION, ...(action === "list" ? {} : { url: { type: "string" as const, required: true as const, description: "Full GitHub PR URL" } }), ...(action === "link" ? { role: { type: "enum" as const, values: ["delivers", "design", "related"] as const, default: "delivers" as const, description: "Relationship to task delivery" }, part: { type: "string" as const, description: "Delivery part k/m" }, owner: { type: "string" as const, description: "Session that opened the PR and gets its lifecycle messages: self or a thread id" } } : {}) },
+          run(input, ctx) { return guard(async () => {
             const task = await resolveTask(domain, input.positionals["key-or-id"]);
             if (action === "list") { const result = await domain.listPrLinks({ taskId: task.id }); return input.options.json ? JSON.stringify(result) : result.links.map(({ link, snapshot, stale }) => `${link.repository}#${link.number} · ${link.role}${link.part ? ` ${link.part}` : ""} · ${link.excluded ? "excluded" : link.confirmed ? "confirmed" : `suggested (${link.source})`} · ${snapshot?.state ?? "unknown"} · CI ${snapshot?.ci ?? "unknown"}${stale ? " · stale" : ""}`).join("\n") || "No PR links."; }
             if (action === "unlink") return JSON.stringify(await domain.unlinkPr(tasksRpcContract.unlinkPr.input.parse({ taskId: task.id, url: input.options.url })));
-            return JSON.stringify(await domain.linkPr(tasksRpcContract.linkPr.input.parse({ taskId: task.id, url: input.options.url, role: input.options.role, part: input.options.part })));
+            const owner = input.options.owner === "self" ? ctx.threadId ?? process.env.BB_THREAD_ID : input.options.owner;
+            if (input.options.owner === "self" && !owner) throw new CliError("--owner self needs a session; pass --owner thr_…");
+            return JSON.stringify(await domain.linkPr(tasksRpcContract.linkPr.input.parse({ taskId: task.id, url: input.options.url, role: input.options.role, part: input.options.part, ...(owner ? { ownerThreadId: owner } : {}) })));
           }); },
         })])),
         ...Object.fromEntries(["archive", "restore"].map(action => [action, cliCommand({

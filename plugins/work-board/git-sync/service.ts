@@ -112,7 +112,7 @@ export function createGitSyncService(
     taskId: string,
     url: string,
     source: PrLink["source"],
-    manual?: { role: PrLink["role"]; part: string | null },
+    manual?: { role: PrLink["role"]; part: string | null; ownerThreadId?: string },
   ) => {
     const task = requireTask(taskId);
     const address = parsePrUrl(url);
@@ -135,6 +135,8 @@ export function createGitSyncService(
         part: manual?.part ?? null,
         confirmed: Boolean(manual),
         excluded: false,
+        // Only an explicit designation sets the owner; a plain relink keeps it.
+        ...((manual?.ownerThreadId ?? old?.ownerThreadId) ? { ownerThreadId: manual?.ownerThreadId ?? old?.ownerThreadId } : {}),
         remoteId: old?.remoteId ?? null,
         createdAt: old?.createdAt ?? now,
         updatedAt: now,
@@ -586,10 +588,11 @@ export function createGitSyncService(
         }),
       };
     },
-    async linkPr({ taskId, url, role, part }) {
+    async linkPr({ taskId, url, role, part, ownerThreadId }) {
       const db = bb.storage.database(), trigger = `pr:${prIdentity(parsePrUrl(url))}`;
       const known = hasPlanDebtEvent(db, taskId, trigger);
-      const link = remember(taskId, url, "manual", { role, part });
+      const link = remember(taskId, url, "manual", { role, part, ownerThreadId });
+      if (ownerThreadId && events.wake(link)) void events.drain();
       if (known || !hasPlanDebtEvent(db, taskId, trigger)) return { link };
       await planDebtService(bb, store.tasks).drain();
       return { link, note: "Plan debt: this card works without an approved plan; a reminder for its executors was recorded." };

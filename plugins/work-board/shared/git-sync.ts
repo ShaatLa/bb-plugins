@@ -78,6 +78,8 @@ export const prLinkSchema = z
     source: z.enum(["manual", "title", "environment", "evidence"]),
     confirmed: z.boolean(),
     excluded: z.boolean().default(false),
+    // Set only by an explicit `pr link --owner`; discovery and relinks keep it. PR messages go to this session first.
+    ownerThreadId: z.string().regex(/^thr_/).optional(),
     createdAt: z.iso.datetime({ precision: 3 }),
     updatedAt: z.iso.datetime({ precision: 3 }),
   })
@@ -277,6 +279,8 @@ export const gitSyncMethods = {
         url: prUrlSchema,
         role: z.enum(["delivers", "design", "related"]).default("delivers"),
         part: z.string().nullable().default(null),
+        // The session that opened the PR; its lifecycle messages go there. Omitted keeps the current owner.
+        ownerThreadId: z.string().regex(/^thr_/).optional(),
       })
       .strict(),
     // `note` is set when the confirmed link reminded the card's executors that it works without an approved plan.

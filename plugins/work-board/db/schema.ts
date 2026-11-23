@@ -913,6 +913,9 @@ const MIGRATIONS = [
    );`,
   // Orders deployment waits least recently swept first, so a capped sweep gives every wait a turn.
   `ALTER TABLE pr_deploy_waits ADD COLUMN swept_at TEXT;`,
+  // A PR message held for an owner keeps its deadline through retries and recovery; an owner designation marks it woken.
+  `ALTER TABLE pr_event_deliveries ADD COLUMN held_until TEXT;
+   ALTER TABLE pr_event_deliveries ADD COLUMN woken_at TEXT;`,
 ] as const;
 
 export function initializeTasksSchema(db: PluginDatabase, log: Log = () => {}): void {

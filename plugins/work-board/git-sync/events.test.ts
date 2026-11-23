@@ -5,7 +5,7 @@ import { historyLimits, receiptPolling } from "../steer";
 import { prSnapshotSchema, type PrSnapshot } from "../shared/git-sync";
 import { createGitSyncService } from "./service";
 import { createGithubClient, GithubError, type DeployRun } from "./github";
-import { claimLease, ciVerdict, createPrEventService, deployBudgets, prEventService, recordPrEvents, setPrEventSetting } from "./events";
+import { claimLease, ciVerdict, createPrEventService, deployBudgets, environmentLookup, prEventService, recordPrEvents, setPrEventSetting } from "./events";
 import { createGitSyncStore } from "./store";
 
 const URL = "https://github.com/owner/repo/pull/7";
@@ -15,11 +15,13 @@ const fixtures: { dispose: () => unknown }[] = [];
 const budgets = structuredClone(deployBudgets);
 const limits = { ...historyLimits };
 const lease = { ...claimLease };
+const lookupDefaults = { ...environmentLookup };
 beforeEach(() => { receiptPolling.tries = 1; receiptPolling.delayMs = 0; });
 afterEach(async () => {
   Object.assign(deployBudgets, structuredClone(budgets));
   Object.assign(historyLimits, limits);
   Object.assign(claimLease, lease);
+  Object.assign(environmentLookup, lookupDefaults);
   vi.useRealTimers();
   await Promise.all(fixtures.splice(0).map((f) => f.dispose()));
 });
@@ -942,9 +944,7 @@ describe("fencing and recovery", () => {
 
   it("drops a missing session as no recipient and backs off a transient lookup failure", async () => {
     const f = setup();
-    const gone = f.card("Gone", "in_review", ""), flaky = f.card("Flaky", "in_review", "");
-    f.store.tasks.createComment({ taskId: gone.id, kind: "agent", authorName: "agent", threadId: "thr_gone", body: "Working" });
-    f.store.tasks.createComment({ taskId: flaky.id, kind: "agent", authorName: "agent", threadId: "thr_flaky", body: "Working" });
+    const gone = f.card("Gone", "in_review", "thr_gone"), flaky = f.card("Flaky", "in_review", "thr_flaky");
     const get = f.threads.sdk.threads.get;
     f.harness.sdk.stub("threads.get", async (args: { threadId: string }) => {
       if (args.threadId === "thr_gone") throw Object.assign(new Error("not found"), { code: "thread_not_found" });
@@ -1256,5 +1256,411 @@ describe("lifecycle", () => {
     expect([await get("prEvents"), await get("prEventsManager")]).toEqual(["on", "off"]);
     await f.harness.runCli(["config", "set", "prEventsManager", "on", "--project", "ATT"]);
     expect(await get("prEventsManager")).toBe("on");
+  });
+});
+
+describe("PR message recipient", () => {
+  const record = (f: ReturnType<typeof setup>, value: Partial<PrSnapshot>) =>
+    f.db.transaction(() => recordPrEvents(f.db, f.store.tasks, { projectId: f.tracker.id, config: createGitSyncStore(f.db).config(f.tracker.id), snapshot: snap(value) }))();
+  /** Each session's environment and the PR each environment is on, as GitHub PR Status reports it; `gate` holds the PR read. */
+  const world = (f: ReturnType<typeof setup>) => {
+    const state = { env: {} as Record<string, string>, onPr: new Set<string>(), urlOf: {} as Record<string, string>, gate: undefined as Promise<void> | undefined, fail: false, reads: 0 };
+    const callRpc = f.threads.sdk.plugins.callRpc;
+    f.harness.sdk.stub("threads.list", async ({ threadIds }: { threadIds: string[] }) => threadIds.map((id) => ({ id, environmentId: state.env[id] ?? null })) as never);
+    f.harness.sdk.stub("plugins.callRpc", async (args: { pluginId: string; method: string; input: { keys: string[] } }) => {
+      if (args.pluginId !== "bb--github-pr-status") return callRpc(args as never);
+      state.reads++;
+      if (state.gate) await state.gate;
+      if (state.fail) throw new Error("plugin unavailable");
+      return Object.fromEntries(args.input.keys.map((key) => [key, state.onPr.has(key)
+        ? { outcome: "available", pullRequest: { number: 7, title: "EXA work", state: "open", url: state.urlOf[key] ?? URL, updatedAt: new Date().toISOString() } }
+        : { outcome: "absent" }]));
+    });
+    return state;
+  };
+  const attach = (f: ReturnType<typeof setup>, taskId: string, threadId: string) => {
+    f.store.tasks.upsertTaskThread({ taskId, threadId, presetName: "Reader", title: "R", liveStatus: "working" });
+    f.threads.threads.set(threadId, { status: "active" });
+  };
+  const rows = (f: ReturnType<typeof setup>) => f.db.prepare<[], { task_id: string; state: string; thread_id: string | null; next_attempt_at: string | null; error: string | null }>(
+    "SELECT task_id, state, thread_id, next_attempt_at, error FROM pr_event_deliveries WHERE role='session' ORDER BY created_at").all();
+  const text = (key: string, head = "bbbbbbb") => `${key} · PR #7 CI red on ${head}: failed lint, unit-tests.`;
+
+  it("goes to the one session on the PR after a complete lookup, or to a card's only session, with one lookup per drain", async () => {
+    const f = setup(), w = world(f);
+    const shared = f.card("Shared", "in_review", "thr_author"), solo = f.card("Solo", "in_review", "thr_solo"), idle = f.card("Idle", "in_review", "thr_idle_a");
+    attach(f, shared.id, "thr_reader");
+    attach(f, idle.id, "thr_idle_b");
+    Object.assign(w.env, { thr_author: "env_author", thr_reader: "env_reader", thr_solo: "env_solo", thr_idle_a: "env_idle_a", thr_idle_b: "env_idle_b" });
+    w.onPr.add("env_author");
+    await f.sync(green());
+    w.reads = 0;
+    record(f, red(b));
+    await f.events.drain();
+    expect(w.reads).toBe(1);
+    expect(f.to("thr_author")).toEqual([text(shared.key)]);
+    expect(f.to("thr_reader")).toEqual([]);
+    expect(f.to("thr_solo")).toEqual([text(solo.key)]);
+    expect(rows(f).find((row) => row.task_id === idle.id)).toMatchObject({ state: "awaiting_owner" });
+  });
+
+  it("holds when the sessions cannot be told apart, and never remembers an earlier match", async () => {
+    const f = setup(), w = world(f);
+    const separate = f.card("Separate", "in_review", "thr_s1"), checkout = f.card("Checkout", "in_review", "thr_c1"), none = f.card("None", "in_review", "thr_n1");
+    const later = f.card("Later", "in_review", "thr_author");
+    for (const [task, thread] of [[separate, "thr_s2"], [checkout, "thr_c2"], [none, "thr_n2"], [later, "thr_reviewer"]] as const) attach(f, task.id, thread);
+    // Separate checkouts both on the PR, one checkout shared by two sessions, and two sessions on no PR.
+    Object.assign(w.env, { thr_s1: "env_s1", thr_s2: "env_s2", thr_c1: "env_c", thr_c2: "env_c", thr_n1: "env_n1", thr_n2: "env_n2", thr_author: "env_author", thr_reviewer: "env_reviewer" });
+    for (const env of ["env_s1", "env_s2", "env_c", "env_reviewer"]) w.onPr.add(env);
+    await f.sync(green());
+    record(f, red(b));
+    await f.events.drain();
+    // The reviewer is the only session on the branch, so this message is its by the rule.
+    expect(f.to("thr_reviewer")).toEqual([text(later.key)]);
+    const held = rows(f).filter((row) => row.state === "awaiting_owner");
+    expect(held.map((row) => row.task_id).sort()).toEqual([separate.id, checkout.id, none.id].sort());
+    for (const row of held) expect(Date.parse(row.next_attempt_at!) - Date.now()).toBeGreaterThan(29 * 60_000);
+    // Once the author checks out the branch too, the next message waits instead of following the reviewer's earlier match.
+    w.onPr.add("env_author");
+    record(f, red(c));
+    await f.events.drain();
+    expect(f.to("thr_reviewer")).toHaveLength(1);
+    expect(f.to("thr_author")).toEqual([]);
+    expect(rows(f).filter((row) => row.task_id === later.id).map((row) => row.state)).toEqual(["sent", "awaiting_owner"]);
+    for (const id of ["thr_s1", "thr_s2", "thr_c1", "thr_c2", "thr_n1", "thr_n2"]) expect(f.to(id)).toEqual([]);
+  });
+
+  it("delivers held rows at once to an owner named with --owner, keeps the owner on relinks and rediscovery, and follows an archived owner to its parent", async () => {
+    const f = setup(), w = world(f);
+    const task = f.card("Owned", "in_review", "thr_author");
+    attach(f, task.id, "thr_reviewer");
+    w.env.thr_reviewer = "env_reviewer";
+    await f.sync(green());
+    record(f, red(b));
+    await f.events.drain();
+    expect(rows(f)[0]).toMatchObject({ state: "awaiting_owner", error: expect.stringContaining("--owner") });
+    expect(await f.harness.runCli(["pr", "link", task.key, "--url", URL, "--owner", "self"], { threadId: "thr_author" })).toMatchObject({ exitCode: 0 });
+    await f.events.drain();
+    expect(f.to("thr_author")).toEqual([text(task.key)]);
+    expect(rows(f)[0]).toMatchObject({ state: "sent", thread_id: "thr_author" });
+    // A reviewer's plain relink, environment rediscovery and a refresh all keep the designated owner.
+    expect(await f.harness.runCli(["pr", "link", task.key, "--url", URL], { threadId: "thr_reviewer" })).toMatchObject({ exitCode: 0 });
+    f.service.remember(task.id, URL, "environment");
+    await f.sync(red(b));
+    const owner = () => createGitSyncStore(f.db).links(task.id)[0]!.ownerThreadId;
+    expect(owner()).toBe("thr_author");
+    // The reviewer is now the only session on the branch, yet the owner gets the message.
+    w.onPr.add("env_reviewer");
+    record(f, red(c));
+    await f.events.drain();
+    expect(f.to("thr_author")).toEqual([text(task.key), text(task.key, "ccccccc")]);
+    f.threads.threads.set("thr_author", { archived: true, parent: "thr_lead" });
+    record(f, red(x));
+    await f.events.drain();
+    expect(f.to("thr_lead")).toEqual([text(task.key, "eeeeeee")]);
+    expect(f.to("thr_reviewer")).toEqual([]);
+    expect(owner()).toBe("thr_author");
+  });
+
+  it("never waits on a lookup that stays pending or fails, and a held row stays held", async () => {
+    const f = setup(), w = world(f);
+    environmentLookup.deadlineMs = 20;
+    const solo = f.card("Solo", "in_review", "thr_solo"), pair = f.card("Pair", "in_review", "thr_a");
+    attach(f, pair.id, "thr_b");
+    Object.assign(w.env, { thr_a: "env_a", thr_b: "env_b" });
+    w.onPr.add("env_a");
+    await f.sync(green());
+    w.gate = new Promise(() => {});
+    record(f, red(b));
+    await f.events.drain();
+    expect(f.to("thr_solo")).toEqual([text(solo.key)]);
+    expect(rows(f).find((row) => row.task_id === pair.id)).toMatchObject({ state: "awaiting_owner" });
+    w.gate = undefined;
+    w.fail = true;
+    f.db.prepare("UPDATE pr_event_deliveries SET next_attempt_at=NULL").run();
+    record(f, red(c));
+    await f.events.drain();
+    expect(f.to("thr_solo")).toHaveLength(2);
+    expect(rows(f).filter((row) => row.task_id === pair.id).map((row) => row.state)).toEqual(["awaiting_owner", "awaiting_owner"]);
+    expect(f.to("thr_a")).toEqual([]);
+  });
+
+  it("ends a held row after a day, and held rows never crowd out a newer ready one", async () => {
+    const f = setup();
+    world(f);
+    const pair = f.card("Pair", "in_review", "thr_a");
+    attach(f, pair.id, "thr_b");
+    await f.sync(green());
+    record(f, red(b));
+    await f.events.drain();
+    expect(rows(f)[0]).toMatchObject({ state: "awaiting_owner" });
+    expect(f.db.prepare<[], { held_until: string; created_at: string }>("SELECT held_until, created_at FROM pr_event_deliveries").get()).toSatisfy(
+      (row: { held_until: string; created_at: string }) => Date.parse(row.held_until) === Date.parse(row.created_at) + DAY);
+    // A recheck never lands past the deadline.
+    const until = new Date(Date.now() + 10 * 60_000).toISOString();
+    f.db.prepare("UPDATE pr_event_deliveries SET next_attempt_at=NULL, held_until=?").run(until);
+    await f.events.drain();
+    expect(rows(f)[0]).toMatchObject({ state: "awaiting_owner", next_attempt_at: until });
+    // An owner named after the deadline does not revive the message.
+    f.db.prepare("UPDATE pr_event_deliveries SET held_until=?").run(new Date(Date.now() - 1000).toISOString());
+    expect(await f.harness.runCli(["pr", "link", pair.key, "--url", URL, "--owner", "thr_a"])).toMatchObject({ exitCode: 0 });
+    await f.events.drain();
+    expect(rows(f)[0]).toMatchObject({ state: "no_recipient:ambiguous" });
+    expect(f.to("thr_a")).toEqual([]);
+    // 200 older held rows whose rechecks are all due still leave room for a newer row in the same drain.
+    const old = new Date(Date.now() - 60_000).toISOString();
+    for (let index = 0; index < 200; index++) {
+      f.db.prepare("INSERT INTO pr_events(id, project_id, remote_id, identity, kind, once_key, payload, created_at) VALUES (?, ?, 'PR_7', 'github:github.com:owner/repo#7', 'ci', ?, '{\"number\":7}', ?)").run(`evt_${index}`, f.tracker.id, `held_${index}`, old);
+      f.db.prepare("INSERT INTO pr_event_deliveries(id, event_id, task_id, role, state, next_attempt_at, held_until, created_at, updated_at) VALUES (?, ?, ?, 'session', 'awaiting_owner', ?, ?, ?, ?)").run(`held_${index}`, `evt_${index}`, pair.id, old, new Date(Date.now() + DAY).toISOString(), old, old);
+    }
+    f.db.prepare("UPDATE task_pr_links SET payload=json_remove(payload, '$.ownerThreadId')").run();
+    const solo = f.card("Solo", "in_review", "thr_solo");
+    record(f, red(c));
+    await f.events.drain();
+    expect(f.to("thr_solo")).toEqual([text(solo.key, "ccccccc")]);
+  });
+
+  it("sends rows that need no lookup while the lookup is still blocked", async () => {
+    const f = setup(), w = world(f);
+    environmentLookup.deadlineMs = 2_000;
+    const pair = f.card("Pair", "in_review", "thr_a");
+    attach(f, pair.id, "thr_b");
+    Object.assign(w.env, { thr_a: "env_a", thr_b: "env_b" });
+    await f.sync(green());
+    record(f, red(b));
+    f.db.prepare("UPDATE pr_event_deliveries SET created_at=?").run(new Date(Date.now() - 60_000).toISOString());
+    const solo = f.card("Solo", "in_review", "thr_solo");
+    let release!: () => void;
+    w.gate = new Promise((resolve) => { release = resolve; });
+    record(f, red(c));
+    const drained = f.events.drain();
+    await vi.waitFor(() => expect(f.to("thr_solo")).toEqual([text(solo.key, "ccccccc")]));
+    expect(w.reads).toBeGreaterThan(0);
+    release();
+    await drained;
+    expect(rows(f).filter((row) => row.task_id === pair.id).map((row) => row.state)).toEqual(["awaiting_owner", "awaiting_owner"]);
+  });
+
+  it("takes an owner named while the row was being resolved", async () => {
+    const f = setup(), w = world(f);
+    const pair = f.card("Pair", "in_review", "thr_a");
+    attach(f, pair.id, "thr_b");
+    Object.assign(w.env, { thr_a: "env_a", thr_b: "env_b" });
+    await f.sync(green());
+    w.reads = 0;
+    let release!: () => void;
+    w.gate = new Promise((resolve) => { release = resolve; });
+    record(f, red(b));
+    const drained = f.events.drain();
+    await vi.waitFor(() => expect(w.reads).toBe(1));
+    expect(await f.harness.runCli(["pr", "link", pair.key, "--url", URL, "--owner", "thr_b"])).toMatchObject({ exitCode: 0 });
+    release();
+    await drained;
+    expect(f.to("thr_b")).toEqual([text(pair.key)]);
+    expect(rows(f)[0]).toMatchObject({ state: "sent", thread_id: "thr_b" });
+  });
+
+  it("matches environments against the renamed repository only", async () => {
+    const renamed = "https://github.com/owner/renamed/pull/7";
+    const f = setup({ repositories: ["owner/repo", "owner/renamed"] }), w = world(f);
+    const pair = f.card("Pair", "in_review", "thr_a");
+    attach(f, pair.id, "thr_b");
+    Object.assign(w.env, { thr_a: "env_a", thr_b: "env_b" });
+    await f.sync(green());
+    record(f, red(b));
+    createGitSyncStore(f.db).saveSnapshot(f.tracker.id, { repository: "owner/repo", number: 7 }, snap({ repository: "owner/renamed", url: renamed }));
+    // Another repository now owns the old path, and one session is on its PR #7.
+    w.onPr.add("env_a");
+    await f.events.drain();
+    expect(f.to("thr_a")).toEqual([]);
+    expect(rows(f)[0]).toMatchObject({ state: "awaiting_owner" });
+    w.urlOf.env_b = renamed;
+    w.onPr.add("env_b");
+    f.db.prepare("UPDATE pr_event_deliveries SET next_attempt_at=NULL").run();
+    await f.events.drain();
+    expect(f.to("thr_b")).toEqual([text(pair.key)]);
+  });
+
+  it("resolves again when the repository is renamed during resolution", async () => {
+    const renamed = "https://github.com/owner/renamed/pull/7";
+    const f = setup({ repositories: ["owner/repo", "owner/renamed"] }), w = world(f);
+    const pair = f.card("Pair", "in_review", "thr_a");
+    attach(f, pair.id, "thr_b");
+    Object.assign(w.env, { thr_a: "env_a", thr_b: "env_b" });
+    // The old path's PR #7, which after the rename belongs to another repository.
+    w.onPr.add("env_a");
+    await f.sync(green());
+    w.reads = 0;
+    let release!: () => void;
+    w.gate = new Promise((resolve) => { release = resolve; });
+    record(f, red(b));
+    const drained = f.events.drain();
+    await vi.waitFor(() => expect(w.reads).toBe(1));
+    createGitSyncStore(f.db).saveSnapshot(f.tracker.id, { repository: "owner/repo", number: 7 }, snap({ repository: "owner/renamed", url: renamed }));
+    release();
+    await drained;
+    expect(f.to("thr_a")).toEqual([]);
+    expect(rows(f)[0]).toMatchObject({ state: "awaiting_owner" });
+  });
+
+  it("keeps a held row's deadline and wake through a return to pending", async () => {
+    const f = setup(), w = world(f);
+    const pair = f.card("Pair", "in_review", "thr_a");
+    attach(f, pair.id, "thr_b");
+    Object.assign(w.env, { thr_a: "env_a", thr_b: "env_b" });
+    await f.sync(green());
+    record(f, red(b));
+    await f.events.drain();
+    expect(rows(f)[0]).toMatchObject({ state: "awaiting_owner" });
+    // A retry or a recovered claim puts the held row back in pending; past its deadline it ends even with a sole match now.
+    f.db.prepare("UPDATE pr_event_deliveries SET state='pending', next_attempt_at=NULL, held_until=?").run(new Date(Date.now() - 1000).toISOString());
+    w.onPr.add("env_a");
+    await f.events.drain();
+    expect(rows(f)[0]).toMatchObject({ state: "no_recipient:ambiguous" });
+    expect(f.to("thr_a")).toEqual([]);
+    // Within its deadline, a held row in backoff is still woken by a designation.
+    w.onPr.add("env_b");
+    record(f, red(c));
+    await f.events.drain();
+    expect(rows(f)[1]).toMatchObject({ state: "awaiting_owner" });
+    f.db.prepare("UPDATE pr_event_deliveries SET state='pending', lookup_failures=1, next_attempt_at=? WHERE state='awaiting_owner'").run(new Date(Date.now() + 3_600_000).toISOString());
+    expect(await f.harness.runCli(["pr", "link", pair.key, "--url", URL, "--owner", "thr_b"])).toMatchObject({ exitCode: 0 });
+    await f.events.drain();
+    expect(f.to("thr_b")).toEqual([text(pair.key, "ccccccc")]);
+  });
+
+  it("ends a row whose resolution crossed its deadline instead of sending it", async () => {
+    const f = setup(), w = world(f);
+    const pair = f.card("Pair", "in_review", "thr_a");
+    attach(f, pair.id, "thr_b");
+    Object.assign(w.env, { thr_a: "env_a", thr_b: "env_b" });
+    await f.sync(green());
+    record(f, red(b));
+    await f.events.drain();
+    const until = Date.now() + 100;
+    f.db.prepare("UPDATE pr_event_deliveries SET next_attempt_at=NULL, held_until=?").run(new Date(until).toISOString());
+    w.reads = 0;
+    let release!: () => void;
+    w.gate = new Promise((resolve) => { release = resolve; });
+    const drained = f.events.drain();
+    await vi.waitFor(() => expect(w.reads).toBe(1));
+    await vi.waitFor(() => expect(Date.now()).toBeGreaterThan(until));
+    w.onPr.add("env_a");
+    release();
+    await drained;
+    expect(f.to("thr_a")).toEqual([]);
+    expect(rows(f)[0]).toMatchObject({ state: "no_recipient:ambiguous" });
+  });
+
+  it("puts a woken row ahead of 200 older due rechecks", async () => {
+    const f = setup(), w = world(f);
+    const crowd = f.card("Crowd", "in_review", "thr_c1"), pair = f.card("Pair", "in_review", "thr_a");
+    attach(f, crowd.id, "thr_c2");
+    attach(f, pair.id, "thr_b");
+    Object.assign(w.env, { thr_a: "env_a", thr_b: "env_b" });
+    await f.sync(green());
+    const old = new Date(Date.now() - 60_000).toISOString(), until = new Date(Date.now() + DAY).toISOString();
+    for (let index = 0; index < 200; index++) {
+      f.db.prepare("INSERT INTO pr_events(id, project_id, remote_id, identity, kind, once_key, payload, created_at) VALUES (?, ?, 'PR_7', 'github:github.com:owner/repo#7', 'ci', ?, '{\"number\":7}', ?)").run(`evt_${index}`, f.tracker.id, `held_${index}`, old);
+      f.db.prepare("INSERT INTO pr_event_deliveries(id, event_id, task_id, role, state, next_attempt_at, held_until, created_at, updated_at) VALUES (?, ?, ?, 'session', 'awaiting_owner', ?, ?, ?, ?)").run(`held_${index}`, `evt_${index}`, crowd.id, old, until, old, old);
+    }
+    record(f, red(b));
+    f.db.prepare("UPDATE pr_event_deliveries SET state='awaiting_owner', next_attempt_at=?, held_until=? WHERE task_id=? AND role='session'").run(new Date(Date.now() + 1_800_000).toISOString(), until, pair.id);
+    f.db.prepare("UPDATE pr_event_deliveries SET state='skipped:test' WHERE task_id=? AND event_id NOT LIKE 'evt_%'").run(crowd.id);
+    // The owner is named and the held row woken; one drain must deliver it.
+    f.db.prepare("UPDATE task_pr_links SET payload=json_set(payload, '$.ownerThreadId', 'thr_a') WHERE task_id=?").run(pair.id);
+    expect(f.events.wake(createGitSyncStore(f.db).links(pair.id)[0]!)).toBe(true);
+    const reads: string[] = [], get = f.threads.sdk.threads.get;
+    f.harness.sdk.stub("threads.get", async (args: { threadId: string }) => { reads.push(args.threadId); return get(args as never); });
+    await f.events.drain();
+    expect(f.to("thr_a")).toEqual([text(pair.key)]);
+    // It is resolved before any of the older rechecks.
+    expect(reads.indexOf("thr_a")).toBeLessThan(reads.indexOf("thr_c1"));
+    expect(reads.indexOf("thr_c1")).toBeGreaterThan(-1);
+  });
+
+  it("claims only the state it listed, with the hold deadline as it is now", async () => {
+    const f = setup(), w = world(f);
+    const other = createPrEventService(f.bb, f.store.tasks);
+    const first = f.card("First", "in_review", "thr_first"), back = f.card("Back", "in_review", "thr_a"), held = f.card("Held", "in_review", "thr_c");
+    attach(f, back.id, "thr_b");
+    attach(f, held.id, "thr_d");
+    Object.assign(w.env, { thr_a: "env_a", thr_b: "env_b", thr_c: "env_c", thr_d: "env_d" });
+    await f.sync(green());
+    record(f, red(b));
+    f.db.prepare("UPDATE pr_event_deliveries SET created_at=? WHERE task_id=?").run(new Date(Date.now() - 60_000).toISOString(), first.id);
+    // This drainer lists every row as pending, then stalls on the first one while another drainer holds the others.
+    let release!: () => void;
+    f.threads.getGateOnce = new Promise((resolve) => { release = resolve; });
+    const stalled = f.events.drain();
+    await vi.waitFor(() => expect(f.threads.getGateOnce).toBeUndefined());
+    await other.drain();
+    expect(rows(f).filter((row) => row.state === "awaiting_owner").map((row) => row.task_id).sort()).toEqual([back.id, held.id].sort());
+    // One went back to pending past its deadline (a retry), with a sole match now; the other is a due recheck.
+    f.db.prepare("UPDATE pr_event_deliveries SET state='pending', next_attempt_at=NULL, held_until=? WHERE task_id=?").run(new Date(Date.now() - 1000).toISOString(), back.id);
+    f.db.prepare("UPDATE pr_event_deliveries SET next_attempt_at=NULL WHERE task_id=?").run(held.id);
+    w.onPr.add("env_a");
+    release();
+    await stalled;
+    expect(f.to("thr_first")).toEqual([text(first.key)]);
+    expect(f.to("thr_a")).toEqual([]);
+    expect(rows(f).find((row) => row.task_id === back.id)).toMatchObject({ state: "no_recipient:ambiguous" });
+    expect(rows(f).find((row) => row.task_id === held.id)).toMatchObject({ state: "awaiting_owner", next_attempt_at: null });
+  });
+
+  it("resolves against an owner named while the previous owner's read was failing", async () => {
+    const f = setup(), w = world(f);
+    const task = f.card("Owned", "in_review", "thr_a");
+    attach(f, task.id, "thr_b");
+    Object.assign(w.env, { thr_a: "env_a", thr_b: "env_b" });
+    await f.sync(green());
+    f.db.prepare("UPDATE task_pr_links SET payload=json_set(payload, '$.ownerThreadId', 'thr_old')").run();
+    let fail!: () => void, reading = false;
+    const gate = new Promise<void>((resolve) => { fail = resolve; }), get = f.threads.sdk.threads.get;
+    f.harness.sdk.stub("threads.get", async (args: { threadId: string }) => {
+      if (args.threadId !== "thr_old") return get(args as never);
+      reading = true;
+      await gate;
+      throw new Error("host unreachable");
+    });
+    record(f, red(b));
+    const drained = f.events.drain();
+    await vi.waitFor(() => expect(reading).toBe(true));
+    expect(await f.harness.runCli(["pr", "link", task.key, "--url", URL, "--owner", "thr_b"])).toMatchObject({ exitCode: 0 });
+    fail();
+    await drained;
+    expect(f.to("thr_b")).toEqual([text(task.key)]);
+  });
+
+  it("caps a held row's retry at its deadline and ends it when a failed read crossed the deadline", async () => {
+    const f = setup(), w = world(f);
+    const task = f.card("Pair", "in_review", "thr_a");
+    attach(f, task.id, "thr_b");
+    Object.assign(w.env, { thr_a: "env_a", thr_b: "env_b" });
+    await f.sync(green());
+    record(f, red(b));
+    await f.events.drain();
+    expect(rows(f)[0]).toMatchObject({ state: "awaiting_owner" });
+    f.db.prepare("UPDATE task_pr_links SET payload=json_set(payload, '$.ownerThreadId', 'thr_old')").run();
+    let gate: Promise<void> | undefined;
+    const get = f.threads.sdk.threads.get;
+    f.harness.sdk.stub("threads.get", async (args: { threadId: string }) => {
+      if (args.threadId !== "thr_old") return get(args as never);
+      if (gate) await gate;
+      throw new Error("host unreachable");
+    });
+    const soon = new Date(Date.now() + 10_000).toISOString();
+    f.db.prepare("UPDATE pr_event_deliveries SET next_attempt_at=NULL, held_until=?").run(soon);
+    await f.events.drain();
+    expect(rows(f)[0]).toMatchObject({ state: "pending", next_attempt_at: soon });
+    const until = Date.now() + 100;
+    let release!: () => void;
+    gate = new Promise((resolve) => { release = resolve; });
+    f.db.prepare("UPDATE pr_event_deliveries SET next_attempt_at=NULL, held_until=?").run(new Date(until).toISOString());
+    const drained = f.events.drain();
+    await vi.waitFor(() => expect(Date.now()).toBeGreaterThan(until));
+    release();
+    await drained;
+    expect(rows(f)[0]).toMatchObject({ state: "no_recipient:ambiguous" });
   });
 });
