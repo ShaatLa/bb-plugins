@@ -15,7 +15,7 @@ export const TRANSFER_FORMAT = "bb-runner-state/1";
 export const CHUNK_BYTES = 262_144;
 const MAX_BYTES = 268_435_456;
 const baseline = z.object({ fingerprint: z.string().min(1), manager: z.string().optional() }).strict();
-// Twin of transferDocument in plugins/bb-plugin-sweep/transfer.ts: keep the two schemas identical.
+// Twin of transferDocument in the removed Sweep plugin (tag sweep/v0.7.0, transfer.ts).
 export const transferDocument = z.object({
   format: z.literal(TRANSFER_FORMAT),
   from: z.enum(["sweep", "work-board"]),

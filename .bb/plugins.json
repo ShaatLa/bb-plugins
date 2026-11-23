@@ -46,10 +46,6 @@
     {
       "name": "agent-spawn-gate",
       "source": "./plugins/spawn-gate"
-    },
-    {
-      "name": "sweep",
-      "source": "./plugins/bb-plugin-sweep"
     }
   ]
 }

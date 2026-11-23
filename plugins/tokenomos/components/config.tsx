@@ -84,7 +84,7 @@ export function Configuration() {
 
 /**
  * Hides bb's own flat "Configuration" list for these settings while the grouped one is shown; the native fields
- * stay, so `bb plugin config` keeps working. The same approach as the Sweep and CI Dashboard plugins.
+ * stay, so `bb plugin config` keeps working. The same approach as the CI Dashboard plugin.
  */
 export function useHideNativeSettings() {
   useEffect(() => {
