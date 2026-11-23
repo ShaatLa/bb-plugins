@@ -134,6 +134,8 @@ function useReadOnView(ref: React.RefObject<HTMLElement | null>, enabled: boolea
 // bb's icon set has no double check; drawn in its stroke style (geometry as Lucide's check-check).
 // Set by the chat: opens bb's "Editing message" box for one of the owner's sent messages.
 export const EditSentContext = createContext<((item: Item) => void) | null>(null);
+// A chat shares one refresh: a useRpcRefresh in every card subscribes it to fetch state and re-renders it on each fetch.
+export const RefreshContext = createContext<(() => void) | null>(null);
 // A chat shares one workBoardProjects query: a query of its own in every card and mention re-renders each on every fetch.
 export const useWorkBoardQuery = () => useQuery({ contract: rpcContract, method: 'workBoardProjects', input: {} }).data;
 // The context is undefined only outside a chat; null means the chat's query has no data yet.
@@ -263,7 +265,7 @@ export const defaultChoices = (question: string) => /[А-Яа-яЁё]/.test(ques
 export function ItemCard({ item, members, late, live = true, chat = false, markable = !chat, autoRead = false, seenOnly = false, replyToOwn = true, part, onJump, compact = false, open }: { item: Item; members?: Item[]; late?: Item[]; live?: boolean; chat?: boolean; markable?: boolean; autoRead?: boolean; seenOnly?: boolean; replyToOwn?: boolean; part?: 'question' | 'answer'; onJump?: (id: string) => void; compact?: boolean; open?: { href: string; label: string; onClick?: () => void } }) {
   const rpc = useRpc<AgentHubRpcContract>();
   // Agent Hub's own writes refresh through the server's realtime invalidation; a reply goes to bb's thread, so it refreshes here.
-  const { refresh } = experimental_useRpcRefresh();
+  const refresh = useContext(RefreshContext) ?? experimental_useRpcRefresh().refresh;
   const editSent = useContext(EditSentContext);
   const group = members?.length ? members : [item], last = group.at(-1)!;
   // An earlier question answered by this message: the owner's bubble, clamped and muted, that jumps to where it was asked.
