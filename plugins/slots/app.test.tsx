@@ -335,7 +335,7 @@ test("settings groups, bounded steppers, reset, events, picker selection and inl
     close: { configurable: true, value: function (this: HTMLDialogElement) { this.open = false; } },
   });
   const values = { heavyCapacity: 4, localModelCapacity: 1, memFreeMinPct: 20, loadMax: 18, gateSamples: 2,
-    gateIntervalSeconds: 15, leaseTtlMinutes: 30, heartbeatIntervalMinutes: 10, observerThreadId: "", observerEvents: "warn,expire",
+    gateIntervalSeconds: 15, leaseTtlMinutes: 30, maxEstimateMinutes: 720, heartbeatIntervalMinutes: 10, observerThreadId: "", observerEvents: "warn,expire",
     observerQueueWaitMinutes: 20, observerGateHoldMinutes: 15, portFrom: 41000, portTo: 41099, grantMode: "auto",
     watchPolicy: "warn", watchCores: 3, watchWindowSeconds: 120, idleLeaseMinutes: 30 };
   const write = vi.fn((input: unknown) => {
@@ -378,7 +378,7 @@ test("settings groups, bounded steppers, reset, events, picker selection and inl
 
 function settingsSlot(extra: Record<string, unknown> = {}) {
   const values = { heavyCapacity: 4, localModelCapacity: 1, memFreeMinPct: 20, loadMax: 18, gateSamples: 2,
-    gateIntervalSeconds: 15, leaseTtlMinutes: 30, heartbeatIntervalMinutes: 10, observerThreadId: "", observerEvents: "warn",
+    gateIntervalSeconds: 15, leaseTtlMinutes: 30, maxEstimateMinutes: 720, heartbeatIntervalMinutes: 10, observerThreadId: "", observerEvents: "warn",
     observerQueueWaitMinutes: 20, observerGateHoldMinutes: 15, portFrom: 41000, portTo: 41099, grantMode: "auto",
     watchPolicy: "warn", watchCores: 3, watchWindowSeconds: 120, idleLeaseMinutes: 30 };
   const read = vi.fn(() => ({ ok: true, data: { cores: 18, heavyDefault: 4, values } }));

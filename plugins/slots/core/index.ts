@@ -22,6 +22,7 @@ export function validateSettings(settings: Settings): string | null {
     Number.isSafeInteger(s.gateSamples) && s.gateSamples > 0 &&
     Number.isSafeInteger(s.gateIntervalMs) && s.gateIntervalMs > 0 &&
     Number.isSafeInteger(s.leaseTtlMs) && s.leaseTtlMs > 0 &&
+    Number.isSafeInteger(s.maxEstimateMs) && s.maxEstimateMs > 0 &&
     Number.isSafeInteger(s.heartbeatIntervalMs) && s.heartbeatIntervalMs > 0 &&
     s.heartbeatIntervalMs < s.leaseTtlMs &&
     (s.observerThreadId === null || text(s.observerThreadId)) &&
@@ -111,7 +112,7 @@ export function apply(original: State, input: Input, ctx: Context): Transition {
   const fields = (l: Lease) => ({ hostId: l.hostId, pool: l.pool, threadId: l.holderThreadId, requestId: l.requestId, leaseId: l.id });
   const refresh = (l: Lease) => {
     l.lastHeartbeatAt = ctx.now;
-    l.expiresAt = ctx.now + Math.max(settingsFor(ctx.settings, l.hostId).leaseTtlMs, l.estMs + 900_000);
+    l.expiresAt = ctx.now + Math.max(settingsFor(ctx.settings, l.hostId).leaseTtlMs, Math.min(l.estMs, settingsFor(ctx.settings, l.hostId).maxEstimateMs) + 900_000);
     l.warnedAt = null;
   };
   const heartbeat = (id: string) => state.leases.filter(l => l.holderThreadId === id).forEach(refresh);
@@ -205,6 +206,8 @@ export function apply(original: State, input: Input, ctx: Context): Transition {
       if (!text(input.job) || !Number.isSafeInteger(input.estMs) || input.estMs <= 0 ||
           !Number.isSafeInteger(ctx.now + input.estMs + 900_000) ||
           (input.priority !== undefined && !priority(input.priority))) return fail("invalid-input", "Job, positive estimate and valid priority required, e.g. --job \"full test suite\" --est 20m");
+      const estCap = settingsFor(ctx.settings, input.hostId).maxEstimateMs;
+      if (input.estMs > estCap) return fail("invalid-input", `Estimate ${minutes(input.estMs)} is above the ${minutes(estCap)} ceiling. Pass a realistic estimate with a unit, e.g. --est 45m or --est 2h (a bare --est number means minutes; the tool's estMs is milliseconds). Heartbeats keep a longer job's lease alive.`);
       host(input.hostId);
       const lease = state.leases.find(l => l.hostId === input.hostId && l.pool === input.pool &&
         (l.holderThreadId === input.threadId || l.ownerThreadId === input.threadId));
@@ -222,6 +225,8 @@ export function apply(original: State, input: Input, ctx: Context): Transition {
       if (!text(input.job) || !Number.isSafeInteger(input.estMs) || input.estMs <= 0 ||
           !Number.isSafeInteger(ctx.now + input.estMs + 900_000) ||
           (input.priority !== undefined && !priority(input.priority))) return fail("invalid-input", "Job, positive estimate and valid priority required, e.g. --job \"full test suite\" --est 20m");
+      const estCap = settingsFor(ctx.settings, input.hostId).maxEstimateMs;
+      if (input.estMs > estCap) return fail("invalid-input", `Estimate ${minutes(input.estMs)} is above the ${minutes(estCap)} ceiling. Pass a realistic estimate with a unit, e.g. --est 45m or --est 2h (a bare --est number means minutes; the tool's estMs is milliseconds). Heartbeats keep a longer job's lease alive.`);
       const lease = state.leases.find(l => l.hostId === input.hostId && l.pool === input.pool && (l.holderThreadId === input.threadId || l.ownerThreadId === input.threadId));
       if (lease && lease.holderThreadId !== input.threadId) return fail("transferred", "Lease is held by another thread");
       let request = state.requests.find(r => r.hostId === input.hostId && r.pool === input.pool && r.threadId === input.threadId);

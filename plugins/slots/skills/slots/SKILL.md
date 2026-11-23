@@ -13,6 +13,10 @@ Run heavy work through the foreground wrapper:
 sh -c "$(bb slots wrapper)" slots-run --est 20m --job "..." -- <command>
 ```
 
+`--est` must carry a unit (`45m`, `2h`); a bare number means minutes. Estimates
+above `maxEstimateMinutes` (default 12 h) are refused; the lease of a longer job
+stays alive through heartbeats, so give the realistic estimate.
+
 Use `--pool local-model` for LLM inference. A holder may reuse its lease for
 nested, sequential or concurrent runs without another gate check. Signal the
 process group to cancel. `bb slots request --wait` timeout exits 75 and keeps

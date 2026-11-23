@@ -138,8 +138,8 @@ export function SlotsSettings() {
         {number("idleLeaseMinutes", "Idle lease notice (minutes)", 10, 240)}
       </Group>
       <Group title="Leases">
-        <p className="text-xs text-muted-foreground">Leases last the longer of lease time or estimate + 15 minutes; idle holders are warned one heartbeat interval before expiry.</p>
-        {number("leaseTtlMinutes", "Lease time (minutes)", 2, 10080)}{number("heartbeatIntervalMinutes", "Heartbeat interval (minutes)", 1, 10079)}
+        <p className="text-xs text-muted-foreground">Leases last the longer of lease time or estimate + 15 minutes; estimates above the longest estimate are refused; idle holders are warned one heartbeat interval before expiry.</p>
+        {number("leaseTtlMinutes", "Lease time (minutes)", 2, 10080)}{number("heartbeatIntervalMinutes", "Heartbeat interval (minutes)", 1, 10079)}{number("maxEstimateMinutes", "Longest estimate (minutes)", 10, 10080)}
       </Group>
       <Group title="Manager / observer">
         <div className="flex flex-wrap items-center gap-3 text-sm">{observer ? <Button variant="link" className="h-auto p-0" onClick={() => navigate.toThread(observer)}>{observerTitle}</Button> : <span className="text-muted-foreground">No observer selected</span>}

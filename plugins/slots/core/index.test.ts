@@ -108,6 +108,18 @@ describe("Slots deterministic engine", () => {
     expect(h.state.leases.find(l => l.hostId === "h2")?.expiresAt).toBe(h.now + 75 * minute);
   });
 
+  it("refuses estimates above the ceiling and caps a stored long estimate's lease time", () => {
+    const h = harness();
+    for (const type of ["request", "acquire"] as const) {
+      const r = h.send({ type, hostId: "h", threadId: "big", pool: "heavy", job: "suite", estMs: 1_100_000 * minute } as Input);
+      expect(r.result).toMatchObject({ ok: false, error: { code: "invalid-input", message: expect.stringContaining("--est 45m") } });
+    }
+    expect(h.state.requests).toEqual([]);
+    h.send({ type: "request", hostId: "h", threadId: "big", pool: "heavy", job: "suite", estMs: 12 * 60 * minute });
+    h.state.requests[0].estMs = 1_100_000 * minute; // state written before the ceiling existed
+    h.open(); expect(h.state.leases[0].expiresAt).toBe(h.now + 12 * 60 * minute + 15 * minute);
+  });
+
   it("archive/deletion frees owned leases and cancels queued requests", () => {
     for (const reason of ["archived", "deleted"] as const) {
       const h = harness(); h.request("a"); h.open(); h.request("a", "normal", "local-model");

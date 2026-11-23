@@ -46,6 +46,7 @@ export async function register(bb: BbPluginApi, overrides: Partial<Runtime> = {}
     gateSamples: { type: "number", label: "Checks in a row", description: `Consecutive passing readings required before automatic grants.`, default: 2, experimental_schema: z.number().int().min(1).max(100) },
     gateIntervalSeconds: { type: "number", label: "Seconds between checks", description: `Time between machine readings while work is waiting.`, default: 15, experimental_schema: z.number().int().min(1).max(3600) },
     leaseTtlMinutes: { type: "number", label: "Lease time", description: `Base lease time in minutes; estimates may extend it.`, default: 30, experimental_schema: z.number().int().min(2).max(10080) },
+    maxEstimateMinutes: { type: "number", label: "Longest estimate", description: `Requests with a longer estimate are refused; also caps how far an estimate extends a lease.`, default: 720, experimental_schema: z.number().int().min(10).max(10080) },
     heartbeatIntervalMinutes: { type: "number", label: "Heartbeat interval", description: `Minutes before expiry to warn an idle holder; must be below lease time.`, default: 10, experimental_schema: z.number().int().min(1).max(10079) },
     observerThreadId: { type: "string", label: "Observer", description: `Session receiving manager notifications; leave empty for none.`, default: "", experimental_schema: z.string().max(200) },
     observerEvents: { type: "string", label: "Observer events", description: `Comma-separated event names; empty disables notifications.`, default: DEFAULT_SETTINGS.observerEvents.join(","), experimental_schema: observerEventsSchema },
@@ -64,7 +65,7 @@ export async function register(bb: BbPluginApi, overrides: Partial<Runtime> = {}
   function effectiveValues() { return Object.fromEntries(SETTING_KEYS.map(key => [key, descriptors[key].default])) as {
     watchPolicy: "off" | "warn"; watchCores: number; watchWindowSeconds: number; idleLeaseMinutes: number;
     heavyCapacity: number; localModelCapacity: number; memFreeMinPct: number; loadMax: number; gateSamples: number;
-    gateIntervalSeconds: number; leaseTtlMinutes: number; heartbeatIntervalMinutes: number; observerThreadId: string;
+    gateIntervalSeconds: number; leaseTtlMinutes: number; maxEstimateMinutes: number; heartbeatIntervalMinutes: number; observerThreadId: string;
     observerEvents: string; observerQueueWaitMinutes: number; observerGateHoldMinutes: number; portFrom: number; portTo: number; grantMode: string;
   }; }
   function validateField(key: SettingKey, value: unknown, stored = false) {
@@ -91,7 +92,7 @@ export async function register(bb: BbPluginApi, overrides: Partial<Runtime> = {}
   }
   function formView(): SettingsFormView {
     return { values: { ...readValues(), heavyCapacity: settings.capacities.heavy, loadMax: settings.loadMax, watchCores: settings.watchCores }, defaults,
-      maxima: { watchCores: cores, watchWindowSeconds: 900, idleLeaseMinutes: 240, heavyCapacity: cores, loadMax: cores, localModelCapacity: 10000, memFreeMinPct: 100, gateSamples: 100, gateIntervalSeconds: 3600, leaseTtlMinutes: 10080, heartbeatIntervalMinutes: 10079, observerQueueWaitMinutes: 10080, observerGateHoldMinutes: 10080, portFrom: 65535, portTo: 65535 }, setKeys: Object.keys(explicit) as SettingKey[], cores, heavyDefault };
+      maxima: { watchCores: cores, watchWindowSeconds: 900, idleLeaseMinutes: 240, heavyCapacity: cores, loadMax: cores, localModelCapacity: 10000, memFreeMinPct: 100, gateSamples: 100, gateIntervalSeconds: 3600, leaseTtlMinutes: 10080, maxEstimateMinutes: 10080, heartbeatIntervalMinutes: 10079, observerQueueWaitMinutes: 10080, observerGateHoldMinutes: 10080, portFrom: 65535, portTo: 65535 }, setKeys: Object.keys(explicit) as SettingKey[], cores, heavyDefault };
   }
   const getSettings = async (): Promise<Settings> => {
     const current = readValues();
@@ -108,7 +109,7 @@ export async function register(bb: BbPluginApi, overrides: Partial<Runtime> = {}
       watchPolicy: values.watchPolicy, watchCores: Math.min(values.watchCores, cores), watchWindowSeconds: values.watchWindowSeconds, idleLeaseMinutes: values.idleLeaseMinutes,
       capacities: { heavy: Math.min(values.heavyCapacity, cores), "local-model": values.localModelCapacity },
       memFreeMinPct: values.memFreeMinPct, loadMax: Math.min(values.loadMax, cores), gateSamples: values.gateSamples,
-      gateIntervalMs: values.gateIntervalSeconds * 1000, leaseTtlMs: values.leaseTtlMinutes * 60000,
+      gateIntervalMs: values.gateIntervalSeconds * 1000, leaseTtlMs: values.leaseTtlMinutes * 60000, maxEstimateMs: values.maxEstimateMinutes * 60000,
       heartbeatIntervalMs: values.heartbeatIntervalMinutes * 60000, observerThreadId: values.observerThreadId.trim() || null,
       observerEvents: parseObserverEvents(values.observerEvents), observerQueueWaitMs: values.observerQueueWaitMinutes * 60000,
       observerGateHoldMs: values.observerGateHoldMinutes * 60000,
@@ -310,7 +311,7 @@ export async function register(bb: BbPluginApi, overrides: Partial<Runtime> = {}
   bb.rpc.register(rpcContract, handlers as unknown as Parameters<typeof bb.rpc.register<typeof rpcContract>>[1]);
   // Agent-facing rules live here, in the skill and in CLI help; keep the three in step.
   const TOOL_DESCRIPTIONS: Partial<Record<keyof RpcMethods, string>> = {
-    request: "Queue a heavy or local-model slot for your thread and return at once (granted or queued). Example: {pool:\"heavy\", job:\"full test suite\", estMs:1200000}. For a command, prefer the slots-run wrapper from `bb slots wrapper`; it waits and releases for you.",
+    request: "Queue a heavy or local-model slot for your thread and return at once (granted or queued). Example: {pool:\"heavy\", job:\"full test suite\", estMs:1200000} (estMs is milliseconds; estimates above maxEstimateMinutes, default 12 h, are refused). For a command, prefer the slots-run wrapper from `bb slots wrapper`; it waits and releases for you.",
     acquire: "Queue a use for a script and return a use ID at once. Renew with slots_heartbeatUse while it runs and finish with slots_done; an unrenewed use expires.",
     done: "Finish one of your uses. The lease is released when its last use is done.",
     detach: "Stop waiting for a queued use while keeping its queue place for one heartbeat interval.",

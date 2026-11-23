@@ -14,6 +14,8 @@ export interface HostSettings {
   gateSamples: number;
   gateIntervalMs: number;
   leaseTtlMs: number;
+  /** Longest accepted estimate; also caps how far an estimate extends a lease. */
+  maxEstimateMs: number;
   heartbeatIntervalMs: number;
   observerThreadId: string | null;
   observerEvents: ObserverEvent[];
@@ -30,7 +32,7 @@ export const DEFAULT_SETTINGS: Settings = {
   watchPolicy: "warn", watchCores: 3, watchWindowSeconds: 120, idleLeaseMinutes: 30,
   capacities: { heavy: 4, "local-model": 1 },
   memFreeMinPct: 20, loadMax: 18, gateSamples: 2, gateIntervalMs: 15_000,
-  leaseTtlMs: 1_800_000, heartbeatIntervalMs: 600_000,
+  leaseTtlMs: 1_800_000, maxEstimateMs: 43_200_000, heartbeatIntervalMs: 600_000,
   observerEvents: ["warn", "expire", "revoke", "queue-wait", "gate-hold", "unleased-load", "idle-lease"],
   observerQueueWaitMs: 1_200_000, observerGateHoldMs: 900_000,
   observerThreadId: null, portRange: { from: 41000, to: 41099 },
@@ -129,7 +131,7 @@ export interface LogParams { since?: number; hostId?: string; limit?: number }
 /** Server implements these methods with boundary validation; these types have no SDK dependency. */
 export interface ObserverParams { threadId?: string; self?: boolean; toThreadId?: string; clear?: boolean; events?: string }
 export interface ObserverView { threadId: string | null; title: string | null; events: ObserverEvent[] }
-export const SETTING_KEYS = ["heavyCapacity", "localModelCapacity", "memFreeMinPct", "loadMax", "gateSamples", "gateIntervalSeconds", "leaseTtlMinutes", "heartbeatIntervalMinutes", "observerThreadId", "observerEvents", "observerQueueWaitMinutes", "observerGateHoldMinutes", "portFrom", "portTo", "grantMode", "watchPolicy", "watchCores", "watchWindowSeconds", "idleLeaseMinutes"] as const;
+export const SETTING_KEYS = ["heavyCapacity", "localModelCapacity", "memFreeMinPct", "loadMax", "gateSamples", "gateIntervalSeconds", "leaseTtlMinutes", "maxEstimateMinutes", "heartbeatIntervalMinutes", "observerThreadId", "observerEvents", "observerQueueWaitMinutes", "observerGateHoldMinutes", "portFrom", "portTo", "grantMode", "watchPolicy", "watchCores", "watchWindowSeconds", "idleLeaseMinutes"] as const;
 export type SettingKey = (typeof SETTING_KEYS)[number];
 export type SettingValues = Record<SettingKey, number | string>;
 export interface SettingsFormView { values: SettingValues; defaults: SettingValues; maxima: Partial<Record<SettingKey, number>>; setKeys: SettingKey[]; cores: number; heavyDefault: number }

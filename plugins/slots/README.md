@@ -6,6 +6,8 @@ Manager commands (`prioritize`, `revoke`, `grant`, `capacity`) are not access-ch
 
 ## Sidebar (0.4.0)
 
+Version 0.5.5 refuses estimates above `maxEstimateMinutes` (default 720, 12 h) with a refusal that names the unit fix, and caps how far a stored estimate extends a lease.
+
 Version 0.5.4 tightens agent rules: each agent tool has its own description; refusals name the fix; `release` without an ID is refused when the thread has several leases or requests (pass the ID or `--all`); inside a thread, `--thread` must be the caller's own; manager commands are documented as manager-only.
 
 Version 0.5.3 starts every message Slots sends into a thread with a `[bb message from plugin:slots]` header line, so the agent does not read it as the owner's, and drops the "Machine Slots" name from the message title.
@@ -166,6 +168,7 @@ remain policy choices rather than machine-derived limits.
 | gateSamples | 2 | 1–100 |
 | gateIntervalSeconds | 15 | 1–3600 seconds |
 | leaseTtlMinutes | 30 | 2–10080 minutes |
+| maxEstimateMinutes | 720 | 10–10080 minutes; longer estimates are refused |
 | heartbeatIntervalMinutes | 10 | 1–10079 minutes, below TTL |
 | observerThreadId | empty | optional thread ID, maximum 200 characters |
 | observerEvents | warn,expire,revoke,queue-wait,gate-hold | comma-separated allowed events; also grant,release,transfer,capacity; empty disables copies |
@@ -181,7 +184,7 @@ The engine's `validateSettings` checks cross-field combinations before use;
 correct invalid heartbeat/TTL or port bounds before continuing operations.
 `capacity` writes the matching capacity field in `config.json`; there is
 no capacity override in state. Lowering capacity preserves live leases. Settings changes
-reset gate streaks. TTL is `max(leaseTtlMs, estimate + 15m)`, renewed by heartbeat,
+reset gate streaks. TTL is `max(leaseTtlMs, min(estimate, maxEstimate) + 15m)`, renewed by heartbeat,
 gate, port, duplicate request, active events and each tick for active holders.
 Idle holders receive one wake-up warning at expiry minus heartbeat interval.
 Archive/deletion cancels queued work and releases leases. Startup rechecks owners,
