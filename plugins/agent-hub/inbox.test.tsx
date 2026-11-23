@@ -518,6 +518,26 @@ it('shows a pending bubble until the matching newest item arrives, and skips dra
   change(editor, { target:{ value:'Draft only' } }); fireEvent.click(slot.getByRole('button', { name:'More send options' })); fireEvent.click(slot.getByRole('menuitem', { name:'Save draft' }));
   expect(slot.queryByText('Sending…')).toBeNull();
 });
+it('empties the composer on Send at once and shows the message before bb answers', async () => {
+  let resolve!: (value: object) => void;
+  const { slot, recipients } = setup({ send: () => new Promise(done => { resolve = done; }) }); fireEvent.click(await recipients.findByRole('option'));
+  const editor = await slot.findByRole('textbox', { name:'Send message' }); change(editor, { target:{ value:'Right away' } }); fireEvent.click(slot.getByRole('button', { name:'Send message' }));
+  expect(editor.textContent).toBe(''); expect(slot.getByText('Right away')).toBeTruthy();
+  await act(async () => { resolve({ ok:true, delivery:'sent' }); });
+  expect(editor.textContent).toBe('');
+});
+it('shows a message bb will queue in the queue card at once, until the queue brings its row', async () => {
+  const thread = { id:'thr_one', title:'One', projectId:'pr_one', parentThreadId:null, parentNotifications:'all', archivedAt:null, pinnedAt:null, sectionId:null, isUnread:false, status:'active', runtimeStatus:'active', queuedWork:'none', hasPendingInteraction:false, indicator:'runtime', activity:{ workflows:0, backgroundAgents:0, backgroundCommands:0, planMode:false }, environment:{ id:'env', path:'/x' } };
+  let resolve!: (value: object) => void, rows: object[] = [];
+  const { slot, recipients } = setup({ sidebarThreads: { threads:[thread], projects:[] }, send: () => new Promise(done => { resolve = done; }), queuedMessages: { list: () => Promise.resolve(rows) } }); fireEvent.click(await recipients.findByRole('option'));
+  const editor = await slot.findByRole('textbox', { name:'Send message' }); change(editor, { target:{ value:'Later one' } }); fireEvent.click(slot.getByRole('button', { name:'Send message' }));
+  expect(editor.textContent).toBe('');
+  await waitFor(() => expect(slot.container.querySelector('[data-queue-pending]')?.textContent).toBe('Later one'));
+  rows = [{ id:'q1', threadId:'thr_one', content:[{ type:'text', text:'Later one', mentions:[] }], createdAt:Date.now(), updatedAt:1 }];
+  await act(async () => { resolve({ ok:true, delivery:'queued' }); });
+  await waitFor(() => expect(slot.container.querySelector('[data-queue-row="q1"]')).toBeTruthy());
+  expect(slot.container.querySelector('[data-queue-pending]')).toBeNull();
+});
 it('drops the pending bubble when bb queues the message, since the queue card shows it', async () => {
   const { slot, recipients } = setup({ send: () => Promise.resolve({ ok:true, delivery:'queued' }) }); fireEvent.click(await recipients.findByRole('option'));
   change(await slot.findByRole('textbox', { name:'Send message' }), { target:{ value:'Queued one' } }); fireEvent.click(slot.getByRole('button', { name:'Send message' }));
