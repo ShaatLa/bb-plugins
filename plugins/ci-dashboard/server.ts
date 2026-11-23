@@ -474,12 +474,13 @@ export default async function plugin(bb: BbPluginApi) {
   const serialObserver = <T>(job: () => Promise<T>) => { const run = observerChain.then(job, job); observerChain = run.catch(() => {}); return run; };
   const prSubscriptionSchema = z.object({ repository: repositorySchema, number: z.number().int().positive(), threadId: z.string().refine(isThreadId), at: z.iso.datetime() });
   type PrSubscription = z.infer<typeof prSubscriptionSchema>;
+  const PR_DEPLOY_WAIT_MS = 24 * 3_600_000;
   const prDeliveryKey = (key: string, entry: PrSubscription) => `${key}:${entry.threadId}:${entry.at}`;
   let prChain: Promise<unknown> = Promise.resolve();
   function updatePr<T>(change: (entries: PrSubscription[]) => { entries: PrSubscription[]; result: T }) {
     const run = prChain.then(async () => {
       const stored = await bb.storage.kv.get("prSubscriptions"), parsed = z.array(prSubscriptionSchema).safeParse(stored);
-      // shortcut: fixed 14-day expiry for PRs that never deploy; make it a setting if someone needs longer
+      // shortcut: fixed 14-day expiry for open PRs (merged ones end 24 h after the merge line); make it a setting if someone needs longer
       const entries = (parsed.success ? parsed.data : []).filter((entry) => Date.now() - Date.parse(entry.at) < 14 * 86_400_000);
       const next = change(entries);
       const entriesToStore = next.entries.sort((a, b) => a.at.localeCompare(b.at)).slice(-200);
@@ -616,6 +617,13 @@ export default async function plugin(bb: BbPluginApi) {
         for (const entry of matches) direct.push({ threadId: entry.threadId, text: `${entry.number === deploy.pullRequest ? line : line.replace(/success(?: · #\d+)? · /, `success · #${entry.number} · in `)}` });
         entries = entries.filter((entry) => !matches.includes(entry));
       }
+      // A merged PR waits for its deployment at most 24 h after the merge line; repositories without deployments do not keep it 14 days.
+      entries = entries.filter((entry) => {
+        const merged = entry.repository === repo ? state.sent[prDeliveryKey(`pr_merged:${entry.number}`, entry)] : undefined;
+        if (merged === undefined || now - merged < PR_DEPLOY_WAIT_MS) return true;
+        direct.push({ threadId: entry.threadId, text: `PR deployment wait ended · #${entry.number} · no successful deployment within 24 h of merge, subscription ended` });
+        return false;
+      });
       return { entries, result: undefined };
     });
     const accepted = acceptEvents(state, global, confirmed.filter((event) => !routed.has(event) && (!event.deploy || (deploymentMode(values.observeDeployments) !== "off" && (deploymentMode(values.observeDeployments) === "all" || event.deploy.state !== "success")))), config);
@@ -1089,7 +1097,7 @@ export default async function plugin(bb: BbPluginApi) {
       throw new Error("fix_pending ref must identify the fix, not CI data; pass #12, FIX-1 or a URL instead.");
     }
   }
-  const prDescription = "The lead must subscribe right after opening the PR with subscribe_pr (number required), at any PR state before READY; unsubscribe_pr cancels. PR CI green / PR CI red, PR merged and PR closed go only to PR subscribers, never observers. Already completed CI or merges arrive on the next pass. CI is once per current head SHA and verdict (latest run per check name); merge is once per PR and keeps the subscription alive for deployment; close without merge ends it. The next successful deployment containing the PR goes to its subscribers instead of observers, then the subscription ends. Deployment failures go to observers only. Subscriptions end on delivery, thread archive/deletion, or after 14 days.";
+  const prDescription = "The lead must subscribe right after opening the PR with subscribe_pr (number required), at any PR state before READY; unsubscribe_pr cancels. PR CI green / PR CI red, PR merged and PR closed go only to PR subscribers, never observers. Already completed CI or merges arrive on the next pass. CI is once per current head SHA and verdict (latest run per check name); merge is once per PR and keeps the subscription alive for deployment up to 24 h after the merge line; close without merge ends it. The next successful deployment containing the PR goes to its subscribers instead of observers, then the subscription ends. Deployment failures go to observers only. Subscriptions end on delivery, thread archive/deletion, or after 14 days.";
   async function manage(input: z.infer<typeof manageInput>, ctx: { threadId: string; signal: AbortSignal }) {
     validateManage(input);
     if (input.action !== "list") requireChanges();

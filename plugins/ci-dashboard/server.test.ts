@@ -2583,6 +2583,23 @@ test("PR lifecycle: late subscribe, head dedupe, new push, restart, merge once a
   } finally { await harness.lifecycle.dispose(); }
 });
 
+test("PR lifecycle: a merged PR without deployment drops its subscription 24 h after the merge line", async () => {
+  const { pr } = lifecycleScenario();
+  pr.state = "MERGED"; pr.merged = true; pr.mergeCommit = { oid: "b".repeat(40) }; pr.mergedAt = "2026-10-20T12:00:00Z";
+  const { bb, harness, send } = observerHost({ repository: "acme/app", observerThreads: "", observeDeployments: "off" });
+  try {
+    await plugin(bb);
+    await harness.behavior.callRpc("manage", { action: "subscribe_pr", number: 12, threadId: "thr_example" });
+    await signalsPass(harness, 0);
+    const list = async () => (await harness.behavior.callRpc("manage", { action: "list" }) as { prSubscriptions: unknown[] }).prSubscriptions;
+    await signalsPass(harness, 23 * 3_600_000);
+    expect(await list()).toHaveLength(1);
+    await signalsPass(harness, 3_600_000);
+    expect(await list()).toHaveLength(0);
+    expect(sentTo(send, "thr_example")).toEqual([`PR merged · #12 · merge commit ${pr.mergeCommit.oid} · ${pr.mergedAt} · ${pr.url}`, "PR deployment wait ended · #12 · no successful deployment within 24 h of merge, subscription ended"]);
+  } finally { await harness.lifecycle.dispose(); }
+});
+
 test.each(["MERGED", "CLOSED"])("PR lifecycle: subscribing at %s delivers next pass; close removes subscriptions", async state => {
   const { pr, requests } = lifecycleScenario();
   pr.state = state; pr.merged = state === "MERGED"; pr.mergeCommit = pr.merged ? { oid: "b".repeat(40) } : null; pr.mergedAt = pr.merged ? "2026-10-20T12:00:00Z" : null;
