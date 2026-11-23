@@ -114,7 +114,7 @@ function ManagerPicker({ projectId, value, disabled, onChange }: {
 }
 
 const PR_SWITCHES = [
-  { key: "prEvents", label: "PR lifecycle messages", hint: "Message the card's working session about CI results, merge-queue removal, the merge and the first successful post-merge run." },
+  { key: "prEvents", label: "PR lifecycle messages", hint: "Message the card's working session about its pull request: CI results, merge-queue removal, the merge and the first successful post-merge run." },
   { key: "prEventsManager", label: "Copy PR messages to the manager", hint: "Also send those messages to the manager thread." },
 ] as const;
 type PrKey = (typeof PR_SWITCHES)[number]["key"];
