@@ -167,12 +167,14 @@ export function createDriver(bb: BbPluginApi, db: Database.Database, invalidate:
         const known = new Map(found.map(t=>[t.id,t]));
         for (const t of found) db.prepare(t.archivedAt ? 'INSERT OR IGNORE INTO archived_threads VALUES (?)' : 'DELETE FROM archived_threads WHERE thread_id=?').run(t.id);
         await Promise.all(tracked.slice(i,i+200).map(async row => {
-          const id=row.thread_id, thread=known.get(id);
+          const id=row.thread_id; let thread: Thread|undefined=known.get(id);
           if (thread?.archivedAt) return;
           if (thread && !row.last_error && row.ingested_thread_updated_at!==null && thread.updatedAt<=row.ingested_thread_updated_at) return;
           if (!thread) {
-            try {await bb.sdk.threads.get({threadId:id,signal});}
+            try {thread=await bb.sdk.threads.get({threadId:id,signal});}
             catch (e) {if (notFound(e)) await locked(id,async()=>remove(id)); return;}
+            // bb's list leaves archived threads out, so only this lookup tells an archive missed while the plugin was down.
+            if (thread.archivedAt) {db.prepare('INSERT OR IGNORE INTO archived_threads VALUES (?)').run(id); return;}
           }
           await schedule(id,thread).catch(()=>{});
         }));

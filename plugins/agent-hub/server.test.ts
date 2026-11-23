@@ -693,6 +693,16 @@ describe('ingestion driver',()=>{
   expect(eventThreads).toEqual(['changed']);
   expect(db.prepare("SELECT thread_id FROM archived_threads").all()).toEqual([{thread_id:'archived'}]);
  });
+ it('records an archived thread that bb leaves out of the list, without ingesting it',async()=>{
+  const {harness,db,driver}=driverSetup();
+  db.prepare("INSERT INTO threads_state(thread_id,last_seq,updated_at,ingested_thread_updated_at) VALUES ('thr_example',1,0,100)").run();
+  harness.sdk.stub('threads.list',async()=>[]);
+  harness.sdk.stub('threads.get',async()=>makeThreadResponse({id:'thr_example',updatedAt:200,archivedAt:150}));
+  const eventThreads:string[]=[]; harness.sdk.stub('threads.events.list',async(args:any)=>{eventThreads.push(args.threadId);return [];});
+  await driver.reconcile();
+  expect(eventThreads).toEqual([]);
+  expect(db.prepare("SELECT thread_id FROM archived_threads").all()).toEqual([{thread_id:'thr_example'}]);
+ });
  it('persists oversized errors without moving the cursor and retries without another event',async()=>{
   vi.useFakeTimers(); const {harness,db,driver}=driverSetup();
   db.prepare("INSERT INTO threads_state(thread_id,last_seq,updated_at) VALUES ('t',42,0)").run();
