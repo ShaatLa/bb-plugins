@@ -5,7 +5,7 @@ import { bindChatCommands, chatShortcut } from './chat-commands';
 import { ThreadHeader } from './thread-header';
 import { COMPOSE_KEY, DRAFTS_EVENT } from './drafts';
 import { QuestionStack } from './question-stack';
-import { ContactsList, useContacts } from './contacts';
+import { ContactsList, useContacts, WARM_CHAT } from './contacts';
 import { JUMP_EVENT, takeJump, useContactSelection } from './open-chat';
 import { mentionsForText } from './mentions';
 import { watchJumps } from './jump-log';
@@ -363,6 +363,7 @@ type InboxProps = { contactsHidden?: boolean; onBulkRead?: (result: { batch: str
 export function Inbox(props: InboxProps) {
   const { selected, select } = useContactSelection(), contacts = useContacts(selected);
   const [kept, setKept] = useState<string[]>([]), [warm, setWarm] = useState<{ threadId: string; unread: number } | null>(null);
+  useEffect(() => { const listen = (event: Event) => { const { threadId, unread } = (event as CustomEvent<{ threadId: string; unread: number }>).detail; setWarm(old => old?.threadId === threadId && old.unread === unread ? old : { threadId, unread }); }; window.addEventListener(WARM_CHAT, listen); return () => window.removeEventListener(WARM_CHAT, listen); }, []);
   const next = selected ? [...kept.filter(id => id !== selected), selected].slice(-5) : kept;
   if (next.join('\n') !== kept.join('\n')) setKept(next);
   const grid = useRef<HTMLDivElement>(null), [contactsWidth, setContactsWidth] = useStoredState('bb-plugin-answers:page:contacts-width', CONTACTS_DEFAULT);
@@ -375,7 +376,7 @@ export function Inbox(props: InboxProps) {
       onPointerDown={event => { event.preventDefault(); const handle = event.currentTarget, left = grid.current!.getBoundingClientRect().left; handle.setPointerCapture(event.pointerId); const move = (e: PointerEvent) => resize(e.clientX - left); const up = () => { handle.removeEventListener('pointermove', move); handle.removeEventListener('pointerup', up); }; handle.addEventListener('pointermove', move); handle.addEventListener('pointerup', up); }}
       onKeyDown={event => { if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') { event.preventDefault(); resize(contactsWidth + (event.key === 'ArrowLeft' ? -16 : 16)); } }}
       onDoubleClick={() => setContactsWidth(CONTACTS_DEFAULT)} />
-    <div data-contacts-column className={`flex min-h-0 min-w-0 flex-col ${contactsHidden ? 'min-[640px]:hidden' : ''} min-[640px]:border-r min-[640px]:border-border-seam ${selected ? 'max-[639px]:hidden' : ''}`}><ContactsList model={contacts} selected={selected} onWarm={(threadId, unread) => { if (!kept.includes(threadId)) setWarm(old => old?.threadId === threadId && old.unread === unread ? old : { threadId, unread }); }} onSelect={select} onBulkRead={onBulkRead} /></div>
+    <div data-contacts-column className={`flex min-h-0 min-w-0 flex-col ${contactsHidden ? 'min-[640px]:hidden' : ''} min-[640px]:border-r min-[640px]:border-border-seam ${selected ? 'max-[639px]:hidden' : ''}`}><ContactsList model={contacts} selected={selected} onSelect={select} onBulkRead={onBulkRead} /></div>
     <div className={`relative min-h-0 min-w-0 ${selected ? '' : 'max-[639px]:hidden'}`}>
       {warm && !next.includes(warm.threadId) && <WarmChat key={warm.threadId} {...warm} />}
       {!selected && <InboxChat {...props} contactsHidden threadId={undefined} />}
