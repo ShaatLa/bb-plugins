@@ -383,8 +383,9 @@ describe("a decision answered", () => {
     const f = setupDebt();
     const task = f.card("Debt");
     f.executor(task.id);
-    f.require();
+    // A check is asked before the debt (it is refused during it) and answered once the card owes a plan.
     const check = (await f.ask(task.id, { kind: "check", prompt: "Verified?", options: [] })).question;
+    f.require();
     const confirmed = await f.call("answerQuestion", { questionId: check.id, revision: check.revision, selectedOptionIds: [check.options[0].id], authorName: "Owner" });
     expect(f.reminders("thr_worker")).toEqual([]);
     expect(confirmed.question.revision).toBe(check.revision + 1);

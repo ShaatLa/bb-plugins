@@ -14,8 +14,9 @@ import {
   type Comment,
 } from "../shared/contract";
 import { createStructuredStore } from "./store";
-import { assertStepsSingleAction } from "../shared/questions";
+import { assertStepsSingleAction, isQuestionOpen } from "../shared/questions";
 import { evidenceFlags, evidenceIndex } from "./evidence";
+import { createPlanStore } from "../plans/store";
 
 const harnesses: FakePluginHarness[] = [];
 afterEach(async () => {
@@ -148,6 +149,48 @@ describe("task questions", () => {
     await expect(ask("Принимаете план от 19.11?")).rejects.toThrow(/plan submit/);
     await expect(ask("Can I start step 1?", ["Approve the plan first"])).rejects.toThrow(/plan submit/);
     await ask("Which database should step 2 use?");
+  });
+
+  it("refuses owner checks and check reopens while the card has plan debt, and keeps decisions allowed", async () => {
+    const { bb, store, project, structured } = setup();
+    const plans = createPlanStore(bb.storage.database(), store.tasks);
+    const author = { kind: "agent" as const, threadId: "thr_example", name: "agent" };
+    store.tasks.updateProject(project.id, { planning: "optional" });
+    const card = store.tasks.createTask({ projectId: project.id, title: "Rendered states", status: "in_progress" });
+    const epic = store.tasks.createTask({ projectId: project.id, title: "Area", type: "epic", status: "in_progress" });
+    const check = (taskId: string) => structured.handlers.createQuestion({ kind: "check", askedByThread: null, taskId, prompt: "Does the list render?", steps: [], mode: "single", options: [] });
+    // Optional planning: no debt, so checks are asked as before.
+    const early = (await check(card.id)).question;
+    await structured.handlers.answerQuestion({ questionId: early.id, revision: early.revision, selectedOptionIds: [early.options[0]!.id], authorName: "Owner" });
+    store.tasks.updateProject(project.id, { planning: "required" });
+    const refusal = `Plan debt: ${card.key} is in work without an approved plan (no plan). Owner checks wait for an approved plan; write it (bb work-board plan set ${card.key} --file plan.md --base-version 0 --summary "Initial plan"), then submit it: bb work-board plan submit ${card.key} --reviewer …`;
+    await expect(check(card.id)).rejects.toThrow(refusal);
+    plans.save({ taskId: card.id, op: "replace", baseVersion: 0, body: "# Plan\n", summary: "Plan", author });
+    await expect(check(card.id)).rejects.toThrow(`(plan v1 is draft). Owner checks wait for an approved plan; submit it for review: bb work-board plan submit ${card.key} --reviewer …`);
+    plans.submit(card.id, author, null);
+    await expect(check(card.id)).rejects.toThrow(`(plan v1 is in review). Owner checks wait for an approved plan; wait for the review to finish (bb work-board plan show ${card.key}); if it asks for changes, revise the plan and submit it again: bb work-board plan submit ${card.key} --reviewer …`);
+    plans.setState(card.id, "changes_requested", { kind: "person", threadId: null, name: "Owner" });
+    await expect(check(card.id)).rejects.toThrow(`(plan v1 is changes requested). Owner checks wait for an approved plan; revise it (bb work-board plan edit ${card.key} … --base-version 1), then submit it: bb work-board plan submit ${card.key} --reviewer …`);
+    // A reopen asks the owner again, so it waits too; an epic never carries debt.
+    const answered = structured.listQuestions(card.id)[0]!;
+    await expect(structured.handlers.updateQuestion({ questionId: answered.id, revision: answered.revision, prompt: answered.prompt, mode: "single", options: answered.options, reopen: true, authorName: "agent" })).rejects.toThrow("Owner checks wait for an approved plan");
+    expect((await check(epic.id)).question.kind).toBe("check");
+    // Clearing an answer is not an ask: it stays open to every caller, so a withdrawn confirmation never sticks.
+    const cleared = await structured.handlers.answerQuestion({ questionId: answered.id, revision: answered.revision, selectedOptionIds: [], authorName: "agent" });
+    expect(cleared.question.answeredBy).toBeNull();
+    expect(isQuestionOpen(cleared.question)).toBe(true);
+    // The cleared check is open again, so an edit (not a reopen) stays allowed during the debt.
+    const edited = await structured.handlers.updateQuestion({ questionId: answered.id, revision: cleared.question.revision, prompt: "Does the list render after reload?", mode: "single", options: cleared.question.options, authorName: "agent" });
+    expect(edited.question.prompt).toBe("Does the list render after reload?");
+    const again = await structured.handlers.answerQuestion({ questionId: answered.id, revision: edited.question.revision, selectedOptionIds: [answered.options[0]!.id], authorName: "Owner" });
+    const reanswered = again.question;
+    const decision = await structured.handlers.createQuestion({ kind: "decision", askedByThread: null, taskId: card.id, prompt: "Which layout?", mode: "single", options: ["A", "B"] });
+    expect(decision.question.kind).toBe("decision");
+    await structured.handlers.deleteQuestion({ questionId: decision.question.id, revision: decision.question.revision });
+    plans.setState(card.id, "approved", { kind: "person", threadId: null, name: "Owner" });
+    expect((await check(card.id)).question.kind).toBe("check");
+    const reopened = await structured.handlers.updateQuestion({ questionId: reanswered.id, revision: reanswered.revision, prompt: answered.prompt, mode: "single", options: answered.options, reopen: true, authorName: "agent" });
+    expect(reopened.question.answeredBy).toBeNull();
   });
 
   it("keeps each check step to one sentence and one action", async () => {

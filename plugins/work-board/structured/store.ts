@@ -10,7 +10,8 @@ import { errorMessage } from "../shared/errors";
 import { planReviewThread, wakeReviewer } from "../plans/delivery";
 import { openDecisionIds, reviewBinding, type ReviewBinding } from "../plans/pause";
 import { planDebtService } from "../plan-debt/service";
-import { recordPlanDebtEvent } from "../plan-debt/store";
+import { openPlanDebt, recordPlanDebtEvent } from "../plan-debt/store";
+import { planDebtCheckRefusal } from "../shared/plan-debt";
 import { createPlanStore } from "../plans/store";
 import { buildOwnerReviewSettledMessage, buildResultCopyMessage, buildReviewPausedMessage, buildReviewResumedMessage } from "../shared/plan-notes";
 import {
@@ -40,6 +41,11 @@ export function createStructuredStore(bb: BbPluginApi, store: TasksApiStore) {
     // With planning off the plan has no review, so a question about it is an ordinary question.
     if (!planningOn(store.tasks.getProject(task.projectId) ?? {})) return;
     assertNotPlanApproval(prompt, steps, task.key, db.prepare<[string], { found: number }>("SELECT 1 AS found FROM task_plans WHERE task_id = ?").get(taskId) !== undefined);
+  };
+  /** An owner check waits for an approved plan; decisions stay allowed because a plan often needs one. */
+  const assertNoCheckDuringPlanDebt = (taskId: string) => {
+    const debt = openPlanDebt(db, taskId);
+    if (debt) throw new Error(planDebtCheckRefusal(store.tasks.getTask(taskId)!.key, debt));
   };
   const plans = createPlanStore(db, store.tasks);
   /**
@@ -261,6 +267,8 @@ export function createStructuredStore(bb: BbPluginApi, store: TasksApiStore) {
       });
       assertNoSecretsInValue(question, "question");
       const wake = store.transaction(() => {
+        // Read inside the write, so a plan save cannot open the debt between this check and the insert.
+        if (question.kind === "check") assertNoCheckDuringPlanDebt(question.taskId);
         const before = openDecisionIds(db, question.taskId).length;
         db.prepare<[string, string, string]>(
           "INSERT INTO task_questions (id, task_id, payload) VALUES (?, ?, ?)",
@@ -421,6 +429,7 @@ export function createStructuredStore(bb: BbPluginApi, store: TasksApiStore) {
         assertStepsSingleAction(content.steps, current.steps ?? []);
         assertNotPlanQuestion(current.taskId, content.prompt, content.steps);
         if (current.answeredBy) assertReopenKeepsScope(current, content);
+        if (current.answeredBy && current.kind === "check") assertNoCheckDuringPlanDebt(current.taskId);
         const { id, taskId, createdAt, history, ...snapshot } = current;
         const next = questionSchema.parse({
           ...current,

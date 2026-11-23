@@ -1269,7 +1269,7 @@ export function registerTasksCli(
           summary: "Ask the owner one decision or one check (short, one link; check steps in --step, evidence in a comment)",
           positionals: [KEY_POSITIONAL],
           options: {
-            kind: { type: "enum", values: ["decision", "check"] as const, description: "Question type (default decision)" },
+            kind: { type: "enum", values: ["decision", "check"] as const, description: "Question type (default decision); a check is refused while the card has plan debt" },
             prompt: {
               type: "string",
               required: true,
