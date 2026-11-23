@@ -136,9 +136,8 @@ const AT_BOTTOM = 2;
 const live = (node: HTMLElement, el: HTMLElement | null, selector: string) => el?.isConnected ? el : node.querySelector<HTMLElement>(selector);
 const rowOf = (id: string) => `[aria-label=History] [data-history-ids~="${CSS.escape(id)}"]`;
 export const atEnd = (node: HTMLElement) => node.scrollHeight - node.scrollTop - node.clientHeight <= Math.max(AT_BOTTOM, node.clientHeight / 4);
-// Following new content stops before it carries away what the reader saw at the bottom: a big arrival (a long reply) halts
-// with its start under the header (covered: the header, the composer and a margin), and the chat stops following there.
-export const followTo = (top: number, height: number, client: number, before: number, covered: number) => Math.max(top, Math.min(height - client, before - covered));
+// A reader at the bottom follows new content to its end, a long reply too (its start scrolls away above, as the owner chose).
+export const followTo = (top: number, height: number, client: number) => Math.max(top, height - client);
 // Cards already shown, by id: coming back to a chat whose card did not change draws it in place instead of replaying the slide.
 // An id is forgotten once its card has slid away (or was hidden when it left), so a card that comes back later slides in again.
 const revealed = new Set<string>();
@@ -756,7 +755,7 @@ function InboxChat({ onBulkRead, bbChat = false, search: searchProp, onSearch, t
     // Older pages render above, so one more shown page (Load earlier, or the reach back over quiet updates) grew the top: keep the place.
     } else if (old.prepend || shownPages > old.shown) node.scrollTop = old.top + node.scrollHeight - old.height;
     // While a quote popup is open (anchored in the chat) nothing follows new messages: the owner is writing about this spot.
-    else if (old.bottom && !quoting.current) node.scrollTop = followTo(node.scrollTop, node.scrollHeight, node.clientHeight, old.height, covered(node));
+    else if (old.bottom && !quoting.current) node.scrollTop = followTo(node.scrollTop, node.scrollHeight, node.clientHeight);
     position.current = { height: node.scrollHeight, top: node.scrollTop, bottom: node.scrollHeight - node.scrollTop - node.clientHeight < AT_BOTTOM, fresh: false, prepend: false, shown: shownPages };
   }, [pages, depth]);
   useEffect(() => {
@@ -780,7 +779,6 @@ function InboxChat({ onBulkRead, bbChat = false, search: searchProp, onSearch, t
   // As in bb's chat the conversation scrolls under the composer to the bottom of the window: the composer stack floats over
   // its end, and the column's bottom padding follows the stack's height, so a growing stack still pushes the chat up. The stack stops short of the scrollbar.
   const stack = useRef<HTMLDivElement>(null), [scrollbar, setScrollbar] = useState(0);
-  const covered = (node: HTMLElement) => (node.querySelector<HTMLElement>('[data-conversation-header]')?.offsetHeight ?? 0) + (stack.current?.offsetHeight ?? 0) + 24;
   // Scrolled up past the last message (its top below the composer stack): offer bb's "Scroll to latest" button.
   // Scroll events come every frame while the window or a sidebar resizes the chat, and any geometry read in one forces a
   // layout of the whole conversation at a size about to change. So the chat's scroll handler reads once a frame, the saved
@@ -865,7 +863,7 @@ function InboxChat({ onBulkRead, bbChat = false, search: searchProp, onSearch, t
       if (!pin.current) {
         const el = gap > AT_BOTTOM ? anchored() : null;
         if (el) node.scrollTop += el.getBoundingClientRect().top - node.getBoundingClientRect().top - anchor!.offset;
-        else if (gap <= AT_BOTTOM && !quoting.current) node.scrollTop = followTo(node.scrollTop, node.scrollHeight, next, content, covered(node));
+        else if (gap <= AT_BOTTOM && !quoting.current) node.scrollTop = followTo(node.scrollTop, node.scrollHeight, next);
       }
       height = next; content = node.scrollHeight; if (Date.now() - resizedAt.current >= 500) gap = node.scrollHeight - node.scrollTop - next;
     });

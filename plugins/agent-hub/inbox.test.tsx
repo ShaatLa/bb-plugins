@@ -964,11 +964,11 @@ it('pauses queue and context polling while hidden and refetches when visible', a
   } finally { vi.useRealTimers(); slot.unmount(); }
 });
 
-it('follows new content at the bottom but stops a long arrival at its start', () => {
-  // View 600 tall, 150 covered by the header, composer and margin; the content was 2000 tall with the reader at the bottom.
-  expect(followTo(1400, 2100, 600, 2000, 150)).toBe(1500); // a short arrival: back to the bottom
-  expect(followTo(1400, 4000, 600, 2000, 150)).toBe(1850); // a long reply: its start stays in view
-  expect(followTo(1400, 2000, 500, 2000, 150)).toBe(1500); // the view shrank (keyboard): the bottom edge is kept
+it('follows new content at the bottom to its end, a long reply too', () => {
+  // View 600 tall; the content was 2000 tall with the reader at the bottom.
+  expect(followTo(1400, 2100, 600)).toBe(1500); // a short arrival: back to the bottom
+  expect(followTo(1400, 4000, 600)).toBe(3400); // a long reply: to its end
+  expect(followTo(1400, 2000, 500)).toBe(1500); // the view shrank (keyboard): the bottom edge is kept
 });
 it('offers Stop only while the chat’s own turn runs, not for its background work', async () => {
   const idle = { id:'thr_one', projectId:'pr_one', parentThreadId:null, parentNotifications:'all', archivedAt:null, pinnedAt:null, sectionId:null, isUnread:false, status:'idle', runtimeStatus:'idle', queuedWork:'none', hasPendingInteraction:false, indicator:'background-command', activity:{ workflows:0, backgroundAgents:0, backgroundCommands:1, planMode:0 } };
@@ -1836,8 +1836,8 @@ it.each([
     if (grows) await waitFor(() => expect(within(scroller).getByText('Question 7')).toBeTruthy());
     await act(async () => { await new Promise(r => setTimeout(r, 100)); });
     expect(scroller.isConnected && scroller.querySelector('[aria-label=History]')).toBe(history); // not remounted
-    // Never above where the reader was; with unread rows below a reader at the bottom, at the first unread (its divider).
-    expect(layout.top(scroller)).toBe(atBottom && grows ? 1776 : left);
+    // Never above where the reader was; a reader at the bottom follows what arrived meanwhile to its end.
+    expect(layout.top(scroller)).toBe(atBottom && grows ? 1900 : left);
   } finally { layout.restore(); }
 });
 it('keeps a chat kept hidden at its place when earlier messages load right after it is shown again', async () => {
