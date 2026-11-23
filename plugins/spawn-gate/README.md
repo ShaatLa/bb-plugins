@@ -133,6 +133,12 @@ request interface. A reason only overrides the pace refusal. Unknown, stale,
 expired or exhausted readings cannot establish room. The same check runs
 during dry-run.
 
+When Account Pooler routes Codex or Claude Code, Spawn Gate uses the lowest
+measured weekly pace among available accounts with room, or the lowest known
+pace among the remaining available accounts. It excludes unavailable accounts
+and accounts whose quota for the requested model is exhausted. This describes
+available pool capacity. Account Pooler chooses the session's actual account.
+
 The default threshold is 1.25. Read or change the native setting:
 
 ```sh

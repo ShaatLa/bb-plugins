@@ -220,6 +220,7 @@ it("checks the actual weekly pace against role-eligible providers before mint, a
   });
   const calls: string[] = [];
   f.harness.sdk.stub("plugins.callRpc", async ({ pluginId, method }: { pluginId: string; method: string }) => {
+    if (pluginId === "account-pool") throw new Error("Account Pooler not installed");
     const providerId = pluginId.replace(/^provider-/, "");
     calls.push(providerId);
     return method.endsWith("listResources")
@@ -260,4 +261,62 @@ it("checks the actual weekly pace against role-eligible providers before mint, a
   const preview = await f.start({ ...f.request, dryRun: true });
   expect(preview.providerPace).toMatchObject({ overridden: false, providers: [ {}, {}, { pace: null } ] });
   expect(f.spawn).toHaveBeenCalledTimes(1);
+});
+
+it("uses the weekly quota of available pooled accounts even without local provider usage", async () => {
+  const f = await fixture();
+  const hostId = "host_example";
+  const observedAt = Date.now() - 1000;
+  const window = (utilization: number, elapsed: number) => ({
+    windowMinutes: 10_080, utilization, observedAt, status: null,
+    resetAt: observedAt + Math.round((1 - elapsed) * 604_800_000),
+  });
+  const account = (provider: string, status: string, utilization: number, elapsed: number) => ({
+    provider, status, enabled: true, limitWindows: [window(utilization, elapsed)],
+    familyWeekly: {} as Record<string, ReturnType<typeof window>>,
+  });
+  const claude = account("claude", "ready", 0.03, 0.1);
+  const pool = {
+    accepting: true, routing: { claude: true, codex: true }, parent: null,
+    accounts: [
+      account("codex", "exhausted", 0, 0.1),
+      account("codex", "ready", 0.52, 0.31),
+      account("claude", "ready", 0.95, 0.7),
+      claude,
+    ],
+  };
+  f.harness.sdk.stub("projects.get", async () => ({ gitRemoteUrl: f.repo, sources: [{ isDefault: true, hostId }] }));
+  f.harness.sdk.stub("threads.get", async () => makeThreadResponse({ projectId: "proj_example", environmentId: "env_parent" }));
+  f.harness.sdk.stub("environments.get", async () => ({ hostId }));
+  f.harness.sdk.stub("providers.list", async () => [
+    { id: "codex", pluginId: "provider-codex" }, { id: "claude-code", pluginId: "provider-claude-code" },
+  ]);
+  f.harness.sdk.stub("plugins.callRpc", async ({ pluginId, method }: { pluginId: string; method: string }) => {
+    if (pluginId === "account-pool" && method === "status.get") return pool;
+    throw new Error("Local usage unavailable");
+  });
+  await f.write("Review the change.", undefined, {
+    eligible: [{ providerId: "codex" }, { providerId: "claude-code", model: "claude-sonnet-example" }],
+  });
+  const dryRun = { ...f.request, dryRun: true };
+  await expect(f.start(dryRun)).rejects.toThrow("Use claude-code or give an explicit reason");
+
+  claude.status = "held";
+  expect((await f.start(dryRun)).providerPace?.providers).toMatchObject([
+    { providerId: "codex", source: "account-pool", usedPercent: 52 },
+    { providerId: "claude-code", source: "account-pool", usedPercent: 95 },
+  ]);
+
+  claude.status = "ready";
+  claude.familyWeekly.sonnet = window(1, 0.5);
+  expect((await f.start(dryRun)).providerPace?.providers[1]).toMatchObject({
+    source: "account-pool", usedPercent: 95,
+  });
+
+  pool.routing.claude = false;
+  expect((await f.start(dryRun)).providerPace?.providers[1]).toMatchObject({
+    source: "provider-claude-code", pace: null,
+  });
+  expect(f.mint).not.toHaveBeenCalled();
+  expect(f.spawn).not.toHaveBeenCalled();
 });

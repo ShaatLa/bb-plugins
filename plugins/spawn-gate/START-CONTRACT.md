@@ -65,6 +65,12 @@ Optional builder output field for role-aware provider admission:
   each eligible provider's usage plugin for the target host. It compares the
   highest pace among applicable weekly windows, observed within the last hour
   with a current reset. Room means below 1.0 with quota remaining.
+- For Codex and Claude Code routed through Account Pooler, Spawn Gate reads
+  `account-pool`'s `status.get` instead. It scores each ready account using
+  its applicable weekly windows and excludes accounts with a blocked or
+  exhausted applicable window. It reports the lowest pace with confirmed room,
+  falling back to the lowest known pace among available accounts. Provider
+  pace describes pool capacity. Account Pooler selects the session account.
 - The native `paceThreshold` setting defaults to 1.25 and accepts a ratio of
   at least 1.0. The selected provider reaching it causes a refusal when an
   eligible alternative has room. These refusals are tracked as `over_pace`.
