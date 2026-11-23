@@ -136,6 +136,9 @@ function useReadOnView(ref: React.RefObject<HTMLElement | null>, enabled: boolea
 export const EditSentContext = createContext<((item: Item) => void) | null>(null);
 // A chat shares one refresh: a useRpcRefresh in every card subscribes it to fetch state and re-renders it on each fetch.
 export const RefreshContext = createContext<(() => void) | null>(null);
+// A chat answers its open questions at once: the question leaves the stack and shows answered while bb delivers the reply.
+export type Answering = { answered: ReadonlyMap<string, string>; failed: ReadonlyMap<string, string>; answer: (id: string, text: string) => void; fail: (id: string, error: string) => void };
+export const AnsweringContext = createContext<Answering | null>(null);
 // A chat shares one workBoardProjects query: a query of its own in every card and mention re-renders each on every fetch.
 export const useWorkBoardQuery = () => useQuery({ contract: rpcContract, method: 'workBoardProjects', input: {} }).data;
 // The context is undefined only outside a chat; null means the chat's query has no data yet.
@@ -310,7 +313,7 @@ export function ItemCard({ item, members, late, live = true, chat = false, marka
   const [pending, setPending] = useState(false);
   const sending = useRef(false);
   const [feedback, setFeedback] = useState('');
-  const [error, setError] = useState(''), [savedOwn, setSavedOwn] = useState(false);
+  const [error, setError] = useState(''), [savedOwn, setSavedOwn] = useState(false), answering = useContext(AnsweringContext);
   async function act(write: () => Promise<unknown>) {
     setError('');
     try { await write(); } catch (cause) { setError(message(cause)); }
@@ -319,11 +322,13 @@ export function ItemCard({ item, members, late, live = true, chat = false, marka
     if (sending.current || !(quick ?? text).trim()) return;
     sending.current = true;
     setPending(true); setError(''); setFeedback('');
+    const early = item.kind === 'for_me' && !options ? answering : null;
+    early?.answer(last.id, quick ?? text);
     try {
       const result = await rpc.call('reply', { id: last.id, text: quick ?? text, ...(files.length ? { attachments: files } : {}), ...(options ? { send: options } : {}) });
       refresh(); setFeedback(options?.mode === 'draft' ? 'Draft saved' : options?.sendAt ? 'Scheduled' : result.delivery === 'sent' ? 'Sent' : 'Queued'); setText(''); setFiles([]); setReplying(false);
     } catch (cause) {
-      setError(deliveryError(cause));
+      setError(deliveryError(cause)); early?.fail(last.id, deliveryError(cause));
     } finally { sending.current = false; setPending(false); }
   }
   const seq = item.kind === 'for_me' ? item.questionSeq : last.answerSeq ?? last.questionSeq;
@@ -448,7 +453,7 @@ export function ItemCard({ item, members, late, live = true, chat = false, marka
       {item.kind !== 'for_me' && replyButton}
     </div>{readMark && !(item.kind === 'for_me' && item.status === 'open') && <span className="ml-auto flex items-center px-2 text-muted-foreground">{readMark}</span>}</div>}
     {replying && <ComposerThread.Provider value={item.threadId}><div ref={replyBox}><Composer label="Reply text" sendLabel="Send reply" autoFocus value={text} onChange={setText} attachments={files} onAttachments={update => setFiles(update)} projectId={item.projectId} pending={pending} sendDisabled={!text.trim() && !files.length} onSend={options => void reply(options)} /></div></ComposerThread.Provider>}
-    {feedback && <p role="status">{feedback}</p>}</>}{error && <p role="alert" className="text-sm text-destructive">{error}</p>}
+    {feedback && <p role="status">{feedback}</p>}</>}{(error || answering?.failed.get(item.id)) && <p role="alert" className="text-sm text-destructive">{error || answering?.failed.get(item.id)}</p>}
   </li>;
 }
 
@@ -678,7 +683,8 @@ export function ThreadQuestions({ threadId, shell }: { threadId: string; shell?:
   const sharedStack = useQuestionStack(), [collapsed, setCollapsed] = useState(false);
   const stack = sharedStack ?? { collapsed, toggle: () => setCollapsed(!collapsed) };
   const { data } = useQuery({ contract: rpcContract, method: 'list', input: { view: 'for_me', threadId, limit: 50 } });
-  const items = (data?.items ?? []).filter(item => item.kind === 'for_me' && item.status === 'open').sort((a, b) => Number(b.urgency === 'blocking') - Number(a.urgency === 'blocking') || a.createdAt - b.createdAt);
+  const answering = useContext(AnsweringContext);
+  const items = (data?.items ?? []).filter(item => item.kind === 'for_me' && item.status === 'open' && !answering?.answered.has(item.id)).sort((a, b) => Number(b.urgency === 'blocking') - Number(a.urgency === 'blocking') || a.createdAt - b.createdAt);
   if (!items.length) return null;
   const waiting = items.filter(item => item.declinedAt === null).length;
   const card = <section aria-label="Questions for you"><button type="button" aria-expanded={!stack?.collapsed} onClick={stack?.toggle} className="answers-hit flex min-h-9 w-full text-left items-center gap-2 px-3 py-1.5 text-xs text-muted-foreground"><Icon name="MessageQuestion" aria-hidden className="size-3.5 shrink-0" /><span className="min-w-0 flex-1 truncate font-medium text-foreground">{waiting === 1 ? 'Question for you' : 'Questions for you'}</span><span className="rounded-full bg-surface-recessed px-1.5 text-2xs">{waiting}</span><Icon name={stack?.collapsed ? 'ChevronRight' : 'ChevronDown'} aria-hidden className="size-3.5" /></button><ul hidden={stack?.collapsed} aria-label="Questions for you" className="max-h-[min(32rem,50dvh)] divide-y divide-border-seam overflow-y-auto overscroll-contain border-t border-border-hairline px-2">{items.map(item => <ItemCard key={item.id} item={item} chat compact open={shell ? undefined : { href: answersThreadHref(threadId), label: 'Open in Agent Hub' }} />)}</ul></section>;

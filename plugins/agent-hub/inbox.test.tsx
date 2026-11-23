@@ -745,6 +745,20 @@ it('answers an open agent question of the conversation from the bottom stack, ou
   await waitFor(() => expect(reply).toHaveBeenCalledWith(expect.objectContaining({ id:'ans_open', text:'Yes' })));
   expect(slot.getByRole('textbox', { name:'Send message' })).toBeTruthy();
 });
+it('takes an answered question out of the stack and shows it answered in the chat before bb delivers the reply; a failed one comes back', async () => {
+  const open = { ...base, id:'ans_open', kind:'for_me' as const, status:'open' as const, question:'Ship it?', answer:null, answerSeq:null, options:['Yes', 'No'] };
+  let reject!: (error: Error) => void;
+  const reply = vi.fn(() => new Promise((_, no) => { reject = no; }));
+  const { slot, recipients } = setup({ list: (input: any) => ({ items: input.view === 'for_me' ? [open] : [base, open], nextCursor:null }), rpc: { reply } });
+  fireEvent.click(await recipients.findByRole('option'));
+  fireEvent.click(within(await slot.findByRole('region', { name:'Questions for you' })).getByRole('button', { name:/^Yes/ }));
+  expect(slot.queryByRole('region', { name:'Questions for you' })).toBeNull();
+  expect(within(slot.getByRole('list', { name:'History' })).getByText('Ship it?')).toBeTruthy();
+  await act(async () => { reject(new Error('Offline')); });
+  const card = await slot.findByRole('region', { name:'Questions for you' });
+  expect(within(card).getByRole('alert').textContent).toContain('Offline');
+  expect(within(slot.getByRole('list', { name:'History' })).queryByText('Ship it?')).toBeNull();
+});
 it('marks a contact whose thread waits for input', async () => {
   const idle = { projectId:'pr_one', parentThreadId:null, parentNotifications:'all', archivedAt:null, pinnedAt:null, sectionId:null, isUnread:false, status:'idle', runtimeStatus:'idle', queuedWork:'none', hasPendingInteraction:true, indicator:'none', activity:{ workflows:0, backgroundAgents:0, backgroundCommands:0, planMode:false }, environment:{ id:'env', path:'/x' } };
   const two = { ...one, threadId:'thr_two', threadTitle:'Two' };
