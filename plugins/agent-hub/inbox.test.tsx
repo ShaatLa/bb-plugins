@@ -1499,6 +1499,26 @@ it('keeps the reader at their place when an older page arrives above after the o
     expect(tops.get(scroller)).toBe(1100);
   } finally { spies.forEach(spy => spy.mockRestore()); vi.unstubAllGlobals(); }
 });
+it('keeps a reader at the newest in place when the reach back over quiet updates adds an older page after the hold ended', async () => {
+  const tops = new WeakMap<Element, number>(); let height = 3000;
+  const spies = [
+    vi.spyOn(HTMLElement.prototype, 'clientHeight', 'get').mockReturnValue(500),
+    vi.spyOn(HTMLElement.prototype, 'scrollHeight', 'get').mockImplementation(() => height),
+    vi.spyOn(HTMLElement.prototype, 'scrollTop', 'get').mockImplementation(function (this: HTMLElement) { return tops.get(this) ?? 0; }),
+    vi.spyOn(HTMLElement.prototype, 'scrollTop', 'set').mockImplementation(function (this: HTMLElement, value: number) { tops.set(this, value); }),
+  ];
+  try {
+    let release!: (value: object) => void;
+    const { slot, recipients } = setup({ list: (input: any) => input.cursor ? new Promise(r => { release = r; }) : { items:[quiet(3, 'Third report'), quiet(2, 'Second report')], nextCursor:'1|ans_u2' } });
+    fireEvent.click(await recipients.findByRole('option')); await slot.findByRole('list', { name:'History' });
+    const scroller = document.querySelector('[aria-label=History]')!.closest('.overflow-auto')!;
+    await waitFor(() => expect(tops.get(scroller)).toBe(3000));
+    fireEvent.wheel(scroller); // the reader acts: the hold on the newest ends
+    await waitFor(() => expect(release).toBeTypeOf('function'));
+    height = 3400; await act(async () => { release({ items:[quiet(1, 'First report')], nextCursor:null }); }); await new Promise(r => setTimeout(r, 50));
+    expect(tops.get(scroller)).toBe(3400);
+  } finally { spies.forEach(spy => spy.mockRestore()); }
+});
 it('keeps the remembered message in place when an older page joins its run of updates and the row is rebuilt', async () => {
   localStorage.setItem('bb-plugin-answers:page:scroll', JSON.stringify({ thr_one: { top:5, depth:1, anchor:'ans_u3', offset:0 } }));
   const observers: (() => void)[] = [];

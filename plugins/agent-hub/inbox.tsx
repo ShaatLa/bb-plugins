@@ -505,7 +505,7 @@ function InboxChat({ onBulkRead, bbChat = false, search: searchProp, onSearch, t
   }, [selected,pages,jumpTo]);
   const receive = useRef((threadId: string, index: number, data: ListResult) => setLoaded(old => receivePage(old, threadId, index, data))).current;
   // fresh: just opened, start at the top; prepend: Load earlier grew the top, keep the reader's place.
-  const position = useRef({ height: 0, top: 0, bottom: false, fresh: true, prepend: false });
+  const position = useRef({ height: 0, top: 0, bottom: false, fresh: true, prepend: false, shown: 0 });
   // First unread message when the conversation opened; it keeps its divider after the thread is marked read.
   const mark = useRef<string | null>(null);
   // Where the open landed (the New divider, or null for the newest); held while messages above finish rendering and grow.
@@ -713,7 +713,7 @@ function InboxChat({ onBulkRead, bbChat = false, search: searchProp, onSearch, t
   useEffect(() => { if (!jump || !pages.length) return; const node = scroll.current, card = node?.querySelector<HTMLElement>(`[data-history-ids~="${jump}"]`); if (card && node) { release(); const header = node.querySelector<HTMLElement>('[data-conversation-header]')?.offsetHeight ?? 0; node.scrollTop += card.getBoundingClientRect().top - node.getBoundingClientRect().top - (jumpOffset.current ?? header); jumpOffset.current = null; setFlash(jump); setTimeout(() => setFlash(current => current === jump ? null : current), 1500); setJump(null); setOlder(false); } else { setOlder(true); setJump(null); } }, [jump, pages]);
   useLayoutEffect(() => {
     const node = scroll.current; if (!node || !pages.length) return;
-    const old = position.current;
+    const old = position.current, shownPages = Math.min(pages.length, depth);
     if (old.fresh) {
       const saved = restore.current?.threadId === selected ? restore.current : null, keep = saved?.bottom ? null : saved;
       if (keep && pages.length < depth && pages.at(-1)?.nextCursor) return; // wait for the remembered pages
@@ -724,11 +724,12 @@ function InboxChat({ onBulkRead, bbChat = false, search: searchProp, onSearch, t
       // Hold the place while the conversation finishes rendering: the remembered message, or the newest.
       pin.current = !keep ? { target: null, until: Date.now() + 3000 } : anchor ? { target: anchor, selector: rowOf(keep!.anchor!), offset: keep!.offset ?? 0, until: Date.now() + 3000 } : null;
       clearTimeout(settle.current); settle.current = setTimeout(release, pin.current ? 3000 : 0);
-    } else if (old.prepend) node.scrollTop = old.top + node.scrollHeight - old.height;
+    // Older pages render above, so one more shown page (Load earlier, or the reach back over quiet updates) grew the top: keep the place.
+    } else if (old.prepend || shownPages > old.shown) node.scrollTop = old.top + node.scrollHeight - old.height;
     // While a quote popup is open (anchored in the chat) nothing follows new messages: the owner is writing about this spot.
     else if (old.bottom && !quoting.current) node.scrollTop = followTo(node.scrollTop, node.scrollHeight, node.clientHeight, old.height, covered(node));
-    position.current = { height: node.scrollHeight, top: node.scrollTop, bottom: node.scrollHeight - node.scrollTop - node.clientHeight < AT_BOTTOM, fresh: false, prepend: false };
-  }, [pages]);
+    position.current = { height: node.scrollHeight, top: node.scrollTop, bottom: node.scrollHeight - node.scrollTop - node.clientHeight < AT_BOTTOM, fresh: false, prepend: false, shown: shownPages };
+  }, [pages, depth]);
   useEffect(() => {
     const node = scroll.current, list = node?.querySelector('[aria-label=History]');
     if (!node || !list) return;
