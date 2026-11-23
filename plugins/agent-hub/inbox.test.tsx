@@ -561,6 +561,22 @@ it('hides a queued row as soon as the chat records its message, before the queue
   await waitFor(() => expect(slot.container.querySelector('[data-queue-row="q2"]')).toBeTruthy());
   expect(slot.container.querySelector('[data-queue-row="q1"]')).toBeNull();
 });
+it('hides a queued row whose recorded message spells its mention or line break differently', async () => {
+  const row = { id:'q1', threadId:'thr_one', content:[{ type:'text', text:'@thread:thr_example#msg=7', mentions:[] }, { type:'text', text:'Why twice?', mentions:[] }], createdAt:1, updatedAt:1 };
+  const { slot, recipients } = setup({ list: () => ({ items:[{ ...base, id:'ans_sent', question:'@thread:thr_example#msg=7 Why twice?', questionSeq:9, createdAt:5 }], nextCursor:null }), queuedMessages: { list: () => Promise.resolve([row, { ...row, id:'q2', content:[{ type:'text', text:'Why twice?', mentions:[] }], createdAt:2 }]) } }); fireEvent.click(await recipients.findByRole('option'));
+  await waitFor(() => expect(slot.container.querySelector('[data-queue-row="q2"]')).toBeTruthy());
+  expect(slot.container.querySelector('[data-queue-row="q1"]')).toBeNull();
+});
+it('drops a queued row bb already sent: Send now answers 404 quietly and the row does not come back', async () => {
+  const row = { id:'q1', threadId:'thr_one', content:[{ type:'text', text:'Already sent', mentions:[] }], createdAt:1, updatedAt:1 };
+  let rows = [row];
+  const sendNow = vi.fn(() => { rows = []; return Promise.reject(Object.assign(new Error('HTTP 404: Queued message not found'), { status:404 })); });
+  const { slot, recipients } = setup({ queuedMessages: { list: () => Promise.resolve(rows), send:sendNow } }); fireEvent.click(await recipients.findByRole('option'));
+  fireEvent.click(await slot.findByRole('button', { name:'Send queued message 1 now' }));
+  await waitFor(() => expect(sendNow).toHaveBeenCalled());
+  await waitFor(() => expect(slot.queryByText('Already sent')).toBeNull());
+  expect(slot.queryByText(/Queued message not found/)).toBeNull();
+});
 it('says why a queued message is held, as bb does', async () => {
   const row = { id:'q1', threadId:'thr_one', content:[{ type:'text', text:'Held text', mentions:[] }], updatedAt:1, waitingOn:{ kind:'plugin', pluginId:'concurrency-limit', reason:'14 of 14 running on host Mac' } };
   const { slot, recipients } = setup({ queuedMessages: { list: () => Promise.resolve([row]) }, plugins: { list: async () => ({ plugins:[{ id:'concurrency-limit', name:'Concurrency limit', icon:'Gauge' }] }) } }); fireEvent.click(await recipients.findByRole('option'));

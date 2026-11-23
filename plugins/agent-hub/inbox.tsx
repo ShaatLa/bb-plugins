@@ -687,7 +687,9 @@ function InboxChat({ onBulkRead, bbChat = false, search: searchProp, onSearch, t
   // deleted leave at once; a row whose message never shows up leaves after 20 s.
   const [leaving, setLeaving] = useState<{ row: typeof queue[number]; at: number }[]>([]), dropped = useRef(new Set<string>());
   const leavingText = (entry: { row: typeof queue[number] }) => queueText(entry.row).trim();
-  const landed = (entry: { row: typeof queue[number] }, list: Item[]) => list.some(item => item.kind === 'mine' && item.threadId === entry.row.threadId && item.questionSeq !== null && item.question.trim() === leavingText(entry));
+  // The recorded message may spell a mention or line break differently from its queued row, so both compare without them.
+  const sameSent = (a: string, b: string) => { const plain = (text: string) => text.replace(/@thread:thr_[A-Za-z0-9_-]+(?:#msg=\d+)?/g, ' ').replace(/\s+/g, ' ').trim(); return plain(a) === plain(b); };
+  const landed = (entry: { row: typeof queue[number] }, list: Item[]) => list.some(item => item.kind === 'mine' && item.threadId === entry.row.threadId && item.questionSeq !== null && sameSent(item.question, leavingText(entry)));
   // Send now (a steer into a running turn, or a scheduled row sent early) answers at once like the composer: the row
   // leaves the queue and the chat shows the message while bb records it. If bb keeps it queued or refuses, it comes back.
   const [sentNow, setSentNow] = useState<string[]>([]);
@@ -696,7 +698,8 @@ function InboxChat({ onBulkRead, bbChat = false, search: searchProp, onSearch, t
     dropped.current.add(row.id); setSentNow(old => [...old, row.id]);
     if (text) setOptimistic(old => [...old, { threadId: row.threadId, text, id: optimisticId, seenIds: pages.flatMap(page => page.items.map(item => item.id)) }]);
     const restore = () => { dropped.current.delete(row.id); setSentNow(old => old.filter(id => id !== row.id)); setOptimistic(old => old.filter(b => b.id !== optimisticId)); };
-    await queueAction(async () => { try { const result = await sdk.threads.queuedMessages.send({ threadId: row.threadId, queuedMessageId: row.id, mode: 'auto' }); if (result.delivery === 'queued') restore(); } catch (e) { restore(); throw e; } });
+    // A 404 means bb already sent or deleted the row: it stays out of the queue, and the chat shows what bb recorded.
+    await queueAction(async () => { try { const result = await sdk.threads.queuedMessages.send({ threadId: row.threadId, queuedMessageId: row.id, mode: 'auto' }); if (result.delivery === 'queued') restore(); } catch (e) { if ((e as { status?: number }).status === 404) setOptimistic(old => old.filter(b => b.id !== optimisticId)); else restore(); throw e; } }, true);
   }
   useEffect(() => { if (!leaving.length) return; const timer = setTimeout(() => setLeaving(current => current.filter(entry => Date.now() - entry.at < 20000)), 20000); return () => clearTimeout(timer); }, [leaving]);
   const queueFiles = (row: typeof queue[number]): Attachment[] => row.content.flatMap(part => part.type === 'localImage' ? [{ type: 'localImage', path: part.path, name: part.path.split('/').at(-1) || 'Image', ...(part.sourceProjectId ? { sourceProjectId: part.sourceProjectId } : {}) }] as Attachment[] : part.type === 'localFile' ? [{ type: 'localFile', path: part.path, name: part.name || part.path.split('/').at(-1) || 'File', ...(part.mimeType ? { mimeType: part.mimeType } : {}), ...(part.sizeBytes ? { sizeBytes: part.sizeBytes } : {}), ...(part.sourceProjectId ? { sourceProjectId: part.sourceProjectId } : {}) }] as Attachment[] : []);
@@ -926,7 +929,7 @@ function InboxChat({ onBulkRead, bbChat = false, search: searchProp, onSearch, t
   const shown = pages === NO_PAGES ? loadedPages : pages.slice(0, depth);
   // The chat records a sent message before the queue reread drops its row, so the row leaves the card as the message
   // lands. Each chat message hides one row, so a repeat of the same text still queued stays.
-  const landedRows = useMemo(() => { const mine = pages.flatMap(page => page.items).filter(item => item.kind === 'mine' && item.questionSeq !== null), used = new Set<string>(), hidden = new Set<string>(); for (const row of [...queue, ...leaving.map(entry => entry.row)]) { const hit = mine.find(item => !used.has(item.id) && item.threadId === row.threadId && item.createdAt >= row.createdAt && item.question.trim() === queueText(row).trim()); if (hit) { used.add(hit.id); hidden.add(row.id); } } return hidden; }, [pages, queue, leaving]);
+  const landedRows = useMemo(() => { const mine = pages.flatMap(page => page.items).filter(item => item.kind === 'mine' && item.questionSeq !== null), used = new Set<string>(), hidden = new Set<string>(); for (const row of [...queue, ...leaving.map(entry => entry.row)]) { const hit = mine.find(item => !used.has(item.id) && item.threadId === row.threadId && item.createdAt >= row.createdAt && sameSent(item.question, queueText(row))); if (hit) { used.add(hit.id); hidden.add(row.id); } } return hidden; }, [pages, queue, leaving]);
   const shownQueue = [...queue.filter(row => !sentNow.includes(row.id)), ...leaving.filter(entry => !queue.some(row => row.id === entry.row.id)).map(entry => entry.row)].filter(row => !landedRows.has(row.id));
   const held = leaving.filter(entry => entry.row.threadId === selected).map(leavingText);
   const items = useMemo(() => { const seen = new Set<string>(); return shown.flatMap(page => page.items).filter(item => (item.kind !== 'for_me' || item.status !== 'open') && !(item.kind === 'mine' && item.questionSeq === null && held.includes(item.question.trim())) && !seen.has(item.id) && !!seen.add(item.id)).reverse(); }, [pages, loadedPages, depth, held.join('\n')]);
