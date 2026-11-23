@@ -99,6 +99,12 @@ function start(bb: BbPluginApi, migrationError: string | null) {
   let projectCache: {expires:number; rows:Awaited<ReturnType<typeof bb.sdk.projects.list>>}|undefined;
   type DisplayThread = {id:string; title:string|null; projectId:string};
   const threadCache=new Map<string,{expires:number; thread:DisplayThread|undefined}>();
+  let pluginNameCache: {expires:number; names:Map<string,string>}|undefined;
+  // A plugin's display name, as its chat card shows it; a host without the plugin list falls back to the bare id.
+  async function pluginNames() {
+    if (!pluginNameCache || pluginNameCache.expires<=Date.now()) pluginNameCache={names:await Promise.resolve().then(()=>bb.sdk.plugins.list()).then(r=>new Map(r.plugins.map(p=>[p.id,p.name ?? p.id])),()=>new Map<string,string>()),expires:Date.now()+60000};
+    return pluginNameCache.names;
+  }
   async function displayProjects() {
     if (!projectCache || projectCache.expires<=Date.now()) projectCache={rows:await bb.sdk.projects.list(),expires:Date.now()+60000};
     return projectCache.rows;
@@ -423,8 +429,10 @@ function start(bb: BbPluginApi, migrationError: string | null) {
       for(const t of threads) threadMap.set(t.id,t);
       // A quote reply previews as its note (the quote is context, as in a messenger); a bare quote as its text without '>'.
       const unquote=(text:string)=>{const note=text.split('\n').filter(line=>!/^\s*>/.test(line)).join('\n').trim(); return note || text.replace(/^\s*>[ \t]?/gm,'');};
+      const names=await pluginNames();
+      // A plugin's or an automation's message previews as "Plugin name: text", without the sender's leading [tag], as its chat card shows it.
       // Another thread's message previews as "Sender: text", as its chat card names the sender instead of the [bb message from …] header.
-      const plain=(text:string)=>unquote(text.replace(/^\[bb message from thread:(thr_[A-Za-z0-9_-]+)\]\s*/,(_,id:string)=>threadMap.get(id)?.title ? `${threadMap.get(id)!.title}: ` : '').replace(/^\[bb message from plugin:([\w.-]+)\]\s*/,'$1: ')).replace(/^\s*(?:#{1,6}|[-*+]|\d+[.)])\s+/gm,'').replace(/@thread:(thr_[A-Za-z0-9_-]+)(?:#msg=\d+)?/g,(_,id:string)=>'@'+(threadMap.get(id)?.title ?? 'thread')).replace(/\[([^\]]+)\]\([^)\s]+\)/g,'$1').replace(/\*\*|`/g,'').replace(/\s+/g,' ').trim();
+      const plain=(text:string)=>unquote(text.replace(/^\[bb message from thread:(thr_[A-Za-z0-9_-]+)\]\s*/,(_,id:string)=>threadMap.get(id)?.title ? `${threadMap.get(id)!.title}: ` : '').replace(/^\[bb (?:message from plugin:([\w.-]+)|automation\b[^\]\n]*)\]\s*(?:\[(?![A-Z][A-Z0-9]*-\d)[^\]\n]{2,40}\](?![(:])\s+)?/,(_,id:string|undefined)=>`${names.get(id ?? 'automations') ?? id ?? 'Automations'}: `)).replace(/^\s*(?:#{1,6}|[-*+]|\d+[.)])\s+/gm,'').replace(/@thread:(thr_[A-Za-z0-9_-]+)(?:#msg=\d+)?/g,(_,id:string)=>'@'+(threadMap.get(id)?.title ?? 'thread')).replace(/\[([^\]]+)\]\([^)\s]+\)/g,'$1').replace(/\*\*|`/g,'').replace(/\s+/g,' ').trim();
       // Threads with an open question to the owner, so contacts can surface a sub-session that asks under its collapsed parent.
       const asking=(db.prepare(`SELECT DISTINCT thread_id FROM items WHERE kind='for_me' AND status='open' AND dismissed_at IS NULL AND declined_at IS NULL AND thread_deleted=0 AND ${ACTIVE_THREAD_SQL} AND ${OWNER_ITEM_SQL}`).all() as {thread_id:string}[]).map(r=>r.thread_id);
       return {asking,recipients:rows.map(r=>{const t=threadMap.get(r.thread_id),projectId=t?.projectId ?? r.project_id ?? null; return {threadId:r.thread_id,threadTitle:t?.title ?? null,projectId,projectName:projectMap.get(projectId)?.name ?? null,unread:r.unread,questions:r.questions,lastAt:r.last_at,preview:plain(inlineCommentPreview(((r.preview ?? '') as string).replace(/<!--[\s\S]*?-->\s*/g,''))).slice(0,160)};})};

@@ -352,6 +352,15 @@ describe('reply pools and inbox',()=>{
   db.prepare("INSERT INTO items(id,kind,thread_id,status,question,read_at,trigger_kind,trigger_source,created_at,updated_at) VALUES ('ans_w','update','t','waiting','[bb message from thread:thr_c] **Review** done',1,'agent','thr_c',1,1)").run();
   expect(((await harness.behavior.callRpc('recipients',{})) as any).recipients[0].preview).toBe('Manager: Review done');
  });
+ it('previews a plugin\'s or an automation\'s message under the plugin\'s name, without the header or the sender tag',async()=>{
+  const {harness,db}=setup();
+  harness.sdk.stub('plugins.list',async()=>({plugins:[{id:'example-board',name:'Example Board'},{id:'automations',name:'Automations'}]}) as any);
+  const preview=async(text:string)=>{db.prepare('DELETE FROM items').run(); db.prepare("INSERT INTO items(id,kind,thread_id,status,question,read_at,trigger_kind,trigger_source,created_at,updated_at) VALUES ('ans_p','update','t','waiting',?,1,'plugin','x',1,1)").run(text); return ((await harness.behavior.callRpc('recipients',{})) as any).recipients[0].preview;};
+  expect(await preview('[bb message from plugin:example-board]\n\n`New comment`\n- Task: EXA-1')).toBe('Example Board: New comment Task: EXA-1');
+  expect(await preview('[bb automation due:auto_example]\n\n[example-check] Monday check')).toBe('Automations: Monday check');
+  expect(await preview('[bb message from plugin:example-board] [EXA-1] ready')).toBe('Example Board: [EXA-1] ready');
+  expect(await preview('[bb message from plugin:gone-plugin] Hello')).toBe('gone-plugin: Hello');
+ });
  it('cleans contact previews with full thread ids, links, emphasis and sender headers',async()=>{
   const {harness,db}=setup(undefined,async (args:any)=>(args?.threadIds ?? []).map((id:string)=>makeThreadResponse({id,projectId:'p',title:id==='thr_manager-one' ? 'Manager' : 'Worker'})));
   db.prepare("INSERT INTO items(id,kind,thread_id,status,question,read_at,trigger_kind,trigger_source,created_at,updated_at) VALUES ('ans_inline','update','t','waiting',?,1,'agent','thr_manager-one',1,1)").run('[bb message from thread:thr_manager-one] **Review** [docs](https://example.com) @thread:thr_worker_two#msg=4 /optimize');
