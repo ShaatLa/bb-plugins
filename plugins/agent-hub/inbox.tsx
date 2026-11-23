@@ -314,10 +314,13 @@ const QueueCard = memo(function QueueCard({ rows, pending = [], sourceName, sour
     })}{pending.map((text, index) => <li key={`pending:${index}`} data-queue-pending className="border-b border-border/35 px-2.5 py-0.5 opacity-60"><div className="flex items-center gap-1.5"><span aria-hidden className="size-7 shrink-0" /><div className={`min-w-0 flex-1 py-1.5 ${queuePreview}`} title={text}><Markdown content={text} /></div></div></li>)}</ul></SortableContext></DndContext></div>{more && <div className="pointer-events-none absolute inset-x-0 bottom-0 z-10 h-6 bg-gradient-to-b from-transparent to-surface-raised-solid" />}</div><div className="shrink-0"><button type="button" aria-label="Collapse queued messages" className="answers-hit -mb-3 flex min-h-[1.875rem] w-full cursor-pointer items-center justify-center rounded-none pb-3 text-muted-foreground hover:bg-state-hover hover:text-foreground" onClick={() => setCollapsed(true)}><Icon name="ChevronUp" aria-hidden className="size-3.5" /></button></div></>}
   </section>;
 });
+// The newest page's read: a warmed contact reads the same input, so the chat finds it fresh (bb keeps reads fresh for 2 s).
+const firstPage = (threadId: string, unread = 0) => ({ view: 'all' as const, threadId, order: 'activity' as const, limit: Math.min(50, Math.max(20, unread + 5)) });
+function WarmChat({ threadId, unread }: { threadId: string; unread: number }) { useQuery({ contract: rpcContract, method: 'list', input: firstPage(threadId, unread) }); return null; }
 function HistoryPage({ threadId, cursor, index, depth, receive, unread = 0 }: { threadId: string; cursor?: string; index: number; depth: number; receive: (threadId: string, index: number, data: ListResult) => void; unread?: number }) {
   // The newest page only needs the unread messages and a little context above them; Load earlier fetches the rest.
   // Frozen at mount so reading (which lowers the unread count) does not refetch it.
-  const [limit] = useState(() => index === 0 ? Math.min(50, Math.max(20, unread + 5)) : 50);
+  const [limit] = useState(() => index === 0 ? firstPage(threadId, unread).limit : 50);
   const [settled, setSettled] = useState(false), [olderData, setOlderData] = useState<ListResult | null>(null);
   const result = useQuery({ contract: rpcContract, method: 'list', input: { view: 'all', threadId, order: 'activity', limit, ...(cursor ? { cursor } : {}) }, enabled: index === 0 || !settled });
   // The first delivery skips cached data while a refetch runs, so the open position and New divider see current read state;
@@ -359,7 +362,7 @@ export function Avatar({ id, title, provider }: { id: string; title: string | nu
 type InboxProps = { contactsHidden?: boolean; onBulkRead?: (result: { batch: string | null; count: number }) => void; bbChat?: boolean; search?: boolean; onSearch?: (open: boolean) => void; onChat?: (open: boolean) => void; toolbarTargets?: { title: HTMLElement | null; search: HTMLElement | null; actions: HTMLElement | null } };
 export function Inbox(props: InboxProps) {
   const { selected, select } = useContactSelection(), contacts = useContacts(selected);
-  const [kept, setKept] = useState<string[]>([]);
+  const [kept, setKept] = useState<string[]>([]), [warm, setWarm] = useState<{ threadId: string; unread: number } | null>(null);
   const next = selected ? [...kept.filter(id => id !== selected), selected].slice(-5) : kept;
   if (next.join('\n') !== kept.join('\n')) setKept(next);
   const grid = useRef<HTMLDivElement>(null), [contactsWidth, setContactsWidth] = useStoredState('bb-plugin-answers:page:contacts-width', CONTACTS_DEFAULT);
@@ -372,8 +375,9 @@ export function Inbox(props: InboxProps) {
       onPointerDown={event => { event.preventDefault(); const handle = event.currentTarget, left = grid.current!.getBoundingClientRect().left; handle.setPointerCapture(event.pointerId); const move = (e: PointerEvent) => resize(e.clientX - left); const up = () => { handle.removeEventListener('pointermove', move); handle.removeEventListener('pointerup', up); }; handle.addEventListener('pointermove', move); handle.addEventListener('pointerup', up); }}
       onKeyDown={event => { if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') { event.preventDefault(); resize(contactsWidth + (event.key === 'ArrowLeft' ? -16 : 16)); } }}
       onDoubleClick={() => setContactsWidth(CONTACTS_DEFAULT)} />
-    <div data-contacts-column className={`flex min-h-0 min-w-0 flex-col ${contactsHidden ? 'min-[640px]:hidden' : ''} min-[640px]:border-r min-[640px]:border-border-seam ${selected ? 'max-[639px]:hidden' : ''}`}><ContactsList model={contacts} selected={selected} onSelect={select} onBulkRead={onBulkRead} /></div>
+    <div data-contacts-column className={`flex min-h-0 min-w-0 flex-col ${contactsHidden ? 'min-[640px]:hidden' : ''} min-[640px]:border-r min-[640px]:border-border-seam ${selected ? 'max-[639px]:hidden' : ''}`}><ContactsList model={contacts} selected={selected} onWarm={(threadId, unread) => { if (!kept.includes(threadId)) setWarm(old => old?.threadId === threadId && old.unread === unread ? old : { threadId, unread }); }} onSelect={select} onBulkRead={onBulkRead} /></div>
     <div className={`relative min-h-0 min-w-0 ${selected ? '' : 'max-[639px]:hidden'}`}>
+      {warm && !next.includes(warm.threadId) && <WarmChat key={warm.threadId} {...warm} />}
       {!selected && <InboxChat {...props} contactsHidden threadId={undefined} />}
       {/* A fixed DOM order: React moves a keyed child that changes place, and a moved scroller reads scrollTop 0 until its offset is put back. */}
       {[...next].sort().map(id => <Activity key={id} mode={id === selected ? 'visible' : 'hidden'}><div inert={id !== selected} className="h-full"><KeptChat {...props} threadId={id} contactsHidden /></div></Activity>)}

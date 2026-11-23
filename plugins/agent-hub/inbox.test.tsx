@@ -759,6 +759,14 @@ it('takes an answered question out of the stack and shows it answered in the cha
   expect(within(card).getByRole('alert').textContent).toContain('Offline');
   expect(within(slot.getByRole('list', { name:'History' })).queryByText('Ship it?')).toBeNull();
 });
+it('starts reading a contact\'s first page when the pointer goes down on it, with the input the chat then reads', async () => {
+  const two = { ...one, threadId:'thr_two', threadTitle:'Two', preview:'Second preview' };
+  const { recipients, list } = setup({ recipients:[one, two] });
+  const row = (await recipients.findAllByRole('option'))[1]!;
+  fireEvent.pointerDown(row);
+  await waitFor(() => expect(list).toHaveBeenCalledWith(expect.objectContaining({ view:'all', threadId:'thr_two', order:'activity', limit:20 })));
+  // The test host's reads are never fresh; bb's stay fresh for 2 s, so there the click reuses this read.
+});
 it('marks a contact whose thread waits for input', async () => {
   const idle = { projectId:'pr_one', parentThreadId:null, parentNotifications:'all', archivedAt:null, pinnedAt:null, sectionId:null, isUnread:false, status:'idle', runtimeStatus:'idle', queuedWork:'none', hasPendingInteraction:true, indicator:'none', activity:{ workflows:0, backgroundAgents:0, backgroundCommands:0, planMode:false }, environment:{ id:'env', path:'/x' } };
   const two = { ...one, threadId:'thr_two', threadTitle:'Two' };
