@@ -6,7 +6,9 @@ Manager commands (`prioritize`, `revoke`, `grant`, `capacity`) are not access-ch
 
 ## Sidebar (0.4.0)
 
-Version 0.5.5 refuses estimates above `maxEstimateMinutes` (default 720, 12 h) with a refusal that names the unit fix, and caps how far a stored estimate extends a lease.
+Version 0.5.6 refuses estimates above `maxEstimateMinutes` (default 720, 12 h) with a refusal that names the unit fix, and caps how far a stored estimate extends a lease.
+
+Version 0.5.5 merges queued notifications into the last queued row, so a thread holds one queued plugin notice.
 
 Version 0.5.4 tightens agent rules: each agent tool has its own description; refusals name the fix; `release` without an ID is refused when the thread has several leases or requests (pass the ID or `--all`); inside a thread, `--thread` must be the caller's own; manager commands are documented as manager-only.
 
