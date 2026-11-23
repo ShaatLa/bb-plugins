@@ -5,11 +5,19 @@ import { errorMessage } from "../shared/errors";
 import { statusLabel } from "../shared/statuses";
 import { isClosedStatus } from "../shared/workflow-policy";
 import { notifyThread } from "../steer";
+import { environmentFingerprint, otherActivity, SAMPLE_TIMEOUT_MS } from "./environment";
 import { PENDING } from "./format";
-import { REASON, type ClosureThread, type Recipient } from "./store";
+import { NOTICE_ATTEMPT_CAP, REASON, UNKNOWN_BASELINE, type ClosureThread, type NoticeState, type Recipient } from "./store";
 
 const MAX_PARENT_HOPS = 5;
 const MAX_MEMO = 256;
+
+type TurnThread = { id: string; parentThreadId: string | null; environmentId: string | null };
+
+const claimable = (state: NoticeState, attempts: number) => (state === "none" || state === "failed") && attempts < NOTICE_ATTEMPT_CAP;
+/** A row is sampled only while one of its recipients can still get the notice. */
+const owesNotice = (entry: ClosureThread, hasParent: boolean) =>
+  claimable(entry.selfNotice, entry.selfAttempts) || (hasParent && claimable(entry.parentNotice, entry.parentAttempts));
 
 /**
  * Everything that happens to the sessions of a closed card after the status write committed: the archive decision with
@@ -20,6 +28,11 @@ export function createClosureService(bb: BbPluginApi, tasks: TasksStore) {
   const evaluations = new Map<string, Promise<ClosedThread[]>>();
   // Archive decisions in flight, by closure and thread: the close evaluation joins one an idle started meanwhile.
   const decisions = new Map<string, Promise<void>>();
+  // Live turn comparisons by thread, from the turn start until the final Git read at its idle. Any other thread's turn
+  // start on the same environment latches one as ambiguous: Git cannot tell whose edits it sees. A restart drops them
+  // together with the stored baselines.
+  // `reading` marks a comparison whose idle took it and is doing the final read: that idle alone releases it.
+  const comparisons = new Map<string, { environmentId: string; ambiguous: boolean; reading: boolean }>();
 
   const publish = (taskId: string, ...channels: string[]) => {
     for (const channel of channels) bb.realtime.publish(channel, { taskId });
@@ -245,9 +258,85 @@ export function createClosureService(bb: BbPluginApi, tasks: TasksStore) {
   }
 
   /**
-   * A live `thread.active` of a thread that is still linked to, or kept under, a closed card: it hears about it once,
-   * and its parent gets one informational copy. Each recipient has its own state; a failed one is retried while it
-   * has attempts left, and a delivery whose outcome is unknown is never resent.
+   * A turn start (`thread.active`), called right after `markActive` and before any await. It latches every other live
+   * comparison on the thread's environment, then stores this turn's baseline on the kept rows that may still notify.
+   * Anything unreadable, or another thread already running on the environment, stores the unknown baseline.
+   */
+  async function turnStarted(thread: TurnThread, kept: ClosureThread[]): Promise<void> {
+    const environmentId = thread.environmentId;
+    if (environmentId) for (const [id, comparison] of comparisons) if (id !== thread.id && comparison.environmentId === environmentId) comparison.ambiguous = true;
+    const rows = kept.filter((entry) => !entry.workSeen && owesNotice(entry, thread.parentThreadId !== null));
+    if (!rows.length) return;
+    const store = (baseline: string, at: number) => rows.map((entry) => closures.setBaseline(entry, baseline, new Date(at).toISOString())).some(Boolean);
+    if (!environmentId) {
+      bb.log.info(`No closed-card comparison for ${thread.id}: the thread has no environment`);
+      store(UNKNOWN_BASELINE, Date.now());
+      return;
+    }
+    const comparison = { environmentId, ambiguous: false, reading: false };
+    comparisons.set(thread.id, comparison);
+    const at = Date.now();
+    const signal = AbortSignal.timeout(SAMPLE_TIMEOUT_MS);
+    const [fingerprint, busy] = await Promise.all([environmentFingerprint(bb, environmentId, signal), otherActivity(bb, environmentId, thread.id, null, signal)]);
+    // A stored baseline hands the latch to the idle that takes it; otherwise (unreadable, or retired by an early idle
+    // or a terminal event) nobody compares, and the latch goes now.
+    if (fingerprint && !busy && store(JSON.stringify({ environmentId, fingerprint }), at)) return;
+    if (!fingerprint || busy) {
+      bb.log.info(`No closed-card comparison for ${thread.id}: ${fingerprint ? "another thread is running on its environment" : "its Git state could not be read"}`);
+      store(UNKNOWN_BASELINE, at);
+    }
+    if (comparisons.get(thread.id) === comparison) comparisons.delete(thread.id);
+  }
+
+  /**
+   * A turn end (`thread.idle`). The comparisons are taken synchronously at the call; Git is read again, and a change
+   * no other thread can explain is recorded as work. Owed notices are then delivered, so a failed recipient is retried
+   * at the end of a later turn, even one that only answered.
+   */
+  async function turnEnded(thread: TurnThread): Promise<void> {
+    const taken = closures.takeTurn(thread.id).filter((entry) => entry.turnBaseline !== UNKNOWN_BASELINE);
+    const comparison = comparisons.get(thread.id);
+    if (taken.length) {
+      if (comparison) comparison.reading = true;
+      try {
+        await compare(thread, taken, comparison);
+      } finally {
+        if (comparison && comparisons.get(thread.id) === comparison) comparisons.delete(thread.id);
+      }
+    } else if (comparison && !comparison.reading) {
+      // Nothing to compare (a reopened card, an early idle): the turn's latch is orphaned. A latch whose final read is
+      // in flight belongs to the idle before this duplicate one and stays.
+      comparisons.delete(thread.id);
+    }
+    const hasParent = thread.parentThreadId !== null;
+    await notify(thread, closures.owedNotices(thread.id).filter((entry) => owesNotice(entry, hasParent)));
+  }
+
+  /** A failed, deleted or archived thread: its turn is not compared, and reads still in flight cannot record or store. */
+  function turnAbandoned(threadId: string): void {
+    closures.abandonTurn(threadId);
+    comparisons.delete(threadId);
+  }
+
+  async function compare(thread: TurnThread, rows: ClosureThread[], comparison: { ambiguous: boolean } | undefined): Promise<void> {
+    // One turn start wrote every row's baseline, so the first one stands for all.
+    const base = JSON.parse(rows[0]!.turnBaseline!) as { environmentId: string; fingerprint: string };
+    const skip = (why: string) => bb.log.info(`No closed-card notice for ${thread.id}: ${why}`);
+    if (thread.environmentId !== base.environmentId) return skip("its environment changed during the turn");
+    const signal = AbortSignal.timeout(SAMPLE_TIMEOUT_MS);
+    const [fingerprint, busy] = await Promise.all([
+      environmentFingerprint(bb, base.environmentId, signal),
+      otherActivity(bb, base.environmentId, thread.id, Date.parse(rows[0]!.turnBaselineAt!), signal),
+    ]);
+    if (!fingerprint) return skip("its Git state could not be read");
+    if (busy || !comparison || comparison.ambiguous) return skip("another thread was active on its environment");
+    if (fingerprint !== base.fingerprint) closures.recordWork(rows);
+  }
+
+  /**
+   * The notice owed by a turn that changed files after the card closed: the thread hears about it once, and its
+   * parent gets one informational copy. Each recipient has its own state; a failed one is retried while it has
+   * attempts left, and a delivery whose outcome is unknown is never resent.
    */
   async function notify(thread: { id: string; parentThreadId: string | null }, rows: ClosureThread[]): Promise<void> {
     for (const entry of rows) {
@@ -269,17 +358,19 @@ export function createClosureService(bb: BbPluginApi, tasks: TasksStore) {
           bb.log.warn(`Closed-card notice to the ${who} of ${thread.id} failed (attempt ${attempt}): ${errorMessage(error)}`);
         }
       };
+      // Git compares the whole environment, so the text says what changed, not who changed it.
+      const key = card.task.key;
       await send("self", () =>
-        `${card.task.key} is ${status}, but this session started new work while still linked to it. If this is new work for another card, it is fine; if ${card.task.key} is not finished, reopen it.`,
+        `${key} is ${status}. Files in this session's environment changed during a turn after ${key} closed. If this is work for another card, it is fine; if ${key} is not finished, reopen it.`,
         async () => thread.id);
       if (thread.parentThreadId)
         await send("parent", () =>
-          `${card.task.key} is ${status}, and @thread:${thread.id} started new work while still linked to it. Informational: reopen ${card.task.key} if it is not finished.`,
+          `${key} is ${status}. Files in the environment of @thread:${thread.id} changed during a turn after ${key} closed. If this is work for another card, it is fine; if ${key} is not finished, reopen it.`,
           () => liveParent(thread.parentThreadId));
     }
   }
 
-  return { onClosed, lateLink, claimIdle, settleIdle, reviewerIdle, notify };
+  return { onClosed, lateLink, claimIdle, settleIdle, reviewerIdle, turnStarted, turnEnded, turnAbandoned, liveComparisons: () => comparisons.size };
 }
 
 export type ClosureService = ReturnType<typeof createClosureService>;

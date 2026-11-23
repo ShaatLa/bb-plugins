@@ -830,6 +830,12 @@ const MIGRATIONS = [
    DELETE FROM attention_acks WHERE NOT EXISTS (SELECT 1 FROM attention_modes m WHERE m.tracker_id=attention_acks.tracker_id AND m.kind=attention_acks.kind AND m.effective_generation >= attention_acks.generation);
    INSERT OR IGNORE INTO checks_stale_rollback (tracker_id, consumed_generation)
    SELECT tracker_id, MAX(generation) FROM attention_acks WHERE kind='stale-status' AND direction='to_shadow' GROUP BY tracker_id;`,
+  // A closed card's notice goes out only when a turn changed the session's files (closure/service.ts): each turn start
+  // reserves a generation and stores the environment's Git fingerprint; its idle compares and records the work fact.
+  `ALTER TABLE closure_threads ADD COLUMN turn_generation INTEGER NOT NULL DEFAULT 0;
+   ALTER TABLE closure_threads ADD COLUMN turn_baseline TEXT;
+   ALTER TABLE closure_threads ADD COLUMN turn_baseline_at TEXT;
+   ALTER TABLE closure_threads ADD COLUMN work_seen INTEGER NOT NULL DEFAULT 0 CHECK (work_seen IN (0, 1));`,
 ] as const;
 
 export function initializeTasksSchema(db: PluginDatabase, log: Log = () => {}): void {

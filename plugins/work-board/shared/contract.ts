@@ -1386,7 +1386,8 @@ export const tasksRpcContract = {
     output: z.object({ ok: z.literal(true) }).strict(),
   },
   listTaskCardMeta: {
-    input: z.object({ taskIds: z.array(idSchema).max(500) }).strict(),
+    // A caller that already has the flags of its page skips them here, so they are not computed again at another instant.
+    input: z.object({ taskIds: z.array(idSchema).max(500), skipStaleStatusFlags: z.boolean().optional() }).strict(),
     output: z.object({ metadata: z.array(z.object({
       taskId: idSchema,
       attachmentCount: z.number().int().nonnegative(),

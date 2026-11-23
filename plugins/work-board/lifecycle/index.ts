@@ -196,27 +196,34 @@ export async function registerLifecycle(
     transitionTrackedThread(bb, store, thread.id, liveStatusFromThread(thread));
   });
   bb.events.on("thread.active", async ({ thread }) => {
-    // Before any await: a new turn ends every turn-bound archive intent of this thread.
+    // Before any await: a new turn ends every turn-bound archive intent of this thread, and reserves its comparison.
     const kept = store.tasks.closures.markActive(thread.id);
+    const started = store.closures.turnStarted(thread, kept).catch((error) => bb.log.warn(`Could not sample ${thread.id} at its turn start: ${errorMessage(error)}`));
     attachNamedTaskThread(bb, store, thread);
     transitionTrackedThread(bb, store, thread.id, "working");
-    if (kept.length) await store.closures.notify(thread, kept);
+    await started;
   });
   bb.events.on("thread.idle", async ({ thread }) => {
     // Claimed synchronously, so the release below keeps the link of a session whose archive is being decided.
     const claimed = store.closures.claimIdle(thread.id);
+    // Taken synchronously too; the Git reads and notices run beside the archive decisions, which never wait on them.
+    const ended = store.closures.turnEnded(thread).catch((error) => bb.log.warn(`Could not compare ${thread.id} at its turn end: ${errorMessage(error)}`));
     transitionTrackedThread(bb, store, thread.id, "idle");
     await store.closures.settleIdle(claimed);
     await store.closures.reviewerIdle(thread.id);
+    await ended;
   });
   bb.events.on("thread.failed", ({ thread }) => {
+    store.closures.turnAbandoned(thread.id);
     transitionTrackedThread(bb, store, thread.id, "failed");
   });
   bb.events.on("thread.deleted", ({ thread }) => {
+    store.closures.turnAbandoned(thread.id);
     transitionTrackedThread(bb, store, thread.id, "completed");
   });
 
   bb.events.on("thread.archived", async ({ thread }) => {
+    store.closures.turnAbandoned(thread.id);
     for (const link of store.tasks.listTaskThreadsByThreadId(thread.id)) {
       // An archive this plugin made for the card: only that link goes, with no fallback parent and no second line.
       // Only the link the archive was decided for goes; a reattached pair is reconciled like any other.

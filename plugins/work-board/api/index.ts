@@ -1392,7 +1392,10 @@ export function registerHandlers(
       return { deleted };
     },
     listTasks(input) {
+      // One clock for the selection and the flags returned with it.
+      const nowMs = Date.now();
       const page = store.tasks.listTasksPage({
+        nowMs,
         ordinaryOnly: !input.includeScheduled,
         archive: input.archive,
         dateField: input.dateField,
@@ -1416,7 +1419,7 @@ export function registerHandlers(
         cursor: input.cursor,
         allowStaleCursor: input.allowStaleCursor,
       });
-      const flags = store.tasks.staleStatusFlags(page.tasks.map((task) => task.id));
+      const flags = store.tasks.staleStatusFlags(page.tasks.map((task) => task.id), undefined, nowMs);
       const tasks = apiTasks(store, page.tasks);
       return {
         tasks: input.omitBodies ? tasks.map((task) => ({ ...task, description: "", progressNote: null })) : tasks,
@@ -1638,7 +1641,7 @@ export function registerHandlers(
       for (const id of affected) bb.realtime.publish("threads:changed", { taskId: id });
       return { ok: true as const };
     },
-    async listTaskCardMeta({ taskIds }) {
+    async listTaskCardMeta({ taskIds, skipStaleStatusFlags }) {
       const ids = [...new Set(taskIds)];
       if (ids.length === 0) return { metadata: [] };
       const discoveryComplete = await discoverRunningTaskThreads(bb, store);
@@ -1652,7 +1655,7 @@ export function registerHandlers(
         entries.push(thread);
         threads.set(thread.taskId, entries);
       }
-      const flags = store.tasks.staleStatusFlags(ids);
+      const flags = skipStaleStatusFlags ? new Map<string, string[]>() : store.tasks.staleStatusFlags(ids);
       const activity = store.tasks.listTaskActivity(ids);
       const scopedActivity = await activityService(bb, store).metadata(ids, discoveryComplete, allLinks);
       const blockedBy = dependencies.blockers(ids);

@@ -3,7 +3,7 @@ import { ensurePlanningStatus, getWorkflowPolicy, inWorkZone, isClosedStatus, pl
 import { syncPlanDebt, syncProjectPlanDebt } from "../plan-debt/store";
 import { createClosureStore } from "../closure/store";
 import { ordinaryTaskVisibilitySql } from "../scheduled/visibility";
-import { projectPolicies, staleRows, staleStatusObservations as observeStaleStatus } from "../attention/observe";
+import { prSettled, projectPolicies, staleRows, staleStatusObservations as observeStaleStatus } from "../attention/observe";
 import { closeTaskOccurrences, markTrackerDirty, touchAttention } from "../attention/ledger";
 import { assertLinkChangeAllowed } from "../attention/modes";
 import { assertChecksDeleteAllowed } from "../checks/ownership";
@@ -1165,7 +1165,7 @@ export function createTasksStore(db: PluginDatabase, log: (message: string) => v
     return createTaskTransaction(input);
   }
 
-  function staleStatusFlags(taskIds?: readonly string[], projectId?: string): Map<string, string[]> {
+  function staleStatusFlags(taskIds?: readonly string[], projectId?: string, nowMs = Date.now()): Map<string, string[]> {
     const policies = projectPolicies(db);
     const rows = staleRows(db, taskIds, projectId);
     const result = new Map<string, string[]>();
@@ -1177,9 +1177,8 @@ export function createTasksStore(db: PluginDatabase, log: (message: string) => v
       const flags: string[] = [];
       // A card held behind an unfinished predecessor is waiting by rule, not abandoned. Planning is active work like In progress.
       if ((row.status === policy.inProgressStatus || (planning.get(row.project_id) ?? null) === row.status) && !row.active && !row.held) flags.push("no_active_thread");
-      // Testing after the merge (a check on a shared environment) is expected, so a merged PR satisfies it.
-      const prSettled = row.open_known || (row.status === policy.testingStatus && row.merged_pr);
-      if ((row.status === policy.reviewStatus || row.status === policy.testingStatus) && !prSettled) flags.push(row.unknown_pr ? "pr_state_unavailable" : "no_open_pr");
+      // Testing after the merge (a check on a shared environment) is expected, so a merged PR satisfies it; review gets a grace.
+      if ((row.status === policy.reviewStatus || row.status === policy.testingStatus) && !prSettled(row, policy, nowMs)) flags.push(row.unknown_pr ? "pr_state_unavailable" : "no_open_pr");
       if (row.status === policy.doneStatus && !row.merge_evidence && !row.outcome && !row.legacy_outcome) flags.push("no_merge_or_outcome");
       if (row.closed_known) flags.push("closed_unmerged_pr");
       if (flags.length) result.set(row.id, flags);
@@ -1188,8 +1187,8 @@ export function createTasksStore(db: PluginDatabase, log: (message: string) => v
   }
 
   /** Stale-status flags of a tracker's cards with a validity per signal; `unknown` marks only the genuinely undecidable. */
-  function staleStatusObservations(trackerId: string, taskIds?: readonly string[]) {
-    return observeStaleStatus(db, taskIds, trackerId);
+  function staleStatusObservations(trackerId: string, taskIds?: readonly string[], nowMs?: number) {
+    return observeStaleStatus(db, taskIds, trackerId, nowMs);
   }
 
   function listTasksPage(filters: ListTasksFilters = {}): ListTasksPage {
@@ -1234,7 +1233,7 @@ export function createTasksStore(db: PluginDatabase, log: (message: string) => v
     const parameters: Record<string, SqlParameter> = {};
     if (filters.staleStatus) {
       clauses.push("t.id IN (SELECT value FROM json_each(@staleIds))");
-      parameters.staleIds = JSON.stringify([...staleStatusFlags(undefined, filters.projectId).keys()]);
+      parameters.staleIds = JSON.stringify([...staleStatusFlags(undefined, filters.projectId, filters.nowMs).keys()]);
     }
     if (filters.dateFrom) {
       clauses.push(`${dateColumn} >= @dateFrom`);

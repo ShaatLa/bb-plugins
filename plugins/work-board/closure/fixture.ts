@@ -29,11 +29,52 @@ export async function closureFixture(options: { projectSettings?: Record<string,
     archiveGate: null as Promise<void> | null,
     childGate: null as Promise<void> | null,
     queuedGate: null as Promise<void> | null,
+    /** Each environment's Git state as the fake `bb--git` reports it; a missing one is a clean checkout. */
+    git: new Map<string, { head: string | null; files: Map<string, string>; truncated?: boolean; checkout?: "branch" | "unborn" | "unknown" }>(),
+    /** `bb--git` is missing, disabled or offline: every call rejects. */
+    gitFail: false,
+    /** Every `bb--git` call waits for this. */
+    gitGate: null as Promise<void> | null,
+    gitCalls: [] as Array<{ method: string; environmentId: string; signal: unknown }>,
+    /** The environment thread listing rejects. */
+    listFail: false,
   };
   const host = createFakePluginHost({ pluginId: "work-board" });
   const { bb, harness } = host;
+  // Each thread has an environment of its own unless the test shares one.
   const thread = (id: string, overrides: Partial<SdkThread> = {}) =>
-    makeThreadResponse({ id, projectId: "proj_example", status: "idle", ...world.threads.get(id), ...overrides });
+    makeThreadResponse({ id, projectId: "proj_example", status: "idle", environmentId: `env_${id}`, ...world.threads.get(id), ...overrides });
+  const gitState = (environmentId: string) => {
+    if (!world.git.has(environmentId)) world.git.set(environmentId, { head: "a".repeat(40), files: new Map() });
+    return world.git.get(environmentId)!;
+  };
+  /** Edits a file in the environment of a thread: a new revision, with the same line counts. */
+  let revisions = 0;
+  const edit = (threadId: string, path = "src/example.ts") => { gitState(thread(threadId).environmentId!).files.set(path, `rev_${++revisions}`); };
+  const commit = (threadId: string) => { const state = gitState(thread(threadId).environmentId!); state.head = (++revisions).toString(16).padStart(40, "0"); state.files.clear(); state.checkout = "branch"; };
+  // Response shapes follow `bb plugin rpc inspect bb--git` (status and files).
+  harness.sdk.stub("plugins.callRpc", async (args: { pluginId: string; method: string; input: { keys?: string[]; environmentId?: string }; outputSchema: { parse: (value: unknown) => unknown }; signal?: AbortSignal }) => {
+    if (args.pluginId !== "bb--git") throw new Error(`unexpected plugin ${args.pluginId}`);
+    const environmentId = args.input.environmentId ?? args.input.keys![0]!;
+    world.gitCalls.push({ method: args.method, environmentId, signal: args.signal });
+    if (world.gitGate) await world.gitGate;
+    if (world.gitFail) throw new Error("plugin unavailable");
+    const state = gitState(environmentId);
+    if (args.method === "status") {
+      const checkout = state.checkout === "unknown" ? { kind: "unknown", reason: "not checked out" } : state.checkout === "unborn" ? { kind: "unborn", branchName: "main" } : { kind: "branch", branchName: "main", headSha: state.head };
+      const workingTree = { insertions: 0, deletions: 0, lineStatsComplete: true, fileCount: state.files.size, files: [...state.files.keys()].map((path) => ({ path, status: "M", insertions: 1, deletions: 1 })), hasUncommittedChanges: state.files.size > 0, state: state.files.size ? "dirty_uncommitted" : "clean" };
+      return args.outputSchema.parse({ [environmentId]: { outcome: "available", workspace: { workingTree, checkout, branch: { currentBranch: "main", defaultBranch: "main" }, mergeBase: null, allChanges: { insertions: 0, deletions: 0, lineStatsComplete: true, fileCount: state.files.size } } } });
+    }
+    if (args.method === "files") {
+      const files = [...state.files].map(([path, revision]) => ({ path, previousPath: null, changeKind: "modified", additions: 1, deletions: 1, binary: false, origin: "tracked", loadMode: "auto", revision }));
+      return args.outputSchema.parse({ outcome: "available", files, truncated: state.truncated ?? false, shortstat: "", mergeBaseRef: null, initialPatches: [] });
+    }
+    throw new Error(`unexpected method ${args.method}`);
+  });
+  harness.sdk.stub("threads.list", async ({ environmentId, archived }: { environmentId?: string; archived?: boolean }) => {
+    if (world.listFail) throw new Error("list failed");
+    return [...world.threads.keys()].map((id) => thread(id)).filter((entry) => entry.environmentId === environmentId && (entry.archivedAt != null) === Boolean(archived));
+  });
   harness.sdk.stub("threads.get", async ({ threadId }: { threadId: string }) => {
     if (world.getGate) await world.getGate;
     if (world.failGet) throw new Error("read failed");
@@ -91,7 +132,13 @@ export async function closureFixture(options: { projectSettings?: Record<string,
   const row = (closureId: string, threadId: string) => store.tasks.closures.row(closureId, threadId);
   const origin = (taskId: string, threadId: string) =>
     bb.storage.database().prepare<[string, string], { created_for_task: number; link_origin: string | null }>("SELECT created_for_task, link_origin FROM task_threads WHERE task_id = ? AND thread_id = ?").get(taskId, threadId);
-  return { ...host, store, project, world, thread, card, link, close, emit, comments, row, origin };
+  /** A turn of the thread: it starts, `during` runs (an edit, a commit, nothing), and it ends. */
+  const turn = async (threadId: string, during: () => void | Promise<void> = () => {}, overrides: Partial<SdkThread> = {}) => {
+    await emit("thread.active", threadId, overrides);
+    await during();
+    await emit("thread.idle", threadId, overrides);
+  };
+  return { ...host, store, project, world, thread, card, link, close, emit, comments, row, origin, edit, commit, turn };
 }
 
 export type ClosureFixture = Awaited<ReturnType<typeof closureFixture>>;

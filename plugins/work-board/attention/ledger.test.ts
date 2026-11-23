@@ -1,10 +1,12 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { createDependencyStore } from "../dependencies/store";
 import { accept, BB_PROJECT, goLive, setup } from "./fixtures";
+import { GRACE_MS, scanTracker } from "./ledger";
+import { POST_MERGE_REVIEW_GRACE_MS } from "./observe";
 
 const fixtures: ReturnType<typeof setup>[] = [];
 const make = async () => { const f = setup(); fixtures.push(f); await f.setMode("shadow"); return f; };
-afterEach(async () => { await Promise.all(fixtures.splice(0).map((f) => f.dispose())); });
+afterEach(async () => { vi.useRealTimers(); await Promise.all(fixtures.splice(0).map((f) => f.dispose())); });
 
 const ledger = (f: ReturnType<typeof setup>, sinceRev?: number) => f.sweep("attention.ledger", { projectId: BB_PROJECT, kind: "stale-status", ...(sinceRev === undefined ? {} : { sinceRev }) });
 describe("ledger", () => {
@@ -182,5 +184,30 @@ describe("in-transaction ledger", () => {
     await f.service.drain();
     expect(f.attempts().filter((a) => a.outcome !== "queued" || a.recipient_thread_id)).toHaveLength(2);
     expect(f.threads.rows.map((row) => f.threads.text(row)).join("\n")).toContain(task.key);
+  });
+});
+
+describe("post-merge grace", () => {
+  it("opens no no_open_pr occurrence inside the grace, and one at the first reconciliation after it, held ten more minutes", async () => {
+    const f = await make();
+    const now = Date.parse("2026-01-01T12:00:00.000Z");
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(now);
+    const task = f.card("Merged", "todo");
+    f.linkPr(task.id, 1, "merged");
+    f.db.prepare("UPDATE git_pr_snapshots SET payload=json_set(payload, '$.mergedAt', ?) WHERE project_id=?").run(new Date(now - 60 * 60_000).toISOString(), f.tracker.id);
+    f.store.tasks.updateTask(task.id, { status: "in_review" });
+    const noOpenPr = () => f.occurrences().filter((o) => o.task_id === task.id && o.signal === "no_open_pr");
+    scanTracker(f.db, f.tracker.id);
+    expect(noOpenPr()).toEqual([]);
+    // Only the clock moves: the ten-minute reconciliation sees the grace expire.
+    const expiry = now - 60 * 60_000 + POST_MERGE_REVIEW_GRACE_MS;
+    vi.setSystemTime(expiry - 1);
+    scanTracker(f.db, f.tracker.id);
+    expect(noOpenPr()).toEqual([]);
+    vi.setSystemTime(expiry);
+    scanTracker(f.db, f.tracker.id);
+    scanTracker(f.db, f.tracker.id);
+    expect(noOpenPr()).toEqual([expect.objectContaining({ first_seen_at: new Date(expiry).toISOString(), eligible_at: new Date(expiry + GRACE_MS).toISOString() })]);
   });
 });

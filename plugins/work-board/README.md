@@ -586,9 +586,18 @@ A restart cancels pending archives. The result is listed in the card's activity 
 and in the output of `bb work-board update KEY --status …` (and the board drag
 RPC) as `closedThreads`; `--json` carries the same list.
 
-A kept or still-working session that starts a new turn inside a closed card hears
-about it once, and so does its parent (an archived parent is replaced by its own
-parent); failed notices are retried once. Project settings, one key at a time with
+Since 0.75.0, a kept or still-working session whose turn after the close changed files in its
+environment hears about it once, at the end of that turn, and so does its parent
+(an archived parent is replaced by its own parent); a turn that only answered a
+message adds no notice of its own. Work Board compares the environment's Git state
+(HEAD and each uncommitted file's revision, read through the built-in Git plugin)
+at the turn start and end. Any doubt sends nothing and logs one info line: no
+environment, the Git plugin missing or disabled, a failed, truncated or slow (5 s)
+read, a missing HEAD SHA, an environment switched during the turn, or another thread
+on the same environment that was running or active between the two reads. A
+restart, or the thread failing, being deleted or archived during the turn, discards
+the comparison without a log line. A failed notice is retried once, at the end of
+a later turn, so an answer-only turn can deliver a notice owed from earlier. Project settings, one key at a time with
 `bb work-board config get|set KEY VALUE --project PREFIX` or in Settings:
 `archiveThreadsOnClose` (on by default, Archiving) and
 `archiveReviewerOnApproval` (on by default, Planning). A plan reviewer is archived
@@ -776,7 +785,7 @@ Export v14 includes optional per-project workflow policy, outcome evidence and d
 
 The Dependencies section has one Add button (pick Blocked by, Blocks or Related, then a task) and lists every link on its own line. Related is for tasks that share context without blocking each other. The link is symmetric, stays within one project and never affects Blocked badges or advisories. CLI: `dependency add KEY --relates-to KEY` and `dependency remove KEY --relates-to KEY`; `dependency list` and `show --json` include `related`. Export v15 carries related links; imports accept v1–v14.
 Question creation, answer changes, revisions and deletion reconcile the configured owner decision label with open questions. Manual task label edits, label renames/deletion, policy changes and archive imports do not reconcile existing questions; the next question change does. A null ownerDecisionLabel disables this reconciliation.
-`bb work-board list --stale-status` filters diagnostic flags before pagination. List and show JSON expose `staleStatusFlags`; list RPC returns flags separately from task records. These diagnostics use the last recorded thread statuses and PR snapshots, not a live remote check. An unavailable PR snapshot is reported as `pr_state_unavailable`, except that a PR last seen merged stays merged when a later refresh fails (0.55.2); recorded active thread status may be out of date. A task in the review or testing status with no open PR gets `no_open_pr`; in the testing status a merged PR also counts, since testing after the merge is expected (0.55.3). Nonexcluded closed PRs produce `closed_unmerged_pr`. A done task clears `no_merge_or_outcome` with structured merge evidence or `bb work-board comment KEY --kind outcome --body '…'`. Existing done tasks with a non-system comment are grandfathered until they change status. Diagnostics never move tasks.
+`bb work-board list --stale-status` filters diagnostic flags before pagination. List and show JSON expose `staleStatusFlags`; list RPC returns flags separately from task records. These diagnostics use the last recorded thread statuses and PR snapshots, not a live remote check. An unavailable PR snapshot is reported as `pr_state_unavailable`, except that a PR last seen merged stays merged when a later refresh fails (0.55.2); recorded active thread status may be out of date. A task in the review or testing status with no open PR gets `no_open_pr`; in the testing status a merged PR also counts, since testing after the merge is expected (0.55.3). In the review status a PR merged less than 2 hours ago counts too (0.75.0), while the lead collects post-merge evidence; the latest merge time that parses and is not in the future is used, and a merged PR without one gets no grace. After the grace the flag appears, and the attention pilot's 10-minute hold starts then. One request uses one clock: `list --stale-status` selects and shows the flags of the same instant, and a cursor from before an expiry is refused as stale. Nonexcluded closed PRs produce `closed_unmerged_pr`. A done task clears `no_merge_or_outcome` with structured merge evidence or `bb work-board comment KEY --kind outcome --body '…'`. Existing done tasks with a non-system comment are grandfathered until they change status. Diagnostics never move tasks.
 ## Card activity (0.18.0)
 
 Card activity is separate from task workflow status. An attached session with both thread and runtime status active makes the card Working; idle or host-waiting sessions stay Attached. This applies to every card linked to that session, including parent links. Unattached sessions never imply card work. Accepted request markers and manual activity start/stop claims are diagnostic context only; they cannot hide or fabricate live execution. Pending owner interactions produce Waiting for owner, and queued card dispatches produce Queued when the session is not executing. A failure to read extra event/request metadata does not suppress verified live runtime activity. Missing thread/runtime data is treated as unknown. Observed execution or agent comments records work history; with no remaining sessions it gives Abandoned, except on done/canceled cards. Active work on terminal cards is warned about. Archive v10 preserves work history, not live claims or queue identities; imports v1–v9 remain accepted.

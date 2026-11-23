@@ -168,7 +168,7 @@ export function touchAttention(db: Database, taskIds: readonly string[]): void {
   ).all(ids)) {
     if (row.project_id !== row.tracker_id) { closeOccurrence(db, row, row.project_id ? "moved" : "deleted"); touched.add(row.tracker_id); }
   }
-  const observations = staleStatusObservations(db, affected);
+  const observations = staleStatusObservations(db, affected, undefined, at);
   const active = new Set(activeTrackers(db, [...new Set(observations.map((card) => card.trackerId))]));
   for (const card of observations) if (active.has(card.trackerId) && applyCard(db, card.trackerId, ATTENTION_KIND, card, at)) touched.add(card.trackerId);
   for (const trackerId of touched) notifyAttentionChanged(trackerId);
@@ -178,7 +178,7 @@ export function touchAttention(db: Database, taskIds: readonly string[]): void {
 export function scanTracker(db: Database, trackerId: string): void {
   if (activeTrackers(db, [trackerId]).length === 0) return;
   const at = Date.now();
-  const observations = staleStatusObservations(db, undefined, trackerId);
+  const observations = staleStatusObservations(db, undefined, trackerId, at);
   let changed = false;
   for (const card of observations) changed = applyCard(db, trackerId, ATTENTION_KIND, card, at) || changed;
   const seen = new Set(observations.map((card) => card.taskId));

@@ -2717,8 +2717,9 @@ export function registerTasksCli(
                   }),
                 ),
               );
-              const metadata = (await domain.listTaskCardMeta({ taskIds: result.tasks.map((task) => task.id) })).metadata;
-              const flags = new Map(metadata.map((row) => [row.taskId, row.staleStatusFlags]));
+              const metadata = (await domain.listTaskCardMeta({ taskIds: result.tasks.map((task) => task.id), skipStaleStatusFlags: true })).metadata;
+              // The flags the page was selected with, not a second read at another instant.
+              const flags = new Map(result.staleStatusFlags.map((row) => [row.taskId, row.flags]));
               const blockedBy = new Map(metadata.map(row => [row.taskId, row.blockedBy ?? []]));
               const advisories = new Map(metadata.map(row => [row.taskId, row.advisories ?? []]));
               const health = new Map(
