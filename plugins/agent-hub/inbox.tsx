@@ -28,7 +28,7 @@ import { WorkLog, ThreadPlan } from './work-log';
 import { useAgentActivity } from './activity';
 import { deliveryError } from './delivery';
 import { buildReplyMessage } from './reply-message';
-import { uploadAttachment, Composer, localInput, SendButton } from './composer';
+import { uploadAttachment, Composer, localInput, SendButton, VOICE_BUSY } from './composer';
 import { EmptyState, useTransientText, type IconName } from './empty';
 import { clipSelection, selectionMarkdown, selectionPosition } from './selection';
 import { ComposerThread } from './rich-editor';
@@ -362,9 +362,10 @@ export function Avatar({ id, title, provider }: { id: string; title: string | nu
 type InboxProps = { contactsHidden?: boolean; onBulkRead?: (result: { batch: string | null; count: number }) => void; bbChat?: boolean; search?: boolean; onSearch?: (open: boolean) => void; onChat?: (open: boolean) => void; toolbarTargets?: { title: HTMLElement | null; search: HTMLElement | null; actions: HTMLElement | null } };
 export function Inbox(props: InboxProps) {
   const { selected, select } = useContactSelection(), contacts = useContacts(selected);
-  const [kept, setKept] = useState<string[]>([]), [warm, setWarm] = useState<{ threadId: string; unread: number } | null>(null);
+  const [kept, setKept] = useState<string[]>([]), [warm, setWarm] = useState<{ threadId: string; unread: number } | null>(null), [voiceBusy, setVoiceBusy] = useState<string[]>([]);
+  useEffect(() => { const listen = (event: Event) => { const { threadId, active } = (event as CustomEvent<{ threadId: string; active: boolean }>).detail; setVoiceBusy(old => active ? (old.includes(threadId) ? old : [...old, threadId]) : old.filter(id => id !== threadId)); }; window.addEventListener(VOICE_BUSY, listen); return () => window.removeEventListener(VOICE_BUSY, listen); }, []);
   useEffect(() => { const listen = (event: Event) => { const { threadId, unread } = (event as CustomEvent<{ threadId: string; unread: number }>).detail; setWarm(old => old?.threadId === threadId && old.unread === unread ? old : { threadId, unread }); }; window.addEventListener(WARM_CHAT, listen); return () => window.removeEventListener(WARM_CHAT, listen); }, []);
-  const next = selected ? [...kept.filter(id => id !== selected), selected].slice(-5) : kept;
+  const recent = selected ? [...kept.filter(id => id !== selected), selected].slice(-5) : kept, next = [...recent, ...voiceBusy.filter(id => !recent.includes(id))];
   if (next.join('\n') !== kept.join('\n')) setKept(next);
   const grid = useRef<HTMLDivElement>(null), [contactsWidth, setContactsWidth] = useStoredState('bb-plugin-answers:page:contacts-width', CONTACTS_DEFAULT);
   const resize = (width: number) => setContactsWidth(Math.round(Math.max(CONTACTS_MIN, Math.min(CONTACTS_MAX, (grid.current?.clientWidth || Infinity) - 320, width))));
@@ -381,7 +382,7 @@ export function Inbox(props: InboxProps) {
       {warm && !next.includes(warm.threadId) && <WarmChat key={warm.threadId} {...warm} />}
       {!selected && <InboxChat {...props} contactsHidden threadId={undefined} />}
       {/* A fixed DOM order: React moves a keyed child that changes place, and a moved scroller reads scrollTop 0 until its offset is put back. */}
-      {[...next].sort().map(id => <Activity key={id} mode={id === selected ? 'visible' : 'hidden'}><div inert={id !== selected} className="h-full"><KeptChat {...props} threadId={id} contactsHidden /></div></Activity>)}
+      {[...next].sort().map(id => <Activity key={id} mode={id === selected || voiceBusy.includes(id) ? 'visible' : 'hidden'}><div inert={id !== selected} className={`h-full ${id === selected ? '' : 'hidden'}`}><KeptChat {...props} threadId={id} contactsHidden /></div></Activity>)}
     </div>
   </div>;
 }

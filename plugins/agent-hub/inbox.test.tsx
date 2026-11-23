@@ -10,6 +10,7 @@ const sidebarOverride = vi.hoisted(() => ({ threads: undefined as any[] | undefi
 vi.mock('@get-bb/plugin-sdk/app', async importOriginal => { const actual = await importOriginal<typeof import('@get-bb/plugin-sdk/app')>(); return { ...actual, ThreadChat: ({threadId}: any) => <div data-thread-chat={threadId}>Raw thread transcript</div>, experimental_PermissionModePicker: ({ value, onChange }: any) => <button data-permission-picker onClick={() => onChange('full')}>{value}</button>, experimental_ProviderModelPicker: ({ value, onChange, allowProviderChange, routing }: any) => <button data-model-picker data-routing={JSON.stringify(routing)} data-provider-change={String(allowProviderChange)} onClick={() => onChange({ providerId: allowProviderChange && value.model === 'handoff-current' ? 'provider_other' : value.providerId, model: 'model-chosen', reasoningLevel: 'high', serviceTier: 'priority' })}>{value.model}</button>, experimental_useSidebarThreads: () => { const sidebar = actual.experimental_useSidebarThreads(); return sidebarOverride.threads ? { ...sidebar, threads: sidebarOverride.threads } : sidebar; } }; });
 vi.mock('./app', async importOriginal => { const app = await importOriginal<typeof import('./app')>(); return { ...app, ItemCard: (props: Parameters<typeof app.ItemCard>[0]) => { cards.renders++; cards.byThread[props.item.threadId]=(cards.byThread[props.item.threadId] ?? 0)+1; return app.ItemCard(props); } }; });
 import { receivePage, History, Inbox, groupItems, followTo, atEnd } from './inbox';
+import { VOICE_BUSY } from './composer';
 import { itemSchema, type Item } from './contract';
 const base: Item = itemSchema.parse({ id:'ans_one', kind:'mine', threadId:'thr_one', projectId:'pr_one', threadTitle:'One', projectName:'Project', status:'answered', question:'Question one', questionSeq:1, requestId:null, turnId:null, candidate:null, candidateSeq:null, interim:null, interimSeq:null, answer:'Answer one', answerSeq:2, answerSource:'turn', resolveTurnId:null, note:null, snoozedUntil:null, failedAt:null, likelyInterim:false, options:null, taskKey:null, readAt:null, pinned:false, dismissedAt:null, threadDeleted:false, createdAt:Date.now(), updatedAt:Date.now() });
 const one = { threadId:'thr_one', threadTitle:'One', projectId:'pr_one', projectName:'Project', unread:1, lastAt:Date.now(), preview:'Answer one' };
@@ -1494,6 +1495,18 @@ it('moves the main composer message into its thread reply pool and clears it', a
   expect(send).not.toHaveBeenCalled();
 });
 
+it('keeps a chat running, only out of sight, while its voice input is busy, so bb does not cancel the transcription', async () => {
+ const people=[0,1].map(i=>({...one,threadId:`thr_example_${i}`,threadTitle:`Example ${i}`}));
+ const {slot,recipients}=setup({recipients:people,list:input=>({items:[{...base,id:`ans_${input.threadId}`,threadId:input.threadId,question:input.threadId}],nextCursor:null})});
+ const open=async(i:number)=>{fireEvent.click(await recipients.findByRole('option',{name:new RegExp(`Example ${i}`)}));await slot.findByText(`thr_example_${i}`);};
+ const wrapper=()=>slot.getByText('thr_example_0').closest('[inert]') as HTMLElement;
+ await open(0);
+ act(()=>{window.dispatchEvent(new CustomEvent(VOICE_BUSY,{detail:{threadId:'thr_example_0',active:true}}));});
+ await open(1);
+ expect(wrapper().style.display).toBe(''); expect(wrapper().classList.contains('hidden')).toBe(true);
+ act(()=>{window.dispatchEvent(new CustomEvent(VOICE_BUSY,{detail:{threadId:'thr_example_0',active:false}}));});
+ await waitFor(()=>expect(wrapper().style.display).toBe('none'));
+});
 it('keeps five chats mounted, pauses hidden reads and restores DOM, composer, expansion and scroll', async () => {
  const people=Array.from({length:6},(_,i)=>({...one,threadId:`thr_example_${i}`,threadTitle:`Example ${i}`}));
  localStorage.setItem('bb-plugin-answers:page:compose',JSON.stringify({thr_example_0:{text:'',files:[{type:'localFile',path:'/tmp/example.txt',name:'example.txt'}]}}));

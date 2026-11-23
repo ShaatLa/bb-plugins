@@ -1,5 +1,8 @@
-import { RichEditor } from './rich-editor';
-import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { RichEditor, ComposerThread } from './rich-editor';
+import { useContext, useEffect, useRef, useState, type ReactNode } from 'react';
+// bb cancels a transcription when its voice input stops running, as a chat hidden by a switch does; the chat page keeps a
+// chat running (only out of sight) while its voice input is busy.
+export const VOICE_BUSY = 'agent-hub:voice-busy';
 import { experimental_ProviderModelPicker as ProviderModelPicker, type ExperimentalProviderModelPickerProps, experimental_PermissionModePicker as PermissionModePicker, type ExperimentalPermissionModePickerProps, experimental_Icon as Icon, experimental_ImageLightbox as ImageLightbox, experimental_VoiceInputTextarea as VoiceInputTextarea, useSdk } from '@get-bb/plugin-sdk/app';
 import type { Attachment, SendOptions } from './contract';
 import { Button } from './components/ui/button';
@@ -40,7 +43,7 @@ type Props = {
 export function Composer({ label, value, onChange, attachments, onAttachments, projectId, onSend, sendDisabled, pending, actions, onPool, autoFocus, onBlur, editableWhilePending, placeholder = 'Reply…', sendLabel = 'Send', header, className = 'shadow-lift', editMode, onCancel, onStop, poolFirst = false, modelPicker, permissionPicker, onHistory }: Props) {
   const sdk = useSdk(), insertText = useRef<(text: string) => void>(() => {}), picker = useRef<HTMLInputElement>(null), editor = useRef<HTMLDivElement>(null), root = useRef<HTMLFormElement>(null);
   const [dragging, setDragging] = useState(false);
-  const [uploading, setUploading] = useState(0), [error, setError] = useState(''), [voiceActive, setVoiceActive] = useState(false);
+  const [uploading, setUploading] = useState(0), [error, setError] = useState(''), [voiceActive, setVoiceActive] = useState(false), voiceThread = useContext(ComposerThread);
   const [savedPreviews, setSavedPreviews] = useState<Record<string, string>>({}), [viewing, setViewing] = useState<string | null>(null), opened = useRef(new Map<string, string>()), loading = useRef(new Set<string>()), alive = useRef(true);
   const urlOf = (path: string) => previews.get(path) ?? savedPreviews[path];
   const images = attachments.filter(file => file.type === 'localImage'), viewed = images.findIndex(file => file.path === viewing);
@@ -104,7 +107,7 @@ export function Composer({ label, value, onChange, attachments, onAttachments, p
           {permissionPicker && <PermissionModePicker {...permissionPicker} />}
         </div>
         <div className="flex shrink-0 items-center gap-3">
-          <div data-composer-voice className={`h-8 [&>.relative]:h-full [&_.absolute]:bottom-0 [&_.absolute]:right-0 ${voiceActive ? 'absolute inset-x-0 bottom-0 z-10 bg-background' : 'relative w-8'}`}><VoiceInputTextarea aria-label="Voice input" rows={1} value="" onValueChange={transcript => insertText.current(transcript)} onVoiceInputActiveChange={setVoiceActive} disabled={pending && !editableWhilePending} className="absolute h-8 w-full opacity-0 pointer-events-none" tabIndex={-1} /></div>
+          <div data-composer-voice className={`h-8 [&>.relative]:h-full [&_.absolute]:bottom-0 [&_.absolute]:right-0 ${voiceActive ? 'absolute inset-x-0 bottom-0 z-10 bg-background' : 'relative w-8'}`}><VoiceInputTextarea aria-label="Voice input" rows={1} value="" onValueChange={transcript => insertText.current(transcript)} onVoiceInputActiveChange={active => { setVoiceActive(active); if (voiceThread) window.dispatchEvent(new CustomEvent(VOICE_BUSY, { detail: { threadId: voiceThread, active } })); }} disabled={pending && !editableWhilePending} className="absolute h-8 w-full opacity-0 pointer-events-none" tabIndex={-1} /></div>
           <div className="flex items-center gap-1">
         {actions}
         {editMode ? <Button type="button" size="sm" className="ml-1 h-8 px-2" aria-label={sendLabel} disabled={blocked} onClick={() => submit()}><Icon name="CornerDownLeft" aria-hidden /></Button> : onStop && !value.trim() && !attachments.length && !uploading ? <Button type="button" size="sm" className="size-8 px-0" aria-label="Stop" onClick={onStop}><Icon name="Square" aria-hidden className="size-3.5 fill-current [&_*]:stroke-0" /></Button> : <SendButton label={sendLabel} disabled={blocked} onSend={submit} onPool={onPool} poolFirst={poolFirst}><Icon name="ArrowUp" aria-hidden /></SendButton>}
