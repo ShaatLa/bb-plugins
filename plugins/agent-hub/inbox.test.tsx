@@ -1671,3 +1671,134 @@ it('shows Jump to unread for a chat reopened at its remembered place with unread
     expect(jumpButton().textContent).toBe('1 unread');
   } finally { layout.restore(); }
 });
+
+// A chat kept by Activity is display:none while another is open: a browser reads its scroll offset as 0 and ignores writes then.
+// Moving an attached element in the DOM (React does it to a keyed child that changes place) resets the offsets inside it to 0.
+// jsdom has no layout: each History row is 300 high and the New divider 40, stacked in DOM order inside a 500 high view.
+function keptLayout() {
+  const tops = new WeakMap<Element, number>();
+  const hidden = (el: Element) => { for (let node: Element | null = el; node; node = node.parentElement) if ((node as HTMLElement).style?.display === 'none') return true; return false; };
+  const isView = (el: Element) => el.classList.contains('overflow-auto') && !!el.querySelector('[aria-label=History]');
+  const viewOf = (el: Element) => { let node: Element | null = el; while (node && !isView(node)) node = node.parentElement; return node; };
+  const list = (view: Element) => view.querySelector('[aria-label=History]')!;
+  const offsets = (view: Element) => { const map = new Map<Element, number>(); let y = 0; for (const el of Array.from(list(view).children)) { map.set(el, y); y += el.hasAttribute('data-new') ? 40 : 300; } return { map, total: y }; };
+  const rowOf = (el: Element, view: Element) => { let node: Element | null = el; while (node && node.parentElement !== list(view)) node = node.parentElement; return node; };
+  const zero = { top:0, bottom:0, left:0, right:0, width:0, height:0 } as DOMRect;
+  const reset = (node: Node) => { if (node.isConnected && node instanceof Element) [node, ...Array.from(node.querySelectorAll('.overflow-auto'))].forEach(el => tops.set(el, 0)); };
+  const insertBefore = Node.prototype.insertBefore, appendChild = Node.prototype.appendChild;
+  Node.prototype.insertBefore = function <T extends Node>(this: Node, node: T, child: Node | null) { reset(node); return insertBefore.call(this, node, child) as T; };
+  Node.prototype.appendChild = function <T extends Node>(this: Node, node: T) { reset(node); return appendChild.call(this, node) as T; };
+  const spies = [
+    vi.spyOn(HTMLElement.prototype, 'clientHeight', 'get').mockImplementation(function (this: HTMLElement) { return hidden(this) ? 0 : 500; }),
+    vi.spyOn(HTMLElement.prototype, 'clientWidth', 'get').mockImplementation(function (this: HTMLElement) { return hidden(this) ? 0 : 400; }),
+    vi.spyOn(HTMLElement.prototype, 'scrollHeight', 'get').mockImplementation(function (this: HTMLElement) { return isView(this) && !hidden(this) ? offsets(this).total : 0; }),
+    vi.spyOn(HTMLElement.prototype, 'scrollTop', 'get').mockImplementation(function (this: HTMLElement) { return hidden(this) ? 0 : tops.get(this) ?? 0; }),
+    vi.spyOn(HTMLElement.prototype, 'scrollTop', 'set').mockImplementation(function (this: HTMLElement, value: number) { if (!hidden(this)) tops.set(this, Math.max(0, Math.min(value, isView(this) ? offsets(this).total - 500 : 0))); }),
+    vi.spyOn(HTMLElement.prototype, 'offsetTop', 'get').mockImplementation(function (this: HTMLElement) { const view = viewOf(this); return view ? offsets(view).map.get(this) ?? 0 : 0; }),
+    vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (this: HTMLElement) {
+      if (!this.isConnected || hidden(this)) return zero;
+      const view = viewOf(this); if (!view) return zero;
+      if (this === view) return { ...zero, top:0, bottom:500 } as DOMRect;
+      const row = rowOf(this, view), off = row ? offsets(view).map.get(row) : undefined; if (!row || off === undefined) return zero;
+      const top = off - (tops.get(view) ?? 0), height = row.hasAttribute('data-new') ? 40 : 300;
+      return { ...zero, top, bottom: top + height, height } as DOMRect;
+    }),
+  ];
+  // A resize observer that reports like a browser's: once on observe, then whenever the box size changes (display:none reads 0 by 0).
+  const watching = new Set<{ callback: () => void; targets: Map<Element, string> }>();
+  const size = (el: Element) => el.getAttribute('aria-label') === 'History' ? `${offsets(viewOf(el)!).total}` : `${(el as HTMLElement).clientWidth}x${(el as HTMLElement).clientHeight}`;
+  vi.stubGlobal('ResizeObserver', class { entry = { callback: () => this.callback(), targets: new Map<Element, string>() }; constructor(private callback: () => void) { watching.add(this.entry); } observe(el: Element) { this.entry.targets.set(el, '0x0'); } unobserve() {} disconnect() { watching.delete(this.entry); } });
+  const frame = setInterval(() => { for (const entry of [...watching]) { let changed = false; for (const [el, last] of entry.targets) { const now = size(el); if (now !== last && el.isConnected) { entry.targets.set(el, now); changed = true; } } if (changed && watching.has(entry)) entry.callback(); } }, 16);
+  return { top: (view: Element) => hidden(view) ? NaN : tops.get(view) ?? 0, restore: () => { clearInterval(frame); Node.prototype.insertBefore = insertBefore; Node.prototype.appendChild = appendChild; vi.unstubAllGlobals(); spies.forEach(spy => spy.mockRestore()); } };
+}
+// Chat A: `rows` answered messages, 300 high each; its list pages by 3 when `paged`, and rows from `unreadFrom` on are unread.
+const keptChats = (rows: () => number, paged: boolean, unreadFrom = 6) => (input: any) => {
+  if (input.threadId !== 'thr_example_b') {
+    const all = Array.from({ length: rows() }, (_, n) => ({ ...chatItem(n, n >= unreadFrom ? null : 1), threadId:'thr_example_a', id:`ans_a${n}` })).reverse(), at = Number(String(input.cursor ?? 0).split('|')[0]), size = paged ? 3 : all.length;
+    return { items: all.slice(at, at + size), nextCursor: at + size < all.length ? `${at + size}|ans_a` : null };
+  }
+  return { items:[{ ...base, id:'ans_b', threadId:'thr_example_b', question:'Question b' }], nextCursor:null };
+};
+const keptSetup = (list: (input: any) => any) => {
+  const people = [{ ...one, threadId:'thr_example_a', threadTitle:'Chat A', unread:0 }, { ...one, threadId:'thr_example_b', threadTitle:'Chat B', unread:0 }], { slot, recipients } = setup({ recipients:people, list });
+  return { slot, open: async (name: RegExp, text: string) => { fireEvent.click(await recipients.findByRole('option', { name })); await slot.findByText(text); } };
+};
+// Chat A read to its newest, or left scrolled up at 400, then B opened: `grows` adds two unread rows to A while it is hidden.
+it.each([
+  ['read to the bottom, new messages arrive meanwhile', true, true],
+  ['left scrolled up, new messages arrive meanwhile', false, true],
+  ['left scrolled up, nothing new', false, false],
+] as const)('a chat kept hidden while another is open returns to its place: %s', async (_name, atBottom, grows) => {
+  const layout = keptLayout();
+  try {
+    let rows = 6;
+    const { slot, open } = keptSetup(keptChats(() => rows, false));
+    await open(/Chat A/, 'Question 5');
+    const scroller = document.querySelector('[aria-label=History]')!.closest('.overflow-auto') as HTMLElement, history = scroller.querySelector('[aria-label=History]');
+    await waitFor(() => expect(layout.top(scroller)).toBe(1300)); // 6 rows of 300 in a 500 view
+    fireEvent.wheel(scroller); await new Promise(r => setTimeout(r, 80)); // the reader acts: the open hold ends
+    if (!atBottom) { scroller.scrollTop = 400; fireEvent.scroll(scroller); await new Promise(r => requestAnimationFrame(() => r(0))); await new Promise(r => setTimeout(r, 250)); }
+    const left = layout.top(scroller);
+    await open(/Chat B/, 'Question b');
+    expect(layout.top(scroller)).toBeNaN(); // hidden: a browser reads 0
+    if (grows) { rows = 8; await slot.behavior.experimental_invalidateRpc(['answers:items']); }
+    await open(/Chat A/, 'Question 5');
+    if (grows) await waitFor(() => expect(within(scroller).getByText('Question 7')).toBeTruthy());
+    await act(async () => { await new Promise(r => setTimeout(r, 100)); });
+    expect(scroller.isConnected && scroller.querySelector('[aria-label=History]')).toBe(history); // not remounted
+    // Never above where the reader was; with unread rows below a reader at the bottom, at the first unread (its divider).
+    expect(layout.top(scroller)).toBe(atBottom && grows ? 1776 : left);
+  } finally { layout.restore(); }
+});
+it('keeps a chat kept hidden at its place when earlier messages load right after it is shown again', async () => {
+  const layout = keptLayout();
+  try {
+    const { slot, open } = keptSetup(keptChats(() => 9, true, 99));
+    await open(/Chat A/, 'Question 8');
+    const scroller = document.querySelector('[aria-label=History]')!.closest('.overflow-auto') as HTMLElement;
+    await waitFor(() => expect(layout.top(scroller)).toBe(400)); // 3 rows of 300 in a 500 view
+    fireEvent.wheel(scroller); await new Promise(r => setTimeout(r, 80));
+    scroller.scrollTop = 250; fireEvent.scroll(scroller); await new Promise(r => requestAnimationFrame(() => r(0))); await new Promise(r => setTimeout(r, 250));
+    await open(/Chat B/, 'Question b');
+    await open(/Chat A/, 'Question 8');
+    fireEvent.click(slot.getByRole('button', { name:'Load earlier' })); // as its sentinel does on coming into view
+    await waitFor(() => expect(within(scroller).getByText('Question 5')).toBeTruthy());
+    await act(async () => { await new Promise(r => setTimeout(r, 100)); });
+    expect(layout.top(scroller)).toBe(250 + 900); // the three earlier rows pushed the reader down by their height
+  } finally { layout.restore(); }
+});
+it('keeps a freshly opened chat at its newest while its content keeps growing after the first page arrived', async () => {
+  const observers: (() => void)[] = [];
+  vi.stubGlobal('ResizeObserver', class { constructor(private callback: () => void) { observers.push(() => this.callback()); } observe() {} disconnect() {} });
+  const tops = new WeakMap<Element, number>(); let height = 3000;
+  const spies = [
+    vi.spyOn(HTMLElement.prototype, 'clientHeight', 'get').mockReturnValue(500),
+    vi.spyOn(HTMLElement.prototype, 'clientWidth', 'get').mockReturnValue(400),
+    vi.spyOn(HTMLElement.prototype, 'scrollHeight', 'get').mockImplementation(() => height),
+    vi.spyOn(HTMLElement.prototype, 'scrollTop', 'get').mockImplementation(function (this: HTMLElement) { return tops.get(this) ?? 0; }),
+    vi.spyOn(HTMLElement.prototype, 'scrollTop', 'set').mockImplementation(function (this: HTMLElement, value: number) { tops.set(this, value); }),
+  ];
+  try {
+    const deliver: ((value: object) => void)[] = [];
+    const { slot, recipients } = setup({ list: () => new Promise(r => { deliver.push(r); }) });
+    fireEvent.click(await recipients.findByRole('option'));
+    await waitFor(() => expect(deliver.length).toBeGreaterThan(0)); // the chat is mounted, its first page still on the way
+    await act(async () => { deliver.forEach(release => release({ items:[base], nextCursor:null })); }); await slot.findByRole('list', { name:'History' });
+    const scroller = document.querySelector('[aria-label=History]')!.closest('.overflow-auto')!;
+    await waitFor(() => expect(tops.get(scroller)).toBe(3000));
+    height = 5000; observers.forEach(observe => observe()); // the cards finish rendering below the fold, with no input from the reader
+    expect(tops.get(scroller)).toBe(5000);
+  } finally { spies.forEach(spy => spy.mockRestore()); vi.unstubAllGlobals(); }
+});
+it('opens at the newest, and stays there, while the pages of a remembered depth arrive one after another', async () => {
+  localStorage.setItem('bb-plugin-answers:page:scroll', JSON.stringify({ thr_example_a: { top:0, depth:3, bottom:true } }));
+  const layout = keptLayout();
+  try {
+    const slow = keptChats(() => 9, true, 99), { slot, open } = keptSetup(input => input.cursor ? new Promise(r => setTimeout(() => r(slow(input)), 120)) : slow(input));
+    await open(/Chat A/, 'Question 8');
+    const scroller = document.querySelector('[aria-label=History]')!.closest('.overflow-auto') as HTMLElement;
+    await waitFor(() => expect(within(scroller).getByText('Question 0')).toBeTruthy(), { timeout: 3000 }); // all three pages are in: 9 rows of 300
+    await act(async () => { await new Promise(r => setTimeout(r, 200)); });
+    expect(layout.top(scroller)).toBe(9 * 300 - 500);
+  } finally { layout.restore(); localStorage.removeItem('bb-plugin-answers:page:scroll'); }
+});

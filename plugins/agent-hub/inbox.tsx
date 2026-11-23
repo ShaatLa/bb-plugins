@@ -374,7 +374,8 @@ export function Inbox(props: InboxProps) {
     <div data-contacts-column className={`flex min-h-0 min-w-0 flex-col ${contactsHidden ? 'min-[640px]:hidden' : ''} min-[640px]:border-r min-[640px]:border-border-seam ${selected ? 'max-[639px]:hidden' : ''}`}><ContactsList model={contacts} selected={selected} onSelect={select} onBulkRead={onBulkRead} /></div>
     <div className={`relative min-h-0 min-w-0 ${selected ? '' : 'max-[639px]:hidden'}`}>
       {!selected && <InboxChat {...props} contactsHidden threadId={undefined} />}
-      {next.map(id => <Activity key={id} mode={id === selected ? 'visible' : 'hidden'}><div inert={id !== selected} className="h-full"><KeptChat {...props} threadId={id} contactsHidden /></div></Activity>)}
+      {/* A fixed DOM order: React moves a keyed child that changes place, and a moved scroller reads scrollTop 0 until its offset is put back. */}
+      {[...next].sort().map(id => <Activity key={id} mode={id === selected ? 'visible' : 'hidden'}><div inert={id !== selected} className="h-full"><KeptChat {...props} threadId={id} contactsHidden /></div></Activity>)}
     </div>
   </div>;
 }
