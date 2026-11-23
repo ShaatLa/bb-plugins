@@ -711,6 +711,15 @@ describe('ingestion driver',()=>{
   expect(eventThreads).toEqual(['changed']);
   expect(db.prepare("SELECT thread_id FROM archived_threads").all()).toEqual([{thread_id:'archived'}]);
  });
+ it('lists a former sub-session as a contact again once bb clears its parent',async()=>{
+  const {harness,db,driver}=driverSetup();
+  db.prepare("INSERT INTO threads_state(thread_id,last_seq,updated_at,ingested_thread_updated_at) VALUES ('thr_example',1,0,100)").run();
+  db.prepare("INSERT INTO sub_threads VALUES ('thr_example')").run();
+  harness.sdk.stub('threads.list',async(args:any)=>args.threadIds ? [makeThreadResponse({id:'thr_example',updatedAt:100})] : []);
+  harness.sdk.stub('threads.events.list',async()=>[]);
+  await driver.reconcile();
+  expect(db.prepare("SELECT thread_id FROM sub_threads").all()).toEqual([]);
+ });
  it('records an archived thread that bb leaves out of the list, without ingesting it',async()=>{
   const {harness,db,driver}=driverSetup();
   db.prepare("INSERT INTO threads_state(thread_id,last_seq,updated_at,ingested_thread_updated_at) VALUES ('thr_example',1,0,100)").run();

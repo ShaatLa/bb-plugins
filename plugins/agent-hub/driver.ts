@@ -102,6 +102,8 @@ export function createDriver(bb: BbPluginApi, db: Database.Database, invalidate:
       db.prepare('INSERT OR IGNORE INTO sub_threads VALUES (?)').run(id);
       db.prepare("UPDATE items SET read_at=coalesce(read_at,?),notify_state=0,asks=0 WHERE thread_id=? AND NOT (kind='for_me' AND chat_asked=0) AND (read_at IS NULL OR notify_state<>0 OR asks<>0)").run(Date.now(),id);
     })();
+    // A sub-session whose parent was cleared in bb is a top-level chat again.
+    else if (db.prepare('DELETE FROM sub_threads WHERE thread_id=?').run(id).changes) changed = true;
     try {
     if (!state || state.last_seq === 0) {
       const events: Event[] = [];
@@ -169,7 +171,8 @@ export function createDriver(bb: BbPluginApi, db: Database.Database, invalidate:
         await Promise.all(tracked.slice(i,i+200).map(async row => {
           const id=row.thread_id; let thread: Thread|undefined=known.get(id);
           if (thread?.archivedAt) return;
-          if (thread && !row.last_error && row.ingested_thread_updated_at!==null && thread.updatedAt<=row.ingested_thread_updated_at) return;
+          // Clearing a parent need not move updatedAt, so a top-level thread still marked as a sub-session is drained anyway.
+          if (thread && !row.last_error && row.ingested_thread_updated_at!==null && thread.updatedAt<=row.ingested_thread_updated_at && (thread.parentThreadId || !db.prepare('SELECT 1 FROM sub_threads WHERE thread_id=?').get(id))) return;
           if (!thread) {
             try {thread=await bb.sdk.threads.get({threadId:id,signal});}
             catch (e) {if (notFound(e)) await locked(id,async()=>remove(id)); return;}
