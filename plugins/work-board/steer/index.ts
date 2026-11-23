@@ -1,6 +1,6 @@
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import type { TasksStore } from "../db";
-import { reconcileTaskThreads } from "../lifecycle/thread-links";
+import { reconcileTaskThreads, reconcileTaskThreadsStrict, threadUnavailable } from "../lifecycle/thread-links";
 import { errorMessage } from "../shared/errors";
 import { isSideChatShapedThread } from "../shared/side-chat";
 
@@ -208,14 +208,18 @@ async function firstReachable(bb: BbPluginApi, candidates: string[], at: { threa
   return undefined;
 }
 
-/** The session a PR message goes to, `hold` when no single session can be told apart, undefined when the card has none. */
-export type PrRecipient = { threadId: string } | "hold" | undefined;
+/**
+ * The session a PR message goes to, `hold` when no single session can be told apart, undefined when the card has none. `linked` is
+ * the sorted linked thread ids the choice was made from, unset when the owner was chosen.
+ */
+export type PrRecipient = { threadId: string; linked?: string[] } | "hold" | undefined;
 
 /**
  * The session a PR message goes to: the explicitly designated owner when reachable (an archived one hands over to its parent), else
- * the one linked thread whose environment is on the PR after a complete lookup, else the card's only linked thread. Anything else
- * holds: a reviewer that checked out the branch, or a lookup that could not finish, must not take the author's messages.
- * `onPr` returns the linked threads on the PR, or null when the lookup is incomplete. Throws when a thread read fails.
+ * the card's only linked thread, else the one root of the card's session tree, else the one linked thread whose environment is on
+ * the PR after a complete lookup. Anything else holds: a reviewer that checked out the branch, or a lookup that could not finish,
+ * must not take the author's messages. `onPr` returns the linked threads on the PR, or null when the lookup is incomplete.
+ * Throws when a thread read or the reconcile fails, so the row backs off.
  */
 export async function resolvePrRecipient(
   bb: BbPluginApi,
@@ -228,10 +232,10 @@ export async function resolvePrRecipient(
     if (owner) return { threadId: owner };
   }
   // Reconciling first detaches archived threads (and attaches the parent fallback), so the count below is of live links.
-  const reachable = (await reconcileTaskThreads(bb, store, taskId)).map((link) => link.threadId);
+  const reachable = (await reconcileTaskThreadsStrict(bb, store, taskId)).map((link) => link.threadId);
   const linked = store.listTaskThreads(taskId).map((link) => link.threadId);
   if (!linked.length) return undefined;
-  let chosen = linked.length === 1 ? linked[0] : undefined;
+  let chosen = linked.length === 1 ? linked[0] : await treeRoot(bb, linked);
   if (!chosen) {
     const on = await pr.onPr(linked);
     if (on?.size === 1) chosen = [...on][0];
@@ -240,7 +244,41 @@ export async function resolvePrRecipient(
   // A stopping session is still the one the message belongs to, so the row waits for it instead of going elsewhere.
   if (!reachable.includes(chosen)) throw new Error(`Thread ${chosen} is stopping`);
   const threadId = await firstReachable(bb, [chosen], {}, true);
-  return threadId ? { threadId } : undefined;
+  return threadId ? { threadId, linked: [...linked].sort() } : undefined;
+}
+
+/**
+ * The one linked thread with no other linked thread among its ancestors (unlinked threads in between do not count), or undefined
+ * when there are several or none. Throws when a read fails, and when a linked thread is gone: the reconcile did not finish.
+ */
+async function treeRoot(bb: BbPluginApi, linked: string[]): Promise<string | undefined> {
+  type Thread = Awaited<ReturnType<BbPluginApi["sdk"]["threads"]["get"]>>;
+  const reads = new Map<string, Promise<Thread | null>>();
+  const read = (threadId: string) => {
+    let thread = reads.get(threadId);
+    if (!thread) {
+      thread = bb.sdk.threads.get({ threadId }).catch((error: unknown) => {
+        if (typeof error === "object" && error !== null && "code" in error && error.code === "thread_not_found") return null;
+        throw error;
+      });
+      reads.set(threadId, thread);
+    }
+    return thread;
+  };
+  const roots: string[] = [];
+  for (const threadId of linked) {
+    const thread = await read(threadId);
+    if (!thread || threadUnavailable(thread)) throw new Error(`Thread ${threadId} is still linked after it became unavailable`);
+    const visited = new Set([threadId]);
+    let ancestorId: string | null | undefined = thread.parentThreadId, root = true;
+    while (ancestorId && !visited.has(ancestorId)) {
+      if (linked.includes(ancestorId)) { root = false; break; }
+      visited.add(ancestorId);
+      ancestorId = (await read(ancestorId))?.parentThreadId;
+    }
+    if (root) roots.push(threadId);
+  }
+  return roots.length === 1 ? roots[0] : undefined;
 }
 
 export type Receipt =

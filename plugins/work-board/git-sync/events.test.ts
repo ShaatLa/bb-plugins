@@ -1663,4 +1663,219 @@ describe("PR message recipient", () => {
     await drained;
     expect(rows(f)[0]).toMatchObject({ state: "no_recipient:ambiguous" });
   });
+
+  /** Links `threadId` to the card (when `taskId` is given) as a child of `parent`; without `taskId` it is an unlinked helper. */
+  const child = (f: ReturnType<typeof setup>, taskId: string | undefined, threadId: string, parent: string) => {
+    if (taskId) attach(f, taskId, threadId);
+    f.threads.threads.set(threadId, { status: "active", parent });
+  };
+
+  it("goes to the one root of the card's session tree before the session on the PR, through unlinked helpers and long chains", async () => {
+    const f = setup(), w = world(f);
+    const fan = f.card("Fan", "in_review", "thr_fan"), onPr = f.card("OnPr", "in_review", "thr_pr"), helper = f.card("Helper", "in_review", "thr_h");
+    const long = f.card("Long", "in_review", "thr_l"), roots = f.card("Roots", "in_review", "thr_ra");
+    for (const id of ["thr_fan_1", "thr_fan_2", "thr_fan_3"]) child(f, fan.id, id, "thr_fan");
+    child(f, onPr.id, "thr_pr_child", "thr_pr");
+    child(f, undefined, "thr_h_helper", "thr_h");
+    child(f, helper.id, "thr_h_reader", "thr_h_helper");
+    // Nine hops: the reader, eight unlinked helpers, then the lead.
+    for (let hop = 1; hop <= 8; hop++) child(f, undefined, `thr_l_${hop}`, hop === 1 ? "thr_l" : `thr_l_${hop - 1}`);
+    child(f, long.id, "thr_l_reader", "thr_l_8");
+    // Two roots: the on-PR rule picks between them as before.
+    attach(f, roots.id, "thr_rb");
+    child(f, roots.id, "thr_ra_child", "thr_ra");
+    Object.assign(w.env, { thr_pr_child: "env_pr_child", thr_l_reader: "env_l_reader", thr_rb: "env_rb" });
+    for (const env of ["env_pr_child", "env_l_reader", "env_rb"]) w.onPr.add(env);
+    await f.sync(green());
+    record(f, red(b));
+    await f.events.drain();
+    expect(f.to("thr_fan")).toEqual([text(fan.key)]);
+    expect(f.to("thr_pr")).toEqual([text(onPr.key)]);
+    expect(f.to("thr_h")).toEqual([text(helper.key)]);
+    expect(f.to("thr_l")).toEqual([text(long.key)]);
+    expect(f.to("thr_rb")).toEqual([text(roots.key)]);
+    for (const id of ["thr_fan_1", "thr_fan_2", "thr_fan_3", "thr_pr_child", "thr_h_helper", "thr_h_reader", "thr_l_reader", "thr_ra", "thr_ra_child"]) expect(f.to(id)).toEqual([]);
+  });
+
+  it("lets a designated owner win over the root", async () => {
+    const f = setup();
+    world(f);
+    const task = f.card("Owned", "in_review", "thr_lead");
+    child(f, task.id, "thr_child", "thr_lead");
+    await f.sync(green());
+    expect(await f.harness.runCli(["pr", "link", task.key, "--url", URL, "--owner", "thr_child"])).toMatchObject({ exitCode: 0 });
+    record(f, red(b));
+    await f.events.drain();
+    expect(f.to("thr_child")).toEqual([text(task.key)]);
+    expect(f.to("thr_lead")).toEqual([]);
+  });
+
+  it("retries a failed ancestor read instead of sending elsewhere, and reads no ancestor of a sole link", async () => {
+    const f = setup();
+    world(f);
+    const pair = f.card("Pair", "in_review", "thr_lead"), solo = f.card("Solo", "in_review", "thr_solo");
+    child(f, undefined, "thr_helper", "thr_lead");
+    child(f, pair.id, "thr_reader", "thr_helper");
+    f.threads.threads.set("thr_solo", { status: "active", parent: "thr_broken" });
+    await f.sync(green());
+    const get = f.threads.sdk.threads.get;
+    f.harness.sdk.stub("threads.get", async (args: { threadId: string }) => {
+      if (args.threadId === "thr_helper" || args.threadId === "thr_broken") throw new Error("host unreachable");
+      return get(args as never);
+    });
+    record(f, red(b));
+    await f.events.drain();
+    expect(f.to("thr_solo")).toEqual([text(solo.key)]);
+    expect(rows(f).find((row) => row.task_id === pair.id)).toMatchObject({ state: "pending", next_attempt_at: expect.any(String), error: "host unreachable" });
+    expect(f.to("thr_lead")).toEqual([]);
+    expect(f.to("thr_reader")).toEqual([]);
+  });
+
+  it("backs off a failed reconcile instead of routing by stale links, and sends to the worker once it finishes", async () => {
+    const f = setup();
+    world(f);
+    const task = f.card("Inherited", "in_review", "thr_manager");
+    await f.sync(green());
+    // The manager was linked as a parent fallback; a worker it started was attached since.
+    f.store.tasks.createComment({ taskId: task.id, threadId: "thr_manager", kind: "system", authorName: "Work Board", body: "Thread attached (parent fallback): @thread:thr_manager" });
+    child(f, task.id, "thr_new", "thr_manager");
+    let failures = 1;
+    const get = f.threads.sdk.threads.get;
+    f.harness.sdk.stub("threads.get", async (args: { threadId: string }) => {
+      if (failures > 0) { failures--; throw new Error("host unreachable"); }
+      return get(args as never);
+    });
+    record(f, red(b));
+    await f.events.drain();
+    expect(f.threads.requests).toEqual([]);
+    expect(rows(f)[0]).toMatchObject({ state: "pending", next_attempt_at: expect.any(String) });
+    f.db.prepare("UPDATE pr_event_deliveries SET next_attempt_at=NULL").run();
+    await f.events.drain();
+    expect(f.store.tasks.listTaskThreads(task.id).map((link) => link.threadId)).toEqual(["thr_new"]);
+    expect(f.to("thr_new")).toEqual([text(task.key)]);
+    expect(f.to("thr_manager")).toEqual([]);
+  });
+
+  it("backs off when a worker is attached while the reconcile reads the inherited manager, then sends to the worker only", async () => {
+    const f = setup();
+    world(f);
+    const task = f.card("Racing", "in_review", "thr_manager");
+    await f.sync(green());
+    f.store.tasks.createComment({ taskId: task.id, threadId: "thr_manager", kind: "system", authorName: "Work Board", body: "Thread attached (parent fallback): @thread:thr_manager" });
+    let attached = false;
+    const get = f.threads.sdk.threads.get;
+    f.harness.sdk.stub("threads.get", async (args: { threadId: string }) => {
+      const thread = await get(args as never);
+      if (args.threadId === "thr_manager" && !attached) { attached = true; child(f, task.id, "thr_new", "thr_manager"); }
+      return thread;
+    });
+    record(f, red(b));
+    await f.events.drain();
+    expect(f.threads.requests).toEqual([]);
+    expect(rows(f)[0]).toMatchObject({ state: "pending", next_attempt_at: expect.any(String) });
+    f.db.prepare("UPDATE pr_event_deliveries SET next_attempt_at=NULL").run();
+    await f.events.drain();
+    expect(f.to("thr_new")).toEqual([text(task.key)]);
+    expect(f.to("thr_manager")).toEqual([]);
+  });
+
+  /** A card whose manager link is a parent fallback, with a worker the manager started attached since; `during` runs on the manager's first read. */
+  const inherited = async (f: ReturnType<typeof setup>, during: (taskId: string, linkOf: (threadId: string) => string) => void) => {
+    const task = f.card("Inherited", "in_review", "thr_manager");
+    await f.sync(green());
+    f.store.tasks.createComment({ taskId: task.id, threadId: "thr_manager", kind: "system", authorName: "Work Board", body: "Thread attached (parent fallback): @thread:thr_manager" });
+    child(f, task.id, "thr_new", "thr_manager");
+    const linkOf = (threadId: string) => f.store.tasks.listTaskThreads(task.id).find((link) => link.threadId === threadId)!.id;
+    let done = false;
+    const get = f.threads.sdk.threads.get;
+    f.harness.sdk.stub("threads.get", async (args: { threadId: string }) => {
+      const thread = await get(args as never);
+      if (args.threadId === "thr_manager" && !done) { done = true; during(task.id, linkOf); }
+      return thread;
+    });
+    record(f, red(b));
+    await f.events.drain();
+    expect(f.threads.requests).toEqual([]);
+    expect(rows(f)[0]).toMatchObject({ state: "pending", next_attempt_at: expect.any(String) });
+    f.db.prepare("UPDATE pr_event_deliveries SET next_attempt_at=NULL").run();
+    await f.events.drain();
+    return task;
+  };
+
+  it("backs off when the worker is detached while the reconcile reads, and keeps the manager fallback", async () => {
+    const f = setup();
+    world(f);
+    const task = await inherited(f, (_taskId, linkOf) => f.store.tasks.deleteTaskThread(linkOf("thr_new")));
+    expect(f.store.tasks.listTaskThreads(task.id).map((link) => link.threadId)).toEqual(["thr_manager"]);
+    expect(f.to("thr_manager")).toEqual([text(task.key)]);
+  });
+
+  it("backs off when the manager link's status changes while the reconcile reads, then sends to the worker", async () => {
+    const f = setup();
+    world(f);
+    const task = await inherited(f, (_taskId, linkOf) =>
+      f.db.prepare("UPDATE task_threads SET live_status='idle', updated_at=? WHERE id=?").run("2099-01-01T00:00:00.000Z", linkOf("thr_manager")));
+    expect(f.to("thr_new")).toEqual([text(task.key)]);
+    expect(f.to("thr_manager")).toEqual([]);
+  });
+
+  it("resolves again when the lead is detached during the tree walk, and sends to the reader left", async () => {
+    const f = setup();
+    world(f);
+    const task = f.card("Detached", "in_review", "thr_lead");
+    child(f, undefined, "thr_helper", "thr_lead");
+    child(f, task.id, "thr_reader", "thr_helper");
+    await f.sync(green());
+    let detached = false;
+    const get = f.threads.sdk.threads.get;
+    f.harness.sdk.stub("threads.get", async (args: { threadId: string }) => {
+      if (args.threadId === "thr_helper" && !detached) {
+        detached = true;
+        f.store.tasks.deleteTaskThread(f.store.tasks.listTaskThreads(task.id).find((link) => link.threadId === "thr_lead")!.id);
+      }
+      return get(args as never);
+    });
+    record(f, red(b));
+    await f.events.drain();
+    expect(detached).toBe(true);
+    expect(f.to("thr_reader")).toEqual([text(task.key)]);
+    expect(f.to("thr_lead")).toEqual([]);
+  });
+
+  it("backs off when a linked lead is archived during resolution, then sends to the sole reader left", async () => {
+    const f = setup();
+    world(f);
+    const task = f.card("Archiving", "in_review", "thr_lead");
+    child(f, task.id, "thr_reader", "thr_lead");
+    await f.sync(green());
+    // The reconcile reads a live lead; every later read sees it archived.
+    const get = f.threads.sdk.threads.get;
+    f.harness.sdk.stub("threads.get", async (args: { threadId: string }) => {
+      const thread = await get(args as never);
+      if (args.threadId === "thr_lead") f.threads.threads.set("thr_lead", { archived: true });
+      return thread;
+    });
+    record(f, red(b));
+    await f.events.drain();
+    expect(f.threads.requests).toEqual([]);
+    expect(rows(f)[0]).toMatchObject({ state: "pending", next_attempt_at: expect.any(String) });
+    f.db.prepare("UPDATE pr_event_deliveries SET next_attempt_at=NULL").run();
+    await f.events.drain();
+    expect(f.to("thr_reader")).toEqual([text(task.key)]);
+  });
+
+  it("holds when an archived lead leaves two live readers and neither is on the PR", async () => {
+    const f = setup();
+    world(f);
+    const task = f.card("Orphans", "in_review", "thr_lead");
+    child(f, task.id, "thr_r1", "thr_lead");
+    child(f, task.id, "thr_r2", "thr_lead");
+    await f.sync(green());
+    f.threads.threads.set("thr_lead", { archived: true, parent: "thr_pm" });
+    record(f, red(b));
+    await f.events.drain();
+    expect(f.store.tasks.listTaskThreads(task.id).map((link) => link.threadId).sort()).toEqual(["thr_r1", "thr_r2"]);
+    expect(rows(f)[0]).toMatchObject({ state: "awaiting_owner" });
+    expect(f.threads.requests).toEqual([]);
+  });
 });

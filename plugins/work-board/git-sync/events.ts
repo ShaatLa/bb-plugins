@@ -530,9 +530,12 @@ export function createPrEventService(bb: BbPluginApi, tasks: TasksStore) {
         const link = linkOf();
         // The link's current identity only: the event's older path may belong to another repository after a rename.
         const owner = link?.ownerThreadId, identity = link ? prIdentity(link) : row.identity;
+        let linked: string[] | undefined;
         unchanged = () => {
           const now = linkOf();
-          return now?.ownerThreadId === owner && (now ? prIdentity(now) : row.identity) === identity;
+          return now?.ownerThreadId === owner && (now ? prIdentity(now) : row.identity) === identity &&
+            // A session linked or detached during resolution may change which one is the card's root.
+            (!linked || tasks.listTaskThreads(row.task_id).map((thread) => thread.threadId).sort().join() === linked.join());
         };
         const onPr = async (threadIds: string[]) => {
           const found = await environments(false);
@@ -573,7 +576,7 @@ export function createPrEventService(bb: BbPluginApi, tasks: TasksStore) {
             if (Date.now() >= until) return ambiguous(), true;
             own(row.id, ["claimed"], "awaiting_owner", {
               claim_owner: null, held_until: new Date(until).toISOString(), next_attempt_at: new Date(Math.min(Date.now() + HOLD_RECHECK_MS, until)).toISOString(),
-              error: "Several sessions could take this message; name the one that opened the PR with `bb work-board pr link KEY --url URL --owner thr_…`",
+              error: "Several sessions could take this message (no single root session; could not identify a unique session on the PR); name the one that opened the PR with `bb work-board pr link KEY --url URL --owner thr_…`",
             });
             return true;
           })();
@@ -582,6 +585,7 @@ export function createPrEventService(bb: BbPluginApi, tasks: TasksStore) {
           continue;
         }
         threadId = recipient.threadId;
+        linked = recipient.linked;
       } else {
         const lookup = await attentionService(bb).lookupManager(configuredManager(db, row.project_id));
         if (lookup.status === "unavailable") return void retryLater(lookup.error);

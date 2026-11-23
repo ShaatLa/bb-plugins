@@ -12,7 +12,7 @@ import {
   captureProject,
   restoreProject,
 } from "../archive/storage";
-import { reconcileTaskThreads } from "./thread-links";
+import { reconcileTaskThreads, reconcileTaskThreadsStrict } from "./thread-links";
 import { deliverCommentToLatestAgent } from "../steer";
 import { createStructuredStore } from "../structured/store";
 
@@ -194,6 +194,39 @@ it("preserves all links and their history on transient SDK failures", async () =
   expect(
     await reconcileTaskThreads(f.bb, f.store.tasks, f.task.id),
   ).toHaveLength(2);
+  expect(f.store.tasks.listComments(f.task.id)).toEqual([]);
+});
+
+it("throws a failed read to a strict caller, also one that joined another caller's run", async () => {
+  const f = setup();
+  f.add("thr_new");
+  f.harness.sdk.stub("threads.get", async () => {
+    throw new Error("Offline");
+  });
+  const [lenient, strict] = await Promise.allSettled([
+    reconcileTaskThreads(f.bb, f.store.tasks, f.task.id),
+    reconcileTaskThreadsStrict(f.bb, f.store.tasks, f.task.id),
+  ]);
+  expect(lenient).toMatchObject({ status: "fulfilled", value: [{ threadId: "thr_new" }] });
+  expect(strict).toMatchObject({ status: "rejected", reason: { message: "Offline" } });
+  expect(f.harness.sdk.callsTo("threads.get")).toHaveLength(1);
+});
+
+it("reruns once on links changed during the reads, and never lists a stopping session to a lenient caller", async () => {
+  const f = setup();
+  f.add("thr_stop");
+  f.threads.set("thr_stop", { ...f.threads.get("thr_stop")!, status: "stopping" });
+  let late = 0;
+  f.harness.sdk.stub("threads.get", async ({ threadId }: { threadId: string }) => {
+    const thread = f.threads.get(threadId)!;
+    // Each of the first two runs sees a session attached while it reads.
+    if (threadId === "thr_stop" && late < 2) f.add(`thr_late_${++late}`);
+    return thread;
+  });
+  const links = await reconcileTaskThreads(f.bb, f.store.tasks, f.task.id);
+  expect(late).toBe(2);
+  expect(links.map((link) => link.threadId).sort()).toEqual(["thr_late_1", "thr_late_2"]);
+  expect(f.store.tasks.listTaskThreads(f.task.id)).toHaveLength(3);
   expect(f.store.tasks.listComments(f.task.id)).toEqual([]);
 });
 
