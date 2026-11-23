@@ -192,22 +192,11 @@ Draft recognition is configurable in Settings → Plugins → CI Dashboard: Draf
 The three draft-recognition fields are grouped behind a Draft deferral disclosure, collapsed by default. The expanded group has a rounded border, inset rows and horizontal separators; it is visually separated from the remaining settings. A cleanup-safe content script decorates the host settings form; native inputs, validation and autosave are retained. Reopening the settings page collapses the group again. If the host form structure changes, fields remain visible rather than becoming inaccessible.
 
 
-PR lifecycle and deployment subscriptions: `ci_dashboard_manage` with `action: "subscribe_pr", number: 12` subscribes the lead's calling thread; `unsubscribe_pr` cancels it. Pass `repository: "acme/app"` when several repositories are configured and `threadId: "thr_example"` to select another thread. `list` includes `prSubscriptions` with ISO subscription times.
+PR subscriptions were removed in 0.8.0.
 
-Deployment lines name the PR when known. `observeDeployments` accepts `all` (default), `failures` (failure, error and gate refusal), or `off`; old boolean settings still work. A gate refusal is superseded, and sent to nobody, when a newer deployment of another commit to the same environment is running or succeeded; with no newer deployment yet it waits up to 10 minutes, then reports as a refusal. A successful deployment containing a subscribed PR goes directly to its subscribers instead of observers, then ends those subscriptions. A later successful default-branch deployment also completes earlier PRs when stored merge-group and push jobs prove coverage. Unknown push times keep subscriptions waiting. Deployment failures go only to observers. PR subscriptions poll even with no observers and mode `off`, bypass quiet windows and digests, and end on delivery, thread archive/deletion, or after 14 days (200 entries maximum; new subscriptions at capacity are refused: use list, then unsubscribe_pr for an obsolete entry).
+Deployment lines name the PR when known. `observeDeployments` accepts `all` (default), `failures` (failure, error and gate refusal), or `off`; old boolean settings still work. A gate refusal is superseded, and sent to nobody, when a newer deployment of another commit to the same environment is running or succeeded; with no newer deployment yet it waits up to 10 minutes, then reports as a refusal.
 
-The lead must subscribe right after opening the PR, at any PR state (including draft, before READY). PR lifecycle lines go only to PR subscribers, never observer threads: **PR CI green / PR CI red** (CI complete), **PR merged**, and **PR closed**. Completed CI or an already merged PR is delivered on the next pass after subscribing; no shell polling loop is needed. CI is reported once per current head SHA and verdict, only after every required context is terminal and no required check is still expected; when a check name ran several times on the head, only its latest run counts. A new push, or a later run that flips the verdict, produces one new line. With no required contexts, all contexts are used and the line says `checks`. SUCCESS, NEUTRAL and SKIPPED pass; other terminal results fail. Failed check names are labels only, capped at five plus `+N`.
-
-```text
-PR CI green · #12 · head <40-char sha> · 5 required checks passed · <PR url>
-PR CI red · #12 · head <40-char sha> · 2 of 5 required checks failed: build, test · <PR url>
-PR merged · #12 · merge commit <40-char sha> · <mergedAt ISO> · <PR url>
-PR closed · #12 · not merged, subscription ended · <PR url>
-```
-
-Merge is reported once per PR, stops CI lines and keeps the subscription for successful deployment delivery for up to 24 h after the merge line; without a successful deployment by then the subscriber gets `PR deployment wait ended · #12 · no successful deployment within 24 h of merge, subscription ended` and the subscription ends. Close without merge removes the PR's subscriptions. Unsubscribe, successful deployment delivery, thread archive/deletion and 14-day expiry also end subscriptions. Lifecycle queries use repository-level GraphQL data and the shared backfill budget, at most one request per repository per 60 seconds, rotating batches of up to 25 PRs. No lifecycle request runs without subscriptions, authorization or a backfill runtime. Sent keys (`pr_ci:12:<sha>`, `pr_merged:12`) persist in `observer:<repo>` before delivery and use the existing history pruning. Rollups exceeding 100 contexts wait rather than report incomplete evidence.
-
-The discoverable `manage` RPC takes the same input as the tool. Actions needing a thread require explicit `threadId` over RPC. Write `{ "action": "subscribe_pr", "number": 12, "threadId": "thr_example" }` to `f.json`, then run:
+The discoverable `manage` RPC takes the same input as the tool. Actions needing a thread require explicit `threadId` over RPC. Write `{ "action": "subscribe", "threadId": "thr_example" }` to `f.json`, then run:
 
 ```sh
 bb plugin rpc call ci-dashboard manage --input-file f.json --json
@@ -224,9 +213,8 @@ You must pass only the fields accepted by the action; unused fields are refused 
 | release, dismiss | id (required), repository |
 | subscribe, unsubscribe, replace | threadId |
 | list | none |
-| subscribe_pr, unsubscribe_pr | number (required), repository, threadId |
 
-Problem and PR actions require repository when several repositories are configured. The tool defaults threadId to its caller; fix_pending preserves the current worker when omitted. The discoverable manage RPC requires an explicit threadId for take and subscription changes. For example, `{"action":"subscribe","threadId":"thr_example"}` works over RPC.
+Problem actions require repository when several repositories are configured. The tool defaults threadId to its caller; fix_pending preserves the current worker when omitted. The discoverable manage RPC requires an explicit threadId for take and subscription changes. For example, `{"action":"subscribe","threadId":"thr_example"}` works over RPC.
 
 Claim changes are allowed across threads, including a lead marking a delegated worker's fix pending. Every problem-action result includes `previous` and `handled` (null means open); callers must inspect `previous` to see replaced claims. For example, a lead can call `{"action":"fix_pending","id":"pool_stall:self-hosted","ref":"#12"}` and keep the worker. Observer replacement returns `removed`; callers must inspect it because removed threads receive no removal notice.
 
