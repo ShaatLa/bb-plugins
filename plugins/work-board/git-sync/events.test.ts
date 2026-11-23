@@ -82,7 +82,7 @@ function setup(config: Record<string, unknown> = {}) {
   /** A sweep with every wait due, as if its own poll interval had passed. */
   const sweep = async () => {
     f.db.prepare("UPDATE pr_deploy_waits SET next_sweep_at=NULL").run();
-    await service.sweep(f.tracker.id);
+    await service.sweep([f.tracker.id]);
     await events.drain();
   };
   const result = { ...f, client, service, events, card, sync, to, deliveries, waits, runs, deadline, sweep, set: (value: PrSnapshot) => { next = value; } };
@@ -481,6 +481,273 @@ describe("post-merge deployment", () => {
   });
 });
 
+describe("refresh first, capped sweep and early delivery", () => {
+  const merged = () => ({ state: "merged" as const, mergeSha: m, mergedAt: new Date(Date.now() - DAY).toISOString() });
+  const config = { enabled: true, repositories: ["owner/repo"], titleDiscovery: false, pollMinutes: 5, lookbackDays: 30, requiredChecks: [], prWaitIgnoredChecks: [], postMergeWorkflows: ["deploy"], postMergeDays: 7 };
+  /** Another project whose card links `url`. */
+  const project = async (f: ReturnType<typeof setup>, url: string, prefix = "OTH") => {
+    const other = f.store.tasks.createProject({ name: "Other", prefix, color: "blue" });
+    await f.service.handlers.setGitSyncConfig({ projectId: other.id, config: config as never });
+    const task = f.store.tasks.createTask({ projectId: other.id, title: "Other work" });
+    f.service.remember(task.id, url, "manual", { role: "related", part: null });
+    return other;
+  };
+  const pr = (number: number, extra: Partial<PrSnapshot> = {}) => snap({ number, remoteId: `PR_${number}`, url: `https://github.com/owner/repo/pull/${number}`, observedAt: new Date().toISOString(), ...extra });
+  const due = (f: ReturnType<typeof setup>) => f.db.prepare("UPDATE git_sync_projects SET last_attempt_at=NULL").run();
+  const sweptAt = (f: ReturnType<typeof setup>, projectId: string) =>
+    f.db.prepare<[string], { swept_at: string | null; final_passes: number; state: string }>("SELECT swept_at, final_passes, state FROM pr_deploy_waits WHERE project_id=?").get(projectId)!;
+
+  it("refreshes a due PR of another project while a sweep is blocked on GitHub", async () => {
+    const f = setup();
+    f.card();
+    await f.sync();
+    await f.sync(merged());
+    const other = await project(f, "https://github.com/owner/repo/pull/8");
+    const read = f.client.snapshot.getMockImplementation()!;
+    f.client.snapshot.mockImplementation((async (_repository: string, number: number) => (number === 8 ? pr(8) : read())) as never);
+    let release!: () => void;
+    f.client.pushRuns.mockImplementationOnce(() => new Promise((resolve) => { release = () => resolve({ total: 0, runs: [] }); }));
+    const startup = f.service.startEvents();
+    await vi.waitFor(() => expect(f.client.pushRuns).toHaveBeenCalledTimes(1));
+    due(f);
+    const tick = f.service.runDue();
+    await vi.waitFor(() => expect((f.client.snapshot.mock.calls as unknown[][]).some((call) => call[1] === 8)).toBe(true));
+    expect(createGitSyncStore(f.db).linksForProject(other.id)).toHaveLength(1);
+    release();
+    await Promise.all([startup, tick]);
+    expect(f.client.pushRuns).toHaveBeenCalledTimes(1);
+  });
+
+  it("stops a slow wait at the sweep deadline without a final pass, refreshes first on the next run and sends one deployment", async () => {
+    const f = setup();
+    const task = f.card();
+    await f.sync();
+    await f.sync(merged());
+    f.deadline(Date.now() - 120_000);
+    // Three successes on descendants: each needs a compare, and each compare takes 20 s.
+    f.runs.push(run(1, { headSha: b }), run(2, { headSha: b, createdAt: new Date(Date.now() - DAY / 3).toISOString() }), run(3, { headSha: b, createdAt: new Date(Date.now() - DAY / 4).toISOString() }));
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+    const refreshedBeforeCompare: number[] = [];
+    f.client.compareStatus.mockImplementation(async () => {
+      refreshedBeforeCompare.push(f.client.snapshot.mock.calls.length);
+      await new Promise((resolve) => setTimeout(resolve, 20_000));
+      return "ahead";
+    });
+    f.client.snapshot.mockClear();
+    due(f);
+    const first = f.service.runDue();
+    await vi.advanceTimersByTimeAsync(45_000);
+    await first;
+    expect(refreshedBeforeCompare).toEqual([1, 1, 1]);
+    expect(f.waits()).toMatchObject([{ state: "waiting", final_passes: 0 }]);
+    expect(JSON.parse(f.waits()[0]!.found!)).toMatchObject({ runId: 1 });
+    expect(f.harness.logEntries).toContainEqual(expect.objectContaining({ level: "info", message: "PR event sweep advanced 1 deployment waits and stopped at its budget with 1 left for the next run" }));
+    due(f);
+    const second = f.service.runDue();
+    await vi.advanceTimersByTimeAsync(20_000);
+    await second;
+    // The next run refreshed the PR before the sweep resumed with the third compare.
+    expect(refreshedBeforeCompare).toEqual([1, 1, 1, 2]);
+    expect(f.waits()).toMatchObject([{ state: "deployed" }]);
+    await f.sweep();
+    expect(f.db.prepare("SELECT COUNT(*) AS n FROM pr_events WHERE kind='deployed'").get()).toEqual({ n: 1 });
+    expect(f.to("thr_worker").filter((text) => text.startsWith(`${task.key} · PR #7: deploy run`))).toEqual([`${task.key} · PR #7: deploy run 1 succeeded with merge ddddddd. Collect the deployment evidence, run the final check and close the card; Work Board does not close it.`]);
+  });
+
+  it("takes waits least recently swept first across projects, so a capped sweep starves none and a cut final pass is not counted", async () => {
+    const f = setup();
+    const task = f.card();
+    await f.sync();
+    const other = await project(f, URL);
+    await f.service.syncProject(other.id, true);
+    await f.sync(merged());
+    await f.service.syncProject(other.id, true);
+    // The tracker's wait has the earlier deadline, so ordering by deadline alone would always take it first.
+    f.db.prepare("UPDATE pr_deploy_waits SET deadline=? WHERE project_id=?").run(new Date(Date.now() + 10 * DAY).toISOString(), other.id);
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+    // Each listing takes 30 s, so a 45 s sweep finishes one wait and is cut in the next.
+    const list = f.client.pushRuns.getMockImplementation()!;
+    f.client.pushRuns.mockImplementation(async (...args) => {
+      await new Promise((resolve) => setTimeout(resolve, 30_000));
+      return list(...args);
+    });
+    const capped = async () => {
+      f.db.prepare("UPDATE pr_deploy_waits SET next_sweep_at=NULL").run();
+      const running = f.service.sweep([f.tracker.id, other.id]);
+      await vi.advanceTimersByTimeAsync(45_000);
+      await running;
+      await f.events.drain();
+    };
+    await capped();
+    const trackerTurn = sweptAt(f, f.tracker.id).swept_at;
+    expect(trackerTurn).not.toBeNull();
+    expect(sweptAt(f, other.id)).toEqual({ swept_at: null, final_passes: 0, state: "waiting" });
+    // The tracker's wait crosses its deadline before its next turn; its final pass still has a range to read.
+    f.deadline(Date.now() - 50_000);
+    f.db.prepare("UPDATE pr_deploy_waits SET deadline=? WHERE project_id=?").run(new Date(Date.now() + 10 * DAY).toISOString(), other.id);
+    await capped();
+    expect(sweptAt(f, other.id).swept_at).not.toBeNull();
+    expect(sweptAt(f, f.tracker.id)).toEqual({ swept_at: trackerTurn, final_passes: 0, state: "waiting" });
+    await capped();
+    expect(sweptAt(f, f.tracker.id).state).toBe("expired");
+    expect(f.to("thr_worker").filter((text) => text.includes("stopped waiting"))).toEqual([`${task.key} · PR #7: Work Board saw no successful deploy run with merge ddddddd within 7 days; it stopped waiting.`]);
+  });
+
+  it("records the turn of a slow wait cut on a fresh budget, so it cannot take every sweep", async () => {
+    const f = setup();
+    f.card();
+    await f.sync();
+    const other = await project(f, URL);
+    await f.service.syncProject(other.id, true);
+    await f.sync(merged());
+    await f.service.syncProject(other.id, true);
+    f.db.prepare("UPDATE pr_deploy_waits SET deadline=? WHERE project_id=?").run(new Date(Date.now() + 10 * DAY).toISOString(), other.id);
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+    // Every listing takes 50 s, longer than the whole budget.
+    const list = f.client.pushRuns.getMockImplementation()!;
+    f.client.pushRuns.mockImplementation(async (...args) => {
+      await new Promise((resolve) => setTimeout(resolve, 50_000));
+      return list(...args);
+    });
+    const capped = async () => {
+      f.db.prepare("UPDATE pr_deploy_waits SET next_sweep_at=NULL").run();
+      const running = f.service.sweep([f.tracker.id, other.id]);
+      await vi.advanceTimersByTimeAsync(45_000);
+      await running;
+    };
+    await capped();
+    expect(sweptAt(f, f.tracker.id).swept_at).not.toBeNull();
+    expect(sweptAt(f, other.id).swept_at).toBeNull();
+    await capped();
+    expect(sweptAt(f, other.id)).toMatchObject({ final_passes: 0, state: "waiting" });
+    expect(sweptAt(f, other.id).swept_at).not.toBeNull();
+  });
+
+  it("gives a wait cut on a fresh budget the first slot of the next sweep, so its listing and compare finish", async () => {
+    const f = setup();
+    f.card();
+    await f.sync();
+    const other = await project(f, URL);
+    await f.service.syncProject(other.id, true);
+    await f.sync(merged());
+    await f.service.syncProject(other.id, true);
+    // The tracker's wait (A) merged later than the run, so only the other wait (B) sees it and needs a compare; A goes first.
+    f.db.prepare("UPDATE pr_deploy_waits SET merged_at=? WHERE project_id=?").run(new Date(Date.now() - DAY / 4).toISOString(), f.tracker.id);
+    f.db.prepare("UPDATE pr_deploy_waits SET deadline=? WHERE project_id=?").run(new Date(Date.now() + 10 * DAY).toISOString(), other.id);
+    f.runs.push(run(1, { headSha: b }));
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+    const list = f.client.pushRuns.getMockImplementation()!;
+    // A's listing takes 12 s; B's takes 18 s and its compare another 18 s.
+    f.client.pushRuns.mockImplementation(async (...args) => {
+      const page = await list(...args);
+      await new Promise((resolve) => setTimeout(resolve, page.total ? 18_000 : 12_000));
+      return page;
+    });
+    f.client.compareStatus.mockImplementation(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 18_000));
+      return "ahead";
+    });
+    const tick = async () => {
+      const running = f.service.sweep([f.tracker.id, other.id]);
+      await vi.advanceTimersByTimeAsync(45_000);
+      await running;
+      vi.setSystemTime(Date.now() + 6 * 60_000);
+    };
+    await tick();
+    expect(sweptAt(f, other.id)).toMatchObject({ final_passes: 0, state: "waiting" });
+    expect(sweptAt(f, other.id).swept_at).toBe(sweptAt(f, f.tracker.id).swept_at);
+    await tick();
+    expect(sweptAt(f, other.id).state).toBe("deployed");
+    expect(f.client.compareStatus).toHaveBeenCalledTimes(2);
+  });
+
+  it("treats a last read that ends past the deadline as cut, so it charges no final pass", async () => {
+    const f = setup();
+    f.card();
+    await f.sync();
+    await f.sync(merged());
+    f.deadline(Date.now() - 120_000);
+    f.db.prepare("UPDATE pr_deploy_waits SET final_passes=2").run();
+    // A success with no completion time stays kept, so this pass would be the third unfinished final pass.
+    f.runs.push(run(1, { updatedAt: null }));
+    vi.useFakeTimers({ toFake: ["Date"] });
+    f.client.workflowRunById.mockImplementation(async (_repository, id) => {
+      vi.setSystemTime(Date.now() + 50_000);
+      return f.runs.find((value) => value.id === id)!;
+    });
+    await f.service.sweep([f.tracker.id]);
+    expect(f.client.workflowRunById).toHaveBeenCalledTimes(1);
+    expect(f.waits()).toMatchObject([{ state: "waiting", final_passes: 2 }]);
+  });
+
+  it("checks the sweep deadline before each read and between waits, even before its timer fires", async () => {
+    const f = setup();
+    f.card();
+    await f.sync();
+    await f.sync(merged());
+    f.deadline(Date.now() - 120_000);
+    f.runs.push(...[2, 3, 4, 5].map((part, index) => run(index + 1, { headSha: b, createdAt: new Date(Date.now() - DAY / part).toISOString() })));
+    // Only the clock moves: each compare takes 20 s of it, and the budget timer never fires during the sweep.
+    vi.useFakeTimers({ toFake: ["Date"] });
+    f.client.compareStatus.mockImplementation(async () => {
+      vi.setSystemTime(Date.now() + 20_000);
+      return "ahead";
+    });
+    await f.service.sweep([f.tracker.id]);
+    expect(f.client.compareStatus).toHaveBeenCalledTimes(3);
+    expect(f.waits()).toMatchObject([{ state: "waiting", final_passes: 0 }]);
+    expect(JSON.parse(f.waits()[0]!.found!)).toMatchObject({ runId: 1 });
+  });
+
+  it("rechecks enabled before each scheduled refresh and collects enabled projects again for the sweep", async () => {
+    const f = setup();
+    f.card();
+    await f.sync();
+    const swept = await project(f, URL);
+    await f.service.syncProject(swept.id, true);
+    await f.sync(merged());
+    await f.service.syncProject(swept.id, true);
+    await f.service.handlers.setGitSyncConfig({ projectId: swept.id, config: { ...config, enabled: false } as never });
+    const skipped = await project(f, "https://github.com/owner/repo/pull/8", "SKP");
+    const read = f.client.snapshot.getMockImplementation()!;
+    // The tracker's refresh turns one project off and the other back on.
+    f.client.snapshot.mockImplementation((async (_repository: string, number: number) => {
+      if (number === 8) return pr(8);
+      await f.service.handlers.setGitSyncConfig({ projectId: skipped.id, config: { ...config, enabled: false } as never });
+      await f.service.handlers.setGitSyncConfig({ projectId: swept.id, config: config as never });
+      return read();
+    }) as never);
+    f.client.snapshot.mockClear();
+    f.db.prepare("UPDATE pr_deploy_waits SET next_sweep_at=NULL").run();
+    due(f);
+    await f.service.runDue();
+    expect((f.client.snapshot.mock.calls as unknown[][]).map((call) => call[1])).toEqual([7]);
+    expect(sweptAt(f, swept.id).swept_at).not.toBeNull();
+  });
+
+  it("sends a PR event while the pass still reads the next PR, once", async () => {
+    const f = setup();
+    const task = f.card();
+    f.service.remember(task.id, "https://github.com/owner/repo/pull/8", "manual", { role: "related", part: null });
+    f.client.snapshot.mockImplementation((async (_repository: string, number: number) => pr(number, green())) as never);
+    await f.service.syncProject(f.tracker.id, true);
+    let release!: () => void, calls = 0;
+    f.client.snapshot.mockImplementation((async (_repository: string, number: number) => {
+      if (++calls === 1) return pr(number, red());
+      await new Promise<void>((resolve) => { release = resolve; });
+      return pr(number, green());
+    }) as never);
+    const pass = f.service.syncProject(f.tracker.id, true);
+    await vi.waitFor(() => expect(f.to("thr_worker")).toHaveLength(1));
+    expect(calls).toBe(2);
+    release();
+    await pass;
+    await f.events.drain();
+    expect(f.to("thr_worker")).toHaveLength(1);
+    expect(f.to("thr_worker")[0]).toContain("CI red");
+  });
+});
+
 describe("recipients", () => {
   it("follows an archived worker to its parent and records a card without a session", async () => {
     const f = setup();
@@ -820,7 +1087,8 @@ describe("late evidence and attempt checks", () => {
     due();
     await restarted.runDue();
     expect(f.client.snapshot).toHaveBeenCalledTimes(2);
-    expect(f.waits()).toMatchObject([{ state: "waiting" }]);
+    // The run refreshes first, so its own sweep settles the wait it just armed.
+    expect(f.waits()).toMatchObject([{ state: "expired" }]);
     await f.sweep();
     expect(f.to("thr_worker")).toEqual([`${task.key} · PR #7: Work Board saw no successful deploy run with merge ddddddd within 7 days; it stopped waiting.`]);
   });
@@ -906,7 +1174,7 @@ describe("SHA recovery and status lag", () => {
     due(f);
     await restarted.runDue();
     expect(f.client.snapshot).toHaveBeenCalledTimes(3);
-    expect(f.waits()).toMatchObject([{ state: "waiting", baseline_at: null }]);
+    expect(f.waits()).toMatchObject([{ state: "expired", baseline_at: null }]);
     await f.sweep();
     expect(f.to("thr_worker")).toEqual([
       `${task.key} · PR #7 merged as ddddddd at ${iso(mergedAt).slice(0, 10)} ${iso(mergedAt).slice(11, 16)} UTC.`,

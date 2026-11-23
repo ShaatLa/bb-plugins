@@ -1072,7 +1072,7 @@ it("gives a settled merged PR a final in-window read before polling stops at its
   expect((await f.service.handlers.prSummaries({ taskIds: [f.task.id] })).summaries).toMatchObject([{ stale: false }]);
 });
 
-it("promotes a due PR that has waited 15 min ahead of a continuously due open group", async () => {
+it("keeps a continuously due open group ahead of a due merged PR, which is read once the open PRs are done", async () => {
   vi.useFakeTimers({ toFake: ["Date"] });
   const start = Date.parse("2026-11-11T12:00:00.000Z");
   vi.setSystemTime(start);
@@ -1098,7 +1098,64 @@ it("promotes a due PR that has waited 15 min ahead of a continuously due open gr
     }
     return Infinity;
   };
-  expect(await passUntil(50, false)).toBeLessThanOrEqual(4);
+  expect(await passUntil(50, false)).toBe(Infinity);
+  slow = false;
+  vi.setSystemTime(Date.now() + 5 * 60_000);
+  f.client.snapshot.mockClear();
+  await f.service.syncProject(f.project.id);
+  const order = fetched(f);
+  expect(order).toContain(50);
+  expect(Math.max(...open.map((number) => order.indexOf(number)))).toBeLessThan(order.indexOf(50));
+});
+
+it("reads a due open PR before overdue merged PRs that fill a scheduled pass", async () => {
+  vi.useFakeTimers({ toFake: ["Date"] });
+  const start = Date.parse("2026-11-11T12:00:00.000Z");
+  vi.setSystemTime(start);
+  const f = setup();
+  await f.service.handlers.setGitSyncConfig({ projectId: f.project.id, config: gitSyncConfigSchema.parse({ repositories: ["example/service"], titleDiscovery: false, postMergeWorkflows: ["Deploy"] }) });
+  await linkAll(f, [42, 50, 51, 52, 53, 54, 55]);
+  let slow = false;
+  f.client.snapshot.mockImplementation(async (repository, number) => {
+    // Each read takes 70 s once overloaded, so a pass fits three PRs into its three-minute budget.
+    if (slow) vi.setSystemTime(Date.now() + 70_000);
+    return number === 42 ? snapshot(repository, number) : merged(number, "2026-11-11T11:00:00.000Z", deploy("pending"));
+  });
+  await f.service.syncProject(f.project.id);
+  slow = true;
+  vi.setSystemTime(start + 10 * 60_000);
+  f.client.snapshot.mockClear();
+  await f.service.syncProject(f.project.id);
+  expect(fetched(f)).toEqual([42, 50, 51]);
+  // PR 42 has been due 12 min, PRs 52 to 55 for 22 min: four overdue merged PRs, more than the pass can read.
+  vi.setSystemTime(start + 22 * 60_000);
+  f.client.snapshot.mockClear();
+  await expect(f.service.syncProject(f.project.id)).resolves.toMatchObject({ checked: 3 });
+  expect(fetched(f)[0]).toBe(42);
+});
+
+it("keeps a known merged PR whose refresh failed in the merged class of a scheduled pass", async () => {
+  vi.useFakeTimers({ toFake: ["Date"] });
+  const start = Date.parse("2026-11-11T12:00:00.000Z");
+  vi.setSystemTime(start);
+  const f = setup();
+  await f.service.handlers.setGitSyncConfig({ projectId: f.project.id, config: gitSyncConfigSchema.parse({ repositories: ["example/service"], titleDiscovery: false, postMergeWorkflows: ["Deploy"] }) });
+  await linkAll(f, [42, 50]);
+  let failing = false;
+  f.client.snapshot.mockImplementation(async (repository, number) => {
+    if (number === 50 && failing) throw new GithubError(502, "down");
+    return number === 42 ? snapshot(repository, number) : merged(number, "2026-11-11T11:00:00.000Z", deploy("pending"));
+  });
+  await f.service.syncProject(f.project.id);
+  failing = true;
+  vi.setSystemTime(start + 5 * 60_000);
+  await f.service.syncProject(f.project.id);
+  // PR 50 failed 20 min ago, past its backoff; PR 42 has been due for 1 min.
+  vi.setSystemTime(start + 11 * 60_000);
+  f.bb.storage.database().prepare("UPDATE git_pr_snapshots SET last_attempt_at=? WHERE identity=?").run(start - 9 * 60_000, prIdentity({ repository: "example/service", number: 50 }));
+  f.client.snapshot.mockClear();
+  await f.service.syncProject(f.project.id);
+  expect(fetched(f)).toEqual([42, 50]);
 });
 
 it("orders a forced pass by last attempt with open PRs first, so history does not displace open work", async () => {

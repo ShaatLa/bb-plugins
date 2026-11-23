@@ -104,21 +104,23 @@ function eligibleLinks(db: Database, tasks: TasksStore, projectId: string, remot
   });
 }
 
-/** Record one event once and its delivery rows for the links eligible right now; runs inside the caller's transaction. */
+/** Record one event once and its delivery rows for the links eligible right now; runs inside the caller's transaction. True when it added a delivery row. */
 function emit(db: Database, tasks: TasksStore, projectId: string, remoteId: string, identity: string, kind: PrEventKind, onceKey: string, payload: Payload) {
   const settings = prEventSettings(db, projectId);
   const id = randomUUID(), now = new Date().toISOString();
   const inserted = db.prepare<[string, string, string, string, string, string, string, string]>(
     "INSERT OR IGNORE INTO pr_events(id, project_id, remote_id, identity, kind, once_key, payload, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
   ).run(id, projectId, remoteId, identity, kind, onceKey, JSON.stringify(payload), now).changes;
-  if (!inserted) return;
+  if (!inserted) return false;
   const add = db.prepare<[string, string, string, string, string, string]>(
     "INSERT OR IGNORE INTO pr_event_deliveries(id, event_id, task_id, role, state, created_at, updated_at) VALUES (?, ?, ?, ?, 'pending', ?, ?)",
   );
+  let added = false;
   for (const taskId of eligibleLinks(db, tasks, projectId, remoteId, identity, kind)) {
-    add.run(randomUUID(), id, taskId, "session", now, now);
-    if (settings.manager === "on") add.run(randomUUID(), id, taskId, "manager", now, now);
+    added = add.run(randomUUID(), id, taskId, "session", now, now).changes > 0 || added;
+    if (settings.manager === "on") added = add.run(randomUUID(), id, taskId, "manager", now, now).changes > 0 || added;
   }
+  return added;
 }
 
 const loadState = (db: Database, projectId: string, remoteId: string) =>
@@ -135,9 +137,11 @@ export function queueDeparture(db: Database, projectId: string, snapshot: PrSnap
 /**
  * Turn one saved snapshot into events, in the snapshot's transaction. The first observation of a PR only records a baseline, so
  * states it is already in send nothing. `removal` is the timeline lookup made for a queue departure (null when unreadable).
+ * Returns true when it added delivery rows.
  */
 export function recordPrEvents(db: Database, tasks: TasksStore, input: { projectId: string; config: GitSyncConfig; snapshot: PrSnapshot; removal?: QueueRemoval | null }) {
   const { projectId, config, snapshot } = input;
+  let added = false;
   const remoteId = snapshot.remoteId, identity = prIdentity(snapshot), now = Date.now();
   const on = config.enabled && prEventSettings(db, projectId).events === "on";
   const state = loadState(db, projectId, remoteId);
@@ -172,16 +176,16 @@ export function recordPrEvents(db: Database, tasks: TasksStore, input: { project
     const baselined = mergeSha === "?", sightedWithoutSha = mergeSha === "!";
     mergeSha = snapshot.mergeSha;
     if (!baselined && !sightedWithoutSha) mergeSeenAt = snapshot.observedAt;
-    if (!baselined && on) emit(db, tasks, projectId, remoteId, identity, "merged", snapshot.mergeSha, { number: snapshot.number, mergeSha: snapshot.mergeSha, mergedAt: snapshot.mergedAt! });
+    if (!baselined && on) added = emit(db, tasks, projectId, remoteId, identity, "merged", snapshot.mergeSha, { number: snapshot.number, mergeSha: snapshot.mergeSha, mergedAt: snapshot.mergedAt! }) || added;
     // A merge first seen inside its window gets its wait even when the SHA arrives after the deadline: the final pass reconciles it.
     const baselineAt = baselined ? mergeSeenAt ?? snapshot.observedAt : null;
     if (!baselined || Date.parse(baselineAt!) <= Date.parse(deadline!)) arm(baselineAt);
   }
   if (state && on && verdict && verdictKey !== state.verdict_key)
-    emit(db, tasks, projectId, remoteId, identity, "ci", verdictKey!, { number: snapshot.number, head: snapshot.headSha, verdict: verdict.verdict, failed: verdict.failed });
+    added = emit(db, tasks, projectId, remoteId, identity, "ci", verdictKey!, { number: snapshot.number, head: snapshot.headSha, verdict: verdict.verdict, failed: verdict.failed }) || added;
   if (state && on && input.removal !== undefined) {
     const departed = state.queue_entry!;
-    emit(db, tasks, projectId, remoteId, identity, "queue_removed", input.removal?.id ?? `entry:${departed}`, { number: snapshot.number, head: snapshot.headSha, reason: input.removal?.reason ?? null });
+    added = emit(db, tasks, projectId, remoteId, identity, "queue_removed", input.removal?.id ?? `entry:${departed}`, { number: snapshot.number, head: snapshot.headSha, reason: input.removal?.reason ?? null }) || added;
   }
   // An unknown queue read keeps the last known entry; a known one replaces it and dates when it was last seen queued.
   const known = snapshot.queueEntryId !== undefined;
@@ -190,6 +194,7 @@ export function recordPrEvents(db: Database, tasks: TasksStore, input: { project
   db.prepare(`INSERT INTO pr_event_state(project_id, remote_id, initialized_at, verdict_key, queue_entry, queue_seen_at, merge_sha, merge_seen_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(project_id, remote_id) DO UPDATE SET verdict_key=excluded.verdict_key, queue_entry=excluded.queue_entry, queue_seen_at=excluded.queue_seen_at, merge_sha=excluded.merge_sha, merge_seen_at=excluded.merge_seen_at, unlinked_at=NULL`)
     .run(projectId, remoteId, new Date(now).toISOString(), verdictKey ?? state?.verdict_key ?? null, queueEntry, queueSeenAt, mergeSha, mergeSeenAt);
+  return added;
 }
 
 type Found = { runId: number; workflow: string; completedAt: string };
@@ -241,8 +246,11 @@ export function createPrEventService(bb: BbPluginApi, tasks: TasksStore) {
    * but are not yet a qualifying success are kept and rechecked, least recently tried first. A success qualifies when it completed by
    * the deadline. The earliest candidate settles only when every run created before its completion was examined and no kept run was
    * last seen before it; after the deadline, an unfinished search counts a pass and the third one ends as unverifiable.
+   * At the sweep's `stopAt` (or when `signal` aborts) the pass keeps what it completed, counts no final pass and returns true.
+   * A turn is recorded as the sweep's start `turnAt`, also when a `fresh` turn (one that started with most of the budget) is cut,
+   * so a slow wait cannot take every sweep.
    */
-  async function sweepWait(wait: WaitRow, client: GithubClient, pollMs: number) {
+  async function sweepWait(wait: WaitRow, client: GithubClient, pollMs: number, signal: AbortSignal, stopAt: number, turnAt: string, fresh: boolean) {
     const now = Date.now(), final = now > at(wait.deadline);
     const budget = final ? deployBudgets.final : deployBudgets.pass;
     const workflows: string[] = JSON.parse(wait.workflows);
@@ -278,10 +286,15 @@ export function createPrEventService(bb: BbPluginApi, tasks: TasksStore) {
       // qualify; read earlier, it may have finished just before the cutoff without GitHub showing it yet, so it stays kept.
       return readable ? null : { id: run.id, seen: visible(readAt), tried: readAt };
     };
-    let failed = false;
+    const over = () => signal.aborted || Date.now() >= stopAt;
+    // No read starts past the sweep deadline, and every read ends at it, even one a client cannot cancel.
+    const bounded = <T>(read: () => Promise<T>) => over()
+      ? Promise.reject(new DOMException("Sweep budget used", "AbortError"))
+      : Promise.race([read(), new Promise<never>((_, reject) => signal.addEventListener("abort", () => reject(signal.reason), { once: true }))]);
+    let failed = false, cut = false;
     // A failed request cuts its own phase only: discovery and the kept-run rechecks each keep their progress.
     const failure = (phase: string, error: unknown) => {
-      if (error instanceof Error && error.name === "AbortError") return true;
+      if (error instanceof Error && error.name === "AbortError") return !(cut = over());
       failed = true;
       bb.log.warn(`PR deployment ${phase} for ${wait.repository}#${wait.number} failed: ${errorMessage(error)}`);
       return false;
@@ -301,7 +314,7 @@ export function createPrEventService(bb: BbPluginApi, tasks: TasksStore) {
             if (!contains) {
               if (compares >= budget.compares) return false;
               compares++;
-              contains = ["ahead", "identical"].includes(await compareStatus(wait.repository, wait.merge_sha, run.headSha));
+              contains = ["ahead", "identical"].includes(await bounded(() => compareStatus(wait.repository, wait.merge_sha, run.headSha)));
             }
             const entry = contains ? classify(run, readAt) : null;
             if (entry && !kept.some((value) => value.id === run.id)) kept.push(entry);
@@ -313,7 +326,7 @@ export function createPrEventService(bb: BbPluginApi, tasks: TasksStore) {
       const done = (range: Range) => { walk.walkedTo = range.hi; walk.ranges.shift(); };
       while (walk.ranges.length && pages < budget.pages) {
         const range = walk.ranges[0]!, readAt = iso();
-        const page = await pushRuns(wait.repository, wait.base_branch, `${range.lo}..${range.hi}`, range.page ?? 1);
+        const page = await bounded(() => pushRuns(wait.repository, wait.base_branch, `${range.lo}..${range.hi}`, range.page ?? 1));
         pages++;
         if (range.page === undefined) {
           // GitHub caps a filtered listing at 1,000 runs and pages shift as totals change, so a busy range is split until one page holds it.
@@ -339,14 +352,14 @@ export function createPrEventService(bb: BbPluginApi, tasks: TasksStore) {
       // A disposed plugin cut the pass; that is no evidence about the wait.
       if (failure("discovery", error)) return;
     }
-    try {
+    if (!cut) try {
       if (!client.workflowRunById) throw new Error("GitHub run lookups unavailable");
       const { workflowRunById } = client;
       // Least recently tried first, and errors per run, so one unreadable run never blocks the others.
       for (const entry of [...kept].sort((left, right) => at(left.tried) - at(right.tried)).slice(0, budget.rechecks)) {
         const readAt = iso();
         try {
-          const next = classify(await workflowRunById(wait.repository, entry.id), readAt);
+          const next = classify(await bounded(() => workflowRunById(wait.repository, entry.id)), readAt);
           kept = kept.filter((value) => value.id !== entry.id);
           if (next) kept.push(next);
         } catch (error) {
@@ -358,21 +371,48 @@ export function createPrEventService(bb: BbPluginApi, tasks: TasksStore) {
       if (failure("recheck", error)) return;
     }
     const settled = found as Found | null;
+    // Completed progress is kept and the wait stays due; a wait cut after others used up the budget keeps its retry priority.
+    // A last read that ended past the deadline counts as cut too, so it never settles the wait or charges a final pass.
+    if (cut || over()) {
+      db.prepare("UPDATE pr_deploy_waits SET walk=?, kept=?, found=?, swept_at=COALESCE(?, swept_at) WHERE project_id=? AND remote_id=? AND state='waiting'")
+        .run(JSON.stringify(walk), JSON.stringify(kept), settled ? JSON.stringify(settled) : null, fresh ? turnAt : null, wait.project_id, wait.remote_id);
+      return true;
+    }
     if (settled && at(walk.walkedTo) >= at(settled.completedAt) && !kept.some((entry) => at(entry.seen) < at(settled.completedAt)))
       return settle(wait, wait.baseline_at && at(settled.completedAt) <= at(wait.baseline_at) ? "satisfied" : "deployed", settled);
     if (final && !failed && !walk.ranges.length && at(walk.upper) >= at(deadlineEnd) && !kept.length && !settled) return settle(wait, "expired", null);
     const passes = final && readable ? wait.final_passes + 1 : wait.final_passes;
     if (final && readable && passes >= FINAL_PASSES) return settle(wait, "unverifiable", null);
-    db.prepare("UPDATE pr_deploy_waits SET walk=?, kept=?, found=?, final_passes=?, next_sweep_at=? WHERE project_id=? AND remote_id=? AND state='waiting'")
-      .run(JSON.stringify(walk), JSON.stringify(kept), settled ? JSON.stringify(settled) : null, passes, new Date(Date.now() + pollMs).toISOString(), wait.project_id, wait.remote_id);
+    db.prepare("UPDATE pr_deploy_waits SET walk=?, kept=?, found=?, final_passes=?, next_sweep_at=?, swept_at=? WHERE project_id=? AND remote_id=? AND state='waiting'")
+      .run(JSON.stringify(walk), JSON.stringify(kept), settled ? JSON.stringify(settled) : null, passes, new Date(Date.now() + pollMs).toISOString(), turnAt, wait.project_id, wait.remote_id);
+    return false;
   }
 
-  /** Advance each due post-merge wait of a project that still has an eligible link; the others keep their state and cost no request. */
-  async function sweep(projectId: string, client: GithubClient) {
-    const config = createGitSyncStore(db).config(projectId);
-    if (!config.enabled || prEventSettings(db, projectId).events !== "on") return;
-    for (const wait of db.prepare<[string, string], WaitRow>("SELECT * FROM pr_deploy_waits WHERE project_id=? AND state='waiting' AND (next_sweep_at IS NULL OR next_sweep_at <= ?) ORDER BY deadline").all(projectId, iso()))
-      if (eligibleLinks(db, tasks, projectId, wait.remote_id, wait.identity, "deployed").length) await sweepWait(wait, client, config.pollMinutes * 60_000);
+  /**
+   * Advance the due post-merge waits of these projects that still have an eligible link, least recently swept first across projects,
+   * until `stopAt` or until `signal` aborts; the others keep their state and cost no request. `remaining` counts the due waits a stop
+   * left unfinished.
+   */
+  async function sweep(projectIds: string[], client: GithubClient, signal: AbortSignal, stopAt: number) {
+    const startedAt = Date.now(), turnAt = new Date(startedAt).toISOString();
+    const polls = new Map<string, number>();
+    for (const projectId of projectIds) {
+      const config = createGitSyncStore(db).config(projectId);
+      if (config.enabled && prEventSettings(db, projectId).events === "on") polls.set(projectId, config.pollMinutes * 60_000);
+    }
+    const ids = [...polls.keys()];
+    // SQLite sorts NULL first, so a wait never swept goes ahead. Turns of one sweep share its start time; a cut one kept its older due
+    // time while a finished one moved it a poll ahead, so the cut wait gets the next sweep's first slot.
+    const due = ids.length ? db.prepare<string[], WaitRow>(`SELECT * FROM pr_deploy_waits WHERE project_id IN (${ids.map(() => "?").join(",")}) AND state='waiting' AND (next_sweep_at IS NULL OR next_sweep_at <= ?) ORDER BY swept_at, next_sweep_at, deadline`).all(...ids, iso()) : [];
+    let advanced = 0;
+    for (const [index, wait] of due.entries()) {
+      if (signal.aborted || Date.now() >= stopAt) return { advanced, remaining: due.length - index };
+      if (!eligibleLinks(db, tasks, wait.project_id, wait.remote_id, wait.identity, "deployed").length) continue;
+      advanced++;
+      const fresh = stopAt - Date.now() >= (stopAt - startedAt) / 2;
+      if (await sweepWait(wait, client, polls.get(wait.project_id)!, signal, stopAt, turnAt, fresh)) return { advanced, remaining: due.length - index };
+    }
+    return { advanced, remaining: 0 };
   }
 
   const setState = (id: string, from: string[], state: string, extra: Record<string, unknown> = {}, owned = false) => {

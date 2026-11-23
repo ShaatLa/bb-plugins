@@ -911,6 +911,8 @@ const MIGRATIONS = [
      settled_at TEXT,
      PRIMARY KEY (project_id, remote_id)
    );`,
+  // Orders deployment waits least recently swept first, so a capped sweep gives every wait a turn.
+  `ALTER TABLE pr_deploy_waits ADD COLUMN swept_at TEXT;`,
 ] as const;
 
 export function initializeTasksSchema(db: PluginDatabase, log: Log = () => {}): void {
