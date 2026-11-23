@@ -21,6 +21,12 @@ test.each(["QUEUED", "IN_PROGRESS", "PENDING", "EXPECTED"])("nonterminal check s
 test.each(["PENDING", "EXPECTED"])("legacy status %s waits", state => {
   expect(prLifecycleEvents(body([legacy(state)]))).toEqual([]);
 });
+test("a repeated check name counts only its latest run, and the verdict is part of the key", () => {
+  const old = { ...check("CI complete", "FAILURE"), startedAt: "2026-11-05T10:00:00Z" }, fresh = { ...check("CI complete", "SUCCESS"), startedAt: "2026-11-05T10:30:00Z" };
+  expect(prLifecycleEvents(body([fresh, old]))[0]).toMatchObject({ key: `pr_ci:12:${head}:green`, text: `PR CI green · #12 · head ${head} · 1 required checks passed · ${url}` });
+  expect(prLifecycleEvents(body([old, { ...fresh, conclusion: "FAILURE" }]))[0]?.key).toBe(`pr_ci:12:${head}:red`);
+  expect(prLifecycleEvents(body([old, { ...fresh, status: "QUEUED", conclusion: null, startedAt: null }]))).toEqual([]);
+});
 test("a required check that has not reported yet (rollup EXPECTED) waits", () => {
   expect(prLifecycleEvents(body([], {}, { statusCheckRollup: { state: "EXPECTED", contexts: { nodes: [check("labeler", "SUCCESS", false)], pageInfo: { hasNextPage: false } } } }))).toEqual([]);
 });

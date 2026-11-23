@@ -2,7 +2,7 @@ import { z } from "zod";
 
 const sha = z.string().regex(/^[a-f0-9]{40}$/i);
 const context = z.discriminatedUnion("__typename", [
-  z.object({ __typename: z.literal("CheckRun"), name: z.string(), status: z.string(), conclusion: z.string().nullable(), isRequired: z.boolean() }),
+  z.object({ __typename: z.literal("CheckRun"), name: z.string(), status: z.string(), conclusion: z.string().nullable(), startedAt: z.string().nullable().optional(), isRequired: z.boolean() }),
   z.object({ __typename: z.literal("StatusContext"), context: z.string(), state: z.string(), isRequired: z.boolean() }),
 ]);
 const pullRequest = z.object({
@@ -25,20 +25,27 @@ export function prLifecycleEvents(body: unknown): PrLifecycleEvent[] {
     const commit = pr.commits.nodes[0]?.commit, contexts = commit?.statusCheckRollup?.contexts;
     // EXPECTED: a required check has not reported yet, so it is missing from contexts and the rest cannot decide.
     if (commit?.oid !== head || !contexts || contexts.pageInfo.hasNextPage || commit.statusCheckRollup?.state === "EXPECTED") return [];
-    const required = contexts.nodes.filter((check) => check.isRequired), checks = required.length ? required : contexts.nodes;
+    // Several workflow runs on one head can report the same check name; GitHub judges the latest one, so only that one counts.
+    const latest = new Map<string, typeof contexts.nodes[number]>();
+    const started = (check: typeof contexts.nodes[number]) => check.__typename === "CheckRun" && check.startedAt ? Date.parse(check.startedAt) : Infinity;
+    for (const check of contexts.nodes) {
+      const name = check.__typename === "CheckRun" ? `run:${check.name}` : `status:${check.context}`, seen = latest.get(name);
+      if (!seen || started(check) >= started(seen)) latest.set(name, check);
+    }
+    const unique = [...latest.values()], required = unique.filter((check) => check.isRequired), checks = required.length ? required : unique;
     if (!checks.length || checks.some((check) => check.__typename === "CheckRun" ? check.status !== "COMPLETED" || !check.conclusion || ["EXPECTED", "PENDING"].includes(check.conclusion) : !["SUCCESS", "FAILURE", "ERROR"].includes(check.state))) return [];
     const failed = checks.filter((check) => check.__typename === "CheckRun" ? !["SUCCESS", "NEUTRAL", "SKIPPED"].includes(check.conclusion!) : check.state !== "SUCCESS");
     const names = failed.slice(0, 5).map((check) => (check.__typename === "CheckRun" ? check.name : check.context).replace(/\s+/g, " ").trim().slice(0, 100));
     if (failed.length > 5) names.push(`+${failed.length - 5}`);
     const label = required.length ? "required checks" : "checks";
-    return [{ number, key: `pr_ci:${number}:${head}`, text: failed.length
+    return [{ number, key: `pr_ci:${number}:${head}:${failed.length ? "red" : "green"}`, text: failed.length
       ? `PR CI red · #${number} · head ${head} · ${failed.length} of ${checks.length} ${label} failed: ${names.join(", ")} · ${url}`
       : `PR CI green · #${number} · head ${head} · ${checks.length} ${label} passed · ${url}` }];
   });
 }
 
 export function prLifecycleQuery(numbers: number[]): string {
-  return `query($owner:String!,$name:String!){repository(owner:$owner,name:$name){${numbers.map((number) => `pr${number}:pullRequest(number:${number}){number state merged mergedAt mergeCommit{oid} headRefOid url commits(last:1){nodes{commit{oid statusCheckRollup{state contexts(first:100){pageInfo{hasNextPage} nodes{__typename ... on CheckRun{name status conclusion isRequired(pullRequestNumber:${number})} ... on StatusContext{context state isRequired(pullRequestNumber:${number})}}}}}}}}`).join(" ")}}}`;
+  return `query($owner:String!,$name:String!){repository(owner:$owner,name:$name){${numbers.map((number) => `pr${number}:pullRequest(number:${number}){number state merged mergedAt mergeCommit{oid} headRefOid url commits(last:1){nodes{commit{oid statusCheckRollup{state contexts(first:100){pageInfo{hasNextPage} nodes{__typename ... on CheckRun{name status conclusion startedAt isRequired(pullRequestNumber:${number})} ... on StatusContext{context state isRequired(pullRequestNumber:${number})}}}}}}}}`).join(" ")}}}`;
 }
 
 export type PrLifecyclePace = { at?: number; cursor?: number };

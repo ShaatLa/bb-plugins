@@ -2562,7 +2562,7 @@ test("PR lifecycle: late subscribe, head dedupe, new push, restart, merge once a
     await harness.behavior.callRpc("manage", { action: "subscribe_pr", number: 12, threadId: "thr_example" });
     await signalsPass(harness);
     expect(sentTo(send, "thr_example")).toEqual([`PR CI green · #12 · head ${pr.headRefOid} · 1 required checks passed · ${pr.url}`]);
-    expect((await bb.storage.kv.get<ReturnType<typeof emptyRepoState>>("observer:acme/app"))!.sent[`pr_ci:12:${pr.headRefOid}`]).toBeDefined();
+    expect((await bb.storage.kv.get<ReturnType<typeof emptyRepoState>>("observer:acme/app"))!.sent[`pr_ci:12:${pr.headRefOid}:green`]).toBeDefined();
     await signalsPass(harness);
     expect(sentTo(send, "thr_example")).toHaveLength(1);
     pr.headRefOid = "c".repeat(40); pr.commits.nodes[0].commit.oid = pr.headRefOid;
