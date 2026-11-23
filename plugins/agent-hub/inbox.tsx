@@ -8,6 +8,7 @@ import { QuestionStack } from './question-stack';
 import { ContactsList, useContacts } from './contacts';
 import { JUMP_EVENT, takeJump, useContactSelection } from './open-chat';
 import { mentionsForText } from './mentions';
+import { watchJumps } from './jump-log';
 import { PendingInteractions, usePendingInteractionRows } from './interactions';
 import { Activity, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
@@ -762,6 +763,9 @@ function InboxChat({ onBulkRead, bbChat = false, search: searchProp, onSearch, t
     for (const name of events) node.addEventListener(name, release, { passive: true });
     return () => { observer?.disconnect(); for (const name of events) node.removeEventListener(name, release); };
   }, [selected]);
+  // Temporary diagnostic, see jump-log.ts.
+  const jumpState = useRef<Record<string, unknown>>({}); jumpState.current = { pages: pages.length, depth, window: !!activeWindow, transcript };
+  useEffect(() => { const node = scroll.current; if (!node || !selected) return; return watchJumps(node, selected, () => ({ ...jumpState.current, ...position.current, pin: !!pin.current, hidden: !node.offsetParent })); }, [selected]);
   // As in bb's chat the conversation scrolls under the composer to the bottom of the window: the composer stack floats over
   // its end, and the column's bottom padding follows the stack's height, so a growing stack still pushes the chat up. The stack stops short of the scrollbar.
   const stack = useRef<HTMLDivElement>(null), [scrollbar, setScrollbar] = useState(0);
