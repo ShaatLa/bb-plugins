@@ -1,3 +1,4 @@
+import { prLifecycleBatch, prLifecycleEvents, prLifecycleQuery, type PrLifecycleEvent, type PrLifecyclePace } from "./ci-pr-lifecycle";
 import { legacyRegistered, migrateId } from "./id-migration";
 import { sendOrAppend } from "./queued-notice";
 import { defaultDraftRules, draftRules, draftNameSchema, draftSettingLabels } from "./draft-deferrals";
@@ -398,6 +399,7 @@ export default async function plugin(bb: BbPluginApi) {
   type Runtime = {
     /** Last GitHub ask per pending queue removal key, so a PR is rechecked at a slow pace instead of every loop. */
     removalChecked?: Map<string, number>;
+    prLifecycle?: PrLifecyclePace;
     signal: AbortSignal; etags: Map<string, GitHubResponse>; liveKnown: boolean; pools: PoolQueueState[]; liveJobs?: JobRecord[]; truncated: boolean; polledAt: string | null; stalls: Signal[];
     defaultBranch: string | null; historyReadAt: number; alerts?: CiInsights["alerts"]; handled?: Record<string, Handled>;
     /** Runs of the previous live poll, and those that left it since (fast path: fetched ahead of the history refresh). Run ids of each alert's failure streak, for observer verdicts. */
@@ -472,6 +474,7 @@ export default async function plugin(bb: BbPluginApi) {
   const serialObserver = <T>(job: () => Promise<T>) => { const run = observerChain.then(job, job); observerChain = run.catch(() => {}); return run; };
   const prSubscriptionSchema = z.object({ repository: repositorySchema, number: z.number().int().positive(), threadId: z.string().refine(isThreadId), at: z.iso.datetime() });
   type PrSubscription = z.infer<typeof prSubscriptionSchema>;
+  const prDeliveryKey = (key: string, entry: PrSubscription) => `${key}:${entry.threadId}:${entry.at}`;
   let prChain: Promise<unknown> = Promise.resolve();
   function updatePr<T>(change: (entries: PrSubscription[]) => { entries: PrSubscription[]; result: T }) {
     const run = prChain.then(async () => {
@@ -533,6 +536,23 @@ export default async function plugin(bb: BbPluginApi) {
     const config = { enabled, quietMs: values.observerQuietMinutes * 60_000, batchMs: values.observerBatchMinutes * 60_000, historyMs: (days + 1) * 86_400_000, now };
     const stored = repoStateSchema.safeParse(await bb.storage.kv.get(`observer:${repo}`));
     const state = stored.success ? stored.data : emptyRepoState(), before = JSON.stringify(state);
+    const lifecycle: PrLifecycleEvent[] = [];
+    if (subscriptions.length && token && rt.backfill) {
+      const waiting = subscriptions.filter((entry) => state.sent[prDeliveryKey(`pr_merged:${entry.number}`, entry)] === undefined);
+      const numbers = prLifecycleBatch(waiting.map((entry) => entry.number), {}, rt.prLifecycle ??= {}, now);
+      if (numbers.length) {
+        const [owner, name] = repo.split("/");
+        try {
+          const { body } = await rt.backfill.run.spend(signal, () => githubRequest("/graphql", token, signal, {
+            method: "POST", body: JSON.stringify({ query: prLifecycleQuery(numbers), variables: { owner, name } }),
+          }));
+          lifecycle.push(...prLifecycleEvents(body).filter((event) => numbers.includes(event.number)));
+        } catch (error) {
+          signal.throwIfAborted();
+          if (!/Budget exhausted/.test(describe(error))) logOnce(`CI observer PR lifecycle for ${repo}: lookup failed`);
+        }
+      }
+    }
     const events: ObserverEvent[] = [];
     if (rt.analysis) {
       const { classified, massCancels } = rt.analysis;
@@ -567,6 +587,19 @@ export default async function plugin(bb: BbPluginApi) {
     const direct: { threadId: string; text: string }[] = [];
     const routed = new Set<ObserverEvent>();
     await updatePr((entries) => {
+      for (const event of lifecycle) {
+        const matches = entries.filter((entry) => entry.repository === repo && entry.number === event.number);
+        if (!matches.length) continue;
+        const recipients = matches.filter((entry) => state.sent[prDeliveryKey(event.key, entry)] === undefined);
+        if (recipients.length && (event.closed || !event.key.startsWith("pr_ci:") || state.sent[`pr_merged:${event.number}`] === undefined)) {
+          state.sent[event.key] = now;
+          for (const entry of recipients) {
+            state.sent[prDeliveryKey(event.key, entry)] = now;
+            direct.push({ threadId: entry.threadId, text: event.text });
+          }
+        }
+        if (event.closed) entries = entries.filter((entry) => !matches.includes(entry));
+      }
       for (const event of confirmed) {
         if (event.deploy?.state !== "success") continue;
         const deploy = event.deploy, push = jobStore.pushAt(repo, deploy.sha, rt.defaultBranch);
@@ -1034,7 +1067,7 @@ export default async function plugin(bb: BbPluginApi) {
   }
   const PROBLEM_ACTIONS = ["take", "fix_pending", "release", "dismiss"] as const, OBSERVER_ACTIONS = ["subscribe", "unsubscribe", "replace", "list"] as const;
   const manageInput = z.object({
-    action: z.enum([...PROBLEM_ACTIONS, ...OBSERVER_ACTIONS, "subscribe_pr", "unsubscribe_pr"]).describe("Problem actions (id required): take: you (or the worker in threadId) are working on the problem; fix_pending: a fix PR/card exists (ref required); release: back to open; dismiss: nobody needs to act. Observer actions: subscribe: add the thread to the observers; unsubscribe: remove it; replace: make it the only observer; list: show observers and PR subscriptions. subscribe_pr/unsubscribe_pr: subscribe the lead to the next success containing its PR, then end; failures go to observers only; expires on archive/deletion or after 14 days"),
+    action: z.enum([...PROBLEM_ACTIONS, ...OBSERVER_ACTIONS, "subscribe_pr", "unsubscribe_pr"]).describe("Problem actions (id required): take: you (or the worker in threadId) are working on the problem; fix_pending: a fix PR/card exists (ref required); release: back to open; dismiss: nobody needs to act. Observer actions: subscribe: add the thread to the observers; unsubscribe: remove it; replace: make it the only observer; list: show observers and PR subscriptions. subscribe_pr/unsubscribe_pr: the lead must subscribe right after opening the PR, at any PR state before READY; PR CI green / PR CI red, PR merged and PR closed go only to PR subscribers, including already completed CI or merges on the next pass. Merge keeps the subscription for successful deployment delivery; close without merge ends it. Deployment failures go to observers only; expires on archive/deletion or after 14 days"),
     number: z.number().int().min(1).optional().describe("PR number, e.g. 12; required and accepted only for subscribe_pr and unsubscribe_pr"),
     id: z.string().min(1).max(300).optional().describe("Problem actions only (required): problem id from ci_dashboard_metrics view=problems or view=signals (problems[].id), from an observer line (`problem <id>`) or from a ref"),
     repository: repositorySchema.optional().describe("Problem and PR actions only: owner/repo, e.g. acme/app; required when several repositories are configured"),
@@ -1056,7 +1089,7 @@ export default async function plugin(bb: BbPluginApi) {
       throw new Error("fix_pending ref must identify the fix, not CI data; pass #12, FIX-1 or a URL instead.");
     }
   }
-  const prDescription = "The lead subscribes to its PR with subscribe_pr (number required); unsubscribe_pr cancels. The next successful deployment containing the PR goes to its subscribers instead of observers, then the subscription ends. Failures go to observers only. Subscriptions end on delivery, thread archive/deletion, or after 14 days.";
+  const prDescription = "The lead must subscribe right after opening the PR with subscribe_pr (number required), at any PR state before READY; unsubscribe_pr cancels. PR CI green / PR CI red, PR merged and PR closed go only to PR subscribers, never observers. Already completed CI or merges arrive on the next pass. CI is once per current head SHA; merge is once per PR and keeps the subscription alive for deployment; close without merge ends it. The next successful deployment containing the PR goes to its subscribers instead of observers, then the subscription ends. Deployment failures go to observers only. Subscriptions end on delivery, thread archive/deletion, or after 14 days.";
   async function manage(input: z.infer<typeof manageInput>, ctx: { threadId: string; signal: AbortSignal }) {
     validateManage(input);
     if (input.action !== "list") requireChanges();
@@ -1086,7 +1119,7 @@ export default async function plugin(bb: BbPluginApi) {
     if (input.action !== "list") requireChanges();
     if (!input.threadId && ["take", "subscribe", "replace", "subscribe_pr", "unsubscribe_pr", "unsubscribe"].includes(input.action)) throw new Error("threadId is required when called over RPC; pass an active BB thread id, e.g. thr_example, or use ci_dashboard_manage from that thread.");
     return manage(input, { threadId: input.threadId ?? "", signal: controller.signal });
-  } }, { experimental_discoverable: true, experimental_description: "Manage CI observers, PR deployment subscriptions and problem claims. Only action-specific fields are accepted. RPC requires threadId for take and subscription changes. Claim results include previous; replace returns removed thread ids." });
+  } }, { experimental_discoverable: true, experimental_description: "Manage CI observers, PR lifecycle and deployment subscriptions and problem claims. Only action-specific fields are accepted. RPC requires threadId for take and subscription changes. Claim results include previous; replace returns removed thread ids." });
   async function manageProblem({ action, id, repository, threadId, ref }: z.infer<typeof manageInput> & { action: typeof PROBLEM_ACTIONS[number] }, ctx: { threadId: string; signal: AbortSignal }) {
     if (!id) throw new Error(`action=${action} needs id: a problem id from ci_dashboard_metrics view=problems.`);
     const values = await settings.get(), names = await repositoryNames(values);

@@ -2534,3 +2534,96 @@ test.each([["ci-dashboard", true], ["someone-else", false]])("observer: a notice
     }
   } finally { await harness.lifecycle.dispose(); }
 });
+
+function lifecycleScenario() {
+  const normal = fetchMock.getMockImplementation()!;
+  const head = "a".repeat(40), url = "https://github.com/acme/app/pull/12";
+  const pr = { number: 12, state: "OPEN", merged: false, mergedAt: null as string | null, mergeCommit: null as { oid: string } | null, headRefOid: head, url,
+    commits: { nodes: [{ commit: { oid: head, statusCheckRollup: { contexts: { pageInfo: { hasNextPage: false }, nodes: [{ __typename: "CheckRun", name: "build", status: "COMPLETED", conclusion: "SUCCESS", isRequired: true }] } } } }] } };
+  const requests: { query: string; variables: unknown }[] = [];
+  fetchMock.mockImplementation(async (input, options) => {
+    if (new URL(input).pathname === "/graphql" && String(options?.body).includes("isRequired(pullRequestNumber:")) {
+      expect(new URL(input).origin).toBe("https://api.github.com");
+      requests.push(JSON.parse(String(options!.body)));
+      return Response.json({ data: { repository: { pr12: pr } } });
+    }
+    return normal(input, options);
+  });
+  return { pr, requests };
+}
+
+test("PR lifecycle: late subscribe, head dedupe, new push, restart, merge once and deployment subscription retained", async () => {
+  const { pr, requests } = lifecycleScenario();
+  let { bb, harness, send } = observerHost({ repository: "acme/app", observeDeployments: "off", observerBatchMinutes: 10 });
+  try {
+    await plugin(bb);
+    await signalsPass(harness, 0);
+    expect(requests).toHaveLength(0);
+    await harness.behavior.callRpc("manage", { action: "subscribe_pr", number: 12, threadId: "thr_example" });
+    await signalsPass(harness);
+    expect(sentTo(send, "thr_example")).toEqual([`PR CI green · #12 · head ${pr.headRefOid} · 1 required checks passed · ${pr.url}`]);
+    expect((await bb.storage.kv.get<ReturnType<typeof emptyRepoState>>("observer:acme/app"))!.sent[`pr_ci:12:${pr.headRefOid}`]).toBeDefined();
+    await signalsPass(harness);
+    expect(sentTo(send, "thr_example")).toHaveLength(1);
+    pr.headRefOid = "c".repeat(40); pr.commits.nodes[0].commit.oid = pr.headRefOid;
+    await signalsPass(harness);
+    expect(sentTo(send, "thr_example")).toHaveLength(2);
+    ({ bb, harness } = await harness.lifecycle.reload(plugin));
+    await signalsPass(harness);
+    expect(sentTo(send, "thr_example")).toHaveLength(2);
+    pr.merged = true; pr.state = "MERGED"; pr.mergeCommit = { oid: "b".repeat(40) }; pr.mergedAt = "2026-10-20T12:00:00Z";
+    await signalsPass(harness);
+    expect(sentTo(send, "thr_example")[2]).toBe(`PR merged · #12 · merge commit ${pr.mergeCommit.oid} · ${pr.mergedAt} · ${pr.url}`);
+    const count = requests.length;
+    await signalsPass(harness);
+    expect(requests).toHaveLength(count);
+    expect(sentTo(send, "thr_example")).toHaveLength(3);
+    expect(sentTo(send, "thr_observer").some(line => /^PR (CI|merged|closed)/.test(line))).toBe(false);
+    expect(await harness.behavior.callRpc("manage", { action: "list" })).toMatchObject({ prSubscriptions: [{ number: 12, threadId: "thr_example" }] });
+  } finally { await harness.lifecycle.dispose(); }
+});
+
+test.each(["MERGED", "CLOSED"])("PR lifecycle: subscribing at %s delivers next pass; close removes subscriptions", async state => {
+  const { pr, requests } = lifecycleScenario();
+  pr.state = state; pr.merged = state === "MERGED"; pr.mergeCommit = pr.merged ? { oid: "b".repeat(40) } : null; pr.mergedAt = pr.merged ? "2026-10-20T12:00:00Z" : null;
+  const { bb, harness, send } = observerHost({ repository: "acme/app", observerThreads: "", observeDeployments: "off" });
+  try {
+    await plugin(bb);
+    await harness.behavior.callRpc("manage", { action: "subscribe_pr", number: 12, threadId: "thr_example" });
+    await signalsPass(harness, 0);
+    expect(sentTo(send, "thr_example")).toHaveLength(1);
+    expect(sentTo(send, "thr_example")[0]).toContain(state === "MERGED" ? "PR merged · #12" : "PR closed · #12 · not merged, subscription ended");
+    expect((await harness.behavior.callRpc("manage", { action: "list" }) as { prSubscriptions: unknown[] }).prSubscriptions).toHaveLength(state === "MERGED" ? 1 : 0);
+    await signalsPass(harness);
+    expect(requests).toHaveLength(1); expect(sentTo(send, "thr_example")).toHaveLength(1);
+  } finally { await harness.lifecycle.dispose(); }
+});
+
+test("PR lifecycle: verification sends and requests nothing and preserves subscriptions and sent keys", async () => {
+  const { requests } = lifecycleScenario(), f = await cutoverHost(true);
+  try {
+    await f.bb.storage.kv.set("prSubscriptions", [{ repository: "acme/widgets", number: 12, threadId: "thr_example", at: new Date().toISOString() }]);
+    const before = await f.bb.storage.kv.get("prSubscriptions");
+    await plugin(f.bb); await signalsPass(f.harness, 0);
+    expect(requests).toHaveLength(0); expect(f.send).not.toHaveBeenCalled();
+    expect(await f.bb.storage.kv.get("prSubscriptions")).toEqual(before);
+    expect(await f.bb.storage.kv.get("observer:acme/widgets")).toEqual(emptyRepoState());
+  } finally { await f.dispose(); }
+});
+
+test("PR lifecycle: a second subscriber gets already announced CI and merge without repeating to the first", async () => {
+  const { pr } = lifecycleScenario();
+  const { bb, harness, send } = observerHost({ repository: "acme/app", observerThreads: "", observeDeployments: "off" });
+  const subscribe = (threadId: string) => harness.behavior.callRpc("manage", { action: "subscribe_pr", number: 12, threadId });
+  try {
+    await plugin(bb);
+    await subscribe("thr_example"); await signalsPass(harness, 0);
+    await subscribe("thr_example2"); await signalsPass(harness);
+    expect(sentTo(send, "thr_example")).toHaveLength(1); expect(sentTo(send, "thr_example2")).toHaveLength(1);
+    pr.merged = true; pr.state = "MERGED"; pr.mergeCommit = { oid: "b".repeat(40) }; pr.mergedAt = "2026-10-20T12:00:00Z";
+    await signalsPass(harness);
+    await subscribe("thr_example3"); await signalsPass(harness);
+    expect(sentTo(send, "thr_example")).toHaveLength(2); expect(sentTo(send, "thr_example2")).toHaveLength(2);
+    expect(sentTo(send, "thr_example3")).toEqual([`PR merged · #12 · merge commit ${pr.mergeCommit.oid} · ${pr.mergedAt} · ${pr.url}`]);
+  } finally { await harness.lifecycle.dispose(); }
+});

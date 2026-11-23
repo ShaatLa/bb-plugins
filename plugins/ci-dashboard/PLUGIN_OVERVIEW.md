@@ -22,3 +22,14 @@ Use repository headings to open GitHub in BB’s configured browser while keepin
 
 
 Agents can read cached or freshly collected CI metrics with ci_dashboard_metrics: pass rates, outcomes, branch/workflow problem signals and elapsed timings, with explicit timestamps, staleness and missing-data errors. ci_dashboard_metrics and the ci RPC are read-only. ci_dashboard_manage and the manage RPC change plugin state only: claims, observers and PR subscriptions. Manage refuses unused action parameters and CI inspection refs as fix references (use #12, FIX-1 or a URL). Claim results include previous and handled; observer replacement returns removed thread ids for the caller to inspect. For example, {"action":"fix_pending","id":"pool_stall:self-hosted","ref":"#12"} preserves the worker when threadId is omitted.
+
+The lead must subscribe right after opening the PR, at any PR state (including draft, before READY). PR lifecycle lines go only to PR subscribers, never observer threads: **PR CI green / PR CI red** (CI complete), **PR merged**, and **PR closed**. Completed CI or an already merged PR is delivered on the next pass after subscribing; no shell polling loop is needed. CI is reported once per current head SHA, only after every required context is terminal; a new push can produce a new line. With no required contexts, all contexts are used and the line says `checks`. SUCCESS, NEUTRAL and SKIPPED pass; other terminal results fail. Failed check names are labels only, capped at five plus `+N`.
+
+```text
+PR CI green · #12 · head <40-char sha> · 5 required checks passed · <PR url>
+PR CI red · #12 · head <40-char sha> · 2 of 5 required checks failed: build, test · <PR url>
+PR merged · #12 · merge commit <40-char sha> · <mergedAt ISO> · <PR url>
+PR closed · #12 · not merged, subscription ended · <PR url>
+```
+
+Merge is reported once per PR, stops CI lines and keeps the subscription for successful deployment delivery. Close without merge removes the PR's subscriptions. Unsubscribe, successful deployment delivery, thread archive/deletion and 14-day expiry also end subscriptions. Lifecycle queries use repository-level GraphQL data and the shared backfill budget, at most one request per repository per 60 seconds, rotating batches of up to 25 PRs. No lifecycle request runs without subscriptions, authorization or a backfill runtime. Sent keys (`pr_ci:12:<sha>`, `pr_merged:12`) persist in `observer:<repo>` before delivery and use the existing history pruning. Rollups exceeding 100 contexts wait rather than report incomplete evidence.
