@@ -62,6 +62,17 @@ it.each(sources)('draws a message from %s with one header, a quote without heade
   expect(slot.getByRole('button', { name: 'Copy link' })).toBeTruthy();
   expect(slot.queryByRole('button', { name: 'More' })).toBeNull();
 });
+it.each([
+  ['example-launch v1 card=EXA-1 role=reviewer', 'Review the proposed change.'],
+  ['Check the tests.', 'Check the tests.Review the proposed change.'],
+])('shows the human brief of a Spawn Gate launch beginning with %s', (firstLine, displayed) => {
+  const question = `${firstLine}\nagent-admission v1 token=${'0'.repeat(64)}\n\nReview the proposed change.`;
+  const slot = show(update({ question, trigger: { kind: 'plugin', sourceId: 'spawn-gate', sourceTitle: null } }));
+  const quote = slot.container.querySelector('[data-agent-message]')!.textContent!;
+  expect(quote.replace(/\s*\n\s*/g, '')).toBe(displayed);
+  expect(quote).not.toContain('agent-admission');
+});
+
 it('shows no quote when a bb notice has nothing but its own line', () => {
   const slot = show(update({ question: '[bb system] @thread:thr_child completed:', trigger: { kind: 'system', sourceId: 'thr_child', sourceTitle: null } }));
   expect(slot.container.querySelector('[data-agent-message]')).toBeNull();

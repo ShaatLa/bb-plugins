@@ -366,6 +366,14 @@ describe('reply pools and inbox',()=>{
   db.prepare("INSERT INTO items(id,kind,thread_id,status,question,read_at,trigger_kind,trigger_source,created_at,updated_at) VALUES ('ans_inline','update','t','waiting',?,1,'agent','thr_manager-one',1,1)").run('[bb message from thread:thr_manager-one] **Review** [docs](https://example.com) @thread:thr_worker_two#msg=4 /optimize');
   expect(((await harness.behavior.callRpc('recipients',{})) as any).recipients[0].preview).toBe('Manager: Review docs @Worker /optimize');
  });
+ it('previews the work of a Spawn Gate launch without its admission lines',async()=>{
+  const {harness,db}=setup();
+  harness.sdk.stub('plugins.list',async()=>({plugins:[{id:'spawn-gate',name:'Spawn Gate'}]}));
+  const prompt = `example-launch v1 card=EXA-1 role=reviewer\nagent-admission v1 token=${'0'.repeat(64)}\n\nReview the proposed change.`;
+  db.prepare("INSERT INTO items(id,kind,thread_id,status,question,read_at,trigger_kind,trigger_source,created_at,updated_at) VALUES ('ans_gate','update','t','waiting',?,1,'plugin','spawn-gate',1,1)").run(prompt);
+  expect(((await harness.behavior.callRpc('recipients',{})) as any).recipients[0].preview).toBe('Spawn Gate: Review the proposed change.');
+  expect(db.prepare("SELECT question FROM items WHERE id='ans_gate'").get()).toEqual({question:prompt});
+ });
  it('hides HTML comment markers other plugins embed from contact previews',async()=>{
   const {harness,db}=setup();
   db.prepare("INSERT INTO items(id,kind,thread_id,status,question,read_at,trigger_kind,trigger_source,created_at,updated_at) VALUES ('ans_marker','update','t','waiting',?,1,'plugin','work-board',1,1)").run('<!-- work-board-task:EXA-1 -->\nPick up EXA-1');

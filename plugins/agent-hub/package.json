@@ -1,6 +1,6 @@
 {
   "name": "bb-plugin-agent-hub",
-  "version": "0.3.247",
+  "version": "0.3.248",
   "type": "module",
   "license": "MIT",
   "engines": {
@@ -55,6 +55,7 @@
   },
   "files": [
     "server.ts",
+    "spawn-gate-message.ts",
     "contract.ts",
     "ingest.ts",
     "schema.ts",

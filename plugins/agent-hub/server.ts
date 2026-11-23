@@ -14,6 +14,7 @@ import { createNotifier } from './notify';
 import { buildReplyMessage } from './reply-message';
 export { buildReplyMessage };
 import { inlineCommentPreview } from './inline-comments';
+import { spawnGateMessageBody } from './spawn-gate-message';
 
 const NOTICE_PREVIEW = 20000;
 export const INSTRUCTIONS = [
@@ -402,7 +403,7 @@ function start(bb: BbPluginApi, migrationError: string | null) {
         -- A thread with only agent questions lives in Questions; an open top-level chat stays listed.
         HAVING sum(kind<>'for_me')>0 OR thread_id=?
         ORDER BY (thread_id=?) DESC,(unread>0) DESC,last_at DESC,thread_id LIMIT 200
-      ) SELECT grouped.*,chosen.project_id,
+      ) SELECT grouped.*,chosen.project_id,chosen.trigger_kind,chosen.trigger_source,
         CASE WHEN ${chosenAttention} AND chosen.kind IN ('mine','update') AND chosen.status='answered' THEN chosen.answer
              WHEN ${chosenAttention} AND chosen.kind='mine' THEN 'Turn failed: '||chosen.question
              WHEN ${chosenAttention} THEN chosen.question ELSE coalesce(chosen.answer,chosen.question) END AS preview
@@ -432,10 +433,17 @@ function start(bb: BbPluginApi, migrationError: string | null) {
       const names=await pluginNames();
       // A plugin's or an automation's message previews as "Plugin name: text", without the sender's leading [tag], as its chat card shows it.
       // Another thread's message previews as "Sender: text", as its chat card names the sender instead of the [bb message from …] header.
+      const previewFor = (r: Row) => {
+        const text = (r.preview ?? '') as string;
+        if (r.trigger_kind !== 'plugin' || r.trigger_source !== 'spawn-gate') return text;
+        const body = spawnGateMessageBody(text);
+        if (body === text || body.startsWith('[bb message from plugin:spawn-gate]')) return body;
+        return `[bb message from plugin:spawn-gate]\n\n${body}`;
+      };
       const plain=(text:string)=>unquote(text.replace(/^\[bb message from thread:(thr_[A-Za-z0-9_-]+)\]\s*/,(_,id:string)=>threadMap.get(id)?.title ? `${threadMap.get(id)!.title}: ` : '').replace(/^\[bb (?:message from plugin:([\w.-]+)|automation\b[^\]\n]*)\]\s*(?:\[(?![A-Z][A-Z0-9]*-\d)[^\]\n]{2,40}\](?![(:])\s+)?/,(_,id:string|undefined)=>`${names.get(id ?? 'automations') ?? id ?? 'Automations'}: `)).replace(/^\s*(?:#{1,6}|[-*+]|\d+[.)])\s+/gm,'').replace(/@thread:(thr_[A-Za-z0-9_-]+)(?:#msg=\d+)?/g,(_,id:string)=>'@'+(threadMap.get(id)?.title ?? 'thread')).replace(/\[([^\]]+)\]\([^)\s]+\)/g,'$1').replace(/\*\*|`/g,'').replace(/\s+/g,' ').trim();
       // Threads with an open question to the owner, so contacts can surface a sub-session that asks under its collapsed parent.
       const asking=(db.prepare(`SELECT DISTINCT thread_id FROM items WHERE kind='for_me' AND status='open' AND dismissed_at IS NULL AND declined_at IS NULL AND thread_deleted=0 AND ${ACTIVE_THREAD_SQL} AND ${OWNER_ITEM_SQL}`).all() as {thread_id:string}[]).map(r=>r.thread_id);
-      return {asking,recipients:rows.map(r=>{const t=threadMap.get(r.thread_id),projectId=t?.projectId ?? r.project_id ?? null; return {threadId:r.thread_id,threadTitle:t?.title ?? null,projectId,projectName:projectMap.get(projectId)?.name ?? null,unread:r.unread,questions:r.questions,lastAt:r.last_at,preview:plain(inlineCommentPreview(((r.preview ?? '') as string).replace(/<!--[\s\S]*?-->\s*/g,''))).slice(0,160)};})};
+      return {asking,recipients:rows.map(r=>{const t=threadMap.get(r.thread_id),projectId=t?.projectId ?? r.project_id ?? null; return {threadId:r.thread_id,threadTitle:t?.title ?? null,projectId,projectName:projectMap.get(projectId)?.name ?? null,unread:r.unread,questions:r.questions,lastAt:r.last_at,preview:plain(inlineCommentPreview(previewFor(r).replace(/<!--[\s\S]*?-->\s*/g,''))).slice(0,160)};})};
     },
     // A UI crash caught by the app's CrashGuard, so its stack reaches `bb plugin logs agent-hub`.
     logClientError(raw:z.infer<typeof inputs.logClientError>) {const p=inputs.logClientError.parse(raw); bb.log.error(`Agent Hub UI crash (${p.where}): ${p.message}${p.stack ? `\n${p.stack}` : ''}`); return {ok:true as const};},

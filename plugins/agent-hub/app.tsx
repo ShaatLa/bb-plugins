@@ -1,3 +1,4 @@
+import { spawnGateMessageBody } from './spawn-gate-message';
 import { DesktopNotifier } from './desktop-notifier';
 import { useQuestionStack } from './question-stack';
 import { AgentHubSettings } from './settings-section';
@@ -205,7 +206,9 @@ const OPEN_GROUPS = 'bb-plugin-answers:open-update-groups';
 const openGroups = (): string[] => { try { const ids = JSON.parse(localStorage.getItem(OPEN_GROUPS) ?? '[]'); return Array.isArray(ids) ? ids : []; } catch { return []; } };
 // An update with no reply yet (still being worked on, or one that joined a running turn) previews the message it quotes,
 // whoever sent it: another thread, a plugin, a bb notice or a script.
-const groupPreview = (item: Item) => item.answer?.trim() ? item.answer : item.trigger ? unlabel(item.question) : '';
+const incomingBody = (item: Item) => unlabel(item.trigger?.kind === 'plugin' && item.trigger.sourceId === 'spawn-gate'
+  ? spawnGateMessageBody(item.question) : item.question);
+const groupPreview = (item: Item) => item.answer?.trim() ? item.answer : item.trigger ? incomingBody(item) : '';
 export function UpdateGroup({ items, reveal, children }: { items: Item[]; reveal?: string | null; children: (item: Item) => ReactNode }) {
   // A group is known by its first update, which a newer update joining it does not change; an opened group stays open
   // across chats, screens and reloads (the last 200 are remembered).
@@ -328,7 +331,7 @@ export function ItemCard({ item, members, late, live = true, chat = false, marka
   const userBubble = 'max-w-full rounded-xl border border-border-seam bg-surface-recessed px-4 py-2.5 text-sm leading-relaxed text-foreground';
   const agentText = 'w-full px-2 text-sm leading-relaxed';
   // An incoming message (not the owner's, not this agent's) is drawn as a quote under its header; the agent's reply to it is a separate agent message.
-  const incoming = chat && item.kind === 'update' && !!item.trigger, quoteText = incoming ? unlabel(item.question).trim() : '';
+  const incoming = chat && item.kind === 'update' && !!item.trigger, quoteText = incoming ? incomingBody(item).trim() : '';
   const bare = chat && item.kind === 'update' && !item.answer;
   const iconProps = (text: string) => ({ 'aria-label': text, title: text, variant: 'ghost' as const, className: 'size-6 px-0 [&_[data-icon-root]]:size-[13px] [@media(hover:none)]:size-8' });
   // In the chat every clamped body (owner bubble, agent text, incoming quote) expands from this icon at the left of its message's action row.
