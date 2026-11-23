@@ -5,12 +5,11 @@ A collection of independently installable [BB](https://getbb.app/) plugins maint
 | Plugin | What it adds | Collection entry / plugin ID | Documentation |
 | --- | --- | --- | --- |
 | **Spawn Gate** | Project-specific one-use admissions for agent and CLI starts; enforcement off by default. | `spawn-gate` | [README](plugins/spawn-gate/README.md) |
-| **Sweep** | Scheduled repository checks and durable delivery to a project manager. | `sweep` | [README](plugins/bb-plugin-sweep/README.md) |
 | **Agent Hub** | A messenger-style inbox for your questions and the agents' answers, questions agents ask you, quote replies, reply pools and saved messages. | `agent-hub` | [README](plugins/agent-hub/README.md) |
 | **Antigravity provider** | Google Gemini agents through your existing Antigravity CLI, with BB tools, live quotas and machine diagnostics. | `antigravity` | [README](plugins/provider-antigravity/README.md) |
 | **CI Dashboard** | GitHub Actions health, run timings, agent-readable CI metrics, and PR/deployment context with cached history. | `ci-dashboard` / `delivery-dashboard` | [README](plugins/ci-dashboard/README.md) |
 | **Idle Compact** | Compacts a Claude Code thread idle for 50 minutes with 100k+ tokens of context while its prompt cache is still warm, so waking it does not rewrite the whole context. | `idle-compact` | [README](plugins/idle-compact/README.md) |
-| **Local models provider** | Local llama.cpp (OpenAI-compatible) models through the installed Codex CLI, with BB tools, a context indicator and unlimited usage. | `local-models` | [README](plugins/provider-local-models/README.md) |
+| **Local models provider** | Local llama.cpp (OpenAI-compatible) models with a built-in agent loop, BB tools, a context indicator, optional Splash engine and unlimited usage. | `local-models` | [README](plugins/provider-local-models/README.md) |
 | **Machine Slots** | Advisory per-host pools, gate checks, transferable leases and dev-server ports. | `slots` | [README](plugins/slots/README.md) |
 | **Tokenomos** | Token usage and API-equivalent cost across Claude Code, Codex, local-model and Antigravity threads: four ranges, project filter, token mix, hourly heatmap, compaction and local-model savings estimates, top threads, and a watchlist of large live contexts. | `tokenomos` | [README](plugins/tokenomos/README.md) |
 | **Work Board** | Tasks, epics, kanban, delegation to existing threads, owner actions, structured questions, evidence and Git-friendly project snapshots. | `work-board` | [README](plugins/work-board/README.md) |
@@ -24,7 +23,7 @@ Use **BB 0.46.1 or newer**, with **Plugin SDK 0.6.49 or newer**. Exact compatibi
 Additional requirements depend on the plugin:
 
 - **Antigravity:** an installed, signed-in **`agy` 1.4.6 or newer on each execution machine**. Login and the CLI installation remain managed by Antigravity.
-- **Local models:** an installed **`codex` CLI** and a running local OpenAI-compatible server (for example llama.cpp's `llama serve`) on each execution machine.
+- **Local models:** a running local OpenAI-compatible server (for example llama.cpp's `llama serve`) on each execution machine. No Codex or other agent CLI is needed. The optional Splash engine needs Homebrew, arm64, macOS 26.4+ and Apple M3 or later.
 - **Work Board:** disable BB's built-in `tasks` plugin before enabling this replacement. To retain its existing data, migrate **before the first Work Board installation**, as described below.
 - **CI Dashboard:** GitHub.com repositories. For authenticated access, use the signed-in GitHub CLI on the **BB server machine**, `GH_TOKEN` / `GITHUB_TOKEN`, or the plugin's secret token override. Private repositories require appropriate read access; commit and line statistics require authentication even for public repositories. Other public metrics can use anonymous access with lower rate limits.
 
@@ -37,19 +36,19 @@ BB supplies its own npm/Node tooling for Git installations. You do **not** need 
 Install the plugins you need:
 
 ```sh
-bb plugin install git:https://github.com/ShaatLa/bb-plugins.git@main --plugin agent-hub
-bb plugin install git:https://github.com/ShaatLa/bb-plugins.git@main --plugin antigravity
-bb plugin install git:https://github.com/ShaatLa/bb-plugins.git@main --plugin ci-dashboard
-bb plugin install git:https://github.com/ShaatLa/bb-plugins.git@main --plugin idle-compact
-bb plugin install git:https://github.com/ShaatLa/bb-plugins.git@main --plugin local-models
-bb plugin install git:https://github.com/ShaatLa/bb-plugins.git@main --plugin tokenomos
+bb plugin install git:https://github.com/ShaatLa/bb-plugins.git@0.x --plugin agent-hub --tag-prefix agent-hub/
+bb plugin install git:https://github.com/ShaatLa/bb-plugins.git@0.x --plugin antigravity --tag-prefix antigravity/
+bb plugin install git:https://github.com/ShaatLa/bb-plugins.git@0.x --plugin ci-dashboard --tag-prefix ci-dashboard/
+bb plugin install git:https://github.com/ShaatLa/bb-plugins.git@0.x --plugin idle-compact --tag-prefix idle-compact/
+bb plugin install git:https://github.com/ShaatLa/bb-plugins.git@0.x --plugin local-models --tag-prefix local-models/
+bb plugin install git:https://github.com/ShaatLa/bb-plugins.git@0.x --plugin tokenomos --tag-prefix tokenomos/
 ```
 
 For **Work Board**, first choose whether to [migrate existing built-in Tasks data](#migrate-built-in-tasks-data). If you want an empty tracker, skip migration and install directly:
 
 ```sh
 bb plugin disable tasks
-bb plugin install git:https://github.com/ShaatLa/bb-plugins.git@main --plugin work-board
+bb plugin install git:https://github.com/ShaatLa/bb-plugins.git@0.x --plugin work-board --tag-prefix work-board/
 ```
 
 The `--plugin` values are collection entry names. You can also select a directory with `--subdirectory plugins/work-board`, for example. The repository root itself is a collection, not a plugin package.
@@ -63,16 +62,16 @@ bb plugin source work-board --json
 
 ### Updates
 
-An installation tracking `@main` receives branch changes when you apply an update:
+Each plugin is released as a version tag `<entry>/vX.Y.Z` (for example `work-board/v0.59.4`), created automatically when its `package.json` version changes on `main`. The install commands above track every `0.x` release of one plugin; BB checks the tags and applies the newest compatible release when you update:
 
 ```sh
 bb plugin outdated
 bb plugin update antigravity
 bb plugin update work-board
-bb plugin update ci-dashboard
+bb plugin update --all
 ```
 
-Replace `@main` in an installation URL with a full commit SHA to pin an exact revision. Local-path installations use the checkout on disk; published Git updates do not update them. Rebuild and reload a local installation after updating its checkout.
+`bb plugin outdated` offers a 1.0 or later release outside the `0.x` range separately; take it with `bb plugin update <id> --range '^1.0.0'`. Use a narrower range such as `^0.59.0` to receive patches only, or a tag such as `@work-board/v0.59.4` to pin one release. Installing `@main` instead tracks every commit on the branch, including unreleased work. Local-path installations use the checkout on disk; published Git updates do not update them. Rebuild and reload a local installation after updating its checkout.
 
 If a plugin is already installed, check its source before changing installation methods. Keep its existing ID and data rather than installing a renamed copy. In particular, Antigravity remains provider `antigravity`, and built-in Tasks must stay disabled while Work Board is enabled.
 
@@ -134,11 +133,14 @@ An optional **Deploy to production** action appears on the production card when 
 
 ### Local models provider
 
-Select **Local models** in BB's provider picker. Models come from the local server's `/v1/models`; turns run through the installed `codex` CLI pointed at that server. Your global Codex config, MCP servers and Apps connectors are not loaded for local threads.
+Select **Local models** in BB's provider picker. Models come from the local servers' `/v1/models`; the plugin runs its own agent loop against `/v1/chat/completions`, without Codex or another agent CLI.
 
-- Streaming, resume, cancellation and BB agent tools; a request adapter handles strict chat templates such as Qwen and Gemma.
-- Context window indicator under the composer; provider usage shows each model with `∞`.
-- Settings for the server URL, `codex` path and default model.
+- Streaming, resume, cancellation, file and shell tools, MCP and BB agent tools; strict chat templates keep their user/assistant alternation.
+- Context window indicator under the composer. Local models have no quota, so the provider is not listed in Provider usage.
+- `local_models_ask` agent tool and `bb local-models ask` for one-shot prompts from other threads; they queue behind Machine Slots `local-model` work.
+- Optional Splash engine: a settings section checks requirements, installs or updates Splash with Homebrew after confirmation, and adds `splash/<id>` model variants.
+- A token-only usage journal that Tokenomos reads; no prompt or reply text is stored.
+- Settings for server URLs, default model and Splash.
 
 ```sh
 bb provider models local-models
@@ -178,7 +180,7 @@ git clone https://github.com/ShaatLa/bb-plugins.git
 cd bb-plugins/plugins/work-board
 bb plugin disable tasks
 python3 scripts/import_tasks.py
-bb plugin install git:https://github.com/ShaatLa/bb-plugins.git@main --plugin work-board
+bb plugin install git:https://github.com/ShaatLa/bb-plugins.git@0.x --plugin work-board --tag-prefix work-board/
 ```
 
 The helper copies the SQLite database through its backup API, preserves record IDs and attachment files, and rewrites attachment URLs in copied descriptions/comments for `work-board`. The original built-in data remains in place. For another BB data location, pass `--data-dir /path/to/bb-data`.
@@ -195,7 +197,7 @@ Each plugin owns its dependencies, tests and build; there is no root install or 
 | `plugins/provider-antigravity` | `npm ci --include=dev` | Node with `--experimental-strip-types` support for its native tests; signed-in `agy` for live checks. |
 | `plugins/ci-dashboard` | `npm ci --include=dev` | GitHub access for live data checks. |
 | `plugins/idle-compact` | `npm ci` | None; `python3 scripts/measure.py` reads local Claude transcripts. |
-| `plugins/provider-local-models` | `npm ci --include=dev` | Node with `--experimental-strip-types` support; `codex` and a running local model server for live checks. |
+| `plugins/provider-local-models` | `npm ci --include=dev` | Node with `--experimental-strip-types` support; a running local model server for live checks. |
 | `plugins/work-board` | `bun install --frozen-lockfile` | `python3 -m unittest discover -s scripts -p 'test_*.py'` for the migration helper. |
 
 From the chosen plugin directory, after installing its dependencies:
@@ -213,6 +215,15 @@ For subsequent local changes:
 bb plugin build .
 bb plugin reload <plugin-id>
 ```
+
+To run a released version on your own machine and keep its settings, install it from its tag:
+
+```sh
+scripts/install-release.sh work-board          # newest work-board/v* tag
+scripts/install-release.sh work-board 0.59.4   # one release
+```
+
+It builds the tag into `releases/<entry>-<version>` next to the checkout (override with `BB_PLUGIN_RELEASES`) and installs that path; bb moves an existing local-path install of the same plugin and keeps its settings, and refuses to replace a Git or npm install. Keep that directory while the version is installed.
 
 `bb plugin dev` provides a build/reload watcher for an already-installed local directory. Do not enable built-in Tasks alongside a local Work Board installation.
 

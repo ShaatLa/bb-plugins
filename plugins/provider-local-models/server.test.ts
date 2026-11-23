@@ -37,6 +37,8 @@ test('registers CLI and native tool, queries fake router and excludes self',asyn
     const status=await cli.run(['status','--json'],ctx);assert.equal(status.exitCode,0);assert.equal(JSON.parse(status.stdout).models[0].contextSize,65536);
     assert.equal((await cli.run(['unload','--all'],ctx)).exitCode,0);
     assert.equal((await cli.run(['ask','hi','--model','missing','--json'],ctx)).exitCode,1);
+    assert.equal((await cli.run(['unload','m','--all'],ctx)).exitCode,1);
+    assert.match((await tool.execute({prompt:'hello',model:'missing'},ctx)).content[0].text,/Run bb local-models status/);
     baseUrl='http://127.0.0.1:1/v1';
     assert.equal((await tool.execute({prompt:'hello'},ctx)).isError,true);
   }finally{await server.close();}
@@ -62,4 +64,19 @@ test('a failed Splash start is remembered per settings key and retried only afte
     t.mock.timers.tick(61_000);
     assert.equal((await status()).error,null);
   }finally{await dispose?.();t.mock.timers.reset();await rm(dir,{recursive:true,force:true});}
+});
+
+test('install-splash re-reads requirements, so an update found after a cached check is installed',async()=>{
+  let cli:any,dispose:any,outdated=false;const calls:string[][]=[];
+  const settings={splash:false,splashBinary:'/x/splash',splashPort:1,splashProxyPort:2,splashIdleMinutes:10,baseUrl:'http://127.0.0.1:1/v1',defaultModel:''};
+  const bb={log:{error:()=>{},info:()=>{}},onDispose:(fn:any)=>{dispose=fn;},pluginId:'local-models',server:{experimental_dataDir:'/nonexistent'},settings:{define:()=>({onChange:()=>{},get:async()=>settings})},providers:{register:()=>{},experimental_contributeEnv:()=>{}},rpc:{register:()=>{}},agents:{registerTool:()=>{},configure:()=>{}},cli:{register:(v:any)=>cli=v}} as unknown as BbPluginApi;
+  const run=async(_bin:string,args:string[])=>{calls.push(args);return args[0]==='outdated'&&outdated?{code:1,output:'incoai/tap/splash'}:{code:0,output:args[0]==='outdated'?'':'ok'};};
+  createPlugin(bb,{run,doctorOptions:{run,exists:async()=>true,brew:'/x/brew',platform:'darwin',arch:'arm64',memoryBytes:64*2**30,fetcher:async()=>new Response('{}')}});
+  const ctx={signal:new AbortController().signal};
+  try{
+    assert.doesNotMatch((await cli.run(['doctor'],ctx)).stdout,/update available/);
+    outdated=true;
+    assert.match((await cli.run(['install-splash'],ctx)).stdout,/^brew upgrade incoai\/tap\/splash/);
+    assert.ok(calls.some(a=>a[0]==='upgrade'));
+  }finally{await dispose?.();}
 });

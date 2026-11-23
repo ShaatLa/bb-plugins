@@ -1,14 +1,24 @@
-import { assertQuestionShape, assertReopenKeepsScope, isQuestionOpen } from "../shared/questions";
+import { assertNotPlanApproval, assertQuestionShape, assertReopenKeepsScope, assertStepsAtomic, assertStepsSingleAction, isQuestionOpen } from "../shared/questions";
 import { UNANSWERED_QUESTION, WAITING_ON_OWNER, NEWEST_UNANSWERED } from "../db/waiting-on-owner";
 import type { BbPluginApi, PluginRpcHandlers } from "@get-bb/plugin-sdk";
 import type { TasksApiStore } from "../api";
 import { createUlid } from "../db/store";
 import { getWorkflowPolicy } from "../shared/workflow-policy";
-import { defaultTaskThreadId, deliverCommentToLatestAgent } from "../steer";
+import { planningOn } from "../shared/project-settings";
+import { defaultTaskThreadId, deliverCommentToLatestAgent, notifyThread } from "../steer";
+import { errorMessage } from "../shared/errors";
+import { planReviewThread, wakeReviewer } from "../plans/delivery";
+import { openDecisionIds, reviewBinding, type ReviewBinding } from "../plans/pause";
+import { planDebtService } from "../plan-debt/service";
+import { openPlanDebt, recordPlanDebtEvent } from "../plan-debt/store";
+import { planDebtCheckRefusal } from "../shared/plan-debt";
+import { createPlanStore } from "../plans/store";
+import { buildOwnerReviewSettledMessage, buildResultCopyMessage, buildReviewPausedMessage, buildReviewResumedMessage } from "../shared/plan-notes";
 import {
   questionSchema,
   templateSchema,
   type TaskQuestion,
+  type PlanWake,
   type DescriptionTemplate,
   type tasksRpcContract,
 } from "../shared/contract";
@@ -26,6 +36,82 @@ export function createStructuredStore(bb: BbPluginApi, store: TasksApiStore) {
   const requireTask = (id: string) => {
     if (!store.tasks.getTask(id)) throw new Error(`Task not found: ${id}`);
   };
+  const assertNotPlanQuestion = (taskId: string, prompt: string, steps: readonly string[]) => {
+    const task = store.tasks.getTask(taskId)!;
+    // With planning off the plan has no review, so a question about it is an ordinary question.
+    if (!planningOn(store.tasks.getProject(task.projectId) ?? {})) return;
+    assertNotPlanApproval(prompt, steps, task.key, db.prepare<[string], { found: number }>("SELECT 1 AS found FROM task_plans WHERE task_id = ?").get(taskId) !== undefined);
+  };
+  /** An owner check waits for an approved plan; decisions stay allowed because a plan often needs one. */
+  const assertNoCheckDuringPlanDebt = (taskId: string) => {
+    const debt = openPlanDebt(db, taskId);
+    if (debt) throw new Error(planDebtCheckRefusal(store.tasks.getTask(taskId)!.key, debt));
+  };
+  const plans = createPlanStore(db, store.tasks);
+  /**
+   * The wake a question write owes the plan reviewer, read inside the write's own transaction from the open-decision count
+   * before and after: only 0 → ≥1 (pause) and ≥1 → 0 (resume) count, and only while a review waits on the card. A resume also
+   * fixes who is told about it, as of the attempt it settled.
+   */
+  type Wake = { event: PlanWake["event"]; taskId: string; binding: ReviewBinding; recipients: { actor: string | null; copy: string | null } } | null;
+  const decisionTransition = (taskId: string, before: number): Wake => {
+    const after = openDecisionIds(db, taskId).length;
+    if ((before === 0) === (after === 0)) return null;
+    const binding = reviewBinding(db, taskId);
+    return binding ? { event: after > 0 ? "paused" : "resumed", taskId, binding, recipients: plans.resultRecipients(taskId, binding.version, binding.attemptId) } : null;
+  };
+  /** Sends the wake after the commit. A delivery failure never undoes the question; it comes back for the command to print. */
+  async function announce(wake: Wake): Promise<PlanWake | undefined> {
+    const task = wake && store.tasks.getTask(wake.taskId);
+    const project = task && store.tasks.getProject(task.projectId);
+    // With planning off the plan is not touched. An owner review has no thread to wake, but its author still hears a resume.
+    if (!wake || !task || !project || !planningOn(project)) return undefined;
+    const { reviewerThread, version, attemptId } = wake.binding;
+    if (!reviewerThread && wake.event === "paused") return undefined;
+    // Read again right before each append or send, and once more before a failure is reported: after an override, a
+    // reassignment, a newer draft or a decision that changed again, a notice that went stale is dropped.
+    // The live count must still match the event, in both directions: a delayed pause never follows its own resume.
+    const wanted = () => reviewBinding(db, task.id)?.attemptId === attemptId && (openDecisionIds(db, task.id).length > 0) === (wake.event === "paused");
+    if (!wanted()) return undefined;
+    const failed: string[] = [];
+    let hint: string | null = null;
+    // A wake that went stale everywhere reports nothing.
+    let sentAny = false;
+    const text = (wake.event === "paused" ? buildReviewPausedMessage : reviewerThread ? buildReviewResumedMessage : buildOwnerReviewSettledMessage)({ taskKey: task.key, version });
+    if (reviewerThread) {
+      const woke = await wakeReviewer(bb, { taskId: task.id, taskKey: task.key, threadId: reviewerThread, text, wanted });
+      if (woke.delivered === "failed") {
+        failed.push(reviewerThread);
+        hint = woke.hint;
+      } else if (woke.delivered === "sent") sentAny = true;
+    }
+    if (wake.event === "resumed") {
+      // The author hears about it for information, through the same routing as a review result, as of the settled attempt.
+      const copy = buildResultCopyMessage({ taskKey: task.key, headline: text, actor: reviewerThread });
+      const told = new Set<string>();
+      for (const original of [wake.recipients.actor, wake.recipients.copy]) {
+        // A recipient that cannot be reached at all is a failure; an author with no thread (a plan written in the app) is not.
+        if (!original) continue;
+        const thread = await planReviewThread(bb, original);
+        if (!thread) {
+          failed.push(original);
+          continue;
+        }
+        if (thread === reviewerThread || told.has(thread)) continue;
+        told.add(thread);
+        try {
+          if (await notifyThread(bb, thread, copy, wanted)) sentAny = true;
+        } catch (error) {
+          bb.log.warn(`failed to tell ${thread} that the decision on ${task.key} is settled: ${errorMessage(error)}`);
+          failed.push(thread);
+        }
+      }
+    }
+    // Lookups and sends take time: a handoff warning is only for a notice that is still needed once they are done.
+    if (failed.length && !wanted()) failed.length = 0;
+    if (!failed.length && !sentAny) return undefined;
+    return { event: wake.event, delivered: failed.length ? "failed" : "sent", failed, hint: failed.length ? hint : null };
+  }
   const getQuestion = (id: string) => {
     const row = db
       .prepare<
@@ -153,9 +239,12 @@ export function createStructuredStore(bb: BbPluginApi, store: TasksApiStore) {
         FROM tasks t WHERE t.id IN (${taskIds.map(() => "?").join(",")})
       `).all(...taskIds).map(row => ({ ...row, waitingOnOwner: Boolean(row.waitingOnOwner) })) : [],
     }),
-    createQuestion(input) {
+    async createQuestion(input) {
       requireTask(input.taskId);
       assertQuestionShape(input.prompt, input.steps ?? []);
+      assertStepsAtomic(input.steps ?? []);
+      assertStepsSingleAction(input.steps ?? []);
+      assertNotPlanQuestion(input.taskId, input.prompt, input.steps ?? []);
       const now = new Date().toISOString();
       const question = questionSchema.parse({
         id: createUlid(),
@@ -177,21 +266,29 @@ export function createStructuredStore(bb: BbPluginApi, store: TasksApiStore) {
         updatedAt: now,
       });
       assertNoSecretsInValue(question, "question");
-      store.transaction(() => {
+      const wake = store.transaction(() => {
+        // Read inside the write, so a plan save cannot open the debt between this check and the insert.
+        if (question.kind === "check") assertNoCheckDuringPlanDebt(question.taskId);
+        const before = openDecisionIds(db, question.taskId).length;
         db.prepare<[string, string, string]>(
           "INSERT INTO task_questions (id, task_id, payload) VALUES (?, ?, ?)",
         ).run(question.id, question.taskId, JSON.stringify(question));
         syncDecisionLabel(question.taskId);
+        return decisionTransition(question.taskId, before);
       });
       changed(question.taskId);
-      return { question };
+      const planWake = await announce(wake);
+      return { question, ...(planWake ? { planWake } : {}) };
     },
     async answerQuestion(input) {
       let withdrawn = false;
+      let debtEvent = false, sameAnswer = false;
       let notice = "";
       let comment: ReturnType<typeof store.tasks.createComment> | undefined;
+      let wake: Wake = null;
       const question = store.transaction(() => {
         const current = getQuestion(input.questionId);
+        const before = openDecisionIds(db, current.taskId).length;
         const attachmentIds = input.attachmentIds ?? [];
         if (new Set(attachmentIds).size !== attachmentIds.length) throw new Error("Duplicate attachment IDs");
         for (const id of attachmentIds) {
@@ -217,23 +314,23 @@ export function createStructuredStore(bb: BbPluginApi, store: TasksApiStore) {
           updatedAt: new Date().toISOString(),
         });
         assertNoSecretsInValue(next, "question");
-        if (
-          JSON.stringify([...current.selectedOptionIds].sort()) ===
-            JSON.stringify([...next.selectedOptionIds].sort()) &&
-          current.answerText === next.answerText && !attachmentIds.length
-        )
-          return current;
+        // Attachments make a save a change, but only options and text make it a new answer.
+        sameAnswer = JSON.stringify([...current.selectedOptionIds].sort()) === JSON.stringify([...next.selectedOptionIds].sort()) && current.answerText === next.answerText;
+        if (sameAnswer && !attachmentIds.length) return current;
         const { id, taskId, createdAt, history, ...snapshot } = current;
         next.history = [...history, snapshot];
         db.prepare<[string, string]>(
           "UPDATE task_questions SET payload = ? WHERE id = ?",
         ).run(JSON.stringify(next), next.id);
         syncDecisionLabel(next.taskId);
+        wake = decisionTransition(next.taskId, before);
         const answerOf = (state: typeof current) => [
           ...state.options.filter((option) => state.selectedOptionIds.includes(option.id)).map((option) => option.label),
           ...(state.answerText ? [state.answerText] : []),
         ].join("; ");
         const answer = answerOf(next), previous = answerOf(current);
+        // A saved, non-empty answer to a decision is a plan-debt trigger of the card's open episode.
+        if ((next.kind ?? "decision") === "decision" && answer && !sameAnswer) debtEvent = recordPlanDebtEvent(db, next.taskId, `answer:${next.id}:${next.revision}`);
         withdrawn = !answer && Boolean(previous);
         comment = store.tasks.createComment({
           taskId: next.taskId,
@@ -258,8 +355,11 @@ export function createStructuredStore(bb: BbPluginApi, store: TasksApiStore) {
       changed(question.taskId);
       if (!comment) return { ...result, question, notification: "unchanged" as const };
       bb.realtime.publish("comments:changed", { taskId: question.taskId });
+      const planWake = await announce(wake);
+      // Its own message, after the answer's delivery below and outside it: the reminder has its own receipts.
+      const remind = () => (debtEvent ? planDebtService(bb, store.tasks).drain() : undefined);
       const threadId = question.askedByThread ?? defaultTaskThreadId(store.tasks, question.taskId, comment.id);
-      if (!threadId) return { ...result, question, notification: "none" as const };
+      if (!threadId) { await remind(); return { ...result, question, notification: "none" as const, ...(planWake ? { planWake } : {}) }; }
       const notifiedCount = await deliverCommentToLatestAgent(bb, store.tasks, {
         taskId: question.taskId,
         commentId: comment.id,
@@ -278,15 +378,19 @@ export function createStructuredStore(bb: BbPluginApi, store: TasksApiStore) {
         store.tasks.updateComment(comment!.id, { notifiedCount }),
       );
       bb.realtime.publish("comments:changed", { taskId: question.taskId });
+      await remind();
       return {
         ...result,
         question,
         notification: notifiedCount ? ("sent" as const) : ("failed" as const),
+        ...(planWake ? { planWake } : {}),
       };
     },
-    updateQuestion(input) {
+    async updateQuestion(input) {
+      let wake: Wake = null;
       const question = store.transaction(() => {
         const current = getQuestion(input.questionId);
+        const before = openDecisionIds(db, current.taskId).length;
         if (current.revision !== input.revision)
           throw new Error("Question changed; reload it before editing");
         if (
@@ -320,7 +424,12 @@ export function createStructuredStore(bb: BbPluginApi, store: TasksApiStore) {
             "Question has an answer; confirm reopen to clear it and request a new decision",
           );
         assertQuestionShape(content.prompt, content.steps);
+        // Only new or changed steps must be single sentences, so an untouched legacy step does not block an edit.
+        assertStepsAtomic(content.steps, current.steps ?? []);
+        assertStepsSingleAction(content.steps, current.steps ?? []);
+        assertNotPlanQuestion(current.taskId, content.prompt, content.steps);
         if (current.answeredBy) assertReopenKeepsScope(current, content);
+        if (current.answeredBy && current.kind === "check") assertNoCheckDuringPlanDebt(current.taskId);
         const { id, taskId, createdAt, history, ...snapshot } = current;
         const next = questionSchema.parse({
           ...current,
@@ -339,6 +448,7 @@ export function createStructuredStore(bb: BbPluginApi, store: TasksApiStore) {
           "UPDATE task_questions SET payload = ? WHERE id = ?",
         ).run(JSON.stringify(next), next.id);
         syncDecisionLabel(next.taskId);
+        wake = decisionTransition(next.taskId, before);
         store.tasks.createComment({
           taskId: next.taskId,
           kind: "system",
@@ -349,20 +459,25 @@ export function createStructuredStore(bb: BbPluginApi, store: TasksApiStore) {
       });
       changed(question.taskId);
       bb.realtime.publish("comments:changed", { taskId: question.taskId });
-      return { question };
+      const planWake = await announce(wake);
+      return { question, ...(planWake ? { planWake } : {}) };
     },
-    deleteQuestion(input) {
+    async deleteQuestion(input) {
       const question = getQuestion(input.questionId);
       if (question.revision !== input.revision)
         throw new Error("Question changed; reload it before deleting");
+      let wake: Wake = null;
       const deleted = store.transaction(() => {
+        const before = openDecisionIds(db, question.taskId).length;
         const result = db.prepare<[string]>("DELETE FROM task_questions WHERE id = ?")
           .run(question.id).changes > 0;
         syncDecisionLabel(question.taskId);
+        wake = decisionTransition(question.taskId, before);
         return result;
       });
       changed(question.taskId);
-      return { deleted };
+      const planWake = await announce(wake);
+      return { deleted, ...(planWake ? { planWake } : {}) };
     },
     listTemplates: ({ projectId }) => ({ templates: listTemplates(projectId) }),
     setTemplate(input) {

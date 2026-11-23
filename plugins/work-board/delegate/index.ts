@@ -1,11 +1,13 @@
-import { withPluginHeader } from "../steer";
+import { notifyThread, withPluginHeader } from "../steer";
+import { buildPlanAdvisoryNotice } from "../shared/plan-notes";
 import { dispatchMarker } from "../activity/dispatch.js";
+import { createPlanStore } from "../plans/store";
 import { createDependencyStore } from "../dependencies/store";
 import type { DependencyTask } from "../shared/contract";
 import { activityService } from "../activity/index.js";
 import { recordThreadLink } from "../lifecycle/thread-links";
 import { DEFAULT_TASK_STATUSES, statusLabel } from "../shared/statuses.js";
-import { getWorkflowPolicy } from "../shared/workflow-policy";
+import { effectiveInProgressStatus, getWorkflowPolicy, startsFromStatus } from "../shared/workflow-policy";
 import type { BbPluginApi, PluginRpcHandlers } from "@get-bb/plugin-sdk";
 import { z } from "zod";
 import { createStructuredStore } from "../structured/store";
@@ -33,10 +35,10 @@ import {
 import { errorMessage } from "../shared/errors";
 import { truncateToWidth } from "../shared/text-measure";
 import { delegationRpcContract } from "./contract";
+import { MANUAL_PRESET_NAME, snapshotLateLink } from "./attach";
 
 const MAX_DELEGATED_THREAD_TITLE_WIDTH = 120;
 const SYSTEM_AUTHOR_NAME = "Work Board";
-const MANUAL_PRESET_NAME = "Attached";
 
 const presetExecutionSchema = z
   .object({
@@ -71,6 +73,8 @@ interface SeedPromptInput {
   recentComments: readonly Comment[];
   presetInstructions: string;
   extraInstructions?: string;
+  /** Set while the card's plan exists and is not approved. */
+  planWarning?: string | null;
 }
 
 function markdownSection(title: string, body: string): string {
@@ -119,6 +123,20 @@ function reportBackContract(key: string, project: Project): string {
   return `You are working on task ${key}; this thread is attached to it and activity is tracked automatically. Keep Current state up to date with bb work-board update ${key} --progress "..." (done, next, waiting for): the owner reads it on the card. Post results and evidence as comments (bb work-board comment ${key} --body ...) and attach artifacts. When you need the owner, ask on the task with bb work-board question add ${key} --kind decision|check (steps in --step), not in chat or a comment. When done, ${done}. If this thread has a parent thread, tell it what it must act on with bb work-board report ${key} --kind ready|question|blocker --body "..." (ready when the work is ready, blocker when you are stuck; question and blocker also need --need "<what the parent must decide or do>"): Current state alone wakes nobody, and progress that asks nothing stays in --progress.`;
 }
 
+/**
+ * The status move was skipped because the plan is not approved, but the prompt that was sent was built while it still
+ * was: the executor gets one advisory notice. A failed delivery is only logged.
+ */
+export async function noticeSkippedMove(bb: BbPluginApi, store: TasksStore, task: Task, threadId: string): Promise<void> {
+  const advisory = createPlanStore(bb.storage.database(), store).advisoryFor(task);
+  if (!advisory) return;
+  try {
+    await notifyThread(bb, threadId, buildPlanAdvisoryNotice(task.key, advisory));
+  } catch (error) {
+    bb.log.warn(`failed to send the plan advisory of ${task.key} to ${threadId}: ${errorMessage(error)}`);
+  }
+}
+
 export function buildSeedPrompt(input: SeedPromptInput): string {
   const sections = [
     `${dispatchMarker(input.task.id)}\n# ${input.task.key} · ${input.task.title}`,
@@ -145,6 +163,7 @@ export function buildSeedPrompt(input: SeedPromptInput): string {
     markdownSection("Attachments", formatAttachments(input.attachments)),
     markdownSection("Recent comments", formatComments(input.recentComments)),
     ...(input.blockedBy?.length ? [markdownSection("Dependency warning", `This task is blocked by unfinished predecessors:\n${input.blockedBy.map(task => `- ${task.key} · ${task.title} (${task.status})`).join("\n")}\nOnly Done satisfies a dependency. Work and status changes are allowed, but respect this ordering and report any blocker. Recheck with bb work-board dependency list ${input.task.key}.`)] : []),
+    ...(input.planWarning ? [markdownSection("Plan warning", `${input.planWarning}. Wait for the approval, or ask the plan author, instead of starting. Read it with bb work-board plan show ${input.task.key}.`)] : []),
     ...(input.questions?.length
       ? [markdownSection("Questions", JSON.stringify(input.questions, null, 2))]
       : []),
@@ -370,9 +389,11 @@ export function handlers(
         );
       }
       const comments = store.tasks.listComments(task.id);
+      const planWarning = createPlanStore(bb.storage.database(), store.tasks).advisoryFor(task);
       const prompt = buildSeedPrompt({
         blockedBy: createDependencyStore(bb.storage.database(), store.tasks).blockers([task.id]).get(task.id),
         questions: createStructuredStore(bb, store).listQuestions(task.id),
+        planWarning,
         task,
         project,
         subtasks:
@@ -390,10 +411,13 @@ export function handlers(
         mode: "queue-if-active",
         input: [{ type: "text", text: withPluginHeader(bb.pluginId, prompt), mentions: [] }],
       });
+      let skippedMove = false;
+      let lateClosure: string | null = null;
       store.transaction(() => {
-        store.tasks.upsertTaskThread({
+        const link = store.tasks.upsertTaskThread({
           taskId: task.id,
           threadId: thread.id,
+          linkOrigin: "delegate_existing",
           presetName: "Existing thread",
           title: truncateToWidth(
             thread.title ?? thread.titleFallback ?? delegatedThreadTitle(task),
@@ -401,8 +425,14 @@ export function handlers(
           ),
           liveStatus: taskThreadLiveStatus(thread),
         });
-        if (task.status === "backlog" || task.status === "todo") {
-          store.tasks.updateTask(task.id, { status: getWorkflowPolicy(project).inProgressStatus ?? "in_progress" });
+        // The send above took time: the card and the project are read again here, so a card canceled meanwhile stays canceled.
+        // A card whose plan is not approved stays where it is; the seed prompt carries the plan warning.
+        const current = store.tasks.getTask(task.id) ?? task;
+        const currentProject = store.tasks.getProject(current.projectId) ?? project;
+        const target = effectiveInProgressStatus(currentProject);
+        if (startsFromStatus(currentProject, current.status) && target) {
+          if (store.tasks.planGate(current, target)) skippedMove = true;
+          else store.tasks.updateTask(task.id, { status: target });
         }
         createSystemComment(store.tasks, {
           taskId: task.id,
@@ -410,11 +440,15 @@ export function handlers(
           threadId: thread.id,
           body: `Dispatched to existing thread ${thread.title ?? thread.titleFallback ?? thread.id}`,
         });
+        lateClosure = snapshotLateLink(store.tasks, task.id, link, false, "delegate_existing");
       });
+      await store.closures.lateLink(lateClosure, thread.id);
+      if (skippedMove && !planWarning) await noticeSkippedMove(bb, store.tasks, store.tasks.getTask(task.id) ?? task, thread.id);
       if (delivery?.delivery === "queued")
         activityService(bb, store).queued(task.id, thread.id, delivery.queuedMessage.id);
       publishThreadsChanged(bb, task.id);
-      publishTasksChanged(bb, task.id, task.projectId);
+      // The card may have changed projects during the dispatch: subscribers of its committed project hear about it.
+      publishTasksChanged(bb, task.id, (store.tasks.getTask(task.id) ?? task).projectId);
       publishCommentsChanged(bb, task.id);
       return { threadId: thread.id };
     },
@@ -434,9 +468,11 @@ export function handlers(
         serviceTier: preset.serviceTier,
         permissionMode: preset.permissionMode,
       });
+      const planWarning = createPlanStore(bb.storage.database(), store.tasks).advisoryFor(task);
       const prompt = buildSeedPrompt({
         blockedBy: createDependencyStore(bb.storage.database(), store.tasks).blockers([task.id]).get(task.id),
         questions: createStructuredStore(bb, store).listQuestions(task.id),
+        planWarning,
         task,
         project,
         subtasks:
@@ -477,6 +513,8 @@ export function handlers(
         })
         .catch((error: unknown) => mapSpawnTargetError(error, preset));
 
+      let skippedMove = false;
+      let lateClosure: string | null = null;
       const taskThread = store.transaction(() => {
         const attached = store.tasks.upsertTaskThread({
           taskId: task.id,
@@ -484,16 +522,23 @@ export function handlers(
           presetName: preset.name,
           title,
           liveStatus: "starting",
+          linkOrigin: "delegate_spawn",
+          createdForTask: true,
         });
 
-        const inProgress = getWorkflowPolicy(project).inProgressStatus ?? "in_progress";
-        if (task.status === "backlog" || task.status === "todo") {
+        // The spawn above took time: the card and the project are read again here, so a card canceled meanwhile stays canceled.
+        const current = store.tasks.getTask(task.id) ?? task;
+        // The card may have changed projects meanwhile; its own project decides the target status.
+        const freshProject = store.tasks.getProject(current.projectId) ?? project;
+        const inProgress = effectiveInProgressStatus(freshProject);
+        if (startsFromStatus(freshProject, current.status) && inProgress && store.tasks.planGate(current, inProgress)) skippedMove = true;
+        else if (startsFromStatus(freshProject, current.status) && inProgress) {
           store.tasks.updateTask(task.id, { status: inProgress });
           createSystemComment(store.tasks, {
             taskId: task.id,
             presetName: preset.name,
             threadId: thread.id,
-            body: `Status changed to ${statusLabel(inProgress, project.statuses)} · dispatched to ${preset.name}`,
+            body: `Status changed to ${statusLabel(inProgress, freshProject.statuses)} · dispatched to ${preset.name}`,
           });
         }
 
@@ -503,9 +548,12 @@ export function handlers(
           threadId: thread.id,
           body: `Dispatched to ${preset.name}`,
         });
+        lateClosure = snapshotLateLink(store.tasks, task.id, attached, true, "delegate_spawn");
         return attached;
       });
+      await store.closures.lateLink(lateClosure, thread.id);
 
+      if (skippedMove && !planWarning) await noticeSkippedMove(bb, store.tasks, store.tasks.getTask(task.id) ?? task, thread.id);
       try {
         const currentThread = await bb.sdk.threads.get({ threadId: thread.id });
         const currentLiveStatus = taskThreadLiveStatus(currentThread);
@@ -521,7 +569,8 @@ export function handlers(
       }
 
       publishThreadsChanged(bb, task.id);
-      publishTasksChanged(bb, task.id, task.projectId);
+      // The card may have changed projects during the dispatch: subscribers of its committed project hear about it.
+      publishTasksChanged(bb, task.id, (store.tasks.getTask(task.id) ?? task).projectId);
       publishCommentsChanged(bb, task.id);
       return { threadId: thread.id };
     },
@@ -551,6 +600,7 @@ export function handlers(
           presetName: MANUAL_PRESET_NAME,
           title,
           liveStatus: taskThreadLiveStatus(thread),
+          linkOrigin: "manual",
         });
 
         if (!existing) {

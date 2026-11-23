@@ -14,7 +14,9 @@ import {
   type Comment,
 } from "../shared/contract";
 import { createStructuredStore } from "./store";
+import { assertStepsSingleAction, isQuestionOpen } from "../shared/questions";
 import { evidenceFlags, evidenceIndex } from "./evidence";
+import { createPlanStore } from "../plans/store";
 
 const harnesses: FakePluginHarness[] = [];
 afterEach(async () => {
@@ -108,18 +110,137 @@ describe("task questions", () => {
   it("allows one link across prompt and steps, keeps a reopen to the same scope and hands the reopened question to the reopener", async () => {
     const { structured, task } = setup();
     const ask = (prompt: string, steps: string[]) => structured.handlers.createQuestion({ kind: "check", askedByThread: "thr_example", taskId: task.id, prompt, steps, mode: "single", options: [] });
-    expect(() => ask("Does [the page](https://example.com/a) look right?", ["Open [state B](https://example.com/b)"])).toThrow(/at most one link.*has 2.*several --kind check questions/);
-    expect(() => ask("See https://example.com/a and https://example.com/b", [])).toThrow(/has 2/);
-    expect(() => ask("Open [the board](/plugins/work-board/work-board/task/EXA-1)", ["Then [the plan](/plugins/work-board/work-board/task/EXA-1/plan)"])).toThrow(/has 2/);
+    await expect(ask("Does [the page](https://example.com/a) look right?", ["Open [state B](https://example.com/b)"])).rejects.toThrow(/at most one link.*has 2.*several --kind check questions/);
+    await expect(ask("See https://example.com/a and https://example.com/b", [])).rejects.toThrow(/has 2/);
+    await expect(ask("Open [the board](/plugins/work-board/work-board/task/EXA-1)", ["Then [the plan](/plugins/work-board/work-board/task/EXA-1/plan)"])).rejects.toThrow(/has 2/);
     // The same link twice is one link.
     const { question } = await ask("Does [the page](https://example.com/a) look right?", ["Open https://example.com/a", "Press Save"]);
     const answered = (await structured.handlers.answerQuestion({ questionId: question.id, revision: question.revision, selectedOptionIds: [question.options[0]!.id], authorName: "Owner" })).question;
     const reopen = (steps: string[], askedByThread?: string) => structured.handlers.updateQuestion({ questionId: question.id, revision: answered.revision, prompt: answered.prompt, steps, mode: answered.mode, options: answered.options, reopen: true, authorName: "Agent", ...(askedByThread ? { askedByThread } : {}) });
-    expect(() => reopen([...(answered.steps ?? []), "Dismiss the notice"])).toThrow(/cannot add steps.*new question/);
-    expect(() => reopen(["Open https://example.com/c", "Press Save"])).toThrow(/at most one link|cannot add links/);
-    const reopened = (await reopen(["Open https://example.com/a", "Press Save and reload"], "thr_reopener")).question;
+    await expect(reopen([...(answered.steps ?? []), "Dismiss the notice"])).rejects.toThrow(/cannot add steps.*new question/);
+    await expect(reopen(["Open https://example.com/c", "Press Save"])).rejects.toThrow(/at most one link|cannot add links/);
+    const reopened = (await reopen(["Open https://example.com/a", "Press Save twice"], "thr_reopener")).question;
     expect(reopened.askedByThread).toBe("thr_reopener");
-    expect(reopened.steps).toEqual(["Open https://example.com/a", "Press Save and reload"]);
+    expect(reopened.steps).toEqual(["Open https://example.com/a", "Press Save twice"]);
+  });
+
+  it("refuses plan-approval questions: any link to a task plan, and approval wording once the task has a plan, but only with planning on", async () => {
+    const { bb, structured, task, store, project } = setup();
+    const ask = (prompt: string, steps: string[] = []) => structured.handlers.createQuestion({ kind: "decision", askedByThread: null, taskId: task.id, prompt, steps, mode: "single", options: ["Yes", "No"] });
+    const link = `Do you accept [the plan](/plugins/work-board/work-board/task/${task.key}/plan)?`;
+    const now = new Date().toISOString();
+    bb.storage.database().prepare("INSERT INTO task_plans (task_id, format, version, body, state, updated_at, author_kind, author_thread, author_name) VALUES (?, 'markdown', 1, '# Plan', 'in_review', ?, 'agent', NULL, 'agent')").run(task.id, now);
+    // With planning off (the default) the plan has no review: the guard does not apply, plan links included.
+    let current = (await ask(link)).question;
+    await ask("Do you accept the plan so I can start?");
+    const update = async (prompt: string) => {
+      current = (await structured.handlers.updateQuestion({ questionId: current.id, revision: current.revision, prompt, mode: current.mode, options: current.options, authorName: "Owner" })).question;
+    };
+    await update("Do you approve the plan now?");
+    store.tasks.updateProject(project.id, { planning: "optional" });
+    await expect(ask(link)).rejects.toThrow(/plan submit.*--reviewer/);
+    await expect(update("Do you accept the plan so we can go?")).rejects.toThrow(/Plan approval is not an owner question/);
+    // Without a plan on the task, approval wording alone is an ordinary question (e.g. a plan of something else), but a plan link is not.
+    bb.storage.database().prepare("DELETE FROM task_plans WHERE task_id = ?").run(task.id);
+    await ask("Do you approve the pricing plan change?");
+    await expect(ask(link)).rejects.toThrow(/plan submit/);
+    bb.storage.database().prepare("INSERT INTO task_plans (task_id, format, version, body, state, updated_at, author_kind, author_thread, author_name) VALUES (?, 'markdown', 1, '# Plan', 'in_review', ?, 'agent', NULL, 'agent')").run(task.id, now);
+    await expect(ask("Do you accept the plan so I can start?")).rejects.toThrow(/Plan approval is not an owner question/);
+    await expect(ask("Принимаете план от 19.11?")).rejects.toThrow(/plan submit/);
+    await expect(ask("Can I start step 1?", ["Approve the plan first"])).rejects.toThrow(/plan submit/);
+    await ask("Which database should step 2 use?");
+  });
+
+  it("refuses owner checks and check reopens while the card has plan debt, and keeps decisions allowed", async () => {
+    const { bb, store, project, structured } = setup();
+    const plans = createPlanStore(bb.storage.database(), store.tasks);
+    const author = { kind: "agent" as const, threadId: "thr_example", name: "agent" };
+    store.tasks.updateProject(project.id, { planning: "optional" });
+    const card = store.tasks.createTask({ projectId: project.id, title: "Rendered states", status: "in_progress" });
+    const epic = store.tasks.createTask({ projectId: project.id, title: "Area", type: "epic", status: "in_progress" });
+    const check = (taskId: string) => structured.handlers.createQuestion({ kind: "check", askedByThread: null, taskId, prompt: "Does the list render?", steps: [], mode: "single", options: [] });
+    // Optional planning: no debt, so checks are asked as before.
+    const early = (await check(card.id)).question;
+    await structured.handlers.answerQuestion({ questionId: early.id, revision: early.revision, selectedOptionIds: [early.options[0]!.id], authorName: "Owner" });
+    store.tasks.updateProject(project.id, { planning: "required" });
+    const refusal = `Plan debt: ${card.key} is in work without an approved plan (no plan). Owner checks wait for an approved plan; write it (bb work-board plan set ${card.key} --file plan.md --base-version 0 --summary "Initial plan"), then submit it: bb work-board plan submit ${card.key} --reviewer …`;
+    await expect(check(card.id)).rejects.toThrow(refusal);
+    plans.save({ taskId: card.id, op: "replace", baseVersion: 0, body: "# Plan\n", summary: "Plan", author });
+    await expect(check(card.id)).rejects.toThrow(`(plan v1 is draft). Owner checks wait for an approved plan; submit it for review: bb work-board plan submit ${card.key} --reviewer …`);
+    plans.submit(card.id, author, null);
+    await expect(check(card.id)).rejects.toThrow(`(plan v1 is in review). Owner checks wait for an approved plan; wait for the review to finish (bb work-board plan show ${card.key}); if it asks for changes, revise the plan and submit it again: bb work-board plan submit ${card.key} --reviewer …`);
+    plans.setState(card.id, "changes_requested", { kind: "person", threadId: null, name: "Owner" });
+    await expect(check(card.id)).rejects.toThrow(`(plan v1 is changes requested). Owner checks wait for an approved plan; revise it (bb work-board plan edit ${card.key} … --base-version 1), then submit it: bb work-board plan submit ${card.key} --reviewer …`);
+    // A reopen asks the owner again, so it waits too; an epic never carries debt.
+    const answered = structured.listQuestions(card.id)[0]!;
+    await expect(structured.handlers.updateQuestion({ questionId: answered.id, revision: answered.revision, prompt: answered.prompt, mode: "single", options: answered.options, reopen: true, authorName: "agent" })).rejects.toThrow("Owner checks wait for an approved plan");
+    expect((await check(epic.id)).question.kind).toBe("check");
+    // Clearing an answer is not an ask: it stays open to every caller, so a withdrawn confirmation never sticks.
+    const cleared = await structured.handlers.answerQuestion({ questionId: answered.id, revision: answered.revision, selectedOptionIds: [], authorName: "agent" });
+    expect(cleared.question.answeredBy).toBeNull();
+    expect(isQuestionOpen(cleared.question)).toBe(true);
+    // The cleared check is open again, so an edit (not a reopen) stays allowed during the debt.
+    const edited = await structured.handlers.updateQuestion({ questionId: answered.id, revision: cleared.question.revision, prompt: "Does the list render after reload?", mode: "single", options: cleared.question.options, authorName: "agent" });
+    expect(edited.question.prompt).toBe("Does the list render after reload?");
+    const again = await structured.handlers.answerQuestion({ questionId: answered.id, revision: edited.question.revision, selectedOptionIds: [answered.options[0]!.id], authorName: "Owner" });
+    const reanswered = again.question;
+    const decision = await structured.handlers.createQuestion({ kind: "decision", askedByThread: null, taskId: card.id, prompt: "Which layout?", mode: "single", options: ["A", "B"] });
+    expect(decision.question.kind).toBe("decision");
+    await structured.handlers.deleteQuestion({ questionId: decision.question.id, revision: decision.question.revision });
+    plans.setState(card.id, "approved", { kind: "person", threadId: null, name: "Owner" });
+    expect((await check(card.id)).question.kind).toBe("check");
+    const reopened = await structured.handlers.updateQuestion({ questionId: reanswered.id, revision: reanswered.revision, prompt: answered.prompt, mode: "single", options: answered.options, reopen: true, authorName: "agent" });
+    expect(reopened.question.answeredBy).toBeNull();
+  });
+
+  it("keeps each check step to one sentence and one action", async () => {
+    const { structured, task } = setup();
+    const ask = (steps: string[]) => structured.handlers.createQuestion({ kind: "check", askedByThread: null, taskId: task.id, prompt: "Does Retry recover the list?", steps, mode: "single", options: [] });
+    await expect(ask(["Press Retry, close the message and press Reload. Check that the list appears."])).rejects.toThrow(/Step 1 has 2 sentences.*separate --step values, in order/);
+    await expect(ask(["Press Retry", "Нажмите Retry. Проверьте список."])).rejects.toThrow(/Step 2 has 2 sentences/);
+    await ask(["Open settings, e.g. the Storage page", "Check that the list appears."]);
+    const joined = ["Press Retry, close the message and press Reload", "Check that the list appears", "Нажмите Retry, затем закройте окно"];
+    expect(() => assertStepsSingleAction(joined)).toThrow(/^Steps 1, 3 may join several actions.*Nothing was saved\..*separate --step values, in order/);
+    expect(() => assertStepsSingleAction(["Open Settings and Storage", "Check the list"])).not.toThrow();
+    expect(() => assertStepsSingleAction(joined, [joined[0]!, joined[2]!])).not.toThrow();
+    // Each kept entry covers one occurrence: a second copy of a legacy step is new.
+    expect(() => assertStepsSingleAction([joined[0]!, joined[0]!], [joined[0]!])).toThrow(/^Step 2 may join/);
+  });
+
+  it("refuses joined steps through the registered RPCs and the CLI without saving anything", async () => {
+    const { harness, task, structured, bb } = setup();
+    const joined = "Press Retry and press Reload";
+    const base = { taskId: task.id, kind: "check", prompt: "Does it reload?", options: [] };
+    await expect(harness.callRpc("createQuestion", { ...base, steps: [joined] })).rejects.toThrow(/Step 1 may join several actions.*Nothing was saved/);
+    expect(structured.listQuestions(task.id)).toEqual([]);
+    const { question } = (await harness.callRpc("createQuestion", { ...base, steps: ["Press Retry"] })) as { question: { id: string; revision: number; options: unknown[] } };
+    const update = (steps: string[], prompt = "Does it reload?") =>
+      harness.callRpc("updateQuestion", { questionId: question.id, revision: question.revision, prompt, steps, mode: "single", options: [{ label: "Yes" }] });
+    await expect(update(["Press Retry", joined])).rejects.toThrow(/Step 2 may join several actions/);
+    expect(structured.listQuestions(task.id)[0]?.revision).toBe(question.revision);
+    // A legacy joined step that is kept does not block an edit of the prompt.
+    bb.storage.database().prepare("UPDATE task_questions SET payload = json_set(payload, '$.steps', json_array(?)) WHERE id = ?").run(joined, question.id);
+    await update([joined], "Does Retry reload the list?");
+    const kept = structured.listQuestions(task.id)[0]!;
+    expect(kept).toMatchObject({ prompt: "Does Retry reload the list?", steps: [joined] });
+    // A second copy of the legacy step is a new step and is refused.
+    await expect(harness.callRpc("updateQuestion", { questionId: question.id, revision: kept.revision, prompt: kept.prompt, steps: [joined, joined], mode: "single", options: [{ label: "Yes" }] })).rejects.toThrow(/Step 2 may join several actions/);
+    expect(structured.listQuestions(task.id)[0]?.revision).toBe(kept.revision);
+  });
+
+  it("refuses joined steps in question add and question update with a non-zero exit", async () => {
+    const { harness, task, structured } = setup();
+    const add = await harness.runCli(["question", "add", task.key, "--kind", "check", "--prompt", "Does it reload?", "--step", "Press Retry and press Reload"]);
+    expect(add.exitCode).not.toBe(0);
+    expect(add.stderr).toMatch(/Nothing was saved/);
+    expect(JSON.parse((await harness.runCli(["question", "list", task.key, "--json"])).stdout).questions).toEqual([]);
+    const created = await harness.runCli(["question", "add", task.key, "--kind", "check", "--prompt", "Does it reload?", "--step", "Press Retry", "--json"]);
+    expect(created.exitCode).toBe(0);
+    const { id, revision } = structured.listQuestions(task.id)[0]!;
+    const update = await harness.runCli(["question", "update", task.key, "--question", id, "--revision", String(revision), "--step", "Press Retry, then press Reload"]);
+    expect(update.exitCode).not.toBe(0);
+    expect(update.stderr + update.stdout).toMatch(/may join several actions/);
+    expect(structured.listQuestions(task.id)[0]?.revision).toBe(revision);
   });
 
   it("keeps the decision label until the last open question is answered or deleted", async () => {

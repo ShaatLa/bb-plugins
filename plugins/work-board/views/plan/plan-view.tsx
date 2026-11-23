@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { experimental_copyToClipboard, experimental_useAppPanel, useBbNavigate } from "@get-bb/plugin-sdk/app";
+import type { Task } from "../../shared/contract.js";
 import { parseHeadings } from "../../shared/plan.js";
 import { taskPlanMarkdownLink } from "../../shared/task-link.js";
 import { useTasksQuery } from "../../shell/data.js";
@@ -9,7 +10,8 @@ import { useOpenThread } from "../../components/open-thread.js";
 import { TASK_TAB } from "../embed/index.js";
 import { formatRelativeTime } from "../activity/time.js";
 import { ACTIVE_NOTE_HIGHLIGHT, NOTE_HIGHLIGHT, NOTE_HIGHLIGHT_CSS, paintHighlight, rangeOfSpan, useBodyText } from "./anchors.js";
-import { planDrafts, usePlanBody, usePlanOverview } from "./data.js";
+import { ActorLabel, ThreadChip } from "../../components/thread-chip.js";
+import { planDrafts, usePlanBody, usePlanning, usePlanOverview } from "./data.js";
 import { PlanDiffView } from "./diff-view.js";
 import { PlanEditor } from "./editor.js";
 import { useActiveHeading, useRenderedHeadings } from "./headings.js";
@@ -104,20 +106,36 @@ function PlanSkeleton() {
  * It is the content of the Plan side panel tab (`panel`) and of the plan route in the main area (`page`).
  */
 export function PlanView({ taskKey, surface }: { taskKey: string; surface: "panel" | "page" }) {
+  // Every way into the plan (a persisted tab, an old link, a setting changed while it is open) passes this check.
+  // One read serves both this gate and the body; once the task id is known, only its own changes refetch.
+  const [loaded, setLoaded] = useState<{ key: string; id: string } | undefined>();
+  const task = useTasksQuery(
+    async (rpc) => (await rpc.call("getTaskByKey", { taskKey })).task,
+    ["tasks:changed"],
+    [taskKey],
+    { relevantTaskIds: loaded?.key === taskKey ? [loaded.id] : undefined },
+  );
+  const taskId = task.data?.id;
+  useEffect(() => setLoaded(taskId === undefined ? undefined : { key: taskKey, id: taskId }), [taskKey, taskId]);
+  const planning = usePlanning(task.data?.projectId ?? null);
+  if (task.error && task.data === undefined) return <PlanError message={task.error} onRetry={task.refresh} />;
+  // The body mounts once, after the setting is known, so a pending "Write plan" request is not lost to a remount.
+  if (task.data === undefined || (task.data !== null && planning === undefined)) return <PlanSkeleton />;
+  if (planning === "off") return <p role="status" className="p-4 text-sm text-muted-foreground">Planning is off for this project</p>;
+  return <PlanViewBody taskKey={taskKey} surface={surface} task={task} />;
+}
+
+function PlanError({ message, onRetry }: { message: string; onRetry: () => void }) {
+  return <div role="alert" className="space-y-3 p-4 text-sm"><p className="text-destructive">{message}</p><Button variant="outline" size="sm" onClick={onRetry}>Retry</Button></div>;
+}
+
+function PlanViewBody({ taskKey, surface, task }: { taskKey: string; surface: "panel" | "page"; task: ReturnType<typeof useTasksQuery<Task | null>> }) {
   const navigate = useBbNavigate();
   const navigation = useTasksNavigation();
   const panel = experimental_useAppPanel();
   const openThread = useOpenThread();
 
-  const [loadedId, setLoadedId] = useState<string | undefined>();
-  const task = useTasksQuery(
-    async (rpc) => (await rpc.call("getTaskByKey", { taskKey })).task,
-    ["tasks:changed"],
-    [taskKey],
-    { relevantTaskIds: loadedId ? [loadedId] : undefined },
-  );
   const taskId = task.data?.id ?? null;
-  useEffect(() => setLoadedId(taskId ?? undefined), [taskId]);
   const overview = usePlanOverview(taskId);
   const head = overview.data?.plan ?? null;
   const versions = overview.data?.versions ?? [];
@@ -179,7 +197,8 @@ export function PlanView({ taskKey, surface }: { taskKey: string; surface: "pane
   // Owner notes: anchored by quote in the text on screen, highlighted without touching the editor DOM.
   const notesQuery = usePlanNotes(taskId);
   const allNotes = useMemo(() => notesQuery.data?.notes ?? [], [notesQuery.data]);
-  const draftCount = allNotes.filter((note) => note.state === "draft").length;
+  // Drafts are scoped per author: the owner sends and counts only their own; a reviewer thread's drafts are not theirs to send.
+  const draftCount = allNotes.filter((note) => note.state === "draft" && note.authorKind === "person").length;
   const showsBody = mode === "read" && display !== null;
   const bodyText = useBodyText(bodyRef, `${mode}:${display?.version}`);
   const placements = usePlacements(allNotes, bodyText, showsBody);
@@ -269,12 +288,12 @@ export function PlanView({ taskKey, surface }: { taskKey: string; surface: "pane
     setSending(true);
     const result = await actions.send();
     setSending(false);
-    setReview(result.ok ? deliveryNotice(result.delivered, "Feedback") : { tone: "warn", text: result.message });
+    setReview(result.ok ? deliveryNotice(result, "Feedback", { key: taskKey, version: result.version, verdict: "needs changes" }) : { tone: "warn", text: result.message });
   };
   const approve = async (note: string) => {
     const result = await actions.approve(note);
     if (!result.ok) return result.message;
-    setReview(deliveryNotice(result.delivered, "Approval"));
+    setReview(deliveryNotice(result, "Approval", { key: taskKey, version: result.version, verdict: "is approved" }));
     return null;
   };
 
@@ -307,7 +326,7 @@ export function PlanView({ taskKey, surface }: { taskKey: string; surface: "pane
 
   const versionNumbers = versions.map((version) => version.version);
   const shownVersion = versions.find((version) => version.version === (target ?? headVersion));
-  const meta = shownVersion ? { name: shownVersion.author.name, at: shownVersion.createdAt } : head ? { name: head.updatedBy.name, at: head.updatedAt } : null;
+  const meta = shownVersion ? { name: shownVersion.author.name, threadId: shownVersion.author.threadId, at: shownVersion.createdAt } : head ? { name: head.updatedBy.name, threadId: head.updatedBy.threadId, at: head.updatedAt } : null;
   const menu = (
     <DropdownMenu>
       <TooltipProvider delayDuration={300}>
@@ -349,6 +368,7 @@ export function PlanView({ taskKey, surface }: { taskKey: string; surface: "pane
             {task.data ? <span> {task.data.title}</span> : null}
           </button>
           {head ? <PlanStateChip state={head.state} /> : null}
+          {head && overview.data?.paused ? <span role="status" className="shrink-0 text-xs text-warning">Waiting for the owner's decision</span> : null}
         </div>
         <div className="ml-auto flex items-center gap-0.5">
           {head && mode === "compare" ? (
@@ -388,7 +408,8 @@ export function PlanView({ taskKey, surface }: { taskKey: string; surface: "pane
       </div>
       {head && mode !== "edit" && meta ? (
         <p className="mt-1 text-xs text-muted-foreground">
-          Updated by {meta.name} · <time dateTime={meta.at} title={meta.at}>{formatRelativeTime(meta.at, Date.now())}</time>
+          Updated by <ActorLabel name={meta.name} threadId={meta.threadId} /> · <time dateTime={meta.at} title={meta.at}>{formatRelativeTime(meta.at, Date.now())}</time>
+          {head ? <span> · Reviewer: {head.reviewer.kind === "thread" && head.reviewer.threadId ? <ThreadChip threadId={head.reviewer.threadId} /> : "owner"}</span> : null}
           {copied ? <span role="status"> · {copied}</span> : null}
         </p>
       ) : (
@@ -424,9 +445,7 @@ export function PlanView({ taskKey, surface }: { taskKey: string; surface: "pane
   );
 
   let content;
-  if (task.error && task.data === undefined) {
-    content = <div role="alert" className="space-y-3 p-4 text-sm"><p className="text-destructive">{task.error}</p><Button variant="outline" size="sm" onClick={task.refresh}>Retry</Button></div>;
-  } else if (task.data === undefined) {
+  if (task.data === undefined) {
     content = <PlanSkeleton />;
   } else if (task.data === null) {
     content = (

@@ -1,8 +1,7 @@
-import { useEffect, useState, type ReactNode } from 'react';
-import { useSdk, experimental_useTabVisible as useTabVisible, experimental_useRpcQuery as useQuery, experimental_useRpcMutation as useMutation, experimental_InfoSection as InfoSection, experimental_InfoList as InfoList, experimental_InfoListRow as InfoListRow, experimental_DetailRow as DetailRow, experimental_Icon as Icon, experimental_Diff as Diff, experimental_FileLink as FileLink } from '@get-bb/plugin-sdk/app';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { useBbNavigate, useSdk, experimental_useTabVisible as useTabVisible, experimental_useRpcQuery as useQuery, experimental_useRpcMutation as useMutation, experimental_InfoSection as InfoSection, experimental_InfoList as InfoList, experimental_InfoListRow as InfoListRow, experimental_DetailRow as DetailRow, experimental_Icon as Icon, experimental_Diff as Diff, experimental_FileLink as FileLink } from '@get-bb/plugin-sdk/app';
 import { useOpenChat } from './open-chat';
-import { openAppRoute } from './lib/app-route';
-import { gitContract, boardContract, unavailable, type GitFile, type GitTarget } from './tab-contracts';
+import { gitContract, unavailable, type GitFile, type GitTarget } from './tab-contracts';
 
 const git = { pluginId: 'bb--git', contract: gitContract };
 type Sdk = ReturnType<typeof useSdk>;
@@ -123,21 +122,28 @@ function DiffFile({ file, input, initial, viewed, visible, refreshViewed }: { fi
   </section>;
 }
 export function WorkBoardTab() {
-  const chat = useOpenChat(), visible = useTabVisible();
-  const tasks = useQuery({ pluginId: 'work-board', contract: boardContract, method: 'threadTasks', input: { threadId: chat.threadId ?? '' }, enabled: visible && !!chat.threadId });
-  useEffect(() => { if (visible && chat.threadId) void tasks.refetch(); }, [visible, chat.threadId, chat.revision]);
+  const chat = useOpenChat(), visible = useTabVisible(), host = useRef<HTMLDivElement>(null), navigate = useRef(useBbNavigate());
+  navigate.current = useBbNavigate();
+  const [state, setState] = useState<'loading' | 'ready' | 'unavailable'>('loading');
+  // Work Board portals its own board into the host node and marks it ready; nothing of its UI is bundled here.
+  useEffect(() => {
+    const node = host.current;
+    if (!node) return;
+    setState('loading');
+    const sync = () => setState(old => node.dataset.workBoardReady === 'true' ? 'ready' : old === 'ready' ? 'unavailable' : old);
+    const observer = new MutationObserver(sync);
+    observer.observe(node, { attributes: true, attributeFilter: ['data-work-board-ready'] });
+    sync();
+    const timer = setTimeout(() => setState(old => old === 'ready' ? old : 'unavailable'), 3000);
+    // Work Board renders from its app overlay, outside this page's surface, so its links would leave bb; this surface opens them in bb's browser.
+    const open = (event: Event) => { const url = (event as CustomEvent<{ url?: unknown }>).detail?.url; if (typeof url === 'string' && navigate.current.openUrl(url)) event.preventDefault(); };
+    node.addEventListener('work-board:open-url', open);
+    return () => { observer.disconnect(); clearTimeout(timer); node.removeEventListener('work-board:open-url', open); };
+  }, [visible, chat.threadId]);
   if (!chat.threadId) return <Empty>No chat open</Empty>;
-  if (tasks.error) return <Empty>Work Board unavailable</Empty>;
-  if (!tasks.data) return <Empty>Loading…</Empty>;
-  if (!tasks.data.tasks.length) return <Empty>No linked tasks</Empty>;
-  // Mirrors Work Board's TaskRow (views/list/row.tsx): status glyph, key, title, then project; the whole row opens the task.
-  // Glyph and color are Work Board's shared icon and color when it sends them; before that the status name stands in.
-  return <div role="list" aria-label="Linked tasks">{tasks.data.tasks.map(task => <div key={task.key} role="listitem" data-task-key={task.key} className={`relative flex h-[34px] w-full items-center gap-x-2 border-b border-border-hairline px-3.5 text-left transition-opacity hover:bg-state-hover ${task.archived ? 'opacity-50' : ''}`}>
-    <button type="button" aria-label={`Open ${task.key}: ${task.title}`} onClick={() => { if (task.url.startsWith('/plugins/work-board/')) openAppRoute(task.url); }} className="absolute inset-0 rounded-none focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring" />
-    {task.status.iconName && <span title={task.status.name} aria-label={task.status.name} className="flex shrink-0" style={{ color: task.status.cssColor }}><Icon name={task.status.iconName} className="size-3.5" /></span>}
-    <span className="w-14 shrink-0 truncate text-xs tabular-nums text-subtle-foreground">{task.key}</span>
-    <span className="min-w-0 flex-1 truncate text-sm">{task.title}</span>
-    {!task.status.iconName && <span className="shrink-0 text-xs text-subtle-foreground">{task.status.name}</span>}
-    <span className="shrink-0 truncate text-xs text-subtle-foreground">{task.projectName}</span>
-  </div>)}</div>;
+  if (!visible) return <></>;
+  return <div className="relative h-full min-h-0">
+    {state !== 'ready' && <div className="absolute inset-x-0 top-0"><Empty>{state === 'loading' ? 'Loading…' : 'Work Board unavailable'}</Empty></div>}
+    <div ref={host} data-work-board-host="board" data-thread-id={chat.threadId} className="h-full min-h-0" />
+  </div>;
 }

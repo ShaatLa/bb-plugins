@@ -13,6 +13,30 @@ export type PlanOp = (typeof PLAN_OPS)[number];
 /** Raised for a plan edit that cannot be applied; the message tells the agent what to fix. */
 export class PlanEditError extends Error {}
 
+const stateText = (state: PlanState) => state.replace("_", " ");
+
+/** Why a card cannot enter the work zone (to `target`) yet; null when the plan is approved. */
+export function planGateRefusal(key: string, plan: { version: number; state: PlanState } | null, target: string): string | null {
+  if (!plan || plan.state === "approved") return null;
+  return `${key} plan v${plan.version} is ${stateText(plan.state)}; with planning required a card enters ${target} only after its plan is approved (\`bb work-board plan show ${key}\`)`;
+}
+
+/** The refusal for a card with no plan when the project requires one. */
+export const noPlanGateRefusal = (key: string, target: string) => `${key} has no plan; with planning required a card enters ${target} only after its plan is approved`;
+
+/** The refusal for creating a new card directly in the work zone when the project requires a plan. */
+export const noPlanCreateRefusal = (prefix: string, target: string) => `with planning required in ${prefix}, a card cannot be created in ${target}: it has no plan yet. Create it in Backlog or Todo, write its plan, and move it after the plan is approved`;
+
+/**
+ * The non-blocking line for executors while the card's plan exists and is not approved; `planRequired` also covers a
+ * card with no plan.
+ */
+export function planAdvisory(plan: { version: number; state: PlanState } | null, planRequired = false): string | null {
+  if (!plan) return planRequired ? "No plan yet: planning is required in this project" : null;
+  if (plan.state === "approved") return null;
+  return `Plan v${plan.version} is ${stateText(plan.state)} (not approved): taking this card into work is not recommended until it is approved`;
+}
+
 export interface PlanHeading {
   level: number;
   text: string;

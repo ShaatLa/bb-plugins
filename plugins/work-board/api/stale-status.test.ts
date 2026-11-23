@@ -3,6 +3,8 @@ import { createFakePluginHost } from "@get-bb/plugin-sdk/testing";
 import { createStore, registerTasksApi } from ".";
 import { registerTasksCli } from "../cli";
 import { initializeTasksSchema } from "../db/schema";
+import { staleRows } from "../attention/observe";
+import { captureStatements } from "../test-capture";
 
 it("reports recorded diagnostics, filters before pagination, and never moves tasks", async () => {
   const { bb, harness } = createFakePluginHost({ pluginId: "work-board" });
@@ -71,7 +73,7 @@ it("uses configured status IDs and distinguishes unavailable and closed PR snaps
   const { bb, harness } = createFakePluginHost({ pluginId: "work-board" });
   const store = createStore(bb);
   const project = store.tasks.createProject({ name: "Custom", prefix: "CUS", color: "blue" });
-  store.tasks.updateProject(project.id, { workflowPolicy: { bugfixStatus: null, doneStatus: "done", inProgressStatus: "todo", reviewStatus: "in_review", testingStatus: null, earlyStatuses: [], ownerDecisionLabel: null } });
+  store.tasks.updateProject(project.id, { workflowPolicy: { bugfixStatus: null, doneStatus: "done", inProgressStatus: "todo", reviewStatus: "in_review", testingStatus: null, planningStatus: null, earlyStatuses: [], ownerDecisionLabel: null } });
   const progress = store.tasks.createTask({ projectId: project.id, title: "Working", status: "todo" });
   store.tasks.upsertTaskThread({ taskId: progress.id, threadId: "thr_worker", title: "Worker", presetName: "agent", liveStatus: "working" });
   const review = store.tasks.createTask({ projectId: project.id, title: "PR", status: "in_review" });
@@ -84,7 +86,7 @@ it("uses configured status IDs and distinguishes unavailable and closed PR snaps
   db.prepare<[string, string, string]>("UPDATE git_pr_snapshots SET payload=?, error='sync unavailable' WHERE project_id=? AND identity=?").run(JSON.stringify({ state: "merged" }), project.id, "pr");
   expect(store.tasks.staleStatusFlags([review.id]).get(review.id)).toEqual(["no_open_pr"]);
   // Testing after the merge is expected; testing with no PR at all is still flagged.
-  store.tasks.updateProject(project.id, { workflowPolicy: { bugfixStatus: null, doneStatus: "done", inProgressStatus: "todo", reviewStatus: "in_review", testingStatus: "in_testing", earlyStatuses: [], ownerDecisionLabel: null } });
+  store.tasks.updateProject(project.id, { workflowPolicy: { bugfixStatus: null, doneStatus: "done", inProgressStatus: "todo", reviewStatus: "in_review", testingStatus: "in_testing", planningStatus: null, earlyStatuses: [], ownerDecisionLabel: null } });
   const statuses = [...(store.tasks.getProject(project.id)!.statuses ?? [])];
   if (!statuses.some((status) => status.id === "in_testing")) store.tasks.updateProject(project.id, { statuses: [...statuses, { id: "in_testing", name: "In testing" }] });
   const testing = store.tasks.createTask({ projectId: project.id, title: "QA", status: "in_testing" });
@@ -92,11 +94,39 @@ it("uses configured status IDs and distinguishes unavailable and closed PR snaps
   db.prepare<[string, string, string]>("INSERT INTO task_pr_links VALUES (?, ?, ?)").run(testing.id, "pr", JSON.stringify({ excluded: false }));
   expect(store.tasks.staleStatusFlags([testing.id]).has(testing.id)).toBe(false);
   db.prepare<[string, string, string]>("UPDATE git_pr_snapshots SET payload=?, error='sync unavailable' WHERE project_id=? AND identity=?").run(JSON.stringify({ state: "closed" }), project.id, "pr");
-  expect(store.tasks.staleStatusFlags([review.id]).get(review.id)).toEqual(["pr_state_unavailable", "closed_unmerged_pr"]);
+  // A refresh that failed leaves its cached payload behind, but that is no longer a known answer: the board reads it as unavailable, like the ledger.
+  expect(store.tasks.staleStatusFlags([review.id]).get(review.id)).toEqual(["pr_state_unavailable"]);
   db.prepare<[string, string, string]>("UPDATE git_pr_snapshots SET payload=?, error=NULL WHERE project_id=? AND identity=?").run(JSON.stringify({ state: "draft" }), project.id, "pr");
   expect(store.tasks.staleStatusFlags([review.id]).has(review.id)).toBe(false);
   const done = store.tasks.createTask({ projectId: project.id, title: "Merged", status: "done" });
   store.tasks.createComment({ taskId: done.id, kind: "agent", authorName: "Agent", body: "Merged", evidence: { kind: "merge", pr: 1, head: "a".repeat(40), merge: "b".repeat(40) } });
   expect(store.tasks.staleStatusFlags([done.id]).has(done.id)).toBe(false);
+  await harness.dispose();
+});
+
+it("scopes the raw rows by ids and by project together, and an empty id list selects nothing", async () => {
+  const { bb, harness } = createFakePluginHost({ pluginId: "work-board" });
+  const store = createStore(bb);
+  const a = store.tasks.createProject({ name: "First", prefix: "FST", color: "blue" });
+  const b = store.tasks.createProject({ name: "Second", prefix: "SND", color: "red" });
+  const inA = store.tasks.createTask({ projectId: a.id, title: "A", status: "in_progress" });
+  const inB = store.tasks.createTask({ projectId: b.id, title: "B", status: "in_progress" });
+  const db = bb.storage.database();
+  const ids = (rows: { id: string }[]) => rows.map((row) => row.id);
+  expect(ids(staleRows(db, [inA.id, inB.id]))).toEqual([inA.id, inB.id].sort());
+  expect(ids(staleRows(db, [inA.id, inB.id], a.id))).toEqual([inA.id]);
+  expect(ids(staleRows(db, [inA.id], b.id))).toEqual([]);
+  expect(staleRows(db, [])).toEqual([]);
+  expect(ids(staleRows(db, undefined, b.id))).toEqual([inB.id]);
+  expect(ids(staleRows(db))).toEqual([inA.id, inB.id].sort());
+  // The ID-scoped read seeks tasks by key instead of scanning them: EXPLAIN the statement the call itself runs, with its own bindings.
+  const capture = captureStatements(db);
+  try {
+    staleRows(db, [inA.id], a.id);
+    const [call, ...rest] = capture.take().filter((statement) => /^\s*SELECT t\.id, t\.project_id/.test(statement.sql));
+    expect(rest).toEqual([]);
+    expect(capture.plan(call!)).toMatch(/SEARCH t USING .*\(id=\?\)/);
+    expect(capture.plan(call!)).not.toMatch(/SCAN t\b/);
+  } finally { capture.restore(); }
   await harness.dispose();
 });

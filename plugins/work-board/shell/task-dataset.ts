@@ -30,29 +30,39 @@ export function invalidateTaskDatasets(force = false) {
   }
 }
 
+const fullFlightKey = (projectId: string | null) => `task-search-index-full:${projectId ?? "all"}`;
+
+/** Drop the scoped description read so a later lookup starts its own instead of joining one a cleared search abandoned. */
+export function evictFullTaskDataset(projectId: string | null) { flights.delete(fullFlightKey(projectId)); }
+
 export function taskDatasetSnapshot(projectId: string | null) {
   return { name: `task-search-index:${projectId ?? "all"}`, schema: tasksRpcContract.listTasks.output.shape.tasks };
 }
 
 // Live UI reads reconcile mutations through realtime patches; CLI cursors remain strict.
 // The board and search share one paginated read, publishing each page before metadata arrives.
-export function loadTaskDataset(rpc: TasksRpc, projectId: string | null, publish: Publish = () => {}): Promise<Task[]> {
+// Dataset rows carry no description/progressNote (listTasks `omitBodies`); detail reads use getTask*. Only the
+// description search passes `full` to read bodies; that read has its own flight and is never persisted.
+export function loadTaskDataset(rpc: TasksRpc, projectId: string | null, publish: Publish = () => {}, full = false): Promise<Task[]> {
   const snapshot = taskDatasetSnapshot(projectId);
-  const existing = flights.get(snapshot.name);
+  const flightKey = full ? fullFlightKey(projectId) : snapshot.name;
+  const existing = flights.get(flightKey);
   if (existing) {
     if (!existing.completed) existing.listeners.add(publish);
     if (existing.latest) publish(existing.latest);
     return existing.promise;
   }
-  const cached = readQuerySnapshot(snapshot.name, snapshot.schema);
+  const cached = full ? undefined : readQuerySnapshot(snapshot.name, snapshot.schema);
   if (cached) publish(cached);
   const flight: Flight = { listeners: new Set([publish]), latest: cached, promise: Promise.resolve([] as Task[]) };
   flight.promise = Promise.resolve().then(async () => {
     let tasks: Task[] = [];
     let cursor: string | undefined;
     do {
-      const page = await rpc.call("listTasks", {
-        archive: "active", allowStaleCursor: true, ...(projectId ? { projectId } : {}), limit: TASKS_PAGE_MAX_LIMIT,
+      // A description read shares only at the dataset level: joining another read's in-flight page would
+      // inherit its failure after the search that started it was cleared.
+      const page = await (full && rpc.callUncached ? rpc.callUncached : rpc.call)("listTasks", {
+        archive: "active", allowStaleCursor: true, ...(full ? {} : { omitBodies: true }), ...(projectId ? { projectId } : {}), limit: TASKS_PAGE_MAX_LIMIT,
         ...(cursor ? { cursor } : {}),
       });
       tasks = [...new Map([...tasks, ...page.tasks].map((task) => [task.id, task])).values()];
@@ -68,13 +78,13 @@ export function loadTaskDataset(rpc: TasksRpc, projectId: string | null, publish
   }).then((tasks) => {
     flight.completed = true;
     flight.listeners.clear();
-    if (flight.invalidated && flights.get(snapshot.name) === flight) flights.delete(snapshot.name);
-    setTimeout(() => { if (flights.get(snapshot.name) === flight) flights.delete(snapshot.name); }, 1000);
+    if (flight.invalidated && flights.get(flightKey) === flight) flights.delete(flightKey);
+    setTimeout(() => { if (flights.get(flightKey) === flight) flights.delete(flightKey); }, 1000);
     return tasks;
   }, (error: unknown) => {
-    if (flights.get(snapshot.name) === flight) flights.delete(snapshot.name);
+    if (flights.get(flightKey) === flight) flights.delete(flightKey);
     throw error;
   });
-  flights.set(snapshot.name, flight);
+  flights.set(flightKey, flight);
   return flight.promise;
 }

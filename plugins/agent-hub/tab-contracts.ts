@@ -26,10 +26,6 @@ export const gitContract = defineRpcContract({
   markViewed: { input: scope.extend({ path: z.string(), revision: z.string() }), output: z.object({ ok: z.literal(true) }) },
   clearViewed: { input: scope.extend({ path: z.string() }), output: z.object({ ok: z.literal(true) }) },
 });
-export const boardContract = defineRpcContract({ threadTasks: {
-  input: z.object({ threadId: z.string() }),
-  output: z.object({ tasks: z.array(z.object({ key: z.string(), title: z.string(), status: z.object({ id: z.string(), name: z.string(), icon: z.string().optional(), color: z.string().optional(), iconName: z.string().optional(), cssColor: z.string().optional() }), projectName: z.string(), archived: z.boolean(), url: z.string() })) }),
-} });
 export type GitFile = z.infer<typeof file>;
 export type GitTarget = z.infer<typeof target>;
 export function unavailable(result: z.infer<typeof failure> | undefined) {

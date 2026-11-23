@@ -3,33 +3,68 @@ name: spawn-gate
 description: Follow Spawn Gate project workflows and mint one-use child-start admissions.
 ---
 
-Settings → Installed plugins → Spawn Gate selects a Script or Instruction
-workflow independently for each bb project. Follow the configured workflow
-before creating child sessions. Live project instructions specify the steps.
+When Spawn Gate is enabled, every new agent or CLI session needs an admission
+for its project, parent thread and exact task brief. Follow the project's
+configured workflow. Human top-level bb windows are exempt. A rejected start
+can leave an idle thread to archive.
 
-In Script mode use `bb agent-spawn-gate start --project <projectId>
---parent-thread <threadId> -- <builder args...>`. It runs the configured JSON
-builder from a freshly fetched remote-default-branch checkout, mints and
-starts the session. `--dry-run` before `--` builds without minting or spawning.
-RPC `start` takes `{projectId,parentThreadId,args,dryRun?}`. Builder contract:
-START-CONTRACT.md in the plugin package. Absolute builder input paths must be
-readable on the bb server machine. The caller's branch is never used.
+## Script mode
 
-In Instruction mode, or for existing integrations, call plugin `spawn-gate`, RPC `mint`, with
-`{projectId,parentThreadId,brief}`. CLI: `bb plugin rpc call spawn-gate mint
---input-file request.json --json`. The brief may be plain task text.
-Output is `{token,expiresAt,prompt}`. Write prompt verbatim to a file and use
-`bb thread spawn --project <projectId> --parent-thread <parentThreadId>
---prompt-file <prompt.txt>`. Never edit or reuse admissions. Lifetime defaults
-to ten minutes.
+Use `start` to run the configured builder at the remote default branch, validate
+its output, mint the admission and start the child. Put Spawn Gate flags before
+the first `--` and builder arguments after it. Pass each project and parent
+selector once. Omitted selectors use the invoking CLI context.
 
-Settings uses one project dropdown. Valid changes automatically persist only
-the selected project's values. Every project defaults off and offers the same
-script/instruction selection. CLI shares the UI's RPC/store:
-`bb plugin rpc call spawn-gate settings.read --json` returns projects and
-saved values. `settings.write` with `{projectId,values:{enabled:false}}` disables
-only that project. Other fields: method, instruction, script, ttlMinutes.
+```sh
+bb agent-spawn-gate start --project proj_example --parent-thread thr_example --dry-run -- --card EXA-1
+```
 
-Enforced projects require admission for all new agent and CLI starts. Human
-top-level bb windows remain exempt. Rejections may leave idle rows; archive
-probe rows. Tokens do not prove script execution or instruction compliance.
+`--dry-run` runs the builder without minting or spawning. A later real start
+fetches and runs the builder again. The builder must only assemble the brief and
+spawn parameters. It must never mint or spawn. Absolute builder input paths
+must be readable on the bb server. See START-CONTRACT.md for builder arguments
+and output, and RPC `start` with `{projectId,parentThreadId,args,dryRun?}`.
+
+When the builder supplies its role's eligible providers, the admission and
+dry-run show their weekly pace and usage sources. If start refuses an ahead-of-
+pace provider, choose the suggested eligible alternative or give an explicit
+reason through the builder's request interface. A reason only waives the pace
+check. The role's provider list still applies.
+
+## Instruction mode and existing mint integrations
+
+Follow the configured instructions first. If Instruction mode has empty
+instructions, ask for project-specific launch instructions before starting.
+Save the mint request as `request.json`, using a parent in the target project
+and a nonempty task brief without any `agent-admission ` line.
+
+```json
+{"projectId":"proj_example","parentThreadId":"thr_example","brief":"Review the proposed change."}
+```
+
+```sh
+bb plugin rpc call spawn-gate mint --input-file request.json --json
+bb thread spawn --project proj_example --parent-thread thr_example --prompt-file prompt.txt
+```
+
+Save the returned `prompt` verbatim to `prompt.txt` before running the second
+command. Use a prompt once, before `expiresAt`. Mint again if the brief, project,
+or parent changes, or the admission expires or was used. A token binds those
+inputs. Compliance with the workflow remains the caller's responsibility.
+
+## Settings and reports
+
+Read or change one project field at a time. Use the configured workflow when
+launching. A settings write changes project-wide policy for future starts.
+
+```sh
+bb agent-spawn-gate config get method --project proj_example
+bb agent-spawn-gate config set ttlMinutes 15 --project proj_example
+bb agent-spawn-gate report --project proj_example --from 2025-01-01 --to 2025-01-07 --events
+```
+
+Settings keys are `enabled`, `method`, `script`, `instruction` and `ttlMinutes`
+(1–60, default 10). A new project defaults to disabled. Config defaults to the
+current project if the flag is omitted. Report defaults to all projects and
+seven inclusive UTC days ending at `--to` (today if omitted).
+Use `bb plugin rpc inspect spawn-gate` for RPC shapes and descriptions.

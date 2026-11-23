@@ -1,10 +1,11 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, waitFor, within } from "@testing-library/react";
-import { afterEach, describe, expect, it } from "vitest";
+import { act, cleanup, fireEvent, waitFor, within } from "@testing-library/react";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { loadPluginApp, renderSlot } from "@get-bb/plugin-sdk/testing/app";
 import { makeThreadResponse } from "@get-bb/plugin-sdk/testing";
 import { makeTask, rpcInput, taskTab } from "../../test-fixtures.js";
 import { storeDefaultThread } from "./thread-preference.js";
+import { PR_FOCUS_STALE_MS } from "./index.js";
 
 if (!window.matchMedia) {
   window.matchMedia = (query: string) => ({
@@ -180,6 +181,7 @@ function detailRpc(overrides: Record<string, unknown> = {}) {
           color: "blue",
           folderId: null,
           linkedBbProjectId: null,
+          planning: "optional",
           createdAt: "2026-07-15T00:00:00.000Z",
         },
       ],
@@ -265,7 +267,8 @@ describe("task detail pull request pills", () => {
     );
 
     await slot.findByRole("button", { name: "Detach Offline worker" });
-    expect(slot.getAllByText("PR unavailable")).toHaveLength(1);
+    // The label comes from the PR lookup that follows the thread list.
+    await waitFor(() => expect(slot.getAllByText("PR unavailable")).toHaveLength(1));
     expect(slot.queryAllByRole("link").filter((link) => link.getAttribute("href")?.startsWith("https://github.com/"))).toHaveLength(0);
   });
 
@@ -335,6 +338,9 @@ describe("task detail pull request pills", () => {
       name: "Pull request #12: Ship the PR pill (Open)",
     });
 
+    // A focus right after the lookup is coalesced; one after the freshness window revalidates.
+    const realNow = Date.now.bind(Date);
+    vi.spyOn(Date, "now").mockImplementation(() => realNow() + PR_FOCUS_STALE_MS + 1);
     window.dispatchEvent(new Event("focus"));
 
     await waitFor(() => {
@@ -344,6 +350,209 @@ describe("task detail pull request pills", () => {
         }),
       ).toBeTruthy();
     });
+    vi.restoreAllMocks();
+  });
+
+  it("coalesces a burst of focus events behind one stale revalidation", async () => {
+    let lookups = 0;
+    const slot = renderSlot(app.navPanels[0]!, { subPath: "task/TSK-5" }, {
+      rpc: detailRpc({ listTaskPullRequests: () => { lookups += 1; return { pullRequests: [], unavailableThreadIds: [] }; } }),
+    });
+    await waitFor(() => expect(lookups).toBe(1));
+    // Inside the window after mount: no lookups.
+    for (let i = 0; i < 3; i++) window.dispatchEvent(new Event("focus"));
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(lookups).toBe(1);
+    // Stale focus: one lookup, resolved at once; the following burst inside 15 s adds nothing.
+    const realNow = Date.now.bind(Date);
+    let skew = PR_FOCUS_STALE_MS + 1;
+    vi.spyOn(Date, "now").mockImplementation(() => realNow() + skew);
+    window.dispatchEvent(new Event("focus"));
+    await waitFor(() => expect(lookups).toBe(2));
+    for (let i = 0; i < 3; i++) window.dispatchEvent(new Event("focus"));
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(lookups).toBe(2);
+    // Another full window later it revalidates again.
+    skew += PR_FOCUS_STALE_MS + 1;
+    window.dispatchEvent(new Event("focus"));
+    await waitFor(() => expect(lookups).toBe(3));
+    vi.restoreAllMocks();
+    void slot;
+  });
+
+  it("does not look up pull requests for a task without attached threads, on mount or focus", async () => {
+    let lookups = 0;
+    const slot = renderSlot(app.navPanels[0]!, { subPath: "task/TSK-5" }, {
+      rpc: detailRpc({
+        listTaskThreads: () => ({ taskThreads: [] }),
+        listTaskPullRequests: () => { lookups += 1; return { pullRequests: [], unavailableThreadIds: [] }; },
+      }),
+    });
+    await slot.findByRole("textbox", { name: "Task title" });
+    window.dispatchEvent(new Event("focus"));
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    expect(lookups).toBe(0);
+  });
+
+  it("does not look up pull requests when the last thread is detached", async () => {
+    let detached = false;
+    let lookups = 0;
+    const slot = renderSlot(app.navPanels[0]!, { subPath: "task/TSK-5" }, {
+      rpc: detailRpc({
+        // The reloaded thread list is slow, so the realtime event lands while the old attachment is still shown.
+        listTaskThreads: async () => {
+          if (detached) await new Promise((resolve) => setTimeout(resolve, 300));
+          return { taskThreads: detached ? [] : [taskThreadRow(THREAD_ROW_ID, "thr_worker000", "Worker")] };
+        },
+        taskThreadsDetach: () => { detached = true; return { threadId: "thr_worker000" }; },
+        listTaskPullRequests: () => { lookups += 1; return { pullRequests: [], unavailableThreadIds: [] }; },
+      }),
+    });
+    fireEvent.click(await slot.findByRole("button", { name: "Detach Worker" }));
+    await waitFor(() => expect(lookups).toBe(1));
+    fireEvent.click(await slot.findByRole("button", { name: "Detach" }));
+    await waitFor(() => expect(detached).toBe(true));
+    await slot.behavior.emitRealtime("threads:changed", { taskId: TASK_ID });
+    await waitFor(() => expect(slot.queryByRole("button", { name: "Detach Worker" })).toBeNull());
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    expect(lookups).toBe(1);
+  });
+
+  it("attaching the first thread costs one pull-request lookup, not one per thread-list phase", async () => {
+    let attached = false;
+    let lookups = 0;
+    const slot = renderSlot(app.navPanels[0]!, { subPath: "task/TSK-5" }, {
+      rpc: detailRpc({
+        listTaskThreads: async (input: unknown) => {
+          // The cached list is instant; the reconciled one arrives 200 ms later.
+          if (attached && rpcInput(input).reconcile !== false) await new Promise((resolve) => setTimeout(resolve, 200));
+          return { taskThreads: attached ? [taskThreadRow(THREAD_ROW_ID, "thr_worker000", "Worker")] : [] };
+        },
+        listTaskPullRequests: () => { lookups += 1; return { pullRequests: [], unavailableThreadIds: [] }; },
+      }),
+    });
+    await slot.findByRole("textbox", { name: "Task title" });
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(lookups).toBe(0);
+    attached = true;
+    await slot.behavior.emitRealtime("threads:changed", { taskId: TASK_ID });
+    await waitFor(() => expect(lookups).toBe(1));
+    await new Promise((resolve) => setTimeout(resolve, 450));
+    expect(lookups).toBe(1);
+  });
+
+  it("one global Refresh tasks click costs one pull-request lookup on a task with a thread", async () => {
+    let slow = false;
+    let lookups = 0;
+    const slot = renderSlot(app.navPanels[0]!, { subPath: "task/TSK-5" }, {
+      rpc: detailRpc({
+        listTaskThreads: async (input: unknown) => {
+          if (slow && rpcInput(input).reconcile !== false) await new Promise((resolve) => setTimeout(resolve, 200));
+          return { taskThreads: [taskThreadRow(THREAD_ROW_ID, "thr_worker000", "Worker")] };
+        },
+        listTaskPullRequests: () => { lookups += 1; return { pullRequests: [], unavailableThreadIds: [] }; },
+      }),
+    });
+    await waitFor(() => expect(lookups).toBe(1));
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    slow = true;
+    fireEvent.click(await slot.findByRole("button", { name: "Refresh tasks" }));
+    await waitFor(() => expect(lookups).toBe(2));
+    await new Promise((resolve) => setTimeout(resolve, 450));
+    expect(lookups).toBe(2);
+  });
+
+  it("one Refresh tasks click costs one lookup even while an older thread read is pending", async () => {
+    let holds: Promise<void>[] = [];
+    let calls = 0;
+    const gates: (() => void)[] = [];
+    let lookups = 0;
+    const slot = renderSlot(app.navPanels[0]!, { subPath: "task/TSK-5" }, {
+      rpc: detailRpc({
+        listTaskThreads: async (input: unknown) => {
+          if (holds.length > 0 && rpcInput(input).reconcile === false) await holds[calls++];
+          return { taskThreads: [taskThreadRow(THREAD_ROW_ID, "thr_worker000", "Worker")] };
+        },
+        listTaskPullRequests: () => { lookups += 1; return { pullRequests: [], unavailableThreadIds: [] }; },
+      }),
+    });
+    await waitFor(() => expect(lookups).toBe(1));
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    holds = [0, 1].map(() => new Promise<void>((resolve) => { gates.push(resolve); }));
+    // An older thread read (event-driven) is pending when the global refresh starts its own read.
+    await slot.behavior.emitRealtime("threads:changed", { taskId: TASK_ID });
+    await waitFor(() => expect(calls).toBe(1));
+    fireEvent.click(await slot.findByRole("button", { name: "Refresh tasks" }));
+    await waitFor(() => expect(calls).toBe(2));
+    gates[0]!();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    gates[1]!();
+    await waitFor(() => expect(lookups).toBe(2));
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(lookups).toBe(2);
+  });
+
+  it("a thread reload that finishes after the view is closed starts no pull-request lookup", async () => {
+    let hold: Promise<void> | null = null;
+    let release!: () => void;
+    let lookups = 0;
+    const slot = renderSlot(app.navPanels[0]!, { subPath: "task/TSK-5" }, {
+      rpc: detailRpc({
+        listTaskThreads: async (input: unknown) => {
+          if (hold && rpcInput(input).reconcile !== false) await hold;
+          return { taskThreads: [taskThreadRow(THREAD_ROW_ID, "thr_worker000", "Worker")] };
+        },
+        listTaskPullRequests: () => { lookups += 1; return { pullRequests: [], unavailableThreadIds: [] }; },
+      }),
+    });
+    await waitFor(() => expect(lookups).toBe(1));
+    hold = new Promise<void>((resolve) => { release = resolve; });
+    await slot.behavior.emitRealtime("threads:changed", { taskId: TASK_ID });
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    slot.unmount();
+    release();
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    expect(lookups).toBe(1);
+  });
+
+  it("refreshes pull requests after a thread event once the thread list has reloaded", async () => {
+    let lookups = 0;
+    const slot = renderSlot(app.navPanels[0]!, { subPath: "task/TSK-5" }, {
+      rpc: detailRpc({ listTaskPullRequests: () => { lookups += 1; return { pullRequests: [], unavailableThreadIds: [] }; } }),
+    });
+    await waitFor(() => expect(lookups).toBe(1));
+    await slot.behavior.emitRealtime("threads:changed", { taskId: TASK_ID });
+    await waitFor(() => expect(lookups).toBe(2));
+  });
+
+  it("does not start a stale-focus lookup while any earlier lookup is still pending", async () => {
+    let detached = false;
+    const pending: (() => void)[] = [];
+    const slot = renderSlot(app.navPanels[0]!, { subPath: "task/TSK-5" }, {
+      rpc: detailRpc({
+        listTaskThreads: () => ({ taskThreads: [taskThreadRow(THREAD_ROW_ID, "thr_worker000", "Worker"), ...(detached ? [] : [taskThreadRow(OFFLINE_ROW_ID, "thr_offline00", "Offline worker")])] }),
+        taskThreadsDetach: () => { detached = true; return { threadId: "thr_offline00" }; },
+        listTaskPullRequests: () => new Promise((resolve) => { pending.push(() => resolve({ pullRequests: [], unavailableThreadIds: [] })); }),
+      }),
+    });
+    fireEvent.click(await slot.findByRole("button", { name: "Detach Offline worker" }));
+    await waitFor(() => expect(pending).toHaveLength(1));
+    // A realtime event drops the shared RPC flight, so the refresh after detaching one of two threads
+    // starts a second lookup while the first is still pending: two overlap.
+    await slot.behavior.emitRealtime("projects:changed", {});
+    fireEvent.click(await slot.findByRole("button", { name: "Detach" }));
+    await waitFor(() => expect(pending).toHaveLength(2));
+    pending[0]!();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    // Another event clears the shared flight again, so only the outstanding count can hold the focus back.
+    await slot.behavior.emitRealtime("projects:changed", {});
+    const realNow = Date.now.bind(Date);
+    vi.spyOn(Date, "now").mockImplementation(() => realNow() + PR_FOCUS_STALE_MS + 1);
+    window.dispatchEvent(new Event("focus"));
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(pending).toHaveLength(2);
+    pending[1]!();
+    vi.restoreAllMocks();
   });
 });
 
@@ -520,13 +729,15 @@ it.each(["main", "side"])("keeps editors and navigation usable during a backgrou
   let refreshing = false;
   let finishRefresh!: () => void;
   const pending = new Promise<void>((resolve) => { finishRefresh = resolve; });
+  let lookupStarted!: () => void;
+  const started = new Promise<void>((resolve) => { lookupStarted = resolve; });
   const options = { rpc: detailRpc({
     getTaskByKey: async () => {
       if (refreshing) await pending;
       return { task: { ...task, title: refreshing ? "Updated by another worker" : task.title } };
     },
     listTaskPullRequests: async () => {
-      if (refreshing) await pending;
+      if (refreshing) { lookupStarted(); await pending; }
       return { pullRequests: [], unavailableThreadIds: [] };
     },
     listPrLinks: () => ({ links: [] }),
@@ -543,7 +754,11 @@ it.each(["main", "side"])("keeps editors and navigation usable during a backgrou
   await slot.behavior.emitRealtime("tasks:changed", { taskId: TASK_ID });
   await slot.behavior.emitRealtime("threads:changed", { taskId: TASK_ID });
   const syncButton = slot.getByRole("button", { name: "Sync PRs" });
-  await waitFor(() => expect(syncButton.getAttribute("aria-busy")).toBe("true"));
+  // Wait on the pending lookup itself; the PR-link query is idle, so the Sync PRs spinner stays off.
+  await started;
+  // Commit the refresh render while the lookup is still pending, then the PR-link spinner must be idle.
+  await act(async () => { await new Promise((resolve) => setTimeout(resolve, 50)); });
+  expect(syncButton.getAttribute("aria-busy")).toBe("false");
   expect(slot.getByRole("textbox", { name: "Task title" })).toBe(title);
   expect(document.activeElement).toBe(title);
   expect(title.textContent).toBe("Unsaved title draft");

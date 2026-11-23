@@ -1,25 +1,8 @@
+import { ActorLabel, ThreadChip } from "../../components/thread-chip.js";
 import type { DisplayComment } from "../../shared/contract.js";
-import { commentByline } from "./time.js";
 
-export function CommentAuthor({
-  comment,
-  onOpenThread,
-}: {
-  comment: DisplayComment;
-  onOpenThread: (threadId: string) => void;
-}) {
-  const byline = commentByline(comment);
-  if (byline.kind === "thread-link") {
-    return (
-      <button
-        type="button"
-        onClick={() => onOpenThread(byline.threadId)}
-        className="truncate font-semibold text-primary hover:underline"
-        title={byline.title}
-      >
-        {byline.title}
-      </button>
-    );
-  }
-  return <span className="font-semibold">{byline.name}</span>;
+/** A comment's author: a thread chip when the comment came from a thread, else the name (a trailing `(thr_…)` still becomes a chip). */
+export function CommentAuthor({ comment }: { comment: DisplayComment }) {
+  if (comment.threadId) return <ThreadChip threadId={comment.threadId} fallbackTitle={comment.threadTitle ?? undefined} />;
+  return <span className="font-semibold"><ActorLabel name={comment.authorName} /></span>;
 }

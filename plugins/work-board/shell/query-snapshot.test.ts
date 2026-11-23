@@ -1,6 +1,9 @@
 // @vitest-environment jsdom
 import { z } from "zod";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import type { Task } from "../shared/contract";
+import { makeTask } from "../test-fixtures";
+import type { TasksRpc } from "./data";
 import { querySnapshotStorageKey, readQuerySnapshot, resetQuerySnapshotStateForTest, writeQuerySnapshot } from "./query-snapshot";
 
 beforeEach(() => { resetQuerySnapshotStateForTest(); localStorage.clear(); vi.useFakeTimers(); });
@@ -25,4 +28,34 @@ it("keeps revision ordering after an oversized write is skipped and bounds pendi
   vi.advanceTimersByTime(25);
   expect(localStorage.getItem(querySnapshotStorageKey("big"))).toBeNull();
   expect(Object.keys(localStorage)).toHaveLength(32);
+});
+
+it("keeps the task dataset, board metadata and sidebar snapshots resident while switching between All tasks and a project", async () => {
+  const { loadTaskDataset } = await import("./task-dataset");
+  const removed: string[] = [];
+  const remove = Storage.prototype.removeItem;
+  vi.spyOn(Storage.prototype, "removeItem").mockImplementation(function (this: Storage, key: string) { removed.push(key); return remove.call(this, key); });
+  // Body-heavy synthetic tasks served the way the real handler does: bodies only unless `omitBodies` is sent.
+  const bodyHeavy = (scope: string) => Array.from({ length: 300 }, (_, index) => makeTask({
+    id: `${scope}-${index}`, key: `EXA-${index}`, title: `Card ${index}`, description: "Acceptance criteria. ".repeat(100), progressNote: "Progress note. ".repeat(20),
+  }));
+  const rows: Record<string, Task[]> = { all: bodyHeavy("all"), proj: bodyHeavy("proj") };
+  const rpc = { async call(_method: string, input: { projectId?: string; omitBodies?: boolean }) {
+    const tasks = rows[input.projectId ?? "all"]!;
+    return { tasks: input.omitBodies ? tasks.map((task) => ({ ...task, description: "", progressNote: null })) : tasks, nextCursor: null };
+  } } as unknown as TasksRpc;
+  const payloads: Record<string, unknown> = {
+    "task-search-index:all": await loadTaskDataset(rpc, null), "task-search-index:proj": await loadTaskDataset(rpc, "proj"),
+    "board-metadata:proj": "m".repeat(146_000), projects: "s".repeat(3_000), folders: "s".repeat(3_000), "sidebar-summary": "s".repeat(3_000),
+  };
+  let revision = 0;
+  const put = (name: string) => { writeQuerySnapshot(name, payloads[name], ++revision); vi.advanceTimersByTime(25); };
+  for (const name of ["projects", "folders", "sidebar-summary"]) put(name);
+  for (let cycle = 0; cycle < 5; cycle++) {
+    put("task-search-index:all");
+    put("task-search-index:proj"); put("board-metadata:proj");
+  }
+  expect(removed).toEqual([]);
+  for (const name of Object.keys(payloads)) expect(localStorage.getItem(querySnapshotStorageKey(name))).not.toBeNull();
+  vi.restoreAllMocks();
 });

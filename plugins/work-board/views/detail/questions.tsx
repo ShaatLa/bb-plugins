@@ -1,4 +1,6 @@
 import { isQuestionOpen } from "../../shared/questions";
+import { DisclosureSummary } from "../../components/disclosure";
+import { ActorLabel } from "../../components/thread-chip";
 import { useEffect, useMemo, useState, useRef } from "react";
 import { experimental_ImageLightbox as ImageLightbox } from "@get-bb/plugin-sdk/app";
 import { Icon } from "@/components/ui/icon";
@@ -237,7 +239,7 @@ function QuestionAnswer({
       {question.answerCommentId ? <AnswerAttachments commentId={question.answerCommentId} /> : null}
       {question.answeredBy ? (
         <p className="text-xs text-muted-foreground">
-          Answered by {question.answeredBy}
+          Answered by <ActorLabel name={question.answeredBy} />
         </p>
       ) : null}
       {!question.answeredBy &&
@@ -305,9 +307,9 @@ function QuestionAnswer({
       </Button>
       {meaningfulHistory(question).length ? (
         <details className="text-xs text-muted-foreground">
-          <summary className="cursor-pointer">
+          <DisclosureSummary>
             History · {meaningfulHistory(question).length}
-          </summary>
+          </DisclosureSummary>
           <ol className="mt-2 space-y-3">
             {[...meaningfulHistory(question)].reverse().map((entry) => (
               <li
@@ -439,7 +441,7 @@ export function QuestionsSection({
     .sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id));
   if (!adding && !editing && !query.error && !query.data?.length) return null;
   return (
-    <section aria-label="Questions" className="mt-5 space-y-3">
+    <section aria-label="Questions" className="mt-5 space-y-3 border-t border-border pt-4">
       <div className="flex items-center justify-between gap-2">
         <h2 className="text-sm font-semibold">Questions</h2>
         {adding || editing ? (
@@ -464,9 +466,9 @@ export function QuestionsSection({
       {open.map(renderQuestion)}
       {earlier.length ? (
         <details>
-          <summary className="cursor-pointer text-sm text-muted-foreground">
+          <DisclosureSummary className="text-sm text-muted-foreground">
             Earlier ({earlier.length})
-          </summary>
+          </DisclosureSummary>
           <div className="mt-3 space-y-3">{earlier.map(renderQuestion)}</div>
         </details>
       ) : null}

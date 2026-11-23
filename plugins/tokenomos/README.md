@@ -14,6 +14,7 @@ All amounts are **API-equivalent**: what those same tokens would cost at public 
 - **Breakdown.** Fresh input, cache read, cache write, output, number of calls, and ~$.
 - **Top threads.** 50 per page, with a "More" button. Each thread shows its own ~$ and the ~$ including sub-threads; clicking a thread opens it.
 - **Compactions in range.** Thread, time, tokens "before → after", source, and ~ net savings.
+- **Provider limits.** Shown when a plugin reports limits over `provider-usage.v1` (the Claude Code, Codex and Antigravity providers, Account Pooler). One card per account; for each window: percent used, time elapsed, the forecast at reset or when the limit runs out, ~$ per 1% of the limit, and the share of heavy models in the window's API-equivalent cost (compared with the target from the settings, 50% by default), with the share of calls for reference. The window spend is provider-wide and includes usage outside BB, because the subscription counts it. Limits are collected at most once a minute and only while the page or CLI asks.
 
 ## Where the numbers come from
 
@@ -38,25 +39,28 @@ Update: BB events and transcripts are read at ~5-second intervals for modified t
 
 ## Settings
 
-The "Tokenomos" section in BB settings.
+The "Tokenomos" section in BB settings shows them in groups (General, Provider limits, Watchlist, Savings and prices, Data) in place of bb's flat list. They stay native fields: `bb plugin config tokenomos set <key> <value>` changes one, and so does RPC `config.set { key, value }`, validated by that setting's own rules; `config.get` reads them.
 
 | Setting | Default | Range / Options | Description |
 | --- | --- | --- | --- |
 | Language | `en` | `en` (English), `ru` (Russian) | Interface language for the page and settings section; numbers, dates, and times are formatted according to the selected language. The labels for the settings themselves in BB are predefined and do not switch: they are always in English. |
+| Default chart grouping | `provider` | `provider`, `model` | What the page opens with when the link names no grouping; the toggle above the chart still switches it. |
 | Keep raw records, days | 30 | 7–60 | Retention period for line-level records. Hourly aggregates are kept longer. |
 | Keep hourly aggregates, days | 200 | 184–400 | Retention period for hourly aggregates; 200 days cover the "3 months" comparison period. |
-| Reference model for cost savings | `claude-sonnet-5-5` | `claude-sonnet-5-5`, `claude-opus-5-5`, `claude-haiku-5-5`, `gpt-6.1-sol`, `gpt-6.1-terra` | Model whose prices are used to calculate the savings of local models. |
+| Reference model for cost savings | `claude-sonnet-5-5` | any model in the price table; the picker lists the priced models bb's providers offer, asked afresh each time the settings open; when they cannot be reached, the last list they gave, or a built-in list before the first answer | Model whose prices are used to calculate the savings of local models. |
 | Track usage outside BB | off | on / off | Claude Code and Codex sessions in the same directories that are not linked to any BB thread go into a separate "Outside BB" group. Directories are scanned every 5 minutes. These entries are not included in thread totals. |
 | Watchlist context threshold | 300000 | 50000–1000000 | Threads with high current context and calls within the last hour. |
+| Heavy model target, % | 50 | 0–100 | Ceiling for the heavy-model share of a limit window's API-equivalent cost: above it the share turns orange and the hints name the target. `0` turns the target off; the share is still shown. |
+| Heavy model families | `fable, opus, sol, astra, argon` | comma-separated words | A model is heavy when a word of its id is in this list (`claude-opus-5-5`, `gpt-6.2-astra`); all other models count as medium and light. Used by the provider limits section. |
 | Custom prices ($/MTok, JSON) | `{}` | JSON object; values are validated against the schema | Override model rates (`input`, `output`, `cacheRead`, `cacheWriteShort`, `cacheWriteLong`, $/MTok). Only changes the rates and applies to the entire history at once. |
 
 Additionally, the settings section shows the status of each source, disk volume, and row count, a **Clear old data** button, and a versioned price table. Background cleanup runs daily at 04:17 according to the BB schedule.
 
-## Integrations with Work Board and Answers
+## Integrations with Work Board and Agent Hub
 
-Public contract: RPC `costs.threads` and `costs.sum`. Both are optional in either direction: Tokenomos does not require other plugins, and the calling plugin must work without Tokenomos—with a timeout and without displaying the value on error.
+Public contract: RPC `costs.threads` and `costs.sum`; other methods refuse plugin callers with `forbidden`. Both are optional in either direction: Tokenomos does not require other plugins, and the calling plugin must work without Tokenomos—with a timeout and without displaying the value on error.
 
-**Important:** in this version, Answers and Work Board do not yet call the RPC. The contract is ready for their integration.
+Work Board calls `costs.sum` for the Cost section of a task. Agent Hub calls `costs.threads` with `includeDescendants` for the cost label of the open chat: the session itself plus its sub-sessions.
 
 Schemas from `contract.ts`:
 
@@ -110,10 +114,12 @@ const sum = await sdk.plugins.callRpc({
 bb tokenomos wake-cost <threadId> [--json]
 bb tokenomos status [--json]
 bb tokenomos summary [--range day|week|month|3m] [--json]
+bb tokenomos limits [--json]
 ```
 
 - `status` — sources (id, number of rows, status `ok` / `degraded` / `no-data`, last import time), number of failed threads, and disk usage.
 - `summary` — results by provider and model for the selected range; defaults to `week`. Without `--json`, it outputs a summary and breakdown string; with `--json`, it returns a `{ providers, models }` object.
+- `limits` — provider limit windows with pace, forecast, ~$ per 1% and the heavy-model share of cost; for a coordinating agent that distributes work across providers.
 
 ## Privacy
 
@@ -129,7 +135,7 @@ Tokenomos reads only token counts, session and message identifiers, timestamps, 
 Installation:
 
 ```sh
-bb plugin install git:https://github.com/ShaatLa/bb-plugins.git@main --plugin tokenomos
+bb plugin install git:https://github.com/ShaatLa/bb-plugins.git@0.x --plugin tokenomos --tag-prefix tokenomos/
 ```
 
 - `wake-cost`: current context, estimated cost for cold and warm wake-ups, cache TTL, and its origin; an unknown context is distinct from an unknown thread.

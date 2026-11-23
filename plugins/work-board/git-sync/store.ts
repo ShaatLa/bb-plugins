@@ -5,6 +5,9 @@ import {
   prLinkSchema,
   prSnapshotSchema,
   prIdentity,
+  overlapEnabled,
+  observationStale,
+  observationTtl,
   type GitSyncConfig,
   type PrLink,
   type Overlap,
@@ -12,6 +15,8 @@ import {
 } from "../shared/git-sync";
 
 import { prepareOverlaps } from "./overlap";
+import { touchAttention } from "../attention/ledger";
+import { recordPlanDebtEvent } from "../plan-debt/store";
 
 type Database = ReturnType<BbPluginApi["storage"]["database"]>;
 export function createGitSyncStore(db: Database) {
@@ -31,14 +36,27 @@ export function createGitSyncStore(db: Database) {
       )
       .all(...(taskId ? [taskId] : []))
       .map((row) => prLinkSchema.parse(JSON.parse(row.payload)));
-  const saveLink = (value: PrLink) => {
+  /** `renamedFrom` is the link this one replaces under a new identity: its confirmation carries over, so a rename is not a new confirmation. */
+  const saveLink = (value: PrLink, renamedFrom?: PrLink) => {
     const link = prLinkSchema.parse(value);
     assertNoSecretsInValue(link, "PR link");
-    db.prepare<[string, string, string]>(
-      "INSERT INTO task_pr_links(task_id, identity, payload) VALUES (?, ?, ?) ON CONFLICT(task_id, identity) DO UPDATE SET payload=excluded.payload",
-    ).run(link.taskId, prIdentity(link), JSON.stringify(link));
-    return link;
+    return db.transaction(() => {
+      const before = db.prepare<[string, string], { payload: string }>("SELECT payload FROM task_pr_links WHERE task_id = ? AND identity = ?").get(link.taskId, prIdentity(link));
+      db.prepare<[string, string, string]>(
+        "INSERT INTO task_pr_links(task_id, identity, payload) VALUES (?, ?, ?) ON CONFLICT(task_id, identity) DO UPDATE SET payload=excluded.payload",
+      ).run(link.taskId, prIdentity(link), JSON.stringify(link));
+      // A link that becomes confirmed, from new or unconfirmed, is a plan-debt trigger of the card's open episode.
+      const was = before ? prLinkSchema.parse(JSON.parse(before.payload)) : renamedFrom ?? null;
+      if (link.confirmed && !link.excluded && !(was?.confirmed && !was.excluded)) recordPlanDebtEvent(db, link.taskId, `pr:${prIdentity(link)}`);
+      touchAttention(db, [link.taskId]);
+      return link;
+    })();
   };
+  // A snapshot write changes the PR facts of every card linked to that PR, so those cards are recomputed in its transaction.
+  const touchLinked = (projectId: string, identities: readonly string[]) =>
+    touchAttention(db, db.prepare<[string, string], { task_id: string }>(
+      "SELECT l.task_id FROM task_pr_links l CROSS JOIN tasks t ON t.id=l.task_id WHERE t.project_id=? AND l.identity IN (SELECT value FROM json_each(?))",
+    ).all(projectId, JSON.stringify(identities)).map((row) => row.task_id));
   let cached: { projectId: string; token: string; evaluate: (taskId: string) => Overlap[]; results: Map<string, Overlap[]> } | undefined;
   // One project scan per call, not per task: board summaries arrive in batches of hundreds.
   function overlapsForTasks(taskIds: readonly string[]) {
@@ -60,7 +78,7 @@ export function createGitSyncStore(db: Database) {
           if (!snapshot) { snapshot = prSnapshotSchema.parse(JSON.parse(row.snapshot)); snapshots.set(row.snapshot, snapshot); }
           return { ...row, link: prLinkSchema.parse(JSON.parse(row.link)), snapshot };
         }).filter(row => projectConfig.repositories.includes(row.link.repository));
-        cached = { projectId, token, evaluate: prepareOverlaps(entries, projectConfig.overlapRules ?? []), results: new Map() };
+        cached = { projectId, token, evaluate: prepareOverlaps(entries, overlapEnabled(projectConfig) ? projectConfig.overlapRules ?? [] : []), results: new Map() };
       }
       for (const taskId of ids) {
         let overlaps = cached.results.get(taskId);
@@ -70,7 +88,7 @@ export function createGitSyncStore(db: Database) {
     }
     return result;
   }
-  return {
+  const store = {
     overlaps(taskId: string) {
       return overlapsForTasks([taskId]).get(taskId) ?? [];
     },
@@ -80,11 +98,14 @@ export function createGitSyncStore(db: Database) {
       const rows = db.prepare<string[], {
         taskId: string; projectId: string; repository: string; state: string | null;
         ci: string | null; observedAt: string | null; error: string | null;
+        mergedAt: string | null; updatedAt: string | null; coverage: string | null;
       }>(`SELECT l.task_id AS taskId, t.project_id AS projectId,
         json_extract(l.payload, '$.repository') AS repository,
         json_extract(s.payload, '$.state') AS state,
         json_extract(s.payload, '$.ci') AS ci,
-        json_extract(s.payload, '$.observedAt') AS observedAt, s.error
+        json_extract(s.payload, '$.observedAt') AS observedAt, s.error,
+        json_extract(s.payload, '$.mergedAt') AS mergedAt, json_extract(s.payload, '$.updatedAt') AS updatedAt,
+        json_extract(s.payload, '$.coverage') AS coverage
         FROM task_pr_links l JOIN tasks t ON t.id=l.task_id
         LEFT JOIN git_pr_snapshots s ON s.project_id=t.project_id AND s.identity=l.identity
         WHERE l.task_id IN (${taskIds.map(() => "?").join(",")})
@@ -100,8 +121,8 @@ export function createGitSyncStore(db: Database) {
         if (row.state === "merged") summary.merged++;
         if (row.ci === "failing") summary.failing++;
         if (row.ci === "pending") summary.pending++;
-        summary.stale ||= !row.observedAt || Boolean(row.error) || !settings.repositories.includes(row.repository)
-          || now - Date.parse(row.observedAt) > settings.pollMinutes * 60_000;
+        summary.stale ||= !row.observedAt || !row.state || Boolean(row.error) || !settings.repositories.includes(row.repository)
+          || observationStale(row.observedAt, observationTtl({ ...row, state: row.state as PrSnapshot["state"], updatedAt: row.updatedAt ?? "", observedAt: row.observedAt, coverage: JSON.parse(row.coverage ?? "[]") }, settings, now), now);
         summaries.set(row.taskId, summary);
       }
       return [...new Set(taskIds)].flatMap((id) => summaries.has(id) ? [summaries.get(id)!] : []);
@@ -111,10 +132,24 @@ export function createGitSyncStore(db: Database) {
         "SELECT l.payload FROM task_pr_links l JOIN tasks t ON t.id=l.task_id WHERE t.project_id=? ORDER BY l.task_id, l.identity",
       ).all(projectId).map((row) => prLinkSchema.parse(JSON.parse(row.payload)));
     },
+    /** Attempt bookkeeping plus the few observation fields a pass needs to skip or order a PR without parsing its payload. */
     attempts(projectId: string) {
-      return new Map(db.prepare<[string], { identity: string; lastAttemptAt: number | null; failureCount: number }>(
-        "SELECT identity, last_attempt_at AS lastAttemptAt, failure_count AS failureCount FROM git_pr_snapshots WHERE project_id=?",
+      return new Map(db.prepare<[string], {
+        identity: string; lastAttemptAt: number | null; failureCount: number; error: string | null;
+        state: PrSnapshot["state"] | null; mergedAt: string | null; updatedAt: string | null; observedAt: string | null; coverage: string | null;
+      }>(
+        `SELECT identity, last_attempt_at AS lastAttemptAt, failure_count AS failureCount, error,
+          json_extract(payload, '$.state') AS state, json_extract(payload, '$.mergedAt') AS mergedAt,
+          json_extract(payload, '$.updatedAt') AS updatedAt, json_extract(payload, '$.observedAt') AS observedAt,
+          json_extract(payload, '$.coverage') AS coverage
+        FROM git_pr_snapshots WHERE project_id=?`,
       ).all(projectId).map((row) => [row.identity, row]));
+    },
+    /** Existing (task, PR) pairs of a project, so discovery skips links it already has. */
+    linkKeys(projectId: string) {
+      return new Set(db.prepare<[string], { key: string }>(
+        "SELECT l.task_id || ' ' || l.identity AS key FROM task_pr_links l JOIN tasks t ON t.id=l.task_id WHERE t.project_id=?",
+      ).all(projectId).map((row) => row.key));
     },
     config,
     links,
@@ -196,7 +231,7 @@ export function createGitSyncStore(db: Database) {
             ...canonical,
             excluded: next.excluded || canonical.excluded,
           });
-        } else saveLink(next);
+        } else saveLink(next, current);
         if (prIdentity(next) !== prIdentity(current))
           db.prepare<[string, string]>(
             "DELETE FROM task_pr_links WHERE task_id=? AND identity=?",
@@ -216,5 +251,18 @@ export function createGitSyncStore(db: Database) {
         "INSERT INTO git_pr_snapshots(project_id, identity, payload, error, last_attempt_at, failure_count) VALUES (?, ?, NULL, ?, ?, 1) ON CONFLICT(project_id, identity) DO UPDATE SET error=CASE WHEN error IS excluded.error THEN error ELSE excluded.error END, last_attempt_at=excluded.last_attempt_at, failure_count=failure_count+1",
       ).run(projectId, prIdentity(link), error, Date.now());
     },
+  };
+  return {
+    ...store,
+    saveSnapshot: (projectId: string, link: Pick<PrLink, "repository" | "number">, snapshot: PrSnapshot) =>
+      db.transaction(() => {
+        store.saveSnapshot(projectId, link, snapshot);
+        touchLinked(projectId, [prIdentity(link), prIdentity(snapshot)]);
+      })(),
+    fail: (projectId: string, link: Pick<PrLink, "repository" | "number">, error: string) =>
+      db.transaction(() => {
+        store.fail(projectId, link, error);
+        touchLinked(projectId, [prIdentity(link)]);
+      })(),
   };
 }

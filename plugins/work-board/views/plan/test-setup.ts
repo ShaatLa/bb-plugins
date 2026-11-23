@@ -32,9 +32,11 @@ export function setupPlanHost(harnesses: FakePluginHarness[]) {
   const store = createStore(bb);
   registerTasksApi(bb, store);
   const project = store.tasks.createProject({ name: "Example", prefix: "EXA", color: "blue" });
+  // Planning is the owner's setting (changed in the project settings), so the fixture sets it directly.
+  store.tasks.updateProject(project.id, { planning: "optional" });
   const task = store.tasks.createTask({ projectId: project.id, title: "Planned work" });
   const rpc = Object.fromEntries(Object.keys(tasksRpcContract).map((method) => [method, (input: unknown) => harness.callRpc(method, input)]));
   const save = (input: Record<string, unknown>) =>
     harness.callRpc("saveTaskPlan", { taskId: task.id, summary: "Edit", author: AGENT, op: "replace", ...input }) as Promise<{ ok: boolean }>;
-  return { store, project, task, rpc, save, harness };
+  return { store, project, task, rpc, save, harness, db: bb.storage.database() };
 }

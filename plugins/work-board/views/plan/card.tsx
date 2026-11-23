@@ -3,7 +3,8 @@ import { experimental_copyToClipboard } from "@get-bb/plugin-sdk/app";
 import type { Task } from "../../shared/contract.js";
 import { taskPlanMarkdownLink } from "../../shared/task-link.js";
 import { formatRelativeTime } from "../activity/time.js";
-import { usePlanOverview } from "./data.js";
+import { ActorLabel, ThreadChip } from "../../components/thread-chip.js";
+import { usePlanning, usePlanOverview } from "./data.js";
 import { useOpenPlan } from "./open.js";
 import { PlanStateChip } from "./state-chip.js";
 import { Button } from "@/components/ui/button";
@@ -13,7 +14,9 @@ import { cn } from "@/lib/utils";
 
 /** The "Plan" card of the task detail: version, state, last summary and meta; the whole card opens the plan tab. */
 export function PlanCard({ task }: { task: Task }) {
-  const overview = usePlanOverview(task.id);
+  const planning = usePlanning(task.projectId);
+  // With planning off the card has no Plan section, and nothing of the plan is read.
+  const overview = usePlanOverview(planning === undefined || planning === "off" ? null : task.id);
   const openPlan = useOpenPlan();
   const [copied, setCopied] = useState<"done" | "failed" | null>(null);
   useEffect(() => {
@@ -39,6 +42,7 @@ export function PlanCard({ task }: { task: Task }) {
       ].filter(Boolean)
     : [];
   const frame = "relative rounded-lg border bg-card p-3 shadow-2xs";
+  if (planning === undefined || planning === "off") return null;
   return (
     <section aria-label="Plan" className="my-4">
       {overview.data === undefined ? (
@@ -92,8 +96,11 @@ export function PlanCard({ task }: { task: Task }) {
           </div>
           {last?.summary ? <p className="mt-2 line-clamp-2 text-sm [overflow-wrap:anywhere]">{last.summary}</p> : null}
           <p className="mt-1 text-xs text-muted-foreground">
-            Updated by {plan.updatedBy.name} · <time dateTime={plan.updatedAt} title={plan.updatedAt}>{formatRelativeTime(plan.updatedAt, Date.now())}</time>
+            Updated by <ActorLabel name={plan.updatedBy.name} threadId={plan.updatedBy.threadId} /> · <time dateTime={plan.updatedAt} title={plan.updatedAt}>{formatRelativeTime(plan.updatedAt, Date.now())}</time>
             {counts.length ? <span data-testid="note-counts"> · {counts.join(" · ")}</span> : null}
+          </p>
+          <p className="mt-1 text-xs text-muted-foreground" data-testid="plan-reviewer">
+            Reviewer: {plan.reviewer.kind === "thread" && plan.reviewer.threadId ? <ThreadChip threadId={plan.reviewer.threadId} /> : "owner"}
           </p>
         </div>
       )}

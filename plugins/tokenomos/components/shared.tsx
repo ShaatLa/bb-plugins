@@ -3,6 +3,7 @@ import { useRef, useState } from "react";
 import { experimental_Icon as Icon } from "@get-bb/plugin-sdk/app";
 import { cn } from "../lib/utils";
 import { Skeleton } from "./ui/skeleton";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "./ui/tooltip";
 
 export function Section({ title, subtitle, action, children, collapseKey }: { title: string; subtitle?: string; action?: ReactNode; children: ReactNode; collapseKey?: string }) {
   const [open, setOpen] = useState(() => !collapseKey || readOpen(collapseKey));
@@ -32,6 +33,19 @@ function readOpen(key: string): boolean {
 }
 function writeOpen(key: string, open: boolean) {
   try { localStorage.setItem(storageKey(key), open ? "open" : "closed"); } catch { /* storage unavailable */ }
+}
+
+/** A hover hint styled like bb's own popovers (white on a light theme); the host does not show native `title` tooltips. */
+export function Hint({ text, children }: { text?: React.ReactNode; children: React.ReactElement }) {
+  if (!text) return children;
+  return (
+    <TooltipProvider delayDuration={450}>
+      <Tooltip>
+        <TooltipTrigger asChild>{children}</TooltipTrigger>
+        <TooltipContent side="top" className="border border-border bg-popover text-popover-foreground shadow-md">{text}</TooltipContent>
+      </Tooltip>
+    </TooltipProvider>
+  );
 }
 
 export const Card = ({ className, ...props }: React.HTMLAttributes<HTMLDivElement>) => (

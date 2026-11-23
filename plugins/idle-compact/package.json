@@ -1,6 +1,6 @@
 {
   "name": "bb-plugin-idle-compact",
-  "version": "0.5.1",
+  "version": "0.5.2",
   "type": "module",
   "license": "MIT",
   "engines": {
@@ -9,7 +9,7 @@
   },
   "bb": {
     "name": "Idle Compact",
-    "description": "Compacts a Claude Code thread idle for 50 minutes while its prompt cache is still warm, and any thread that stops with its context at 80% of the window or more. Adds a Compact button to the thread header.",
+    "description": "Compacts a Claude Code thread idle for 50 minutes while its prompt cache is still warm, and any thread whose context reaches a set share of the window (default 80%): before its next message, after 50 minutes idle, or at once if it fails. Adds a Compact button to the thread header.",
     "branding": {
       "icon": "Minimize2"
     },

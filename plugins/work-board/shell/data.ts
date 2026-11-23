@@ -16,7 +16,7 @@ import {
   writeQuerySnapshot,
 } from "./query-snapshot.js";
 import { forgetTaskReads, getSharedTask, invalidateTaskDatasets } from "./task-dataset";
-import { useTasksRefresh } from "./refresh.js";
+import { onRefreshRequested, useTasksRefresh } from "./refresh.js";
 import {
   createTaskSignalScheduler,
   type InvalidationChannel,
@@ -24,6 +24,8 @@ import {
 } from "./signal-scheduler.js";
 
 const readFlights = new Map<string, Promise<unknown>>();
+// A read still in flight from before a reconnect or manual refresh may carry stale rows: no later query may join it.
+onRefreshRequested(() => readFlights.clear());
 // Shared reads are only safe while nothing changed: any event or mutation starts a fresh generation.
 function forgetReads() {
   readFlights.clear();
@@ -34,11 +36,15 @@ const readMethods = new Set<string>([
   "listTaskDependencies", "listSequences", "listTaskClaims", "listFolders",
   "getBoardPreferences", "listProjects", "listQuestions", "questionCounts",
   "listTemplates", "getTask", "getTaskByKey", "listTasks", "listLabels",
-  "listComments", "listAttachments", "listTaskThreads", "listTaskCardMeta",
+  "listComments", "commentsRevision", "listCommentThreads", "listAttachments", "listTaskThreads", "listTaskCardMeta",
   "listTaskPullRequests", "listPresets", "listMachines", "searchThreads",
   "listBbProjects", "getTaskPlan", "listTaskPlanVersions", "listPlanNotes", "getNavigationBadgeCriteria", "navigationBadge",
   "sidebarOpenTaskCount", "sidebarSummary", "prSummaries",
 ]);
+
+// Pure reads of the settings views: never shared between callers (a refresh after an event must not join a read that started
+// before it) and never clearing the shared read caches.
+const freshReads = new Set<string>(["getChecksStatus", "getAttentionSettings"]);
 
 export function useTasksRpc() {
   const rpc = useRpc<TasksRpcContract>();
@@ -52,7 +58,10 @@ export function useTasksRpc() {
     const flights = readFlights;
     return {
       ...rpc,
+      // The raw client, for reads that must not join another in-flight request with the same arguments.
+      callUncached: rpc.call,
       call: ((method: keyof TasksRpcContract, ...args: unknown[]) => {
+        if (freshReads.has(method)) return (rpc.call as (...args: unknown[]) => Promise<unknown>)(method, ...args);
         if (!readMethods.has(method)) {
           forgetReads();
           const write = (rpc.call as (...args: unknown[]) => Promise<unknown>)(method, ...args);
@@ -74,7 +83,8 @@ export function useTasksRpc() {
   }, [rpc]);
 }
 
-export type TasksRpc = ReturnType<typeof useTasksRpc>;
+type UseTasksRpc = ReturnType<typeof useTasksRpc>;
+export type TasksRpc = Omit<UseTasksRpc, "callUncached"> & Partial<Pick<UseTasksRpc, "callUncached">>;
 
 interface TaskListQuery {
   archive?: "active" | "archived" | "all";
@@ -89,6 +99,7 @@ interface TaskListQuery {
   epicId?: string | null;
   search?: string;
   sort?: TaskSort;
+  omitBodies?: boolean;
 }
 
 export async function listAllTasks(
@@ -143,13 +154,15 @@ export async function patchTasks(
   current: readonly Task[],
   taskIds: readonly string[],
   belongs: (task: Task) => boolean,
+  keepBodies = false,
 ): Promise<Task[] | null> {
   if (taskIds.length === 0) return [...current];
   if (taskIds.length > 25) return null;
   const fetched = await Promise.all(
     taskIds.map(async (taskId) => {
       const task = await getSharedTask(rpc, taskId);
-      return [taskId, task] as const;
+      // Dataset rows are list rows: keep them light so snapshots do not regrow with edited bodies.
+      return [taskId, task && !keepBodies ? { ...task, description: "", progressNote: null } : task] as const;
     }),
   );
   const updates = new Map(fetched);
@@ -399,6 +412,8 @@ export function useTasksQuery<T>(
     invalidateTaskDatasets();
     scheduler.push("projects:changed", payload);
   });
+  // Settings-only signal: no forgetReads, so it never clears reads other views share; only hooks that list the channel react.
+  useRealtime("settings:changed", (payload) => scheduler.push("settings:changed", payload));
   useRealtime("comments:changed", (payload) => { forgetReads(); scheduler.push("comments:changed", payload); });
   useRealtime("threads:changed", (payload) => { forgetReads(); scheduler.push("threads:changed", payload); });
   useRealtime("prs:changed", (payload) => { forgetReads(); scheduler.push("prs:changed", payload); });

@@ -1,6 +1,8 @@
 import { GitSyncSettings } from "./git-sync-settings";
+import { formatRelativeTime } from "./activity/time.js";
 import { StorageSettings } from "./storage-settings";
-import { NavigationBadgeSettings } from "./navigation-badge-settings";
+import { AttentionSettings } from "./attention-settings";
+import { ChecksSettings } from "./checks-settings";
 import { TasksRefreshProvider } from "../shell/refresh.js";
 import {
   Select,
@@ -9,16 +11,17 @@ import {
   SelectContent,
   SelectItem,
 } from "@/components/ui/select";
-import { useId, useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useId, useLayoutEffect, useRef, useState, type ComponentType, type ReactNode } from "react";
 import { useBbNavigate } from "@get-bb/plugin-sdk/app";
 import { Button } from "@/components/ui/button";
 import { Popover, PopoverTrigger, PopoverContent } from "@/components/ui/popover";
+import { Switch } from "@/components/ui/switch";
 import { cn } from "@/lib/utils";
 import { Input } from "@/components/ui/input";
 import { Icon } from "@/components/ui/icon";
 import { COLOR_PALETTE } from "../shared/colors.js";
 import { StatusIcon, StatusColorDot } from "../components/status-icon.js";
-import { useProjects, useTasksRpc, useTasksQuery } from "../shell/data.js";
+import { useProjects, useTasksRpc } from "../shell/data.js";
 import {
   DEFAULT_TASK_STATUSES,
   TASK_STATUSES,
@@ -29,11 +32,12 @@ import {
 } from "../shared/statuses.js";
 import type { Project } from "../shared/contract.js";
 import { errorMessage } from "../shared/errors.js";
-import { DEFAULT_BOARD_PREFERENCES, boardPreferencesSchema, type autoArchiveAfterDaysSchema, type statusNotificationsSchema, type staleIdleThresholdSchema } from "../shared/project-settings";
+import type { archiveSettingSchema, autoArchiveAfterDaysSchema, planningSchema, statusNotificationsSchema, staleIdleThresholdSchema } from "../shared/project-settings";
 import type { z } from "zod";
 import { NewProjectDialog } from "./manage/new-project-dialog.js";
 
-function ProjectStatuses({ project }: { project: Project }) {
+/** `onBusy` reports a save in flight or a rejected draft, so the editor is not closed over a draft or an error. */
+function ProjectStatuses({ project, onBusy }: { project: Project; onBusy: (busy: boolean) => void }) {
   const rpc = useTasksRpc();
   const [statuses, setStatuses] = useState<TaskStatusDefinition[]>(
     () => project.statuses ?? DEFAULT_TASK_STATUSES,
@@ -62,6 +66,12 @@ function ProjectStatuses({ project }: { project: Project }) {
         )
         ?.focus({ preventScroll: true });
   }, [draggedId, statuses]);
+  // A rejection with nothing left to correct (a refused removal) does not hold the editor open.
+  const failedDraft = error !== null && (adding || JSON.stringify(statuses) !== JSON.stringify(saved));
+  useEffect(() => {
+    onBusy(saving || failedDraft);
+    return () => onBusy(false);
+  }, [saving, failedDraft]);
   const save = async (next: TaskStatusDefinition[]) => {
     if (JSON.stringify(next) === JSON.stringify(saved)) return;
     setSaving(true);
@@ -140,8 +150,7 @@ function ProjectStatuses({ project }: { project: Project }) {
   return (
     <div className="max-w-2xl space-y-2">
       <p className="text-xs text-muted-foreground">
-        Changes save automatically. System statuses stay; statuses used by tasks
-        cannot be deleted.
+        System statuses stay; statuses used by tasks cannot be deleted.
       </p>
       <p id={dragInstructions} className="sr-only">
         Drag to reorder. With the keyboard, press Space to pick up, use arrow
@@ -396,15 +405,23 @@ function ProjectStatuses({ project }: { project: Project }) {
   );
 }
 
-function ProjectAutomationSettings({ project, onSaved }: { project: Project; onSaved: () => void }) {
+type SectionProps = { project: Project; onSaved: () => void };
+type ProjectChanges = {
+  autoArchiveAfterDays?: z.infer<typeof autoArchiveAfterDaysSchema>;
+  staleIdleMinutes?: z.infer<typeof staleIdleThresholdSchema>;
+  statusNotifications?: z.infer<typeof statusNotificationsSchema>;
+  archiveThreadsOnClose?: z.infer<typeof archiveSettingSchema>;
+  archiveReviewerOnApproval?: z.infer<typeof archiveSettingSchema>;
+  planning?: z.infer<typeof planningSchema>;
+  statuses?: TaskStatusDefinition[];
+};
+
+/** Saves one project setting at a time and reports the failure beside the section's controls. */
+function useProjectUpdate(project: Project, onSaved: () => void) {
   const rpc = useTasksRpc();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const save = async (changes: {
-    autoArchiveAfterDays?: z.infer<typeof autoArchiveAfterDaysSchema>;
-    staleIdleMinutes?: z.infer<typeof staleIdleThresholdSchema>;
-    statusNotifications?: z.infer<typeof statusNotificationsSchema>;
-  }) => {
+  const update = async (changes: ProjectChanges) => {
     setBusy(true);
     setError(null);
     try {
@@ -416,98 +433,176 @@ function ProjectAutomationSettings({ project, onSaved }: { project: Project; onS
       setBusy(false);
     }
   };
+  return { busy, error, update };
+}
+
+function SelectRow<T extends string>({ label, value, options, disabled, onChange, hint }: {
+  label: string; value: T; options: readonly (readonly [T, string])[]; disabled: boolean; onChange: (value: T) => void; hint: ReactNode;
+}) {
   return (
-    <section aria-label="Project automation" className="space-y-4 border-t border-border pt-4">
-      <h3 className="text-sm font-medium">Archiving and activity</h3>
+    <div className="space-y-1">
       <label className="flex flex-wrap items-center justify-between gap-2 text-sm">
-        Automatically archive completed tasks
-        <Select value={project.autoArchiveAfterDays ?? "off"} disabled={busy}
-          onValueChange={(value) => void save({ autoArchiveAfterDays: value as z.infer<typeof autoArchiveAfterDaysSchema> })}>
-          <SelectTrigger aria-label="Automatically archive completed tasks" className="h-8 w-48"><SelectValue /></SelectTrigger>
+        {label}
+        <Select value={value} disabled={disabled} onValueChange={(next) => onChange(next as T)}>
+          <SelectTrigger aria-label={label} className="h-8 w-48"><SelectValue /></SelectTrigger>
           <SelectContent>
-            <SelectItem value="off">Off</SelectItem>
-            <SelectItem value="3">After 3 days</SelectItem>
-            <SelectItem value="7">After 7 days</SelectItem>
-            <SelectItem value="14">After 14 days</SelectItem>
-            <SelectItem value="30">After 30 days</SelectItem>
+            {options.map(([option, text]) => <SelectItem key={option} value={option}>{text}</SelectItem>)}
           </SelectContent>
         </Select>
       </label>
-      <p className="text-xs text-muted-foreground">Checks hourly for this project. Task, comment, attachment or question activity restarts the interval. Unfinished children, unanswered questions and working agents prevent archival.</p>
-      <label className="flex flex-wrap items-center justify-between gap-2 text-sm">
-        Flag idle threads without task updates
-        <Select value={project.staleIdleMinutes ?? "45"} disabled={busy}
-          onValueChange={(value) => void save({ staleIdleMinutes: value as z.infer<typeof staleIdleThresholdSchema> })}>
-          <SelectTrigger aria-label="Flag idle threads without task updates" className="h-8 w-48"><SelectValue /></SelectTrigger>
-          <SelectContent>
-            <SelectItem value="off">Off</SelectItem>
-            <SelectItem value="30">After 30 minutes</SelectItem>
-            <SelectItem value="45">After 45 minutes</SelectItem>
-            <SelectItem value="60">After 60 minutes</SelectItem>
-            <SelectItem value="120">After 2 hours</SelectItem>
-          </SelectContent>
-        </Select>
-      </label>
-      <p className="text-xs text-muted-foreground">Display an amber marker for idle attached threads in this project. No messages are sent to the thread.</p>
-      <label className="flex flex-wrap items-center justify-between gap-2 text-sm">
-        Task status notifications
-        <Select value={project.statusNotifications ?? "off"} disabled={busy}
-          onValueChange={(value) => void save({ statusNotifications: value as z.infer<typeof statusNotificationsSchema> })}>
-          <SelectTrigger aria-label="Task status notifications" className="h-8 w-48"><SelectValue /></SelectTrigger>
-          <SelectContent>
-            <SelectItem value="off">Off</SelectItem>
-            <SelectItem value="all">All status changes</SelectItem>
-            <SelectItem value="done">Done only</SelectItem>
-          </SelectContent>
-        </Select>
-      </label>
-      <p className="text-xs text-muted-foreground">Applies only to this project. Uses the enabled channels in BB Push notifications.</p>
+      <p className="text-xs text-muted-foreground">{hint}</p>
+    </div>
+  );
+}
+
+function SwitchRow({ label, checked, disabled, onChange, hint }: {
+  label: string; checked: boolean; disabled: boolean; onChange: (checked: boolean) => void; hint: ReactNode;
+}) {
+  const id = useId();
+  return (
+    <div className="space-y-1">
+      <div className="flex flex-wrap items-center justify-between gap-2 text-sm">
+        <label htmlFor={id} className="cursor-pointer">{label}</label>
+        <Switch id={id} aria-label={label} aria-describedby={`${id}-hint`} checked={checked} disabled={disabled} onCheckedChange={onChange} />
+      </div>
+      <p id={`${id}-hint`} className="text-xs text-muted-foreground">{hint}</p>
+    </div>
+  );
+}
+
+function StatusesSection({ project }: SectionProps) {
+  const [editing, setEditing] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const statuses: TaskStatusDefinition[] = project.statuses ?? DEFAULT_TASK_STATUSES;
+  return (
+    <section aria-label="Project task statuses" className="space-y-3 border-t border-border pt-4">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <h3 className="text-sm font-medium">Statuses</h3>
+        <Button size="sm" variant="outline" className="h-7 px-2.5" aria-expanded={editing} disabled={editing && busy}
+          aria-label={editing ? "Done editing statuses" : "Edit statuses"} onClick={() => setEditing(!editing)}>
+          {editing ? "Done" : "Edit"}
+        </Button>
+      </div>
+      {editing ? <ProjectStatuses key={`${project.id}:${JSON.stringify(project.statuses)}`} project={project} onBusy={setBusy} /> : (
+        <ol aria-label="Status order" className="flex flex-wrap items-center gap-x-1 gap-y-1.5 text-xs">
+          {statuses.map((status, index) => (
+            <li key={status.id} className="inline-flex items-center gap-1">
+              {index ? <Icon name="ChevronRight" aria-hidden className="size-3 text-muted-foreground" /> : null}
+              <span className="inline-flex h-6 items-center gap-1.5 rounded-md border border-border px-2">
+                <StatusIcon status={status.id} projectId={project.id} icon={status.icon} color={status.color} />
+                {status.name}
+              </span>
+            </li>
+          ))}
+        </ol>
+      )}
+    </section>
+  );
+}
+
+function PlanningSection({ project, onSaved }: SectionProps) {
+  const { busy, error, update } = useProjectUpdate(project, onSaved);
+  const statuses: TaskStatusDefinition[] = project.statuses ?? DEFAULT_TASK_STATUSES;
+  const marked = statuses.filter((status) => status.requiresApprovedPlan === true && status.id !== "canceled");
+  const unmarked = statuses.filter((status) => status.requiresApprovedPlan !== true);
+  const setFlag = (id: string, on: boolean) => void update({ statuses: statuses.map((status) => (status.id === id ? { ...status, requiresApprovedPlan: on } : status)) });
+  const planning = project.planning ?? "off";
+  return (
+    <section aria-label="Project planning" className="space-y-3 border-t border-border pt-4">
+      <h3 className="text-sm font-medium">Planning</h3>
+      <SelectRow label="Mode" value={planning} disabled={busy} onChange={(value) => void update({ planning: value })}
+        options={[["off", "Off"], ["optional", "Optional"], ["required", "Required"]]}
+        hint="Off hides plans for this project (existing plans are kept). Optional turns on plans and their review. Required keeps a card out of the statuses below until its plan is approved; epics are exempt." />
+      <p className="text-xs text-muted-foreground">Only you change the planning mode and the statuses that need an approved plan; agents cannot.</p>
+      {project.planningChangedAt ? (
+        <p className="text-xs text-muted-foreground" data-testid="planning-changed">
+          Changed <time dateTime={project.planningChangedAt} title={project.planningChangedAt}>{formatRelativeTime(project.planningChangedAt, Date.now())}</time>, was {project.planningPrevious ?? "off"}
+        </p>
+      ) : null}
+      {planning === "required" ? (
+        <div className="space-y-2" data-testid="plan-gated-statuses">
+          <h4 className="text-sm font-medium">Statuses that need an approved plan</h4>
+          <div className="flex flex-wrap items-center gap-1.5">
+            {marked.map((status) => (
+              <span key={status.id} className="inline-flex h-7 items-center gap-1.5 rounded-md border border-border pl-2 pr-1 text-xs">
+                <StatusIcon status={status.id} projectId={project.id} icon={status.icon} color={status.color} />
+                {status.name}
+                <Button type="button" variant="ghost" size="icon" className="size-5" disabled={busy} aria-label={`Remove ${status.name}`} onClick={() => setFlag(status.id, false)}>
+                  <Icon name="X" className="size-3" />
+                </Button>
+              </span>
+            ))}
+            {unmarked.some((status) => status.id !== "canceled") ? (
+              <Select value="" disabled={busy} onValueChange={(id) => setFlag(id, true)}>
+                <SelectTrigger aria-label="Add status" className="h-7 w-auto gap-1 text-xs"><SelectValue placeholder="+ Add status" /></SelectTrigger>
+                <SelectContent>
+                  {unmarked.filter((status) => status.id !== "canceled").map((status) => (
+                    <SelectItem key={status.id} value={status.id}>{status.name}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            ) : null}
+          </div>
+          <p className="text-xs text-muted-foreground" data-testid="plan-free-statuses">
+            Without an approved plan a card stays in: {unmarked.map((status) => status.name).join(", ")}
+          </p>
+        </div>
+      ) : null}
+      {planning !== "off" ? (
+        <SwitchRow label="Archive the plan reviewer after approval" checked={(project.archiveReviewerOnApproval ?? "on") === "on"} disabled={busy}
+          onChange={(on) => void update({ archiveReviewerOnApproval: on ? "on" : "off" })}
+          hint="A reviewer thread submitted with --dedicated-reviewer is archived after it approves a plan. A reused thread is never archived." />
+      ) : null}
       {error ? <p role="alert" className="text-xs text-destructive">{error}</p> : null}
     </section>
   );
 }
 
-function GeneralSettings() {
-  const rpc = useTasksRpc();
-  const preferences = useTasksQuery((rpc) => rpc.call("getBoardPreferences", null), ["projects:changed"]);
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+function ArchivingSection({ project, onSaved }: SectionProps) {
+  const { busy, error, update } = useProjectUpdate(project, onSaved);
   return (
-    <details className="rounded-md border border-border text-sm">
-      <summary className="cursor-pointer px-3 py-2.5 font-medium">General</summary>
-      <div className="space-y-3 border-t border-border p-3">
-        <p className="text-xs text-muted-foreground">Applies to all projects.</p>
-        <label className="flex flex-wrap items-center justify-between gap-2">
-          Open by default
-          <Select value={preferences.data?.defaultScreen ?? DEFAULT_BOARD_PREFERENCES.defaultScreen}
-            disabled={busy || !preferences.data}
-            onValueChange={(defaultScreen) => {
-              setBusy(true);
-              setError(null);
-              void rpc.call("setBoardPreferences", boardPreferencesSchema.parse({ ...preferences.data, defaultScreen }))
-                .then(() => preferences.refresh())
-                .catch((error) => setError(errorMessage(error)))
-                .finally(() => setBusy(false));
-            }}>
-            <SelectTrigger aria-label="Open by default" className="h-8 w-48"><SelectValue /></SelectTrigger>
-            <SelectContent>
-              <SelectItem value="last-project-board">Last project · Kanban</SelectItem>
-              <SelectItem value="last-project-list">Last project · List</SelectItem>
-              <SelectItem value="all">All tasks</SelectItem>
-              <SelectItem value="active">Active tasks</SelectItem>
-            </SelectContent>
-          </Select>
-        </label>
-        <p className="text-xs text-muted-foreground">The last selected project is remembered on this device.</p>
-        {error || preferences.error ? <div role="alert" className="text-xs text-destructive">
-          {error ?? preferences.error}
-          <Button size="sm" variant="ghost" onClick={preferences.refresh}>Retry</Button>
-        </div> : null}
-        <NavigationBadgeSettings />
-      </div>
-    </details>
+    <section aria-label="Project archiving" className="space-y-4 border-t border-border pt-4">
+      <h3 className="text-sm font-medium">Archiving</h3>
+      <SelectRow label="Archive completed tasks after" value={project.autoArchiveAfterDays ?? "off"} disabled={busy}
+        onChange={(value) => void update({ autoArchiveAfterDays: value })}
+        options={[["off", "Off"], ["3", "3 days"], ["7", "7 days"], ["14", "14 days"], ["30", "30 days"]]}
+        hint="Checks hourly for this project. Task, comment, attachment or question activity restarts the interval. Unfinished children, unanswered questions and working agents prevent archival." />
+      <SwitchRow label="Archive threads of closed cards" checked={(project.archiveThreadsOnClose ?? "on") === "on"} disabled={busy}
+        onChange={(on) => void update({ archiveThreadsOnClose: on ? "on" : "off" })}
+        hint="When a card goes to Done or Canceled, the sessions Work Board created for it are archived once they are idle. Sessions made outside Work Board, or linked to another open card, are kept." />
+      {error ? <p role="alert" className="text-xs text-destructive">{error}</p> : null}
+    </section>
   );
 }
+
+function ActivitySection({ project, onSaved }: SectionProps) {
+  const { busy, error, update } = useProjectUpdate(project, onSaved);
+  return (
+    <section aria-label="Project activity and notifications" className="space-y-4 border-t border-border pt-4">
+      <h3 className="text-sm font-medium">Activity and notifications</h3>
+      <SelectRow label="Flag idle threads after" value={project.staleIdleMinutes ?? "45"} disabled={busy}
+        onChange={(value) => void update({ staleIdleMinutes: value })}
+        options={[["off", "Off"], ["30", "30 minutes"], ["45", "45 minutes"], ["60", "60 minutes"], ["120", "2 hours"]]}
+        hint="Display an amber marker for idle attached threads in this project. No messages are sent to the thread." />
+      <SelectRow label="Notify me of status changes" value={project.statusNotifications ?? "off"} disabled={busy}
+        onChange={(value) => void update({ statusNotifications: value })}
+        options={[["off", "Off"], ["all", "All status changes"], ["done", "Done only"]]}
+        hint="Applies only to this project and uses the enabled channels in BB Push notifications. Status changes you make yourself in the board are not notified." />
+      {error ? <p role="alert" className="text-xs text-destructive">{error}</p> : null}
+      <AttentionSettings projectId={project.id} />
+    </section>
+  );
+}
+
+/** The project sections in page order. Add a section by adding one entry; it receives the selected project. */
+const PROJECT_SECTIONS: { id: string; Section: ComponentType<SectionProps> }[] = [
+  { id: "statuses", Section: StatusesSection },
+  { id: "planning", Section: PlanningSection },
+  { id: "archiving", Section: ArchivingSection },
+  { id: "activity", Section: ActivitySection },
+  { id: "git", Section: ({ project }) => <GitSyncSettings projectId={project.id} /> },
+  { id: "checks", Section: ({ project }) => <ChecksSettings projectId={project.id} /> },
+];
 
 function TasksSettingsContent() {
   const navigate = useBbNavigate();
@@ -527,29 +622,23 @@ function TasksSettingsContent() {
         <Button size="sm" variant="outline" className="h-8 px-2.5" onClick={() => setNewProjectOpen(true)}>
           <Icon name="Plus" className="size-3.5" />New project
         </Button>
+        <Button size="sm" variant="outline" className="h-8 px-2.5"
+          onClick={() => navigate.toPluginPanel("work-board", { subPath: "manage" })}>Manage labels and presets</Button>
       </div>
       {projects.error ? <div role="alert" className="text-xs text-destructive">
         {projects.error}<Button size="sm" variant="ghost" onClick={projects.refresh}>Retry</Button>
       </div> : null}
       {newProjectOpen ? <NewProjectDialog open onOpenChange={setNewProjectOpen}
         onCreated={(created) => { setProjectId(created.id); projects.refresh(); }} /> : null}
-      {project ? <>
-        <ProjectAutomationSettings key={`automation:${project.id}`} project={project} onSaved={projects.refresh} />
-        <section aria-label="Project task statuses" className="space-y-3 border-t border-border pt-4">
-          <h3 className="text-sm font-medium">Task statuses</h3>
-          <ProjectStatuses key={`${project.id}:${JSON.stringify(project.statuses)}`} project={project} />
-        </section>
-        <GitSyncSettings key={`git:${project.id}`} projectId={project.id} />
-      </> : !projects.error ? <p className="text-xs text-muted-foreground">
+      {project ? PROJECT_SECTIONS.map(({ id, Section }) => (
+        <Section key={`${id}:${project.id}`} project={project} onSaved={projects.refresh} />
+      )) : !projects.error ? <p className="text-xs text-muted-foreground">
         {projects.data ? "Create a project to configure its workflow." : "Loading projects…"}
       </p> : null}
-      <GeneralSettings />
       <StorageSettings />
       <div className="flex flex-wrap gap-2 border-t border-border pt-4">
         <Button size="sm" className="h-7 px-2.5" variant="outline"
           onClick={() => navigate.toPluginPanel("work-board", project ? { subPath: project.id } : undefined)}>Open Work Board</Button>
-        <Button size="sm" className="h-7 px-2.5" variant="outline"
-          onClick={() => navigate.toPluginPanel("work-board", { subPath: "manage" })}>Manage labels and presets</Button>
       </div>
     </div>
   );

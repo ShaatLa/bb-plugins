@@ -45,3 +45,13 @@ it('sends reminder age and question in an individual blocking push',async()=>{
  at('11:00');const h=setup({notify:'asked'});await h.notifier.run();h.insert('ans_reminder');h.db.prepare("UPDATE items SET urgency='blocking',reminders=1,reminded_at=?,created_at=? WHERE id='ans_reminder'").run(Date.now(),Date.now()-3*3600000);
  await h.notifier.run();expect(h.sent).toEqual([{title:'Blocking · Thread title',threadId:'t',body:'Still waiting (3h): Question?'}]);
 });
+
+it.each(['fresh','absent','stale','denied','publish failure'])('routes desktop delivery with %s presence',async mode=>{
+ vi.useFakeTimers();const h=setup();await h.notifier.run();
+ if(mode!=='absent') h.notifier.beat({clientId:'client_example',canNotify:mode!=='denied'});
+ if(mode==='stale') await vi.advanceTimersByTimeAsync(45000);
+ if(mode==='publish failure') vi.spyOn(h.host.bb.realtime,'publish').mockImplementation(()=>{throw new Error('Offline');});
+ h.insert('ans_example');await h.notifier.run();await vi.advanceTimersByTimeAsync(10000);
+ expect(h.sent).toHaveLength(mode==='fresh'?0:1);
+ if(mode==='fresh') expect(h.host.harness.realtimeSignals).toContainEqual({channel:'agent-hub:notifications',payload:expect.objectContaining({title:'Thread title',body:'Question?',threadId:'t'})});
+});

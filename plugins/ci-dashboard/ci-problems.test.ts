@@ -104,7 +104,7 @@ test("the prompt stays under the cap by shortening lists and annotations, never 
   const prompt = seedPrompt(REPO, target, sections);
   expect(prompt.length).toBeLessThanOrEqual(12_000);
   expect(prompt).toContain("omitted to keep the prompt short");
-  for (const fact of ["Do not re-run workflows, cancel runs or change CI configuration unless the owner asks.", "gh run view <runId>", "Classify the root cause", "ci_dashboard_metrics", "Problem: Title of rerun_failed:7:1 (warning)"]) expect(prompt).toContain(fact);
+  for (const fact of ["You must not re-run workflows, cancel runs or change CI configuration unless the owner asks.", "gh run view <runId>", "Classify the root cause", "ci_dashboard_metrics", "Problem: Title of rerun_failed:7:1 (warning)"]) expect(prompt).toContain(fact);
   expect(seedPrompt(REPO, target).length).toBeLessThan(12_000);
   expect(seedPrompt(REPO, target, sections, "ci-dashboard")).toContain("`bb plugin rpc call ci-dashboard ci --input-file <json>`");
 });

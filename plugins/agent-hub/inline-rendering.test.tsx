@@ -2,7 +2,7 @@
 import { afterEach, expect, it } from 'vitest';
 import { cleanup, fireEvent, waitFor } from '@testing-library/react';
 import { renderSlot } from '@get-bb/plugin-sdk/testing/app';
-import { ItemCard, InlineCommentText, UpdateGroup, UserText } from './app';
+import { ItemCard, InlineCommentText, UpdateGroup, UserText, unlabel } from './app';
 import { Inbox } from './inbox';
 import { PendingInteractions, QuestionForm } from './interactions';
 import { ComposerThread } from './rich-editor';
@@ -94,16 +94,71 @@ it('keeps the card end in place when the group closes from its bottom bar, and t
   fireEvent.click(toggle); box.scrollTop = 1000; fireEvent.click(toggle);
   expect(box.scrollTop).toBe(1000);
 });
-it('gives an open background updates group the side inset the chat list has, for bubbles and bled-out tables alike', () => {
+it('renders a quoted plugin or thread message through the agent text\'s Markdown, without bb\'s header', async () => {
+  const question = '[bb message from plugin:example-plugin]\n\n## Title\n\n**bold** and `code`\n\n| a | b |\n| - | - |\n| 1 | 2 |';
+  const update = { ...item, id:'ans_fmt', kind:'update' as const, status:'answered' as const, question, questionSeq:null, answer:'Done', trigger:{ kind:'plugin' as const, sourceId:'example-plugin', sourceTitle:null } } as any;
+  const slot = renderSlot({ component:ItemCard }, { item:update, chat:true }, { sdk } as any);
+  // The test host draws Markdown as its source; the quote and the agent's reply share one renderer.
+  const quote = await waitFor(() => { const node = slot.container.querySelector('[data-agent-message] [data-testid="bb-markdown"]'); expect(node).toBeTruthy(); return node!; });
+  expect(quote.textContent).toBe(question.replace('[bb message from plugin:example-plugin]\n\n', ''));
+  expect(slot.container.querySelector('[data-agent-body] [data-testid="bb-markdown"]')?.parentElement?.className).toBe(quote.parentElement?.className);
+});
+it('drops a sender\'s own leading [tag] from the quote but keeps task keys, links and checkboxes', () => {
+  expect(unlabel('[bb message from thread:thr_example]\n\n[Agent Hub] A request')).toBe('A request');
+  expect(unlabel('[example-plugin] Done')).toBe('Done');
+  expect(unlabel('[EXA-1] landed')).toBe('[EXA-1] landed');
+  expect(unlabel('[EXA-1](/plugins/work-board/work-board/task/EXA-1) ready')).toBe('[EXA-1](/plugins/work-board/work-board/task/EXA-1) ready');
+  expect(unlabel('[x] done')).toBe('[x] done');
+});
+it('previews the quoted message of a background update that has no reply yet', () => {
+  const plugin = { ...item, id:'ans_noreply', kind:'update' as const, status:'answered' as const, question:'[bb message from plugin:work-board]\n\n`New comment` on EXA-1', answer:null, answerSeq:null, trigger:{ kind:'plugin' as const, sourceId:'work-board', sourceTitle:null } } as any;
+  const slot = renderSlot({ component:UpdateGroup }, { items:[{ ...plugin, id:'ans_first', answer:'Earlier' }, plugin], children:(i: any) => <ItemCard item={i} chat /> }, { sdk } as any);
+  expect(slot.container.querySelector('[data-update-group]')?.textContent).toContain('New comment on EXA-1');
+});
+it('previews a bb notice in a background update that has no reply yet', () => {
+  const notice = { ...item, id:'ans_notice', kind:'update' as const, status:'answered' as const, question:'[bb system]\n\n@thread:thr_example completed:\n\nAPPROVE v2', answer:'', answerSeq:null, trigger:{ kind:'system' as const, sourceId:null, sourceTitle:null } } as any;
+  const slot = renderSlot({ component:UpdateGroup }, { items:[{ ...notice, id:'ans_first', answer:'Earlier' }, notice], children:(i: any) => <ItemCard item={i} chat /> }, { sdk } as any);
+  expect(slot.container.querySelector('[data-update-group] p')?.textContent).toContain('APPROVE v2');
+});
+it('gives a message with no reply of its own only its expand and link icons, without the More menu', () => {
+  const update = { ...item, id:'ans_bare', kind:'update' as const, status:'answered' as const, question:'[bb message from plugin:example-plugin]\n\nNotice', answer:null, answerSeq:null, trigger:{ kind:'plugin' as const, sourceId:'example-plugin', sourceTitle:null } } as any;
+  const slot = renderSlot({ component:ItemCard }, { item:update, chat:true }, { sdk } as any);
+  expect(slot.getByRole('button', { name:'Copy link' })).toBeTruthy();
+  expect(slot.queryByRole('button', { name:'More' })).toBeNull();
+  const replied = renderSlot({ component:ItemCard }, { item:{ ...update, id:'ans_replied', answer:'Done', answerSeq:7 }, chat:true }, { sdk } as any);
+  expect(replied.getByRole('button', { name:'More' })).toBeTruthy();
+});
+it('gives an open background updates group the side inset the chat list has, for quotes and bled-out tables alike', () => {
   const plugin = { ...item, id:'ans_plugin', kind:'update' as const, status:'answered' as const, question:'**EXA-1 · READY** from a lead', trigger:{ kind:'plugin' as const, sourceId:'work-board', label:null } } as any;
   const slot = renderSlot({ component:UpdateGroup }, { items:[plugin, { ...plugin, id:'ans_plugin2' }], children:(i: any) => <ItemCard item={i} chat /> }, { sdk } as any);
   fireEvent.click(slot.getByRole('button', { name:/2 background updates/ }));
   const list = slot.container.querySelector('[data-update-group] ul')!;
-  expect(list.querySelector('[data-bubble-row] [data-plugin-message]')).toBeTruthy();
+  expect(list.querySelector('[data-agent-message]')).toBeTruthy();
   expect(list.className.split(' ')).toEqual(expect.arrayContaining(['px-2', '[&_[data-bubble-row]]:mr-2', '@container']));
 });
 it('gives every field on the Agent Hub page 16px text on touch screens, so iOS does not zoom in on focus', async () => {
   const { AgentHubPanel } = await import('./app');
   const slot = renderSlot({ component:AgentHubPanel }, {}, { sdk, rpc:{ recipients:() => ({ recipients:[] }), list:() => ({ items:[], nextCursor:null }), counts:() => ({ unread:0, waiting:0, forMe:0, inbox:0 }) } } as any);
   expect(slot.container.querySelector('section')!.className).toContain('[@media(pointer:coarse)]:[&_:is(input,textarea,select,[contenteditable=true])]:text-[16px]');
+});
+it('drops an open question\'s text above a form of several parts, which already shows each prompt, and keeps it for one part', async () => {
+  const part = (id: string, prompt: string) => ({ id, prompt, shortLabel: id, required: false, multiSelect: false, allowFreeText: true, options: [{ value: 'a', label: 'Alpha' }] });
+  const ask = { ...item, id:'ans_form', kind:'for_me' as const, status:'open' as const, question:'1. First part?\n2. Second part?', answer:null, answerSeq:null, questions:[part('one', 'First part?'), part('two', 'Second part?')] } as any;
+  const many = renderSlot({ component:ItemCard }, { item:ask, chat:true, compact:true }, { sdk } as any);
+  await many.findAllByText('First part?');
+  expect(many.container.textContent).not.toContain('1. First part?');
+  many.unmount();
+  const one = renderSlot({ component:ItemCard }, { item:{ ...ask, question:'Only part?', questions:[part('one', 'Only part?')] }, chat:true, compact:true }, { sdk } as any);
+  await waitFor(() => expect(one.container.textContent).toContain('Only part?'));
+});
+it('lays an open question out top to bottom: form, its footer with Won\'t reply in Cancel\'s place, then the time and actions', async () => {
+  const ask = { ...item, id:'ans_layout', kind:'for_me' as const, status:'open' as const, question:'Pick?', answer:null, answerSeq:null, questions:[{ id:'one', prompt:'Pick?', shortLabel:'one', required:false, multiSelect:false, allowFreeText:true, options:[{ value:'a', label:'Alpha' }] }] } as any;
+  const view = renderSlot({ component:ItemCard }, { item:ask, chat:true, compact:true }, { sdk } as any);
+  const decline = await view.findByRole('button', { name:'Won’t reply' });
+  const submit = view.getByRole('button', { name:'Submit answer' });
+  expect(decline.parentElement).toBe(submit.parentElement!.parentElement);
+  const time = view.container.querySelector('time')!, more = view.getByRole('button', { name:'More' });
+  expect(submit.compareDocumentPosition(time) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  expect(time.compareDocumentPosition(more) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  expect(view.queryByLabelText('Unread')).toBeNull();
 });

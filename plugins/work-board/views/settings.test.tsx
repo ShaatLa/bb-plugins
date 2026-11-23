@@ -1,9 +1,11 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, waitFor, within } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
 import { loadPluginApp, renderSlot } from "@get-bb/plugin-sdk/testing/app";
 import { createFakePluginHost } from "@get-bb/plugin-sdk/testing";
 import { createStore, registerTasksApi } from "../api";
+import { registerAttention } from "../attention/rpc";
+import { registerChecks } from "../checks/rpc";
 import { navTab } from "../test-fixtures";
 import { tasksRpcContract } from "../shared/contract";
 
@@ -27,6 +29,9 @@ window.PointerEvent ??= window.MouseEvent as typeof PointerEvent;
 Element.prototype.setPointerCapture ??= () => {};
 
 const app = await loadPluginApp(() => import("../app"));
+const editStatuses = async (settings: ReturnType<typeof renderSlot>) => {
+  fireEvent.click(await settings.findByRole("button", { name: "Edit statuses" }));
+};
 it("loads shared storage statistics only when opened and performs maintenance", async () => {
   const { bb, harness } = createFakePluginHost({ pluginId: "work-board" });
   try {
@@ -34,7 +39,12 @@ it("loads shared storage statistics only when opened and performs maintenance", 
     const settings = renderSlot(app.settingsSections[0]!, {}, { rpc: Object.fromEntries(Object.keys(tasksRpcContract).map(method => [method, (input: unknown) => harness.callRpc(method, input)])) });
     expect(settings.rpcCalls.some(call => call.method === "getStorageStatus")).toBe(false);
     fireEvent.click(settings.getByText("Storage"));
-    await settings.findByText("Database / WAL");
+    // Usage, reclaimable space and missing files lead; database details sit in a nested, closed disclosure.
+    await settings.findByText("Missing attachment files");
+    const database = settings.getByText("Database details").closest("details")!;
+    expect(database.open).toBe(false);
+    expect(database.textContent).toContain("Database / WAL");
+    expect(database.parentElement?.closest("details")?.open).toBe(true);
     fireEvent.click(settings.getByRole("button", { name: "Optimize storage" }));
     await settings.findByText(/Cleanup complete\./);
     expect(settings.rpcCalls.filter(call => call.method === "getStorageStatus")).toHaveLength(1);
@@ -59,14 +69,14 @@ it("switches automation, statuses and Git settings together without changing the
     const settings = renderSlot(app.settingsSections[0]!, {}, { rpc: Object.fromEntries(
       methods.map((method) => [method, (input: unknown) => harness.callRpc(method, input)]),
     ) });
-    const archiveSelect = () => settings.getByRole("combobox", { name: "Automatically archive completed tasks" });
-    const idleSelect = () => settings.getByRole("combobox", { name: "Flag idle threads without task updates" });
-    await waitFor(() => expect(archiveSelect().textContent).toContain("After 7 days"));
-    expect(idleSelect().textContent).toContain("After 30 minutes");
+    const archiveSelect = () => settings.getByRole("combobox", { name: "Archive completed tasks after" });
+    const idleSelect = () => settings.getByRole("combobox", { name: "Flag idle threads after" });
+    await waitFor(() => expect(archiveSelect().textContent).toContain("7 days"));
+    expect(idleSelect().textContent).toContain("30 minutes");
     fireEvent.click(settings.getByRole("combobox", { name: "Settings project" }));
     fireEvent.click(await settings.findByRole("option", { name: "Beta" }));
-    await waitFor(() => expect(archiveSelect().textContent).toContain("After 14 days"));
-    expect(idleSelect().textContent).toContain("After 2 hours");
+    await waitFor(() => expect(archiveSelect().textContent).toContain("14 days"));
+    expect(idleSelect().textContent).toContain("2 hours");
     await waitFor(() => expect(settings.rpcCalls).toContainEqual(expect.objectContaining({ method: "getGitSyncConfig", input: { projectId: second.id } })));
     fireEvent.click(archiveSelect());
     fireEvent.click(await settings.findByRole("option", { name: "Off" }));
@@ -74,7 +84,7 @@ it("switches automation, statuses and Git settings together without changing the
     expect(store.tasks.getProject(first.id)).toMatchObject({ autoArchiveAfterDays: "7", staleIdleMinutes: "30" });
     fireEvent.click(settings.getByRole("combobox", { name: "Settings project" }));
     fireEvent.click(await settings.findByRole("option", { name: "Alpha" }));
-    await waitFor(() => expect(archiveSelect().textContent).toContain("After 7 days"));
+    await waitFor(() => expect(archiveSelect().textContent).toContain("7 days"));
     expect(settings.getAllByRole("combobox", { name: "Settings project" })).toHaveLength(1);
     expect(settings.queryByRole("combobox", { name: "Statuses project" })).toBeNull();
   } finally {
@@ -118,6 +128,8 @@ it.each([false, true])("creates a project directly in settings (existing project
     expect(settings.navigateCalls).toContainEqual({
       method: "toPluginPanel", path: "work-board", options: { subPath: "manage" },
     });
+    // The footer no longer repeats it.
+    expect(settings.getAllByRole("button", { name: "Manage labels and presets" })).toHaveLength(1);
   } finally {
     cleanup();
     await harness.dispose();
@@ -166,6 +178,7 @@ it("saves a project workflow in compact settings and uses it in the list, board 
       ]),
     );
     const settings = renderSlot(app.settingsSections[0]!, {}, { rpc });
+    await editStatuses(settings);
     await settings.findByRole("textbox", { name: "Status name backlog" });
     expect(
       settings.getByRole("button", { name: "Open Work Board" }).className,
@@ -344,6 +357,7 @@ it("autosaves names and removals, hides system removal, and keeps rejected chang
         ),
       },
     );
+    await editStatuses(settings);
     const backlog = await settings.findByRole("textbox", {
       name: "Status name backlog",
     });
@@ -464,6 +478,222 @@ it("autosaves names and removals, hides system removal, and keeps rejected chang
   }
 });
 
+it("lets the owner pick each planning mode for the selected project, and the choice survives a reload", async () => {
+  const { bb, harness } = createFakePluginHost({ pluginId: "work-board" });
+  try {
+    const store = createStore(bb);
+    const alpha = store.tasks.createProject({ name: "Alpha", prefix: "A", color: "blue" });
+    const beta = store.tasks.createProject({ name: "Beta", prefix: "B", color: "red" });
+    registerTasksApi(bb, store);
+    const rpc = Object.fromEntries(Object.keys(tasksRpcContract).map(method => [method, (input: unknown) => harness.callRpc(method, input)]));
+    const settings = renderSlot(app.settingsSections[0]!, {}, { rpc });
+    const region = () => within(settings.getByRole("region", { name: "Project planning" }));
+    const mode = () => region().getByRole("combobox", { name: "Mode" });
+    await settings.findByRole("combobox", { name: "Mode" });
+    // The project sections come in this order; the former General block is gone (native fields are rendered by the host).
+    const regions = settings.getAllByRole("region").map(node => node.getAttribute("aria-label"));
+    expect(regions.filter(name => name?.startsWith("Project ") || name === "Repository checks")).toEqual([
+      "Project task statuses", "Project planning", "Project archiving", "Project activity and notifications", "Project Git and PR sync", "Repository checks",
+    ]);
+    expect(settings.queryByText("General")).toBeNull();
+    expect(settings.queryByText("Open by default")).toBeNull();
+    expect(settings.queryByText("Navigation badge")).toBeNull();
+    expect(region().getByRole("heading", { name: "Planning" })).toBeTruthy();
+    // The owner-only hint covers the mode and the gated statuses, not the reviewer switch.
+    expect(region().getByText("Only you change the planning mode and the statuses that need an approved plan; agents cannot.")).toBeTruthy();
+    expect(region().getByText(/^Off hides plans/).textContent).not.toContain("agents cannot");
+    expect(within(settings.getByRole("region", { name: "Project archiving" })).getAllByRole("combobox").map(box => box.getAttribute("aria-label"))).toEqual(["Archive completed tasks after"]);
+    expect(within(settings.getByRole("region", { name: "Project activity and notifications" })).getAllByRole("combobox").map(box => box.getAttribute("aria-label"))).toEqual(["Flag idle threads after", "Notify me of status changes"]);
+    expect(mode().textContent).toContain("Off");
+    // The reviewer switch is shown only while planning is not Off.
+    expect(region().queryByRole("switch", { name: "Archive the plan reviewer after approval" })).toBeNull();
+    for (const [label, value] of [["Optional", "optional"], ["Required", "required"], ["Off", "off"], ["Required", "required"]] as const) {
+      fireEvent.click(mode());
+      fireEvent.click(await settings.findByRole("option", { name: label }));
+      await waitFor(() => expect(store.tasks.getProject(alpha.id)?.planning).toBe(value));
+      await waitFor(() => expect(region().queryByRole("switch", { name: "Archive the plan reviewer after approval" }) !== null).toBe(value !== "off"));
+    }
+    expect(store.tasks.getProject(beta.id)?.planning).toBe("off");
+    // The control shows when planning last changed and what it was before.
+    const changed = await region().findByTestId("planning-changed");
+    expect(changed.textContent).toMatch(/^Changed .*, was off$/);
+    expect(changed.querySelector("time")!.getAttribute("datetime")).toBe(store.tasks.getProject(alpha.id)!.planningChangedAt);
+    // A fresh render (a reload) reads the saved mode back.
+    cleanup();
+    const reloaded = renderSlot(app.settingsSections[0]!, {}, { rpc });
+    await waitFor(() => expect(reloaded.getByRole("combobox", { name: "Mode" }).textContent).toContain("Required"));
+  } finally { cleanup(); await harness.dispose(); }
+});
+
+it("lets the owner switch the two thread-archive settings, each in its own section", async () => {
+  const { bb, harness } = createFakePluginHost({ pluginId: "work-board" });
+  try {
+    const store = createStore(bb);
+    const alpha = store.tasks.createProject({ name: "Alpha", prefix: "A", color: "blue" });
+    store.tasks.updateProject(alpha.id, { planning: "optional" });
+    registerTasksApi(bb, store);
+    const rpc = Object.fromEntries(Object.keys(tasksRpcContract).map(method => [method, (input: unknown) => harness.callRpc(method, input)]));
+    const settings = renderSlot(app.settingsSections[0]!, {}, { rpc });
+    const archiveThreads = () => within(settings.getByRole("region", { name: "Project archiving" })).getByRole("switch", { name: "Archive threads of closed cards" });
+    const archiveReviewer = () => within(settings.getByRole("region", { name: "Project planning" })).getByRole("switch", { name: "Archive the plan reviewer after approval" });
+    await settings.findByRole("combobox", { name: "Mode" });
+    expect(archiveThreads().getAttribute("aria-checked")).toBe("true");
+    expect(archiveReviewer().getAttribute("aria-checked")).toBe("true");
+    fireEvent.click(archiveThreads());
+    await waitFor(() => expect(store.tasks.getProject(alpha.id)?.archiveThreadsOnClose).toBe("off"));
+    fireEvent.click(archiveReviewer());
+    await waitFor(() => expect(store.tasks.getProject(alpha.id)?.archiveReviewerOnApproval).toBe("off"));
+    expect(store.tasks.getProject(alpha.id)?.archiveThreadsOnClose).toBe("off");
+    fireEvent.click(archiveReviewer());
+    await waitFor(() => expect(store.tasks.getProject(alpha.id)?.archiveReviewerOnApproval).toBe("on"));
+  } finally { cleanup(); await harness.dispose(); }
+});
+
+it("keeps the status editor open over a rejected draft and lets Done close it once corrected", async () => {
+  const { bb, harness } = createFakePluginHost({ pluginId: "work-board" });
+  try {
+    const store = createStore(bb);
+    const alpha = store.tasks.createProject({ name: "Alpha", prefix: "A", color: "blue" });
+    registerTasksApi(bb, store);
+    const settings = renderSlot(app.settingsSections[0]!, {}, { rpc: Object.fromEntries(Object.keys(tasksRpcContract).map(method => [method, (input: unknown) => harness.callRpc(method, input)])) });
+    await editStatuses(settings);
+    const name = await settings.findByRole("textbox", { name: "Status name backlog" }) as HTMLInputElement;
+    // An empty name is rejected on blur; Done must not discard the draft or the error.
+    fireEvent.change(name, { target: { value: "" } });
+    fireEvent.blur(name);
+    await settings.findByRole("alert");
+    const done = settings.getByRole("button", { name: "Done editing statuses" });
+    expect(done.hasAttribute("disabled")).toBe(true);
+    fireEvent.click(done);
+    expect((settings.getByRole("textbox", { name: "Status name backlog" }) as HTMLInputElement).value).toBe("");
+    expect(settings.getByRole("alert")).toBeTruthy();
+    expect(store.tasks.getProject(alpha.id)?.statuses?.[0]?.name ?? "Backlog").toBe("Backlog");
+    // Correcting the name saves it and releases Done.
+    fireEvent.change(settings.getByRole("textbox", { name: "Status name backlog" }), { target: { value: "Incoming" } });
+    fireEvent.blur(settings.getByRole("textbox", { name: "Status name backlog" }));
+    await waitFor(() => expect(settings.queryByRole("alert")).toBeNull());
+    await waitFor(() => expect(settings.getByRole("button", { name: "Done editing statuses" }).hasAttribute("disabled")).toBe(false));
+    fireEvent.click(settings.getByRole("button", { name: "Done editing statuses" }));
+    expect(settings.getByRole("list", { name: "Status order" })).toBeTruthy();
+  } finally { cleanup(); await harness.dispose(); }
+});
+
+it("shows a compact status order and opens the full editor only on Edit", async () => {
+  const { bb, harness } = createFakePluginHost({ pluginId: "work-board" });
+  try {
+    const store = createStore(bb);
+    store.tasks.createProject({ name: "Alpha", prefix: "A", color: "blue" });
+    registerTasksApi(bb, store);
+    const settings = renderSlot(app.settingsSections[0]!, {}, { rpc: Object.fromEntries(Object.keys(tasksRpcContract).map(method => [method, (input: unknown) => harness.callRpc(method, input)])) });
+    const edit = await settings.findByRole("button", { name: "Edit statuses" });
+    const order = within(settings.getByRole("list", { name: "Status order" }));
+    expect(order.getAllByRole("listitem").map(item => item.textContent)).toEqual(["Backlog", "Todo", "In Progress", "In Review", "Done", "Canceled"]);
+    expect(settings.container.querySelectorAll('[aria-label="Status order"] [data-status-icon]')).toHaveLength(6);
+    expect(edit.getAttribute("aria-expanded")).toBe("false");
+    expect(settings.queryByRole("textbox", { name: "Status name backlog" })).toBeNull();
+    fireEvent.click(edit);
+    expect(settings.getByRole("button", { name: "Done editing statuses" }).getAttribute("aria-expanded")).toBe("true");
+    expect(settings.getByRole("textbox", { name: "Status name backlog" })).toBeTruthy();
+    expect(settings.queryByRole("list", { name: "Status order" })).toBeNull();
+    fireEvent.click(settings.getByRole("button", { name: "Done editing statuses" }));
+    expect(settings.queryByRole("textbox", { name: "Status name backlog" })).toBeNull();
+    expect(settings.getByRole("list", { name: "Status order" })).toBeTruthy();
+  } finally { cleanup(); await harness.dispose(); }
+});
+
+it.each([false, true])("offers Manage labels and presets above the project sections (existing project: %s)", async (hasProject) => {
+  const { bb, harness } = createFakePluginHost({ pluginId: "work-board" });
+  try {
+    const store = createStore(bb);
+    if (hasProject) store.tasks.createProject({ name: "Alpha", prefix: "A", color: "blue" });
+    registerTasksApi(bb, store);
+    const settings = renderSlot(app.settingsSections[0]!, {}, { rpc: Object.fromEntries(Object.keys(tasksRpcContract).map(method => [method, (input: unknown) => harness.callRpc(method, input)])) });
+    const manage = await settings.findByRole("button", { name: "Manage labels and presets" });
+    if (hasProject) await settings.findByRole("region", { name: "Project planning" });
+    else await settings.findByText("Create a project to configure its workflow.");
+    expect(settings.queryAllByRole("region", { name: /^Project / })).toHaveLength(hasProject ? 5 : 0);
+    const first = settings.container.querySelector("section");
+    if (first) expect(manage.compareDocumentPosition(first) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    fireEvent.click(manage);
+    expect(settings.navigateCalls).toContainEqual({ method: "toPluginPanel", path: "work-board", options: { subPath: "manage" } });
+  } finally { cleanup(); await harness.dispose(); }
+});
+
+it("shows the plan-gated statuses only when planning is required, and the status editor has no plan checkbox or auto-save sentence", async () => {
+  const { bb, harness } = createFakePluginHost({ pluginId: "work-board" });
+  try {
+    const store = createStore(bb);
+    const alpha = store.tasks.createProject({ name: "Alpha", prefix: "A", color: "blue" });
+    registerTasksApi(bb, store);
+    const settings = renderSlot(app.settingsSections[0]!, {}, { rpc: Object.fromEntries(Object.keys(tasksRpcContract).map(method => [method, (input: unknown) => harness.callRpc(method, input)])) });
+    await settings.findByRole("combobox", { name: "Mode" });
+    const block = () => within(settings.getByRole("region", { name: "Project planning" })).queryByTestId("plan-gated-statuses");
+    expect(block()).toBeNull();
+    expect(settings.queryByText(/Changes save automatically/)).toBeNull();
+    expect(settings.queryByText(/System statuses stay; statuses used by tasks cannot be deleted\./)).toBeNull();
+    await editStatuses(settings);
+    expect(settings.queryByText(/System statuses stay; statuses used by tasks cannot be deleted\./)).not.toBeNull();
+    expect(settings.queryAllByRole("checkbox", { name: /approved plan/ })).toHaveLength(0);
+    expect(settings.queryByText("Plan", { selector: "label" })).toBeNull();
+    for (const [label, value] of [["Optional", "optional"], ["Required", "required"], ["Optional", "optional"]] as const) {
+      fireEvent.click(settings.getByRole("combobox", { name: "Mode" }));
+      fireEvent.click(await settings.findByRole("option", { name: label }));
+      await waitFor(() => expect(store.tasks.getProject(alpha.id)?.planning).toBe(value));
+      await waitFor(() => (value === "required" ? expect(block()).not.toBeNull() : expect(block()).toBeNull()));
+    }
+  } finally { cleanup(); await harness.dispose(); }
+});
+
+it("edits the plan-gated statuses as chips: add and remove save the flag, canceled is never offered, the complement line follows", async () => {
+  const { bb, harness } = createFakePluginHost({ pluginId: "work-board" });
+  try {
+    const store = createStore(bb);
+    const alpha = store.tasks.createProject({ name: "Alpha", prefix: "A", color: "blue" });
+    store.tasks.updateProject(alpha.id, { planning: "required" });
+    registerTasksApi(bb, store);
+    const settings = renderSlot(app.settingsSections[0]!, {}, { rpc: Object.fromEntries(Object.keys(tasksRpcContract).map(method => [method, (input: unknown) => harness.callRpc(method, input)])) });
+    const flag = (id: string) => store.tasks.getProject(alpha.id)?.statuses?.find(status => status.id === id)?.requiresApprovedPlan === true;
+    const chips = () => within(settings.getByTestId("plan-gated-statuses")).queryAllByRole("button", { name: /^Remove / }).map(button => button.getAttribute("aria-label"));
+    const free = () => settings.getByTestId("plan-free-statuses").textContent;
+    await within(await settings.findByRole("region", { name: "Project planning" })).findByTestId("plan-gated-statuses");
+    expect(within(settings.getByRole("region", { name: "Project archiving" })).queryByTestId("plan-gated-statuses")).toBeNull();
+    // The first switch to required marked In progress and every later status; chips follow the project status order.
+    expect(settings.getByRole("heading", { name: "Statuses that need an approved plan" })).toBeTruthy();
+    expect(chips()).toEqual(["Remove In Progress", "Remove In Review", "Remove Done"]);
+    expect(free()).toBe("Without an approved plan a card stays in: Backlog, Todo, Planning, Canceled");
+    expect(settings.getByTestId("plan-gated-statuses").querySelectorAll("[data-status-icon]")).toHaveLength(3);
+    // Adding offers the unmarked statuses except canceled.
+    fireEvent.click(settings.getByRole("combobox", { name: "Add status" }));
+    expect((await settings.findAllByRole("option")).map(option => option.textContent)).toEqual(["Backlog", "Todo", "Planning"]);
+    fireEvent.click(settings.getByRole("option", { name: "Todo" }));
+    await waitFor(() => expect(flag("todo")).toBe(true));
+    await waitFor(() => expect(free()).toBe("Without an approved plan a card stays in: Backlog, Planning, Canceled"));
+    expect(chips()).toEqual(["Remove Todo", "Remove In Progress", "Remove In Review", "Remove Done"]);
+    // Removing clears the flag and the status leaves the chips.
+    fireEvent.click(settings.getByRole("button", { name: "Remove Done" }));
+    await waitFor(() => expect(flag("done")).toBe(false));
+    await waitFor(() => expect(free()).toBe("Without an approved plan a card stays in: Backlog, Planning, Done, Canceled"));
+    expect(chips()).toEqual(["Remove Todo", "Remove In Progress", "Remove In Review"]);
+    expect(flag("canceled")).toBe(false);
+  } finally { cleanup(); await harness.dispose(); }
+});
+
+it("shows a failed plan-gated status save like the other settings", async () => {
+  const { bb, harness } = createFakePluginHost({ pluginId: "work-board" });
+  try {
+    const store = createStore(bb);
+    const alpha = store.tasks.createProject({ name: "Alpha", prefix: "A", color: "blue" });
+    store.tasks.updateProject(alpha.id, { planning: "required" });
+    registerTasksApi(bb, store);
+    const rpc = Object.fromEntries(Object.keys(tasksRpcContract).map(method => [method, (input: unknown) => harness.callRpc(method, input)]));
+    rpc.updateProject = async () => { throw new Error("Statuses are locked"); };
+    const settings = renderSlot(app.settingsSections[0]!, {}, { rpc });
+    fireEvent.click(await settings.findByRole("button", { name: "Remove Done" }));
+    expect((await settings.findByRole("alert")).textContent).toBe("Statuses are locked");
+    expect(store.tasks.getProject(alpha.id)?.statuses?.find(status => status.id === "done")?.requiresApprovedPlan).toBe(true);
+  } finally { cleanup(); await harness.dispose(); }
+});
+
 it("saves notification modes independently for each selected project", async () => {
   const { bb, harness } = createFakePluginHost({ pluginId: "work-board" });
   try {
@@ -472,8 +702,9 @@ it("saves notification modes independently for each selected project", async () 
     const beta = store.tasks.createProject({ name: "Beta", prefix: "B", color: "red" });
     registerTasksApi(bb, store);
     const settings = renderSlot(app.settingsSections[0]!, {}, { rpc: Object.fromEntries(Object.keys(tasksRpcContract).map(method => [method, (input: unknown) => harness.callRpc(method, input)])) });
-    const mode = () => settings.getByRole("combobox", { name: "Task status notifications" });
-    await settings.findByRole("combobox", { name: "Task status notifications" });
+    const mode = () => settings.getByRole("combobox", { name: "Notify me of status changes" });
+    await settings.findByRole("combobox", { name: "Notify me of status changes" });
+    expect(settings.getByText(/Status changes you make yourself in the board are not notified\./)).toBeTruthy();
     fireEvent.click(mode());
     fireEvent.click(await settings.findByRole("option", { name: "Done only" }));
     await waitFor(() => expect(store.tasks.getProject(alpha.id)?.statusNotifications).toBe("done"));
@@ -485,5 +716,31 @@ it("saves notification modes independently for each selected project", async () 
     fireEvent.click(await settings.findByRole("option", { name: "All status changes" }));
     await waitFor(() => expect(store.tasks.getProject(beta.id)?.statusNotifications).toBe("all"));
     expect(store.tasks.getProject(alpha.id)?.statusNotifications).toBe("done");
+  } finally { cleanup(); await harness.dispose(); }
+});
+
+it("refreshes only the checks and attention getters on a settings signal, whichever tracker it names, and the wider set on projects:changed", async () => {
+  const { bb, harness } = createFakePluginHost({ pluginId: "work-board" });
+  try {
+    const store = createStore(bb);
+    registerTasksApi(bb, store); registerAttention(bb, store); registerChecks(bb);
+    store.tasks.createProject({ name: "Alpha", prefix: "ALP", color: "blue", linkedBbProjectId: "proj_example" });
+    const settings = renderSlot(app.settingsSections[0]!, {}, {
+      rpc: Object.fromEntries(Object.keys(tasksRpcContract).map((method) => [method, (input: unknown) => harness.callRpc(method, input)])),
+      sdk: { threads: { list: async () => [] } },
+    });
+    await settings.findByRole("region", { name: "Manager attention" });
+    await settings.findByRole("region", { name: "Repository checks" });
+    const burst = async (channel: "settings:changed" | "projects:changed", projectId: string | null) => {
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      const from = settings.rpcCalls.length;
+      await settings.behavior.emitRealtime(channel, { projectId });
+      await new Promise((resolve) => setTimeout(resolve, 600));
+      return settings.rpcCalls.slice(from).map((call) => call.method).sort();
+    };
+    expect(await burst("settings:changed", store.tasks.listProjects()[0]!.id)).toEqual(["getAttentionSettings", "getChecksStatus"]);
+    // A signal naming another tracker still refreshes both: a shared runner can change this tracker's status.
+    expect(await burst("settings:changed", "tracker_other")).toEqual(["getAttentionSettings", "getChecksStatus"]);
+    expect(await burst("projects:changed", null)).toEqual(["getAttentionSettings", "getChecksStatus", "getGitSyncConfig", "listProjects"]);
   } finally { cleanup(); await harness.dispose(); }
 });

@@ -41,6 +41,7 @@ const ALIASES: Record<string, string> = {
  * - strips a trailing `[...]` suffix
  * - strips a trailing `-YYYYMMDD` suffix
  * - resolves known aliases
+ * - strips a trailing reasoning-level suffix (`-high`, `-medium`) that is not part of a priced id
  *
  * Returns the normalised key if it exists in PRICES, else `null`.
  */
@@ -49,6 +50,7 @@ export function resolveModel(id: string): string | null {
   key = key.replace(/\[.*\]$/, "");
   key = key.replace(/-\d{8}$/, "");
   key = ALIASES[key] ?? key;
+  if (!(key in PRICES)) key = key.replace(/-(minimal|low|medium|high|xhigh|max)$/, "");
   return key in PRICES ? key : null;
 }
 

@@ -662,3 +662,31 @@ it("uses a short null cache after a host name timeout", async () => {
     h.advance(1); expect((await h.view()).localHostName).toBe("Recovered"); expect(calls).toBe(2);
   } finally { vi.useRealTimers(); }
 });
+it.each([["slots", true], ["someone-else", false]])("a queued notification extends the last queued row when it is ours: %s", async (origin, merges) => {
+  const h = await setup();
+  const row = { id: "q1", content: [{ type: "text", text: "Earlier notice", mentions: [] }], originPluginId: origin, state: "queued", editable: true, updatedAt: 42 };
+  h.harness.sdk.stub("threads.queuedMessages.list", async () => [row] as never);
+  h.harness.sdk.stub("threads.queuedMessages.update", async () => row as never);
+  await h.grant();
+  const update = h.harness.sdk.callsTo("threads.queuedMessages.update") as [{ threadId: string; queuedMessageId: string; expectedUpdatedAt: number; input: { text: string }[] }][];
+  if (merges) {
+    expect(h.send).not.toHaveBeenCalled();
+    expect(update[0][0]).toMatchObject({ threadId: "a", queuedMessageId: "q1", expectedUpdatedAt: 42 });
+    expect(update[0][0].input[0].text).toMatch(/^Earlier notice\n\n---\n\n[\s\S]*bb slots wrapper/);
+    expect(update[0][0].input[0].text).not.toContain("[bb message from plugin");
+  } else {
+    expect(update).toEqual([]);
+    expect(h.send).toHaveBeenCalledWith(expect.objectContaining({ threadId: "a", mode: "queue-if-active" }));
+  }
+});
+it("the auto-mode warning stays a plain send even when our row is queued", async () => {
+  const h = await setup(); await h.grant(); h.send.mockClear();
+  const row = { id: "q1", content: [{ type: "text", text: "Earlier notice", mentions: [] }], originPluginId: "slots", state: "queued", editable: true, updatedAt: 42 };
+  h.harness.sdk.stub("threads.queuedMessages.list", async () => [row] as never);
+  h.harness.sdk.stub("threads.queuedMessages.update", async () => row as never);
+  h.advance(1200000);
+  const service = h.harness.behavior.runService("sampler");
+  await vi.waitFor(() => expect(h.send).toHaveBeenCalledWith(expect.objectContaining({ mode: "auto" })));
+  service.controller.abort(); await service.done;
+  expect(h.harness.sdk.callsTo("threads.queuedMessages.update")).toEqual([]);
+});

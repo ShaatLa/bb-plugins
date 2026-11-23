@@ -1,7 +1,7 @@
 import { afterEach, describe, it, expect } from 'vitest';
 import Database from 'better-sqlite3';
 import { migrations } from './schema';
-import { applyEvents, asksOwner, cap, chatQuestion, failRequest, type Event } from './ingest';
+import { applyEvents, asksOwner, cap, chatQuestion, failRequest, restatesOnly, type Event } from './ingest';
 const databases: Database.Database[] = [];
 const setup = () => { const db = new Database(':memory:'); migrations.forEach(m => db.exec(m)); databases.push(db); return db; };
 afterEach(() => databases.splice(0).forEach(db => db.close()));
@@ -115,21 +115,78 @@ describe('updates',()=>{
  const count=(db:Database.Database,table:string)=>(db.prepare(`SELECT count(*) n FROM ${table}`).get() as {n:number}).n;
  const text=(t:string)=>[{type:'text',text:t}];
  const system={initiator:'system',input:text('[bb system] @thread:thr_child-1 completed: done')};
+ const wake={input:text('[example-watcher] changed')};
  it.each([
   [system,'system','thr_child-1'],
   [{initiator:'agent',senderThreadId:'thr_s',input:text('[bb message from thread:thr_s] hi')},'agent','thr_s'],
   [{originPluginId:'delivery-dashboard',input:text('**CI Dashboard** Deploy')},'plugin','delivery-dashboard'],
   [{input:text('[merge-queue watcher] Merge queue changed: empty')},'other','merge-queue watcher'],
  ] as const)('records the final message of a %j turn',(extra,kind,source)=>{
-  const db=setup(); applyEvents(db,'t',[req(1,'r',extra),start(),accept(),message(4,'first'),message(5,'report'),{...done(6),createdAt:77}],'p',100,true,true);
-  expect(updates(db)).toEqual([expect.objectContaining({status:'answered',question:extra.input[0].text,answer:'report',answer_seq:5,answer_source:'turn',answered_at:77,created_at:kind==='agent'||kind==='plugin' ? 100 : 77,read_at:77,asks:0,notify_state:0,trigger_kind:kind,trigger_source:source,project_id:'p'})]);
+  const db=setup(); applyEvents(db,'t',[req(1,'r',extra),start(),accept(),message(4,'first'),ev(5,'item/completed','x',{item:{type:'commandExecution'}}),message(6,'report'),{...done(7),createdAt:77}],'p',100,true,true);
+  expect(updates(db)).toEqual([expect.objectContaining({status:'answered',question:extra.input[0].text,answer:'report',answer_seq:6,answer_source:'turn',answered_at:77,created_at:kind==='other' ? 77 : 100,read_at:77,asks:0,notify_state:0,trigger_kind:kind,trigger_source:source,project_id:'p'})]);
   expect([count(db,'request_triggers'),count(db,'turn_updates')]).toEqual([0,0]);
+ });
+ describe('messages written in a row',()=>{
+  const step=(seq:number,type='commandExecution')=>ev(seq,'item/completed','x',{item:{type}});
+  const long='Full answer. '.repeat(40), mine=(db:Database.Database)=>rows(db).filter(r=>r.kind==='mine');
+  it('is one reply: a long answer followed by a short message with no step between keeps both, the last message\'s seq',()=>{
+   const db=setup(); applyEvents(db,'t',[req(1),start(),accept(),step(4),message(5,long),message(6,'And one more thing.'),done(7)],'p',100,true,true);
+   expect(mine(db)[0]).toMatchObject({status:'answered',answer:`${long}\n\nAnd one more thing.`,answer_seq:6});
+  });
+  it('is one reply when a provider splits it in parts, and also for a turn that answers no message of the owner',()=>{
+   const db=setup(); applyEvents(db,'t',[req(1),start(),accept(),message(4,'Part 1'),message(5,'Part 2'),message(6,'Part 3'),done(7)]);
+   expect(mine(db)[0]).toMatchObject({answer:'Part 1\n\nPart 2\n\nPart 3',answer_seq:6});
+   const wake=setup(); applyEvents(wake,'t',[req(1,'r',{initiator:'system',input:text('[bb system] @thread:thr_child-1 completed: done')}),start(),accept(),message(4,'Part 1'),message(5,'Part 2'),done(6)],'p',100,true,true);
+   expect(updates(wake)[0]).toMatchObject({answer:'Part 1\n\nPart 2',answer_seq:5});
+  });
+  it('folds a message followed by a tool step or reasoning into the log: only the last run is the reply',()=>{
+   const db=setup(); applyEvents(db,'t',[req(1),start(),accept(),message(4,'Looking.'),step(5),message(6,'Found it.'),message(7,'Done.'),done(8)]);
+   expect(mine(db)[0]).toMatchObject({answer:'Found it.\n\nDone.',answer_seq:7});
+   const reasoning=setup(); applyEvents(reasoning,'t',[req(1),start(),accept(),message(4,'First.'),step(5,'reasoning'),message(6,'Second.'),done(7)]);
+   expect(mine(reasoning)[0]).toMatchObject({answer:'Second.',answer_seq:6});
+  });
+  it('does not join a message that starts a new item for another owner message',()=>{
+   const db=setup(); applyEvents(db,'t',[req(1),start(),accept(),message(4,'Reply to the first.'),req(5,'s'),accept(6,'s'),step(7),message(8,'Reply to both.'),done(9)]);
+   expect(mine(db).map(r=>r.answer)).toEqual(['Reply to both.','Reply to both.']);
+  });
+ });
+ it('shows another thread\'s or a plugin\'s message that joins a turn already under way, read, while the owner\'s message keeps the reply',()=>{
+  const db=setup(); const tool=(seq:number)=>ev(seq,'item/completed','x',{item:{type:'commandExecution',command:'ls'}});
+  applyEvents(db,'t',[req(1),start(),accept(),tool(4),req(5,'s',{initiator:'agent',senderThreadId:'thr_s',input:text('[bb message from thread:thr_s] steer')}),accept(6,'s'),req(7,'q',{originPluginId:'example-plugin',input:text('notice')}),accept(8,'q'),message(9),done(10)],'p',100,true,true);
+  expect(updates(db)).toEqual(expect.arrayContaining([expect.objectContaining({status:'answered',question:'[bb message from thread:thr_s] steer',answer:null,trigger_kind:'agent',trigger_source:'thr_s',read_at:100,turn_id:'x'}),expect.objectContaining({status:'answered',question:'notice',trigger_kind:'plugin',trigger_source:'example-plugin',read_at:100})]));
+  expect(updates(db)).toHaveLength(2);
+  expect(rows(db).find(r=>r.kind==='mine')).toMatchObject({status:'answered',answer:'answer'});
+ });
+ it('gives a steer\'s reply to the steer when the owner\'s full answer came before it and little work followed',()=>{
+  const db=setup(), long='Full answer. '.repeat(40); const tool=(seq:number)=>ev(seq,'item/completed','x',{item:{type:'commandExecution',command:'ls'}});
+  applyEvents(db,'t',[req(1),start(),accept(),tool(4),req(5,'s',{initiator:'agent',senderThreadId:'thr_s',input:text('[bb message from thread:thr_s] released')}),accept(6,'s'),message(7,long),tool(8),message(9,'steer reply'),done(10)],'p',100,true,true);
+  expect(rows(db).find(r=>r.kind==='mine')).toMatchObject({status:'answered',answer:long,answer_seq:7});
+  expect(updates(db)).toEqual([expect.objectContaining({trigger_kind:'agent',answer:'steer reply',read_at:100,turn_id:'x'})]);
+ });
+ it('keeps the turn\'s last message as the owner\'s answer when only a progress note came before the steer, or much work followed',()=>{
+  const tool=(seq:number)=>ev(seq,'item/completed','x',{item:{type:'commandExecution',command:'ls'}}), steer=[req(5,'s',{initiator:'agent',senderThreadId:'thr_s',input:text('[bb message from thread:thr_s] addendum')}),accept(6,'s')];
+  const note=setup(); applyEvents(note,'t',[req(1),start(),accept(),tool(4),...steer,message(7,'Reading the tests first.'),tool(8),message(9,'Final report'),done(10)],'p',100,true,true);
+  expect(rows(note).find(r=>r.kind==='mine')).toMatchObject({answer:'Final report'}); expect(updates(note)[0]).toMatchObject({answer:null});
+  const busy=setup(); applyEvents(busy,'t',[req(1),start(),accept(),tool(4),...steer,message(7,'Long status. '.repeat(40)),tool(8),tool(9),tool(10),tool(11),message(12,'Final report'),done(13)],'p',100,true,true);
+  expect(rows(busy).find(r=>r.kind==='mine')).toMatchObject({answer:'Final report'}); expect(updates(busy)[0]).toMatchObject({answer:null});
+ });
+ it('gives the owner the reply written only after a steer was seen, as it answers both',()=>{
+  const db=setup(); const tool=(seq:number)=>ev(seq,'item/completed','x',{item:{type:'commandExecution',command:'ls'}});
+  applyEvents(db,'t',[req(1),start(),accept(),tool(4),req(5,'s',{originPluginId:'example-plugin',input:text('[bb message from plugin:example-plugin] notice')}),accept(6,'s'),tool(7),message(8,'both answered'),done(9)],'p',100,true,true);
+  expect(rows(db).find(r=>r.kind==='mine')).toMatchObject({status:'answered',answer:'both answered'});
+  expect(updates(db)).toEqual([expect.objectContaining({trigger_kind:'plugin',answer:null})]);
  });
  it('shows another thread\'s message when the turn takes it, and keeps it when the turn stops without a reply',()=>{
   const db=setup(); applyEvents(db,'t',[req(1,'r',{initiator:'agent',senderThreadId:'thr_s',input:text('[bb message from thread:thr_s] hi')}),start(),accept()],'p',100,true,true);
   expect(updates(db)).toEqual([expect.objectContaining({status:'waiting',question:'[bb message from thread:thr_s] hi',answer:null,trigger_kind:'agent',trigger_source:'thr_s',created_at:100,read_at:100})]);
   applyEvents(db,'t',[message(4,'half'),done(5,'interrupted')],'p',200,true,true);
   expect(updates(db)).toEqual([expect.objectContaining({status:'answered',answer:null,read_at:100})]);
+ });
+ it('shows a child\'s completion when the turn takes it, before the reply',()=>{
+  const db=setup(); applyEvents(db,'t',[req(1,'r',system),start(),accept()],'p',100,true,true);
+  expect(updates(db)).toEqual([expect.objectContaining({status:'waiting',answer:null,trigger_kind:'system',trigger_source:'thr_child-1',read_at:100})]);
+  applyEvents(db,'t',[message(4,'report'),done(5)],'p',200,true,true);
+  expect(updates(db)).toEqual([expect.objectContaining({status:'answered',answer:'report'})]);
  });
  it('turns the final message of a turn the agent marked with agent_hub_report into an unread, pushed report',()=>{
   const db=setup(); applyEvents(db,'t',[req(1,'r',system),start(),accept(),message(4,'Task done.')],'p',100,true,true);
@@ -153,19 +210,19 @@ describe('updates',()=>{
  it('adds nothing when the turn answered the owner: own question, steer-in, agent_hub_resolve',()=>{
   const db=setup();
   applyEvents(db,'t',[req(1),start(),accept(),message(),done()]);
-  applyEvents(db,'t',[req(6,'s',system),start(7,'y'),accept(8,'s','y'),req(9,'o'),accept(10,'o','y'),message(11,'steered','y'),done(12,'completed','y')]);
+  applyEvents(db,'t',[req(6,'s',wake),start(7,'y'),accept(8,'s','y'),req(9,'o'),accept(10,'o','y'),message(11,'steered','y'),done(12,'completed','y')]);
   applyEvents(db,'t',[req(13,'d'),start(14,'z'),accept(15,'d','z'),done(16,'completed','z')]); db.prepare("UPDATE items SET status='deferred' WHERE request_id='d'").run();
-  applyEvents(db,'t',[req(17,'s2',system),start(18,'w'),accept(19,'s2','w')]); db.prepare("UPDATE items SET resolve_turn_id='w' WHERE request_id='d'").run();
+  applyEvents(db,'t',[req(17,'s2',wake),start(18,'w'),accept(19,'s2','w')]); db.prepare("UPDATE items SET resolve_turn_id='w' WHERE request_id='d'").run();
   applyEvents(db,'t',[message(20,'resolved','w'),done(21,'completed','w')]);
   expect(updates(db)).toHaveLength(0); expect(rows(db).map(r=>r.answer)).toEqual(['answer','steered','resolved']);
  });
  it.each(['failed','interrupted'])('adds nothing for a %s turn and cleans its bookkeeping',status=>{
-  const db=setup(); applyEvents(db,'t',[req(1,'s',system),start(),accept(3,'s'),message(),done(5,status)]);
+  const db=setup(); applyEvents(db,'t',[req(1,'s',wake),start(),accept(3,'s'),message(),done(5,status)]);
   expect(updates(db)).toHaveLength(0); expect(count(db,'turn_updates')).toBe(0);
  });
  it('keeps a sub-thread final message read and ignores empty final messages',()=>{
-  const db=setup(); applyEvents(db,'t',[req(1,'s',system),start(),accept(3,'s'),done(4)]);
-  applyEvents(db,'u',[req(1,'s',system),start(),accept(3,'s'),message(),done()],null,0,false);
+  const db=setup(); applyEvents(db,'t',[req(1,'s',wake),start(),accept(3,'s'),done(4)]);
+  applyEvents(db,'u',[req(1,'s',wake),start(),accept(3,'s'),message(),done()],null,0,false);
   expect(updates(db)).toMatchObject([{thread_id:'u',read_at:0}]); expect([count(db,'request_triggers'),count(db,'turn_updates')]).toEqual([0,0]);
  });
  it('is idempotent on re-ingest, also from a reset cursor',()=>{
@@ -185,6 +242,19 @@ describe('asksOwner',()=>{
   ['Для публикации примера нужна ваша команда «опубликовать пример».',true],['Макет проверяют. Когда проверка закончится, нужна ваша команда «показать пример».',false],['**После проверки нужна ваша команда «показать пример».**',false],['Ready for your review once CI passes.',false],['EXA-1 is back to you: CI is green.',true],['We need your go-ahead to publish the example.',true],['Awaiting your approval on EXA-1.',true],['I assigned it to you.',true],['Merging is your call.',true],['When both approve, I need your command to merge.',false],
   ['Потом EXA-2 придёт к вам с вопросом о проверке. Пока пример готовится.',false],['Вашу приёмку EXA-3 я сверил по учебной карточке.',false],
  ] as const)('%j → %s',(text,expected)=>expect(asksOwner(text)).toBe(expected));
+});
+describe('restatesOnly',()=>{
+ const shown='EXA-2 awaits your review; PR #12 awaits your three checks on EXA-3. Agent Hub question `ans_abc1234`.';
+ it.each([
+  ['Nothing new. Still waiting:\n- [EXA-2](/task/EXA-2) awaits your review;\n- PR #12 awaits your checks on [EXA-3](/task/EXA-3).',true],
+  ['EXA-2 awaits your review. EXA-4 is ready for your review.',false],
+  ['Ready for your review.',false],
+  ['Lead finished EXA-2, merged.',false],
+  ['EXA-2: shall I merge?',true],
+  ['Everything else awaits your answers on the cards.',true],
+  ['Awaiting your answer:\n\n- EXA-2\n- PR #12',true],
+  ['Two new cards await your answer:\n- EXA-2\n- EXA-4\n\nEXA-4 is new.',false],
+ ] as const)('%j → %s',(text,expected)=>expect(restatesOnly(text,shown)).toBe(expected));
 });
 
 describe('questions asked in chat', () => {

@@ -6,6 +6,8 @@ import type { FakePluginHarness } from "@get-bb/plugin-sdk/testing";
 import { loadPluginApp, renderSlot } from "@get-bb/plugin-sdk/testing/app";
 import { makeThreadResponse } from "@get-bb/plugin-sdk/testing";
 import type { PlanNote } from "../../shared/contract";
+import { createPlanNoteStore } from "../../plans/notes";
+import { createPlanStore } from "../../plans/store";
 import { BODY, setupPlanHost } from "./test-setup";
 
 window.ResizeObserver ??= class { observe() {} unobserve() {} disconnect() {} };
@@ -235,6 +237,62 @@ describe("general notes, Send feedback and Approve", () => {
     expect(list(slot).getAllByText("Sent")).toHaveLength(2);
   });
 
+  it("scopes drafts per author: a reviewer thread's draft is shown with its author, is not counted, and cannot be edited or sent by the owner", async () => {
+    const { slot, store, db, task, note, refresh } = await open();
+    const plans = createPlanStore(db, store.tasks);
+    plans.submit(task.id, { kind: "agent", threadId: "thr_example", name: "agent (thr_example)" }, "thr_reviewer");
+    createPlanNoteStore(db, store.tasks, plans.head).createByReviewer({ taskId: task.id, by: { kind: "agent", threadId: "thr_reviewer", name: "agent (thr_reviewer)" }, version: 1, body: "Reviewer's draft." });
+    await refresh();
+    const group = await slot.findByRole("group", { name: "Plan notes" });
+    const item = (await within(group).findByText("Reviewer's draft.")).closest("li")!;
+    expect(within(item).getByRole("button", { name: "Open thread thr_reviewer" })).toBeTruthy();
+    expect(within(group).queryByText(/Drafts to send/)).toBeNull();
+    expect(within(item).queryByRole("button", { name: /Edit|Delete/ })).toBeNull();
+    expect((slot.getByRole("button", { name: "Send feedback (0)" }) as HTMLButtonElement).disabled).toBe(true);
+    // The owner's own draft is counted alone, and the owner can approve over the reviewer's draft once theirs is gone.
+    await note({ kind: "general", body: "My draft." });
+    expect(await slot.findByRole("button", { name: "Send feedback (1)" })).toBeTruthy();
+  });
+
+  it("names every thread that was not reached after a decision, and confirms it was saved", async () => {
+    const { slot, harness, store, db, task, note } = await open();
+    createPlanStore(db, store.tasks).submit(task.id, { kind: "agent", threadId: "thr_submitter", name: "agent (thr_submitter)" }, "thr_reviewer");
+    await note({ kind: "general", body: "Add a rollback step." });
+    harness.sdk.stub("threads.send", async ({ threadId }: { threadId: string }) => {
+      if (threadId === "thr_example") throw new Error("gone");
+      return undefined;
+    });
+    fireEvent.click(await slot.findByRole("button", { name: "Send feedback (1)" }));
+    await slot.findByText("Feedback saved, but not delivered: tell thr_example yourself that EXA-1 plan v1 needs changes. They read it with bb work-board plan show EXA-1 and bb work-board plan notes EXA-1 --all");
+    expect((harness.sdk.callsTo("threads.send") as Array<[{ threadId: string }]>).map((entry) => entry[0].threadId)).toEqual(["thr_submitter", "thr_example"]);
+    expect(list(slot).getByText("Sent")).toBeTruthy();
+  });
+
+  it("names the recipient, version, verdict and handoff commands when an approval reaches nobody", async () => {
+    const { slot, harness } = await open();
+    harness.sdk.stub("threads.send", async () => {
+      throw new Error("gone");
+    });
+    fireEvent.click(await slot.findByRole("button", { name: "Approve" }));
+    await slot.findByText("Approve plan v1?");
+    fireEvent.click(slot.getByRole("button", { name: "Approve plan" }));
+    await slot.findByText("Approval saved, but not delivered: tell thr_example yourself that EXA-1 plan v1 is approved. They read it with bb work-board plan show EXA-1 and bb work-board plan notes EXA-1 --all");
+  });
+
+  it("reports the version that was actually decided when another session saved a newer one behind the page", async () => {
+    const { slot, harness, note, save } = await open();
+    await note({ kind: "general", body: "Add a rollback step." });
+    await slot.findByRole("button", { name: "Send feedback (1)" });
+    // v2 is saved by someone else; the page has not refreshed and still shows v1.
+    await save({ baseVersion: 1, body: `${BODY}\nSecond.\n`, summary: "Second" });
+    harness.sdk.stub("threads.send", async () => {
+      throw new Error("gone");
+    });
+    fireEvent.click(slot.getByRole("button", { name: "Send feedback (1)" }));
+    await slot.findByText(/tell thr_example yourself that EXA-1 plan v2 needs changes/);
+    expect(slot.queryByText(/plan v1 needs changes/)).toBeNull();
+  });
+
   it("keeps the notes sent and says so when the agent could not be notified", async () => {
     const { slot, harness, note } = await open();
     await note({ kind: "general", body: "Add a rollback step." });
@@ -242,7 +300,7 @@ describe("general notes, Send feedback and Approve", () => {
       throw new Error("gone");
     });
     fireEvent.click(await slot.findByRole("button", { name: "Send feedback (1)" }));
-    await slot.findByText("Saved, but the agent could not be notified");
+    await slot.findByText("Feedback saved, but not delivered: tell thr_example yourself that EXA-1 plan v1 needs changes. They read it with bb work-board plan show EXA-1 and bb work-board plan notes EXA-1 --all");
     expect(list(slot).getByText("Sent")).toBeTruthy();
   });
 
@@ -286,7 +344,8 @@ describe("the notes list", () => {
     await refresh();
     const item = await waitFor(() => list(slot).getByText("Added the owner.").closest("li")!);
     expect(within(item).getByText("Addressed")).toBeTruthy();
-    expect(within(item).getByText(/agent \(thr_example\) · addressed in v2/)).toBeTruthy();
+    expect(within(item).getByText(/addressed in v2/)).toBeTruthy();
+    expect(within(item).getByRole("button", { name: "Open thread thr_example" })).toBeTruthy();
     expect(within(item).queryByRole("button", { name: "Edit N1" })).toBeNull();
     expect(within(item).queryByRole("button", { name: "Delete N1" })).toBeNull();
 

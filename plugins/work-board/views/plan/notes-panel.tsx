@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { ActorLabel } from "../../components/thread-chip.js";
 import type { PlanNote } from "../../shared/contract.js";
 import type { TextSpan } from "../../shared/plan-anchor.js";
 import { noteKindLabel, noteLabel, type PlanNoteState } from "../../shared/plan-notes.js";
@@ -120,6 +121,7 @@ function NoteItem({
         <span className={cn(chip, STATE_TONES[note.state])}>{STATE_LABELS[note.state]}</span>
         {unanchored ? <span className={cn(chip, "text-muted-foreground")} title={`The quoted text is not in this version (the note was made on v${note.madeOnVersion})`}>Unanchored</span> : null}
         {note.kind === "remove" ? <span className="text-2xs text-muted-foreground">Remove this</span> : null}
+        <span className="text-2xs text-muted-foreground">by <ActorLabel name={note.authorKind === "thread" ? note.authorName : "You"} threadId={note.authorThread} /></span>
       </div>
       {editing ? (
         <NoteBodyEditor note={note} actions={actions} onDone={() => onEdit(false)} />
@@ -129,7 +131,7 @@ function NoteItem({
       {note.reply ? (
         <div className="mt-1.5 border-l-2 border-border pl-2">
           <p className="text-2xs text-muted-foreground">
-            {note.replyBy ?? "Agent"}
+            <ActorLabel name={note.replyBy ?? "Agent"} />
             {note.addressedInVersion ? ` · addressed in v${note.addressedInVersion}` : " · replied"}
           </p>
           <p className="whitespace-pre-wrap [overflow-wrap:anywhere]">{note.reply}</p>
@@ -138,7 +140,7 @@ function NoteItem({
       {error ? <p role="alert" className="mt-1 text-destructive">{error}</p> : null}
       {!readOnly && !editing ? (
         <div className="mt-1.5 flex flex-wrap gap-1.5">
-          {note.state === "draft" ? (
+          {note.state === "draft" && note.authorKind === "person" ? (
             <>
               <Button type="button" size="sm" variant="ghost" className="h-6 px-2 text-2xs" aria-label={`Edit ${noteLabel(note.number)}`} onClick={() => onEdit(true)}>Edit</Button>
               <Button type="button" size="sm" variant="ghost" className="h-6 px-2 text-2xs" aria-label={`Delete ${noteLabel(note.number)}`} onClick={() => void act(() => actions.remove(note.id))}>Delete</Button>
@@ -186,8 +188,9 @@ export function PlanNotesList({
         Select text in the plan to comment on it, or <GeneralNoteButton inline onAdd={onAddGeneral} />
       </p>
     );
-  const drafts = notes.filter((note) => note.state === "draft");
-  const others = notes.filter((note) => note.state !== "draft");
+  // The owner's own drafts wait to be sent; a reviewer thread's drafts are shown with the others and are not the owner's to send.
+  const drafts = notes.filter((note) => note.state === "draft" && note.authorKind === "person");
+  const others = notes.filter((note) => note.state !== "draft" || note.authorKind !== "person");
   const group = (items: readonly PlanNote[], label: string | null) =>
     items.length === 0 ? null : (
       <div className="space-y-1.5">

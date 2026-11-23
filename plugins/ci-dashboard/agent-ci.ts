@@ -7,12 +7,12 @@ import { jobRef, problemRefs, queueRef, runRef, REF_FORMS, whereRef } from "./ci
 import type { DashboardData } from "./server";
 
 export const ciQuerySchema = z.object({
-  repository: repositorySchema.optional().describe("Configured owner/repo; omit for all dashboard repositories."),
+  repository: repositorySchema.optional().describe("Configured owner/repo, e.g. acme/app; omit for all repositories except ref drill-downs, which require it when several are configured."),
   selection: rangeInputSchema.default({ days: 7 }).describe("Preset days 1, 3, 7, 14, 30 or 90, or inclusive UTC start/end dates within the past year. One day means today from 00:00 UTC."),
   refresh: z.boolean().default(false).describe("False returns a local snapshot when available, including stale data with its timestamp. True forces a GitHub refresh; cold/large ranges may take time. Ignored by views other than summary."),
   view: z.enum(["summary", "problems", "signals", "stall", "losses", "failures", "reruns", "lanes"]).default("summary").describe("summary: run-level metrics plus open signals and runner pools. problems: only the open CI health problems with ids, handled state and refs (smallest; use it to find something to take with ci_dashboard_manage). Other views return only compact job-level rows from the local store, each with a ref for ref=...: signals (open signals: id, kind, severity, title, what, since, actor, ref), stall (live runner pool queues plus per pool queue wait and duration p50/p90, overall and by event), losses (runner loss tallies, mass cancels with run refs, recent loss job refs), failures (failed jobs: ref, run, name, class, event, at, queuePullRequest, plus counts by event), reruns (rows with run and queue refs). They ignore selection."),
   event: z.string().optional().describe("For view=lanes: the run event of the pipeline; default the main pipeline."),
-  ref: z.string().trim().min(1).max(300).optional().describe(`Drill down: pass a ref taken from any view or observer line to get one small inspection (summary, facts, related refs, next steps) built from the local store only. view, selection and refresh are then ignored. Refs: ${REF_FORMS.join("; ")}.`),
+  ref: z.string().trim().min(1).max(300).optional().describe(`Drill down: pass a ref taken from any view or observer line to get one small inspection (summary, facts, related refs, next steps) built from the local store only. view, selection and refresh are then ignored (also event). Refs: ${REF_FORMS.join("; ")}.`),
 }).strict();
 const openSignalSchema = signalSchema.pick({ id: true, kind: true, severity: true, title: true, since: true }).extend({ actor: actorSchema });
 // One line per signal for agents: the where block (runner, sha, ids) made up half of view=signals. `ref` replaces the url (ref=... returns the link and the details).
@@ -87,7 +87,7 @@ export function ciSliceReport(signals: SignalsOutput, view: Exclude<CiQuery["vie
 
 export function ciReport(data: DashboardData, query: CiQuery, refreshSeconds: number, fromCache: boolean, signals: SignalsOutput) {
   const repositories = data.repositories.filter((row) => !query.repository || row.repository.toLowerCase() === query.repository.toLowerCase());
-  if (query.repository && repositories.length === 0) throw new Error("Repository is not configured in CI Dashboard or could not be discovered.");
+  if (query.repository && repositories.length === 0) throw new Error("Repository is not configured in CI Dashboard or could not be discovered. Pass a configured owner/repo such as acme/app, or add it in plugin settings and retry.");
   return ciReportSchema.parse({
     source: fromCache ? "cache" : "collection", discoveryError: data.discoveryError,
     repositories: repositories.map((row) => {

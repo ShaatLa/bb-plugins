@@ -9,15 +9,19 @@ import { z } from "zod";
 
 import { createStore, publishProjectsChanged, registerTasksApi } from "./api";
 import { registerAttachments } from "./attachments";
+import { registerAttention } from "./attention/rpc";
+import { registerChecks } from "./checks/rpc";
 import { registerTasksCli } from "./cli";
 import { registerDelegation } from "./delegate";
 import { registerLifecycle } from "./lifecycle";
 import { TASK_LINK_INSTRUCTIONS } from "./shared/task-link";
 import { registerMentions } from "./mentions";
+import { planDebtService } from "./plan-debt/service";
 import { autoArchiveTasks } from "./lifecycle/task-archive";
+import pkg from "./package.json" with { type: "json" };
 
 const WORK_BOARD_PLUGIN_NAME = "Work Board";
-export const WORK_BOARD_PLUGIN_VERSION = "0.58.2";
+export const WORK_BOARD_PLUGIN_VERSION: string = pkg.version;
 
 const tasksRpcContract = defineRpcContract({
   ping: {
@@ -40,12 +44,15 @@ export default async function plugin(bb: BbPluginApi) {
     publishProjectsChanged(bb, null);
   });
   registerTasksApi(bb, store);
+  registerAttention(bb, store);
+  registerChecks(bb);
   registerAttachments(bb, store.tasks);
   registerTasksCli(bb, store, statusPayload());
   registerDelegation(bb, store);
   registerScheduled(bb, store);
   registerPublicApi(bb, store.tasks);
   registerMentions(bb, store);
+  planDebtService(bb, store.tasks).register();
   // Read when a provider session starts, so only threads started or resumed after install see it.
   bb.agents.contributeInstructions(({ projectId }) =>
     store.tasks.listProjects().some((project) => project.linkedBbProjectId === projectId)

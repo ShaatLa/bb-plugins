@@ -1,16 +1,18 @@
+import { createPlanStore } from "../plans/store";
 import { afterEach, expect, it, vi } from "vitest";
 import { createFakePluginHost, makeThreadResponse } from "@get-bb/plugin-sdk/testing";
 import { createStore, registerTasksApi } from "../api";
 import { registerTasksCli } from "../cli";
 import { gitSyncService } from "./service";
-import { createGithubClient } from "./github";
-import { gitSyncConfigSchema, prSnapshotSchema } from "../shared/git-sync";
+import { createGithubClient, GithubError } from "./github";
+import { gitSyncConfigSchema, prIdentity, prSnapshotSchema, settledSpreadMs } from "../shared/git-sync";
 import {
   archiveRecords,
   captureProject,
   restoreProject,
 } from "../archive/storage";
 import { createGitSyncStore } from "./store";
+import { createDependencyStore } from "../dependencies/store";
 
 const hosts: ReturnType<typeof createFakePluginHost>[] = [];
 afterEach(async () => {
@@ -254,7 +256,7 @@ it("exports v8 config and links/exclusions, excludes CI snapshots, and restores 
   await f.service.syncProject(f.project.id);
   const capture = captureProject(f.bb, f.store, f.project.id);
   const records = await archiveRecords(f.store, capture, async () => {});
-  expect(capture.manifest.version).toBe(19);
+  expect(capture.manifest.version).toBe(21);
   expect(capture.manifest.gitSync?.repositories).toEqual(["example/service"]);
   expect(JSON.stringify(records)).not.toContain('"checks":');
   expect(
@@ -903,10 +905,30 @@ it("advances only confirmed delivering open PRs from early statuses", async () =
   expect(f.tasks.slice(0, 8).map(task => f.store.tasks.getTask(task.id)!.status)).toEqual(["in_review", "todo", "todo", "todo", "todo", "done", "canceled", "in_review"]);
 });
 
+it("skips a card whose plan is not approved in a required project while the sync succeeds and the approved card advances", async () => {
+  const f = setup();
+  const url = "https://github.com/example/service/pull/42";
+  f.store.tasks.updateProject(f.project.id, { planning: "required" });
+  const plans = createPlanStore(f.bb.storage.database(), f.store.tasks);
+  const author = { kind: "agent" as const, threadId: "thr_example", name: "agent (thr_example)" };
+  for (const task of f.tasks.slice(0, 2)) {
+    f.store.tasks.updateTask(task.id, { status: "todo" });
+    plans.save({ taskId: task.id, op: "replace", baseVersion: 0, body: "# Plan\n", summary: "Plan", author });
+    // The first plan version moved the card to Planning; this test is about the gate on a card waiting in Todo.
+    f.store.tasks.updateTask(task.id, { status: "todo" });
+  }
+  plans.setState(f.tasks[1]!.id, "approved", { kind: "person", threadId: null, name: "Owner" });
+  await f.service.handlers.setGitSyncConfig({ projectId: f.project.id, config: gitSyncConfigSchema.parse({ repositories: ["example/service"], titleDiscovery: false }) });
+  for (const task of f.tasks.slice(0, 2)) await f.service.handlers.linkPr({ taskId: task.id, url, role: "delivers", part: null });
+  const result = await f.service.syncProject(f.project.id);
+  expect(result.errors).toEqual([]);
+  expect(f.tasks.slice(0, 2).map(task => f.store.tasks.getTask(task.id)!.status)).toEqual(["todo", "in_review"]);
+});
+
 it("uses custom workflow status IDs and does not reverse a closed PR", async () => {
   const f = setup();
   const statuses = [...f.project.statuses!, { id: "ready_custom", name: "Ready custom" }, { id: "review_custom", name: "Review custom" }];
-  f.store.tasks.updateProject(f.project.id, { statuses, workflowPolicy: { bugfixStatus: null, doneStatus: "done", inProgressStatus: null, reviewStatus: "review_custom", testingStatus: null, earlyStatuses: ["ready_custom"], ownerDecisionLabel: null } });
+  f.store.tasks.updateProject(f.project.id, { statuses, workflowPolicy: { bugfixStatus: null, doneStatus: "done", inProgressStatus: null, reviewStatus: "review_custom", testingStatus: null, planningStatus: null, earlyStatuses: ["ready_custom"], ownerDecisionLabel: null } });
   f.store.tasks.updateTask(f.task.id, { status: "ready_custom" });
   await f.service.handlers.setGitSyncConfig({ projectId: f.project.id, config: gitSyncConfigSchema.parse({ repositories: ["example/service"], titleDiscovery: false }) });
   await f.service.handlers.linkPr({ taskId: f.task.id, url: "https://github.com/example/service/pull/42", role: "delivers", part: null });
@@ -978,4 +1000,454 @@ it("aborts an in-flight thread batch and does not start another after the sync d
     await vi.advanceTimersByTimeAsync(0);
     expect(calls).toBe(1);
   } finally { vi.useRealTimers(); }
+});
+
+const deploy = (state: "passed" | "failed" | "pending") => [{ workflow: "Deploy", state, runId: null, sha: null, url: null, superseded: false, originalRunId: null }];
+const merged = (number: number, mergedAt: string, coverage: ReturnType<typeof deploy> | [] = []) => ({ ...snapshot("example/service", number), state: "merged" as const, mergedAt, mergeSha: b, coverage });
+async function linkAll(f: ReturnType<typeof setup>, numbers: number[], taskId = f.task.id) {
+  for (const number of numbers) await f.service.handlers.linkPr({ taskId, url: `https://github.com/example/service/pull/${number}`, role: "related", part: null });
+}
+const fetched = (f: ReturnType<typeof setup>) => f.client.snapshot.mock.calls.map(([, number]) => number);
+const spread = (number: number) => settledSpreadMs(prIdentity({ repository: "example/service", number }));
+
+it("re-reads a settled merged PR hourly and a pending one on every pass, while force reads both", async () => {
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(new Date("2026-11-11T12:00:00.000Z"));
+  const f = setup();
+  await f.service.handlers.setGitSyncConfig({ projectId: f.project.id, config: gitSyncConfigSchema.parse({ repositories: ["example/service"], titleDiscovery: false, postMergeWorkflows: ["Deploy"] }) });
+  await linkAll(f, [42, 43]);
+  f.client.snapshot.mockImplementation(async (_repository, number) => merged(number, "2026-11-10T12:00:00.000Z", deploy(number === 42 ? "passed" : "pending")));
+  await f.service.syncProject(f.project.id);
+  f.client.snapshot.mockClear();
+  await f.service.syncProject(f.project.id);
+  expect(fetched(f)).toEqual([43]);
+  f.client.snapshot.mockClear();
+  // Due once it would go stale before the next pass (55 min), less its fixed per-PR spread.
+  const dueAt = Date.parse("2026-11-11T12:55:00.000Z") - spread(42);
+  vi.setSystemTime(dueAt - 1);
+  await f.service.syncProject(f.project.id);
+  expect(fetched(f)).toEqual([43]);
+  f.client.snapshot.mockClear();
+  vi.setSystemTime(dueAt);
+  await f.service.syncProject(f.project.id);
+  expect(fetched(f).sort()).toEqual([42, 43]);
+  f.client.snapshot.mockClear();
+  await f.service.syncProject(f.project.id, true);
+  expect(fetched(f).sort()).toEqual([42, 43]);
+});
+
+it("gives a settled merged PR a final in-window read before polling stops at its cutoff", async () => {
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(new Date("2026-11-11T11:40:00.000Z"));
+  const f = setup();
+  await f.service.handlers.setGitSyncConfig({ projectId: f.project.id, config: gitSyncConfigSchema.parse({ repositories: ["example/service"], titleDiscovery: false, postMergeWorkflows: ["Deploy"] }) });
+  await linkAll(f, [42]);
+  // Merged seven days before 12:30, so polling stops then.
+  f.client.snapshot.mockImplementation(async (_repository, number) => merged(number, "2026-11-04T12:30:00.000Z", deploy("failed")));
+  await f.service.syncProject(f.project.id);
+  f.client.snapshot.mockClear();
+  // The clamp makes it due 45 min after the read (50 min to the cutoff, less one poll), less its spread.
+  vi.setSystemTime(Date.parse("2026-11-11T12:25:00.000Z") - spread(42) - 1000);
+  await f.service.syncProject(f.project.id);
+  expect(fetched(f)).toEqual([]);
+  f.client.snapshot.mockImplementation(async (_repository, number) => merged(number, "2026-11-04T12:30:00.000Z", deploy("passed")));
+  vi.setSystemTime(new Date("2026-11-11T12:26:00.000Z"));
+  await f.service.syncProject(f.project.id);
+  expect(fetched(f)).toEqual([42]);
+  f.client.snapshot.mockClear();
+  vi.setSystemTime(new Date("2026-11-11T12:31:00.000Z"));
+  await f.service.syncProject(f.project.id);
+  expect(fetched(f)).toEqual([]);
+  const { links } = await f.service.handlers.listPrLinks({ taskId: f.task.id });
+  expect(links[0]).toMatchObject({ stale: false, snapshot: { coverage: [{ state: "passed" }] } });
+  expect((await f.service.handlers.prSummaries({ taskIds: [f.task.id] })).summaries).toMatchObject([{ stale: false }]);
+});
+
+it("promotes a due PR that has waited 15 min ahead of a continuously due open group", async () => {
+  vi.useFakeTimers({ toFake: ["Date"] });
+  const start = Date.parse("2026-11-11T12:00:00.000Z");
+  vi.setSystemTime(start);
+  const f = setup();
+  await f.service.handlers.setGitSyncConfig({ projectId: f.project.id, config: gitSyncConfigSchema.parse({ repositories: ["example/service"], titleDiscovery: false, postMergeWorkflows: ["Deploy"] }) });
+  const open = [42, 43, 44, 45, 46, 47];
+  await linkAll(f, [...open, 50, 60]);
+  let slow = false;
+  f.client.snapshot.mockImplementation(async (repository, number) => {
+    // Each read takes 70 s once overloaded, so a pass fits three PRs into its three-minute budget.
+    if (slow) vi.setSystemTime(Date.now() + 70_000);
+    return number === 50 ? merged(number, "2026-11-11T11:00:00.000Z", deploy("pending")) : number === 60 ? merged(number, "2020-01-01T00:00:00.000Z") : snapshot(repository, number);
+  });
+  await f.service.syncProject(f.project.id);
+  slow = true;
+  const passUntil = async (number: number, force: boolean) => {
+    for (let pass = 1; pass <= 8; pass++) {
+      vi.setSystemTime(Math.max(Date.now(), start + pass * 5 * 60_000));
+      f.client.snapshot.mockClear();
+      const result = await f.service.syncProject(f.project.id, force);
+      expect(result.deferred).toBeGreaterThan(0);
+      if (fetched(f).includes(number)) return pass;
+    }
+    return Infinity;
+  };
+  expect(await passUntil(50, false)).toBeLessThanOrEqual(4);
+});
+
+it("orders a forced pass by last attempt with open PRs first, so history does not displace open work", async () => {
+  vi.useFakeTimers({ toFake: ["Date"] });
+  const start = Date.parse("2026-11-11T12:00:00.000Z");
+  vi.setSystemTime(start);
+  const f = setup();
+  await f.service.handlers.setGitSyncConfig({ projectId: f.project.id, config: gitSyncConfigSchema.parse({ repositories: ["example/service"], titleDiscovery: false }) });
+  let slow = false;
+  f.client.snapshot.mockImplementation(async (repository, number) => {
+    if (slow) vi.setSystemTime(Date.now() + 70_000);
+    return number === 50 ? merged(number, "2026-11-10T12:00:00.000Z") : number >= 60 ? merged(number, "2026-11-01T12:00:00.000Z") : snapshot(repository, number);
+  });
+  // Terminal history (8+ days past merge) was read first, so it has the oldest attempts.
+  await linkAll(f, [60, 61]);
+  await f.service.syncProject(f.project.id, true);
+  vi.setSystemTime(start + 60_000);
+  await linkAll(f, [42, 43, 50]);
+  await f.service.syncProject(f.project.id);
+  slow = true;
+  const passes: number[][] = [];
+  for (let pass = 1; pass <= 3; pass++) {
+    vi.setSystemTime(Math.max(Date.now(), start + pass * 5 * 60_000));
+    f.client.snapshot.mockClear();
+    await f.service.syncProject(f.project.id, true);
+    passes.push(fetched(f));
+  }
+  for (const numbers of passes) expect(numbers.slice(0, 2)).toEqual([42, 43]);
+  expect(new Set(passes.flat())).toEqual(new Set([42, 43, 50, 60, 61]));
+  expect(passes[0]![2]).toBe(60);
+});
+
+it("stops starting PRs at the budget, publishes what it committed and reports a deferral as ok", async () => {
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(new Date("2026-11-11T12:00:00.000Z"));
+  const f = setup();
+  await f.service.handlers.setGitSyncConfig({ projectId: f.project.id, config: gitSyncConfigSchema.parse({ repositories: ["example/service"], titleDiscovery: false, enabled: true }) });
+  await linkAll(f, [42, 43, 44, 45, 46]);
+  f.client.snapshot.mockImplementation(async (repository, number) => {
+    vi.setSystemTime(Date.now() + 70_000);
+    return snapshot(repository, number);
+  });
+  const before = f.harness.realtimeSignals.length;
+  await expect(f.service.runDue()).resolves.toBeUndefined();
+  expect(f.client.snapshot).toHaveBeenCalledTimes(3);
+  expect(f.harness.realtimeSignals.slice(before)).toContainEqual({ channel: "prs:changed", payload: { taskId: f.task.id, projectId: f.project.id } });
+  expect(f.harness.logEntries).toContainEqual(expect.objectContaining({ level: "info", message: expect.stringContaining("checked 3 PRs and deferred 2 to the next pass") }));
+  const manual = await f.service.handlers.syncGit({ projectId: f.project.id });
+  expect(manual).toEqual({ checked: 3, errors: ["2 PRs deferred to the next pass"] });
+});
+
+it("counts each failed PR snapshot, finishes later projects and only then fails the scheduled run", async () => {
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(new Date("2026-11-11T12:00:00.000Z"));
+  const f = setup();
+  const config = gitSyncConfigSchema.parse({ repositories: ["example/service"], titleDiscovery: false, enabled: true });
+  await f.service.handlers.setGitSyncConfig({ projectId: f.project.id, config });
+  await linkAll(f, [42, 43, 44, 45, 46, 47]);
+  const other = f.store.tasks.createProject({ name: "Other", prefix: "OTH", color: "green" });
+  const otherTask = f.store.tasks.createTask({ projectId: other.id, title: "Other work" });
+  await f.service.handlers.setGitSyncConfig({ projectId: other.id, config });
+  await linkAll(f, [77], otherTask.id);
+  f.client.snapshot.mockImplementation(async (repository, number) => {
+    if (number === 42 || number === 43) throw new GithubError(503, "GitHub request failed (HTTP 503)");
+    vi.setSystemTime(Date.now() + 70_000);
+    return snapshot(repository, number);
+  });
+  await expect(f.service.runDue()).rejects.toThrow(`project ${f.project.id}: 2 GitHub request failures (3 PRs checked)`);
+  expect(fetched(f)).toContain(77);
+  expect(f.harness.logEntries).toContainEqual(expect.objectContaining({ level: "info", message: expect.stringContaining("checked 3 PRs and deferred 1") }));
+  const manual = await f.service.handlers.syncGit({ projectId: f.project.id });
+  expect(manual.errors.filter((error) => error.includes("HTTP 503"))).toHaveLength(1);
+  expect(manual.errors.filter((error) => error.includes("deferred to the next pass"))).toHaveLength(1);
+});
+
+it("tolerates optional lookup and permission failures next to a successful snapshot", async () => {
+  const f = setup();
+  await f.service.handlers.setGitSyncConfig({ projectId: f.project.id, config: gitSyncConfigSchema.parse({ repositories: ["example/service"], titleDiscovery: false, enabled: true }) });
+  await linkAll(f, [42, 43]);
+  f.harness.sdk.stub("threads.list", async ({ threadIds }: { threadIds?: readonly string[] }) =>
+    (threadIds ?? []).map((id) => makeThreadResponse({ id, environmentId: "env_one" })));
+  f.harness.sdk.stub("plugins.callRpc", async () => ({ env_one: { outcome: "available", pullRequest: {
+    number: 44, title: "Worker PR", state: "open", url: "https://github.com/example/service/pull/44", updatedAt: "2026-11-04T00:00:00.000Z" } } }));
+  f.store.tasks.upsertTaskThread({ taskId: f.task.id, threadId: "thr_example", title: "Worker", presetName: "Default", liveStatus: "working" });
+  f.client.referenceText.mockRejectedValue(new Error("unavailable"));
+  f.client.snapshot.mockImplementation(async (repository, number) => {
+    if (number === 42) throw new GithubError(404, "GitHub request failed (HTTP 404)");
+    return snapshot(repository, number);
+  });
+  await expect(f.service.runDue()).resolves.toBeUndefined();
+  expect(f.harness.logEntries.filter((entry) => entry.level === "warn" && entry.message.includes("tolerated 2 optional"))).toHaveLength(1);
+});
+
+it("publishes committed snapshots from the deadline itself and ignores a late fetch", async () => {
+  vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+  const f = setup();
+  await f.service.handlers.setGitSyncConfig({ projectId: f.project.id, config: gitSyncConfigSchema.parse({ repositories: ["example/service"], titleDiscovery: false }) });
+  await linkAll(f, [42, 43]);
+  let release!: (value: ReturnType<typeof snapshot>) => void;
+  f.client.snapshot.mockImplementation(async (repository, number) =>
+    number === 43 ? new Promise<ReturnType<typeof snapshot>>((resolve) => { release = resolve; }) : snapshot(repository, number));
+  const before = f.harness.realtimeSignals.length;
+  const first = f.service.syncProject(f.project.id);
+  await vi.waitFor(() => expect(f.client.snapshot).toHaveBeenCalledTimes(2));
+  await vi.advanceTimersByTimeAsync(4 * 60_000);
+  await expect(first).resolves.toMatchObject({ checked: 1, timedOut: true });
+  const published = f.harness.realtimeSignals.slice(before).filter((signal) => signal.channel === "prs:changed");
+  expect(published).toEqual([{ channel: "prs:changed", payload: { taskId: f.task.id, projectId: f.project.id } }]);
+  const after = f.harness.realtimeSignals.length;
+  release({ ...snapshot("example/service", 43), ci: "failing" });
+  await vi.advanceTimersByTimeAsync(0);
+  expect(f.harness.realtimeSignals.slice(after)).toEqual([]);
+  const { links } = await f.service.handlers.listPrLinks({ taskId: f.task.id });
+  expect(links.find((link) => link.link.number === 43)?.snapshot).toBeNull();
+});
+
+it("signals a stale-to-current refresh even when the PR facts are unchanged", async () => {
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(new Date("2026-11-11T12:00:00.000Z"));
+  const f = setup();
+  await f.service.handlers.setGitSyncConfig({ projectId: f.project.id, config: gitSyncConfigSchema.parse({ repositories: ["example/service"], titleDiscovery: false }) });
+  await linkAll(f, [42]);
+  await f.service.syncProject(f.project.id);
+  vi.setSystemTime(new Date("2026-11-11T12:10:00.000Z"));
+  expect((await f.service.handlers.prSummaries({ taskIds: [f.task.id] })).summaries).toMatchObject([{ stale: true }]);
+  const before = f.harness.realtimeSignals.length;
+  await f.service.syncProject(f.project.id);
+  expect(f.harness.realtimeSignals.slice(before)).toEqual([{ channel: "prs:changed", payload: { taskId: f.task.id, projectId: f.project.id } }]);
+  expect((await f.service.handlers.prSummaries({ taskIds: [f.task.id] })).summaries).toMatchObject([{ stale: false }]);
+});
+
+it("shows terminal and settled observations as current, and errors and unobserved PRs as stale", async () => {
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(new Date("2026-11-11T12:00:00.000Z"));
+  const f = setup();
+  await f.service.handlers.setGitSyncConfig({ projectId: f.project.id, config: gitSyncConfigSchema.parse({ repositories: ["example/service"], titleDiscovery: false }) });
+  await linkAll(f, [42, 43, 44]);
+  await linkAll(f, [45], f.tasks[1]!.id);
+  f.client.snapshot.mockImplementation(async (repository, number) =>
+    number === 43 ? merged(number, "2026-11-10T12:00:00.000Z") : number === 44 ? merged(number, "2020-01-01T00:00:00.000Z")
+      : number === 45 ? Promise.reject(new Error("unavailable")) : snapshot(repository, number));
+  await f.service.syncProject(f.project.id);
+  vi.setSystemTime(new Date("2026-11-11T12:10:00.000Z"));
+  f.client.snapshot.mockClear();
+  await f.service.syncProject(f.project.id);
+  // The open PR and the failed one (its 5 min backoff has passed) are read; settled and terminal PRs are not.
+  expect(fetched(f)).toEqual([42, 45]);
+  const summaries = (await f.service.handlers.prSummaries({ taskIds: [f.task.id, f.tasks[1]!.id] })).summaries;
+  expect(summaries).toMatchObject([{ taskId: f.task.id, total: 3, stale: false }, { taskId: f.tasks[1]!.id, stale: true }]);
+  expect((await f.service.handlers.listPrLinks({ taskId: f.task.id })).links.map((link) => link.stale)).toEqual([false, false, false]);
+  await linkAll(f, [46], f.tasks[2]!.id);
+  expect((await f.service.handlers.prSummaries({ taskIds: [f.tasks[2]!.id] })).summaries).toMatchObject([{ stale: true }]);
+});
+
+it("does not re-remember evidence links a project already has", async () => {
+  const f = setup();
+  await f.service.handlers.setGitSyncConfig({ projectId: f.project.id, config: gitSyncConfigSchema.parse({ repositories: ["example/service"], titleDiscovery: false }) });
+  for (const task of f.tasks.slice(0, 3))
+    f.store.tasks.createComment({ taskId: task.id, kind: "agent", authorName: "Reviewer", body: "Approved",
+      evidence: { kind: "review", pr: 42, head: a, verdict: "approve", thread: "thr_example", recordedByThread: "thr_example" } });
+  await f.service.syncProject(f.project.id);
+  expect((await f.service.handlers.listPrLinks({ taskId: f.tasks[2]!.id })).links).toHaveLength(1);
+  const db = f.bb.storage.database();
+  const prepare = vi.spyOn(db, "prepare");
+  const before = f.harness.realtimeSignals.length;
+  const rows = (db.prepare("SELECT count(*) AS n FROM task_pr_links").get() as { n: number }).n;
+  prepare.mockClear();
+  await f.service.syncProject(f.project.id);
+  expect(prepare.mock.calls.filter(([sql]) => String(sql).includes("FROM task_pr_links WHERE task_id = ?"))).toHaveLength(0);
+  expect((db.prepare("SELECT count(*) AS n FROM task_pr_links").get() as { n: number }).n).toBe(rows);
+  expect(f.harness.realtimeSignals.slice(before)).toEqual([]);
+});
+
+it("keeps open PRs ahead of hourly PRs that come due together", async () => {
+  vi.useFakeTimers({ toFake: ["Date"] });
+  const start = Date.parse("2026-11-11T12:00:00.000Z");
+  vi.setSystemTime(start);
+  const f = setup();
+  await f.service.handlers.setGitSyncConfig({ projectId: f.project.id, config: gitSyncConfigSchema.parse({ repositories: ["example/service"], titleDiscovery: false }) });
+  await linkAll(f, [42, 43, 44, 50]);
+  let slow = false;
+  f.client.snapshot.mockImplementation(async (repository, number) => {
+    if (slow) vi.setSystemTime(Date.now() + 70_000);
+    return number === 50 ? merged(number, "2026-11-10T12:00:00.000Z") : snapshot(repository, number);
+  });
+  await f.service.syncProject(f.project.id);
+  const duePass = Math.ceil((55 * 60_000 - spread(50)) / (5 * 60_000));
+  for (let pass = 1; pass < duePass; pass++) {
+    vi.setSystemTime(start + pass * 5 * 60_000);
+    await f.service.syncProject(f.project.id);
+  }
+  // The settled PR comes due now, later than the open PRs became due.
+  slow = true;
+  vi.setSystemTime(start + duePass * 5 * 60_000);
+  f.client.snapshot.mockClear();
+  await expect(f.service.syncProject(f.project.id)).resolves.toMatchObject({ checked: 3, deferred: 1 });
+  expect(fetched(f)).toEqual([42, 43, 44]);
+});
+
+it("signals a dependent when a forced read renews expired merged-delivery evidence", async () => {
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(new Date("2026-11-11T12:00:00.000Z"));
+  const f = setup();
+  await f.service.handlers.setGitSyncConfig({ projectId: f.project.id, config: gitSyncConfigSchema.parse({ repositories: ["example/service"], titleDiscovery: false, enabled: true }) });
+  const dependent = f.tasks[1]!;
+  createDependencyStore(f.bb.storage.database(), f.store.tasks).add(dependent.id, f.task.id);
+  await f.service.handlers.linkPr({ taskId: f.task.id, url: "https://github.com/example/service/pull/42", role: "delivers", part: null });
+  f.client.snapshot.mockImplementation(async (_repository, number) => merged(number, "2026-11-01T12:00:00.000Z"));
+  await f.service.syncProject(f.project.id, true);
+  // Exactly one poll later the evidence has expired (validUntil > now fails), so the identical read renews it.
+  vi.setSystemTime(new Date("2026-11-11T12:05:00.000Z"));
+  expect((await f.harness.callRpc("listTaskCardMeta", { taskIds: [dependent.id] }) as { metadata: { advisories: unknown[] }[] }).metadata[0]!.advisories).toEqual([]);
+  const before = f.harness.realtimeSignals.length;
+  await f.service.syncProject(f.project.id, true);
+  expect(f.harness.realtimeSignals.slice(before)).toContainEqual({ channel: "prs:changed", payload: { taskId: dependent.id, projectId: f.project.id } });
+  // Within one poll of that read the evidence is current, so an identical read stays silent.
+  vi.setSystemTime(new Date("2026-11-11T12:06:00.000Z"));
+  const again = f.harness.realtimeSignals.length;
+  await f.service.syncProject(f.project.id, true);
+  expect(f.harness.realtimeSignals.slice(again)).toEqual([]);
+});
+
+it("judges the previous observation's freshness when the read commits, not when the pass queued it", async () => {
+  vi.useFakeTimers({ toFake: ["Date"] });
+  const start = Date.parse("2026-11-11T12:00:00.000Z");
+  vi.setSystemTime(start);
+  const f = setup();
+  await f.service.handlers.setGitSyncConfig({ projectId: f.project.id, config: gitSyncConfigSchema.parse({ repositories: ["example/service"], titleDiscovery: false }) });
+  await linkAll(f, [42]);
+  await f.service.syncProject(f.project.id);
+  // Queued at 4:59, fresh; the read takes 2 s, so it commits after the 5 min limit.
+  vi.setSystemTime(start + 4 * 60_000 + 59_000);
+  f.client.snapshot.mockImplementation(async (repository, number) => {
+    vi.setSystemTime(Date.now() + 2_000);
+    return snapshot(repository, number);
+  });
+  const before = f.harness.realtimeSignals.length;
+  await f.service.syncProject(f.project.id);
+  expect(f.harness.realtimeSignals.slice(before)).toEqual([{ channel: "prs:changed", payload: { taskId: f.task.id, projectId: f.project.id } }]);
+});
+
+it("promotes terminal history in bounded time under repeated saturated forced passes", async () => {
+  vi.useFakeTimers({ toFake: ["Date"] });
+  const start = Date.parse("2026-11-11T12:00:00.000Z");
+  vi.setSystemTime(start);
+  const f = setup();
+  await f.service.handlers.setGitSyncConfig({ projectId: f.project.id, config: gitSyncConfigSchema.parse({ repositories: ["example/service"], titleDiscovery: false }) });
+  await linkAll(f, [60]);
+  let slow = false;
+  f.client.snapshot.mockImplementation(async (repository, number) => {
+    // Three 70 s reads fill the three-minute budget.
+    if (slow) vi.setSystemTime(Date.now() + 70_000);
+    return number === 60 ? merged(number, "2026-11-01T12:00:00.000Z") : snapshot(repository, number);
+  });
+  await f.service.syncProject(f.project.id, true);
+  vi.setSystemTime(start + 60_000);
+  await linkAll(f, [42, 43, 44]);
+  await f.service.syncProject(f.project.id);
+  slow = true;
+  const passes: number[][] = [];
+  for (let pass = 1; pass <= 4; pass++) {
+    vi.setSystemTime(Math.max(Date.now(), start + pass * 5 * 60_000));
+    f.client.snapshot.mockClear();
+    await f.service.syncProject(f.project.id, true);
+    passes.push(fetched(f));
+  }
+  // Open work fills the first passes; the terminal PR left unread since pass 1 goes first once it has waited 15 min.
+  expect(passes[0]).toEqual([42, 43, 44]);
+  expect(passes.findIndex((numbers) => numbers.includes(60))).toBe(3);
+  expect(passes[3]![0]).toBe(60);
+});
+
+it("keeps an old closed PR on its plain hourly due time, without the settled spread", async () => {
+  vi.useFakeTimers({ toFake: ["Date"] });
+  const start = Date.parse("2026-11-11T12:00:00.000Z");
+  vi.setSystemTime(start);
+  const f = setup();
+  await f.service.handlers.setGitSyncConfig({ projectId: f.project.id, config: gitSyncConfigSchema.parse({ repositories: ["example/service"], titleDiscovery: false }) });
+  await linkAll(f, [42]);
+  f.client.snapshot.mockImplementation(async (repository, number) => ({ ...snapshot(repository, number), state: "closed" as const, updatedAt: "2026-09-01T00:00:00.000Z" }));
+  await f.service.syncProject(f.project.id);
+  f.client.snapshot.mockClear();
+  vi.setSystemTime(start + 55 * 60_000 - 1);
+  await f.service.syncProject(f.project.id);
+  expect(fetched(f)).toEqual([]);
+  vi.setSystemTime(start + 55 * 60_000);
+  await f.service.syncProject(f.project.id);
+  expect(fetched(f)).toEqual([42]);
+});
+
+it("starts the forced wait when the queue is built, so a pass cut by the hard deadline still promotes the unread PR", async () => {
+  vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+  const start = Date.parse("2026-11-11T12:00:00.000Z");
+  vi.setSystemTime(start - 10 * 60_000);
+  const f = setup();
+  await f.service.handlers.setGitSyncConfig({ projectId: f.project.id, config: gitSyncConfigSchema.parse({ repositories: ["example/service"], titleDiscovery: false }) });
+  await linkAll(f, [60]);
+  f.client.snapshot.mockImplementation(async (repository, number) => number === 60 ? merged(number, "2026-11-01T12:00:00.000Z") : snapshot(repository, number));
+  await f.service.syncProject(f.project.id, true);
+  vi.setSystemTime(start - 5 * 60_000);
+  await linkAll(f, [42, 43, 44]);
+  await f.service.syncProject(f.project.id);
+  // The first open read hangs until the 4 min deadline; the terminal PR behind it is never reached.
+  let mode: "hang" | "slow" = "hang";
+  f.client.snapshot.mockImplementation(async (repository, number) => {
+    if (mode === "hang") return new Promise<ReturnType<typeof snapshot>>(() => {});
+    vi.setSystemTime(Date.now() + 70_000);
+    return number === 60 ? merged(number, "2026-11-01T12:00:00.000Z") : snapshot(repository, number);
+  });
+  vi.setSystemTime(start);
+  f.client.snapshot.mockClear();
+  const cut = f.service.syncProject(f.project.id, true);
+  await vi.advanceTimersByTimeAsync(4 * 60_000);
+  await expect(cut).resolves.toMatchObject({ timedOut: true, checked: 0 });
+  expect(fetched(f)).not.toContain(60);
+  mode = "slow";
+  const passes: number[][] = [];
+  for (const minute of [5, 10, 15]) {
+    vi.setSystemTime(Math.max(Date.now(), start + minute * 60_000));
+    f.client.snapshot.mockClear();
+    await f.service.syncProject(f.project.id, true);
+    passes.push(fetched(f));
+  }
+  // Waiting since the cut pass at 0 min, it goes first at 15 min although open work filled the passes between.
+  expect(passes[0]).not.toContain(60);
+  expect(passes[1]).not.toContain(60);
+  expect(passes[2]![0]).toBe(60);
+});
+
+it("drops the forced wait of a PR that leaves eligibility, so re-linking it starts a fresh wait", async () => {
+  vi.useFakeTimers({ toFake: ["Date"] });
+  const start = Date.parse("2026-11-11T12:00:00.000Z");
+  vi.setSystemTime(start);
+  const f = setup();
+  await f.service.handlers.setGitSyncConfig({ projectId: f.project.id, config: gitSyncConfigSchema.parse({ repositories: ["example/service"], titleDiscovery: false }) });
+  await linkAll(f, [60]);
+  let slow = false;
+  f.client.snapshot.mockImplementation(async (repository, number) => {
+    if (slow) vi.setSystemTime(Date.now() + 70_000);
+    return number === 60 ? merged(number, "2026-11-01T12:00:00.000Z") : snapshot(repository, number);
+  });
+  await f.service.syncProject(f.project.id, true);
+  vi.setSystemTime(start + 60_000);
+  await linkAll(f, [42, 43, 44]);
+  await f.service.syncProject(f.project.id);
+  slow = true;
+  // A saturated forced pass leaves PR 60 waiting; it is then excluded and a pass runs without it.
+  vi.setSystemTime(start + 5 * 60_000);
+  f.client.snapshot.mockClear();
+  await f.service.syncProject(f.project.id, true);
+  expect(fetched(f)).not.toContain(60);
+  await f.service.handlers.unlinkPr({ taskId: f.task.id, url: "https://github.com/example/service/pull/60" });
+  vi.setSystemTime(start + 10 * 60_000);
+  await f.service.syncProject(f.project.id, true);
+  // Re-linked an hour later, it waits behind open work again instead of jumping ahead at once.
+  vi.setSystemTime(start + 70 * 60_000);
+  await linkAll(f, [60]);
+  f.client.snapshot.mockClear();
+  await f.service.syncProject(f.project.id, true);
+  expect(fetched(f)).toEqual([42, 43, 44]);
 });

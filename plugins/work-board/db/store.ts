@@ -1,10 +1,18 @@
 import { WAITING_ON_OWNER, NEWEST_UNANSWERED } from "./waiting-on-owner";
-import { getWorkflowPolicy, workflowPolicySchema } from "../shared/workflow-policy.js";
+import { ensurePlanningStatus, getWorkflowPolicy, inWorkZone, isClosedStatus, planningStatusOf, settlePlanFlags, usableStartTarget, withPlanningStatus, workflowPolicySchema } from "../shared/workflow-policy.js";
+import { syncPlanDebt, syncProjectPlanDebt } from "../plan-debt/store";
+import { createClosureStore } from "../closure/store";
 import { ordinaryTaskVisibilitySql } from "../scheduled/visibility";
-import { autoArchiveAfterDaysSchema, staleIdleThresholdSchema, statusNotificationsSchema } from "../shared/project-settings";
+import { projectPolicies, staleRows, staleStatusObservations as observeStaleStatus } from "../attention/observe";
+import { closeTaskOccurrences, markTrackerDirty, touchAttention } from "../attention/ledger";
+import { assertLinkChangeAllowed } from "../attention/modes";
+import { assertChecksDeleteAllowed } from "../checks/ownership";
+import { releaseOwner } from "../checks/transfer";
+import { archiveSettingSchema, autoArchiveAfterDaysSchema, planningSchema, staleIdleThresholdSchema, statusNotificationsSchema } from "../shared/project-settings";
 import { taskDateFiltersSchema } from "../shared/task-dates.js";
 import {
   DEFAULT_TASK_STATUSES,
+  statusLabel,
   taskStatusesSchema,
 } from "../shared/statuses.js";
 import { createHash, randomBytes } from "node:crypto";
@@ -15,6 +23,7 @@ import {
   assertNoSecretsInValue,
 } from "../shared/secret-guard.js";
 import { evidenceSchema } from "../shared/contract.js";
+import { noPlanCreateRefusal, noPlanGateRefusal, planGateRefusal, type PlanState } from "../shared/plan.js";
 import { initializeTasksSchema } from "./schema";
 import {
   TASK_SORTS,
@@ -82,6 +91,12 @@ interface ProjectRow {
   auto_archive_after_days: string | null;
   stale_idle_minutes: string | null;
   status_notifications: string | null;
+  archive_threads_on_close: string;
+  archive_reviewer_on_approval: string;
+  planning: string | null;
+  plan_flags_initialized: number;
+  planning_changed_at: string | null;
+  planning_previous: string | null;
   statuses: string | null;
   id: string;
   name: string;
@@ -220,6 +235,8 @@ const taskCursorSchema = z
 type TaskCursor = z.infer<typeof taskCursorSchema>;
 
 export class TaskEpicError extends Error {}
+/** A scheduled card has nowhere to start because the project's planning flags mark every viable status. */
+export class PlanningPlacementError extends Error {}
 
 export class TasksPageCursorError extends Error {
   constructor(
@@ -252,6 +269,7 @@ function taskQueryFingerprint(
     activeOnly: filters.activeOnly === true,
     ...(filters.staleStatus ? { staleStatus: true } : {}),
     ...(filters.waitingOnOwner ? { waitingOnOwner: true } : {}),
+    ...(filters.planDebt ? { planDebt: true } : {}),
     parentTaskId:
       filters.parentTaskId === undefined
         ? { specified: false, value: null }
@@ -389,6 +407,12 @@ function projectFromRow(row: ProjectRow): Project {
     autoArchiveAfterDays: autoArchiveAfterDaysSchema.parse(row.auto_archive_after_days ?? "off"),
     staleIdleMinutes: staleIdleThresholdSchema.parse(row.stale_idle_minutes ?? "45"),
     statusNotifications: statusNotificationsSchema.parse(row.status_notifications ?? "off"),
+    archiveThreadsOnClose: archiveSettingSchema.parse(row.archive_threads_on_close),
+    archiveReviewerOnApproval: archiveSettingSchema.parse(row.archive_reviewer_on_approval),
+    planning: planningSchema.parse(row.planning ?? "off"),
+    planFlagsInitialized: row.plan_flags_initialized === 1,
+    planningChangedAt: row.planning_changed_at,
+    planningPrevious: row.planning_previous === null ? null : planningSchema.parse(row.planning_previous),
     statuses:
       row.statuses == null
         ? DEFAULT_TASK_STATUSES.map((status) => ({ ...status }))
@@ -543,8 +567,56 @@ export function escapeLike(value: string): string {
     .replaceAll("_", "\\_");
 }
 
-export function createTasksStore(db: PluginDatabase) {
-  initializeTasksSchema(db);
+export function createTasksStore(db: PluginDatabase, log: (message: string) => void = () => {}) {
+  initializeTasksSchema(db, log);
+  const closures = createClosureStore(db);
+  // Closures written by the current writes. They are handed to the listener only after the outermost commit; a rollback
+  // drops the ones added inside it, and a closure row a raw rollback took with it is found missing by the listener.
+  const pendingClosures: string[] = [];
+  let closureListener: ((closureId: string) => void) | null = null;
+  let closureScopes = 0;
+  function drainClosures(): void {
+    if (db.inTransaction) { setTimeout(drainClosures, 0); return; }
+    for (let id = pendingClosures.shift(); id !== undefined; id = pendingClosures.shift()) {
+      try { closureListener?.(id); } catch { /* the listener reports its own failures */ }
+    }
+  }
+  /** Runs one write (or one whole transaction) and dispatches its closures after the outermost commit, now or in a microtask. */
+  function closureScope<T>(run: () => T, defer = false): T {
+    const mark = pendingClosures.length;
+    closureScopes++;
+    let done = false;
+    try {
+      const result = run();
+      done = true;
+      return result;
+    } finally {
+      closureScopes--;
+      if (!done) pendingClosures.length = Math.min(pendingClosures.length, mark);
+      else if (closureScopes === 0 && pendingClosures.length) { if (defer) queueMicrotask(drainClosures); else drainClosures(); }
+    }
+  }
+  // Epic moves written by the current writes; like closures they are published after the outermost commit, and a
+  // record whose comment row a rollback took away is dropped.
+  type EpicMove = { epicId: string; commentId: string; projectId: string };
+  const pendingEpicMoves: EpicMove[] = [];
+  let epicMoveListener: ((move: EpicMove) => void) | null = null;
+  function flushEpicMoves(): void {
+    if (db.inTransaction) { setTimeout(flushEpicMoves, 0); return; }
+    for (const move of pendingEpicMoves.splice(0)) {
+      if (!db.prepare("SELECT 1 FROM comments WHERE id=?").get(move.commentId)) continue;
+      try { epicMoveListener?.(move); } catch { /* the listener reports its own failures */ }
+    }
+  }
+  /** The write moved a card between open and closed: closing records a closure, reopening ends the current one. */
+  function trackClosure(task: Task, status: string, closerThreadId: string | null | undefined): void {
+    if (status === task.status) return;
+    const project = requireProject(task.projectId);
+    const was = isClosedStatus(project, task.status);
+    const now = isClosedStatus(project, status);
+    if (!was && now) pendingClosures.push(closures.open(task.id, closerThreadId ?? null, project.archiveThreadsOnClose !== "off"));
+    else if (was && !now) closures.reopen(task.id);
+  }
 
   const getFolderRow = db.prepare<[string], FolderRow>(
     "SELECT * FROM folders WHERE id = ?",
@@ -700,6 +772,7 @@ export function createTasksStore(db: PluginDatabase) {
 
   function createProject(input: CreateProjectInput): Project {
     const id = createUlid();
+    assertLinkChangeAllowed(db, id, null, validateLinkedBbProjectId(input.linkedBbProjectId ?? null));
     const folderId = input.folderId ?? null;
     if (folderId !== null) requireFolder(folderId);
     db.prepare<
@@ -752,11 +825,23 @@ export function createTasksStore(db: PluginDatabase) {
   function updateProject(id: string, input: UpdateProjectInput): Project {
     return db.transaction(() => {
       const current = requireProject(id);
-      const statuses = taskStatusesSchema.parse(
+      const requested = taskStatusesSchema.parse(
         input.statuses ?? current.statuses ?? DEFAULT_TASK_STATUSES,
       );
+      let policy = input.workflowPolicy === undefined ? current.workflowPolicy : workflowPolicySchema.parse(input.workflowPolicy);
+      // A change of planning is recorded with its time and old value in the same write; the same value changes nothing.
+      const nextPlanning = planningSchema.parse(input.planning ?? current.planning ?? "off");
+      const planningChanged = nextPlanning !== (current.planning ?? "off");
+      const settled = settlePlanFlags({ statuses: requested, previous: current.statuses, planning: nextPlanning, initialized: current.planFlagsInitialized === true, workflowPolicy: policy });
+      let statuses = settled.statuses;
+      // Turning planning on settles the planning status: an existing one is found, else one is inserted before In progress.
+      if (planningChanged && nextPlanning !== "off") {
+        const ensured = ensurePlanningStatus({ statuses, workflowPolicy: policy });
+        statuses = ensured.statuses;
+        policy = withPlanningStatus(policy, ensured.planningStatus) ?? undefined;
+        if (ensured.planningStatus === null) log(`planning status not set for ${current.prefix}: ${ensured.reason}`);
+      }
       assertNoSecretsInValue(statuses, "statuses");
-      const policy = input.workflowPolicy === undefined ? current.workflowPolicy : workflowPolicySchema.parse(input.workflowPolicy);
       assertNoSecretsInValue(policy, "workflowPolicy");
       const ids = new Set(statuses.map((status) => status.id));
       if (listTasks({ projectId: id }).some((task) => !ids.has(task.status)))
@@ -766,13 +851,15 @@ export function createTasksStore(db: PluginDatabase) {
       const folderId =
         input.folderId === undefined ? current.folderId : input.folderId;
       if (folderId !== null) requireFolder(folderId);
+      // A tracker bound to manager attention keeps its BB project link; a bound BB project takes no second tracker.
+      if (input.linkedBbProjectId !== undefined) assertLinkChangeAllowed(db, id, current.linkedBbProjectId ?? null, validateLinkedBbProjectId(input.linkedBbProjectId));
       db.prepare<
-        [string, string, string, string | null, string | null, string, string | null, string, string, string, string]
+        [string, string, string, string | null, string | null, string, string | null, string, string, string, string, string, string, number, string | null, string | null, string]
       >(
         `
       UPDATE projects
       SET name = ?, prefix = ?, color = ?, folder_id = ?, linked_bb_project_id = ?, statuses = ?, workflow_policy = ?,
-          auto_archive_after_days = ?, stale_idle_minutes = ?, status_notifications = ?
+          auto_archive_after_days = ?, stale_idle_minutes = ?, status_notifications = ?, archive_threads_on_close = ?, archive_reviewer_on_approval = ?, planning = ?, plan_flags_initialized = ?, planning_changed_at = ?, planning_previous = ?
       WHERE id = ?
     `,
       ).run(
@@ -794,17 +881,33 @@ export function createTasksStore(db: PluginDatabase) {
         autoArchiveAfterDaysSchema.parse(input.autoArchiveAfterDays ?? current.autoArchiveAfterDays ?? "off"),
         staleIdleThresholdSchema.parse(input.staleIdleMinutes ?? current.staleIdleMinutes ?? "45"),
         statusNotificationsSchema.parse(input.statusNotifications ?? current.statusNotifications ?? "off"),
+        archiveSettingSchema.parse(input.archiveThreadsOnClose ?? current.archiveThreadsOnClose ?? "on"),
+        archiveSettingSchema.parse(input.archiveReviewerOnApproval ?? current.archiveReviewerOnApproval ?? "on"),
+        nextPlanning,
+        settled.initialized ? 1 : 0,
+        planningChanged ? nowIso() : (current.planningChangedAt ?? null),
+        planningChanged ? (current.planning ?? "off") : (current.planningPrevious ?? null),
         id,
       );
+      syncProjectPlanDebt(db, id);
+      // The owner row of the old link goes with it; the assertions above already refused a row that must stay.
+      if (input.linkedBbProjectId !== undefined && (current.linkedBbProjectId ?? null) !== validateLinkedBbProjectId(input.linkedBbProjectId)) releaseOwner(db, id, current.linkedBbProjectId ?? null);
       return requireProject(id);
     })();
   }
 
   function deleteProject(id: string): boolean {
-    return (
-      db.prepare<[string]>("DELETE FROM projects WHERE id = ?").run(id)
-        .changes > 0
-    );
+    assertChecksDeleteAllowed(db, id);
+    // Deleting would cascade through the mode, ledger and attempts while Sweep may still hold its fence.
+    if (db.prepare("SELECT 1 FROM attention_modes WHERE tracker_id=? AND (bound_tracker_id IS NOT NULL OR requested_mode IS NOT NULL OR effective_mode<>'off')").get(id))
+      throw new Error("Switch manager attention off in the project settings before deleting this project");
+    return db.transaction(() => {
+      releaseOwner(db, id, db.prepare<[string], { link: string | null }>("SELECT linked_bb_project_id AS link FROM projects WHERE id = ?").get(id)?.link ?? null);
+      // Not cascaded: a restore of the same id starts its generations over, so stale rows would hide its first return to shadow.
+      db.prepare<[string]>("DELETE FROM attention_acks WHERE tracker_id = ?").run(id);
+      db.prepare<[string]>("DELETE FROM checks_stale_rollback WHERE tracker_id = ?").run(id);
+      return db.prepare<[string]>("DELETE FROM projects WHERE id = ?").run(id).changes > 0;
+    })();
   }
 
   function getTask(id: string): Task | undefined {
@@ -921,6 +1024,54 @@ export function createTasksStore(db: PluginDatabase) {
     }
   }
 
+  /** A card is started once it left Backlog and Todo and is not closed; Planning counts (unlike the plan gate's work zone). */
+  function isStarted(project: Project, status: string): boolean {
+    return status !== "backlog" && status !== "todo" && !isClosedStatus(project, status);
+  }
+
+  /** The epic a card belongs to: its own, or for a sub-task (which has none) its parent's. */
+  function effectiveEpicId(task: Task): string | null {
+    return task.epicId ?? (task.parentTaskId ? getTask(task.parentTaskId)?.epicId ?? null : null);
+  }
+
+  /** Moves the epic of a started card from Backlog or Todo to In progress, with one system comment; skips anything unusable. */
+  function startEpicOf(task: Task, project: Project): void {
+    const epicId = effectiveEpicId(task);
+    const epic = epicId ? getTask(epicId) : undefined;
+    if (!epic || epic.type !== "epic" || epic.archivedAt || (epic.status !== "backlog" && epic.status !== "todo")) return;
+    const target = usableStartTarget(project, epic.status);
+    if (!target) return;
+    try {
+      // A savepoint: a refusal inside leaves the epic and the child's write untouched.
+      db.transaction(() => {
+        updateTaskTransaction(epic.id, { status: target });
+        const comment = createComment({
+          taskId: epic.id, kind: "system", authorName: "Work Board",
+          body: `Status changed to ${statusLabel(target, project.statuses)} automatically: ${task.key} started (${statusLabel(task.status, project.statuses)})`,
+        });
+        pendingEpicMoves.push({ epicId: epic.id, commentId: comment.id, projectId: project.id });
+      })();
+    } catch { return; }
+    touchAttention(db, [epic.id]);
+    queueMicrotask(flushEpicMoves);
+  }
+
+  /**
+   * Called at the end of a write of `task`; `before` is the card before it (null for a new card). Only a change from not
+   * started to started, or a changed epic of a started card, moves the epic, so one the owner moved back stays put.
+   */
+  function advanceEpicFor(task: Task, before: Task | null): void {
+    if (task.type === "epic") return;
+    const project = requireProject(task.projectId);
+    // Compared by effective epic: moving a sub-task between two tasks of the same epic changes nothing for the epic.
+    const epicChanged = before !== null && effectiveEpicId(before) !== effectiveEpicId(task);
+    const startedNow = before === null || !isStarted(project, before.status);
+    if (isStarted(project, task.status) && (startedNow || epicChanged)) startEpicOf(task, project);
+    // Sub-tasks inherit the epic: a task joining one brings its started sub-tasks with it.
+    if (epicChanged && task.type === "task" && before?.epicId !== task.epicId)
+      for (const subtask of listSubtasks(task.id)) if (isStarted(project, subtask.status)) startEpicOf(subtask, project);
+  }
+
   const createTaskTransaction = db.transaction(
     (input: CreateTaskInput): Task => {
       const project = requireProject(input.projectId);
@@ -929,6 +1080,9 @@ export function createTasksStore(db: PluginDatabase) {
       validateTaskStatus(project.id, status);
       const parentTaskId = input.parentTaskId ?? null;
       const type = input.type ?? "task";
+      // A new card has no plan yet, so a project that requires one cannot have it created in In progress.
+      if (project.planning === "required" && type !== "epic" && inWorkZone(project, status))
+        throw new Error(noPlanCreateRefusal(project.prefix, statusLabel(status, project.statuses)));
       const epicId = input.epicId ?? null;
       validateTaskEpic(project.id, type, epicId, parentTaskId);
       validateTaskParent(project.id, parentTaskId, id);
@@ -998,7 +1152,10 @@ export function createTasksStore(db: PluginDatabase) {
         createdAt,
         createdAt,
       );
-      return requireTask(id);
+      const created = requireTask(id);
+      syncPlanDebt(db, id);
+      advanceEpicFor(created, null);
+      return created;
     },
   );
 
@@ -1009,38 +1166,30 @@ export function createTasksStore(db: PluginDatabase) {
   }
 
   function staleStatusFlags(taskIds?: readonly string[], projectId?: string): Map<string, string[]> {
-    const policies = new Map(listProjects().map((project) => [project.id, getWorkflowPolicy(project)]));
-    const rows = db.prepare<[string | null, string | null, string | null, string | null], { id: string; project_id: string; status: string; active: number; held: number; open_pr: number; merged_pr: number; merge_evidence: number; outcome: number; unknown_pr: number; legacy_outcome: number; closed_pr: number }>(`
-      SELECT t.id, t.project_id, t.status,
-        EXISTS(SELECT 1 FROM task_threads x WHERE x.task_id=t.id AND x.live_status IN ('starting','working')) AS active,
-        EXISTS(SELECT 1 FROM task_dependencies d JOIN tasks b ON b.id=d.blocking_task_id WHERE d.task_id=t.id AND b.status <> 'done') AS held,
-        EXISTS(SELECT 1 FROM task_pr_links l JOIN git_pr_snapshots s ON s.project_id=t.project_id AND s.identity=l.identity
-          WHERE l.task_id=t.id AND COALESCE(json_extract(l.payload,'$.excluded'),0)=0 AND json_extract(s.payload,'$.state') IN ('open','draft')) AS open_pr,
-        EXISTS(SELECT 1 FROM task_pr_links l JOIN git_pr_snapshots s ON s.project_id=t.project_id AND s.identity=l.identity
-          WHERE l.task_id=t.id AND COALESCE(json_extract(l.payload,'$.excluded'),0)=0 AND json_extract(s.payload,'$.state')='merged') AS merged_pr,
-        EXISTS(SELECT 1 FROM comments c WHERE c.task_id=t.id AND json_extract(c.evidence,'$.kind')='merge') AS merge_evidence,
-        EXISTS(SELECT 1 FROM comments c WHERE c.task_id=t.id AND json_extract(c.evidence,'$.kind')='outcome') AS outcome,
-        EXISTS(SELECT 1 FROM legacy_done_tasks d JOIN comments c ON c.task_id=d.task_id WHERE d.task_id=t.id AND c.kind != 'system') AS legacy_outcome,
-        -- Merged is final, so a failed refresh of a merged PR leaves its state known.
-        EXISTS(SELECT 1 FROM task_pr_links l LEFT JOIN git_pr_snapshots s ON s.project_id=t.project_id AND s.identity=l.identity WHERE l.task_id=t.id AND COALESCE(json_extract(l.payload,'$.excluded'),0)=0 AND (s.payload IS NULL OR (s.error IS NOT NULL AND COALESCE(json_extract(s.payload,'$.state'),'') <> 'merged'))) AS unknown_pr
-        , EXISTS(SELECT 1 FROM task_pr_links l JOIN git_pr_snapshots s ON s.project_id=t.project_id AND s.identity=l.identity
-          WHERE l.task_id=t.id AND COALESCE(json_extract(l.payload,'$.excluded'),0)=0 AND json_extract(s.payload,'$.state')='closed') AS closed_pr
-      FROM tasks t WHERE (? IS NULL OR t.project_id=?) AND (? IS NULL OR t.id IN (SELECT value FROM json_each(?))) ORDER BY t.id`).all(projectId ?? null, projectId ?? null, taskIds ? JSON.stringify(taskIds) : null, taskIds ? JSON.stringify(taskIds) : null);
+    const policies = projectPolicies(db);
+    const rows = staleRows(db, taskIds, projectId);
     const result = new Map<string, string[]>();
+    // The planning status is read from the live project, so a settings edit that made it invalid counts at once.
+    const planning = new Map(listProjects().map((project) => [project.id, planningStatusOf(project)]));
     for (const row of rows) {
       const policy = policies.get(row.project_id);
       if (!policy) continue;
       const flags: string[] = [];
-      // A card held behind an unfinished predecessor is waiting by rule, not abandoned.
-      if (row.status === policy.inProgressStatus && !row.active && !row.held) flags.push("no_active_thread");
+      // A card held behind an unfinished predecessor is waiting by rule, not abandoned. Planning is active work like In progress.
+      if ((row.status === policy.inProgressStatus || (planning.get(row.project_id) ?? null) === row.status) && !row.active && !row.held) flags.push("no_active_thread");
       // Testing after the merge (a check on a shared environment) is expected, so a merged PR satisfies it.
-      const prSettled = row.open_pr || (row.status === policy.testingStatus && row.merged_pr);
+      const prSettled = row.open_known || (row.status === policy.testingStatus && row.merged_pr);
       if ((row.status === policy.reviewStatus || row.status === policy.testingStatus) && !prSettled) flags.push(row.unknown_pr ? "pr_state_unavailable" : "no_open_pr");
       if (row.status === policy.doneStatus && !row.merge_evidence && !row.outcome && !row.legacy_outcome) flags.push("no_merge_or_outcome");
-      if (row.closed_pr) flags.push("closed_unmerged_pr");
+      if (row.closed_known) flags.push("closed_unmerged_pr");
       if (flags.length) result.set(row.id, flags);
     }
     return result;
+  }
+
+  /** Stale-status flags of a tracker's cards with a validity per signal; `unknown` marks only the genuinely undecidable. */
+  function staleStatusObservations(trackerId: string, taskIds?: readonly string[]) {
+    return observeStaleStatus(db, taskIds, trackerId);
   }
 
   function listTasksPage(filters: ListTasksFilters = {}): ListTasksPage {
@@ -1078,6 +1227,7 @@ export function createTasksStore(db: PluginDatabase) {
     const dateColumn = { created: "t.created_at", updated: "t.updated_at", archived: "t.archived_at" }[dateField];
     const clauses: string[] = [];
     if (filters.waitingOnOwner) clauses.push(WAITING_ON_OWNER);
+    if (filters.planDebt) clauses.push("EXISTS (SELECT 1 FROM plan_debt_episodes e WHERE e.task_id = t.id AND e.ended_at IS NULL)");
     if (filters.ordinaryOnly) clauses.push(ordinaryTaskVisibilitySql());
     if (filters.archive === "active") clauses.push("t.archived_at IS NULL");
     if (filters.archive === "archived") clauses.push("t.archived_at IS NOT NULL");
@@ -1364,7 +1514,40 @@ export function createTasksStore(db: PluginDatabase) {
       .map(taskFromRow);
   }
 
+  /**
+   * Why a card may not enter the work zone of `destination` as `status`, or null. Only a destination that requires
+   * planning refuses, only an entry from outside the zone (zone membership is read under each project's own status
+   * order), and never an epic. A card already in the zone is never pushed out.
+   */
+  function gateRefusal(task: Task, status: string, source: Project, destination: Project): string | null {
+    if (destination.planning !== "required" || task.type === "epic" || inWorkZone(source, task.status) || !inWorkZone(destination, status)) return null;
+    const project = destination;
+    const target = statusLabel(status, project.statuses);
+    const plan = db.prepare<[string], { version: number; state: PlanState }>("SELECT version, state FROM task_plans WHERE task_id = ?").get(task.id);
+    return plan ? planGateRefusal(task.key, plan, target) : noPlanGateRefusal(task.key, target);
+  }
+  /** Where a scheduled card (a run card or a template) starts: Backlog, or the first unmarked status when planning requires plans. */
+  function scheduledStatus(projectId: string): string {
+    const project = requireProject(projectId);
+    if (project.planning !== "required") return "backlog";
+    // Backlog when it exists and is not marked; else the first unmarked status that is not terminal (never Done or canceled:
+    // a run card placed there would be recorded as completed the moment its worker starts).
+    const statuses = project.statuses ?? DEFAULT_TASK_STATUSES;
+    // Both the built-in done and the configured done status are terminal, whatever the policy says.
+    const terminal = new Set(["canceled", "done", getWorkflowPolicy(project).doneStatus ?? "done"]);
+    const viable = statuses.filter((status) => !terminal.has(status.id) && !inWorkZone(project, status.id));
+    const found = viable.find((status) => status.id === "backlog") ?? viable[0];
+    if (!found) throw new PlanningPlacementError(`Every status that is not Done or canceled is marked "only with an approved plan" in ${project.prefix}, so a scheduled card has nowhere to start; unmark one status in the project's planning flags`);
+    return found.id;
+  }
+  function planGate(task: Task, status: string): string | null {
+    const project = requireProject(task.projectId);
+    return gateRefusal(task, status, project, project);
+  }
+
   function validateWorkflowTransition(task: Task, status: string) {
+    const gate = planGate(task, status);
+    if (gate) throw new Error(gate);
     const policy = getWorkflowPolicy(requireProject(task.projectId));
     if (status !== task.status && policy.bugfixStatus && policy.doneStatus && task.status === policy.bugfixStatus && status === policy.doneStatus)
       throw new Error("Cannot move directly from bugfix to done: failed review or testing must be resolved first");
@@ -1375,13 +1558,14 @@ export function createTasksStore(db: PluginDatabase) {
       if (current.scheduledRole === "template" && (input.status !== undefined || input.type !== undefined || input.parentTaskId !== undefined || input.epicId !== undefined))
         throw new Error("Use Scheduled settings to manage a schedule; its template is not a work instance");
       const status = input.status ?? current.status;
+      const type = input.type ?? current.type;
       validateTaskStatus(current.projectId, status);
-      validateWorkflowTransition(current, status);
+      // The gate reads the resulting type: converting an epic and moving it in one update is judged as the task it becomes.
+      validateWorkflowTransition({ ...current, type }, status);
       const parentTaskId =
         input.parentTaskId === undefined
           ? current.parentTaskId
           : input.parentTaskId;
-      const type = input.type ?? current.type;
       const epicId = input.epicId === undefined ? current.epicId : input.epicId;
       validateTaskEpic(current.projectId, type, epicId, parentTaskId, id);
       validateTaskParent(current.projectId, parentTaskId, id);
@@ -1399,6 +1583,7 @@ export function createTasksStore(db: PluginDatabase) {
             .get(current.projectId, status)?.position ?? POSITION_STEP;
       }
 
+      trackClosure(current, status, input.closerThreadId);
       db.prepare<
         [
           string,
@@ -1441,7 +1626,10 @@ export function createTasksStore(db: PluginDatabase) {
         db.prepare("UPDATE tasks SET progress_note=?, progress_updated_at=?, progress_updated_by=? WHERE id=?")
           .run(input.progressNote, input.progressNote === null ? null : nowIso(), input.progressNote === null ? null : input.authorName ?? "You", id);
       }
-      return requireTask(id);
+      const updated = requireTask(id);
+      syncPlanDebt(db, id);
+      advanceEpicFor(updated, current);
+      return updated;
     },
   );
 
@@ -1451,7 +1639,7 @@ export function createTasksStore(db: PluginDatabase) {
     assertNoSecrets(input.progressNote ?? undefined, "current state");
     if (input.progressNote != null && Buffer.byteLength(input.progressNote, "utf8") > 4096)
       throw new Error("Current state exceeds 4 KB; keep it to current state and move details to a comment or attachment");
-    return updateTaskTransaction(id, input);
+    return closureScope(() => updateTaskTransaction(id, input), true);
   }
 
   const moveTaskToProjectTransaction = db.transaction(
@@ -1470,6 +1658,11 @@ export function createTasksStore(db: PluginDatabase) {
         ...[root, ...members].flatMap((task) => listSubtasks(task.id)),
       ];
       for (const task of moving) validateTaskStatus(target.id, task.status);
+      // The whole family stays in the source when any non-epic card would enter the destination's gated work zone.
+      for (const task of moving) {
+        const refusal = gateRefusal(task, task.status, source, target);
+        if (refusal) throw new Error(`${refusal}; the whole family stays in ${source.prefix} because of ${task.key}`);
+      }
       const movingIds = new Set(moving.map((task) => task.id));
 
       const allocated = db
@@ -1555,6 +1748,7 @@ export function createTasksStore(db: PluginDatabase) {
               });
           insertTaskLabel.run(task.id, targetLabel.id);
         }
+        syncPlanDebt(db, task.id);
         return { previousKey: task.key, task: requireTask(task.id) };
       });
       return { task: requireTask(root.id), moved };
@@ -1651,17 +1845,21 @@ export function createTasksStore(db: PluginDatabase) {
             .get(task.projectId, input.status, id)?.position ?? POSITION_STEP;
       }
 
+      trackClosure(task, input.status, input.closerThreadId);
       db.prepare<[Task["status"], number, string, string]>(
         `
         UPDATE tasks SET status = ?, position = ?, updated_at = ? WHERE id = ?
       `,
       ).run(input.status, position, nowIso(), id);
-      return requireTask(id);
+      const moved = requireTask(id);
+      syncPlanDebt(db, id);
+      advanceEpicFor(moved, task);
+      return moved;
     },
   );
 
   function updatePosition(id: string, input: UpdateTaskPositionInput): Task {
-    return updatePositionTransaction(id, input);
+    return closureScope(() => updatePositionTransaction(id, input), true);
   }
 
   function archiveFamily(id: string): Task[] {
@@ -1684,7 +1882,7 @@ export function createTasksStore(db: PluginDatabase) {
     const timestamp = nowIso();
     const changed = family.filter(task => archived ? !task.archivedAt : Boolean(task.archivedAt));
     const update = db.prepare<[string | null, string, string]>("UPDATE tasks SET archived_at = ?, updated_at = ? WHERE id = ?");
-    for (const task of changed) update.run(archived ? timestamp : null, timestamp, task.id);
+    for (const task of changed) { update.run(archived ? timestamp : null, timestamp, task.id); syncPlanDebt(db, task.id); }
     return changed.map(task => requireTask(task.id));
   });
 
@@ -1693,6 +1891,8 @@ export function createTasksStore(db: PluginDatabase) {
     const changed: Task[] = [];
     for (const task of listTasks({ projectId, archive: "active", parentTaskId: null })) {
       if (task.scheduledRole === "template") continue;
+      // The root is part of its own family, so a root that is not done or canceled can never archive; skip before building the family.
+      if (!["done", "canceled"].includes(task.status)) continue;
       const family = archiveFamily(task.id);
       if (inactiveBefore && family.some(member => !member.archivedAt && (
         member.updatedAt > inactiveBefore ||
@@ -2118,17 +2318,21 @@ export function createTasksStore(db: PluginDatabase) {
         TaskThreadLiveStatus,
         string,
         string,
+        number,
+        string | null,
       ]
     >(
       `
       INSERT INTO task_threads (
-        id, task_id, thread_id, preset_name, title, live_status, attached_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        id, task_id, thread_id, preset_name, title, live_status, attached_at, updated_at, created_for_task, link_origin
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT (task_id, thread_id) DO UPDATE SET
         preset_name = excluded.preset_name,
         title = excluded.title,
         live_status = excluded.live_status,
-        updated_at = excluded.updated_at
+        updated_at = excluded.updated_at,
+        created_for_task = excluded.created_for_task,
+        link_origin = excluded.link_origin
     `,
     ).run(
       id,
@@ -2139,6 +2343,8 @@ export function createTasksStore(db: PluginDatabase) {
       input.liveStatus,
       timestamp,
       timestamp,
+      input.createdForTask && input.linkOrigin ? 1 : 0,
+      input.linkOrigin ?? null,
     );
     const thread = getTaskThreadByThreadId(input.taskId, input.threadId);
     if (!thread) throw new Error("Task thread upsert failed");
@@ -2401,6 +2607,59 @@ export function createTasksStore(db: PluginDatabase) {
     })();
   }
 
+  // Manager-attention hooks. A source write recomputes the ledger of the cards it touched inside its own transaction;
+  // project-wide changes (policy, labels, relinks) only ask for the debounced scan.
+  const touching = <A extends unknown[], R>(fn: (...args: A) => R, ids: (result: R, ...args: A) => readonly string[]) => {
+    const run = db.transaction((...args: A): R => {
+      const result = fn(...args);
+      touchAttention(db, ids(result, ...args));
+      return result;
+    });
+    return (...args: A): R => run(...args);
+  };
+  const dirtying = <A extends unknown[], R>(fn: (...args: A) => R, project: (result: R, ...args: A) => string | undefined) =>
+    (...args: A): R => {
+      const result = fn(...args);
+      const trackerId = project(result, ...args);
+      if (trackerId) markTrackerDirty(trackerId);
+      return result;
+    };
+  const createTaskHooked = touching(createTask, (task) => [task.id]);
+  const updateTaskHooked = touching(updateTask, (task) => [task.id]);
+  const moveTaskToProjectHooked = touching(moveTaskToProject, (result, id) => [id, ...result.moved.map((entry) => entry.task.id)]);
+  const updatePositionHooked = touching(updatePosition, (task) => [task.id]);
+  const setTaskArchivedHooked = touching(setTaskArchived, (tasks) => tasks.map((task) => task.id));
+  const archiveCompletedTasksHooked = touching(archiveCompletedTasks, (tasks) => tasks.map((task) => task.id));
+  const addTaskLabelHooked = touching(addTaskLabel, (_label, taskId) => [taskId]);
+  const removeTaskLabelHooked = touching(removeTaskLabel, (_removed, taskId) => [taskId]);
+  const createCommentHooked = touching(createComment, (comment) => (comment.evidence ? [comment.taskId] : []));
+  const upsertTaskThreadHooked = touching(upsertTaskThread, (thread) => [thread.taskId]);
+  const updateTaskThreadStatusHooked = touching(updateTaskThreadStatus, (thread) => [thread.taskId]);
+  const deleteTaskThreadTransaction = db.transaction((id: string): boolean => {
+    const taskId = getTaskThread(id)?.taskId;
+    const removed = deleteTaskThread(id);
+    if (taskId) touchAttention(db, [taskId]);
+    return removed;
+  });
+  const deleteTaskThreadHooked = (id: string): boolean => deleteTaskThreadTransaction(id);
+  const deleteTaskTransaction = db.transaction((id: string): boolean => {
+    // A deleted card has nothing left to observe, so its occurrences close first and the cards it blocked are recomputed after.
+    const blocked = db.prepare<[string], { task_id: string }>("SELECT task_id FROM task_dependencies WHERE blocking_task_id=?").all(id).map((row) => row.task_id);
+    const removed = deleteTask(id);
+    if (removed) { closeTaskOccurrences(db, id, "deleted"); touchAttention(db, blocked); }
+    return removed;
+  });
+  const deleteTaskHooked = (id: string): boolean => deleteTaskTransaction(id);
+  const updateProjectHooked = dirtying(updateProject, (project) => project.id);
+  const createLabelHooked = dirtying(createLabel, (label) => label.projectId);
+  const updateLabelHooked = dirtying(updateLabel, (label) => label.projectId);
+  const deleteLabelHooked = (id: string): boolean => {
+    const projectId = getLabel(id)?.projectId;
+    const removed = deleteLabel(id);
+    if (removed && projectId) markTrackerDirty(projectId);
+    return removed;
+  };
+
   return {
     createSequence, getSequence, listSequences, listSequenceClaims, listTaskClaims, setSequenceNext, deleteSequence, claimSequence, releaseClaim,
     createFolder,
@@ -2411,32 +2670,39 @@ export function createTasksStore(db: PluginDatabase) {
     createProject,
     getProject,
     listProjects,
-    updateProject,
+    updateProject: updateProjectHooked,
     deleteProject,
-    createTask,
+    createTask: createTaskHooked,
     getTask,
     getTaskByKey,
     listTasksPage,
     staleStatusFlags,
+    staleStatusObservations,
     listTasks,
     listSubtasks,
-    updateTask,
-    moveTaskToProject,
-    updatePosition,
-    deleteTask,
-    setTaskArchived,
-    archiveCompletedTasks,
-    createLabel,
+    updateTask: updateTaskHooked,
+    closures,
+    closureScope,
+    onClosure: (listener: (closureId: string) => void) => { closureListener = listener; },
+    onEpicMoved: (listener: (move: { epicId: string; commentId: string; projectId: string }) => void) => { epicMoveListener = listener; },
+    planGate,
+    scheduledStatus,
+    moveTaskToProject: moveTaskToProjectHooked,
+    updatePosition: updatePositionHooked,
+    deleteTask: deleteTaskHooked,
+    setTaskArchived: setTaskArchivedHooked,
+    archiveCompletedTasks: archiveCompletedTasksHooked,
+    createLabel: createLabelHooked,
     getLabel,
     listLabels,
-    updateLabel,
-    deleteLabel,
-    addTaskLabel,
-    removeTaskLabel,
+    updateLabel: updateLabelHooked,
+    deleteLabel: deleteLabelHooked,
+    addTaskLabel: addTaskLabelHooked,
+    removeTaskLabel: removeTaskLabelHooked,
     listTaskLabels,
     listTaskLabelsForProject,
     listLabelsForTask,
-    createComment,
+    createComment: createCommentHooked,
     getComment,
     listComments,
     listCommentsForProject,
@@ -2450,7 +2716,7 @@ export function createTasksStore(db: PluginDatabase) {
     listAttachmentsForProject,
     updateAttachment,
     deleteAttachment,
-    upsertTaskThread,
+    upsertTaskThread: upsertTaskThreadHooked,
     getTaskThread,
     getTaskThreadByThreadId,
     listTaskThreadsByThreadId,
@@ -2458,8 +2724,8 @@ export function createTasksStore(db: PluginDatabase) {
     listTaskThreadsForProject,
     listTaskThreadsForTasks,
     listTaskActivity,
-    updateTaskThreadStatus,
-    deleteTaskThread,
+    updateTaskThreadStatus: updateTaskThreadStatusHooked,
+    deleteTaskThread: deleteTaskThreadHooked,
     createPreset,
     getPreset,
     listPresets,

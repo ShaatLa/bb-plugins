@@ -358,3 +358,32 @@ it("clears previous activity when refreshed metadata has no activity", async () 
   const next = await patchBoard(rpc, project.id, current, [{ channel: "threads:changed", taskId: task.id }]);
   expect(next?.metaByTaskId.get(task.id)?.activity?.state).not.toBe("working");
 });
+
+it("loads the dataset without bodies, keeps patched rows light and reads bodies only for the full variant", async () => {
+  const { loadTaskDataset, resetTaskDatasetCachesForTest } = await import("./task-dataset");
+  const { store, project, rpc } = setup();
+  const task = store.tasks.createTask({ projectId: project.id, title: "Row", description: "Long body" });
+  store.tasks.updateTask(task.id, { progressNote: "Note" });
+  const calls: Array<Record<string, unknown>> = [];
+  const spy: TasksRpc = { async call(method, ...args) {
+    if (method === "listTasks") calls.push(args[0] as Record<string, unknown>);
+    return rpc.call(method, ...args);
+  } };
+  resetTaskDatasetCachesForTest();
+  const light = await loadTaskDataset(spy, project.id);
+  expect(light[0]).toMatchObject({ description: "", progressNote: null });
+  expect(calls.every((call) => call.omitBodies === true)).toBe(true);
+  calls.length = 0;
+  const full = await loadTaskDataset(spy, project.id, () => {}, true);
+  expect(full[0]).toMatchObject({ description: "Long body", progressNote: "Note" });
+  expect(calls.every((call) => call.omitBodies === undefined)).toBe(true);
+  const belongs = () => true;
+  expect((await patchTasks(rpc, light, [task.id], belongs))![0]).toMatchObject({ description: "", progressNote: null });
+  expect((await patchTasks(rpc, light, [task.id], belongs, true))![0]).toMatchObject({ description: "Long body" });
+  // The active-only list route sends the projection on every page.
+  store.transaction(() => { for (let index = 0; index < 600; index++) store.tasks.createTask({ projectId: project.id, title: `Bulk ${index}` }); });
+  calls.length = 0;
+  await listAllTasks(spy, { projectId: project.id, omitBodies: true });
+  expect(calls.length).toBeGreaterThan(1);
+  expect(calls.every((call) => call.omitBodies === true)).toBe(true);
+});

@@ -23,7 +23,7 @@ test('doctor uses the installed engine device-check as authority and reports ver
     const command=[binary,...args].join(' ');commands.push(command);
     if(args[0]==='device-check')return {code:deviceCode,output:deviceCode?'Splash needs Apple GPU family 9 or newer (M3 or later)':'Device supported'};
     if(args[0]==='--prefix')return {code:0,output:'/fake/prefix'};
-    if(args[0]==='outdated')return {code:0,output:'incoai/tap/splash'};
+    if(args[0]==='outdated')return {code:1,output:'incoai/tap/splash'};
     if(args[0]==='--version')return {code:0,output:'Splash 1.6.0'};
     if(binary.endsWith('sw_vers'))return {code:0,output:'26.4'};
     if(binary.endsWith('sysctl'))return {code:0,output:'Apple M3'};

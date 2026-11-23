@@ -611,4 +611,4 @@ Returns `null` when nothing eligible is retained (reported as "unknown", distinc
 - Metric per (provider, `resolveModel(model) ?? lower-cased raw model id`): calls and fresh tokens (freshIn + cacheWrite + output) of the report day vs the median of the 7 previous days. A metric flags when ratio ≥ growthAlertRatio AND its own gate holds (calls ≥ 200; fresh ≥ 1M). All 7 baseline days zero → "new model" under the same gate; a zero median with some prior activity is reported as "irregular use" without a ratio. Daily totals come from `daily_exact` only. Payload keeps the top 3 threads by fresh tokens.
 
 ### 10.4 Out of scope (named)
-Window pace vs quota (owner removed limits), Codex reasoning-effort share (effort not stored yet), per-task Opus-vs-Sonnet efficiency and review rounds (no role/round data).
+Codex reasoning-effort share (effort not stored yet), per-task Opus-vs-Sonnet efficiency and review rounds (no role/round data).

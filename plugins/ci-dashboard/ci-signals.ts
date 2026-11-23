@@ -9,7 +9,7 @@ const CLASSES: FailureClass[] = ["runner_loss", "timeout", "transient", "flake",
 const runUrl = (repository: string, runId: number) => `https://github.com/${repository}/actions/runs/${runId}`;
 const jobUrl = (repository: string, job: JobRecord) => `${runUrl(repository, job.runId)}/job/${job.jobId}`;
 const jobWhere = (repository: string, job: JobRecord): Signal["where"] => ({
-  runId: job.runId, attempt: job.attempt, jobId: job.jobId, jobName: job.jobName, runnerName: job.runnerName ?? undefined, pool: job.pool ?? undefined,
+  runId: job.runId, attempt: job.attempt, jobId: job.jobId, jobName: job.jobName, ...(job.runnerName ? { runnerName: job.runnerName } : {}), ...(job.pool ? { pool: job.pool } : {}),
   branch: job.headBranch, headSha: job.headSha, pullRequests: job.pullRequests, url: jobUrl(repository, job),
 });
 const since = (job: JobRecord) => job.startedAt ?? job.createdAt;
@@ -31,7 +31,7 @@ export function buildSignals({ classified, reruns, massCancels, stalls, defaultB
     const pools = new Set(group.jobs.map((c) => c.job.pool));
     const pool = pools.size === 1 ? [...pools][0] ?? undefined : undefined;
     out.push({ id: `mass_cancel:${group.since}`, kind: "mass_cancel", severity: "critical", title: `Mass runner loss${pool ? ` in ${pool}` : ""}`,
-      what: `${group.jobs.length} jobs on ${group.runners.length} runners lost/cancelled within 2 min`, where: { pool },
+      what: `${group.jobs.length} jobs on ${group.runners.length} runners lost/cancelled within 2 min`, where: pool ? { pool } : {},
       since: group.since, until: group.until, impact: `${group.runIds.length} runs affected; rerun needed`, actor: "owner_sre", open: true });
   }
 

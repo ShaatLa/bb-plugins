@@ -117,3 +117,22 @@ it("registers a daily cleanup and exposes storage status and actions through CLI
   await other.harness.behavior.runSchedule("storage-maintenance");
   expect(await other.harness.callRpc("getStorageStatus", null)).toMatchObject({ orphanFiles: 0, missingAttachments: 0, lastCleanedAt: expect.any(String) });
 });
+
+it("drops a snapshot linked only from another project and keeps one linked from its own, using the identity index", async () => {
+  const h = setup();
+  const other = h.store.tasks.createProject({ name: "Other", prefix: "OTH", color: "red" });
+  const foreign = h.store.tasks.createTask({ projectId: other.id, title: "Foreign", status: "done" });
+  const link = h.db.prepare("INSERT INTO task_pr_links(task_id, identity, payload) VALUES (?, ?, '{}')");
+  const snapshot = h.db.prepare("INSERT INTO git_pr_snapshots(project_id, identity, payload) VALUES (?, ?, '{}')");
+  link.run(h.task.id, "own"); snapshot.run(h.project.id, "own");
+  link.run(foreign.id, "shared"); snapshot.run(h.project.id, "shared"); snapshot.run(other.id, "shared");
+  const seen: string[] = [];
+  const prepare = h.db.prepare.bind(h.db);
+  (h.db as { prepare: unknown }).prepare = (sql: string) => { seen.push(sql); return prepare(sql); };
+  try { await h.service.run(false); } finally { (h.db as { prepare: unknown }).prepare = prepare; }
+  expect(h.db.prepare("SELECT project_id, identity FROM git_pr_snapshots ORDER BY project_id, identity").all()).toEqual(
+    [{ project_id: h.project.id, identity: "own" }, { project_id: other.id, identity: "shared" }].sort((x, y) => x.project_id.localeCompare(y.project_id)));
+  const sql = seen.find((statement) => statement.startsWith("DELETE FROM git_pr_snapshots"))!;
+  const plan = prepare(`EXPLAIN QUERY PLAN ${sql}`).all().map((row: any) => row.detail).join("\n");
+  expect(plan).toContain("idx_task_pr_links_identity");
+});

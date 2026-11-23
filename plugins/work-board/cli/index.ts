@@ -4,6 +4,7 @@ import { createGithubClient, githubToken } from "../git-sync/github";
 import { waitForPrCi } from "../git-sync/ci-wait";
 import { gitSyncConfigSchema } from "../shared/git-sync";
 import { advisoryText } from "../shared/task-advisories";
+import { openPlanDebt, pendingLookupsOf, unsentNoticesOf } from "../plan-debt/store";
 import { TASK_DATE_FIELDS } from "../shared/task-dates.js";
 import { workflowPolicySchema } from "../shared/workflow-policy.js";
 import { DEFAULT_TASK_STATUSES, taskStatusesSchema } from "../shared/statuses.js";
@@ -31,6 +32,7 @@ import {
   childrenCards,
   publishProjectsChanged,
   registerHandlers,
+  createPlanReviewFlow,
   type TasksApiStore,
 } from "../api";
 import {
@@ -40,6 +42,7 @@ import {
 } from "../attachments";
 import { delegationRpcContract } from "../delegate/contract";
 import { handlers as delegationHandlers } from "../delegate";
+import { closedThreadsBlock } from "../closure/format";
 import {
   presetReasoningLevelSchema,
   tasksRpcContract,
@@ -74,7 +77,14 @@ import { taskMarkdownLink } from "../shared/task-link";
 import { ACTIVITY_LABELS } from "../shared/task-activity.js";
 import { threadHealthJson } from "../shared/thread-health";
 import { scheduledCliCommands } from "../scheduled/cli";
+import { checksCliCommands } from "../checks/cli";
+import { LITERAL_TEXT_FIELDS } from "../checks/config";
 import { planCommands } from "./plan";
+import { planAdvisory } from "../shared/plan";
+import { startHint } from "../shared/start-hint";
+import { planningOn, planningRequired, PLANNING_OWNER_ONLY } from "../shared/project-settings";
+import { planGatedStatuses } from "../shared/workflow-policy";
+import { createPlanStore } from "../plans/store";
 
 const TASK_KEY_PATTERN = /^([A-Z][A-Z0-9]{0,9})-(\d+)$/;
 const BB_PROJECT_ID_PATTERN = /^proj_[A-Za-z0-9_-]+$/;
@@ -873,6 +883,13 @@ function lockCommands(domain: TasksDomain) {
   };
 }
 
+/** The one-line report of a plan-review wake that was not delivered; empty when it was sent or none was owed. */
+function planWakeLine(wake: { event: "paused" | "resumed"; delivered: string; failed: string[]; hint: string | null } | undefined): string[] {
+  if (!wake || wake.delivered === "sent") return [];
+  const what = wake.event === "paused" ? "the plan review is paused on this decision" : "the owner's decision is settled";
+  return [`The question is saved, but ${wake.failed.join(", ")} could not be told that ${what}; tell them yourself.${wake.hint ? ` ${wake.hint}` : ""}`];
+}
+
 export function registerTasksCli(
   bb: BbPluginApi,
   store: TasksApiStore,
@@ -962,6 +979,7 @@ export function registerTasksCli(
           preset: async (address) => resolvePreset(await listPresets(domain), address),
           readText: async (ctx, machine, path) => (await readTextOption(bb, ctx, await resolveClientHostId(bb, domain, machine, ctx), undefined, path)) ?? "",
         }),
+        ...checksCliCommands(bb, { group: groupCommand, guard, project: (ctx, address) => requiredProject(domain, ctx, address) }),
         storage: groupCommand("storage", "Inspect and maintain plugin-owned storage", [["status", "Show disk usage and unreachable files"], ["clean", "Remove orphan files older than 24h and unreachable cache rows"], ["optimize", "Also share identical blobs and compact SQLite (may take time)"]]),
         ...Object.fromEntries((["status", "clean", "optimize"] as const).map(action => [`storage ${action}`, cliCommand({
           summary: `${action} storage across all projects; preserve accessible task history`,
@@ -1072,7 +1090,10 @@ export function registerTasksCli(
               const project = await requiredProject(domain, ctx, input.options.project);
               const raw = input.positionals.value;
               let value: unknown = raw;
-              try { value = JSON.parse(raw); } catch { /* plain text stays a string */ }
+              // Branch and script are literal text: JSON decoding would turn the legal branch `1e3` into 1000.
+              if (!LITERAL_TEXT_FIELDS.some((field) => input.positionals.key === `checks.${field}`)) {
+                try { value = JSON.parse(raw); } catch { /* plain text stays a string */ }
+              }
               const result = await domain["config.set"]({ projectId: project.id, key: input.positionals.key, value });
               return input.options.json ? JSON.stringify(result) : `${result.key}=${typeof result.value === "string" ? result.value : JSON.stringify(result.value)}`;
             });
@@ -1150,7 +1171,7 @@ export function registerTasksCli(
         }),
         ...templateReadCommands,
         ...lockCommands(domain),
-        ...planCommands({ bb, domain, guard, resolveTask, resolveClientHostId, readTextOption, taskAuthor, keyPositional: KEY_POSITIONAL, jsonOption: JSON_OPTION, machineOption: MACHINE_OPTION }),
+        ...planCommands({ bb, domain, review: createPlanReviewFlow(bb, store), guard, resolveTask, resolveClientHostId, readTextOption, taskAuthor, keyPositional: KEY_POSITIONAL, jsonOption: JSON_OPTION, machineOption: MACHINE_OPTION }),
         template: groupCommand(
           "template",
           "Manage project description templates",
@@ -1248,7 +1269,7 @@ export function registerTasksCli(
           summary: "Ask the owner one decision or one check (short, one link; check steps in --step, evidence in a comment)",
           positionals: [KEY_POSITIONAL],
           options: {
-            kind: { type: "enum", values: ["decision", "check"] as const, description: "Question type (default decision)" },
+            kind: { type: "enum", values: ["decision", "check"] as const, description: "Question type (default decision); a check is refused while the card has plan debt" },
             prompt: {
               type: "string",
               required: true,
@@ -1257,7 +1278,7 @@ export function registerTasksCli(
             step: {
               type: "string",
               repeatable: true,
-              description: "One \"How to check\" step, shown as a numbered list under the question; repeat in order (at most 10). Steps say how to check this one thing; the prompt and all steps together carry at most one link, so separate states are separate --kind check questions",
+              description: "One \"How to check\" step: one action or one observation in one sentence, shown as a numbered list under the question. Repeat in order (at most 10): \"press A, then B and check C\" is three steps. Joined actions and several sentences in one step are refused. The prompt and all steps together carry at most one link, so separate states are separate --kind check questions",
             },
             option: {
               type: "string",
@@ -1331,6 +1352,7 @@ export function registerTasksCli(
                 // More than one link is refused by the store; length stays a warning.
                 ...(input.options.prompt.length > 300
                   ? ["The question is long. Ask one decision or one check in one or two short sentences; put what to do in --step, split a multi-part acceptance into several --kind check questions and put evidence in a task comment."] : []),
+                ...planWakeLine(result.planWake),
               ];
               return input.options.json
                 ? JSON.stringify({ ...result, warnings })
@@ -1438,7 +1460,7 @@ export function registerTasksCli(
               }
               return input.options.json
                 ? JSON.stringify(result)
-                : `Saved answer to ${result.question.id}`;
+                : [`Saved answer to ${result.question.id}`, ...planWakeLine(result.planWake)].join("\n");
             });
           },
         }),
@@ -1465,7 +1487,7 @@ export function registerTasksCli(
             step: {
               type: "string",
               repeatable: true,
-              description: "Replacement \"How to check\" steps; repeat in order (omit to keep the current steps). The prompt and all steps together carry at most one link",
+              description: "Replacement \"How to check\" steps, each one action or one observation in one sentence; repeat in order (omit to keep the current steps). The prompt and all steps together carry at most one link",
             },
             mode: {
               type: "enum",
@@ -1580,9 +1602,10 @@ export function registerTasksCli(
                 }));
               }
               const result = await domain.updateQuestion(update);
+              const warnings = planWakeLine(result.planWake);
               return input.options.json
-                ? JSON.stringify(result)
-                : `Saved question ${result.question.id} (revision ${result.question.revision})`;
+                ? JSON.stringify({ ...result, warnings })
+                : { exitCode: 0, stdout: `Saved question ${result.question.id} (revision ${result.question.revision})`, stderr: warnings.join("\n") };
             });
           },
         }),
@@ -1624,7 +1647,7 @@ export function registerTasksCli(
               });
               return input.options.json
                 ? JSON.stringify(result)
-                : "Deleted question";
+                : ["Deleted question", ...planWakeLine(result.planWake)].join("\n");
             });
           },
         }),
@@ -1928,6 +1951,9 @@ export function registerTasksCli(
                 ["BB project", project.linkedBbProjectId ?? "-"],
                 ["Auto archive (days)", project.autoArchiveAfterDays ?? "off"],
                 ["Idle warning (minutes)", project.staleIdleMinutes ?? "45"],
+                ["Planning", project.planning ?? "off"],
+                ["Plan-gated statuses", planGatedStatuses(project).join(", ") || "-"],
+                ["Planning changed", project.planningChangedAt ? `${project.planningChangedAt}, was ${project.planningPrevious ?? "off"}` : "-"],
                 ["Next task", `${project.prefix}-${project.nextTaskNumber}`],
                 ["Created", project.createdAt],
               ]);
@@ -1949,6 +1975,7 @@ export function registerTasksCli(
             "auto-archive": { type: "enum", values: ["off", "3", "7", "14", "30"] as const, description: "Project auto-archive interval in days" },
             "stale-idle": { type: "enum", values: ["off", "30", "45", "60", "120"] as const, description: "Project idle warning threshold in minutes" },
             "status-notifications": { type: "enum", values: ["off", "all", "done"] as const, description: "Project status change push notifications" },
+            planning: { type: "enum", values: ["off", "optional", "required"] as const, description: "Owner only, set in the project settings: the CLI refuses it" },
             machine: MACHINE_OPTION,
             name: { type: "string", description: "New project name" },
             color: { type: "string", description: "New accent color name" },
@@ -2000,7 +2027,10 @@ export function registerTasksCli(
               if (input.options["statuses-file"]) {
                 const hostId = await resolveClientHostId(bb, domain, input.options.machine, ctx);
                 const text = await readTextOption(bb, ctx, hostId, undefined, input.options["statuses-file"]);
-                try { statuses = taskStatusesSchema.parse(JSON.parse(text!)); }
+                try {
+                  // A flag is the owner's: a file never changes one (an existing status keeps its flag, a new one gets the default).
+                  statuses = taskStatusesSchema.parse(JSON.parse(text!)).map(({ requiresApprovedPlan: _flag, ...status }) => status);
+                }
                 catch { throw new CliError("Invalid statuses file: expected unique [{id,name}] definitions retaining the six system IDs"); }
               } else if (input.options.machine && !input.options["workflow-policy-file"]) throw new CliError("--machine requires a file option");
               let workflowPolicy;
@@ -2010,12 +2040,14 @@ export function registerTasksCli(
                 try { workflowPolicy = workflowPolicySchema.parse(JSON.parse(text!)); }
                 catch { throw new CliError("Invalid workflow policy file"); }
               }
+              if (input.options.planning !== undefined) throw new CliError(PLANNING_OWNER_ONLY, { code: "owner_only" });
               const changes = {
                 workflowPolicy,
                 statuses,
                 autoArchiveAfterDays: input.options["auto-archive"],
                 staleIdleMinutes: input.options["stale-idle"],
                 statusNotifications: input.options["status-notifications"],
+                planning: input.options.planning,
                 name: input.options.name,
                 color: input.options.color,
                 folderId: input.options["no-folder"] ? null : folder?.id,
@@ -2034,6 +2066,7 @@ export function registerTasksCli(
                 changes.autoArchiveAfterDays === undefined &&
                 changes.staleIdleMinutes === undefined &&
                 changes.statusNotifications === undefined &&
+                changes.planning === undefined &&
                 changes.linkedBbProjectId === undefined
               ) {
                 throw new CliError("no project changes were provided", {
@@ -2056,6 +2089,7 @@ export function registerTasksCli(
                 changes.autoArchiveAfterDays !== undefined ||
                 changes.staleIdleMinutes !== undefined ||
                 changes.statusNotifications !== undefined ||
+                changes.planning !== undefined ||
                 changes.linkedBbProjectId !== undefined;
               const updateInput = hasFieldChanges
                 ? tasksRpcContract.updateProject.input.parse({
@@ -2079,6 +2113,7 @@ export function registerTasksCli(
                   autoArchiveAfterDays: updateInput?.autoArchiveAfterDays,
                   staleIdleMinutes: updateInput?.staleIdleMinutes,
                   statusNotifications: updateInput?.statusNotifications,
+                  planning: updateInput?.planning,
                   name: updateInput?.name,
                   color: updateInput?.color,
                   folderId: updateInput?.folderId,
@@ -2575,6 +2610,7 @@ export function registerTasksCli(
               description: "Keep only tasks with a live agent thread",
             },
             "waiting-on-owner": { type: "boolean", description: "Keep only tasks waiting on you" },
+            "plan-debt": { type: "boolean", description: "Keep only tasks in work without an approved plan" },
             "include-scheduled": {
               type: "boolean",
               description: "Also list scheduled templates and pre-start runs (hidden by default; see bb work-board schedule)",
@@ -2672,6 +2708,7 @@ export function registerTasksCli(
                     activeOnly: input.options.active,
                     staleStatus: input.options["stale-status"],
                     waitingOnOwner: input.options["waiting-on-owner"],
+                    planDebt: input.options["plan-debt"],
                     ...(input.options["include-scheduled"] ? { includeScheduled: true } : {}),
                     search: input.options.search,
                     sort: input.options.latest !== undefined ? "newest" : input.options.sort,
@@ -2735,7 +2772,7 @@ export function registerTasksCli(
                   task.agentsWorking,
                   task.staleStatusFlags.join(", ") || "-",
                   task.blockedBy.map(blocker => blocker.key).join(", ") || "-",
-                  task.advisories.map(item => item.kind === "merged-predecessor" ? `Check ${item.predecessor.key}: merged PR #${item.pr.number}` : "No live session").join("; ") || "-",
+                  task.advisories.map(item => item.kind === "merged-predecessor" ? `Check ${item.predecessor.key}: merged PR #${item.pr.number}` : item.kind === "plan-debt" ? "Plan debt" : "No live session").join("; ") || "-",
                 ]),
                 "No tasks.",
               );
@@ -2831,20 +2868,33 @@ export function registerTasksCli(
                 ? allPrLinks.map((entry) => entry.snapshot ? { ...entry, snapshot: (({ checks: _checks, ...snapshot }) => snapshot)(entry.snapshot) } : entry)
                 : allPrLinks;
               const dependencies = await domain.listTaskDependencies({ taskId: task.id });
-              const taskPlan = (await domain.getTaskPlan({ taskId: task.id })).plan;
+              // With planning off the plan is not part of the card: no read of it, no summary, body or warning.
+              const planning = project.planning ?? "off";
+              const taskPlan = planningOn(project) ? (await domain.getTaskPlan({ taskId: task.id })).plan : null;
               const withPlan = input.options["with-plan"] === true;
+              // A sub-task has no epic of its own: its parent's counts.
+              const epicId = task.epicId ?? (task.parentTaskId ? (await resolveTask(domain, task.parentTaskId)).epicId : null);
+              const epic = epicId ? await resolveTask(domain, epicId) : null;
+              const hint = startHint(project, task, taskPlan, epic);
               const more: Record<string, string> = {};
               if (omittedComments) more.comments = `bb work-board comment list ${task.key} --kind user --kind agent --kind system`;
               if (brief && evidence.records.length) more.evidence = `bb work-board evidence ${task.key}`;
               if (brief && questions.some(q => !isQuestionOpen(q) || q.history?.length)) more.questions = `bb work-board question list ${task.key}`;
               if (brief && allPrLinks.some(link => link.snapshot && "checks" in link.snapshot)) more.checks = `bb work-board show ${task.key} --json --comments 0`;
+              // The debt of the card now, with the reminders still owed: an unresolved one is visible here, not silent.
+              const debtNow = openPlanDebt(bb.storage.database(), task.id);
+              const planDebt = debtNow && { ...debtNow, pendingLookups: pendingLookupsOf(bb.storage.database(), task.id), notices: unsentNoticesOf(bb.storage.database(), task.id).map(({ trigger, destination, state, attempts, lastError }) => ({ trigger, destination, state, attempts, lastError })) };
               if (input.options.json) {
                 return JSON.stringify({
                   prLinks,
                   overlaps,
+                  planDebt,
                   task: { ...task, waitingOnOwner: waiting },
                   link: taskMarkdownLink(task.key),
-                  plan: taskPlan ? { version: taskPlan.version, state: taskPlan.state, noteCounts: taskPlan.noteCounts, updatedAt: taskPlan.updatedAt, updatedBy: taskPlan.updatedBy.name, ...(withPlan ? { body: taskPlan.requested.body } : {}) } : null,
+                  startHint: hint,
+                  planning,
+                  ...(planning !== "off" ? { planWarning: planAdvisory(taskPlan, planningRequired(project) && task.type !== "epic") } : {}),
+                  plan: taskPlan ? { version: taskPlan.version, state: taskPlan.state, reviewer: taskPlan.reviewer, review: { paused: taskPlan.paused }, noteCounts: taskPlan.noteCounts, updatedAt: taskPlan.updatedAt, updatedBy: taskPlan.updatedBy.name, ...(withPlan ? { body: taskPlan.requested.body } : {}) } : null,
                   project,
                   labels,
                   subtasks: task.type === "epic" ? [] : subtasks,
@@ -2896,7 +2946,7 @@ export function registerTasksCli(
                     "Labels",
                     labels.map((label) => label.name).join(", ") || "-",
                   ],
-                  ["Plan", taskPlan ? `v${taskPlan.version} · ${taskPlan.state}${taskPlan.noteCounts.open ? ` · ${taskPlan.noteCounts.open} open note${taskPlan.noteCounts.open === 1 ? "" : "s"}` : ""} · bb work-board plan show ${task.key}` : "-"],
+                  ["Plan", taskPlan ? `v${taskPlan.version} · ${taskPlan.state}${taskPlan.paused ? " · waiting for the owner's decision" : ""}${taskPlan.noteCounts.open ? ` · ${taskPlan.noteCounts.open} open note${taskPlan.noteCounts.open === 1 ? "" : "s"}` : ""} · reviewer ${taskPlan.reviewer.threadId ?? "owner"} · bb work-board plan show ${task.key}` : planning === "off" ? "planning is off for this project" : "-"],
                   ["Created", task.createdAt],
                   ["Updated", task.updatedAt],
                 ]),
@@ -2908,6 +2958,7 @@ ${activity.diagnostics?.inactiveSessions.map((session) => `@thread:${session.thr
                 ...(activity?.diagnostics?.hasWorked ? [`Activity reports\n${comments.filter((comment) => comment.kind === "agent" && comment.threadId).slice(-5).map((comment) => `${comment.createdAt} · @thread:${comment.threadId} · comment ${comment.id}`).join("\n") || "Previous work is recorded; historical execution details were not retained."}`] : []),
                 ...(waiting ? [`Waiting on you: ${newestQuestion?.prompt.split(/\r?\n/)[0] ?? "Question"}`] : []),
                 `Description\n${task.description || "(none)"}`,
+                ...(planning !== "off" && planAdvisory(taskPlan, planningRequired(project) && task.type !== "epic") ? [`Plan warning\n${planAdvisory(taskPlan, planningRequired(project) && task.type !== "epic")}`] : []),
                 ...(withPlan && taskPlan ? [`Plan v${taskPlan.version} (${taskPlan.state})\n${taskPlan.requested.body}`] : []),
                 task.progressNote ? `Current state (updated ${task.progressUpdatedAt} by ${task.progressUpdatedBy})\n${task.progressNote}` : "Current state\n(none)",
                 `${task.type === "epic" ? "Tasks in epic" : "Sub-tasks"}\n${table(
@@ -2957,6 +3008,7 @@ ${activity.diagnostics?.inactiveSessions.map((session) => `@thread:${session.thr
                 brief ? `Evidence: ${evidence.records.length} record(s); \`bb work-board evidence ${task.key}\` lists them` : `Evidence\n${evidenceText(evidence)}`,
                 `Comments\nLatest comment: ${latestCommentId ?? "(none)"}\n${commentsTable(shownComments)}${omittedComments ? `\n${omittedComments} of ${comments.length} comment(s) not shown; read them with \`bb work-board comment list ${task.key} --kind user --kind agent --kind system\`` : ""}`,
                 ...Object.entries(more).filter(([part]) => part !== "comments").map(([part, command]) => `${part} omitted; read with \`${command}\``),
+                ...(hint ? [`Next step\n${hint}`] : []),
               ].join("\n\n");
             });
           },
@@ -3140,6 +3192,7 @@ ${activity.diagnostics?.inactiveSessions.map((session) => `@thread:${session.thr
                   tasksRpcContract.updateTask.input.parse({
                     taskId: task.id,
                     agentThreadId: ctx.threadId ?? null,
+                    attachCaller: progressNote != null && ctx.threadId ? true : undefined,
                     type: input.options.type,
                     epicId: input.options["no-epic"]
                       ? null
@@ -3162,14 +3215,20 @@ ${activity.diagnostics?.inactiveSessions.map((session) => `@thread:${session.thr
                 ),
               );
               const updated = unwrapTask(result);
-              const attach = progressNote != null && ctx.threadId ? await attachCardSession(updated.id, ctx.threadId) : { attached: false, warnings: [] };
+              const closedThreads = result.ok ? result.closedThreads : undefined;
+              const attach = {
+                attached: result.ok && result.attached === true,
+                warnings: result.ok && result.attachWarning ? [result.attachWarning.replace("attach KEY", `attach ${updated.key}`)] : [],
+              };
+              const closedBlock = closedThreads ? closedThreadsBlock(updated.key, closedThreads) : "";
               return input.options.json
                 ? JSON.stringify({
                     task: updated,
                     ...(attach.attached ? { attached: true } : {}),
                     ...(attach.warnings.length ? { warnings: attach.warnings } : {}),
+                    ...(closedThreads ? { closedThreads } : {}),
                   })
-                : { exitCode: 0, stdout: `Updated ${updated.key}  ${updated.title}${attach.attached ? `; attached ${ctx.threadId}` : ""}`, stderr: attach.warnings.join("\n") };
+                : { exitCode: 0, stdout: `Updated ${updated.key}  ${updated.title}${attach.attached ? `; attached ${ctx.threadId}` : ""}${closedBlock ? `\n${closedBlock}` : ""}`, stderr: attach.warnings.join("\n") };
             });
           },
         }),
@@ -4315,6 +4374,7 @@ ${activity.diagnostics?.inactiveSessions.map((session) => `@thread:${session.thr
                 input.options.thread,
                 ctx,
               );
+              const planWarning = createPlanStore(bb.storage.database(), store.tasks).advisoryFor(task);
               const result =
                 delegationRpcContract.taskThreadsAttach.output.parse(
                   await delegationHandlers(bb, store).taskThreadsAttach(
@@ -4325,8 +4385,8 @@ ${activity.diagnostics?.inactiveSessions.map((session) => `@thread:${session.thr
                   ),
                 );
               return input.options.json
-                ? JSON.stringify({ task, ...result })
-                : `Attached ${result.threadId} to ${task.key}`;
+                ? JSON.stringify({ task, ...result, planWarning })
+                : `Attached ${result.threadId} to ${task.key}${planWarning ? `\n${planWarning}` : ""}`;
             });
           },
         }),

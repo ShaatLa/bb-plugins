@@ -3,7 +3,8 @@ import { publishCommentsChanged, type TasksApiStore } from "../api";
 import type { TaskThread, TaskThreadLiveStatus } from "../db";
 import { createSystemComment, publishThreadsChanged } from "../delegate";
 import { errorMessage } from "../shared/errors";
-import { reconcileTaskThreads } from "./thread-links";
+import { reconcileTaskThreads, recordThreadLink } from "./thread-links";
+import { isClosedStatus } from "../shared/workflow-policy";
 import { attachNamedTaskThread } from "./discovery";
 
 const TERMINAL_LIVE_STATUSES = new Set<TaskThreadLiveStatus>(["completed"]);
@@ -55,6 +56,29 @@ function sdkErrorCode(error: unknown): string | undefined {
   return typeof error.code === "string" ? error.code : undefined;
 }
 
+/**
+ * A done or canceled card keeps a thread only while that thread works on it. When the thread goes idle, or starts a
+ * new turn after the card was closed, the link is released: later work is elsewhere, so the card neither warns nor
+ * counts its cost.
+ */
+function releaseFromClosedTask(bb: BbPluginApi, store: TasksApiStore, thread: TaskThread, liveStatus: "working" | "idle"): boolean {
+  // One indexed read: lifecycle events are hot and query-counted.
+  const task = bb.storage.database().prepare<[string], { id: string; key: string; status: string; policy: string | null }>(
+    "SELECT t.id, p.prefix || '-' || t.number AS key, t.status, p.workflow_policy AS policy FROM tasks t JOIN projects p ON p.id = t.project_id WHERE t.id = ?",
+  ).get(thread.taskId);
+  if (!task || !isClosedStatus({ workflowPolicy: task.policy ? JSON.parse(task.policy) : null }, task.status)) return false;
+  // A session whose archive is still to be decided keeps its link until the decision is made (and releases it once then).
+  if (store.tasks.closures.holdsLink(task.id, thread.threadId)) return false;
+  store.transaction(() => {
+    store.tasks.deleteTaskThread(thread.id);
+    recordThreadLink(store.tasks, task.id, thread.threadId,
+      `Thread detached (automatic): @thread:${thread.threadId} ${liveStatus === "idle" ? "finished its turn" : "started new work"} after ${task.key} was closed`);
+  });
+  publishThreadsChanged(bb, task.id);
+  publishCommentsChanged(bb, task.id);
+  return true;
+}
+
 function transitionThread(
   bb: BbPluginApi,
   store: TasksApiStore,
@@ -67,6 +91,7 @@ function transitionThread(
   ) {
     return;
   }
+  if ((liveStatus === "working" || liveStatus === "idle") && releaseFromClosedTask(bb, store, thread, liveStatus)) return;
 
   let commented = false;
   store.transaction(() => {
@@ -163,16 +188,26 @@ export async function registerLifecycle(
   bb: BbPluginApi,
   store: TasksApiStore,
 ): Promise<void> {
+  // A restart cannot tell a missed idle from none: pending intents are retired, and nothing is archived by startup.
+  const { unknownNotices } = store.tasks.closures.recoverOnStartup();
+  if (unknownNotices) bb.log.warn(`${unknownNotices} closed-card notice(s) were interrupted by a restart; their delivery is unknown and they are not resent`);
   bb.events.on("thread.created", ({ thread }) => {
     attachNamedTaskThread(bb, store, thread);
     transitionTrackedThread(bb, store, thread.id, liveStatusFromThread(thread));
   });
-  bb.events.on("thread.active", ({ thread }) => {
+  bb.events.on("thread.active", async ({ thread }) => {
+    // Before any await: a new turn ends every turn-bound archive intent of this thread.
+    const kept = store.tasks.closures.markActive(thread.id);
     attachNamedTaskThread(bb, store, thread);
     transitionTrackedThread(bb, store, thread.id, "working");
+    if (kept.length) await store.closures.notify(thread, kept);
   });
-  bb.events.on("thread.idle", ({ thread }) => {
+  bb.events.on("thread.idle", async ({ thread }) => {
+    // Claimed synchronously, so the release below keeps the link of a session whose archive is being decided.
+    const claimed = store.closures.claimIdle(thread.id);
     transitionTrackedThread(bb, store, thread.id, "idle");
+    await store.closures.settleIdle(claimed);
+    await store.closures.reviewerIdle(thread.id);
   });
   bb.events.on("thread.failed", ({ thread }) => {
     transitionTrackedThread(bb, store, thread.id, "failed");
@@ -183,8 +218,19 @@ export async function registerLifecycle(
 
   bb.events.on("thread.archived", async ({ thread }) => {
     for (const link of store.tasks.listTaskThreadsByThreadId(thread.id)) {
+      // An archive this plugin made for the card: only that link goes, with no fallback parent and no second line.
+      // Only the link the archive was decided for goes; a reattached pair is reconciled like any other.
+      const own = store.tasks.closures.ownArchive(link.taskId, thread.id);
+      if (own && own.linkId === link.id && store.tasks.closures.linkUnchanged(own)) {
+        store.tasks.deleteTaskThread(link.id);
+        publishThreadsChanged(bb, link.taskId);
+        continue;
+      }
       await reconcileTaskThreads(bb, store.tasks, link.taskId, thread);
     }
+  });
+  bb.events.on("thread.unarchived", ({ thread }) => {
+    store.tasks.closures.clearArchived(thread.id);
   });
 
   await reconcileTrackedThreads(bb, store);

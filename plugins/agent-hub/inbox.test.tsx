@@ -4,11 +4,11 @@ import { act, cleanup, fireEvent, waitFor, within } from '@testing-library/react
 const change = (element: Element, init: { target: { value?: string; files?: File[] } }) => { if (element.getAttribute('contenteditable') !== null) { (element as HTMLElement).dataset.testValue = init.target.value ?? ''; fireEvent.input(element); } else fireEvent.change(element, init); };
 import { renderSlot as sdkRenderSlot } from '@get-bb/plugin-sdk/testing/app';
 const renderSlot = ((slot: any, props: any, options: any = {}) => sdkRenderSlot(slot, props, { ...options, sdk: { ...options.sdk, threads: { ...options.sdk?.threads, queuedMessages: { list: () => Promise.resolve([]), ...options.sdk?.threads?.queuedMessages }, context: options.sdk?.threads?.context ?? (() => Promise.resolve({ usage: null })) } } })) as typeof sdkRenderSlot;
-const cards = vi.hoisted(() => ({ renders: 0 }));
+const cards = vi.hoisted(() => ({ renders: 0, byThread: {} as Record<string, number> }));
 // The harness fixes sidebar threads at render; a test that needs a sidebar change sets sidebarOverride.threads and re-renders.
 const sidebarOverride = vi.hoisted(() => ({ threads: undefined as any[] | undefined }));
 vi.mock('@get-bb/plugin-sdk/app', async importOriginal => { const actual = await importOriginal<typeof import('@get-bb/plugin-sdk/app')>(); return { ...actual, ThreadChat: ({threadId}: any) => <div data-thread-chat={threadId}>Raw thread transcript</div>, experimental_PermissionModePicker: ({ value, onChange }: any) => <button data-permission-picker onClick={() => onChange('full')}>{value}</button>, experimental_ProviderModelPicker: ({ value, onChange, allowProviderChange, routing }: any) => <button data-model-picker data-routing={JSON.stringify(routing)} data-provider-change={String(allowProviderChange)} onClick={() => onChange({ providerId: allowProviderChange && value.model === 'handoff-current' ? 'provider_other' : value.providerId, model: 'model-chosen', reasoningLevel: 'high', serviceTier: 'priority' })}>{value.model}</button>, experimental_useSidebarThreads: () => { const sidebar = actual.experimental_useSidebarThreads(); return sidebarOverride.threads ? { ...sidebar, threads: sidebarOverride.threads } : sidebar; } }; });
-vi.mock('./app', async importOriginal => { const app = await importOriginal<typeof import('./app')>(); return { ...app, ItemCard: (props: Parameters<typeof app.ItemCard>[0]) => { cards.renders++; return app.ItemCard(props); } }; });
+vi.mock('./app', async importOriginal => { const app = await importOriginal<typeof import('./app')>(); return { ...app, ItemCard: (props: Parameters<typeof app.ItemCard>[0]) => { cards.renders++; cards.byThread[props.item.threadId]=(cards.byThread[props.item.threadId] ?? 0)+1; return app.ItemCard(props); } }; });
 import { receivePage, History, Inbox, groupItems, followTo, atEnd } from './inbox';
 import { itemSchema, type Item } from './contract';
 const base: Item = itemSchema.parse({ id:'ans_one', kind:'mine', threadId:'thr_one', projectId:'pr_one', threadTitle:'One', projectName:'Project', status:'answered', question:'Question one', questionSeq:1, requestId:null, turnId:null, candidate:null, candidateSeq:null, interim:null, interimSeq:null, answer:'Answer one', answerSeq:2, answerSource:'turn', resolveTurnId:null, note:null, snoozedUntil:null, failedAt:null, likelyInterim:false, options:null, taskKey:null, readAt:null, pinned:false, dismissedAt:null, threadDeleted:false, createdAt:Date.now(), updatedAt:Date.now() });
@@ -293,6 +293,40 @@ it('shows only the quoted answer while its question is beyond the loaded window,
 const quiet = (n: number, answer: string, asks = false) => ({ ...between, id:`ans_u${n}`, answer, asks, createdAt:asked + n * minute, answeredAt:asked + n * minute });
 // The owner's later message, so the quiet run is not the chat's latest message (that one always shows in full).
 const after = { ...base, id:'ans_after', question:'Thanks', createdAt:asked + 9 * minute, answeredAt:asked + 9 * minute };
+it('puts a message that joined the turn answering the owner above the owner\'s message, keeping the question and answer together', async () => {
+  const { conversation } = await import('./inbox');
+  const mine = { ...base, id:'ans_mine', turnId:'turn-1', status:'waiting', answer:null, answerSeq:null, createdAt:asked, answeredAt:null };
+  const joined = { ...between, id:'ans_joined', turnId:'turn-1', answer:null, createdAt:asked + minute, answeredAt:asked + minute };
+  const other = { ...between, id:'ans_other', turnId:null, answer:null, createdAt:asked + 2 * minute, answeredAt:asked + 2 * minute };
+  const shape = (entries: any[]) => entries.map(e => `${e.part ?? ''}${e.group.map((i: any) => i.id).join('+')}`);
+  expect(shape(conversation([[mine], [joined], [other]] as any, false, [], false, null, false).entries)).toEqual(['ans_joined', 'ans_mine', 'ans_other']);
+  const done = { ...mine, status:'answered', answer:'Answer', answerSeq:9, answeredAt:asked + 3 * minute };
+  expect(shape(conversation([[done], [joined]] as any, false, [], true, null, false).entries)).toEqual(['ans_joined', 'ans_mine']);
+  const replied = { ...joined, id:'ans_replied', answer:'Steer reply', answeredAt:done.answeredAt };
+  expect(shape(conversation([[done], [replied]] as any, false, [], true, null, false).entries)).toEqual(['ans_mine', 'ans_replied']);
+});
+it('keeps a message that joined the owner\'s turn at its own time when other messages came after the question, so the New divider is not far above them', async () => {
+  const { conversation } = await import('./inbox');
+  const mine = { ...base, id:'ans_mine', turnId:'turn-1', status:'answered', answer:'Answer', answerSeq:9, createdAt:asked, answeredAt:asked + 9 * minute, readAt:1 };
+  const other = { ...between, id:'ans_other', turnId:'turn-2', answer:null, createdAt:asked + minute, answeredAt:asked + minute, readAt:1 };
+  const joined = { ...between, id:'ans_joined', turnId:'turn-1', answer:null, createdAt:asked + 5 * minute, answeredAt:asked + 5 * minute, readAt:null };
+  const shape = (entries: any[]) => entries.map(e => `${e.part ?? ''}${e.group.map((i: any) => i.id).join('+')}`);
+  expect(shape(conversation([[other], [mine], [joined]] as any, false, [], false, null, false).entries)).toEqual(['question' + 'ans_mine', 'ans_other', 'ans_joined', 'answerans_mine']);
+  // Still waiting (no split), and a message with no turn blocks like one of another turn.
+  const waiting = { ...mine, status:'waiting', answer:null, answerSeq:null, answeredAt:null };
+  expect(shape(conversation([[waiting], [other], [joined]] as any, false, [], false, null, false).entries)).toEqual(['ans_mine', 'ans_other', 'ans_joined']);
+  expect(shape(conversation([[waiting], [{ ...other, turnId:null }], [joined]] as any, false, [], false, null, false).entries)).toEqual(['ans_mine', 'ans_other', 'ans_joined']);
+});
+it('opens a chat with the New divider right above the unread message that joined the owner\'s turn, below the read messages that came before it', async () => {
+  const mine = { ...base, id:'ans_mine', turnId:'turn-1', status:'answered', answer:'Answer', answerSeq:9, createdAt:asked, answeredAt:asked + 9 * minute, readAt:1 };
+  const other = { ...base, id:'ans_other', question:'Other question', questionSeq:3, turnId:'turn-2', answer:'Other answer', answerSeq:4, createdAt:asked + minute, answeredAt:asked + minute, readAt:1 };
+  const joined = { ...between, id:'ans_joined', turnId:'turn-1', answer:null, createdAt:asked + 5 * minute, answeredAt:asked + 5 * minute, readAt:null };
+  const { slot, recipients } = setup({ list: () => ({ items:[mine, joined, other], nextCursor:null }) }); fireEvent.click(await recipients.findByRole('option'));
+  await slot.findByRole('list', { name:'History' });
+  await waitFor(() => expect(document.querySelector('[data-new]')).not.toBeNull());
+  const order = Array.from(document.querySelectorAll('[data-new], [data-history-ids]')).flatMap(node => node.hasAttribute('data-new') ? ['new'] : node.getAttribute('data-history-ids')!.split(' '));
+  expect(order.indexOf('new')).toBe(order.indexOf('ans_joined') - 1); expect(order.indexOf('ans_other')).toBeLessThan(order.indexOf('new'));
+});
 it('does not fold the last update shown in full back into its group when a turn starts (a queued message sent)', async () => {
   const { conversation } = await import('./inbox');
   const run = [[quiet(1, 'One')], [quiet(2, 'Two')], [quiet(3, 'Long final report')]] as any;
@@ -353,22 +387,23 @@ it('walks the robot under a plugin\'s message while the agent works on it (a Wor
   await slot.findByText(/READY/);
   expect(within(document.querySelector('[data-history-ids="ans_plug"]') as HTMLElement).getByRole('img', { name:'Working on the message' })).toBeTruthy();
 });
-it('shows the message a plugin sent as bb does: a user bubble with all of its text, the reply below', async () => {
+it('quotes the message a plugin sent under its caption, like another thread\'s, the reply below', async () => {
   const update = { ...base, id:'ans_plug', kind:'update' as const, question:'**CI Dashboard** · `Deploy finished` main\n- Run: 42', questionSeq:null, answer:'Deployed', answerSeq:7, trigger:{ kind:'plugin' as const, sourceId:'delivery-dashboard', sourceTitle:null } };
   const { slot, recipients } = setup({ list: () => ({ items:[update], nextCursor:null }) });
   fireEvent.click(await recipients.findByRole('option'));
   await slot.findByText('Deployed');
-  const bubble = document.querySelector('[data-history-ids="ans_plug"] [data-plugin-message]') as HTMLElement;
-  expect(bubble.textContent).toContain('Deploy finished'); expect(bubble.textContent).toContain('Run: 42');
-  expect(document.querySelector('[data-history-ids="ans_plug"] [data-update-caption]')).toBeNull();
+  const quote = document.querySelector('[data-history-ids="ans_plug"] [data-agent-message]') as HTMLElement;
+  expect(quote.textContent).toContain('Deploy finished'); expect(quote.textContent).toContain('Run: 42');
+  expect(document.querySelector('[data-history-ids="ans_plug"] [data-update-caption]')).toBeTruthy();
+  expect(document.querySelector('[data-history-ids="ans_plug"] [data-bubble-row]')).toBeNull();
 });
-it('names the plugin above its message and drops the plugin\'s own leading tag', async () => {
+it('names the plugin as "Message from" its pill and drops the plugin\'s own leading tag', async () => {
   const update = { ...base, id:'ans_plug', kind:'update' as const, question:'[answers] Call `agent_hub_report` now.', questionSeq:null, answer:'Done', answerSeq:7, trigger:{ kind:'plugin' as const, sourceId:'agent-hub', sourceTitle:null } };
   const { slot, recipients } = setup({ list: () => ({ items:[update], nextCursor:null }), // The brand list is cached per module, so it also carries the brand a later test reads.
     plugins: { list: async () => ({ plugins:[{ id:'agent-hub', name:'Agent Hub', icon:'MessageQuestion' }, { id:'concurrency-limit', name:'Concurrency limit', icon:'Gauge' }] }) } });
   fireEvent.click(await recipients.findByRole('option'));
-  await waitFor(() => expect(document.querySelector('[data-history-ids="ans_plug"] [data-plugin-sender]')?.textContent).toBe('Agent Hub'));
-  expect(document.querySelector('[data-history-ids="ans_plug"] [data-plugin-message]')?.textContent).toBe('Call `agent_hub_report` now.');
+  await waitFor(() => expect(document.querySelector('[data-history-ids="ans_plug"] [data-update-caption]')?.textContent).toMatch(/^Message from Agent Hub/));
+  expect(document.querySelector('[data-history-ids="ans_plug"] [data-agent-message]')?.textContent).toBe('Call `agent_hub_report` now.');
 });
 it('keeps an opened updates group open after leaving the screen and coming back', async () => {
   const list = () => ({ items:[after, quiet(3, 'Third report'), quiet(2, 'Second report'), quiet(1, 'First report')], nextCursor:null });
@@ -408,7 +443,7 @@ it('shows Reply only on agent questions and keeps open ones out of the conversat
   expect(within(document.querySelector('[data-history-ids="ans_agent"]')!).getByRole('button', { name:'Reply' })).toBeTruthy();
   expect(within(slot.getByRole('list', { name:'History' })).queryByText('Still open?')).toBeNull();
 });
-it('keeps the list and the previous conversation on screen while switching', async () => {
+it('keeps the contact list and hides the previous conversation while switching', async () => {
   let release!: () => void;
   const two = { ...one, threadId:'thr_two', threadTitle:'Two', preview:'Answer two' };
   const { slot, recipients } = setup({ recipients:[one, two], list: (input: any) => input.threadId === 'thr_two' && input.view !== 'for_me'
@@ -418,10 +453,10 @@ it('keeps the list and the previous conversation on screen while switching', asy
   expect(await slot.findByText('Question one')).toBeTruthy();
   fireEvent.click(recipients.getAllByRole('option')[1]!);
   expect(recipients.getAllByRole('option')).toHaveLength(2);
-  expect(slot.getByText('Question one')).toBeTruthy();
+  expect(slot.getByText('Question one').closest('[inert]')).toBeTruthy();
   await act(async () => { release(); });
   expect(await slot.findByText('Question two')).toBeTruthy();
-  expect(slot.queryByText('Question one')).toBeNull();
+  expect(slot.getByText('Question one').closest('[inert]')).toBeTruthy();
 });
 it('wraps a contact in bb’s thread menu when bb lists the thread', async () => {
   const idle = { projectId:'pr_one', parentThreadId:null, parentNotifications:'all', archivedAt:null, pinnedAt:null, sectionId:null, isUnread:false, status:'idle', runtimeStatus:'idle', queuedWork:'none', hasPendingInteraction:false, indicator:'none', activity:{ workflows:0, backgroundAgents:0, backgroundCommands:0, planMode:false }, environment:{ id:'env', path:'/x' } };
@@ -483,6 +518,26 @@ it('shows a pending bubble until the matching newest item arrives, and skips dra
   change(editor, { target:{ value:'Draft only' } }); fireEvent.click(slot.getByRole('button', { name:'More send options' })); fireEvent.click(slot.getByRole('menuitem', { name:'Save draft' }));
   expect(slot.queryByText('Sending…')).toBeNull();
 });
+it('empties the composer on Send at once and shows the message before bb answers', async () => {
+  let resolve!: (value: object) => void;
+  const { slot, recipients } = setup({ send: () => new Promise(done => { resolve = done; }) }); fireEvent.click(await recipients.findByRole('option'));
+  const editor = await slot.findByRole('textbox', { name:'Send message' }); change(editor, { target:{ value:'Right away' } }); fireEvent.click(slot.getByRole('button', { name:'Send message' }));
+  expect(editor.textContent).toBe(''); expect(slot.getByText('Right away')).toBeTruthy();
+  await act(async () => { resolve({ ok:true, delivery:'sent' }); });
+  expect(editor.textContent).toBe('');
+});
+it('shows a message bb will queue in the queue card at once, until the queue brings its row', async () => {
+  const thread = { id:'thr_one', title:'One', projectId:'pr_one', parentThreadId:null, parentNotifications:'all', archivedAt:null, pinnedAt:null, sectionId:null, isUnread:false, status:'active', runtimeStatus:'active', queuedWork:'none', hasPendingInteraction:false, indicator:'runtime', activity:{ workflows:0, backgroundAgents:0, backgroundCommands:0, planMode:false }, environment:{ id:'env', path:'/x' } };
+  let resolve!: (value: object) => void, rows: object[] = [];
+  const { slot, recipients } = setup({ sidebarThreads: { threads:[thread], projects:[] }, send: () => new Promise(done => { resolve = done; }), queuedMessages: { list: () => Promise.resolve(rows) } }); fireEvent.click(await recipients.findByRole('option'));
+  const editor = await slot.findByRole('textbox', { name:'Send message' }); change(editor, { target:{ value:'Later one' } }); fireEvent.click(slot.getByRole('button', { name:'Send message' }));
+  expect(editor.textContent).toBe('');
+  await waitFor(() => expect(slot.container.querySelector('[data-queue-pending]')?.textContent).toBe('Later one'));
+  rows = [{ id:'q1', threadId:'thr_one', content:[{ type:'text', text:'Later one', mentions:[] }], createdAt:Date.now(), updatedAt:1 }];
+  await act(async () => { resolve({ ok:true, delivery:'queued' }); });
+  await waitFor(() => expect(slot.container.querySelector('[data-queue-row="q1"]')).toBeTruthy());
+  expect(slot.container.querySelector('[data-queue-pending]')).toBeNull();
+});
 it('drops the pending bubble when bb queues the message, since the queue card shows it', async () => {
   const { slot, recipients } = setup({ send: () => Promise.resolve({ ok:true, delivery:'queued' }) }); fireEvent.click(await recipients.findByRole('option'));
   change(await slot.findByRole('textbox', { name:'Send message' }), { target:{ value:'Queued one' } }); fireEvent.click(slot.getByRole('button', { name:'Send message' }));
@@ -520,10 +575,41 @@ it('rereads the queue when the chat already recorded a queued row\'s message aft
   await waitFor(() => expect(list.mock.calls.length).toBeGreaterThanOrEqual(2));
   await waitFor(() => expect(slot.queryByRole('region', { name:'Queued messages' })).toBeNull());
 });
+it('hides a queued row as soon as the chat records its message, before the queue drops it; a repeat of the same text stays', async () => {
+  const row = (id: string, createdAt: number) => ({ id, threadId:'thr_one', content:[{ type:'text', text:'Sent meanwhile', mentions:[] }], createdAt, updatedAt:createdAt });
+  const { slot, recipients } = setup({ list: () => ({ items:[{ ...base, id:'ans_sent', question:'Sent meanwhile', questionSeq:9, createdAt:5 }], nextCursor:null }), queuedMessages: { list: () => Promise.resolve([row('q1', 1), row('q2', 2)]) } }); fireEvent.click(await recipients.findByRole('option'));
+  await waitFor(() => expect(slot.container.querySelector('[data-queue-row="q2"]')).toBeTruthy());
+  expect(slot.container.querySelector('[data-queue-row="q1"]')).toBeNull();
+});
+it('hides a queued row whose recorded message spells its mention or line break differently', async () => {
+  const row = { id:'q1', threadId:'thr_one', content:[{ type:'text', text:'@thread:thr_example#msg=7', mentions:[] }, { type:'text', text:'Why twice?', mentions:[] }], createdAt:1, updatedAt:1 };
+  const { slot, recipients } = setup({ list: () => ({ items:[{ ...base, id:'ans_sent', question:'@thread:thr_example#msg=7 Why twice?', questionSeq:9, createdAt:5 }], nextCursor:null }), queuedMessages: { list: () => Promise.resolve([row, { ...row, id:'q2', content:[{ type:'text', text:'Why twice?', mentions:[] }], createdAt:2 }]) } }); fireEvent.click(await recipients.findByRole('option'));
+  await waitFor(() => expect(slot.container.querySelector('[data-queue-row="q2"]')).toBeTruthy());
+  expect(slot.container.querySelector('[data-queue-row="q1"]')).toBeNull();
+});
+it('drops a queued row bb already sent: Send now answers 404 quietly and the row does not come back', async () => {
+  const row = { id:'q1', threadId:'thr_one', content:[{ type:'text', text:'Already sent', mentions:[] }], createdAt:1, updatedAt:1 };
+  let rows = [row];
+  const sendNow = vi.fn(() => { rows = []; return Promise.reject(Object.assign(new Error('HTTP 404: Queued message not found'), { status:404 })); });
+  const { slot, recipients } = setup({ queuedMessages: { list: () => Promise.resolve(rows), send:sendNow } }); fireEvent.click(await recipients.findByRole('option'));
+  fireEvent.click(await slot.findByRole('button', { name:'Send queued message 1 now' }));
+  await waitFor(() => expect(sendNow).toHaveBeenCalled());
+  await waitFor(() => expect(slot.queryByText('Already sent')).toBeNull());
+  expect(slot.queryByText(/Queued message not found/)).toBeNull();
+});
 it('says why a queued message is held, as bb does', async () => {
   const row = { id:'q1', threadId:'thr_one', content:[{ type:'text', text:'Held text', mentions:[] }], updatedAt:1, waitingOn:{ kind:'plugin', pluginId:'concurrency-limit', reason:'14 of 14 running on host Mac' } };
   const { slot, recipients } = setup({ queuedMessages: { list: () => Promise.resolve([row]) }, plugins: { list: async () => ({ plugins:[{ id:'concurrency-limit', name:'Concurrency limit', icon:'Gauge' }] }) } }); fireEvent.click(await recipients.findByRole('option'));
   expect(await slot.findByText('Held by Concurrency limit · 14 of 14 running on host Mac')).toBeTruthy();
+});
+it('shows a plugin\'s queued message with the plugin icon instead of bb\'s header and the From line', async () => {
+  const row = { id:'q1', threadId:'thr_one', originPluginId:'concurrency-limit', content:[{ type:'text', text:'[bb message from plugin:concurrency-limit]\n\n`Needs attention` · 2 to review', mentions:[] }], updatedAt:1 };
+  const { slot, recipients } = setup({ queuedMessages: { list: () => Promise.resolve([row]) }, plugins: { list: async () => ({ plugins:[{ id:'concurrency-limit', name:'Concurrency limit', icon:'Gauge' }] }) } }); fireEvent.click(await recipients.findByRole('option'));
+  expect(await slot.findByRole('img', { name:'From Concurrency limit' })).toBeTruthy();
+  const preview = slot.container.querySelector('[data-queue-row="q1"]')!;
+  expect(preview.textContent).not.toContain('[bb message from');
+  expect(preview.textContent).toContain('Needs attention');
+  expect(preview.textContent).not.toMatch(/From\s*Concurrency limit/);
 });
 it('slides a queue card in once: coming back to its chat draws it in place, a new one after it left slides again', async () => {
   const first = { ...one, threadId:'thr_slide' }, two = { ...one, threadId:'thr_two', threadTitle:'Two' };
@@ -548,9 +634,12 @@ it('offers bb\'s Scroll to latest button once the last message is out of sight b
   expect(button.className).toContain('invisible');
   const view = slot.getByRole('list', { name:'History' }).closest('.overflow-auto') as HTMLElement, last = slot.getByRole('list', { name:'History' }).lastElementChild as HTMLElement;
   Object.defineProperty(view, 'clientHeight', { configurable:true, value:500 }); // a shown chat (a hidden one, 0 high, is left alone)
+  Object.defineProperty(view, 'scrollHeight', { configurable:true, value:1500 }); let top = 1000; Object.defineProperty(view, 'scrollTop', { configurable:true, get:() => top, set:v => { top = v; } });
   view.getBoundingClientRect = () => ({ top:0, bottom:500 }) as DOMRect; last.getBoundingClientRect = () => ({ top:900, bottom:1000 }) as DOMRect;
   const scrollTo = vi.fn(); view.scrollTo = scrollTo as any;
-  fireEvent.scroll(view);
+  // At the very end the button stays hidden even if the last row still measures below the stack (a stack settling).
+  fireEvent.scroll(view); await new Promise(r => setTimeout(r, 50)); expect(button.className).toContain('invisible');
+  top = 0; fireEvent.scroll(view);
   await waitFor(() => expect(button.className).not.toContain('invisible'));
   fireEvent.click(button); expect(scrollTo).toHaveBeenCalledWith(expect.objectContaining({ behavior:'smooth' }));
   last.getBoundingClientRect = () => ({ top:300, bottom:450 }) as DOMRect; fireEvent.scroll(view);
@@ -579,6 +668,14 @@ it('keeps a delivered queued message in the queue card until the chat records it
   fireEvent.click(slot.getByRole('button', { name:'Send queued message 1 now' })); await waitFor(() => expect(emptied).toBeGreaterThan(0));
   await new Promise(resolve => setTimeout(resolve, 300));
   expect(slot.getByText('Waiting text')).toBeTruthy();
+});
+it('drops a delivered bb notice from the queue card at once, as the chat never records it as a message', async () => {
+  let rows: unknown[] = [{ id:'q1', threadId:'thr_one', content:[{ type:'text', text:'[bb system] raw report', mentions:[] }], systemNotice:{ kind:'child-completed', subject:{ kind:'thread', threadId:'child0', threadName:'Child 0' } }, updatedAt:1 }];
+  const sendNow = vi.fn(() => { rows = []; return Promise.resolve({}); });
+  const { slot, recipients } = setup({ queuedMessages: { list: () => Promise.resolve(rows), send:sendNow } }); fireEvent.click(await recipients.findByRole('option'));
+  await waitFor(() => expect(slot.container.querySelector('[data-queued-message-system-notice]')).toBeTruthy());
+  fireEvent.click(slot.getByRole('button', { name:'Send queued message 1 now' }));
+  await waitFor(() => expect(slot.container.querySelector('[data-queued-message-system-notice]')).toBeNull());
 });
 it('shows bb system notice icon and text for completed and failed children', async () => {
   const rows = (['child-completed', 'child-failed'] as const).map((kind, n) => ({ id:`q${n}`, threadId:'thr_one', content:[{ type:'text', text:'[bb system] raw report', mentions:[] }], systemNotice:{ kind, subject:{ kind:'thread', threadId:`child${n}`, threadName:`Child ${n}` } }, updatedAt:1 }));
@@ -637,9 +734,10 @@ it('edits queued text and attachments through the composer, holding it while edi
   const editor = await slot.findByRole('textbox', { name:'Edit queued message' });
   expect(hold).toHaveBeenCalledWith({ threadId:'thr_one', queuedMessageId:'q1' });
   expect(slot.getByText('old.txt')).toBeTruthy();
-  fireEvent.click(await slot.findByRole('button', { name:'auto' }));
+  // The thread's permission mode is chosen in the main composer; the queued editor keeps the row's own.
+  expect(editor.closest('[data-queued-message-inline-editor]')!.querySelector('[data-permission-picker]')).toBeNull();
   change(editor, { target:{ value:'Changed text' } }); fireEvent.click(slot.getByRole('button', { name:'Remove old.txt' })); fireEvent.click(slot.getByRole('button', { name:'Confirm queued message edit' }));
-  await waitFor(() => expect(update).toHaveBeenCalledWith({ threadId:'thr_one', queuedMessageId:'q1', expectedUpdatedAt:7, model:'opus', reasoningLevel:'high', serviceTier:'default', permissionMode:'full', input:[{ type:'text', text:'Changed text', mentions:[] }] }));
+  await waitFor(() => expect(update).toHaveBeenCalledWith({ threadId:'thr_one', queuedMessageId:'q1', expectedUpdatedAt:7, model:'opus', reasoningLevel:'high', serviceTier:'default', permissionMode:'auto', input:[{ type:'text', text:'Changed text', mentions:[] }] }));
   await waitFor(() => expect(release).toHaveBeenCalledWith({ threadId:'thr_one', queuedMessageId:'q1' }));
   fireEvent.click(slot.getByRole('button', { name:'Edit queued message 1' })); fireEvent.keyDown(await slot.findByRole('textbox', { name:'Edit queued message' }), { key:'Escape' });
   await waitFor(() => expect(release).toHaveBeenCalledTimes(2)); expect(update).toHaveBeenCalledTimes(1);
@@ -997,6 +1095,16 @@ it('keeps a newly revealed history row mounted on subsequent renders', () => {
   expect(slot.container.querySelector('[data-history-ids="ans_reveal"]')).toBe(row);
 });
 
+it('does not slide in a switched chat\'s rows while the previous chat\'s rows are still shown at mount', () => {
+  const onJump = () => {}, slid = (slot: ReturnType<typeof renderSlot>) => slot.container.querySelectorAll('.starting\\:translate-y-full').length;
+  const old = { group: [{ ...base, kind: 'update' as const, id: 'ans_old' }] }, mine = (id: string) => ({ group: [{ ...base, kind: 'update' as const, id, threadId: 'thr_two' }] });
+  const slot = renderSlot({ component: History }, { threadId: 'thr_two', groups: [old], flash: null, markId: null, settled: true, onJump });
+  slot.rerender(<History threadId="thr_two" groups={[mine('ans_a'), mine('ans_b')]} flash={null} markId={null} settled onJump={onJump} />);
+  expect(slid(slot)).toBe(0);
+  slot.rerender(<History threadId="thr_two" groups={[mine('ans_a'), mine('ans_b'), mine('ans_c')]} flash={null} markId={null} settled onJump={onJump} />);
+  expect(slid(slot)).toBe(1);
+});
+
 it('ignores identical page deliveries without dropping other pages', () => {
   const page = { items: [base], nextCursor: 'older' }, older = { items: [], nextCursor: null };
   const old = { threadId: 'thr_one', pages: [page, older] };
@@ -1327,4 +1435,390 @@ it('moves the main composer message into its thread reply pool and clears it', a
   await waitFor(() => expect(poolAdd).toHaveBeenCalledWith({ threadId: 'thr_one', quote: '', note: 'Collect this message', attachments: [] }));
   await waitFor(() => expect(editor.textContent).toBe(''));
   expect(send).not.toHaveBeenCalled();
+});
+
+it('keeps five chats mounted, pauses hidden reads and restores DOM, composer, expansion and scroll', async () => {
+ const people=Array.from({length:6},(_,i)=>({...one,threadId:`thr_example_${i}`,threadTitle:`Example ${i}`}));
+ localStorage.setItem('bb-plugin-answers:page:compose',JSON.stringify({thr_example_0:{text:'',files:[{type:'localFile',path:'/tmp/example.txt',name:'example.txt'}]}}));
+ let answer='Original answer';
+ const {slot,recipients,list}=setup({recipients:people,list:input=>({items:[{...base,id:`ans_${input.threadId}`,threadId:input.threadId,question:input.threadId,answer}],nextCursor:input.threadId==='thr_example_0' && !input.cursor?'1|ans_example_old':null})});
+ const open=async(i:number)=>{fireEvent.click(await recipients.findByRole('option',{name:new RegExp(`Example ${i}`)}));await slot.findByText(`thr_example_${i}`);};
+ await open(0);const editor=slot.getByRole('textbox',{name:'Send message'}), history=slot.getByRole('list',{name:'History'}), scroll=history.closest('.overflow-auto') as HTMLElement;
+ change(editor,{target:{value:'Kept draft'}});scroll.scrollTop=123;
+ await open(1);const before=list.mock.calls.filter(([input])=>input.threadId==='thr_example_0' && input.view==='all').length;
+ const renders=cards.byThread.thr_example_0;answer='Updated answer';
+ await slot.behavior.experimental_invalidateRpc(['answers:items']);
+ expect(cards.byThread.thr_example_0).toBe(renders);
+ expect(list.mock.calls.filter(([input])=>input.threadId==='thr_example_0' && input.view==='all')).toHaveLength(before);
+ await open(0);expect(slot.getByRole('list',{name:'History'})).toBe(history);expect(slot.getByRole('textbox',{name:'Send message'})).toBe(editor);expect(editor.textContent).toBe('Kept draft');expect(slot.getByText('example.txt')).toBeTruthy();expect(scroll.scrollTop).toBe(123);
+ await waitFor(()=>expect(within(history).getByText('Updated answer')).toBeTruthy());
+ await waitFor(()=>expect(list.mock.calls.filter(([input])=>input.threadId==='thr_example_0' && input.view==='all')).toHaveLength(before+1));
+ for(const i of [1,2,3,4,5])await open(i);
+ expect(history.isConnected).toBe(false);
+ localStorage.setItem('bb-plugin-answers:page:scroll',JSON.stringify({thr_example_0:{top:77,depth:2}}));
+ await open(0);expect(slot.getByRole('list',{name:'History'})).not.toBe(history);
+ await waitFor(()=>expect(list.mock.calls.some(([input])=>input.threadId==='thr_example_0' && input.cursor==='1|ans_example_old')).toBe(true));
+});
+
+it('keeps expanded updates and the full transcript across cached chat switches', async()=>{
+ const people=[one,{...one,threadId:'thr_example',threadTitle:'Example'}];
+ const {slot,recipients}=setup({recipients:people,list:input=>({items:input.threadId==='thr_one'?[after,quiet(3,'Third report'),quiet(2,'Second report'),quiet(1,'First report')]:[{...base,id:'ans_example',threadId:'thr_example'}],nextCursor:null})});
+ fireEvent.click(await recipients.findByRole('option',{name:/One/}));const toggle=await slot.findByRole('button',{name:/3 background updates/});fireEvent.click(toggle);
+ fireEvent.click(slot.getByRole('button',{name:'Full transcript'}));const transcript=slot.getByRole('region',{name:'Full transcript'});
+ fireEvent.click(recipients.getByRole('option',{name:/Example/}));await slot.findByRole('list',{name:'History'});
+ fireEvent.click(recipients.getByRole('option',{name:/One/}));expect(slot.getByRole('region',{name:'Full transcript'})).toBe(transcript);
+ fireEvent.click(slot.getByRole('button',{name:'Back to Agent Hub'}));expect(slot.getByRole('button',{name:/3 background updates/})).toBe(toggle);expect(toggle.getAttribute('aria-expanded')).toBe('true');
+});
+it('keeps a chat of background updates at its New divider, right above the first unread, when an older read page arrives', async () => {
+  const jump = async () => { const button = await waitFor(() => { const node = document.querySelector('[aria-label="Jump to unread"]') as HTMLElement; expect(node.className).not.toContain('invisible'); return node; }); fireEvent.click(button); };
+  const observers: (() => void)[] = [];
+  vi.stubGlobal('ResizeObserver', class { constructor(private callback: () => void) { observers.push(() => this.callback()); } observe() {} disconnect() {} });
+  const tops = new WeakMap<Element, number>(); const divider = 700;
+  // A detached element has no box, as in a browser: its rect reads all zeros.
+  const spies = [
+    vi.spyOn(HTMLElement.prototype, 'clientHeight', 'get').mockReturnValue(500),
+    vi.spyOn(HTMLElement.prototype, 'clientWidth', 'get').mockReturnValue(400),
+    vi.spyOn(HTMLElement.prototype, 'scrollHeight', 'get').mockReturnValue(3000),
+    vi.spyOn(HTMLElement.prototype, 'scrollTop', 'get').mockImplementation(function (this: HTMLElement) { return tops.get(this) ?? 0; }),
+    vi.spyOn(HTMLElement.prototype, 'scrollTop', 'set').mockImplementation(function (this: HTMLElement, value: number) { tops.set(this, value); }),
+    vi.spyOn(HTMLElement.prototype, 'offsetTop', 'get').mockImplementation(function (this: HTMLElement) { return this.hasAttribute('data-new') ? divider : 0; }),
+    vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (this: HTMLElement) {
+      const top = !this.isConnected ? 0 : this.hasAttribute('data-new') ? divider - (tops.get(this.closest('.overflow-auto')!) ?? 0) + 50 : this.classList.contains('overflow-auto') ? 50 : 0;
+      return { top, bottom: 0, left:0, right:0, width:0, height:0 } as DOMRect;
+    }),
+  ];
+  try {
+    const update = (n: number, readAt: number | null) => ({ ...between, id:`ans_u${n}`, answer:`Report ${n}`, readAt, createdAt:asked + n * minute, answeredAt:asked + n * minute });
+    const { slot, recipients } = setup({ list: (input: any) => input.cursor ? { items:[update(1, 1), update(0, 1)], nextCursor:null } : { items:[5, 4, 3, 2].map(n => update(n, null)), nextCursor:'1|ans_u2' } });
+    fireEvent.click(await recipients.findByRole('option')); await slot.findByRole('list', { name:'History' });
+    const first = await waitFor(() => { const node = document.querySelector('[data-new]'); expect(node).not.toBeNull(); return node!; });
+    const scroller = document.querySelector('[aria-label=History]')!.closest('.overflow-auto')!;
+    await waitFor(() => expect(tops.get(scroller)).toBe(3000)); // opened at the newest
+    const ids = () => Array.from(document.querySelectorAll('[data-new], [data-history-ids]')).flatMap(node => node.hasAttribute('data-new') ? ['new'] : node.getAttribute('data-history-ids')!.split(' '));
+    await waitFor(() => expect(ids()).toContain('ans_u0')); // the older read page joined the chat
+    expect(first.isConnected).toBe(true); expect(ids().indexOf('new')).toBe(ids().indexOf('ans_u2') - 1); expect(ids().indexOf('ans_u1')).toBeLessThan(ids().indexOf('new'));
+    await jump(); expect(tops.get(scroller)).toBe(divider); // the button lands right above the first unread
+    observers.forEach(observe => observe());
+    expect(tops.get(scroller)).toBe(divider);
+  } finally { spies.forEach(spy => spy.mockRestore()); vi.unstubAllGlobals(); }
+});
+it('keeps the reader at their place when an older page arrives above after the open position was released', async () => {
+  const jump = async () => { const button = await waitFor(() => { const node = document.querySelector('[aria-label="Jump to unread"]') as HTMLElement; expect(node.className).not.toContain('invisible'); return node; }); fireEvent.click(button); };
+  const observers: (() => void)[] = [];
+  vi.stubGlobal('ResizeObserver', class { constructor(private callback: () => void) { observers.push(() => this.callback()); } observe() {} disconnect() {} });
+  const tops = new WeakMap<Element, number>(); let shift = 0;
+  const spies = [
+    vi.spyOn(HTMLElement.prototype, 'clientHeight', 'get').mockReturnValue(500),
+    vi.spyOn(HTMLElement.prototype, 'clientWidth', 'get').mockReturnValue(400),
+    vi.spyOn(HTMLElement.prototype, 'scrollHeight', 'get').mockReturnValue(3000),
+    vi.spyOn(HTMLElement.prototype, 'scrollTop', 'get').mockImplementation(function (this: HTMLElement) { return tops.get(this) ?? 0; }),
+    vi.spyOn(HTMLElement.prototype, 'scrollTop', 'set').mockImplementation(function (this: HTMLElement, value: number) { tops.set(this, value); }),
+    vi.spyOn(HTMLElement.prototype, 'offsetTop', 'get').mockImplementation(function (this: HTMLElement) { return this.hasAttribute('data-new') ? 700 + shift : 0; }),
+    vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (this: HTMLElement) {
+      if (!this.isConnected) return { top:0, bottom:0, left:0, right:0, width:0, height:0 } as DOMRect;
+      const off = this.hasAttribute('data-new') ? 700 + shift : this.hasAttribute('data-history-ids') ? 710 + shift : null, top = off === null ? (this.classList.contains('overflow-auto') ? 50 : 0) : off - (tops.get(this.closest('.overflow-auto')!) ?? 0) + 50;
+      return { top, bottom: off === null ? 0 : top + 100, left:0, right:0, width:0, height:0 } as DOMRect;
+    }),
+  ];
+  try {
+    const update = (n: number, readAt: number | null) => ({ ...between, id:`ans_u${n}`, answer:`Report ${n}`, readAt, createdAt:asked + n * minute, answeredAt:asked + n * minute });
+    let release!: (value: object) => void;
+    const { slot, recipients } = setup({ list: (input: any) => input.cursor ? new Promise(r => { release = r; }) : { items:[5, 4, 3, 2].map(n => update(n, null)), nextCursor:'1|ans_u2' } });
+    fireEvent.click(await recipients.findByRole('option')); await slot.findByRole('list', { name:'History' });
+    const scroller = document.querySelector('[aria-label=History]')!.closest('.overflow-auto')!;
+    await waitFor(() => expect(tops.get(scroller)).toBe(3000));
+    await jump(); expect(tops.get(scroller)).toBe(700);
+    fireEvent.scroll(scroller); await new Promise(r => requestAnimationFrame(() => r(0))); fireEvent.wheel(scroller); // the reader acts: the hold ends
+    await waitFor(() => expect(release).toBeTypeOf('function'));
+    shift = 400; await act(async () => { release({ items:[update(1, 1), update(0, 1)], nextCursor:null }); }); await new Promise(r => setTimeout(r, 50));
+    observers.forEach(observe => observe());
+    expect(tops.get(scroller)).toBe(1100);
+  } finally { spies.forEach(spy => spy.mockRestore()); vi.unstubAllGlobals(); }
+});
+it('keeps a reader at the newest in place when the reach back over quiet updates adds an older page after the hold ended', async () => {
+  const tops = new WeakMap<Element, number>(); let height = 3000;
+  const spies = [
+    vi.spyOn(HTMLElement.prototype, 'clientHeight', 'get').mockReturnValue(500),
+    vi.spyOn(HTMLElement.prototype, 'scrollHeight', 'get').mockImplementation(() => height),
+    vi.spyOn(HTMLElement.prototype, 'scrollTop', 'get').mockImplementation(function (this: HTMLElement) { return tops.get(this) ?? 0; }),
+    vi.spyOn(HTMLElement.prototype, 'scrollTop', 'set').mockImplementation(function (this: HTMLElement, value: number) { tops.set(this, value); }),
+  ];
+  try {
+    let release!: (value: object) => void;
+    const { slot, recipients } = setup({ list: (input: any) => input.cursor ? new Promise(r => { release = r; }) : { items:[quiet(3, 'Third report'), quiet(2, 'Second report')], nextCursor:'1|ans_u2' } });
+    fireEvent.click(await recipients.findByRole('option')); await slot.findByRole('list', { name:'History' });
+    const scroller = document.querySelector('[aria-label=History]')!.closest('.overflow-auto')!;
+    await waitFor(() => expect(tops.get(scroller)).toBe(3000));
+    fireEvent.wheel(scroller); // the reader acts: the hold on the newest ends
+    await waitFor(() => expect(release).toBeTypeOf('function'));
+    height = 3400; await act(async () => { release({ items:[quiet(1, 'First report')], nextCursor:null }); }); await new Promise(r => setTimeout(r, 50));
+    expect(tops.get(scroller)).toBe(3400);
+  } finally { spies.forEach(spy => spy.mockRestore()); }
+});
+it('keeps the remembered message in place when an older page joins its run of updates and the row is rebuilt', async () => {
+  localStorage.setItem('bb-plugin-answers:page:scroll', JSON.stringify({ thr_one: { top:5, depth:1, anchor:'ans_u3', offset:0 } }));
+  const observers: (() => void)[] = [];
+  vi.stubGlobal('ResizeObserver', class { constructor(private callback: () => void) { observers.push(() => this.callback()); } observe() {} disconnect() {} });
+  const tops = new WeakMap<Element, number>();
+  // A detached element has no box, as in a browser: its rect reads all zeros.
+  const spies = [
+    vi.spyOn(HTMLElement.prototype, 'clientHeight', 'get').mockReturnValue(500),
+    vi.spyOn(HTMLElement.prototype, 'clientWidth', 'get').mockReturnValue(400),
+    vi.spyOn(HTMLElement.prototype, 'scrollHeight', 'get').mockReturnValue(3000),
+    vi.spyOn(HTMLElement.prototype, 'scrollTop', 'get').mockImplementation(function (this: HTMLElement) { return tops.get(this) ?? 0; }),
+    vi.spyOn(HTMLElement.prototype, 'scrollTop', 'set').mockImplementation(function (this: HTMLElement, value: number) { tops.set(this, value); }),
+    vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (this: HTMLElement) {
+      const row = this.hasAttribute('data-history-ids'), top = !this.isConnected ? 0 : row ? 710 - (tops.get(this.closest('.overflow-auto')!) ?? 0) + 50 : this.classList.contains('overflow-auto') ? 50 : 0;
+      return { top, bottom: row && this.isConnected ? top + 100 : 0, left:0, right:0, width:0, height:0 } as DOMRect;
+    }),
+  ];
+  try {
+    const update = (n: number) => ({ ...between, id:`ans_u${n}`, answer:`Report ${n}`, readAt:1, createdAt:asked + n * minute, answeredAt:asked + n * minute });
+    const { slot, recipients } = setup({ list: (input: any) => input.cursor ? { items:[update(1), update(0)], nextCursor:null } : { items:[5, 4, 3, 2].map(update), nextCursor:'1|ans_u2' } });
+    fireEvent.click(await recipients.findByRole('option')); await slot.findByRole('list', { name:'History' });
+    const scroller = document.querySelector('[aria-label=History]')!.closest('.overflow-auto')!;
+    await waitFor(() => expect(tops.get(scroller)).toBe(710));
+    await waitFor(() => expect(document.querySelector('[data-history-ids~="ans_u0"]')).not.toBeNull()); // the older page joined the run
+    observers.forEach(observe => observe());
+    expect(tops.get(scroller)).toBe(710);
+  } finally { spies.forEach(spy => spy.mockRestore()); vi.unstubAllGlobals(); localStorage.removeItem('bb-plugin-answers:page:scroll'); }
+});
+it('starts a run of updates at the first unread, so older read updates stay above it', async () => {
+  const { conversation } = await import('./inbox');
+  const update = (n: number, readAt: number | null) => [{ ...between, id:`ans_u${n}`, answer:`Report ${n}`, readAt, createdAt:asked + n * minute, answeredAt:asked + n * minute }];
+  const ids = (entries: any[]) => entries.map(e => e.group.map((i: any) => i.id).join('+'));
+  const groups = [update(0, 1), update(1, 1), update(2, null), update(3, null), update(4, null)];
+  expect(ids(conversation(groups as any, false, [], false, null, true, 'ans_u2').entries)).toEqual(['ans_u0+ans_u1', 'ans_u2+ans_u3+ans_u4']);
+  expect(ids(conversation(groups as any, false, [], false, null, true).entries)).toEqual(['ans_u0+ans_u1+ans_u2+ans_u3+ans_u4']);
+});
+
+// jsdom has no layout: each History row is 300 high and the New divider 40, stacked in DOM order inside a 500 high view.
+function stackLayout() {
+  const tops = new WeakMap<Element, number>();
+  const list = () => document.querySelector('[aria-label=History]'), view = () => list()?.closest('.overflow-auto') ?? null;
+  const offsets = () => { const map = new Map<Element, number>(); let y = 0; for (const el of Array.from(list()?.children ?? [])) { map.set(el, y); y += el.hasAttribute('data-new') ? 40 : 300; } return { map, total: y }; };
+  const rowOf = (el: Element) => { let node: Element | null = el; while (node && node.parentElement !== list()) node = node.parentElement; return node; };
+  const zero = { top:0, bottom:0, left:0, right:0, width:0, height:0 } as DOMRect;
+  const spies = [
+    vi.spyOn(HTMLElement.prototype, 'clientHeight', 'get').mockReturnValue(500),
+    vi.spyOn(HTMLElement.prototype, 'clientWidth', 'get').mockReturnValue(400),
+    vi.spyOn(HTMLElement.prototype, 'scrollHeight', 'get').mockImplementation(function (this: HTMLElement) { return this === view() ? offsets().total : 0; }),
+    vi.spyOn(HTMLElement.prototype, 'scrollTop', 'get').mockImplementation(function (this: HTMLElement) { return tops.get(this) ?? 0; }),
+    // A browser clamps the scroll position to the content.
+    vi.spyOn(HTMLElement.prototype, 'scrollTop', 'set').mockImplementation(function (this: HTMLElement, value: number) { tops.set(this, Math.max(0, Math.min(value, this === view() ? offsets().total - 500 : 0))); }),
+    vi.spyOn(HTMLElement.prototype, 'offsetTop', 'get').mockImplementation(function (this: HTMLElement) { return offsets().map.get(this) ?? 0; }),
+    vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (this: HTMLElement) {
+      if (!this.isConnected) return zero;
+      if (this === view()) return { ...zero, top:0, bottom:500 } as DOMRect;
+      const row = list() ? rowOf(this) : null, off = row ? offsets().map.get(row) : undefined; if (!row || off === undefined) return zero;
+      const top = off - (tops.get(view()!) ?? 0), height = row.hasAttribute('data-new') ? 40 : 300;
+      return { ...zero, top, bottom: top + height, height } as DOMRect;
+    }),
+  ];
+  return { scroller: () => view() as HTMLElement, top: () => tops.get(view()!) ?? 0, restore: () => spies.forEach(spy => spy.mockRestore()) };
+}
+// An answered message of the owner's chat, n minutes into the hour; read unless it is one of the unread ones.
+const chatItem = (n: number, readAt: number | null) => ({ ...base, id:`ans_${n}`, question:`Question ${n}`, questionSeq:n * 2, answer:`Reply ${n}`, answerSeq:n * 2 + 1, readAt, createdAt:asked + n * minute, answeredAt:asked + n * minute + 1000 });
+const chatList = (unread: number[], total = 7) => () => ({ items:Array.from({ length: total }, (_, n) => chatItem(n, unread.includes(n) ? null : 1)).reverse(), nextCursor:null });
+const jumpButton = () => document.querySelector('[aria-label="Jump to unread"]') as HTMLElement;
+const markedIds = (markRead: ReturnType<typeof vi.fn>) => markRead.mock.calls.flatMap(([input]: any) => input.ids as string[]).sort();
+const settle = async (scroller: Element) => { fireEvent.wheel(scroller); await new Promise(r => setTimeout(r, 80)); }; // the reader acts: the hold ends, reads count
+
+it('opens a chat whose first unread message is above the last screen at the newest message, not at the first unread', async () => {
+  const layout = stackLayout();
+  try {
+    const { slot, recipients } = setup({ recipients:[{ ...one, unread:6 }], list: chatList([1, 2, 3, 4, 5, 6]) });
+    fireEvent.click(await recipients.findByRole('option')); await slot.findByRole('list', { name:'History' });
+    await waitFor(() => expect(layout.top()).toBe(2140 - 500)); // the divider is at 300; the old rule opened there
+    expect(document.querySelector('[data-new]')).not.toBeNull();
+  } finally { layout.restore(); }
+});
+it('keeps a short unread tail in view with its New divider, and a chat with nothing unread at the newest without the button', async () => {
+  const layout = stackLayout();
+  try {
+    const { slot, recipients } = setup({ list: chatList([6]) });
+    fireEvent.click(await recipients.findByRole('option')); await slot.findByRole('list', { name:'History' });
+    await waitFor(() => expect(layout.top()).toBe(2140 - 500)); // the divider (1800) sits in the last screen
+    expect(document.querySelector('[data-new]')).not.toBeNull(); expect(jumpButton().className).toContain('invisible');
+    cleanup();
+    const next = setup({ list: chatList([]) });
+    fireEvent.click(await next.recipients.findByRole('option')); await next.slot.findByRole('list', { name:'History' });
+    await waitFor(() => expect(layout.top()).toBe(2100 - 500));
+    expect(document.querySelector('[data-new]')).toBeNull(); expect(jumpButton().className).toContain('invisible');
+  } finally { layout.restore(); }
+});
+it('offers Jump to unread with the unread count of the contact badge while the first unread is out of sight above, and hides it once it is in view', async () => {
+  const layout = stackLayout();
+  try {
+    const { slot, recipients } = setup({ recipients:[{ ...one, unread:6 }], list: chatList([1, 2, 3, 4, 5, 6]) });
+    fireEvent.click(await recipients.findByRole('option')); await slot.findByRole('list', { name:'History' });
+    await waitFor(() => expect(jumpButton().className).not.toContain('invisible'));
+    expect(jumpButton().textContent).toBe('6 unread'); expect((await recipients.findAllByLabelText('6 unread')).length).toBeGreaterThan(0);
+    layout.scroller().scrollTop = 0; fireEvent.scroll(layout.scroller()); // the first unread comes into view
+    await waitFor(() => expect(jumpButton().className).toContain('invisible'));
+  } finally { layout.restore(); }
+});
+it('jumps to the first unread at once, marking read only what is in view there and nothing between it and the newest', async () => {
+  const layout = stackLayout(), markRead = vi.fn(() => ({ ok:true }));
+  try {
+    const { slot, recipients } = setup({ recipients:[{ ...one, unread:6 }], list: chatList([1, 2, 3, 4, 5, 6]), rpc:{ markRead } });
+    fireEvent.click(await recipients.findByRole('option')); await slot.findByRole('list', { name:'History' });
+    await waitFor(() => expect(jumpButton().className).not.toContain('invisible'));
+    fireEvent.click(jumpButton()); expect(layout.top()).toBe(300); // set at once: a smooth scroll would pass over, and mark, rows in between
+    fireEvent.scroll(layout.scroller()); await new Promise(r => setTimeout(r, 80));
+    expect(markedIds(markRead)).toEqual(['ans_1']); // the view holds the New divider and the first unread only
+    await waitFor(() => expect(jumpButton().className).toContain('invisible'));
+  } finally { layout.restore(); }
+});
+it('leaves the unread rows above the first screen unread while the chat sits at the newest, and marks the ones in view', async () => {
+  const layout = stackLayout(), markRead = vi.fn(() => ({ ok:true }));
+  try {
+    const { slot, recipients } = setup({ recipients:[{ ...one, unread:6 }], list: chatList([1, 2, 3, 4, 5, 6]), rpc:{ markRead } });
+    fireEvent.click(await recipients.findByRole('option')); await slot.findByRole('list', { name:'History' });
+    await waitFor(() => expect(layout.top()).toBe(2140 - 500));
+    await settle(layout.scroller());
+    expect(markedIds(markRead)).toEqual(['ans_5', 'ans_6']); // ans_1 to ans_4 lie above the view: not seen, not read
+  } finally { layout.restore(); }
+});
+it('shows Jump to unread for a chat reopened at its remembered place with unread rows above it', async () => {
+  localStorage.setItem('bb-plugin-answers:page:scroll', JSON.stringify({ thr_one: { top:5, depth:1, anchor:'ans_4', offset:0 } }));
+  const layout = stackLayout();
+  try {
+    const { slot, recipients } = setup({ list: chatList([1], 7) });
+    fireEvent.click(await recipients.findByRole('option')); await slot.findByRole('list', { name:'History' });
+    await waitFor(() => expect(layout.top()).toBe(1240)); // ans_4's row (ans_0, the divider and ans_1 to ans_3 above it) at the top of the view
+    await waitFor(() => expect(jumpButton().className).not.toContain('invisible'));
+    expect(jumpButton().textContent).toBe('1 unread');
+  } finally { layout.restore(); }
+});
+
+// A chat kept by Activity is display:none while another is open: a browser reads its scroll offset as 0 and ignores writes then.
+// Moving an attached element in the DOM (React does it to a keyed child that changes place) resets the offsets inside it to 0.
+// jsdom has no layout: each History row is 300 high and the New divider 40, stacked in DOM order inside a 500 high view.
+function keptLayout() {
+  const tops = new WeakMap<Element, number>();
+  const hidden = (el: Element) => { for (let node: Element | null = el; node; node = node.parentElement) if ((node as HTMLElement).style?.display === 'none') return true; return false; };
+  const isView = (el: Element) => el.classList.contains('overflow-auto') && !!el.querySelector('[aria-label=History]');
+  const viewOf = (el: Element) => { let node: Element | null = el; while (node && !isView(node)) node = node.parentElement; return node; };
+  const list = (view: Element) => view.querySelector('[aria-label=History]')!;
+  const offsets = (view: Element) => { const map = new Map<Element, number>(); let y = 0; for (const el of Array.from(list(view).children)) { map.set(el, y); y += el.hasAttribute('data-new') ? 40 : 300; } return { map, total: y }; };
+  const rowOf = (el: Element, view: Element) => { let node: Element | null = el; while (node && node.parentElement !== list(view)) node = node.parentElement; return node; };
+  const zero = { top:0, bottom:0, left:0, right:0, width:0, height:0 } as DOMRect;
+  const reset = (node: Node) => { if (node.isConnected && node instanceof Element) [node, ...Array.from(node.querySelectorAll('.overflow-auto'))].forEach(el => tops.set(el, 0)); };
+  const insertBefore = Node.prototype.insertBefore, appendChild = Node.prototype.appendChild;
+  Node.prototype.insertBefore = function <T extends Node>(this: Node, node: T, child: Node | null) { reset(node); return insertBefore.call(this, node, child) as T; };
+  Node.prototype.appendChild = function <T extends Node>(this: Node, node: T) { reset(node); return appendChild.call(this, node) as T; };
+  const spies = [
+    vi.spyOn(HTMLElement.prototype, 'clientHeight', 'get').mockImplementation(function (this: HTMLElement) { return hidden(this) ? 0 : 500; }),
+    vi.spyOn(HTMLElement.prototype, 'clientWidth', 'get').mockImplementation(function (this: HTMLElement) { return hidden(this) ? 0 : 400; }),
+    vi.spyOn(HTMLElement.prototype, 'scrollHeight', 'get').mockImplementation(function (this: HTMLElement) { return isView(this) && !hidden(this) ? offsets(this).total : 0; }),
+    vi.spyOn(HTMLElement.prototype, 'scrollTop', 'get').mockImplementation(function (this: HTMLElement) { return hidden(this) ? 0 : tops.get(this) ?? 0; }),
+    vi.spyOn(HTMLElement.prototype, 'scrollTop', 'set').mockImplementation(function (this: HTMLElement, value: number) { if (!hidden(this)) tops.set(this, Math.max(0, Math.min(value, isView(this) ? offsets(this).total - 500 : 0))); }),
+    vi.spyOn(HTMLElement.prototype, 'offsetTop', 'get').mockImplementation(function (this: HTMLElement) { const view = viewOf(this); return view ? offsets(view).map.get(this) ?? 0 : 0; }),
+    vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (this: HTMLElement) {
+      if (!this.isConnected || hidden(this)) return zero;
+      const view = viewOf(this); if (!view) return zero;
+      if (this === view) return { ...zero, top:0, bottom:500 } as DOMRect;
+      const row = rowOf(this, view), off = row ? offsets(view).map.get(row) : undefined; if (!row || off === undefined) return zero;
+      const top = off - (tops.get(view) ?? 0), height = row.hasAttribute('data-new') ? 40 : 300;
+      return { ...zero, top, bottom: top + height, height } as DOMRect;
+    }),
+  ];
+  // A resize observer that reports like a browser's: once on observe, then whenever the box size changes (display:none reads 0 by 0).
+  const watching = new Set<{ callback: () => void; targets: Map<Element, string> }>();
+  const size = (el: Element) => el.getAttribute('aria-label') === 'History' ? `${offsets(viewOf(el)!).total}` : `${(el as HTMLElement).clientWidth}x${(el as HTMLElement).clientHeight}`;
+  vi.stubGlobal('ResizeObserver', class { entry = { callback: () => this.callback(), targets: new Map<Element, string>() }; constructor(private callback: () => void) { watching.add(this.entry); } observe(el: Element) { this.entry.targets.set(el, '0x0'); } unobserve() {} disconnect() { watching.delete(this.entry); } });
+  const frame = setInterval(() => { for (const entry of [...watching]) { let changed = false; for (const [el, last] of entry.targets) { const now = size(el); if (now !== last && el.isConnected) { entry.targets.set(el, now); changed = true; } } if (changed && watching.has(entry)) entry.callback(); } }, 16);
+  return { top: (view: Element) => hidden(view) ? NaN : tops.get(view) ?? 0, restore: () => { clearInterval(frame); Node.prototype.insertBefore = insertBefore; Node.prototype.appendChild = appendChild; vi.unstubAllGlobals(); spies.forEach(spy => spy.mockRestore()); } };
+}
+// Chat A: `rows` answered messages, 300 high each; its list pages by 3 when `paged`, and rows from `unreadFrom` on are unread.
+const keptChats = (rows: () => number, paged: boolean, unreadFrom = 6) => (input: any) => {
+  if (input.threadId !== 'thr_example_b') {
+    const all = Array.from({ length: rows() }, (_, n) => ({ ...chatItem(n, n >= unreadFrom ? null : 1), threadId:'thr_example_a', id:`ans_a${n}` })).reverse(), at = Number(String(input.cursor ?? 0).split('|')[0]), size = paged ? 3 : all.length;
+    return { items: all.slice(at, at + size), nextCursor: at + size < all.length ? `${at + size}|ans_a` : null };
+  }
+  return { items:[{ ...base, id:'ans_b', threadId:'thr_example_b', question:'Question b' }], nextCursor:null };
+};
+const keptSetup = (list: (input: any) => any) => {
+  const people = [{ ...one, threadId:'thr_example_a', threadTitle:'Chat A', unread:0 }, { ...one, threadId:'thr_example_b', threadTitle:'Chat B', unread:0 }], { slot, recipients } = setup({ recipients:people, list });
+  return { slot, open: async (name: RegExp, text: string) => { fireEvent.click(await recipients.findByRole('option', { name })); await slot.findByText(text); } };
+};
+// Chat A read to its newest, or left scrolled up at 400, then B opened: `grows` adds two unread rows to A while it is hidden.
+it.each([
+  ['read to the bottom, new messages arrive meanwhile', true, true],
+  ['left scrolled up, new messages arrive meanwhile', false, true],
+  ['left scrolled up, nothing new', false, false],
+] as const)('a chat kept hidden while another is open returns to its place: %s', async (_name, atBottom, grows) => {
+  const layout = keptLayout();
+  try {
+    let rows = 6;
+    const { slot, open } = keptSetup(keptChats(() => rows, false));
+    await open(/Chat A/, 'Question 5');
+    const scroller = document.querySelector('[aria-label=History]')!.closest('.overflow-auto') as HTMLElement, history = scroller.querySelector('[aria-label=History]');
+    await waitFor(() => expect(layout.top(scroller)).toBe(1300)); // 6 rows of 300 in a 500 view
+    fireEvent.wheel(scroller); await new Promise(r => setTimeout(r, 80)); // the reader acts: the open hold ends
+    if (!atBottom) { scroller.scrollTop = 400; fireEvent.scroll(scroller); await new Promise(r => requestAnimationFrame(() => r(0))); await new Promise(r => setTimeout(r, 250)); }
+    const left = layout.top(scroller);
+    await open(/Chat B/, 'Question b');
+    expect(layout.top(scroller)).toBeNaN(); // hidden: a browser reads 0
+    if (grows) { rows = 8; await slot.behavior.experimental_invalidateRpc(['answers:items']); }
+    await open(/Chat A/, 'Question 5');
+    if (grows) await waitFor(() => expect(within(scroller).getByText('Question 7')).toBeTruthy());
+    await act(async () => { await new Promise(r => setTimeout(r, 100)); });
+    expect(scroller.isConnected && scroller.querySelector('[aria-label=History]')).toBe(history); // not remounted
+    // Never above where the reader was; with unread rows below a reader at the bottom, at the first unread (its divider).
+    expect(layout.top(scroller)).toBe(atBottom && grows ? 1776 : left);
+  } finally { layout.restore(); }
+});
+it('keeps a chat kept hidden at its place when earlier messages load right after it is shown again', async () => {
+  const layout = keptLayout();
+  try {
+    const { slot, open } = keptSetup(keptChats(() => 9, true, 99));
+    await open(/Chat A/, 'Question 8');
+    const scroller = document.querySelector('[aria-label=History]')!.closest('.overflow-auto') as HTMLElement;
+    await waitFor(() => expect(layout.top(scroller)).toBe(400)); // 3 rows of 300 in a 500 view
+    fireEvent.wheel(scroller); await new Promise(r => setTimeout(r, 80));
+    scroller.scrollTop = 250; fireEvent.scroll(scroller); await new Promise(r => requestAnimationFrame(() => r(0))); await new Promise(r => setTimeout(r, 250));
+    await open(/Chat B/, 'Question b');
+    await open(/Chat A/, 'Question 8');
+    fireEvent.click(slot.getByRole('button', { name:'Load earlier' })); // as its sentinel does on coming into view
+    await waitFor(() => expect(within(scroller).getByText('Question 5')).toBeTruthy());
+    await act(async () => { await new Promise(r => setTimeout(r, 100)); });
+    expect(layout.top(scroller)).toBe(250 + 900); // the three earlier rows pushed the reader down by their height
+  } finally { layout.restore(); }
+});
+it('keeps a freshly opened chat at its newest while its content keeps growing after the first page arrived', async () => {
+  const observers: (() => void)[] = [];
+  vi.stubGlobal('ResizeObserver', class { constructor(private callback: () => void) { observers.push(() => this.callback()); } observe() {} disconnect() {} });
+  const tops = new WeakMap<Element, number>(); let height = 3000;
+  const spies = [
+    vi.spyOn(HTMLElement.prototype, 'clientHeight', 'get').mockReturnValue(500),
+    vi.spyOn(HTMLElement.prototype, 'clientWidth', 'get').mockReturnValue(400),
+    vi.spyOn(HTMLElement.prototype, 'scrollHeight', 'get').mockImplementation(() => height),
+    vi.spyOn(HTMLElement.prototype, 'scrollTop', 'get').mockImplementation(function (this: HTMLElement) { return tops.get(this) ?? 0; }),
+    vi.spyOn(HTMLElement.prototype, 'scrollTop', 'set').mockImplementation(function (this: HTMLElement, value: number) { tops.set(this, value); }),
+  ];
+  try {
+    const deliver: ((value: object) => void)[] = [];
+    const { slot, recipients } = setup({ list: () => new Promise(r => { deliver.push(r); }) });
+    fireEvent.click(await recipients.findByRole('option'));
+    await waitFor(() => expect(deliver.length).toBeGreaterThan(0)); // the chat is mounted, its first page still on the way
+    await act(async () => { deliver.forEach(release => release({ items:[base], nextCursor:null })); }); await slot.findByRole('list', { name:'History' });
+    const scroller = document.querySelector('[aria-label=History]')!.closest('.overflow-auto')!;
+    await waitFor(() => expect(tops.get(scroller)).toBe(3000));
+    height = 5000; observers.forEach(observe => observe()); // the cards finish rendering below the fold, with no input from the reader
+    expect(tops.get(scroller)).toBe(5000);
+  } finally { spies.forEach(spy => spy.mockRestore()); vi.unstubAllGlobals(); }
+});
+it('opens at the newest, and stays there, while the pages of a remembered depth arrive one after another', async () => {
+  localStorage.setItem('bb-plugin-answers:page:scroll', JSON.stringify({ thr_example_a: { top:0, depth:3, bottom:true } }));
+  const layout = keptLayout();
+  try {
+    const slow = keptChats(() => 9, true, 99), { slot, open } = keptSetup(input => input.cursor ? new Promise(r => setTimeout(() => r(slow(input)), 120)) : slow(input));
+    await open(/Chat A/, 'Question 8');
+    const scroller = document.querySelector('[aria-label=History]')!.closest('.overflow-auto') as HTMLElement;
+    await waitFor(() => expect(within(scroller).getByText('Question 0')).toBeTruthy(), { timeout: 3000 }); // all three pages are in: 9 rows of 300
+    await act(async () => { await new Promise(r => setTimeout(r, 200)); });
+    expect(layout.top(scroller)).toBe(9 * 300 - 500);
+  } finally { layout.restore(); localStorage.removeItem('bb-plugin-answers:page:scroll'); }
 });

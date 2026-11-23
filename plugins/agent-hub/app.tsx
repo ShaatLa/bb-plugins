@@ -1,3 +1,5 @@
+import { spawnGateMessageBody } from './spawn-gate-message';
+import { DesktopNotifier } from './desktop-notifier';
 import { useQuestionStack } from './question-stack';
 import { AgentHubSettings } from './settings-section';
 import { usePreferences } from './use-preferences';
@@ -6,14 +8,14 @@ import './touch.css';
 import { MessageCopy, messageLink } from './message-copy';
 import { useThreadCommands, commandMention } from './thread-commands';
 import { AgentHubContacts } from './contacts';
-import { CONTACT_SELECTED, ContactPageProvider, useContactPage, useContactSelection, useSidebarContacts } from './open-chat';
+import { CONTACT_SELECTED, ContactPageProvider, requestJump, threadLink, useContactPage, useContactSelection, useSidebarContacts } from './open-chat';
 import { defaultAnswer } from './contract';
 import { InfoTab, DiffTab, WorkBoardTab } from './chat-tabs';
 import { taskKeyRegex } from './task-links';
-import { Component, Fragment, createContext, useContext, useEffect, useLayoutEffect, useRef, useState, type ErrorInfo, type ReactNode } from 'react';
+import { Component, Fragment, createContext, useContext, useEffect, useLayoutEffect, useRef, useState, type ErrorInfo, type MouseEvent as ReactMouseEvent, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { definePluginApp, experimental_saveFile, experimental_resolveThreadStatus, experimental_Icon as Icon, experimental_PluginIcon as PluginIcon, experimental_describePromptMention, experimental_PromptMentionIcon as PromptMentionIcon, experimental_ThreadTitleText as ThreadTitleText, experimental_ImageLightbox as ImageLightbox, experimental_ThreadStatusGlyph as ThreadStatusGlyph, Markdown, UrlLink, useRpc, useSdk, experimental_useRpcQuery as useQuery, experimental_useSidebarThreads, experimental_useProviders, experimental_useAppPanel, experimental_usePanelTabs, experimental_useRpcRefresh, useComposer } from '@get-bb/plugin-sdk/app';
-import { rpcContract, type AgentHubRpcContract, type Item, type ItemAttachment, type View, type Attachment, type SendOptions } from './contract';
+import { rpcContract, NOTICE_THREAD, type AgentHubRpcContract, type Item, type ItemAttachment, type View, type Attachment, type SendOptions } from './contract';
 import { Inbox, Pools, Avatar, ago, activityAt, conversation, type Entry } from './inbox';
 import { answerText, PendingInteractions, QuestionForm, usePendingInteractionRows } from './interactions';
 import { ChatComment, COMMENT_EVENT } from './chat-comment';
@@ -108,23 +110,24 @@ export function useAgentHubBadge() {
 
 // chat: render as a conversation exchange (no thread header); markable: offer Mark read (the Inbox marks on open).
 // Like Telegram's read cursor: a message is read once its end has reached the screen or was scrolled past. No timer.
-const readLists = new WeakMap<HTMLElement, { cards: Map<HTMLElement, () => void>; check: () => void; schedule: () => void; frame: number }>();
-function useReadOnView(ref: React.RefObject<HTMLElement | null>, enabled: boolean, onRead: () => void) {
+const readLists = new WeakMap<HTMLElement, { cards: Map<HTMLElement, { read: () => void; seenOnly: boolean }>; check: () => void; schedule: () => void; frame: number }>();
+// seenOnly: a card above the view (opened at the newest, never in sight) is not counted as scrolled past.
+function useReadOnView(ref: React.RefObject<HTMLElement | null>, enabled: boolean, onRead: () => void, seenOnly = false) {
   const latest = useRef(onRead); latest.current = onRead;
   useEffect(() => {
     const node = ref.current, root = node?.closest<HTMLElement>('.overflow-auto');
     if (!enabled || !node || !root) return;
     let list = readLists.get(root);
     if (!list) {
-      const cards = new Map<HTMLElement, () => void>();
+      const cards = new Map<HTMLElement, { read: () => void; seenOnly: boolean }>();
       list = { cards, frame: 0, check: () => {}, schedule: () => {} };
       const shared = list;
-      shared.check = () => { shared.frame = 0; if (document.visibilityState === 'hidden') return; const bottom = root.getBoundingClientRect().bottom; for (const [card, read] of cards) { const box = card.getBoundingClientRect(); if (box.height > 0 && box.bottom <= bottom) { cards.delete(card); read(); } } };
+      shared.check = () => { shared.frame = 0; if (document.visibilityState === 'hidden') return; const { top, bottom } = root.getBoundingClientRect(); for (const [card, { read, seenOnly }] of cards) { const box = card.getBoundingClientRect(); if (box.height > 0 && box.bottom <= bottom && (!seenOnly || box.bottom > top)) { cards.delete(card); read(); } } };
       shared.schedule = () => { if (!shared.frame) shared.frame = requestAnimationFrame(shared.check); };
       root.addEventListener('scroll', shared.schedule, { passive: true }); document.addEventListener('visibilitychange', shared.schedule);
       readLists.set(root, shared);
     }
-    list.cards.set(node, () => latest.current()); list.schedule();
+    list.cards.set(node, { read: () => latest.current(), seenOnly }); list.schedule();
     return () => { list.cards.delete(node); if (!list.cards.size) { cancelAnimationFrame(list.frame); root.removeEventListener('scroll', list.schedule); document.removeEventListener('visibilitychange', list.schedule); readLists.delete(root); } };
   }, [ref, enabled]);
 }
@@ -136,7 +139,7 @@ function ReadTicks({ at }: { at: number }) {
   const label = `Read ${new Date(at).toLocaleString()}`;
   return <svg role="img" aria-label={label} viewBox="0 0 24 24" className="size-3.5 shrink-0" fill="none" stroke="currentColor" strokeWidth={1.75} strokeLinecap="round" strokeLinejoin="round"><title>{label}</title><path d="M18 6 7 17l-5-5" /><path d="m22 10-7.5 7.5L13 16" /></svg>;
 }
-export const isUnread = (item: Item) => item.dismissedAt === null && item.readAt === null && item.snoozedUntil === null && (((item.kind === 'mine' || item.kind === 'update') && item.status === 'answered') || (item.kind === 'for_me' && item.status === 'open') || (item.kind === 'mine' && (item.status === 'waiting' || item.status === 'deferred') && item.failedAt !== null));
+export const isUnread = (item: Item) => item.dismissedAt === null && item.readAt === null && item.snoozedUntil === null && (((item.kind === 'mine' || item.kind === 'update') && item.status === 'answered') || (item.kind === 'for_me' && item.status === 'open' && item.declinedAt === null) || (item.kind === 'mine' && (item.status === 'waiting' || item.status === 'deferred') && item.failedAt !== null));
 const SAVED_FLASH = 'bb-plugin-answers:saved-flash';
 const PROJECT_CHOICE = 'bb-plugin-answers:task-project';
 export function useReadUndo() {
@@ -165,25 +168,35 @@ export function usePluginBrand(id: string | null) {
   const brands = usePluginBrands(!!id);
   return id ? brands.find(brand => brand.id === id) ?? null : null;
 }
-// An update has no owner message; bb's own row for what started its turn names it: a finished child or another thread
-// (bb's "… finished" and "Message from" rows, same classes and icons), or a plugin. bb's quote of the trigger is left out.
-// The notice that woke the agent, as one line after its sender: the text below is the agent's reply to it, not the sender's.
-function notice(text: string, sender: string) {
-  const line = text.replace(/<!--[\s\S]*?-->/g, '').split('\n').map(l => l.replace(/[*`_#>]/g, '').trim()).find(Boolean) ?? '';
-  const rest = (line.toLowerCase().startsWith(sender.toLowerCase()) ? line.slice(sender.length) : line.replace(/^\[[^\]]*\]\s*/, '')).replace(/^[\s·:—-]+/, '');
-  return rest ? ` · ${rest}` : '';
+// A message someone other than the owner or this agent put into the thread has one header: an icon, the sender, an optional verb and
+// the time. bb's own rows are the model: "Message from" another thread or a plugin, "… finished"/"failed" for a child, a script's tag.
+const SYSTEM_NOTICE = /@thread:(thr_[\w-]+) (completed|failed)\b/g;
+// The children a bb notice names (a batch names several) and whether all of them failed.
+const noticeChildren = (text: string) => { const found = [...text.matchAll(SYSTEM_NOTICE)]; return { ids: [...new Set(found.map(m => m[1]!))], failed: found.length > 0 && found.every(m => m[2] === 'failed') }; };
+// The text under the header, without bb's [bb message from …] header, a bb notice's own "@thread:… completed:" line or the sender's own
+// leading [tag] (its name or role, which the header already says); a tag that starts with a task key is content and stays, as do links and checkboxes.
+export function unlabel(text: string) {
+  const rest = text.replace(/^\[bb message from [^\]]*\]\s*/, ''), tag = /^\[([^\]\n]{2,40})\](?![(:])\s+/.exec(rest);
+  const body = tag && !/^[A-Z][A-Z0-9]*-\d+/.test(tag[1]!) ? rest.slice(tag[0].length) : rest;
+  return text.startsWith('[bb system]') ? body.replace(/^@thread:thr_[\w-]+ (?:completed:?|failed\.?)[ \t]*/gm, '').trim() : body;
 }
-function UpdateCaption({ item, time }: { item: Item; time: ReactNode }) {
-  const { threads } = experimental_useSidebarThreads(), trigger = item.trigger, source = trigger?.sourceId ?? null, brand = usePluginBrand(trigger?.kind === 'plugin' ? source : null);
+function IncomingHeader({ item, time }: { item: Item; time: ReactNode }) {
+  const { threads } = experimental_useSidebarThreads(), trigger = item.trigger, system = trigger?.kind === 'system' ? noticeChildren(item.question) : null;
+  const source = system ? system.ids[0] ?? trigger?.sourceId ?? null : trigger?.sourceId ?? null, brand = usePluginBrand(trigger?.kind === 'plugin' ? source : null);
   const thread = threads.find(t => t.id === source), projectId = thread?.projectId ?? item.projectId, title = thread?.displayTitle ?? thread?.title ?? trigger?.sourceTitle ?? source ?? '';
   const href = source ? `${projectId ? `/projects/${encodeURIComponent(projectId)}` : ''}/threads/${encodeURIComponent(source)}` : '';
   const mention = source ? { kind: 'thread' as const, threadId: source, label: title, ...(projectId ? { projectId } : {}) } : null, look = mention && experimental_describePromptMention(mention);
+  const muted = (text: string) => <span className="shrink-0 whitespace-pre text-muted-foreground">{text}</span>;
   const [icon, body]: [IconName | null, ReactNode] = !source ? [null, null]
-    : trigger?.kind === 'system' ? ['CircleCheck', <><UrlLink href={href} className="min-w-0 cursor-pointer truncate whitespace-pre text-left font-medium text-foreground underline underline-offset-2 opacity-70 focus-visible:outline-none">{title}</UrlLink><span className="shrink-0 whitespace-pre text-muted-foreground"> finished</span></>]
-    : trigger?.kind === 'agent' && mention && look ? ['MessageSquare', <><span className="shrink-0 whitespace-pre text-muted-foreground">Message from </span><UrlLink href={href} title={look.title} className={`${look.className} min-w-0 bg-surface-raised/50 font-normal no-underline hover:no-underline whitespace-nowrap`}><PromptMentionIcon mention={mention} className="size-3.5 shrink-0 self-center text-muted-foreground" /><span className="truncate"><ThreadTitleText title={title} /></span></UrlLink></>]
-    : trigger?.kind === 'plugin' && brand ? [null, <span className="flex min-w-0 items-center gap-2"><PluginIcon pluginId={brand.id} icon={brand.icon} className="size-4 shrink-0" /><span className="min-w-0 truncate whitespace-pre text-muted-foreground"><span className="text-foreground/80">{brand.name}</span>{notice(item.question, brand.name)}</span></span>]
-    // A tagged script waking its own thread: bb's automation icon; a plugin that is not installed any more: its bare id.
-    : trigger?.kind === 'plugin' || trigger?.kind === 'other' ? [trigger.kind === 'other' ? 'Repeat' : 'Info', <span className="min-w-0 truncate whitespace-pre text-muted-foreground"><span className="text-foreground/80">{source}</span>{notice(item.question, source)}</span>] : [null, null];
+    // A batch names its children by count; one child is a link to its thread.
+    : system ? [system.failed ? 'CircleX' : 'CircleCheck', system.ids.length > 1 ? <><span className="min-w-0 truncate whitespace-pre font-medium text-foreground opacity-70">{system.ids.length} child threads</span>{muted(system.failed ? ' failed' : ' finished')}</>
+      : <><UrlLink href={href} className="min-w-0 cursor-pointer truncate whitespace-pre text-left font-medium text-foreground underline underline-offset-2 opacity-70 focus-visible:outline-none">{title}</UrlLink>{muted(system.failed ? ' failed' : ' finished')}</>]
+    : trigger?.kind === 'agent' && mention && look ? ['MessageSquare', <>{muted('Message from ')}<UrlLink href={href} title={look.title} className={`${look.className} min-w-0 bg-surface-raised/50 font-normal no-underline hover:no-underline whitespace-nowrap`}><PromptMentionIcon mention={mention} className="size-3.5 shrink-0 self-center text-muted-foreground" /><span className="truncate"><ThreadTitleText title={title} /></span></UrlLink></>]
+    // bb has no plugin pill; a thread pill's look with the plugin's icon reads the same as "Message from" another thread.
+    // A plugin that is not installed any more is named by its bare id.
+    : trigger?.kind === 'plugin' ? ['MessageSquare', <>{muted('Message from ')}<span className={`${experimental_describePromptMention({ kind: 'thread', threadId: source, label: brand?.name ?? source }).className} min-w-0 bg-surface-raised/50 font-normal whitespace-nowrap`}>{brand && <PluginIcon pluginId={brand.id} icon={brand.icon} className="size-3.5 shrink-0 self-center" />}<span className="truncate">{brand?.name ?? source}</span></span></>]
+    // A tagged script waking its own thread: bb's automation icon.
+    : trigger?.kind === 'other' ? ['Repeat', <span className="min-w-0 truncate whitespace-pre text-foreground/80">{source}</span>] : [null, null];
   if (!body && !time) return null;
   return <div data-update-caption className="flex min-w-0 items-center gap-2 px-2 text-sm leading-5">{icon && <Icon name={icon} aria-hidden className="size-4 shrink-0 text-muted-foreground" />}{(body || time) && <span className="inline-flex min-w-0 max-w-full items-baseline overflow-hidden whitespace-nowrap">{body}{time && <span className="shrink-0 whitespace-pre text-muted-foreground [&_time]:text-sm">{body && ' · '}{time}</span>}</span>}</div>;
 }
@@ -191,13 +204,18 @@ function UpdateCaption({ item, time }: { item: Item; time: ReactNode }) {
 // latest on bb's nested-rows rail; expanded, each shows as usual. reveal: a jump or search target that opens the group.
 const OPEN_GROUPS = 'bb-plugin-answers:open-update-groups';
 const openGroups = (): string[] => { try { const ids = JSON.parse(localStorage.getItem(OPEN_GROUPS) ?? '[]'); return Array.isArray(ids) ? ids : []; } catch { return []; } };
+// An update with no reply yet (still being worked on, or one that joined a running turn) previews the message it quotes,
+// whoever sent it: another thread, a plugin, a bb notice or a script.
+const incomingBody = (item: Item) => unlabel(item.trigger?.kind === 'plugin' && item.trigger.sourceId === 'spawn-gate'
+  ? spawnGateMessageBody(item.question) : item.question);
+const groupPreview = (item: Item) => item.answer?.trim() ? item.answer : item.trigger ? incomingBody(item) : '';
 export function UpdateGroup({ items, reveal, children }: { items: Item[]; reveal?: string | null; children: (item: Item) => ReactNode }) {
   // A group is known by its first update, which a newer update joining it does not change; an opened group stays open
   // across chats, screens and reloads (the last 200 are remembered).
   const key = items[0]!.id, [open, setOpenState] = useState(() => openGroups().includes(key)), row = useRef<HTMLLIElement>(null), last = items.at(-1)!;
   const setOpen = (value: boolean) => { setOpenState(value); try { localStorage.setItem(OPEN_GROUPS, JSON.stringify([...openGroups().filter(id => id !== key), ...(value ? [key] : [])].slice(-200))); } catch { /* storage unavailable */ } };
   useEffect(() => { if (reveal && items.some(item => item.id === reveal)) setOpen(true); }, [reveal]);
-  const at = activityAt(last), age = ago(at), previewText = (last.answer ?? '').replace(/\*\*|`|^#+\s*/gm, '').replace(/\s+/g, ' ').trim();
+  const at = activityAt(last), age = ago(at), previewText = groupPreview(last).replace(/\*\*|`|^#+\s*/gm, '').replace(/\s+/g, ' ').trim();
   // The stack-card look of "Active child threads", so the group stands out from the caption rows around it; the earlier
   // updates open above the latest, like older messages in a chat.
   // Opening shows the latest update whole: its end just above the composer, or its start under the chat's header when it
@@ -235,8 +253,10 @@ export function UpdateGroup({ items, reveal, children }: { items: Item[]; reveal
   </li>;
 }
 // part: a late answer split from its question (see conversation in inbox.tsx); onJump scrolls to the other part's history id.
-export function ItemCard({ item, members, late, live = true, chat = false, markable = !chat, autoRead = false, replyToOwn = true, part, onJump, compact = false, open }: { item: Item; members?: Item[]; late?: Item[]; live?: boolean; chat?: boolean; markable?: boolean; autoRead?: boolean; replyToOwn?: boolean; part?: 'question' | 'answer'; onJump?: (id: string) => void; compact?: boolean; open?: { href: string; label: string; onClick?: () => void } }) {
-  const rpc = useRpc<AgentHubRpcContract>(), sender = usePluginBrand(chat && item.kind === 'update' && item.trigger?.kind === 'plugin' ? item.trigger.sourceId ?? null : null);
+// A question asked without choices still gets a one-tap yes and no, in the language it was asked in.
+export const defaultChoices = (question: string) => /[А-Яа-яЁё]/.test(question) ? ['Да', 'Нет'] : ['Yes', 'No'];
+export function ItemCard({ item, members, late, live = true, chat = false, markable = !chat, autoRead = false, seenOnly = false, replyToOwn = true, part, onJump, compact = false, open }: { item: Item; members?: Item[]; late?: Item[]; live?: boolean; chat?: boolean; markable?: boolean; autoRead?: boolean; seenOnly?: boolean; replyToOwn?: boolean; part?: 'question' | 'answer'; onJump?: (id: string) => void; compact?: boolean; open?: { href: string; label: string; onClick?: () => void } }) {
+  const rpc = useRpc<AgentHubRpcContract>();
   // Agent Hub's own writes refresh through the server's realtime invalidation; a reply goes to bb's thread, so it refreshes here.
   const { refresh } = experimental_useRpcRefresh();
   const editSent = useContext(EditSentContext);
@@ -252,7 +272,7 @@ export function ItemCard({ item, members, late, live = true, chat = false, marka
     if (!menu) return;
     // The robot opens its own one-item menu under itself; the rest follow the More button.
     const anchor = menu === 'robot' ? robotButton.current : moreButton.current;
-    const place = () => { const r = anchor?.getBoundingClientRect(); if (r) setMenuAt(r.top > 240 ? { left: r.left, bottom: window.innerHeight - r.top + 4 } : { left: r.left, top: r.bottom + 4 }); };
+    const place = () => { const r = anchor?.getBoundingClientRect(); if (r) { const left = Math.max(8, Math.min(r.left, window.innerWidth - 200)); setMenuAt(r.top > 240 ? { left, bottom: window.innerHeight - r.top + 4 } : { left, top: r.bottom + 4 }); }; };
     const close = (event: Event) => { if (!menuBox.current?.contains(event.target as Node) && !(event.type === 'pointerdown' && anchor?.contains(event.target as Node))) setMenu(null); };
     place(); window.addEventListener('scroll', close, true); window.addEventListener('resize', place); document.addEventListener('pointerdown', close, true);
     return () => { window.removeEventListener('scroll', close, true); window.removeEventListener('resize', place); document.removeEventListener('pointerdown', close, true); setMenuAt(null); };
@@ -300,6 +320,9 @@ export function ItemCard({ item, members, late, live = true, chat = false, marka
     } finally { sending.current = false; setPending(false); }
   }
   const seq = item.kind === 'for_me' ? item.questionSeq : last.answerSeq ?? last.questionSeq;
+  // A thread-less notice lives on a placeholder id: nothing links to it. A long report arrives as a preview; the full text loads on request.
+  const placeholder = item.threadId === NOTICE_THREAD, [fullText, setFullText] = useState<string | null>(null);
+  const fullButton = item.notice?.truncated && fullText === null && <Button size="sm" variant="ghost" className="mx-2 h-auto min-h-8 py-1 text-xs text-muted-foreground" onClick={() => void act(async () => setFullText((await rpc.call('noticeBody', { id: item.id })).markdown))}>Show full report</Button>;
   // BB's message routes use the project prefix when the thread belongs to a project.
   const href = `${item.projectId ? `/projects/${encodeURIComponent(item.projectId)}` : ''}/threads/${encodeURIComponent(item.threadId)}${seq === null ? '' : `?msg=${seq}`}`;
   const minutes = Math.max(0, Math.floor((Date.now() - item.createdAt) / 60000));
@@ -307,17 +330,27 @@ export function ItemCard({ item, members, late, live = true, chat = false, marka
   // Same look as bb chat: my message is a recessed bubble on the right, the agent's text has no background.
   const userBubble = 'max-w-full rounded-xl border border-border-seam bg-surface-recessed px-4 py-2.5 text-sm leading-relaxed text-foreground';
   const agentText = 'w-full px-2 text-sm leading-relaxed';
-  const iconProps = (text: string) => ({ 'aria-label': text, title: text, variant: 'ghost' as const, className: 'size-6 px-0 [&_[data-icon-root]]:size-[13px]' });
+  // An incoming message (not the owner's, not this agent's) is drawn as a quote under its header; the agent's reply to it is a separate agent message.
+  const incoming = chat && item.kind === 'update' && !!item.trigger, quoteText = incoming ? incomingBody(item).trim() : '';
+  const bare = chat && item.kind === 'update' && !item.answer;
+  const iconProps = (text: string) => ({ 'aria-label': text, title: text, variant: 'ghost' as const, className: 'size-6 px-0 [&_[data-icon-root]]:size-[13px] [@media(hover:none)]:size-8' });
+  // In the chat every clamped body (owner bubble, agent text, incoming quote) expands from this icon at the left of its message's action row.
+  const expandButton = (clamped || expanded) && <Button size="sm" {...iconProps(expanded ? 'Show less' : 'Show more')} aria-expanded={expanded} onClick={() => setExpanded(!expanded)}><Icon name={expanded ? 'ChevronUp' : 'ChevronDown'} aria-hidden /></Button>;
+  // Always visible on touch screens, where there is no hover.
+  const rowFade = 'text-muted-foreground opacity-60 transition-opacity hover:opacity-100 focus-within:opacity-100 [@media(hover:none)]:opacity-100';
   const unread = group.some(isUnread), card = useRef<HTMLLIElement>(null);
   // Telegram-style status: a dot while the answer is new, a double check once read.
   const readMark = unread ? <span className="size-1.5 rounded-full bg-foreground/70" aria-label="Unread" /> : group.every(member => member.readAt !== null) && (last.kind === 'mine' || (last.kind === 'update' && last.asks)) && last.status === 'answered' ? <ReadTicks at={last.readAt!} /> : null;
-  useReadOnView(card, autoRead && unread && part !== 'question', () => void act(() => rpc.call('markRead', { ids: group.filter(isUnread).map(member => member.id) })));
+  useReadOnView(card, autoRead && unread && part !== 'question', () => void act(() => rpc.call('markRead', { ids: group.filter(isUnread).map(member => member.id) })), seenOnly);
   // "Done" said different things per item; name what dismissing actually does, and offer it only where it does something.
-  const dismiss: [string, IconName] | null = item.dismissedAt !== null ? null
+  const dismiss: [string, IconName] | null = item.dismissedAt !== null || (item.kind === 'for_me' && item.declinedAt !== null) ? null
     : item.kind === 'mine' && (item.status === 'waiting' || item.status === 'deferred') ? ['Stop waiting', 'X']
     // A question filed from the agent's plain text may be rhetorical: the owner dismisses it as not a question.
     : item.kind === 'for_me' && item.status === 'open' ? [item.chatAsked ? 'Not a question' : 'Won’t reply', 'X']
     : item.kind === 'saved' ? ['Remove from Saved', 'Trash2'] : null;
+  // Closing an open question without an answer sits with its choices, quiet, so it is not mistaken for one of them.
+  const declinedOpen = item.status === 'open' && item.dismissedAt === null && item.declinedAt !== null;
+  const decline = item.kind === 'for_me' && item.status === 'open' && dismiss && <Button size="sm" variant="ghost" className="h-auto min-h-8 py-1 text-muted-foreground" disabled={pending} onClick={() => void act(async () => { for (const member of group) await rpc.call('setDismissed', { id: member.id, dismissed: true }); })}>{dismiss[0]}</Button>;
   // In the chat the robot stands for a pending answer (waiting, or deferred with an interim) and carries Stop waiting.
   // Only the chat's last card carries a robot (live = false further up); a pending card above keeps Stop waiting in More.
   const interimShown = part !== 'answer' && !!item.interim, answeredHere = interimShown && part !== 'question' && !!item.answer;
@@ -333,7 +366,7 @@ export function ItemCard({ item, members, late, live = true, chat = false, marka
         question is settled (the owner marked it answered) the reply is the last word and nothing is owed. */}{part !== 'question' && !answeredHere && item.status !== 'answered' && <span title="Interim reply" className="flex w-fit px-2 text-muted-foreground"><Icon name="Clock" aria-label="Interim reply" className="size-3.5" /></span>}{agentBody(item.interim, item.interimSeq)}</>}</div>;
   return <li ref={card} data-pending-title={item.kind === 'for_me' && item.status === 'open' ? item.question : undefined} data-history-ids={part && group.map(member => part === 'answer' ? `${member.id}:answer` : member.id).join(' ')} className={compact ? 'group space-y-1.5 py-2' : chat ? 'group space-y-3 py-5' : 'group space-y-3 rounded-xl border border-border-seam p-4'}>
     {!chat && <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5 px-2 text-xs text-muted-foreground">
-      <h2 className="min-w-0 truncate text-sm font-medium text-foreground">{item.threadTitle ?? 'Untitled thread'}</h2>
+      <h2 className="min-w-0 truncate text-sm font-medium text-foreground">{item.notice ? item.question : item.threadTitle ?? 'Untitled thread'}</h2>
       {item.projectName && <span>{item.projectName}</span>}
       <span className="flex-1" />
       {item.status !== 'answered' && <span>{status}</span>}
@@ -341,43 +374,37 @@ export function ItemCard({ item, members, late, live = true, chat = false, marka
       {item.threadDeleted && <span>Thread deleted</span>}
     </div>}
     {item.kind === 'for_me' ? <div className="space-y-1">
-      <div className="flex min-h-8 items-center gap-2 pl-2 text-xs text-muted-foreground">{chat && time}{item.status === 'open' && item.deadlineAt !== null && <Deadline item={item} />}{item.status === 'replied' && item.answerSource === 'agent' && <span>Defaulted</span>}{item.urgency === 'blocking' && <span>Blocking</span>}{item.chatAsked && <span title="The agent asked this in its reply text, not through Agent Hub" className="inline-flex items-center gap-1"><Icon name="MessageSquare" aria-hidden className="size-3" />Asked in chat</span>}{item.dismissedAt !== null && item.answerSource === 'agent' && <span title="The agent withdrew this question; its reason is below">Withdrawn</span>}<span className="flex-1" /><span className="opacity-60 transition-opacity hover:opacity-100 focus-within:opacity-100">{!item.threadDeleted && <Button asChild size="sm" {...iconProps(open?.label ?? 'Open in chat')}><UrlLink href={open?.href ?? href} onClick={event => { if (open?.onClick) { event.preventDefault(); open.onClick(); } }}><Icon name="ExternalLink" aria-hidden /></UrlLink></Button>}</span></div>
-      <div ref={question} className={expanded ? '' : 'line-clamp-6'}>{agentBody(item.question, item.questionSeq)}</div>
-    </div> : item.kind === 'update' && chat && item.trigger?.kind === 'plugin' && item.question ? <div data-bubble-row className="ml-auto flex w-fit min-w-0 max-w-[70%] flex-col items-end gap-1">
-      {/* bb shows a plugin's message (a Work Board comment, a CI notice) as a user bubble with its markdown, so it does too. */}
-      {/* bb gives a plugin's message no sender line; here it names the plugin, and its leading [tag] (how a plugin marks its own notes) is left out. */}
-      {sender && <span data-plugin-sender className="flex items-center gap-1.5 px-1 text-xs text-muted-foreground"><PluginIcon pluginId={sender.id} icon={sender.icon} className="size-3.5 shrink-0" />{sender.name}</span>}
-      <div data-plugin-message className={userBubble}><div ref={question} className={`break-words [&_p]:my-0 ${expanded ? '' : 'line-clamp-6'}`}><Markdown content={sender ? item.question.replace(new RegExp(`^\\[(?:${[sender.id, sender.name, ...(sender.id === 'agent-hub' ? ['answers'] : [])].map(n => n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|')})\\]\\s*`, 'i'), '') : item.question} /></div></div>
-      {time}<span className="flex gap-0.5"><MessageCopy small text={item.question} /><MessageCopy small link text={messageLink(item.projectId, item.threadId, item.questionSeq)} /></span>
-    </div> : item.kind === 'update' ? <><UpdateCaption item={item} time={chat ? time : null} />
-      {/* bb quotes another thread's message under "Message from …"; the [bb message from …] header is already the caption. */}
-      {chat && item.trigger?.kind === 'agent' && item.question && <div data-agent-message className="ml-8 mr-2 border-l-2 border-border-seam pl-3 text-sm text-muted-foreground"><div ref={question} className={`break-words [&_p]:my-0 ${expanded ? '' : 'line-clamp-3'}`}><Markdown content={item.question.replace(/^\[bb message from [^\]]*\]\s*/, '')} /></div></div>}
-    </> : part === 'answer' ? <div className="ml-auto flex w-fit min-w-0 max-w-[70%] flex-col items-end gap-1">{group.map(echo)}</div> : <div className="ml-auto flex w-fit max-w-[70%] flex-col items-end gap-1">
+      {/* The time sits in the action row, as under the owner's messages; this row only carries labels and the link out. */}
+      {((item.status === 'open' && item.deadlineAt !== null) || (item.status === 'replied' && item.answerSource === 'agent') || item.urgency === 'blocking' || item.chatAsked || (item.dismissedAt !== null && item.answerSource === 'agent') || declinedOpen || (!!open && !item.threadDeleted)) && <div className="flex min-h-8 items-center gap-2 pl-2 text-xs text-muted-foreground">{item.status === 'open' && item.deadlineAt !== null && <Deadline item={item} />}{item.status === 'replied' && item.answerSource === 'agent' && <span>Defaulted</span>}{item.urgency === 'blocking' && <span>Blocking</span>}{item.chatAsked && <span title="The agent asked this in its reply text, not through Agent Hub" className="inline-flex items-center gap-1"><Icon name="MessageSquare" aria-hidden className="size-3" />Asked in chat</span>}{item.dismissedAt !== null && item.answerSource === 'agent' && <span title="The agent withdrew this question; its reason is below">Withdrawn</span>}{declinedOpen && <span title="You chose not to reply; the question stays open for the agent">Won’t reply</span>}<span className="flex-1" /><span className="opacity-60 transition-opacity hover:opacity-100 focus-within:opacity-100">{/* Only outside the chat it leads anywhere: in the chat the conversation is already open. */}{open && !item.threadDeleted && <Button asChild size="sm" {...iconProps(open.label)}><UrlLink href={open.href} onClick={event => { if (open.onClick) { event.preventDefault(); open.onClick(); } }}><Icon name="ExternalLink" aria-hidden /></UrlLink></Button>}</span></div>}
+      {/* An open question of several parts shows each prompt in its form's tabs, so its text above would only repeat them. */}
+      {!(item.status === 'open' && (item.questions?.length ?? 0) > 1) && <div ref={question} className={expanded ? '' : 'line-clamp-6'}>{agentBody(item.question, item.questionSeq)}</div>}
+    </div> : item.kind === 'update' ? <><IncomingHeader item={item} time={chat ? time : null} />
+      {/* The quote has no header text: bb's [bb message from …] header, a notice's own line and a sender's leading [tag] are already in the header. */}
+      {quoteText && <div data-agent-message className="ml-3 mr-2 border-l-2 sm:ml-8 border-border-seam pl-3 text-sm text-muted-foreground"><div ref={question} className={`break-words ${expanded ? '' : '[&_p]:my-0 line-clamp-3'}`}><AgentMarkdown content={quoteText} threadId={item.threadId} /></div></div>}
+      {chat && <div className={`flex items-center gap-0.5 px-1 ${rowFade}`}>{expandButton}{!placeholder && <MessageCopy small link text={messageLink(item.projectId, item.threadId, item.questionSeq)} />}</div>}
+    </> : part === 'answer' ? <div className="ml-auto flex w-fit min-w-0 max-w-[85%] sm:max-w-[70%] flex-col items-end gap-1">{group.map(echo)}</div> : <div className="ml-auto flex w-fit max-w-[85%] sm:max-w-[70%] flex-col items-end gap-1">
       {late?.map(echo)}
       {group.map(member => <div key={member.id} className={userBubble}>{member.question && <div ref={member === item ? question : undefined} className={`whitespace-pre-wrap break-words ${expanded ? '' : 'line-clamp-6'}`}><InlineCommentText threadId={member.threadId} text={member.question} prefixes={workBoard?.projects.map(p => p.prefix)} /></div>}{member.attachments.length > 0 && <ItemAttachments attachments={member.attachments} projectId={member.projectId} />}</div>)}
       {/* bb's row under the owner's own message: time, then Copy and Save, shown on hover (always on touch screens). */}
       {chat && <div className="flex items-center gap-[13px] text-muted-foreground">{time}<span className="flex items-center gap-0.5 opacity-60 transition-opacity hover:opacity-100 focus-within:opacity-100 [@media(hover:none)]:opacity-100">
+        {expandButton}
         <MessageCopy small text={group.map(member => member.question).filter(Boolean).join('\n\n')} />
         <MessageCopy small link text={messageLink(item.projectId, item.threadId, item.questionSeq)} />
-        {item.kind === 'mine' && group.every(member => member.questionSeq !== null) && <Button size="sm" {...iconProps(savedOwn ? 'Saved to Agent Hub' : 'Save to Agent Hub')} className="size-6 px-0 [&_[data-icon-root]]:size-[13px]" onClick={() => void act(async () => { for (const member of group) await rpc.call('save', { threadId: member.threadId, seq: member.questionSeq!, role: 'user', text: member.question }); setSavedOwn(true); })}><Icon name={savedOwn ? 'Check' : 'Star'} aria-hidden /></Button>}
-        {editSent && item.kind === 'mine' && group.length === 1 && item.questionSeq !== null && !item.threadDeleted && <Button size="sm" {...iconProps('Edit message')} className="size-6 px-0 [&_[data-icon-root]]:size-[13px]" onClick={() => editSent(item)}><Icon name="Edit" aria-hidden /></Button>}
+        {item.kind === 'mine' && group.every(member => member.questionSeq !== null) && <Button size="sm" {...iconProps(savedOwn ? 'Saved to Agent Hub' : 'Save to Agent Hub')} className="size-6 px-0 [&_[data-icon-root]]:size-[13px] [@media(hover:none)]:size-8" onClick={() => void act(async () => { for (const member of group) await rpc.call('save', { threadId: member.threadId, seq: member.questionSeq!, role: 'user', text: member.question }); setSavedOwn(true); })}><Icon name={savedOwn ? 'Check' : 'Star'} aria-hidden /></Button>}
+        {editSent && item.kind === 'mine' && group.length === 1 && item.questionSeq !== null && !item.threadDeleted && <Button size="sm" {...iconProps('Edit message')} className="size-6 px-0 [&_[data-icon-root]]:size-[13px] [@media(hover:none)]:size-8" onClick={() => editSent(item)}><Icon name="Edit" aria-hidden /></Button>}
       </span></div>}
     </div>}
-    {(() => {
-      // A message another agent or a plugin (a Work Board report, a CI notice) sent, still being worked on: the robot under it
-      // shares a row with its Show more, dimmed like the other robots. The chat's own end robot stands back for it.
-      const working = chat && live && item.status === 'waiting' && item.kind === 'update';
-      const more = (clamped || expanded) && <Button variant="ghost" size="sm" className={chat ? `ml-auto flex h-6 shrink-0 px-2 text-xs text-muted-foreground ${working ? 'mt-1' : ''}` : undefined} aria-expanded={expanded} onClick={() => setExpanded(!expanded)}>{chat ? (expanded ? 'Show less' : 'Show more') : (expanded ? 'Collapse question' : 'Expand question')}</Button>;
-      return working ? <div className="flex items-start gap-2"><div className="min-w-0 flex-1 px-2 text-muted-foreground opacity-60 transition-opacity hover:opacity-100 has-[[aria-expanded=true]]:opacity-100"><WorkLog threadId={item.threadId} turnId={item.turnId} sourceSeqStart={item.questionSeq} startedAt={item.createdAt} live><RobotLoader className="h-8" label="Working on the message" /></WorkLog></div>{more}</div> : more;
-    })()}
+    {!chat && (clamped || expanded) && <Button variant="ghost" size="sm" aria-expanded={expanded} onClick={() => setExpanded(!expanded)}>{expanded ? 'Collapse question' : 'Expand question'}</Button>}
+    {/* An incoming message still being worked on: the robot is its add-on, dimmed like the other robots. The chat's own end robot stands back for it. */}
+    {chat && live && item.status === 'waiting' && item.kind === 'update' && <div className="px-2 text-muted-foreground opacity-60 transition-opacity hover:opacity-100 has-[[aria-expanded=true]]:opacity-100"><WorkLog threadId={item.threadId} turnId={item.turnId} sourceSeqStart={item.questionSeq} startedAt={item.createdAt} live><RobotLoader className="h-8" label="Working on the message" /></WorkLog></div>}
     {/* Where the agent's reply would be, so on its side. */}{part === 'question' && <Button variant="ghost" size="sm" className="flex h-6 gap-1.5 px-2 text-xs text-muted-foreground" onClick={() => onJump?.(`${last.id}:answer`)}><Icon name="ArrowDown" aria-hidden className="size-3.5" />Answered below</Button>}
     {/* An interim reply and the final answer in one card: the interim goes first, as it came, under the same "Answered below"
         line a split card has (the answer is right under it here, so the line only says so). */}
     {answeredHere && <><span className="flex h-6 w-fit items-center gap-1.5 px-2 text-xs font-medium text-muted-foreground"><Icon name="ArrowDown" aria-hidden className="size-3.5" />Answered below</span>{interimReply}</>}
-    {part !== 'question' && item.answer && <>{/* An agent's question carries its asking turn, but the owner's reply has no work behind it. */}{chat && item.turnId && item.kind !== 'for_me' && <div className="px-2"><WorkLog threadId={item.threadId} turnId={item.turnId} sourceSeqStart={item.questionSeq} sourceSeqEnd={item.answerSeq} startedAt={item.createdAt} completedAt={item.answeredAt ?? item.updatedAt} answerSeq={item.answerSeq} /></div>}{item.kind !== 'for_me' ? agentBody(item.answer, item.answerSeq)
+    {part !== 'question' && item.answer && <>{/* An agent's question carries its asking turn, but the owner's reply has no work behind it. */}{chat && item.turnId && item.kind !== 'for_me' && <div className="px-2"><WorkLog threadId={item.threadId} turnId={item.turnId} sourceSeqStart={item.questionSeq} sourceSeqEnd={item.answerSeq} startedAt={item.createdAt} completedAt={item.answeredAt ?? item.updatedAt} answerSeq={item.answerSeq} answer={item.answer} /></div>}{item.kind !== 'for_me' ? <>{agentBody(fullText ?? item.answer, item.answerSeq)}{fullButton}</>
       /* The owner's reply goes into the chat as their own message (the question quoted), so the conversation shows that one
          bubble; elsewhere it stands under the question on the owner's side, as bb draws the owner's messages. */
-      : !chat || compact ? <div className="ml-auto w-fit min-w-0 max-w-[70%]"><div className={userBubble}><div className="whitespace-pre-wrap break-words"><InlineCommentText threadId={item.threadId} text={item.answer} prefixes={workBoard?.projects.map(p => p.prefix)} /></div></div></div> : null}</>}
+      : !chat || compact ? <div className="ml-auto w-fit min-w-0 max-w-[85%] sm:max-w-[70%]"><div className={userBubble}><div className="whitespace-pre-wrap break-words"><InlineCommentText threadId={item.threadId} text={item.answer} prefixes={workBoard?.projects.map(p => p.prefix)} /></div></div></div> : null}</>}
     {!answeredHere && <>{interimReply}</>}
     {part !== 'question' && <>{item.likelyInterim && item.status === 'answered' && <div className="flex flex-wrap items-center gap-2 px-2 text-xs text-muted-foreground"><span>Looks like an interim reply</span><Button size="sm" variant="ghost" onClick={() => void act(() => rpc.call('keepWaiting', { id: last.id }))}>Keep waiting</Button><Button size="sm" variant="ghost" onClick={() => void act(() => rpc.call('setInterim', { id: last.id, value: false }))}>It's the answer</Button></div>}
     {item.interruptedAt != null && <div className="px-2 text-xs text-muted-foreground">Turn interrupted</div>}
@@ -387,30 +414,32 @@ export function ItemCard({ item, members, late, live = true, chat = false, marka
     </>}{part !== 'answer' && item.note && <p className="px-2 text-sm text-muted-foreground whitespace-pre-wrap"><UserText threadId={item.threadId} text={item.note} /></p>}
     {/* While the answer is owed, the robot walks where it will appear, above the actions (raw statuses told the owner nothing). */}
     {/* While the message is still on its way (see sendingItem in inbox.tsx) the robot's place is kept but left empty. */}{robot && part !== 'question' && item.status === 'waiting' && <div className={`${item.id.startsWith('ans_sending') ? 'invisible ' : ''}px-2 text-muted-foreground opacity-60 transition-opacity hover:opacity-100 has-[[aria-expanded=true]]:opacity-100`}><WorkLog threadId={item.threadId} turnId={item.turnId} sourceSeqStart={item.questionSeq} startedAt={item.createdAt} live><button {...robotProps} title="Waiting for the answer"><RobotLoader className="h-8" label="Waiting for the answer" /></button></WorkLog></div>}
-    {part !== 'question' && <><div className="flex items-center gap-2"><div className="flex items-center gap-0.5 px-1 text-muted-foreground opacity-60 transition-opacity hover:opacity-100 focus-within:opacity-100 has-[[role=menu]]:opacity-100">
+    {/* An open question's choices come before its action row, which closes the card. */}
+    {part !== 'question' && item.kind === 'for_me' && item.status === 'open' && !item.questions && <div className="flex flex-wrap gap-1 px-2">{(item.options ?? defaultChoices(item.question)).map(option => <Button key={option} size="sm" variant={option === item.recommended ? 'default' : 'outline'} className="h-auto min-h-8 whitespace-normal py-1 text-left" disabled={pending} onClick={() => void reply(undefined, option)}>{option}{option === item.recommended && <>{' '}<span className="sr-only">(recommended)</span></>}</Button>)}{decline}
+      {item.recommendReason && <p className="w-full pt-1 text-xs text-muted-foreground">{item.recommendReason}</p>}</div>}
+    {part !== 'question' && item.kind === 'for_me' && item.status === 'open' && item.questions && <div className="px-2"><QuestionForm threadId={item.threadId} requireAny questions={item.questions} hidePrompt={item.questions.length === 1} onSubmit={answers => reply(undefined, answerText(item.questions!, answers))} {...(decline && dismiss ? { onCancel: () => act(async () => { for (const member of group) await rpc.call('setDismissed', { id: member.id, dismissed: true }); }), cancelLabel: dismiss[0] } : {})} />
+      {item.recommendReason && <p className="pt-1 text-xs text-muted-foreground">{item.recommendReason}</p>}</div>}
+    {part !== 'question' && <>{/* One action row for all agent text. An incoming message with no reply of its own has none: its own row has expand and its link. */}{!bare && <div className="flex items-center gap-2">{chat && item.kind === 'for_me' && <span className="pl-2">{time}</span>}<div className={`flex items-center gap-0.5 px-1 ${rowFade} has-[[role=menu]]:opacity-100`}>
       {item.kind === 'for_me' && replyButton}
-      {(text => text && <MessageCopy small text={text} />)(item.answer || (item.kind === 'for_me' ? item.question : ''))}
-      {/* In the chat the conversation is already open here; other views still link to it. */}{!chat && item.kind !== 'for_me' && !item.threadDeleted && <Button asChild size="sm" {...iconProps('Open in chat')}><UrlLink href={href} onClick={() => { if (unread) void act(() => rpc.call('markRead', { ids: group.filter(isUnread).map(member => member.id) })); }}><Icon name="ExternalLink" aria-hidden /></UrlLink></Button>}
+      {chat && item.kind === 'for_me' && expandButton}
+      {(text => text && <MessageCopy small text={text} />)(fullText || item.answer || (item.kind === 'for_me' ? item.question : ''))}
+      {!placeholder && <MessageCopy small link text={messageLink(item.projectId, item.threadId, seq)} />}
+      {/* In the chat the conversation is already open here; other views still link to it. */}{!chat && item.kind !== 'for_me' && !item.threadDeleted && !placeholder && <Button asChild size="sm" {...iconProps('Open in chat')}><UrlLink href={href} onClick={() => { if (unread) void act(() => rpc.call('markRead', { ids: group.filter(isUnread).map(member => member.id) })); }}><Icon name="ExternalLink" aria-hidden /></UrlLink></Button>}
       {markable && unread && <Button size="sm" {...iconProps('Mark read')} onClick={() => void act(() => rpc.call('markRead', { ids: group.filter(isUnread).map(member => member.id) }))}><Icon name="MailOpen" aria-hidden /></Button>}
       <div className="relative" onBlur={event => { if (!event.currentTarget.contains(event.relatedTarget as Node) && !menuBox.current?.contains(event.relatedTarget as Node)) setMenu(null); }} onKeyDown={event => { if (event.key === 'Escape') setMenu(null); }}>
         <Button ref={moreButton} size="sm" {...iconProps('More')} aria-haspopup="menu" aria-expanded={!!menu} onClick={() => setMenu(menu ? null : 'main')}><Icon name="MoreHorizontal" aria-hidden /></Button>
-        {menu && menuAt && createPortal(<div ref={menuBox} role="menu" aria-label="Item actions" className="fixed z-[100] w-48 rounded-lg border border-border bg-background p-1 shadow-lg" style={menuAt} onBlur={event => { if (!event.currentTarget.contains(event.relatedTarget as Node) && event.relatedTarget !== moreButton.current && event.relatedTarget !== robotButton.current) setMenu(null); }} onKeyDown={event => { if (event.key === 'Escape') { setMenu(null); (menu === 'robot' ? robotButton : moreButton).current?.focus(); } }}>
+        {menu && menuAt && createPortal(<div ref={menuBox} role="menu" aria-label="Item actions" className="fixed z-[100] max-h-[70vh] w-48 overflow-y-auto rounded-lg border border-border bg-background p-1 shadow-lg" style={menuAt} onBlur={event => { if (!event.currentTarget.contains(event.relatedTarget as Node) && event.relatedTarget !== moreButton.current && event.relatedTarget !== robotButton.current) setMenu(null); }} onKeyDown={event => { if (event.key === 'Escape') { setMenu(null); (menu === 'robot' ? robotButton : moreButton).current?.focus(); } }}>
           {menu === 'robot' ? dismiss && <button role="menuitem" className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-sm hover:bg-state-hover" onClick={() => { setMenu(null); void act(async () => { for (const member of group) await rpc.call('setDismissed', { id: member.id, dismissed: true }); }); }}><Icon name={dismiss[1]} aria-hidden className="size-4 text-muted-foreground" />{dismiss[0]}</button>
           : menu === 'main' ? <>
-            <MessageCopy menu link text={messageLink(item.projectId, item.threadId, seq)} />
             {item.kind !== 'saved' && <button role="menuitem" className="w-full rounded px-2 py-1.5 text-left text-sm hover:bg-state-hover" onClick={() => { setMenu(null); void act(() => rpc.call('setPinned', { id: last.id, pinned: !item.pinned })); }}>{item.pinned ? 'Remove from Saved' : 'Save'}</button>}
             {item.kind !== 'saved' && <button role="menuitem" className="w-full rounded px-2 py-1.5 text-left text-sm hover:bg-state-hover" onClick={() => setMenu('snooze')}>Remind later</button>}
             {item.kind !== 'saved' && workBoard?.available && <button type="button" role="menuitem" className="w-full rounded px-2 py-1.5 text-left text-sm hover:bg-state-hover" onClick={() => setMenu('task')}>Create task</button>}
-            {dismiss && !robot && <button role="menuitem" className="w-full rounded px-2 py-1.5 text-left text-sm hover:bg-state-hover" onClick={() => { setMenu(null); void act(async () => { for (const member of group) await rpc.call('setDismissed', { id: member.id, dismissed: true }); }); }}>{dismiss[0]}</button>}
+            {item.kind === 'saved' && dismiss && <button role="menuitem" className="w-full rounded px-2 py-1.5 text-left text-sm hover:bg-state-hover" onClick={() => { setMenu(null); void act(async () => { for (const member of group) await rpc.call('setDismissed', { id: member.id, dismissed: true }); }); }}>{dismiss[0]}</button>}
           </> : menu === 'snooze' ? <>{(['In 1 hour', 'This evening', 'Tomorrow 9:00', 'Next Monday 9:00'] as const).map((label, index) => <button key={label} role="menuitem" className="w-full rounded px-2 py-1.5 text-left text-sm hover:bg-state-hover" onClick={() => { const now = new Date(), until = new Date(now); if (index === 0) until.setHours(now.getHours() + 1); if (index === 1) { until.setHours(18, 0, 0, 0); if (+until <= +now) until.setTime(+now + 3 * 3600000); } if (index === 2) { until.setDate(now.getDate() + 1); until.setHours(9, 0, 0, 0); } if (index === 3) { until.setDate(now.getDate() + ((8 - now.getDay()) % 7 || 7)); until.setHours(9, 0, 0, 0); } setMenu(null); void act(() => rpc.call('snooze', { id: last.id, until: +until })); }}>{label}</button>)}</> : [...(workBoard?.projects ?? [])].sort((a, b) => Number(b.id === localStorage.getItem(PROJECT_CHOICE)) - Number(a.id === localStorage.getItem(PROJECT_CHOICE))).map(project => <button key={project.id} role="menuitem" className="w-full rounded px-2 py-1.5 text-left text-sm hover:bg-state-hover" onClick={() => { localStorage.setItem(PROJECT_CHOICE, project.id); setMenu(null); void act(() => rpc.call('createTask', { id: last.id, projectId: project.id })); }}>{project.name}</button>)}
         </div>, document.body)}
       </div>
       {item.kind !== 'for_me' && replyButton}
-    </div>{readMark && <span className="ml-auto flex items-center px-2 text-muted-foreground">{readMark}</span>}</div>
-    {item.kind === 'for_me' && item.status === 'open' && item.options && <div className="flex flex-wrap gap-1 px-2">{item.options.map(option => <Button key={option} size="sm" variant={option === item.recommended ? 'default' : 'outline'} className="h-auto min-h-8 whitespace-normal py-1 text-left" disabled={pending} onClick={() => void reply(undefined, option)}>{option}{option === item.recommended && <>{' '}<span className="sr-only">(recommended)</span></>}</Button>)}
-      {item.recommendReason && <p className="w-full pt-1 text-xs text-muted-foreground">{item.recommendReason}</p>}</div>}
-    {item.kind === 'for_me' && item.status === 'open' && item.questions && <div className="px-2"><QuestionForm threadId={item.threadId} requireAny questions={item.questions} hidePrompt={item.questions.length === 1} onSubmit={answers => reply(undefined, answerText(item.questions!, answers))} />
-      {item.recommendReason && <p className="pt-1 text-xs text-muted-foreground">{item.recommendReason}</p>}</div>}
+    </div>{readMark && !(item.kind === 'for_me' && item.status === 'open') && <span className="ml-auto flex items-center px-2 text-muted-foreground">{readMark}</span>}</div>}
     {replying && <ComposerThread.Provider value={item.threadId}><div ref={replyBox}><Composer label="Reply text" sendLabel="Send reply" autoFocus value={text} onChange={setText} attachments={files} onAttachments={update => setFiles(update)} projectId={item.projectId} pending={pending} sendDisabled={!text.trim() && !files.length} onSend={options => void reply(options)} /></div></ComposerThread.Provider>}
     {feedback && <p role="status">{feedback}</p>}</>}{error && <p role="alert" className="text-sm text-destructive">{error}</p>}
   </li>;
@@ -557,6 +586,16 @@ function AgentHubPanelContent({ threadId }: { threadId?: string }) {
   const questions = questionsTab && !savedTab, setQuestions = (on: boolean) => { setQuestionsTab(on); setSavedTab(false); };
   const section = savedTab ? 'saved' : questions ? 'questions' : 'chats', setSection = (next: typeof section) => { setQuestionsTab(next === 'questions'); setSavedTab(next === 'saved'); };
   const openChat = (id: string) => { selectContact(id); setQuestions(false); };
+  // On the page a thread link or chip opens the conversation here, not bb's chat (data-bb-chat links need bb's own forms); preventDefault alone stops bb's link, so its own onClick still runs.
+  const routeThreadLink = (event: ReactMouseEvent) => {
+    const anchor = (event.target as Element).closest?.('a[href]');
+    if (!anchor || anchor.hasAttribute('data-bb-chat') || event.defaultPrevented || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+    const link = threadLink(anchor.getAttribute('href') ?? '');
+    if (!link) return;
+    event.preventDefault();
+    if (link.seq !== null) requestJump(link.threadId, link.seq);
+    openChat(link.threadId);
+  };
   useEffect(() => {
     if (threadId) return;
     if (page?.open) setQuestions(false);
@@ -566,7 +605,10 @@ function AgentHubPanelContent({ threadId }: { threadId?: string }) {
   const { rows: pendingRows, settle: settlePending } = usePendingInteractionRows(threadId ? [] : threads);
   // The Questions section is page-only, so a thread tab never reads the global list.
   const forMe = useQuery({ contract: rpcContract, method: 'list', input: { view: 'for_me', limit: 50 }, enabled: !threadId });
-  const questionCount = Object.values(pendingRows).reduce((sum, rows) => sum + rows.length, 0) + (forMe.data?.items.length ?? 0);
+  // Reports other plugins sent, with or without a thread: bb's own chat does not show them, so they are listed here until handled.
+  const noticeList = useQuery({ contract: rpcContract, method: 'list', input: { view: 'unread', notices: true, limit: 50 }, enabled: !threadId });
+  const notices = noticeList.data?.items.filter(item => item.notice) ?? [];
+  const questionCount = Object.values(pendingRows).reduce((sum, rows) => sum + rows.length, 0) + (forMe.data?.items.filter(item => item.declinedAt === null).length ?? 0) + notices.length;
   const [error, setError] = useState('');
   const undo = useReadUndo(), [saved, setSaved] = useTransientText();
   useEffect(() => { const receive = (event: Event) => { const detail = (event as CustomEvent<{created:boolean}>).detail; localStorage.removeItem(SAVED_FLASH); setSaved(detail.created ? 'Saved to Agent Hub' : 'Already in Saved'); }; const stored = localStorage.getItem(SAVED_FLASH); if (stored) { localStorage.removeItem(SAVED_FLASH); try { const detail = JSON.parse(stored); if (Date.now() - detail.at < 5000) receive(new CustomEvent('answers:saved', { detail })); } catch {} } window.addEventListener('answers:saved', receive); return () => window.removeEventListener('answers:saved', receive); }, [setSaved]);
@@ -580,9 +622,9 @@ function AgentHubPanelContent({ threadId }: { threadId?: string }) {
   const [chatTitleTarget, setChatTitleTarget] = useState<HTMLDivElement | null>(null), [chatSearchTarget, setChatSearchTarget] = useState<HTMLDivElement | null>(null), [chatActionsTarget, setChatActionsTarget] = useState<HTMLDivElement | null>(null);
   const searchable = list && (view !== 'saved' || !!query || (savedPeek.data?.items.length ?? 0) > 1);
   // iOS zooms into a focused field under 16px; bb's phone text-sm is 15px, so every field here reads 16px on touch screens.
-  return <section onPointerDownCapture={activate} onFocusCapture={activate} className="flex h-full flex-col bg-background [@media(pointer:coarse)]:[&_:is(input,textarea,select,[contenteditable=true])]:text-[16px]">
+  return <section onPointerDownCapture={activate} onFocusCapture={activate} onClickCapture={threadId ? undefined : routeThreadLink} className="flex h-full flex-col bg-background [@media(pointer:coarse)]:[&_:is(input,textarea,select,[contenteditable=true])]:text-[16px]">
     {threadId && <Pools threadId={threadId} />}
-    {/* Left edge on the chat text column (the history list pl-4 plus its rows px-2), so the avatar lines up with the messages. */}<div className="space-y-2 border-b border-border-seam bg-background py-2 pl-6 pr-4">
+    {/* Left edge on the chat text column (the history list pl-4 plus its rows px-2), so the title lines up with the messages. */}<div className="space-y-2 border-b border-border-seam bg-background py-2 pl-6 pr-4">
       <div data-page-toolbar className="flex min-h-8 items-center gap-1">
         {/* Never narrower than the avatar, so a crowded row truncates the title instead of overlapping the selector. */}<div ref={setChatTitleTarget} className="mr-1.5 hidden min-w-8 max-w-[40%] items-center gap-2.5 overflow-hidden min-[640px]:[&:not(:empty)]:flex" />
         {threadId ? <ViewPicker options={viewOptions} value={view} onChange={setView} />
@@ -600,7 +642,7 @@ function AgentHubPanelContent({ threadId }: { threadId?: string }) {
       </div>}
     </div>
     {error && <p role="alert" className="px-4 pt-2 text-sm text-destructive">{error}</p>}{saved && <p role="status" className="px-4 py-2 text-xs">{saved}{view !== 'saved' && <> · <Button size="sm" variant="ghost" onClick={() => threadId ? setView('saved') : setSection('saved')}>Show in Saved</Button></>}</p>}
-    {questions ? <QuestionsSection threads={threads} projects={projects} rows={pendingRows} settle={settlePending} items={forMe.data?.items ?? []} loading={!forMe.data} onOpen={openChat} /> : view === 'inbox' ? <div className="min-h-0 flex-1"><Inbox contactsHidden={contactsHidden || inSidebar} onBulkRead={undo.record} bbChat={bbChat} search={chatSearch} onSearch={setChatSearch} onChat={setChatOpen} toolbarTargets={{ title: chatTitleTarget, search: chatSearchTarget, actions: chatActionsTarget }} /></div> : <div className={`min-h-0 flex-1 overflow-auto bg-background ${threadId ? 'px-4' : 'p-4'}`}><Page key={JSON.stringify([threadId, view, searchQuery, projectId])} {...{ threadId, view }} query={list ? searchQuery : ''} projectId={list ? projectId || undefined : undefined} /></div>}
+    {questions ? <QuestionsSection threads={threads} projects={projects} rows={pendingRows} settle={settlePending} items={[...(forMe.data?.items ?? []), ...notices]} loading={!forMe.data || !noticeList.data} onOpen={openChat} /> : view === 'inbox' ? <div className="min-h-0 flex-1"><Inbox contactsHidden={contactsHidden || inSidebar} onBulkRead={undo.record} bbChat={bbChat} search={chatSearch} onSearch={setChatSearch} onChat={setChatOpen} toolbarTargets={{ title: chatTitleTarget, search: chatSearchTarget, actions: chatActionsTarget }} /></div> : <div className={`min-h-0 flex-1 overflow-auto bg-background ${threadId ? 'px-4' : 'p-4'}`}><Page key={JSON.stringify([threadId, view, searchQuery, projectId])} {...{ threadId, view }} query={list ? searchQuery : ''} projectId={list ? projectId || undefined : undefined} /></div>}
     {undo.line}
   </section>;
 }
@@ -613,10 +655,10 @@ function QuestionsSection({ threads, projects, rows, settle, items, loading, onO
   const entries = [...threads.flatMap(thread => rows[thread.id]?.length ? [{ key: thread.id, threadId: thread.id, at: Math.min(...rows[thread.id]!.map(row => row.createdAt)), item: null as Item | null }] : []), ...items.map(item => ({ key: item.id, threadId: item.threadId, at: item.createdAt, item }))].sort((a, b) => Number(b.item?.urgency === 'blocking') - Number(a.item?.urgency === 'blocking') || a.at - b.at);
   if (!entries.length) return loading ? null : <div className="min-h-0 flex-1 overflow-auto"><EmptyState icon={emptyCopy.for_me[0]} title={emptyCopy.for_me[1]}>{emptyCopy.for_me[2]}</EmptyState></div>;
   return <div className="min-h-0 min-w-0 flex-1 overflow-auto p-3"><div className="space-y-3">{entries.map(entry => {
-    const thread = threads.find(t => t.id === entry.threadId), projectId = thread?.projectId ?? entry.item?.projectId, title = thread?.displayTitle ?? thread?.title ?? entry.item?.threadTitle ?? 'Untitled thread';
+    const thread = threads.find(t => t.id === entry.threadId), projectId = thread?.projectId ?? entry.item?.projectId, notice = entry.item?.notice ?? null, placeholder = entry.threadId === NOTICE_THREAD, title = notice ? entry.item!.question : thread?.displayTitle ?? thread?.title ?? entry.item?.threadTitle ?? 'Untitled thread';
     return <section key={entry.key} aria-label={title} className="min-w-0 overflow-hidden rounded-xl border border-border bg-surface-raised-solid shadow-lift">
-      <header className="flex min-w-0 items-center gap-2.5 border-b border-border-hairline px-3 py-2"><Avatar id={entry.threadId} title={title} provider={thread?.providerId ? providers.find(p => p.id === thread.providerId) ?? { id: thread.providerId } : undefined} /><div className="min-w-0 flex-1"><div className="truncate text-sm font-medium">{title}</div><div className="truncate text-xs text-muted-foreground">{projects.find(project => project.id === projectId)?.name ?? entry.item?.projectName ?? 'No project'} · <time dateTime={new Date(entry.at).toISOString()}>{ago(entry.at)}</time></div></div><UrlLink href={answersThreadHref(entry.threadId)} className="shrink-0 text-xs" onClick={event => { event.preventDefault(); onOpen(entry.threadId); }}>Open thread</UrlLink></header>
-      {entry.item ? <ul className="px-2"><ItemCard item={entry.item} chat compact open={{ href: answersThreadHref(entry.threadId), label: 'Open in Agent Hub', onClick: () => onOpen(entry.threadId) }} /></ul> : <PendingInteractions threadId={entry.threadId} projectId={projectId} pending status={thread?.status} stacked shared={rows[entry.threadId]} onAnswered={rowId => settle(entry.threadId, rowId)} />}
+      <header className="flex min-w-0 items-center gap-2.5 border-b border-border-hairline px-3 py-2"><Avatar id={entry.threadId} title={title} provider={thread?.providerId ? providers.find(p => p.id === thread.providerId) ?? { id: thread.providerId } : undefined} /><div className="min-w-0 flex-1"><div className="truncate text-sm font-medium">{title}</div><div className="truncate text-xs text-muted-foreground">{projects.find(project => project.id === projectId)?.name ?? entry.item?.projectName ?? 'No project'}{notice && ` · Report from ${notice.source}`} · <time dateTime={new Date(entry.at).toISOString()}>{ago(entry.at)}</time></div></div>{!placeholder && <UrlLink href={answersThreadHref(entry.threadId)} className="shrink-0 text-xs" onClick={event => { event.preventDefault(); onOpen(entry.threadId); }}>Open thread</UrlLink>}{placeholder && notice?.managerThreadId && <UrlLink href={`${projectId ? `/projects/${encodeURIComponent(projectId)}` : ''}/threads/${encodeURIComponent(notice.managerThreadId)}`} className="shrink-0 text-xs">Intended manager</UrlLink>}</header>
+      {entry.item ? <ul className="px-2"><ItemCard item={entry.item} chat compact markable={!!notice} open={placeholder ? undefined : { href: answersThreadHref(entry.threadId), label: 'Open in Agent Hub', onClick: () => onOpen(entry.threadId) }} /></ul> : <PendingInteractions threadId={entry.threadId} projectId={projectId} pending status={thread?.status} stacked shared={rows[entry.threadId]} onAnswered={rowId => settle(entry.threadId, rowId)} />}
     </section>;
   })}</div></div>;
 }
@@ -631,7 +673,8 @@ export function ThreadQuestions({ threadId, shell }: { threadId: string; shell?:
   const { data } = useQuery({ contract: rpcContract, method: 'list', input: { view: 'for_me', threadId, limit: 50 } });
   const items = (data?.items ?? []).filter(item => item.kind === 'for_me' && item.status === 'open').sort((a, b) => Number(b.urgency === 'blocking') - Number(a.urgency === 'blocking') || a.createdAt - b.createdAt);
   if (!items.length) return null;
-  const card = <section aria-label="Questions for you"><button type="button" aria-expanded={!stack?.collapsed} onClick={stack?.toggle} className="answers-hit flex min-h-9 w-full text-left items-center gap-2 px-3 py-1.5 text-xs text-muted-foreground"><Icon name="MessageQuestion" aria-hidden className="size-3.5 shrink-0" /><span className="min-w-0 flex-1 truncate font-medium text-foreground">{items.length === 1 ? 'Question for you' : 'Questions for you'}</span><span className="rounded-full bg-surface-recessed px-1.5 text-2xs">{items.length}</span><Icon name={stack?.collapsed ? 'ChevronRight' : 'ChevronDown'} aria-hidden className="size-3.5" /></button><ul hidden={stack?.collapsed} aria-label="Questions for you" className="max-h-[min(32rem,50dvh)] divide-y divide-border-seam overflow-y-auto overscroll-contain border-t border-border-hairline px-2">{items.map(item => <ItemCard key={item.id} item={item} chat compact open={shell ? undefined : { href: answersThreadHref(threadId), label: 'Open in Agent Hub' }} />)}</ul></section>;
+  const waiting = items.filter(item => item.declinedAt === null).length;
+  const card = <section aria-label="Questions for you"><button type="button" aria-expanded={!stack?.collapsed} onClick={stack?.toggle} className="answers-hit flex min-h-9 w-full text-left items-center gap-2 px-3 py-1.5 text-xs text-muted-foreground"><Icon name="MessageQuestion" aria-hidden className="size-3.5 shrink-0" /><span className="min-w-0 flex-1 truncate font-medium text-foreground">{waiting === 1 ? 'Question for you' : 'Questions for you'}</span><span className="rounded-full bg-surface-recessed px-1.5 text-2xs">{waiting}</span><Icon name={stack?.collapsed ? 'ChevronRight' : 'ChevronDown'} aria-hidden className="size-3.5" /></button><ul hidden={stack?.collapsed} aria-label="Questions for you" className="max-h-[min(32rem,50dvh)] divide-y divide-border-seam overflow-y-auto overscroll-contain border-t border-border-hairline px-2">{items.map(item => <ItemCard key={item.id} item={item} chat compact open={shell ? undefined : { href: answersThreadHref(threadId), label: 'Open in Agent Hub' }} />)}</ul></section>;
   return shell ? <div data-promptbox-shell className={shell}>{card}</div> : card;
 }
 // bb shows its own blocking question forms in its chat; this banner adds only the agents' open questions.
@@ -690,6 +733,7 @@ function AgentHubPage() {
 }
 
 export default definePluginApp(app => {
+  app.slots.experimental_appOverlay({id:'desktop-notifier',component:DesktopNotifier});
   app.slots.settingsSection({id:'settings',title:'Agent Hub',description:'Notifications, conversations and agent warnings.',component:AgentHubSettings});
   registerChatCommands(app);
   app.slots.experimental_threadList({ id: 'agent-hub', title: 'Agent Hub contacts', description: 'Open your Agent Hub conversations from the sidebar.', component: guarded('contacts', AgentHubContacts) });
@@ -697,7 +741,7 @@ export default definePluginApp(app => {
   app.slots.experimental_tab({ id: 'my-questions', title: 'My questions', icon: 'MessageQuestion', context: { kind: 'thread' }, availability: 'fixed', component: guarded('thread tab', AgentHubPanel) });
   app.slots.experimental_tab({ id: 'info', title: 'Info', icon: 'Info', context: { kind: 'nav-panel', panelId: 'agent-hub' }, availability: 'fixed', component: () => <CrashGuard where="Info tab"><InfoTab /></CrashGuard> });
   app.slots.experimental_tab({ id: 'diff', title: 'Diff', icon: 'FileDiff', context: { kind: 'nav-panel', panelId: 'agent-hub' }, availability: 'fixed', component: () => <CrashGuard where="Diff tab"><DiffTab /></CrashGuard> });
-  app.slots.experimental_tab({ id: 'work-board', title: 'Work Board', icon: 'ListTodo', context: { kind: 'nav-panel', panelId: 'agent-hub' }, availability: 'fixed', component: () => <CrashGuard where="Work Board tab"><WorkBoardTab /></CrashGuard> });
+  app.slots.experimental_tab({ id: 'work-board', title: 'Work Board', icon: 'work-board/kanban', context: { kind: 'nav-panel', panelId: 'agent-hub' }, availability: 'fixed', component: () => <CrashGuard where="Work Board tab"><WorkBoardTab /></CrashGuard> });
   app.slots.experimental_tab({ id: 'pools', title: 'Reply pools', icon: 'Sent', context: { kind: 'nav-panel', panelId: 'agent-hub' }, availability: 'fixed', component: () => <CrashGuard where="pools"><Pools /></CrashGuard> });
   app.slots.messageAction({ id: 'pool', title: 'Add to reply pool', icon: 'ListEnd', async run({ threadId, message, selectedText, experimental_panel }) {
     const input = rpcContract.poolAdd.input.parse({ threadId, quote: selectedText ?? message.text, quoteSeq: message.experimental_messageSeq });

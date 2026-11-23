@@ -3,6 +3,17 @@ import { z } from "zod";
 export const autoArchiveAfterDaysSchema = z.enum(["off", "3", "7", "14", "30"]);
 export const staleIdleThresholdSchema = z.enum(["off", "30", "45", "60", "120"]);
 export const statusNotificationsSchema = z.enum(["off", "all", "done"]);
+/**
+ * How plans apply to a project; off is the default for new projects. `optional` is plans and review without any
+ * refusal; `required` also keeps a card out of In progress until its plan is approved. Only the owner changes it.
+ */
+export const planningSchema = z.enum(["off", "optional", "required"]);
+export const planningOn = (project: { planning?: string | null }) => project.planning === "optional" || project.planning === "required";
+export const planningRequired = (project: { planning?: string | null }) => project.planning === "required";
+export const planningOffMessage = (prefix: string) => `planning is off for project ${prefix}; the owner can enable it in the project settings`;
+export const PLANNING_OWNER_ONLY = "planning is changed by the owner in the project settings";
+/** Automation switches of the closed-card thread handling; both default to on. */
+export const archiveSettingSchema = z.enum(["on", "off"]);
 export const boardPreferencesSchema = z.object({
   defaultScreen: z.enum(["last-project-board", "last-project-list", "all", "active"]),
 }).strict();

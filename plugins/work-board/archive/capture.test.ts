@@ -49,6 +49,7 @@ async function populate(h: Host, tasks: number, perTask: { rich: boolean }, pref
   const db = bb.storage.database();
   const structured = createStructuredStore(bb, store);
   const project = store.tasks.createProject({ name: "Capture", prefix, color: "blue" });
+  store.tasks.updateProject(project.id, { planning: "optional" });
   const labels = ["A", "B", "C"].map((name) => store.tasks.createLabel({ projectId: project.id, name, color: "green" }));
   for (let i = 0; i < tasks; i++) {
     const task = store.tasks.createTask({ projectId: project.id, title: `Task ${i}` });
@@ -106,6 +107,7 @@ function legacyRecords(h: Host, projectId: string) {
         questions: structured.listQuestions(task.id),
         plan: createPlanStore(db, store.tasks).capture(task.id),
         planNotes: createPlanNoteStore(db, store.tasks, createPlanStore(db, store.tasks).head).capture(task.id),
+        planReviews: createPlanStore(db, store.tasks).captureReviews(task.id),
         attachments: [
           ...store.tasks.listAttachmentsForTask(task.id),
           ...comments.flatMap((comment) => store.tasks.listAttachmentsForComment(comment.id)),
@@ -150,7 +152,7 @@ describe("captureProject batching", () => {
     }
     expect(counts[1]).toBe(counts[0]);
     // Per-task reads cost 96 / 906 statements for these fixtures; batching plus dependency rows and the three schedule tables measures 18.
-    expect(counts[0]).toBeLessThanOrEqual(22);
+    expect(counts[0]).toBeLessThanOrEqual(23);
   });
 
   it("keeps the statement count constant for populated questions, evidence, attachments and threads", async () => {
@@ -163,7 +165,7 @@ describe("captureProject batching", () => {
       counts.push(h.counter.statements);
     }
     expect(counts[1]).toBe(counts[0]);
-    expect(counts[0]).toBeLessThanOrEqual(22);
+    expect(counts[0]).toBeLessThanOrEqual(23);
   });
 
   it("keeps the statement count constant as schedules, sources and runs grow", async () => {
@@ -185,7 +187,7 @@ describe("captureProject batching", () => {
       counts.push(h.counter.statements);
     }
     expect(counts[1]).toBe(counts[0]);
-    expect(counts[0]).toBeLessThanOrEqual(22);
+    expect(counts[0]).toBeLessThanOrEqual(23);
   });
 
   it("round-trips captured records through restoreProject", async () => {

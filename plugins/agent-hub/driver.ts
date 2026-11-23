@@ -1,9 +1,11 @@
 import { getProjectConfig } from './project-config';
+import { NOTICE_THREAD } from './contract';
+import { sendOrAppend } from './queued-notice';
 import type { BbPluginApi } from '@get-bb/plugin-sdk';
 import type Database from 'better-sqlite3';
 import { applyEvents, COMPACTED_EVENT, CONTEXT_EVENT, QUIET_SQL, RELEVANT, type Event } from './ingest';
 
-const notFound = (e: unknown) => {
+export const notFound = (e: unknown) => {
   const error = e as { status?: number; statusCode?: number; code?: string };
   return error?.status === 404 || error?.statusCode === 404 || error?.code === 'not_found';
 };
@@ -36,9 +38,19 @@ export function createDriver(bb: BbPluginApi, db: Database.Database, invalidate:
     void result.finally(() => { if (locks.get(id) === result) locks.delete(id); }).catch(() => {});
     return result;
   }
+  // A warning is rare and costly to get wrong: before sending one, read the turn's tool calls again, since ingest once missed one.
+  async function usedChannel(id: string, turn: string, seq: number, channelCommands: string[]) {
+    try {
+      const events = await bb.sdk.threads.events.list({threadId:id,types:['item/completed'],order:'desc',limit:'200',beforeSeq:String(seq),signal});
+      return events.some(e => e.scope?.kind === 'turn' && e.scope.turnId === turn && ['agent_hub_ask','answers_ask','agent_hub_report','answers_report',...channelCommands].some(fragment => { const item = (e.data as {item?:{tool?:string;name?:string;command?:string}}|undefined)?.item; return `${item?.tool ?? ''} ${item?.name ?? ''} ${item?.command ?? ''}`.includes(fragment); }));
+    } catch { return false; }
+  }
   function remove(id: string) {
+    if (id === NOTICE_THREAD) return;
     const hadItems = !!db.prepare('SELECT 1 FROM items WHERE thread_id=? LIMIT 1').get(id);
     db.transaction(() => {
+      // A notice outlives its thread: it moves to the placeholder before the thread's items go.
+      db.prepare('UPDATE items SET thread_id=? WHERE thread_id=? AND id IN (SELECT id FROM notices)').run(NOTICE_THREAD,id);
       db.prepare("DELETE FROM items WHERE thread_id=? AND kind!='saved'").run(id);
       db.prepare('DELETE FROM pool_entries WHERE thread_id=?').run(id);
       db.prepare('DELETE FROM request_aliases WHERE thread_id=?').run(id);
@@ -77,11 +89,12 @@ export function createDriver(bb: BbPluginApi, db: Database.Database, invalidate:
     const {channelCommands} = await getProjectConfig(bb,projectId);
     let changed = false;
     async function apply(events: Event[]) {
-      const warnings: string[] = [];
-      changed = db.transaction(() => applyEvents(db,id,events,projectId,Date.now(),questions,live.has(id),(text,at) => {if (at >= startedAt) warnings.push(text);},channelCommands))() || changed;
-      for (const text of warnings) {
+      const warnings: {text:string;turn:string;seq:number}[] = [];
+      changed = db.transaction(() => applyEvents(db,id,events,projectId,Date.now(),questions,live.has(id),(text,at,turn,seq) => {if (at >= startedAt) warnings.push({text,turn,seq});},channelCommands))() || changed;
+      for (const {text,turn,seq} of warnings) {
         if (signal.aborted || thread.archivedAt || db.prepare('SELECT 1 FROM archived_threads WHERE thread_id=?').get(id) || !await handoffWarnings()) continue;
-        try {await bb.sdk.threads.send({threadId:id,originPluginId:'agent-hub',mode:'queue-if-active',input:[{type:'text',text,mentions:[]}]});}
+        if (await usedChannel(id,turn,seq,channelCommands)) {bb.log.warn(`Agent Hub warning skipped: turn ${turn} used a channel its ingest missed`); continue;}
+        try {await sendOrAppend(bb,{threadId:id,text,header:false});}
         catch (e) {bb.log.warn(`Agent Hub handoff warning: ${String(e)}`);}
       }
     }
@@ -136,6 +149,7 @@ export function createDriver(bb: BbPluginApi, db: Database.Database, invalidate:
     }
   }
   function schedule(id: string, listed?: Thread) {
+    if (id === NOTICE_THREAD) return Promise.resolve();
     const existing = scheduled.get(id);
     if (existing) {existing.dirty=true; if (listed) existing.listed=listed; return existing.promise;}
     const entry: { dirty: boolean; listed?: Thread; promise: Promise<void> } = {dirty:false,listed,promise:Promise.resolve()};
@@ -145,7 +159,7 @@ export function createDriver(bb: BbPluginApi, db: Database.Database, invalidate:
     scheduled.set(id,entry); return entry.promise;
   }
   async function reconcile() {
-    const tracked = db.prepare('SELECT ids.thread_id,s.last_seq,s.last_error,s.ingested_thread_updated_at FROM (SELECT thread_id FROM threads_state UNION SELECT thread_id FROM pool_entries) ids LEFT JOIN threads_state s USING(thread_id)').all() as (State & {thread_id:string})[];
+    const tracked = db.prepare('SELECT ids.thread_id,s.last_seq,s.last_error,s.ingested_thread_updated_at FROM (SELECT thread_id FROM threads_state UNION SELECT thread_id FROM pool_entries) ids LEFT JOIN threads_state s USING(thread_id)').all().filter((r) => (r as {thread_id:string}).thread_id !== NOTICE_THREAD) as (State & {thread_id:string})[];
     for (let i=0;i<tracked.length && !signal.aborted;i+=200) {
       const ids = tracked.slice(i,i+200).map(r=>r.thread_id);
       try {
@@ -153,12 +167,14 @@ export function createDriver(bb: BbPluginApi, db: Database.Database, invalidate:
         const known = new Map(found.map(t=>[t.id,t]));
         for (const t of found) db.prepare(t.archivedAt ? 'INSERT OR IGNORE INTO archived_threads VALUES (?)' : 'DELETE FROM archived_threads WHERE thread_id=?').run(t.id);
         await Promise.all(tracked.slice(i,i+200).map(async row => {
-          const id=row.thread_id, thread=known.get(id);
+          const id=row.thread_id; let thread: Thread|undefined=known.get(id);
           if (thread?.archivedAt) return;
           if (thread && !row.last_error && row.ingested_thread_updated_at!==null && thread.updatedAt<=row.ingested_thread_updated_at) return;
           if (!thread) {
-            try {await bb.sdk.threads.get({threadId:id,signal});}
+            try {thread=await bb.sdk.threads.get({threadId:id,signal});}
             catch (e) {if (notFound(e)) await locked(id,async()=>remove(id)); return;}
+            // bb's list leaves archived threads out, so only this lookup tells an archive missed while the plugin was down.
+            if (thread.archivedAt) {db.prepare('INSERT OR IGNORE INTO archived_threads VALUES (?)').run(id); return;}
           }
           await schedule(id,thread).catch(()=>{});
         }));
@@ -174,6 +190,7 @@ export function createDriver(bb: BbPluginApi, db: Database.Database, invalidate:
   return {
     schedule, reconcile,
     withThread: <T>(id: string, mutate: () => T | Promise<T>) => locked(id,async () => {
+      if (id === NOTICE_THREAD) throw new Error('thread not found');
       await attempt(id);
       if (!db.prepare('SELECT 1 FROM threads_state WHERE thread_id=?').get(id)) throw new Error('thread not found');
       return mutate();

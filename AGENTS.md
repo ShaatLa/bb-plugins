@@ -13,3 +13,7 @@ Use placeholders such as `proj_example`, `thr_example`, `EXA-1`, `example/ready-
 ## Plugin settings: one field at a time
 
 Agents keep full access to plugin settings, but read and change them one field at a time instead of writing whole objects. A global setting is a native field (`bb.settings.define`), so `bb plugin config <id>` lists it and `bb plugin config <id> set <key> <value>` / `unset <key>` change it. A per-project setting gets `bb <plugin> config get [<key>] --project <id>` and `bb <plugin> config set <key> <value> --project <id>`, plus RPC `config.get {projectId, key?}` and `config.set {projectId, key, value}`, which validate and return only that key. Existing whole-object calls keep working.
+
+## Releasing a plugin
+
+Bump `version` in the plugin's `package.json` and push to `main`; CI tags `<entry>/vX.Y.Z`. To install that release on this machine, run `scripts/install-release.sh <entry> [version]` instead of copying the plugin by hand. Never `bb plugin remove` an installed plugin to change its source: it deletes the plugin's settings, secrets and schedules.

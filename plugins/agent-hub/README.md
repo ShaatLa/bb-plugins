@@ -6,7 +6,7 @@ Open Full transcript from the conversation toolbar or an expanded work step. It 
 
 The thread table of contents button beside search lists your messages in order. Search results and ?msg= links open an anchored Agent Hub window directly; scrolling loads earlier or newer windows as needed, and Scroll to latest returns to current history. Anchors missing from Agent Hub’s stored history offer the full transcript.
 
-Expand a work-log step to load its command, output, exit code, tool arguments or file diff. Other payloads link to the full transcript. The current agent plan appears once below the conversation as a compact checklist when bb exposes todos.
+As in bb’s chat, messages the agent writes in a row, with no tool step or reasoning between them, are one reply: all of them stay below the work log, together in the answer; a message followed by a tool step folds into the log. Expand a work-log step to load its command, output, exit code, tool arguments or file diff. Other payloads link to the full transcript. The current agent plan appears once below the conversation as a compact checklist when bb exposes todos.
 
 The @ menu searches workspace files and folders in the selected thread’s environment after a short debounce (up to eight paths and eight threads). Selecting a path inserts a native workspace mention pill and sends its typed metadata.
 
@@ -16,9 +16,9 @@ Agent Hub solves a simple problem: answers to your questions get lost among agen
 
 The plugin tracks your messages in all threads except those initiated by agents (which have a parent thread), linking them to the final response of a successfully completed run, agent queries directed at you, and messages you manually saved.
 
-A run that did not respond to your message (a child thread finished, another thread received a message, or a plugin triggered an action) also appears in the conversation as an **update**: the agent's final message without your bubble, annotated with a source label ("After … finished", "Message from …", or plugin ID). Consecutive updates are collapsed into a single "N background updates" group showing a preview of the last one (expandable by clicking). They do not have a read status (are excluded from notification counters) and are not sent via push. If an update contains what appears to be a question (`?` at the end of a phrase outside code blocks, links, or quotes), it remains a separate message, is marked as unread, and triggers a push when `notify: questions` or `all` is configured. Reports marked by the agent via `agent_hub_report` behave identically. Once a thread and its sub-sessions go quiet, the most recent message in the group is not collapsed: the full result after a series of updates remains visible. While work is in progress, new updates are collapsed like the rest.
+A run that did not respond to your message (a child thread finished, another thread received a message, or a plugin triggered an action) also appears in the conversation as an **update**: the agent's final message without your bubble, annotated with a source label ("After … finished", "Message from …" naming the thread or the plugin, with its message quoted under it). The label shows as soon as the agent takes the message, with the robot until the reply arrives; a script's wake-up shows only with the reply. One that reaches the agent while it is answering your message stands above your message, so the question and its answer stay together. If the agent had already written your full answer when it saw such a message mid-turn, and did little work after, its last message is the reply to that message: it goes under that message, after your answer, and your answer stays the earlier one. Consecutive updates are collapsed into a single "N background updates" group showing a preview of the last one (expandable by clicking). They do not have a read status (are excluded from notification counters) and are not sent via push. If an update contains what appears to be a question (`?` at the end of a phrase outside code blocks, links, or quotes), it remains a separate message, is marked as unread, and triggers a push when `notify: questions` or `all` is configured. Reports marked by the agent via `agent_hub_report` behave identically. Once a thread and its sub-sessions go quiet, the most recent message in the group is not collapsed: the full result after a series of updates remains visible. While work is in progress, new updates are collapsed like the rest.
 
-BB logs `bb thread tell` (used by a script to wake its own thread) as a user message. Therefore, such messages must begin with a square-bracket label, e.g., `[merge-queue watcher] …`: Agent Hub does not treat them as user questions, and the run they trigger is displayed as an update bearing that label. Links like `[EXA-12](…)` and `[x]` at the start of a message do not count as labels.
+BB logs `bb thread tell` (used by a script to wake its own thread) as a user message. Therefore, such messages must begin with a square-bracket label, e.g., `[example-watcher] build finished`: Agent Hub does not treat them as user questions, and the run they trigger is displayed as an update bearing that label. Links like `[EXA-12](…)` and `[x]` at the start of a message do not count as labels.
 
 ## Interface
 
@@ -28,19 +28,19 @@ The **Agent Hub contacts** list replaces the thread list in the BB sidebar with 
 
 ## Agent tools
 
-- `agent_hub_defer` — indicate that a response will be provided in a subsequent turn, for example after delegation.
-- `agent_hub_list` and `agent_hub_resolve` — find a deferred question and associate it with the current turn's response. The final answer must be included in the turn's final message.
+- `agent_hub_defer` — indicate that a response will be provided in a subsequent turn, for example after delegation. Without `id` it defers the thread’s newest waiting message.
+- `agent_hub_list` and `agent_hub_resolve` — find a deferred question and associate it with the current turn's response. `agent_hub_resolve` requires the `id` that `agent_hub_list` shows; an id that is not a waiting or deferred message of the calling thread is refused. The final answer must be included in the turn's final message.
 - `agent_hub_report` — display the turn's final message in the owner's history as a report rather than a background update. Call it in the same turn whenever handing work to the owner (ready for review, decisions awaiting them). Also use it for wrap-up messages when the turn was initiated by someone other than the owner (another agent, sub-session, or script) and no one is expecting further questions.
-- `agent_hub_ask` — prompt the user with a question, including blocking decisions. The response arrives in the thread as a new message quoting the question. `options` accepts 1–6 distinct choices of up to 200 characters each, `recommended` highlights one, and `reason` explains the choice. Decisions regarding a specific Work Board task are tracked on its card.
-- A multipart question: `agent_hub_ask` with `questions` (2–10 questions, each with its own `header`, `options`, `multiSelect`, and `recommended`) appears as a tabbed BB form. The agent receives one response, with a line for each question. `multiSelect` (also available for a single question with `options`) allows multiple choices using checkboxes; any form accepts a custom choice.
+- `agent_hub_ask` — prompt the user with a question, including blocking decisions. The response arrives in the thread as a new message quoting the question. `options` accepts 1–6 distinct choices of up to 200 characters each, `recommended` highlights one, and `reason` explains the choice. Agents must use it instead of writing the question in chat, then end the turn. A single question requires `question`; `reason` requires `recommended`, and `recommended` must equal one of `options`. Decisions regarding a specific Work Board task are tracked on its card.
+- A multipart question: `agent_hub_ask` with `questions` instead of `question` (`question` then only titles the form and may be omitted; 2–10 questions, each with its own `header`, `options`, `multiSelect`, and `recommended`) appears as a tabbed BB form. The agent receives one response, with a line for each question. `multiSelect` (also available for a single question with `options`) allows multiple choices using checkboxes; any form accepts a custom choice.
 - Repeated `agent_hub_ask` calls in the same turn merge into one form of up to 10 parts: choices and recommendations are preserved, urgency increases, and the earliest deadline applies. Merging does not send a new push unless urgency rises to `blocking`.
-- `handoffWarnings` (default on) warns agents who hand work over without `agent_hub_report` or ask in chat without `agent_hub_ask` or a command matching the project’s `channelCommands`. Live top-level completions only; archived threads and backfilled completions never warn. The `[answers]` plugin message queues in the same thread. Its reply stays read and sends no push unless the agent uses `agent_hub_report` or `agent_hub_ask`; it never triggers another warning. Existing handoff detection and **Asked in chat** filing remain as a safety net.
+- `handoffWarnings` (default on) warns agents who hand work over without `agent_hub_report` or ask in chat without `agent_hub_ask` or a command matching the project’s `channelCommands`. Live top-level completions only; archived threads and backfilled completions never warn. The `[agent-hub]` plugin message names the fix and queues in the same thread; for a missed handoff the agent calls `agent_hub_report` and restates the handoff in that turn’s final message. Its reply stays read and sends no push unless the agent uses `agent_hub_report` or `agent_hub_ask`; it never triggers another warning. Existing handoff detection and **Asked in chat** filing remain as a safety net.
 - `remindHours` in notification settings sets the reminder interval for open `blocking` questions (3 hours by default; 0 disables reminders). At most three reminders are sent; each arrives separately, includes the question’s age, and respects quiet hours.
 - `urgency`: `blocking` raises the question in lists and sends a separate `Blocking` push; `normal` is the default, and `low` sends no push. Notification settings and quiet hours always apply.
-- `deadlineMinutes` (an integer from 5 to 10080) sets a deadline, after which the agent receives the default answer marked `Defaulted`. A single question requires `recommended`; parts without a recommendation receive `Your call`. The owner’s answer before the deadline takes priority.
+- `deadlineMinutes` (an integer from 5 to 10080) sets a deadline, after which the agent receives the default answer marked `Defaulted`. Optional; on a single question it requires `recommended`, and parts without a recommendation receive `Your call`. The owner’s answer before the deadline takes priority.
 - Partial answers: you can answer only some parts of a form; empty parts arrive as `Skipped`, and `Your call` arrives as `Your call (decide yourself)`. It excludes other checkboxes; at least one answer is required.
-- A question the agent asks the user as plain text in its final reply also lands in Questions, marked **Asked in chat**, counted in the badge and push like an `agent_hub_ask` question. It is the last sentence ending in "?" outside code, links, quotes and tables, unless it names a channel ("on the card", "in Agent Hub") or the agent called `agent_hub_ask` or a command matching `channelCommands` in that turn. A short question ("Want it?") is taken together with the previous sentence. The reply goes to the thread quoting the question; a rhetorical question is closed with **Not a question**.
-- `agent_hub_withdraw` — withdraw your own open question from Questions with a reason when an answer is no longer needed (the agent found it, changed course, or asked twice). Only unanswered questions from your own thread can be withdrawn, including questions caught from chat text. The question leaves the counter and For me, sends no push, and stays in history marked **Withdrawn** with the reason; it can still be answered. `agent_hub_list` shows the agent’s open questions and their IDs.
+- A question the agent asks the user as plain text in its final reply also lands in Questions, marked **Asked in chat**, counted in the badge and push like an `agent_hub_ask` question. It is the last sentence ending in "?" outside code, links, quotes and tables, unless it names a channel ("on the card", "in Agent Hub") or the agent called `agent_hub_ask` or a command matching `channelCommands` in that turn. A short question ("Want it?") is taken together with the previous sentence. The reply goes to the thread quoting the question; a rhetorical question is closed with **Not a question**. Agent Hub then reminds the agent to call `agent_hub_ask`; that call replaces the caught question in place (with its options), so the user still sees one question.
+- `agent_hub_withdraw` — withdraw your own open question from Questions with a reason when an answer is no longer needed (the agent found it, changed course, or asked twice). `id` and `reason` are both required. Only unanswered questions from your own thread can be withdrawn, including questions caught from chat text; an answered, already withdrawn or foreign id is refused with the fix. A merged multi-part form is withdrawn whole. The question leaves the counter and For me, sends no push, and stays in history marked **Withdrawn** with the reason; it can still be answered. `agent_hub_list` shows the agent’s open questions and their IDs.
 
 ## CLI and Installation
 
@@ -50,7 +50,7 @@ bb agent-hub get ID [--json]
 bb agent-hub read <ids...> | --all [--thread ID]
 bb agent-hub status [--thread ID]
 bb agent-hub digest [--since 24h|7d|ISO-date] [--json]
-bb plugin install git:https://github.com/ShaatLa/bb-plugins.git@main --plugin agent-hub
+bb plugin install git:https://github.com/ShaatLa/bb-plugins.git@0.x --plugin agent-hub --tag-prefix agent-hub/
 ```
 
 ## Limitations
@@ -70,7 +70,7 @@ By default, **Inbox** opens: threads with unread replies and questions directed 
 
 In the thread's **My questions** tab, view options are selected via the top-left menu: **Unread** shows new replies in this thread, **Awaiting answer** lists your unanswered questions, **Saved** displays starred and saved replies, and **History** shows all messages with search capability. **Mark all read** is available in Inbox and Unread.
 
-Card actions only appear where they change the status: **Mark read** for unread items; **Stop waiting** for your unanswered questions (removes them from Awaiting answer); **Won’t reply** for agent questions (removes them from the Questions section and Inbox); **Remove from Saved** for saved messages. All cleared items remain in History.
+Card actions only appear where they change the status: **Mark read** for unread items; **Stop waiting** for your unanswered questions (removes them from Awaiting answer); **Won’t reply**, a quiet button beside an agent question's choices (quiets it: out of the Inbox, counts, pushes and reminders; the question stays open, listed in Questions and visible to the agent, and nothing is sent to it); **Remove from Saved** for saved messages. All cleared items remain in History.
 
 Short messages without a question mark (up to 60 characters) that receive a short agent reply (up to 160 characters) are automatically marked as read and don’t appear in the Inbox. Messages containing a “?” are tagged as “Question”.
 
@@ -108,21 +108,29 @@ The chat message menu’s **Add to reply pool** option adds selected text or the
 
 Each conversation includes a search feature for questions and answers that jumps directly to the matching message. Questions from a single turn that share an answer are grouped into a card. The bottom bar lets you type a message, attach files, schedule delivery, save a draft, or route the message into the active turn. Questions using `agent_hub_ask` with `options` render as quick reply buttons. Agent links to local files open in BB’s file viewer on the right, as in thread chat: files in the thread’s environment open as working-copy files, and other files as host files; `#L12` and `:12` open the specified line. In the input field, “/” (or “$”) opens the thread provider’s commands and skills, as in BB chat; the selection is inserted as a pill, while the message text remains `/name`.
 
-With the **Tokenomos** plugin enabled, the conversation header displays the session cost in USD based on API rates, along with the total if sub-sessions are present (`$0.80 · $1.24 with 3 subs`). A tilde (`~`) indicates an estimate or partial data. Without Tokenomos, the header is unaffected.
+With the **Tokenomos** plugin enabled, the line under the composer shows the Tokenomos icon and the session cost in USD based on API rates (the session's own cost). A tilde (`~`) indicates an estimate or partial data. A click opens today's and the last 7 days' cost, the models and the sub-sessions. Without Tokenomos, the header is unaffected.
 
-The **More** menu includes **Save** / **Remove from Saved**, **Remind later**, and, when Work Board is available, **Create task** with project selection. A reminder hides the item until the scheduled time; **Unsnooze** restores it. Failed turns are flagged as **Turn failed** and include a **Retry** button.
+The chat draws every message by its author, in one of three kinds: the **owner's** bubble (time, Copy, Copy link, Save to Agent Hub, Edit), the **agent's** text, and an **incoming** message that someone else put into the thread (another thread, a plugin, a bb notice such as a finished or failed child, or a script's `[tag]`). An incoming message has one header (icon, sender, optional verb, time) and its text quoted under it, clamped to three lines; its row has only expand and Copy link, and the agent's reply stands under it as an ordinary agent message. Every clamped body expands from the same chevron icon at the left of its message's row. Rows are always visible on touch screens, with 32px touch areas.
 
-The `notify` setting controls alerts: `off` disables them, `asked` covers agent questions directed at you, `questions` adds answers to your messages that end with a question mark, and `all` triggers for all matching events. The default is `asked` since BB already notifies when turns complete, so separate answer notifications are unnecessary. `quietHours` defines a local `HH:MM-HH:MM` window; events during this period are batched into a single notification once it ends. Delivery requires the Push Notifications plugin.
+Agent text has one row: Copy, Copy link, and a **More** menu. The **More** menu includes **Save** / **Remove from Saved**, **Remind later**, and, when Work Board is available, **Create task** with project selection. A reminder hides the item until the scheduled time; **Unsnooze** restores it. Failed turns are flagged as **Turn failed** and include a **Retry** button.
+
+The `notify` setting controls alerts: `off` disables them, `asked` covers agent questions directed at you, `questions` adds answers to your messages that end with a question mark, and `all` triggers for all matching events. The default is `asked` since BB already notifies when turns complete, so separate answer notifications are unnecessary. `quietHours` defines a local `HH:MM-HH:MM` window; events during this period are batched into a single notification once it ends. Fallback delivery requires the Push Notifications plugin.
 
 `bb agent-hub digest` lists new answers from the past 24 hours, pending questions, and direct questions from the agent. Use `--since 7d` or an ISO date to adjust the lookback window, and add `--json` for JSON output. For instance, within the Automations plugin you can schedule a daily agent task running `bb agent-hub digest --since 24h`.
 
 `bb agent-hub list` returns one page, 20 items by default (`--limit` up to 50); its text output truncates each item to one line and ends with `More: --cursor C` when there is a next page. `bb agent-hub get ID` prints one item in full. `bb agent-hub status` shows counts, active and archived tracked threads, and the 10 latest ingestion errors; `--thread ID` shows one thread.
 
-The Agent Hub side panel has Info, Diff, and Work Board tabs that follow the open chat. Info shows its environment, branch, commits, and changed files; Diff compares uncommitted or branch changes and saves Viewed marks through bb’s Git plugin. Work Board lists linked tasks and opens them in-app. Tabs read only while visible and refresh after the chat’s turn completes; unavailable integrations show an empty or error state.
+The Agent Hub side panel has Info, Diff, and Work Board tabs that follow the open chat. Info shows its environment, branch, commits, and changed files; Diff compares uncommitted or branch changes and saves Viewed marks through bb’s Git plugin. Work Board shows Work Board’s own board for the project linked to the chat (filters, drag and drop, task details), drawn by Work Board itself, with the chat’s own tasks outlined. Tabs read only while visible and refresh after the chat’s turn completes; unavailable integrations show an empty or error state.
 
 The chat’s Owed card lets you jump to, confirm or dismiss older deferred answers; they expire after three days without answer movement.
 
 Owner messages remain plain text: links, Work Board tasks, thread mentions, and known commands or skills after `/` and `$` appear as pills, as in the input field. This also applies to quotes, reply echoes, the queue, and owed answers. The Background updates preview keeps a two-line clamp and preserves thread pills; agent replies and plugin messages use BB Markdown.
+
+For messages to other threads, Agent Hub instructs agents to open with one short
+sentence, put each point in its own short paragraph or bullet, use inline code
+for commands, IDs and field names, and fence JSON objects. Blank lines separate
+paragraphs and code blocks. See [the Agent Hub skill](skills/agent-hub/SKILL.md)
+for an example.
 
 Agent and owner messages offer Copy (Markdown) and Copy link beside the message actions, with brief inline clipboard feedback. Links use the native thread route and message sequence when available.
 
@@ -130,7 +138,7 @@ Coarse-pointer controls have at least 40×40px targets, with desktop spacing and
 
 The selected chat header shows the host-rendered title, a parent link that opens in Agent Hub, and bb’s thread actions menu. Rename uses bb’s dialog; lifecycle confirmations and selection fallback remain host-driven.
 
-Copy link is in the existing More menu for agent messages; owner bubbles and interim replies without their own menu use an icon action.
+Copy link is its own icon in every message row; interim replies use the same icon.
 
 With a chat open on desktop, its avatar and title, section selector, inline search, Mark all read and thread actions share one toolbar row. Phones keep Back, title, inline search and thread actions in the chat header.
 
@@ -141,6 +149,23 @@ The permission picker beside the model uses the thread’s resolved execution op
 Focused Agent Hub chats register rebindable Focus composer (Mod+Alt+L), Search conversation (Mod+Alt+F), and Thread actions (Mod+Alt+T) commands. Other panels keep their shortcuts. Up at the start of an empty composer recalls this thread’s prompt history; Up/Down browse it and Down past the newest restores the draft and attachments.
 
 Changing provider prepares a Handoff to new thread. Exit handoff restores the source provider. The next send creates and selects a thread in the same project and environment, using the selected provider/model and a `Continue from @thread:<source-id>` mention followed by a blank line and your message. The source thread is unchanged.
+
+## Notices from other plugins
+
+A plugin that cannot reach its manager thread can hand a report to Agent Hub with the RPC `notice` (`bb.sdk.plugins.callRpc({ pluginId: 'agent-hub', method: 'notice', input })`).
+
+| Input | |
+|---|---|
+| `source` | Caller plugin id, 1–200 characters. |
+| `tickId` | Stable key of the original report, 1–500 characters. |
+| `projectId` | bb project id, 1–200 characters. |
+| `threadId` | Optional, the intended manager thread, up to 200 characters. |
+| `title` | 1–200 characters after trimming. |
+| `markdown` | The report, 1 byte to 1 MiB of UTF-8. |
+
+The result is `{ id, created }`. A repeat with the same `(source, tickId)` returns the same `id` with `created: false` and keeps the first body. A returned `id` means the notice is stored. Unknown input fields are ignored. A validation error (an empty or too long field, a body over 1 MiB) is a definite refusal: the report was not stored and a retry with the same input fails the same way. Any other error may mean the notice was stored, so retry with the same `tickId`.
+
+The notice is an unread update that needs attention, like an `agent_hub_report`: it counts in the Inbox total and the badge, and is pushed at every notification level except `off`, `asked` included, since only you can fix a manager that could not take its report, held in quiet hours. With a usable `threadId` it shows in that thread's chat. If that thread is archived, deleted, a sub-session or unknown, or no `threadId` is given, the notice is kept without a thread and shows in the **Questions** section under its project, with a link to the intended manager when there is one; a thread that is archived or deleted later moves its notices there the same way. A notice is also listed in **Questions** while it is unhandled. Long reports show a preview first: **Show full report** loads the rest. **Mark read** is "handled". Opening the manager thread in bb does not mark a notice read. Reports are kept until handled and are not deleted automatically.
 
 ## Settings
 
@@ -171,3 +196,7 @@ Choose **Add to reply pool** from the main composer’s send menu to move its te
 Drop files or images from the OS onto a reply pool header or its empty area to create an entry, or onto an existing entry to add attachments. Uploads use the thread’s project and the same ten-attachment limit as the composer. Attachment chips do not provide a custom drag-out format.
 
 If import fails, the empty database stays read-only and automatic ingestion pauses until restart, keeping retries safe. Preferences and migration status remain available. An already populated new database is preserved and reported as a migration conflict.
+
+While a bb window with Agent Hub is open and notification permission is granted, Agent Hub shows desktop/web notifications itself; clicking opens its conversation (or the Agent Hub page for a summary). One tab per browser holds the notifier lock. With no fresh notifier, delivery falls back to Push Notifications; phone clicks open bb chat. Opening a chat from any notification (bb's, Work Board's, the phone) continues in Agent Hub. Permission is managed by Push Notifications.
+
+The last five opened conversations stay mounted. Hidden chats pause their subscriptions and effects; returning preserves scroll position, expanded cards, transcript and composer state immediately, then refreshes in place. Opening a sixth chat evicts the least recently opened; evicted chats and page reloads use remembered scroll restoration.

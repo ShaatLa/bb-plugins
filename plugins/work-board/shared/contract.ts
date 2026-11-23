@@ -4,12 +4,14 @@ import { taskActivitySchema } from "./task-activity.js";
 import { storageMethods } from "./storage";
 import { gitSyncMethods } from "./git-sync";
 import { lockMethods } from "./locks";
+import { attentionUiMethods } from "./attention";
+import { checksUiMethods } from "./checks";
 import { taskDateFiltersSchema } from "./task-dates.js";
 import { PLAN_FORMATS, PLAN_OPS, PLAN_STATES } from "./plan";
 import { PLAN_NOTE_BODY_MAX, PLAN_NOTE_CONTEXT_MAX, PLAN_NOTE_HEADING_MAX, PLAN_NOTE_KINDS, PLAN_NOTE_QUOTE_MAX, PLAN_NOTE_STATES } from "./plan-notes";
 import type { PluginRpcContract } from "@get-bb/plugin-sdk";
 import { z } from "zod";
-import { autoArchiveAfterDaysSchema, staleIdleThresholdSchema, statusNotificationsSchema, boardPreferencesSchema } from "./project-settings";
+import { archiveSettingSchema, autoArchiveAfterDaysSchema, planningSchema, staleIdleThresholdSchema, statusNotificationsSchema, boardPreferencesSchema } from "./project-settings";
 import {
   TASK_SORTS,
   TASKS_PAGE_DEFAULT_LIMIT,
@@ -247,6 +249,11 @@ const questionStateSchema = z
       });
   });
 
+/** The wake a question write sent the plan reviewer: `failed` lists the threads that could not be told, `hint` says what to do by hand. */
+export const planWakeSchema = z
+  .object({ event: z.enum(["paused", "resumed"]), delivered: z.enum(["sent", "failed"]), failed: z.array(z.string()), hint: z.string().nullable() })
+  .strict();
+export type PlanWake = z.infer<typeof planWakeSchema>;
 export const questionSchema = questionStateSchema
   .safeExtend({
     id: idSchema,
@@ -313,6 +320,16 @@ export const projectSchema = z
     autoArchiveAfterDays: autoArchiveAfterDaysSchema.optional(),
     staleIdleMinutes: staleIdleThresholdSchema.optional(),
     statusNotifications: statusNotificationsSchema.optional(),
+    /** v21: archive the sessions Work Board created for a card when it closes (default on). */
+    archiveThreadsOnClose: archiveSettingSchema.optional(),
+    /** v21: archive a dedicated plan reviewer after it approved the plan (default on). */
+    archiveReviewerOnApproval: archiveSettingSchema.optional(),
+    planning: planningSchema.optional(),
+    /** False until the "only with an approved plan" flags were set up (by the owner, or by the first switch to required). */
+    planFlagsInitialized: z.boolean().optional(),
+    /** When planning last changed and what it was before; null until the first change. */
+    planningChangedAt: z.string().nullable().optional(),
+    planningPrevious: planningSchema.nullable().optional(),
     color: z.string(),
     folderId: idSchema.nullable(),
     linkedBbProjectId: z.string().startsWith("proj_").nullable(),
@@ -490,11 +507,22 @@ const tasksDomainErrorSchema = z
   })
   .strict();
 
+/** What happened to one session linked to a card that this change closed. */
+export const closedThreadSchema = z
+  .object({ threadId: z.string(), action: z.enum(["archived", "on_idle", "kept"]), reason: z.string().nullable() })
+  .strict();
+export type ClosedThread = z.infer<typeof closedThreadSchema>;
+
 const taskMutationResultSchema = z.discriminatedUnion("ok", [
   z
     .object({
       ok: z.literal(true),
       task: taskSchema,
+      /** Only when the change closed the card: the fate of every linked session. */
+      closedThreads: z.array(closedThreadSchema).optional(),
+      /** Only when the call asked to attach its own thread: whether that link was made, and why not. */
+      attached: z.boolean().optional(),
+      attachWarning: z.string().optional(),
     })
     .strict(),
   z.object({ ok: z.literal(false), error: tasksDomainErrorSchema }).strict(),
@@ -550,6 +578,8 @@ const updateTaskInputSchema = z
     epicId: idSchema.nullable().optional(),
     labelIds: taskLabelsSchema.optional(),
     agentThreadId: evidenceThreadSchema.nullable().optional(),
+    /** Attach the calling thread (`agentThreadId`) to the card in the same write; only with a progress note, as `update --progress` does. */
+    attachCaller: z.boolean().optional(),
     authorName: nonBlankStringSchema.default("You"),
   })
   .strict()
@@ -577,6 +607,9 @@ const updateProjectInputSchema = z
     autoArchiveAfterDays: autoArchiveAfterDaysSchema.optional(),
     staleIdleMinutes: staleIdleThresholdSchema.optional(),
     statusNotifications: statusNotificationsSchema.optional(),
+    archiveThreadsOnClose: archiveSettingSchema.optional(),
+    archiveReviewerOnApproval: archiveSettingSchema.optional(),
+    planning: planningSchema.optional(),
     color: nonBlankStringSchema.optional(),
     folderId: idSchema.nullable().optional(),
     linkedBbProjectId: z.string().startsWith("proj_").nullable().optional(),
@@ -589,6 +622,9 @@ const updateProjectInputSchema = z
       input.autoArchiveAfterDays !== undefined ||
       input.staleIdleMinutes !== undefined ||
       input.statusNotifications !== undefined ||
+      input.archiveThreadsOnClose !== undefined ||
+      input.archiveReviewerOnApproval !== undefined ||
+      input.planning !== undefined ||
       input.name !== undefined ||
       input.color !== undefined ||
       input.folderId !== undefined ||
@@ -689,6 +725,10 @@ export const planVersionSchema = z
     removed: z.number().int().min(0),
   })
   .strict();
+/** Who approves the plan: the owner, or a reviewer thread. A plan stored before reviewers existed has the owner. */
+export const planReviewerSchema = z
+  .object({ kind: z.enum(["owner", "thread"]), threadId: z.string().regex(/^thr_/).nullable().default(null) })
+  .strict();
 export const taskPlanHeadSchema = z
   .object({
     taskId: idSchema,
@@ -697,9 +737,25 @@ export const taskPlanHeadSchema = z
     state: planStateSchema,
     updatedAt: z.string(),
     updatedBy: planAuthorSchema,
+    reviewer: planReviewerSchema,
+    /** The version that was submitted for review; null when the plan was never submitted with a reviewer. */
+    reviewVersion: z.number().int().min(1).nullable(),
   })
   .strict();
-const planErrorCodes = ["plan_conflict", "plan_no_change", "plan_invalid", "plan_archived", "plan_state", "secret_detected"] as const;
+export const PLAN_REVIEW_OUTCOMES = ["pending", "changes_requested", "approved", "superseded", "reassigned"] as const;
+/** One review attempt: a plan version, the reviewer it went to and how that attempt ended. */
+export const planReviewSchema = z
+  .object({
+    version: z.number().int().min(1),
+    reviewer: planReviewerSchema,
+    submittedByThread: z.string().regex(/^thr_/).nullable(),
+    submittedAt: z.string(),
+    outcome: z.enum(PLAN_REVIEW_OUTCOMES),
+    decidedAt: z.string().nullable(),
+    decidedBy: z.string().nullable(),
+  })
+  .strict();
+const planErrorCodes = ["planning_off", "plan_conflict", "plan_no_change", "plan_invalid", "plan_archived", "plan_state", "secret_detected"] as const;
 const planErrorSchema = z
   .object({
     code: z.enum(planErrorCodes),
@@ -708,6 +764,37 @@ const planErrorSchema = z
   .strict();
 const planMutationResultSchema = z.discriminatedUnion("ok", [
   z.object({ ok: z.literal(true), plan: taskPlanHeadSchema, version: planVersionSchema.nullable() }).strict(),
+  z.object({ ok: z.literal(false), error: planErrorSchema }).strict(),
+]);
+/** `owner` or a thread id; the plan author picks it on submit. */
+export const planReviewerInputSchema = z.string().regex(/^(owner|thr_[A-Za-z0-9_-]+)$/, "use owner or a thread id such as thr_example");
+const planSubmitResultSchema = z.discriminatedUnion("ok", [
+  z
+    .object({
+      ok: z.literal(true),
+      plan: taskPlanHeadSchema,
+      version: z.null(),
+      /** `submitted` is a new review, `resent` a repeat to the same reviewer (no new event), `reassigned` a change of reviewer. */
+      outcome: z.enum(["submitted", "resent", "reassigned"]),
+      /** The wake of the reviewer thread; null when the owner reviews. */
+      delivered: z.enum(["sent", "failed"]).nullable(),
+      /** What to do when the wake failed. */
+      deliveryHint: z.string().nullable(),
+    })
+    .strict(),
+  z.object({ ok: z.literal(false), error: planErrorSchema }).strict(),
+]);
+const planDeliverySchema = z.enum(["sent", "failed", "no_thread"]);
+/** An owner's state change; `deliveries` lists who was told about an approval or a request for changes (empty when nothing was sent). */
+const planStateResultSchema = z.discriminatedUnion("ok", [
+  z
+    .object({
+      ok: z.literal(true),
+      plan: taskPlanHeadSchema,
+      version: planVersionSchema.nullable(),
+      deliveries: z.array(z.object({ role: z.enum(["actor", "copy"]), delivered: planDeliverySchema, threadId: z.string().nullable() }).strict()).default([]),
+    })
+    .strict(),
   z.object({ ok: z.literal(false), error: planErrorSchema }).strict(),
 ]);
 const planWriteBase = { taskId: idSchema, baseVersion: z.number().int().min(0), summary: z.string(), author: planAuthorSchema };
@@ -742,6 +829,9 @@ export const planNoteSchema = z
     repliedAt: z.string().nullable(),
     addressedInVersion: z.number().int().min(1).nullable(),
     authorName: nonBlankStringSchema,
+    /** `person` is the owner; `thread` is a reviewer thread. Older notes are the owner's. */
+    authorKind: z.enum(["person", "thread"]).default("person"),
+    authorThread: z.string().regex(/^thr_/).nullable().default(null),
     createdAt: z.string(),
     updatedAt: z.string(),
   })
@@ -771,9 +861,18 @@ const createPlanNoteInputSchema = z
     authorName: nonBlankStringSchema.default("You"),
   })
   .strict();
-const planDeliverySchema = z.enum(["sent", "failed", "no_thread"]);
 const planReviewResultSchema = z.discriminatedUnion("ok", [
-  z.object({ ok: z.literal(true), plan: taskPlanHeadSchema, delivered: planDeliverySchema, threadId: z.string().nullable(), notes: z.number().int().min(0) }).strict(),
+  z
+    .object({
+      ok: z.literal(true),
+      plan: taskPlanHeadSchema,
+      delivered: planDeliverySchema,
+      threadId: z.string().nullable(),
+      /** One entry per recipient: the actor, who gets the actionable message, and an informational copy for the other thread. */
+      deliveries: z.array(z.object({ role: z.enum(["actor", "copy"]), delivered: planDeliverySchema, threadId: z.string().nullable() }).strict()),
+      notes: z.number().int().min(0),
+    })
+    .strict(),
   z.object({ ok: z.literal(false), error: planNoteErrorSchema }).strict(),
 ]);
 
@@ -819,6 +918,8 @@ export const tasksRpcContract = {
   listTaskClaims: { input: z.object({ taskId: idSchema }).strict(), output: z.object({ claims: z.array(sequenceClaimSchema) }).strict() },
 
   ...lockMethods,
+  ...attentionUiMethods,
+  ...checksUiMethods,
   createFolder: {
     input: z
       .object({
@@ -962,7 +1063,7 @@ export const tasksRpcContract = {
           .max(20).default([]),
       })
       .strict(),
-    output: z.object({ question: questionSchema }).strict(),
+    output: z.object({ question: questionSchema, planWake: planWakeSchema.optional() }).strict(),
   },
   answerQuestion: {
     input: z
@@ -983,6 +1084,7 @@ export const tasksRpcContract = {
         notification: z
           .enum(["sent", "failed", "none", "unchanged"])
           .optional(),
+        planWake: planWakeSchema.optional(),
       })
       .strict(),
   },
@@ -1006,13 +1108,13 @@ export const tasksRpcContract = {
         authorName: nonBlankStringSchema.default("You"),
       })
       .strict(),
-    output: z.object({ question: questionSchema }).strict(),
+    output: z.object({ question: questionSchema, planWake: planWakeSchema.optional() }).strict(),
   },
   deleteQuestion: {
     input: z
       .object({ questionId: idSchema, revision: z.number().int().positive() })
       .strict(),
-    output: z.object({ deleted: z.boolean() }).strict(),
+    output: z.object({ deleted: z.boolean(), planWake: planWakeSchema.optional() }).strict(),
   },
   listTemplates: {
     input: z.object({ projectId: idSchema }).strict(),
@@ -1059,11 +1161,11 @@ export const tasksRpcContract = {
   },
   getTaskPlan: {
     input: z.object({ taskId: idSchema, version: z.number().int().min(1).optional() }).strict(),
-    output: z.object({ plan: taskPlanHeadSchema.extend({ requested: planVersionSchema.extend({ body: z.string() }).strict(), noteCounts: planNoteCountsSchema }).strict().nullable() }).strict(),
+    output: z.object({ plan: taskPlanHeadSchema.extend({ requested: planVersionSchema.extend({ body: z.string() }).strict(), noteCounts: planNoteCountsSchema, /** Derived: in review while the card has an open owner decision. */ paused: z.boolean().default(false) }).strict().nullable() }).strict(),
   },
   listTaskPlanVersions: {
     input: z.object({ taskId: idSchema }).strict(),
-    output: z.object({ plan: taskPlanHeadSchema.nullable(), versions: z.array(planVersionSchema), noteCounts: planNoteCountsSchema }).strict(),
+    output: z.object({ plan: taskPlanHeadSchema.nullable(), versions: z.array(planVersionSchema), noteCounts: planNoteCountsSchema, paused: z.boolean().default(false) }).strict(),
   },
   listPlanNotes: {
     input: z.object({ taskId: idSchema }).strict(),
@@ -1097,18 +1199,36 @@ export const tasksRpcContract = {
     input: z.object({ taskId: idSchema, author: planAuthorSchema, note: z.string().max(PLAN_NOTE_BODY_MAX).optional() }).strict(),
     output: planReviewResultSchema,
   },
-  saveTaskPlan: { input: savePlanInputSchema, output: planMutationResultSchema },
+  saveTaskPlan: {
+    input: savePlanInputSchema,
+    output: z.discriminatedUnion("ok", [
+      z
+        .object({
+          ok: z.literal(true),
+          plan: taskPlanHeadSchema,
+          version: planVersionSchema.nullable(),
+          /** Set when the first version moved the card into the planning status in the same write: its id and name. */
+          movedTo: z.object({ status: z.string(), label: z.string() }).strict().nullable().default(null),
+        })
+        .strict(),
+      z.object({ ok: z.literal(false), error: planErrorSchema }).strict(),
+    ]),
+  },
   diffTaskPlan: {
     input: z.object({ taskId: idSchema, from: z.number().int().min(0).optional(), to: z.number().int().min(1).optional() }).strict(),
     output: z.object({ from: z.number().int().min(0), to: z.number().int().min(1), patch: z.string(), added: z.number().int().min(0), removed: z.number().int().min(0) }).strict(),
   },
   submitTaskPlan: {
-    input: z.object({ taskId: idSchema, author: planAuthorSchema }).strict(),
-    output: planMutationResultSchema,
+    input: z.object({ taskId: idSchema, author: planAuthorSchema, reviewer: planReviewerInputSchema.optional(), dedicatedReviewer: z.boolean().optional() }).strict(),
+    output: planSubmitResultSchema,
+  },
+  listPlanReviews: {
+    input: z.object({ taskId: idSchema }).strict(),
+    output: z.object({ reviews: z.array(planReviewSchema), paused: z.boolean().default(false) }).strict(),
   },
   setTaskPlanState: {
     input: z.object({ taskId: idSchema, state: z.enum(SETTABLE_PLAN_STATES), author: planAuthorSchema }).strict(),
-    output: planMutationResultSchema,
+    output: planStateResultSchema,
   },
   listTasks: {
     input: z
@@ -1123,6 +1243,7 @@ export const tasksRpcContract = {
         activeOnly: z.boolean().default(false),
         staleStatus: z.boolean().default(false),
         waitingOnOwner: z.boolean().default(false),
+        planDebt: z.boolean().default(false),
         includeScheduled: z.boolean().default(false),
         parentTaskId: idSchema.nullable().optional(),
         type: z.enum(TASK_TYPES).optional(),
@@ -1137,6 +1258,8 @@ export const tasksRpcContract = {
           .default(TASKS_PAGE_DEFAULT_LIMIT),
         cursor: nonBlankStringSchema.optional(),
         allowStaleCursor: z.boolean().default(false),
+        // List projection: rows come back with description "" and progressNote null (full text stays on getTask*).
+        omitBodies: z.boolean().default(false),
       })
       .strict(),
     output: z
@@ -1209,16 +1332,36 @@ export const tasksRpcContract = {
     output: z.object({ comment: commentSchema }).strict(),
   },
   listComments: {
-    input: z.object({ taskId: idSchema, resolveMetadata: z.boolean().optional() }).strict(),
-    output: z.object({ comments: z.array(displayCommentSchema) }).strict(),
+    // `withRevision` is opt-in: legacy callers get the exact old response (no `revision` key, no extra query).
+    input: z.object({ taskId: idSchema, resolveMetadata: z.boolean().optional(), withRevision: z.boolean().optional() }).strict(),
+    output: z.object({ comments: z.array(displayCommentSchema), revision: z.string().optional() }).strict(),
+  },
+  /** Cheap change token of a task's comments and their attachments: `<comments part>|<attachments part>`. */
+  commentsRevision: {
+    input: z.object({ taskId: idSchema }).strict(),
+    output: z.object({ revision: z.string() }).strict(),
+  },
+  /** Thread title/provider of the agent comments of a task; `complete: false` when a lookup failed (retry later). */
+  listCommentThreads: {
+    input: z.object({ taskId: idSchema }).strict(),
+    output: z
+      .object({
+        threads: z.array(
+          z
+            .object({ threadId: z.string(), threadTitle: z.string().nullable(), provider: commentProviderSchema.nullable() })
+            .strict(),
+        ),
+        complete: z.boolean(),
+      })
+      .strict(),
   },
   listAttachments: {
     input: z.union([
       z.object({ taskId: idSchema }).strict(),
       z.object({ commentId: idSchema }).strict(),
-      z.object({ commentsOfTaskId: idSchema }).strict(),
+      z.object({ commentsOfTaskId: idSchema, withRevision: z.boolean().optional() }).strict(),
     ]),
-    output: z.object({ attachments: z.array(attachmentSchema) }).strict(),
+    output: z.object({ attachments: z.array(attachmentSchema), revision: z.string().optional() }).strict(),
   },
   deleteAttachment: {
     input: z
@@ -1415,6 +1558,8 @@ export type Attachment = z.infer<typeof attachmentSchema>;
 export type PlanAuthor = z.infer<typeof planAuthorSchema>;
 export type PlanVersion = z.infer<typeof planVersionSchema>;
 export type TaskPlanHead = z.infer<typeof taskPlanHeadSchema>;
+export type PlanReviewer = z.infer<typeof planReviewerSchema>;
+export type PlanReview = z.infer<typeof planReviewSchema>;
 export type PlanNote = z.infer<typeof planNoteSchema>;
 export type PlanNoteCounts = z.infer<typeof planNoteCountsSchema>;
 export type CreatePlanNoteInput = z.input<typeof createPlanNoteInputSchema>;

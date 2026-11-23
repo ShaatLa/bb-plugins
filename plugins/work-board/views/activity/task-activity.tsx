@@ -14,12 +14,13 @@ import {
 } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 import { TasksEditor } from "../../editor/tasks-editor.js";
-import { Markdown, experimental_saveFile, useBbNavigate } from "@get-bb/plugin-sdk/app";
+import { Markdown, experimental_saveFile, useBbNavigate, useRealtime } from "@get-bb/plugin-sdk/app";
 import {
   useMentionItems,
   useTasksQuery,
   useTasksRpc,
 } from "../../shell/data.js";
+import { useTasksRefresh } from "../../shell/refresh.js";
 import { Lightbox } from "../detail/attachments.js";
 import {
   AttachmentChip,
@@ -74,17 +75,118 @@ export function activityFeedEntries(
   }));
 }
 
+type ThreadMetadata = Pick<DisplayComment, "threadTitle" | "provider">;
+
+interface FeedCache {
+  taskId: string;
+  /** `<comments part>|<attachments part>`, read together with the rows it describes. */
+  token: string;
+  comments: DisplayComment[];
+  attachments: Attachment[];
+  entries: FeedEntry[];
+  /** False while thread metadata is missing because a lookup failed; only that part is retried. */
+  complete: boolean;
+}
+
+export interface FeedLoadState {
+  cache: FeedCache | null;
+  /** Sequence of the latest started load: an older load never writes the cache. */
+  seq: number;
+  /** Set by `comments:changed`: the comment set may have changed in a way the token cannot show (overwrite import). */
+  force: boolean;
+}
+
+function mergeThreadMetadata(
+  entries: readonly FeedEntry[],
+  threads: ReadonlyMap<string, ThreadMetadata>,
+): FeedEntry[] {
+  return entries.map((entry) => {
+    const { comment } = entry;
+    // System comments can carry a worker's thread id but never show its metadata.
+    const metadata =
+      comment.kind === "agent" && comment.threadId !== null ? threads.get(comment.threadId) : undefined;
+    return metadata ? { ...entry, comment: { ...comment, ...metadata } } : entry;
+  });
+}
+
+type FeedRpc = { call: (method: any, input: any) => Promise<any> };
+
+/**
+ * One load of the activity feed. A refresh caused by an unrelated task edit costs one `commentsRevision` call: the
+ * cached feed is returned while the token is unchanged. A cold or changed load fetches the bodies once, publishes them
+ * without thread metadata, then adds titles/providers from one `listCommentThreads` call.
+ */
+export async function fetchActivityFeed(
+  rpc: FeedRpc,
+  publish: (entries: FeedEntry[]) => void,
+  taskId: string,
+  state: FeedLoadState,
+): Promise<FeedEntry[]> {
+  const seq = ++state.seq;
+  if (state.force) {
+    // Drop the snapshot first: if this reload fails, the next ordinary refresh must not serve the old rows.
+    state.force = false;
+    state.cache = null;
+  }
+  const commit = (cache: FeedCache) => {
+    if (seq === state.seq) state.cache = cache;
+  };
+  const withMetadata = async (
+    base: Pick<FeedCache, "token" | "comments" | "attachments">,
+    baseEntries: FeedEntry[],
+  ) => {
+    commit({ taskId, ...base, entries: baseEntries, complete: false });
+    const { threads, complete } = await rpc.call("listCommentThreads", { taskId });
+    const entries = mergeThreadMetadata(
+      baseEntries,
+      new Map<string, ThreadMetadata>(
+        (threads as { threadId: string; threadTitle: string | null; provider: DisplayComment["provider"] }[]).map(
+          (thread) => [thread.threadId, { threadTitle: thread.threadTitle, provider: thread.provider }],
+        ),
+      ),
+    );
+    commit({ taskId, ...base, entries, complete });
+    return entries;
+  };
+
+  const cached = state.cache?.taskId === taskId ? state.cache : null;
+  if (cached) {
+    const { revision } = await rpc.call("commentsRevision", { taskId });
+    if (revision === cached.token) {
+      if (cached.complete) return cached.entries;
+      return withMetadata(cached, activityFeedEntries(cached.comments, cached.attachments));
+    }
+  }
+  const [loadedComments, loadedAttachments] = await Promise.all([
+    rpc.call("listComments", { taskId, resolveMetadata: false, withRevision: true }),
+    rpc.call("listAttachments", { commentsOfTaskId: taskId, withRevision: true }),
+  ]);
+  const comments = loadedComments.comments as DisplayComment[];
+  const attachments = loadedAttachments.attachments as Attachment[];
+  const baseEntries = activityFeedEntries(comments, attachments);
+  publish(baseEntries);
+  return withMetadata(
+    { token: `${loadedComments.revision}|${loadedAttachments.revision}`, comments, attachments },
+    baseEntries,
+  );
+}
+
 function useActivityFeed(taskId: string) {
+  const state = useRef<FeedLoadState>({ cache: null, seq: 0, force: false });
+  const taskIdRef = useRef(taskId);
+  taskIdRef.current = taskId;
+  // A reconnect or manual refresh may follow a missed `comments:changed`: take a full load, not the token shortcut.
+  const { generation } = useTasksRefresh();
+  const generationRef = useRef(generation);
+  if (generationRef.current !== generation) {
+    generationRef.current = generation;
+    state.current.force = true;
+  }
+  useRealtime("comments:changed", (payload) => {
+    if ((payload as { taskId?: string }).taskId === taskIdRef.current) state.current.force = true;
+  });
   return useTasksQuery<FeedEntry[]>(
-    async (rpc, publish) => {
-      const [{ comments }, { attachments }] = await Promise.all([
-        rpc.call("listComments", { taskId, resolveMetadata: false }),
-        rpc.call("listAttachments", { commentsOfTaskId: taskId }),
-      ]);
-      publish(activityFeedEntries(comments, attachments));
-      const enriched = await rpc.call("listComments", { taskId });
-      return activityFeedEntries(enriched.comments, attachments);
-    },
+    (rpc, publish) => fetchActivityFeed(rpc, publish, taskId, state.current),
     ["comments:changed", "tasks:changed"],
     [taskId],
     { relevantTaskIds: [taskId] },
@@ -267,7 +369,7 @@ export function CommentCard({ entry, nowMs }: { entry: FeedEntry; nowMs: number 
       {/* Host Markdown tables size their breakout from the nearest query container. */}
       <div className="@container min-w-0 flex-1">
         <div className="mb-0.5 flex items-baseline gap-1.5 text-xs">
-          <CommentAuthor comment={comment} onOpenThread={openThread} />
+          <CommentAuthor comment={comment} />
           {agent && comment.presetName ? (
             <span className="rounded-sm bg-secondary px-1 py-px text-2xs font-semibold text-muted-foreground">
               {comment.presetName}

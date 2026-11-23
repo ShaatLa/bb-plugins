@@ -53,6 +53,8 @@ export async function doctor(options: DoctorOptions, signal: AbortSignal) {
     device = await command(join(prefix, 'libexec/engine/splash'), ['device-check']);
     if (brew) outdated = await command(brew, ['outdated', 'incoai/tap/splash']);
   }
+  // `brew outdated <formula>` exits 1 when it lists the formula as outdated, 0 when it is current.
+  const brewOk = !!outdated && (outdated.code === 0 || outdated.code === 1);
   let llamaVersion: string | null = null;
   if (llamaInstalled) {
     const value = await command('/usr/libexec/PlistBuddy', ['-c', 'Print :CFBundleShortVersionString', '/Applications/Llama.app/Contents/Info.plist']);
@@ -64,7 +66,7 @@ export async function doctor(options: DoctorOptions, signal: AbortSignal) {
     supportMessage: device ? device.output || (device.code === 0 ? 'Splash device-check passed' : 'Splash device-check failed') : eligible ? 'Apple silicon, macOS and GPU requirements met' : 'Splash not supported on this Mac: requires arm64, macOS 26.4+, and Apple M3 or later.',
     llama: { installed: llamaInstalled, version: llamaVersion, reachable, url: options.baseUrl, downloadUrl: 'https://llama.app/' },
     brew: { path: brew, url: 'https://brew.sh', bootstrap: BREW_BOOTSTRAP },
-    splash: { installed, binary: options.binary, version: splashVersion?.code === 0 ? splashVersion.output : null, error: splashVersion && splashVersion.code !== 0 ? splashVersion.output : null, outdated: outdated?.code === 0 && !!outdated.output, updateError: outdated && outdated.code !== 0 ? outdated.output : null },
+    splash: { installed, binary: options.binary, version: splashVersion?.code === 0 ? splashVersion.output : null, error: splashVersion && splashVersion.code !== 0 ? splashVersion.output : null, outdated: brewOk && /^incoai\/tap\/splash$/m.test(outdated!.output), updateError: outdated && !brewOk ? outdated.output : null },
   };
 }
 export type DoctorReport = Awaited<ReturnType<typeof doctor>>;

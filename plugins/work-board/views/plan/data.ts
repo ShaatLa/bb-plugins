@@ -46,6 +46,12 @@ export function usePlanBody(taskId: string | null, version: number | null): { bo
   return { body: bodies.get(key), error: fetched?.key === key ? fetched.error : null };
 }
 
+/** The planning mode of a project; undefined while it loads. With `off` nothing of the plan is shown or read. */
+export function usePlanning(projectId: string | null): "off" | "optional" | "required" | undefined {
+  const projects = useTasksQuery(async (rpc) => (await rpc.call("listProjects", {})).projects, ["projects:changed"], [], { enabled: projectId !== null });
+  return projectId === null ? undefined : projects.data?.find((project) => project.id === projectId) ? (projects.data.find((project) => project.id === projectId)!.planning ?? "off") : undefined;
+}
+
 /** The plan head and the metadata of every version, live on `tasks:changed` for that task. */
 export function usePlanOverview(taskId: string | null) {
   return useTasksQuery(

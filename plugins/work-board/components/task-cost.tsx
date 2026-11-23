@@ -1,4 +1,5 @@
 import { defineRpcContract } from "@get-bb/plugin-sdk";
+import { DisclosureSummary } from "./disclosure";
 import { experimental_useRpcQuery as useQuery } from "@get-bb/plugin-sdk/app";
 import { useState } from "react";
 import { z } from "zod";
@@ -217,10 +218,10 @@ export function TaskCostSection({ taskId, epic }: { taskId: string; epic: boolea
       </div>
       {slices.length ? <ModelPie slices={slices} unit={unit} /> : null}
       {threads.length ? (
-        <details className="group">
-          <summary className="cursor-pointer list-none text-muted-foreground hover:text-foreground [&::-webkit-details-marker]:hidden">
-            <span className="inline-block transition-transform group-open:rotate-90">›</span> Threads ({threads.length})
-          </summary>
+        <details>
+          <DisclosureSummary className="text-muted-foreground hover:text-foreground">
+            Threads ({threads.length})
+          </DisclosureSummary>
           <ul className="mt-1 space-y-0.5">
             {threads.map((thread) => (
               <li key={thread.threadId} className="flex min-w-0 items-center gap-1.5">

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { ROW_WINDOW_THRESHOLD, rowWindows } from "./row-window.js";
+import { ROW_WINDOW_THRESHOLD, rowWindows, rowWindowSettled } from "./row-window.js";
 
 const base = { headerHeight: 40, rowHeight: 36, viewportHeight: 700 };
 
@@ -9,6 +9,21 @@ describe("rowWindows", () => {
       [0, 3],
       [0, 10],
     ]);
+  });
+
+  it("shares the unmeasured fallback budget across the whole list", () => {
+    const counts = [15, 15, 15, 165, 90];
+    const ranges = rowWindows({ counts, headerHeight: 0, rowHeight: 0, scrollTop: 0, viewportHeight: 0 });
+    expect(ranges.reduce((sum, [start, end]) => sum + end - start, 0)).toBe(60);
+    expect(ranges.slice(0, 3)).toEqual([[0, 15], [0, 15], [0, 15]]);
+    expect(ranges[3]).toEqual([0, 15]);
+    expect(ranges[4]).toEqual([0, 0]);
+  });
+
+  it("settles short lists at once and windowed lists once a row height is known", () => {
+    expect(rowWindowSettled(ROW_WINDOW_THRESHOLD - 1, 0)).toBe(true);
+    expect(rowWindowSettled(ROW_WINDOW_THRESHOLD, 0)).toBe(false);
+    expect(rowWindowSettled(ROW_WINDOW_THRESHOLD, 34)).toBe(true);
   });
 
   it("windows a large group around the viewport", () => {

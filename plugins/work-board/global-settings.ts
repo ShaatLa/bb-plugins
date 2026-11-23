@@ -1,3 +1,5 @@
+import { isAbsolute } from "node:path";
+import { z } from "zod";
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import { BADGE_CRITERIA, BADGE_CRITERION_LABELS, DEFAULT_BADGE_CRITERIA, type BadgeCriterion } from "./shared/badge";
 import { BOARD_PREFERENCES_KEY, DEFAULT_BOARD_PREFERENCES, boardPreferencesSchema, type BoardPreferences } from "./shared/project-settings";
@@ -14,9 +16,12 @@ const BADGE_FIELDS: Record<BadgeCriterion, string> = {
 const descriptors = {
   // Not "defaultScreen": that native key holds the stale pre-0.20 value.
   startScreen: { type: "select", label: "Start screen", options: [...boardPreferencesSchema.shape.defaultScreen.options], default: DEFAULT_BOARD_PREFERENCES.defaultScreen },
-  // Read by the app (components/open-thread.ts): "agent-hub" opens Agent Hub (or Answers, its former id) and falls
-  // back to bb chat when neither is installed. "answers" is still accepted and moved to "agent-hub" at load.
-  openThreadsIn: { type: "select", label: "Open thread links in", options: ["bb", "agent-hub", "answers"], default: "bb" },
+  // Read by the app (components/open-thread.ts): "agent-hub" opens Agent Hub and falls back to bb chat when it is not
+  // installed.
+  openThreadsIn: { type: "select", label: "Open thread links in", options: ["bb", "agent-hub"], experimental_optionLabels: { bb: "bb chat", "agent-hub": "Agent Hub" }, default: "bb" },
+  // Repository-check runner: how the script is launched. Empty values inherit the server environment.
+  checksBbCli: { type: "string", label: "Repository checks: BB CLI absolute path (empty: use the server environment)", default: "", experimental_schema: z.string().refine((path) => path === "" || isAbsolute(path), "Enter the absolute path to bb (for example /opt/bin/bb), or clear it to use the server environment.") },
+  checksRuntimePath: { type: "string", label: "Repository checks: script PATH (empty: inherit the server PATH)", default: "" },
   ...Object.fromEntries(BADGE_CRITERIA.map((criterion) => [BADGE_FIELDS[criterion], {
     type: "boolean", label: `Navigation badge counts: ${BADGE_CRITERION_LABELS[criterion]}`, default: DEFAULT_BADGE_CRITERIA.includes(criterion),
   }])),
@@ -42,6 +47,11 @@ export async function setBoardPreferences(bb: BbPluginApi, preferences: BoardPre
   await handle(bb).experimental_set({ startScreen: preferences.defaultScreen });
   return preferences;
 }
+/** The launch environment of the repository-check scripts. */
+export async function getChecksEnvironment(bb: BbPluginApi): Promise<{ bbCli: string; runtimePath: string }> {
+  const values = await handle(bb).get();
+  return { bbCli: String(values.checksBbCli ?? ""), runtimePath: String(values.checksRuntimePath ?? "") };
+}
 export async function getBadgeCriteria(bb: BbPluginApi): Promise<BadgeCriterion[]> {
   const values = await handle(bb).get();
   return BADGE_CRITERIA.filter((criterion) => values[BADGE_FIELDS[criterion]] ?? DEFAULT_BADGE_CRITERIA.includes(criterion));
@@ -66,6 +76,5 @@ export async function registerGlobalSettings(bb: BbPluginApi, onChange: () => vo
     }
     await bb.storage.kv.set("global-settings:native", true);
   }
-  if ((await settings.get()).openThreadsIn === "answers") await settings.experimental_set({ openThreadsIn: "agent-hub" });
   settings.onChange(onChange);
 }

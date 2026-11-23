@@ -54,6 +54,20 @@ describe("Plan tab", () => {
     expect(slot.container.querySelector(".tiptap")?.getAttribute("contenteditable")).toBe("false");
   });
 
+  it("says the review waits for the owner's decision while a decision is open, and stops when it is answered", async () => {
+    const { slot, task, project, harness } = await open();
+    const refresh = () => slot.behavior.emitRealtime("tasks:changed", { taskId: task.id, projectId: project.id });
+    await slot.findByText("Draft");
+    expect(slot.queryByText("Waiting for the owner's decision")).toBeNull();
+    await harness.callRpc("submitTaskPlan" as never, { taskId: task.id, author: { kind: "person", threadId: null, name: "You" }, reviewer: "owner" } as never);
+    const { question } = (await harness.callRpc("createQuestion" as never, { taskId: task.id, kind: "decision", prompt: "Which one?", options: ["A", "B"], mode: "single" } as never)) as { question: { id: string; revision: number; options: Array<{ id: string }> } };
+    await refresh();
+    expect(await slot.findByText("Waiting for the owner's decision")).toBeTruthy();
+    await harness.callRpc("answerQuestion" as never, { questionId: question.id, revision: question.revision, selectedOptionIds: [question.options[0]!.id], authorName: "You" } as never);
+    await refresh();
+    await waitFor(() => expect(slot.queryByText("Waiting for the owner's decision")).toBeNull());
+  });
+
   it("keeps the state badge next to the title, and the version and actions together on the right", async () => {
     const { slot } = await open();
     const title = await slot.findByRole("button", { name: /Planned work/ });
@@ -63,7 +77,32 @@ describe("Plan tab", () => {
     const actions = ["Edit", "History", "Compare with previous", "Plan actions"].map((name) => slot.getByRole("button", { name }));
     expect(new Set([version.parentElement, ...actions.map((button) => button.closest("div"))]).size).toBe(1);
     expect((slot.getByRole("button", { name: "Compare with previous" }) as HTMLButtonElement).disabled).toBe(true);
-    expect(slot.getByText(/Updated by agent/)).toBeTruthy();
+    expect(slot.getByText(/Updated by/)).toBeTruthy();
+    expect(slot.getByRole("button", { name: "Open thread thr_example" })).toBeTruthy();
+  });
+
+  it("hides the plan of a project whose planning is off on every way in, while another project's plan stays accessible", async () => {
+    const { slot, store, project, rpc, harness } = await open();
+    await waitFor(() => expect(rendered(slot)).toHaveLength(3));
+    // A change of the setting while the tab is open replaces the plan with a message.
+    store.tasks.updateProject(project.id, { planning: "off" });
+    await slot.behavior.emitRealtime("projects:changed", { projectId: project.id });
+    await slot.findByText("Planning is off for this project");
+    expect(slot.container.querySelector(".tiptap")).toBeNull();
+    // A tab opened afterwards (a persisted tab or an old link) never reads the plan.
+    cleanup();
+    const reopened = renderSlot(planTab(), { threadId: "thr_1", environment: null, params: { taskKey: "EXA-1" } }, { rpc });
+    await reopened.findByText("Planning is off for this project");
+    expect(reopened.inspection.rpcCalls.map((call: { method: string }) => call.method)).not.toContain("listTaskPlanVersions");
+    expect(reopened.inspection.rpcCalls.map((call: { method: string }) => call.method)).not.toContain("getTaskPlan");
+    // Another project keeps its plan.
+    cleanup();
+    const other = store.tasks.createProject({ name: "Other", prefix: "OTH", color: "red" });
+    store.tasks.updateProject(other.id, { planning: "optional" });
+    const otherTask = store.tasks.createTask({ projectId: other.id, title: "Other work" });
+    await harness.callRpc("saveTaskPlan", { taskId: otherTask.id, summary: "Plan", author: { kind: "agent", threadId: "thr_example", name: "agent (thr_example)" }, op: "replace", baseVersion: 0, body: BODY } as never);
+    const accessible = renderSlot(planTab(), { threadId: "thr_1", environment: null, params: { taskKey: "OTH-1" } }, { rpc });
+    await waitFor(() => expect(rendered(accessible)).toHaveLength(3));
   });
 
   it("puts the table of contents after the text in the DOM, so the wide layout shows it on the right", async () => {

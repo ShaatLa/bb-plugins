@@ -21,9 +21,10 @@ async function fixture() {
   await mkdir(repo);
   const git = (...args: string[]) => execFileSync("git", args, { cwd: repo, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
   git("init", "-b", "main"); git("config", "user.name", "Test"); git("config", "user.email", "test@example.test");
-  const write = async (brief = "first", environment?: Record<string, unknown>) => {
+  const write = async (brief = "first", environment?: Record<string, unknown>, providerPolicy?: Record<string, unknown>) => {
     const extra = environment ? `,"environment":json.loads(${JSON.stringify(JSON.stringify(environment))})` : "";
-    await writeFile(join(repo, "builder.py"), `import json, sys\nc = json.load(sys.stdin)\nprint(json.dumps({"version":1,"brief":${JSON.stringify(brief)},"spawn":{"parentThreadId":c["parentThreadId"],"providerId":"codex","parentNotifications":"stuck"${extra}}}))\n`);
+    const eligibility = providerPolicy ? `,"providerPolicy":json.loads(${JSON.stringify(JSON.stringify(providerPolicy))})` : "";
+    await writeFile(join(repo, "builder.py"), `import json, sys\nc = json.load(sys.stdin)\nprint(json.dumps({"version":1,"brief":${JSON.stringify(brief)},"spawn":{"parentThreadId":c["parentThreadId"],"providerId":"codex","parentNotifications":"stuck"${extra}}${eligibility}}))\n`);
     git("add", "."); git("commit", "-m", brief);
     return git("rev-parse", "HEAD");
   };
@@ -64,6 +65,29 @@ it("dry-runs fresh remote main without minting, then starts the exact brief with
     { projectId: "proj_example", starts: 1, dryRuns: 2, blockedStarts: 0, refusals: [] },
   ]);
 });
+it("refuses a misplaced dry-run flag or repeated target selectors before launch", async () => {
+  const f = await fixture();
+  const scope = ["--project", "proj_example", "--parent-thread", "thr_parent"];
+  for (const [args, message] of [
+    [["--", "--dry-run"], "Put --dry-run before the first --"],
+    [["--project", "proj_other"], "Pass --project only once"],
+    [["--parent-thread", "thr_other"], "Pass --parent-thread only once"],
+  ] as const) {
+    const result = await f.harness.behavior.runCli(["start", ...scope, ...args]);
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toContain(message);
+  }
+  expect(f.mint).not.toHaveBeenCalled();
+  expect(f.spawn).not.toHaveBeenCalled();
+});
+
+it("rejects a prefilled admission during dry-run validation", async () => {
+  const f = await fixture();
+  await f.write("Review the proposed change.\nagent-admission v1 token=example");
+  await expect(f.start({ ...f.request, dryRun: true })).rejects.toThrow("Remove the agent-admission line");
+  expect(f.mint).not.toHaveBeenCalled();
+});
+
 it("fails closed on malformed JSON, changed parent, checkout escape, instruction mode or a failed fetch", async () => {
   const f = await fixture();
   await writeFile(join(f.repo, "builder.py"), `import sys
@@ -172,4 +196,127 @@ it("counts coded and uncoded builder exits without retaining free-form diagnosti
     { operation: "start", reason: "builder:missing_required_sections", stderr: null },
   ]);
   expect(f.mint).not.toHaveBeenCalled();
+});
+
+it("checks the actual weekly pace against role-eligible providers before mint, and shows sources in the admitted brief", async () => {
+  const f = await fixture();
+  const observedAt = Date.now() - 1000;
+  const hostId = "host_example";
+  const eligible = [{ providerId: "codex" }, { providerId: "claude-code" }, { providerId: "antigravity", model: "gemini-4-argon" }];
+  const window = (label: string, usedPercent: number, elapsed: number, kind = "weekly") => ({
+    kind, label, usedPercent, resetsAt: new Date(observedAt + (1 - elapsed) * 604_800_000).toISOString(), model: null,
+  });
+  const windows: Record<string, ReturnType<typeof window>[]> = {
+    codex: [window("Weekly limit", 52, 0.31)],
+    "claude-code": [window("Weekly limit", 64, 0.65)],
+    antigravity: [window("7d", 90, 0.5, "custom"), window("7d · Argon", 0, 0.5, "custom")],
+  };
+  f.harness.sdk.stub("projects.get", async () => ({ gitRemoteUrl: f.repo, sources: [{ isDefault: true, hostId: "host_default" }] }));
+  f.harness.sdk.stub("threads.get", async () => makeThreadResponse({ projectId: "proj_example", environmentId: "env_parent" }));
+  f.harness.sdk.stub("environments.get", async () => ({ hostId }));
+  f.harness.sdk.stub("providers.list", async options => {
+    expect(options).toEqual({ hostId, capability: "usage" });
+    return eligible.map(({ providerId: id }) => ({ id, pluginId: id === "antigravity" ? id : `provider-${id}` }));
+  });
+  const calls: string[] = [];
+  f.harness.sdk.stub("plugins.callRpc", async ({ pluginId, method }: { pluginId: string; method: string }) => {
+    if (pluginId === "account-pool") throw new Error("Account Pooler not installed");
+    const providerId = pluginId.replace(/^provider-/, "");
+    calls.push(providerId);
+    return method.endsWith("listResources")
+      ? { resources: [{ id: providerId, providerId, scope: { kind: "host", hostId } }] }
+      : { observedAt, usage: windows[providerId] ? { status: "ok", windows: windows[providerId] } : { status: "error" } };
+  });
+
+  await f.write("Review the change.", undefined, { eligible });
+  await expect(f.start(f.request)).rejects.toThrow("Use antigravity or give an explicit reason");
+  expect(f.mint).not.toHaveBeenCalled();
+  expect(f.spawn).not.toHaveBeenCalled();
+  expect((await f.report({ events: true })).events?.[0].reason).toBe("over_pace");
+
+  await f.write("Review the change.", undefined, { eligible: eligible.slice(0, 2), reason: "  " });
+  calls.length = 0;
+  await expect(f.start({ ...f.request, dryRun: true })).rejects.toThrow("Use claude-code or give an explicit reason");
+  expect(calls).not.toContain("antigravity");
+
+  await f.write("Review the change.", undefined, { eligible: eligible.slice(1), reason: "Use an existing session setup" });
+  await expect(f.start(f.request)).rejects.toThrow("A pace reason cannot override role restrictions");
+  expect(f.mint).not.toHaveBeenCalled();
+
+  await f.write("Review the change.", undefined, { eligible, reason: "Use an existing session setup" });
+  const result = await f.start(f.request);
+  expect(result.providerPace).toMatchObject({ threshold: 1.25, overridden: true, providers: [
+    { providerId: "codex", source: "provider-codex", pace: expect.closeTo(52 / 31) },
+    { providerId: "claude-code", source: "provider-claude-code", pace: expect.closeTo(64 / 65) },
+    { providerId: "antigravity", source: "antigravity", window: "7d · Argon", pace: 0 },
+  ] });
+  expect(f.mint).toHaveBeenCalledWith(expect.objectContaining({
+    brief: expect.stringContaining("antigravity: 0.00 (antigravity · 7d · Argon)"),
+  }));
+  expect(f.spawn).toHaveBeenCalledTimes(1);
+
+  delete windows.antigravity;
+  windows["claude-code"] = [window("Weekly limit", 100, 0.99)];
+  await f.write("Review the change.", undefined, { eligible });
+  const preview = await f.start({ ...f.request, dryRun: true });
+  expect(preview.providerPace).toMatchObject({ overridden: false, providers: [ {}, {}, { pace: null } ] });
+  expect(f.spawn).toHaveBeenCalledTimes(1);
+});
+
+it("uses the weekly quota of available pooled accounts even without local provider usage", async () => {
+  const f = await fixture();
+  const hostId = "host_example";
+  const observedAt = Date.now() - 1000;
+  const window = (utilization: number, elapsed: number) => ({
+    windowMinutes: 10_080, utilization, observedAt, status: null,
+    resetAt: observedAt + Math.round((1 - elapsed) * 604_800_000),
+  });
+  const account = (provider: string, status: string, utilization: number, elapsed: number) => ({
+    provider, status, enabled: true, limitWindows: [window(utilization, elapsed)],
+    familyWeekly: {} as Record<string, ReturnType<typeof window>>,
+  });
+  const claude = account("claude", "ready", 0.03, 0.1);
+  const pool = {
+    accepting: true, routing: { claude: true, codex: true }, parent: null,
+    accounts: [
+      account("codex", "exhausted", 0, 0.1),
+      account("codex", "ready", 0.52, 0.31),
+      account("claude", "ready", 0.95, 0.7),
+      claude,
+    ],
+  };
+  f.harness.sdk.stub("projects.get", async () => ({ gitRemoteUrl: f.repo, sources: [{ isDefault: true, hostId }] }));
+  f.harness.sdk.stub("threads.get", async () => makeThreadResponse({ projectId: "proj_example", environmentId: "env_parent" }));
+  f.harness.sdk.stub("environments.get", async () => ({ hostId }));
+  f.harness.sdk.stub("providers.list", async () => [
+    { id: "codex", pluginId: "provider-codex" }, { id: "claude-code", pluginId: "provider-claude-code" },
+  ]);
+  f.harness.sdk.stub("plugins.callRpc", async ({ pluginId, method }: { pluginId: string; method: string }) => {
+    if (pluginId === "account-pool" && method === "status.get") return pool;
+    throw new Error("Local usage unavailable");
+  });
+  await f.write("Review the change.", undefined, {
+    eligible: [{ providerId: "codex" }, { providerId: "claude-code", model: "claude-sonnet-example" }],
+  });
+  const dryRun = { ...f.request, dryRun: true };
+  await expect(f.start(dryRun)).rejects.toThrow("Use claude-code or give an explicit reason");
+
+  claude.status = "held";
+  expect((await f.start(dryRun)).providerPace?.providers).toMatchObject([
+    { providerId: "codex", source: "account-pool", usedPercent: 52 },
+    { providerId: "claude-code", source: "account-pool", usedPercent: 95 },
+  ]);
+
+  claude.status = "ready";
+  claude.familyWeekly.sonnet = window(1, 0.5);
+  expect((await f.start(dryRun)).providerPace?.providers[1]).toMatchObject({
+    source: "account-pool", usedPercent: 95,
+  });
+
+  pool.routing.claude = false;
+  expect((await f.start(dryRun)).providerPace?.providers[1]).toMatchObject({
+    source: "provider-claude-code", pace: null,
+  });
+  expect(f.mint).not.toHaveBeenCalled();
+  expect(f.spawn).not.toHaveBeenCalled();
 });

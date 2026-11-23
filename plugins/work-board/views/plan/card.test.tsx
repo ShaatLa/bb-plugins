@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { FakePluginHarness } from "@get-bb/plugin-sdk/testing";
 import { loadPluginApp, renderSlot } from "@get-bb/plugin-sdk/testing/app";
 import { requestPlanEdit, takePlanEditRequest } from "./open";
+import { createPlanStore } from "../../plans/store";
 import { BODY, setupPlanHost } from "./test-setup";
 
 window.ResizeObserver ??= class { observe() {} unobserve() {} disconnect() {} };
@@ -32,6 +33,28 @@ describe("Plan card in the task detail", () => {
     expect(plan.queryByRole("button", { name: /Open plan/ })).toBeNull();
   });
 
+  it("shows the reviewer: the owner, or a link to the reviewer thread", async () => {
+    const host = openDetail(() => true);
+    await host.save({ baseVersion: 0, body: BODY });
+    const plan = await card(host.slot);
+    await waitFor(() => expect(plan.getByTestId("plan-reviewer").textContent).toBe("Reviewer: owner"));
+    createPlanStore(host.db, host.store.tasks).submit(host.task.id, { kind: "agent", threadId: "thr_example", name: "agent (thr_example)" }, "thr_reviewer");
+    await host.slot.behavior.emitRealtime("tasks:changed", { taskId: host.task.id, projectId: host.project.id });
+    const link = await within(await plan.findByTestId("plan-reviewer")).findByRole("button", { name: "Open thread thr_reviewer" });
+    expect(link.textContent).toBe("thr_reviewer");
+  });
+
+  it("has no Plan section, and reads no plan, when planning is off for the project", async () => {
+    const host = setupPlanHost(harnesses);
+    await host.save({ baseVersion: 0, body: BODY });
+    host.store.tasks.updateProject(host.project.id, { planning: "off" });
+    const slot = renderSlot(app.navPanels[0]!, { subPath: "task/EXA-1" }, { rpc: host.rpc, experimental_panel: { openTab: () => true } });
+    await slot.findByRole("region", { name: "Current state" });
+    await waitFor(() => expect(slot.rpcCalls.some((call: { method: string }) => call.method === "listProjects")).toBe(true));
+    expect(slot.queryByRole("region", { name: "Plan" })).toBeNull();
+    expect(slot.rpcCalls.map((call: { method: string }) => call.method)).not.toContain("listTaskPlanVersions");
+  });
+
   it("sits between the description and the current state", async () => {
     const { slot } = openDetail(() => true);
     const region = await slot.findByRole("region", { name: "Plan" });
@@ -47,7 +70,9 @@ describe("Plan card in the task detail", () => {
     const plan = await card(host.slot);
     await plan.findByText("v2");
     expect(plan.getByText("Draft")).toBeTruthy();
-    expect(plan.getByText(/Updated by agent \(thr_example\)/)).toBeTruthy();
+    expect(plan.getByText(/Updated by/)).toBeTruthy();
+    expect(plan.getByRole("button", { name: "Open thread thr_example" })).toBeTruthy();
+    expect(plan.getByTestId("plan-reviewer").textContent).toBe("Reviewer: owner");
     expect(plan.getByText("Added a closing note")).toBeTruthy();
     expect(plan.queryByText("Release plan")).toBeNull();
     expect(plan.queryByRole("button", { name: "Write plan" })).toBeNull();

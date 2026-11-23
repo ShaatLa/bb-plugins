@@ -62,9 +62,23 @@ function endGenerationWork() {
   }
 }
 
+const refreshRequestHooks = new Set<() => void>();
+
+/** Runs `hook` each time a refresh generation is requested, before the generation advances. */
+export function onRefreshRequested(hook: () => void) {
+  refreshRequestHooks.add(hook);
+}
+
+/** A manual refresh while one is running is ignored (repeated clicks). */
 function requestRefresh() {
   if (sharedSnapshot.isRefreshing) return;
+  advanceGeneration();
+}
+
+/** Starts a new generation even while one is running: a reconnect may follow changes the running one did not read. */
+function advanceGeneration() {
   invalidateTaskDatasets(true);
+  for (const hook of refreshRequestHooks) hook();
   const generation = sharedSnapshot.generation + 1;
   updateSharedSnapshot({ generation, isRefreshing: true });
   queueMicrotask(() => {
@@ -97,7 +111,7 @@ function updateConnectionState(registrationId: symbol, state: string) {
   }
   if (next === "reconnecting") hasEstablishedConnection = true;
   if (next === "connected" && previous !== "connected") {
-    if (hasEstablishedConnection) requestRefresh();
+    if (hasEstablishedConnection) advanceGeneration();
     hasEstablishedConnection = true;
   }
 }

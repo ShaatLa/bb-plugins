@@ -5,21 +5,21 @@ import { createNotifier } from './notify';
 import { migrations } from './schema';
 const cleanup: (() => Promise<void>)[] = [];
 afterEach(async () => {for (const f of cleanup.splice(0)) await f();});
-const handoff = '[agent-hub] Your last reply hands work to the owner but did not call `agent_hub_report`; call it now so the owner sees it as needing them.';
-const question = '[agent-hub] Your last reply asks the owner a question in chat; ask it with `agent_hub_ask` and end the turn.';
+const handoff = '[agent-hub] Your last reply hands work to the owner but did not call `agent_hub_report`. Call `agent_hub_report` now and restate the handoff in this turn’s final message: that message becomes the report the owner sees as needing them.';
+const question = '[agent-hub] Your last reply asks the owner a question in chat. Call `agent_hub_ask` now with that question (add options and recommended if you have them), then end the turn without waiting; the answer arrives as a new message.';
 function setup() {
  const send=vi.fn(async () => ({ok:true,delivery:'sent'}));
  let events:any[]=[], seq=0;
- const host=createFakePluginHost({pluginId:'agent-hub',sdk:{threads:{get:async ({threadId}) => makeThreadResponse({id:threadId,projectId:'proj_example'}),events:{list:async (a:any) => a.order==='desc' ? [...events].reverse() : events.filter(e => e.seq>Number(a.afterSeq ?? 0))},send}}});
+ const host=createFakePluginHost({pluginId:'agent-hub',sdk:{threads:{get:async ({threadId}) => makeThreadResponse({id:threadId,projectId:'proj_example'}),events:{list:async (a:any) => a.order==='desc' ? [...events].reverse() : events.filter(e => !e.late && e.seq>Number(a.afterSeq ?? 0))},send}}});
  const db=host.bb.storage.database(); db.exec(migrations.join('\n'));
  const notifier=createNotifier(host.bb,db);
  const driver=createDriver(host.bb,db,() => {},undefined,async () => (await notifier.settings.get()).handoffWarnings);
  cleanup.push(async () => {await driver.dispose(); await notifier.dispose(); await host.harness.lifecycle.dispose();});
- async function turn(text='Ready for your review.',extra:Record<string,unknown>={originPluginId:'example'},tool?:string,old=false) {
+ async function turn(text='Ready for your review.',extra:Record<string,unknown>={originPluginId:'example'},tool?:string,old=false,late=false) {
   const turnId='turn_example_'+seq, requestId='request_example_'+seq;
-  const e=(type:string,data:object) => ({seq:++seq,type,scope:{turnId},createdAt:old ? 1 : Date.now(),data});
+  const e=(type:string,data:object) => ({seq:++seq,type,scope:{kind:'turn',turnId},createdAt:old ? 1 : Date.now(),data});
   events.push(e('client/turn/requested',{initiator:'user',requestId,input:[{type:'text',text:'Continue'}],...extra}),e('turn/started',{}),e('turn/input/accepted',{clientRequestId:requestId}));
-  if(tool) events.push(e('item/completed',{item:{type:'mcpToolCall',tool,command:tool}}));
+  if(tool) events.push({...e('item/completed',{item:{type:'mcpToolCall',tool,command:tool}}),late});
   if(tool==='agent_hub_report') {await driver.schedule('thr_example'); db.prepare('UPDATE turn_updates SET report=1 WHERE thread_id=? AND turn_id=?').run('thr_example',turnId);}
   events.push(e('item/completed',{item:{type:'agentMessage',text}}),e('turn/completed',{status:'completed'}));
   await driver.schedule('thr_example');
@@ -44,6 +44,11 @@ it('allows an explicit report from a warning reply',async () => {
  await s.turn(undefined,{originPluginId:'agent-hub',input:[{type:'text',text:handoff}]},'agent_hub_report');
  expect(s.send).not.toHaveBeenCalled(); expect(s.db.prepare('SELECT count(*) AS n FROM items WHERE read_at IS NULL AND notify_state=1').get()).toEqual({n:1});
 });
+it('does not warn when a reply only restates items already shown to the owner, and warns for a new one',async () => {
+ const s=setup(); await s.turn('EXA-1 is ready for your review.'); s.send.mockClear();
+ await s.turn('Nothing new; EXA-1 still awaits your review.'); expect(s.send).not.toHaveBeenCalled();
+ await s.turn('EXA-1 still awaits your review. EXA-2 is ready for your review.'); expect(s.send).toHaveBeenCalledOnce();
+});
 it.each(['sub-thread','archived','backfill','disabled','owner-handoff'])('does not warn for %s',async mode => {
  const s=setup(); await s.control();
  if(mode==='sub-thread') s.harness.sdk.stub('threads.get',async ({threadId}) => makeThreadResponse({id:threadId,parentThreadId:'thr_parent'}));
@@ -61,4 +66,15 @@ it('keeps a reply to a warning sent before the rename quiet too', async () => {
  const s=setup(); await s.control();
  await s.turn('Ready for your review.',{originPluginId:'answers',input:[{type:'text',text:handoff.replace('[agent-hub]','[answers]')}]});
  expect(s.send).not.toHaveBeenCalled();
+});
+it.each(['agent_hub_ask','bb work-board question add EXA-1 --kind decision'])('sends no question warning when the turn used %s but ingest missed that event',async tool => {
+ const s=setup(); await s.control(); await s.turn('Which one do you want?',undefined,tool,false,true); expect(s.send).not.toHaveBeenCalled();
+});
+it.each([['agent-hub',true],['example',false]])('extends a queued row from %s with the handoff warning only when it is ours: %s',async (origin,merges) => {
+ const s=setup(); const row={id:'q1',content:[{type:'text',text:'Earlier notice',mentions:[]}],originPluginId:origin,state:'queued',editable:true,updatedAt:42};
+ s.harness.sdk.stub('threads.queuedMessages.list',async () => [row] as never);
+ s.harness.sdk.stub('threads.queuedMessages.update',async () => row as never);
+ await s.turn();
+ expect(s.send.mock.calls.length).toBe(merges ? 0 : 1);
+ expect(s.harness.sdk.callsTo('threads.queuedMessages.update')).toEqual(merges ? [[{threadId:'thr_example',queuedMessageId:'q1',expectedUpdatedAt:42,input:[{type:'text',text:'Earlier notice\n\n---\n\n'+handoff,mentions:[]}]}]] : []);
 });

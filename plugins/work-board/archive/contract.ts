@@ -17,6 +17,8 @@ import {
   planStateSchema,
   planVersionSchema,
   planNoteSchema,
+  planReviewerSchema,
+  planReviewSchema,
 } from "../shared/contract";
 import { PLAN_FORMATS } from "../shared/plan";
 import { MAX_ATTACHMENT_SIZE_BYTES } from "../shared/attachments";
@@ -45,6 +47,8 @@ export const archiveProjectSchema = z
       z.literal(17),
       z.literal(18),
       z.literal(19),
+      z.literal(20),
+      z.literal(21),
     ]),
     project: projectSchema,
     gitSync: gitSyncConfigSchema.optional(),
@@ -68,11 +72,14 @@ export const archivePlanSchema = z
     state: planStateSchema,
     updatedAt: z.string(),
     updatedBy: planAuthorSchema,
+    /** v20: who approves the plan; older archives and plans have the owner. */
+    reviewer: planReviewerSchema.default({ kind: "owner", threadId: null }),
+    reviewVersion: z.number().int().min(1).nullable().default(null),
     versions: z.array(planVersionSchema.extend({ body: z.string() }).strict()).min(1),
   })
   .strict();
 
-/** v19: an owner's note on the plan; the task record that holds it replaces `taskId`. */
+/** v19: a note on the plan (v20 adds who wrote it); the task record that holds it replaces `taskId`. */
 export const archivePlanNoteSchema = planNoteSchema.omit({ taskId: true });
 
 export const archiveTaskSchema = z
@@ -89,6 +96,8 @@ export const archiveTaskSchema = z
     plan: archivePlanSchema.nullable().optional(),
     /** v19: the owner's notes on the plan, by number. */
     planNotes: z.array(archivePlanNoteSchema).optional(),
+    /** v20: every review attempt of the plan, oldest first. */
+    planReviews: z.array(planReviewSchema).optional(),
     attachments: z.array(
       attachmentSchema
         .extend({
@@ -209,6 +218,13 @@ export function validateArchive(archive: ProjectArchive): void {
     if (manifest.version < 18 && record.plan) throw new Error("Task plans require archive v18");
     if (manifest.version >= 19 && record.planNotes === undefined) throw new Error("Archive v19 requires planNotes");
     if (manifest.version < 19 && record.planNotes?.length) throw new Error("Plan notes require archive v19");
+    if (manifest.version >= 20 && record.planReviews === undefined) throw new Error("Archive v20 requires planReviews");
+    if (manifest.version < 20 && record.planReviews?.length) throw new Error("Plan reviews require archive v20");
+    if (record.planReviews?.length) {
+      if (!record.plan) throw new Error(`Plan reviews of ${record.task.id} need a plan`);
+      if (record.planReviews.some((review) => review.version > record.plan!.version))
+        throw new Error(`Plan reviews of ${record.task.id} refer to a version the plan does not have`);
+    }
     if (record.planNotes?.length) {
       if (!record.plan) throw new Error(`Plan notes of ${record.task.id} need a plan`);
       unique(record.planNotes.map((note) => String(note.number)), "plan note number");

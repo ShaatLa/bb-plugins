@@ -42,7 +42,7 @@ import { editedTasks, matchesFilters } from "./optimistic.js";
 import { useListTaskEdits } from "./use-task-edits.js";
 import { TaskRow } from "./row.js";
 import { useQuestionCounts } from "../../components/question-count";
-import { rowWindows, useRowWindowViewport } from "./row-window.js";
+import { rowWindows, rowWindowSettled, useRowWindowViewport } from "./row-window.js";
 
 const NO_LABELS: readonly Label[] = [];
 
@@ -220,13 +220,17 @@ export function ListView({ projectId, activeOnly = false }: ListViewProps) {
       setSettledRouteScope(routeScope);
     }
   }, [routeScope, tasksQuery.isLoading, tasksQuery.data]);
+  // Measured before restoring the scroll offset: the cold fallback DOM is too short to hold a deep offset.
+  const viewport = useRowWindowViewport(scrollRef, groups);
   useListScrollRestoration(scrollRef, scopeKey, {
     contentReady: tasksQuery.data !== undefined && tasksQuery.data.length > 0,
     loading: tasksQuery.isLoading || scopeChanged,
+    measured: rowWindowSettled(
+      groups.reduce((sum, group) => sum + group.tasks.length, 0),
+      viewport.rowHeight,
+    ),
     revision: tasksQuery.data?.length ?? 0,
   });
-
-  const viewport = useRowWindowViewport(scrollRef, groups);
   const ranges = rowWindows({
     counts: groups.map((group) => group.tasks.length),
     headerHeight: viewport.headerHeight,

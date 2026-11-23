@@ -75,6 +75,14 @@ describe("buildSignals", () => {
     const [signal] = buildSignals({ classified: [{ ...loss, job: { ...loss.job, headBranch: null } }], reruns: [], massCancels: [], stalls: [], defaultBranch: null, repository: "a/b", now });
     expect(signal!.severity).toBe("info");
   });
+
+  it("leaves no undefined values in where, because bb rejects them in RPC results", () => {
+    const noPool = classified.map((c) => ({ ...c, job: { ...c.job, pool: null } }));
+    const noRunner = classified.map((c) => ({ ...c, job: { ...c.job, runnerName: null } }));
+    const out = [noPool, noRunner].flatMap((bare) => buildSignals({ classified: bare, reruns, massCancels: detectMassCancel(bare), stalls: [], defaultBranch: "main", repository: REPO, now }));
+    expect(out.some((s) => s.kind === "mass_cancel")).toBe(true);
+    for (const s of out) expect(Object.values(s.where)).not.toContain(undefined);
+  });
 });
 
 describe("shouldPush", () => {

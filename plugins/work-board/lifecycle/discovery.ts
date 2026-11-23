@@ -2,6 +2,7 @@ import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import type { TasksApiStore } from "../api";
 import { errorMessage } from "../shared/errors";
 import { recordThreadLink, threadLiveStatus, threadUnavailable } from "./thread-links";
+import { isClosedStatus } from "../shared/workflow-policy";
 
 type Thread = Pick<Awaited<ReturnType<BbPluginApi["sdk"]["threads"]["get"]>>,
   "id" | "title" | "projectId" | "status" | "runtime" | "archivedAt" | "deletedAt" | "originKind" | "originPluginId" | "visibility">;
@@ -23,11 +24,12 @@ export function attachNamedTaskThread(bb: BbPluginApi, store: TasksApiStore, thr
   const projects = store.tasks.listProjects().filter((project) => project.linkedBbProjectId != null && project.linkedBbProjectId === thread.projectId);
   if (!projects.length) return;
   const projectIds = new Set(projects.map((project) => project.id));
+  const closed = (task: { projectId: string; status: string }) => isClosedStatus(projects.find((project) => project.id === task.projectId)!, task.status);
   const attached = new Set(store.tasks.listTaskThreadsByThreadId(thread.id).map((link) => link.taskId));
   const db = bb.storage.database();
   for (const key of keys) {
     const task = store.tasks.getTaskByKey(key);
-    if (!task || task.ordinaryVisible === false || !projectIds.has(task.projectId) || attached.has(task.id) || task.archivedAt || ["done", "canceled"].includes(task.status)) continue;
+    if (!task || task.ordinaryVisible === false || !projectIds.has(task.projectId) || attached.has(task.id) || task.archivedAt || closed(task)) continue;
     // Manual detachment wins for that card; other explicitly named cards can still attach.
     if (db.prepare<[string, string], { found: number }>(
       "SELECT 1 AS found FROM comments WHERE task_id = ? AND thread_id = ? AND kind = 'system' AND body LIKE 'Thread detached (manual):%' LIMIT 1",
@@ -38,6 +40,7 @@ export function attachNamedTaskThread(bb: BbPluginApi, store: TasksApiStore, thr
         threadId: thread.id,
         title,
         presetName: "Auto attached",
+        linkOrigin: "discovery",
         liveStatus: threadLiveStatus(thread),
       });
       recordThreadLink(store.tasks, task.id, thread.id,

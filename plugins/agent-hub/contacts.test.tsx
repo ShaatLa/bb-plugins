@@ -37,3 +37,11 @@ it('shows the unread count on the contact avatar, as messengers do', async () =>
   expect(badge.parentElement!.className).toContain('relative shrink-0');
   expect(badge.className).toContain('absolute');
 });
+it('counts only messages on the avatar and shows a question mark for an open question', async () => {
+  const app = await loadPluginApp(() => import('./app'));
+  const asking = [{ ...rows[0]!, unread: 3, questions: 1 }];
+  const slot = renderSlot(app.threadLists[0]!, props, { rpc: { ...rpc, recipients: () => ({ recipients: asking }) } });
+  expect((await slot.findAllByLabelText('2 unread')).length).toBeGreaterThan(0);
+  expect(slot.queryByLabelText('3 unread')).toBeNull();
+  expect(slot.getAllByRole('img', { name: 'Asking you' }).length).toBeGreaterThan(0);
+});

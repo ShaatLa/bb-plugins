@@ -1,6 +1,7 @@
 import { createFakePluginHost } from "@get-bb/plugin-sdk/testing";
 import { describe, expect, it } from "vitest";
 import plugin, { WORK_BOARD_PLUGIN_VERSION } from "./server";
+import pkg from "./package.json" with { type: "json" };
 import { createStore } from "./api";
 
 describe("Tasks plugin scaffold", () => {
@@ -21,7 +22,7 @@ describe("Tasks plugin scaffold", () => {
       const replacement = await harness.lifecycle.reload(plugin);
       try {
         // Only the native global settings stay; the legacy migration fields are gone.
-        expect(Object.keys(replacement.harness.registrations.settingsDescriptors ?? {})).toEqual(["startScreen", "openThreadsIn", "badgeOpen", "badgeWaitingOnOwner", "badgeInReview", "badgeNeedsAnswer", "badgeFailedThread", "badgeStaleIdle"]);
+        expect(Object.keys(replacement.harness.registrations.settingsDescriptors ?? {})).toEqual(["startScreen", "openThreadsIn", "checksBbCli", "checksRuntimePath", "badgeOpen", "badgeWaitingOnOwner", "badgeInReview", "badgeNeedsAnswer", "badgeFailedThread", "badgeStaleIdle"]);
         const projects = await replacement.harness.callRpc("listProjects", {});
         expect(projects).toMatchObject({ projects: expect.arrayContaining([
           expect.objectContaining({ id: legacy.id, autoArchiveAfterDays: "off", staleIdleMinutes: "30" }),
@@ -35,6 +36,11 @@ describe("Tasks plugin scaffold", () => {
     } finally {
       await harness.dispose();
     }
+  });
+
+  it("reports the version of the package manifest", () => {
+    expect(WORK_BOARD_PLUGIN_VERSION).toBe(pkg.version);
+    expect(WORK_BOARD_PLUGIN_VERSION).toMatch(/^\d+\.\d+\.\d+/);
   });
 
   it("registers the CLI and RPC surfaces after opening plugin storage", async () => {

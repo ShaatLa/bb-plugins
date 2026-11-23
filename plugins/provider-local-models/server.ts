@@ -122,12 +122,12 @@ export function createPlugin(bb: BbPluginApi, testing: Pick<Parameters<typeof sp
   const signal = (parent: AbortSignal | undefined, timeout = 20*60000) => AbortSignal.any([...(parent ? [parent] : []), AbortSignal.timeout(timeout)]);
   bb.agents.registerTool({
     name: 'local_models_ask',
-    description: 'One-shot prompt (no tools) to a local llama.cpp model: private and free but slow; for summaries, drafts, classification.',
-    parameters: z.object({prompt:z.string().min(1).max(200000),model:z.string().optional(),system:z.string().optional(),max_tokens:z.number().int().min(1).max(8192).default(1024),effort:z.enum(['none','low','medium','high','xhigh']).optional()}),
+    description: 'One-shot prompt (no tools) to a local llama.cpp model: private and free but slow; for summaries, drafts, classification. Queues behind other Machine Slots local-model work and fails after 20 minutes.',
+    parameters: z.object({prompt:z.string().min(1).max(200000),model:z.string().optional().describe('Model id from `bb local-models status`, e.g. ggml-org/gpt-oss-20b-GGUF:MXFP4; omit for the default model'),system:z.string().optional().describe('System prompt text'),max_tokens:z.number().int().min(1).max(8192).default(1024).describe('Output token limit, reasoning included'),effort:z.enum(['none','low','medium','high','xhigh']).optional().describe('Reasoning level; omit for the model default')}),
     presentation: {label:{pending:'Asking local model',completed:'Asked local model'}},
     async execute(input,ctx) {
       try {const abort=signal(ctx.signal);return (await withSlot(slots,ctx.threadId,'local_models_ask · '+(input.model??'default model'),abort,async()=>{const result=await (await client()).ask(input,abort);void journal('tool',ctx.threadId,result);return result;},line=>bb.log.info(line))).content;}
-      catch(error) {return {content:[{type:'text' as const,text:'Local model request failed: '+(error instanceof Error ? error.message : String(error))}],isError:true};}
+      catch(error) {return {content:[{type:'text' as const,text:'Local model request failed: '+(error instanceof Error ? error.message : String(error))+(error instanceof PluginCliError && error.hint ? ' '+error.hint : '')}],isError:true};}
     },
   });
   bb.agents.configure(context => ({tools:context.provider.id === PROVIDER_ID ? [] : ['local_models_ask'],skills:['local-models']}));
@@ -137,7 +137,7 @@ export function createPlugin(bb: BbPluginApi, testing: Pick<Parameters<typeof sp
       const result=await (await client()).status(signal(ctx.signal,10000));
       return {exitCode:0,stdout:(options.json?JSON.stringify(result):result.models.map(m=>m.id+' · '+m.displayName+' · '+m.status+' · context '+m.contextSize+(m.reasoningLevels?' · reasoning '+(m.reasoningLevels.join(', ')||'not adjustable'):'')).join('\n'))+'\n'};
     }}),
-    ask:cliCommand({summary:'Send one prompt without tools',positionals:[{name:'prompt',description:'Prompt text',required:true}],options:{json,model:{type:'string',description:'Model id'},system:{type:'string',description:'System text'},'max-tokens':{type:'integer',min:1,max:8192,default:1024,description:'Output token limit'},effort:{type:'enum',values:REASONING_EFFORTS,description:'Reasoning level'},timeout:{type:'duration',defaultUnit:'m',default:1200000,min:1,max:2147483647,description:'Request timeout'}},async run({options,positionals},ctx){
+    ask:cliCommand({summary:'Send one prompt without tools',positionals:[{name:'prompt',description:'Prompt text',required:true}],options:{json,model:{type:'string',description:'Model id'},system:{type:'string',description:'System text'},'max-tokens':{type:'integer',min:1,max:8192,default:1024,description:'Output token limit'},effort:{type:'enum',values:REASONING_EFFORTS,description:'Reasoning level'},timeout:{type:'duration',defaultUnit:'m',default:1200000,min:1,max:2147483647,description:'Request timeout such as 90s or 20m; a bare number means minutes. Default 20m (shown in ms)'}},async run({options,positionals},ctx){
       const abort=signal(ctx.signal,options.timeout),result=await withSlot(slots,ctx.threadId,'bb local-models ask · '+(options.model??'default model'),abort,async()=>(await client()).ask({prompt:positionals.prompt,model:options.model,system:options.system,max_tokens:options['max-tokens'],effort:options.effort},abort),line=>bb.log.info(line));
       void journal('cli',ctx.threadId,result);
       return {exitCode:0,stdout:(options.json?JSON.stringify(result):result.content)+'\n'};
@@ -167,12 +167,15 @@ export function createPlugin(bb: BbPluginApi, testing: Pick<Parameters<typeof sp
       ].join('\n'))+'\n'};
     }}),
     'install-splash':cliCommand({summary:'Explicitly install or update Splash with Homebrew',async run(){
-      const report=await controls.detect(),command=report.splash.outdated?SPLASH_UPDATE:SPLASH_INSTALL;
+      const report=await controls.detect(true),command=report.splash.outdated?SPLASH_UPDATE:SPLASH_INSTALL;
       const output=await controls.install(command,true);
       return {exitCode:0,stdout:command+'\n'+output+'\n'};
     }}),
-    unload:cliCommand({summary:'Unload model(s)',positionals:[{name:'model',description:'Model id'}],options:{all:{type:'boolean',description:'Unload all models'}},async run({options,positionals},ctx){
-      return {exitCode:0,stdout:JSON.stringify(await (await client()).unload(positionals.model,options.all,signal(ctx.signal,10000)))+'\n'};
+    unload:cliCommand({summary:'Unload one model, or every loaded model with --all; from a thread, waits for running local-model work',positionals:[{name:'model',description:'Model id from status; omit only with --all'}],options:{all:{type:'boolean',description:'Unload every loaded model, including ones other threads use'}},async run({options,positionals},ctx){
+      if(options.all&&positionals.model)throw new PluginCliError('Pass a model id or --all, not both.',{code:'invalid_arguments',hint:'Drop --all to unload only '+positionals.model+'.'});
+      // From a thread, take a local-model Slots use first so the unload never pulls a model out from under a running request.
+      const abort=signal(ctx.signal),result=await withSlot(slots,ctx.threadId,'bb local-models unload · '+(options.all?'all':positionals.model),abort,async()=>(await client()).unload(positionals.model,options.all,signal(abort,10000)),line=>bb.log.info(line));
+      return {exitCode:0,stdout:JSON.stringify(result)+'\n'};
     }}),
   }}));
 }

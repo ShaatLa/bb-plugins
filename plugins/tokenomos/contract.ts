@@ -81,7 +81,7 @@ export type Rates = z.infer<typeof ratesSchema>;
 export const rangeSchema = z.enum(["day", "week", "month", "3m"]);
 export type Range = z.infer<typeof rangeSchema>;
 
-const threadIds = z.array(z.string().min(1)).min(1).max(2000);
+const threadIds = z.array(z.string().min(1)).min(1, "Pass at least one thread ID.").max(2000, "Pass at most 2000 thread IDs per call; a larger set needs several calls, and a thread shared between them counts in each.");
 
 // ---- Public RPC (PLAN §6.1) ----
 
@@ -91,8 +91,8 @@ const breakdown = z.boolean().optional();
 const costsSumInput = costsInput.extend({ breakdown });
 // Time-window form: a call counts only while its thread was inside one of its spans (to: null = until now).
 const span = z.object({ threadId: z.string().min(1), from: z.number().int().nonnegative(), to: z.number().int().nonnegative().nullable() })
-  .refine(s => s.to === null || s.to >= s.from, { message: "to must not precede from" });
-const costsSpansInput = z.object({ spans: z.array(span).min(1).max(2000), includeDescendants: z.boolean(), breakdown });
+  .refine(s => s.to === null || s.to >= s.from, { message: "to must be null (until now) or not earlier than from." });
+const costsSpansInput = z.object({ spans: z.array(span).min(1, "Pass at least one span.").max(2000, "Pass at most 2000 spans per call."), includeDescendants: z.boolean(), breakdown });
 const sumThread = z.object({ threadId: z.string(), title: z.string(), model: z.string(), cost: costSchema });
 const sumModel = z.object({ provider: z.string(), model: z.string(), cost: costSchema, calls: count });
 
@@ -121,7 +121,30 @@ export const wakeCostSchema = z.object({
   cacheLikelyExpired:z.boolean().nullable(), coldCostUsd:nullableNum, warmCostUsd:nullableNum,
 });
 
+const limitPart = z.object({ usd: num, calls: count });
+export const limitWindowSchema = z.object({
+  id: z.string(), label: z.string(), kind: z.string(), model: z.string().nullable(), usedPercent: num, resetsAt: nullableNum,
+  startsAt: nullableNum, elapsedShare: nullableNum, forecastPercent: nullableNum, runsOutAt: nullableNum,
+  stale: z.boolean().optional(), seenAt: num.optional(),
+  usage: z.object({ heavy: limitPart, other: limitPart, heavyShare: nullableNum, usdPerPercent: nullableNum, partial: z.boolean() }).nullable(),
+});
+export const limitsSchema = z.object({
+  heavyModels: z.array(z.string()),
+  /** Target ceiling for the heavy-model share of cost, as a fraction; null when the user turned it off. */
+  heavyTarget: nullableNum,
+  accounts: z.array(z.object({
+    providerId: z.string(), label: z.string(), plan: z.string().nullable(), status: z.string(), message: z.string().nullable(),
+    observedAt: nullableNum, windows: z.array(limitWindowSchema), stale: z.boolean().optional(),
+  })),
+});
+
 export const rpcContract = defineRpcContract({
+  limits:{tags,input:z.object({}),output:limitsSchema},
+  // One global setting at a time; the value is validated by that setting's own schema on the server.
+  'config.get': { input: z.object({}), output: z.object({ values: z.record(z.string(), z.union([z.string(), z.number(), z.boolean()])) }) },
+  'config.options': { input: z.object({}), output: z.object({ referenceModels: z.array(z.object({ model: z.string(), label: z.string(), provider: z.string().nullable() })) }) },
+  // `key` is checked against settings.ts on the server; importing it here would cycle through the price table.
+  'config.set': { input: z.object({ key: z.string().min(1), value: z.union([z.string(), z.number(), z.boolean()]) }), output: z.object({ ok: z.literal(true) }) },
   watchlist:{tags,input:z.object({}),output:z.object({items:z.array(watchlistItemSchema).max(20)})},
   wakeCost:{tags,input:z.object({threadId:z.string().min(1)}),output:wakeCostSchema},
   "costs.threads": {
@@ -156,7 +179,7 @@ export const rpcContract = defineRpcContract({
       totals: costSchema,
       previous: costSchema.nullable(),
       cacheReadShare: nullableNum,
-      breakdown: z.array(z.object({ key: z.string(), label: z.string(), cost: costSchema, calls: count })),
+      breakdown: z.array(z.object({ key: z.string(), label: z.string(), provider: z.string(), cost: costSchema, calls: count })),
       compactionSavings: savingSchema,
       localSavings: savingSchema.extend({ referenceModel: z.string() }),
     }),

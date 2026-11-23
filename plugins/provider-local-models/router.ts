@@ -72,7 +72,7 @@ export function router(baseUrl: string, defaultModel: string, dataDir: string, s
     },
     async unload(model: string | undefined, all: boolean, signal: AbortSignal) {
       const listed=await models(signal);
-      if(!all&&!model)throw new PluginCliError('Specify a model or --all.',{code:'model_not_found',hint:'Run bb local-models status.'});
+      if(!all&&!model)throw new PluginCliError('Specify a model or --all.',{code:'invalid_arguments',hint:'Pass a model id from bb local-models status, or --all.'});
       // --all unloads what is loaded (the router answers 400 for an idle model); servers without status cannot unload.
       const targets=all?listed.filter((m:any)=>m.status?.value==='loaded'):listed.filter((m:any)=>m.id===model);
       if(!all&&!targets.length)throw new PluginCliError('Local model not found.',{code:'model_not_found',hint:'Run bb local-models status.'});

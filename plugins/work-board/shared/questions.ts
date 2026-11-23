@@ -38,3 +38,66 @@ export function assertReopenKeepsScope(previous: { prompt: string; steps: readon
   if (next.steps.length > previous.steps.length || added.length)
     throw new Error(`Reopening an answered question asks the same check again; it cannot add ${added.length ? "links" : "steps"} the answered revision did not have. Ask the new state as a new question instead. ${QUESTION_SPLIT_HINT}`);
 }
+
+const PLAN_LINK = /\/plugins\/work-board\/work-board\/task\/[^/\s)]+\/plan(?![\w-])/;
+// "accept/approve … plan" either way round, English and Russian, within one sentence.
+const PLAN_APPROVAL = [
+  /\b(?:accept|approve|sign[ -]?off|confirm)\w*\b[^.?!\n]{0,60}\bplan\b/i,
+  /\bplan\b[^.?!\n]{0,60}\b(?:accept|approve|sign[ -]?off|confirm)\w*/i,
+  /(?:принима|приним|одобр|соглас|утвержд|подтвержд)[а-яё]*[^.?!\n]{0,60}план/i,
+  /план[а-яё]*[^.?!\n]{0,60}(?:принима|одобр|соглас|утвержд|подтвержд)/i,
+];
+
+/**
+ * The plan's own review replaces "do you accept the plan?" questions. A question that links a task plan is refused;
+ * on a task that has a plan, so is one that asks to accept or approve a plan.
+ */
+export function assertNotPlanApproval(prompt: string, steps: readonly string[], taskKey: string, taskHasPlan: boolean): void {
+  const text = [prompt, ...steps].join("\n");
+  if (PLAN_LINK.test(text) || (taskHasPlan && PLAN_APPROVAL.some((pattern) => pattern.test(text))))
+    throw new Error(`Plan approval is not an owner question: run \`bb work-board plan submit ${taskKey} --reviewer <reviewer thread, or owner only when the user asked to approve the plan>\` and wait. The reviewer approves the plan or sends notes, and you get a message either way. Ask questions only for decisions inside the work.`);
+}
+
+export const STEP_SPLIT_HINT =
+  'One --step is one action or one observation: split it into separate --step values, in order, e.g. --step "Press Retry" --step "Close the message" --step "Check that the list reloads".';
+
+// A new sentence starts after . ! ? or … and whitespace, with a capital letter, a quote or a digit.
+const SENTENCE_BREAK = /[.!?…]["»”)]?\s+(?=["«“(]?[A-ZА-ЯЁ0-9])/u;
+// Common abbreviations end in a dot without ending the sentence.
+const ABBREVIATION = /\b(?:e\.g|i\.e|etc|vs|т\.е|т\.к|т\.д|т\.п|напр|см|стр)\.$/i;
+
+/** A step that matches an unused kept step is untouched; each kept entry covers one occurrence, so a duplicate of a legacy step is new. */
+function keptMatcher(kept: readonly string[]): (step: string) => boolean {
+  const unused = [...kept];
+  return (step) => {
+    const at = unused.indexOf(step);
+    if (at < 0) return false;
+    unused.splice(at, 1);
+    return true;
+  };
+}
+
+/** Each "How to check" step is a single sentence; several sentences are several steps. Steps in `kept` are not checked, once each. */
+export function assertStepsAtomic(steps: readonly string[], kept: readonly string[] = []): void {
+  const isKept = keptMatcher(kept);
+  steps.forEach((step, index) => {
+    if (isKept(step)) return;
+    const parts = step.trim().split(SENTENCE_BREAK);
+    let sentences = 1;
+    for (let i = 0; i < parts.length - 1; i++) if (!ABBREVIATION.test(parts[i]!.trim())) sentences++;
+    if (sentences > 1)
+      throw new Error(`Step ${index + 1} has ${sentences} sentences ("${step.slice(0, 80)}${step.length > 80 ? "…" : ""}"). ${STEP_SPLIT_HINT}`);
+  });
+}
+
+const ACTION = String.raw`(?:press|click|tap|open|close|select|choose|type|enter|scroll|drag|wait|check|verify|confirm|go|switch|reload|нажм|нажи|закро|закры|откро|откры|выбер|выбра|введ|введ|прокру|перетащ|подожд|дожд|провер|убед|перейд|переключ|обнов)`;
+// Actions chained inside one sentence: "then", or a comma or "and" followed by another action verb.
+const CHAINED = new RegExp(String.raw`\b(?:then|after that|afterwards)\b|затем|потом|после чего|,\s*(?:and\s+|и\s+)?${ACTION}|\s(?:and|и)\s+${ACTION}`, "iu");
+
+/** Each new or changed step is one action: a step that chains actions ("then", or a comma or "and" before another verb) is refused. Steps in `kept` are not checked, once each. */
+export function assertStepsSingleAction(steps: readonly string[], kept: readonly string[] = []): void {
+  const isKept = keptMatcher(kept);
+  const numbers = steps.flatMap((step, index) => (!isKept(step) && CHAINED.test(step) ? [index + 1] : []));
+  if (numbers.length)
+    throw new Error(`Step${numbers.length > 1 ? "s" : ""} ${numbers.join(", ")} may join several actions ("then", or a comma or "and" before another action). Nothing was saved. ${STEP_SPLIT_HINT}`);
+}

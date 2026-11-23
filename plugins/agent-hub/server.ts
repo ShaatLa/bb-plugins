@@ -5,38 +5,59 @@ import { createHash, randomUUID } from 'node:crypto';
 import type { BbPluginApi } from '@get-bb/plugin-sdk';
 import { z } from 'zod';
 import { deliveryError } from './delivery';
-import { rpcContract, inputs, idSchema, itemSchema, ITEMS_TAG, COUNTS_TAG, POOLS_TAG, QUEUE_TAG, CONTEXT_TAG, inlinePreviewSchema, tokenomosThreads, type Item, type ListInput, type Counts, type Attachment, type SendOptions, type FormQuestion, YOUR_CALL, defaultAnswer } from './contract';
+import { NOTICE_THREAD, rpcContract, inputs, itemSchema, ITEMS_TAG, COUNTS_TAG, RECIPIENTS_TAG, RECIPIENTS_THROTTLE_MS, POOLS_TAG, QUEUE_TAG, CONTEXT_TAG, inlinePreviewSchema, tokenomosThreads, tokenomosSum, type Item, type ListInput, type Counts, type Attachment, type SendOptions, type FormQuestion, YOUR_CALL, defaultAnswer } from './contract';
 import { migrations } from './schema';
-import { cap, ATTENTION_SQL, ACTIVE_THREAD_SQL, OWNER_ITEM_SQL, failRequest } from './ingest';
-import { createDriver } from './driver';
+import { cap, CHAT_QUESTION_WARNING, ATTENTION_SQL, ACTIVE_THREAD_SQL, OWNER_ITEM_SQL, failRequest } from './ingest';
+import { createDriver, notFound } from './driver';
 import { registerCli } from './cli';
 import { createNotifier } from './notify';
 import { buildReplyMessage } from './reply-message';
 export { buildReplyMessage };
 import { inlineCommentPreview } from './inline-comments';
+import { spawnGateMessageBody } from './spawn-gate-message';
 
-export const INSTRUCTIONS = "Agent Hub tracks user messages and final replies. For a later answer, call agent_hub_defer; when it arrives, agent_hub_list then agent_hub_resolve. Ask decisions via agent_hub_ask, then end the turn. With no pending question, call agent_hub_report for an awaited result or when handing work to the owner (ready for review, decisions awaiting them). Scripts waking their own thread via bb thread tell start with a [tag].";
-const optionsSchema=z.array(z.string().trim().min(1).max(200)).min(1).max(6).refine(v=>new Set(v).size===v.length,'Options must be unique');
+const NOTICE_PREVIEW = 20000;
+export const INSTRUCTIONS = [
+  "Call agent_hub_defer for later answers. On arrival, call agent_hub_list, then agent_hub_resolve with the id. You must ask the owner a decision with agent_hub_ask, then end the turn. Keep the question out of chat. With no pending question, you must call agent_hub_report for awaited results or handoffs.",
+  "For messages to other threads, open with one short sentence with the request or result. Use short paragraphs or bullets, one point each. Use inline code for commands, IDs and fields. Put JSON objects in fenced json blocks. Leave blank lines between paragraphs and around code blocks.",
+  "A script waking its own thread via `bb thread tell` must start the text with a [tag], e.g. `[example-watcher] done`.",
+].join('\n\n');
+const optionsSchema=z.array(z.string({error:'options must be a list of strings'}).trim().min(1,'an option is empty; give it text or remove it').max(200,'an option is longer than 200 characters; shorten it'),{error:'options must be a list of 1–6 strings'}).min(1,'options is empty; give 1–6 options or leave options out').max(6,'options has more than 6 entries; keep at most 6').refine(v=>new Set(v).size===v.length,'options must be unique after trimming; remove the duplicate');
 // A session started before a tool gained a flag sends it as a string; read 'true'/'false' as the boolean.
-const flag=z.preprocess(v=>v==='true' ? true : v==='false' ? false : v,z.boolean());
+const flag=z.preprocess(v=>v==='true' ? true : v==='false' ? false : v,z.boolean({error:'multiSelect must be true or false'}));
+const ID_PATTERN=/^ans_[A-Za-z0-9_-]+$/;
+const toolId=(fix:string)=>z.string({error:`id is required: ${fix}`}).regex(ID_PATTERN,`id must be an item id such as ans_… exactly as returned by the tools: ${fix}`);
+// An unknown field is refused with the accepted ones, since a wrong name is the usual cause.
+const strictInput=<T extends z.ZodRawShape>(tool:string,shape:T)=>z.object(shape,{error:iss=>iss.code==='unrecognized_keys' ? `unknown field ${iss.keys.map(k=>`"${k}"`).join(', ')}; ${tool} accepts ${Object.keys(shape).join(', ') || 'no arguments'}` : undefined}).strict();
+const DEADLINE='deadlineMinutes must be an integer from 5 to 10080 (minutes); change it or leave it out';
+const OPTIONS_NEED='needs options; add options (1–6) that contain it, or drop it';
+// The card renders Markdown, so a list only reads as a list when each item starts its own line.
+const INLINE_LIST='lists numbered items inside one paragraph; write the question in one short sentence, then put each item on its own line as a Markdown list ("1. …")';
+const inlineList=(text?:string)=>!!text && text.split('\n').some(line=>/(?:^|\s)\(?1[.)]\s/.test(line) && /\S\s+\(?2[.)]\s/.test(line));
 const toolInputs = {
-  list: z.object({}).strict(),
-  defer: z.object({id:idSchema.optional(),note:z.string().max(2000).optional()}).strict(),
-  resolve: z.object({id:idSchema}).strict(),
-  report: z.object({}).strict(),
-  withdraw: z.object({id:idSchema,reason:z.string().trim().min(1).max(300)}).strict(),
-  ask: z.object({urgency:z.enum(['blocking','normal','low']).optional(),deadlineMinutes:z.number().int().min(5).max(10080).optional(),question:z.string().trim().min(1).max(2000),options:optionsSchema.optional(),multiSelect:flag.optional(),recommended:z.string().trim().min(1).optional(),reason:z.string().trim().min(1).max(300).optional(),
-    questions:z.array(z.object({question:z.string().trim().min(1).max(1000),header:z.string().trim().min(1).max(40).optional(),options:optionsSchema.optional(),multiSelect:flag.optional(),recommended:z.string().trim().min(1).optional()}).strict()
-      .refine(q=>!q.multiSelect || !!q.options,{message:'multiSelect requires options',path:['multiSelect']})
-      .refine(q=>q.recommended===undefined || q.options?.includes(q.recommended),{message:'recommended must equal one of options',path:['recommended']})).min(2).max(10).optional()}).strict()
-    .refine(p=>!p.questions || (p.options===undefined && p.multiSelect===undefined && p.recommended===undefined),{message:'with questions, put options, multiSelect and recommended on each question',path:['questions']})
-    .refine(p=>!p.multiSelect || !!p.options,{message:'multiSelect requires options',path:['multiSelect']})
-    .refine(p=>p.recommended===undefined || p.options?.includes(p.recommended),{message:'recommended must equal one of options',path:['recommended']})
-    .refine(p=>p.deadlineMinutes===undefined || !!p.questions || p.recommended!==undefined,{message:'deadlineMinutes requires recommended for a single question',path:['deadlineMinutes']})
-    .refine(p=>p.reason===undefined || p.recommended!==undefined,{message:'reason requires recommended',path:['reason']}),
+  list: strictInput('agent_hub_list',{}),
+  defer: strictInput('agent_hub_defer',{id:toolId('copy it from agent_hub_list, or leave id out to defer this thread’s newest waiting message').optional(),note:z.string({error:'note must be text'}).max(2000,'note is longer than 2000 characters; shorten it').optional()}),
+  resolve: strictInput('agent_hub_resolve',{id:toolId('call agent_hub_list and pass the id of the deferred question whose answer you now have')}),
+  report: strictInput('agent_hub_report',{}),
+  withdraw: strictInput('agent_hub_withdraw',{id:toolId('copy it from the agent_hub_ask result or from "Your open questions to the user" in agent_hub_list'),reason:z.string({error:'reason is required: say in a few words why the question needs no answer'}).trim().min(1,'reason is empty: say in a few words why the question needs no answer').max(300,'reason is longer than 300 characters; shorten it')}),
+  ask: strictInput('agent_hub_ask',{urgency:z.enum(['blocking','normal','low'],{error:'urgency must be blocking, normal or low'}).optional(),deadlineMinutes:z.number({error:DEADLINE}).int(DEADLINE).min(5,DEADLINE).max(10080,DEADLINE).optional(),question:z.string({error:'question must be text'}).trim().min(1,'question is empty; write the question or leave it out and pass questions').max(2000,'question is longer than 2000 characters; shorten it').optional(),options:optionsSchema.optional(),multiSelect:flag.optional(),recommended:z.string({error:'recommended must be text'}).trim().min(1,'recommended is empty; copy one of the options or drop it').optional(),reason:z.string({error:'reason must be text'}).trim().min(1,'reason is empty; explain the recommended option or drop reason').max(300,'reason is longer than 300 characters; shorten it').optional(),
+    questions:z.array(strictInput('a part of questions',{question:z.string({error:'each part needs a question: add the question text'}).trim().min(1,'a part has an empty question; write it or remove the part').max(1000,'a part’s question is longer than 1000 characters; shorten it'),header:z.string({error:'header must be text'}).trim().min(1,'header is empty; give a short label or drop it').max(40,'header is longer than 40 characters; shorten it').optional(),options:optionsSchema.optional(),multiSelect:flag.optional(),recommended:z.string({error:'recommended must be text'}).trim().min(1,'recommended is empty; copy one of the options or drop it').optional()})
+      .refine(q=>!inlineList(q.question),{message:`this part ${INLINE_LIST}`,path:['question']})
+      .refine(q=>!q.multiSelect || !!q.options,{message:'multiSelect needs options to tick; add options to this part or drop multiSelect',path:['multiSelect']})
+      .refine(q=>q.recommended===undefined || !!q.options,{message:`recommended ${OPTIONS_NEED}`,path:['recommended']})
+      .refine(q=>q.recommended===undefined || !q.options || q.options.includes(q.recommended),{message:'recommended must equal one of this part’s options exactly; fix it or add it to options',path:['recommended']}),{error:'questions must be a list of 2–10 parts, each with its own question'}).min(2,'questions needs 2–10 parts; for one question pass question instead').max(10,'questions has more than 10 parts; split them over two asks or merge some').optional()})
+    .refine(p=>p.question!==undefined || !!p.questions,{message:'question is required for a single question: add question, or pass questions (2–10 parts) instead',path:['question']})
+    .refine(p=>!inlineList(p.question),{message:`question ${INLINE_LIST}`,path:['question']})
+    .refine(p=>!p.questions || (p.options===undefined && p.multiSelect===undefined && p.recommended===undefined && p.reason===undefined),{message:'with questions, put options, multiSelect and recommended on each part and drop the top-level reason (parts take no reason)',path:['questions']})
+    .refine(p=>!!p.questions || !p.multiSelect || !!p.options,{message:'multiSelect needs options to tick; add options or drop multiSelect',path:['multiSelect']})
+    .refine(p=>!!p.questions || p.recommended===undefined || !!p.options,{message:`recommended ${OPTIONS_NEED}`,path:['recommended']})
+    .refine(p=>!!p.questions || p.recommended===undefined || !p.options || p.options.includes(p.recommended),{message:'recommended must equal one of options exactly (after trimming); fix recommended or add it to options',path:['recommended']})
+    .refine(p=>p.deadlineMinutes===undefined || !!p.questions || p.recommended!==undefined,{message:'deadlineMinutes on a single question needs recommended (equal to one of options): it is the answer applied at the deadline; add recommended, drop deadlineMinutes, or use questions',path:['deadlineMinutes']})
+    .refine(p=>!!p.questions || p.reason===undefined || p.recommended!==undefined,{message:'reason explains the recommended option; add recommended (equal to one of options) or drop reason',path:['reason']}),
 };
 const formQuestion=(id:string,prompt:string,q:{header?:string;options?:string[];multiSelect?:boolean;recommended?:string;reason?:string}):FormQuestion=>({id,prompt,...(q.header ? {shortLabel:q.header} : {}),
   options:[...(q.options ?? []).filter(o=>o!==YOUR_CALL).map(o=>({value:o,label:o,...(o===q.recommended ? {description:q.reason ? `Recommended: ${q.reason}` : 'Recommended'} : {})})),{value:YOUR_CALL,label:YOUR_CALL,description:'Let the agent decide'}],multiSelect:!!q.multiSelect,allowFreeText:true,required:false});
+const NO_TURN='no active turn in this thread; call this from inside the running turn whose final message should carry it';
 // Deferred answers expire after three days without answer movement.
 export const OWED_EXPIRY_MS = 3 * 24 * 60 * 60 * 1000;
 type Row = Record<string, any>;
@@ -58,8 +79,15 @@ function start(bb: BbPluginApi, migrationError: string | null) {
   const invalidate = (): void => {
     if (invOff) return;
     if (invTimer) { invPending = true; return; }
-    bb.rpc.experimental_invalidate([ITEMS_TAG,COUNTS_TAG]);
+    bb.rpc.experimental_invalidate([ITEMS_TAG,COUNTS_TAG]); invalidateRecipients();
     invTimer = setTimeout(() => { invTimer = undefined; if (invPending) { invPending = false; invalidate(); } },150); invTimer.unref();
+  };
+  // shortcut: a recipients read slower than the interval is still restarted until the burst ends; raise it if reads grow.
+  let recTimer: ReturnType<typeof setTimeout> | undefined, recPending = false;
+  const invalidateRecipients = (): void => {
+    if (recTimer) { recPending = true; return; }
+    bb.rpc.experimental_invalidate([RECIPIENTS_TAG]);
+    recTimer = setTimeout(() => { recTimer = undefined; if (recPending) { recPending = false; invalidateRecipients(); } },RECIPIENTS_THROTTLE_MS); recTimer.unref();
   };
   const invalidatePools = () => bb.rpc.experimental_invalidate([POOLS_TAG]);
   const queueStamps = new Map<string,number>(); // per thread, bumped by bb's queue events below
@@ -72,6 +100,12 @@ function start(bb: BbPluginApi, migrationError: string | null) {
   let projectCache: {expires:number; rows:Awaited<ReturnType<typeof bb.sdk.projects.list>>}|undefined;
   type DisplayThread = {id:string; title:string|null; projectId:string};
   const threadCache=new Map<string,{expires:number; thread:DisplayThread|undefined}>();
+  let pluginNameCache: {expires:number; names:Map<string,string>}|undefined;
+  // A plugin's display name, as its chat card shows it; a host without the plugin list falls back to the bare id.
+  async function pluginNames() {
+    if (!pluginNameCache || pluginNameCache.expires<=Date.now()) pluginNameCache={names:await Promise.resolve().then(()=>bb.sdk.plugins.list()).then(r=>new Map(r.plugins.map(p=>[p.id,p.name ?? p.id])),()=>new Map<string,string>()),expires:Date.now()+60000};
+    return pluginNameCache.names;
+  }
   async function displayProjects() {
     if (!projectCache || projectCache.expires<=Date.now()) projectCache={rows:await bb.sdk.projects.list(),expires:Date.now()+60000};
     return projectCache.rows;
@@ -108,7 +142,7 @@ function start(bb: BbPluginApi, migrationError: string | null) {
     return db.prepare(`SELECT
       count(CASE WHEN kind IN ('mine','update') AND status='answered' AND read_at IS NULL AND snoozed_until IS NULL THEN 1 END) AS unread,
       count(CASE WHEN kind='mine' AND status IN ('waiting','deferred') THEN 1 END) AS waiting,
-      count(CASE WHEN kind='for_me' AND status='open' THEN 1 END) AS forMe,
+      count(CASE WHEN kind='for_me' AND status='open' AND declined_at IS NULL THEN 1 END) AS forMe,
       count(CASE WHEN ${ATTENTION_SQL} THEN 1 END) AS inbox
       FROM items WHERE dismissed_at IS NULL AND thread_deleted=0 AND ${ACTIVE_THREAD_SQL} AND ${OWNER_ITEM_SQL}`).get() as Counts;
   }
@@ -116,12 +150,14 @@ function start(bb: BbPluginApi, migrationError: string | null) {
   // page loads contacts. Counting first applies bb's lastReadAt to threads with unread answers (at most every 15 s).
   // Agent questions stay: reading the thread in bb does not answer them.
   let bbReadSyncedAt = 0;
+  const NOT_NOTICE_SQL = 'id NOT IN (SELECT id FROM notices)';
   // bb also counts sending a message as reading its thread (lastReadAt = the send time, to the millisecond), even a queued
   // message it sends by itself when a turn ends, while nobody is looking; taking that as a read would hide the answer that
   // just arrived. So a lastReadAt that falls right on one of the owner's sends is not a read; only bb's real reads count.
   const sendReads = new Map<string, number>();
   async function applyBbRead(threadId: string, readAt: number) {
-    const sql = `FROM items WHERE thread_id=? AND ${ATTENTION_SQL} AND kind<>'for_me' AND coalesce(answered_at,created_at)<=?`;
+    // A notice is not in bb's chat, so bb's lastReadAt says nothing about it.
+    const sql = `FROM items WHERE thread_id=? AND ${ATTENTION_SQL} AND kind<>'for_me' AND ${NOT_NOTICE_SQL} AND coalesce(answered_at,created_at)<=?`;
     if (sendReads.get(threadId) === readAt || !(db.prepare(`SELECT count(*) AS n ${sql}`).get(threadId,readAt) as {n:number}).n) return 0;
     const sent = await bb.sdk.threads.events.list({threadId,types:['client/turn/requested'],order:'desc',limit:'5'}) as {createdAt:number;data?:{initiator?:string}}[];
     if (sent.some(e => e.data?.initiator === 'user' && readAt >= e.createdAt && readAt - e.createdAt < 1000)) { sendReads.set(threadId, readAt); return 0; }
@@ -129,7 +165,7 @@ function start(bb: BbPluginApi, migrationError: string | null) {
   }
   async function syncReadFromBb() {
     if (Date.now() - bbReadSyncedAt < 15000) return; bbReadSyncedAt = Date.now();
-    const ids = threadsOf(`${ATTENTION_SQL} AND kind<>'for_me' AND thread_deleted=0`);
+    const ids = threadsOf(`${ATTENTION_SQL} AND kind<>'for_me' AND ${NOT_NOTICE_SQL} AND thread_deleted=0`);
     if (!ids.length) return;
     try {
       let n = 0;
@@ -148,6 +184,7 @@ function start(bb: BbPluginApi, migrationError: string | null) {
     };
     const where = [views[p.view]], args: (string | number)[] = [];
     if (!p.threadId) where.push(OWNER_ITEM_SQL);
+    if (p.notices) where.push('id IN (SELECT id FROM notices)');
     if (!['all','pinned','saved'].includes(p.view)) where.push('dismissed_at IS NULL',ACTIVE_THREAD_SQL);
     for (const [key,value] of [['thread_id',p.threadId],['project_id',p.projectId]] as const) {
       if (value !== undefined) {where.push(`${key}=?`); args.push(value);}
@@ -157,7 +194,10 @@ function start(bb: BbPluginApi, migrationError: string | null) {
     const at = p.order === 'activity' ? 'coalesce(answered_at,created_at)' : 'created_at';
     if ((p.anchor !== undefined || p.after) && (!p.threadId || p.view !== 'all' || p.order !== 'activity' || p.cursor || p.query)) throw new Error('Anchored history requires one thread and activity order');
     if (p.anchor !== undefined) {
-      const target = db.prepare(`SELECT *,${at} AS list_at FROM items WHERE thread_id=? AND ${typeof p.anchor === 'number' ? '(question_seq=? OR answer_seq=? OR interim_seq=? OR candidate_seq=?)' : 'id=?'} LIMIT 1`).get(p.threadId, ...(typeof p.anchor === 'number' ? [p.anchor,p.anchor,p.anchor,p.anchor] : [p.anchor])) as Row | undefined;
+      const last = 'max(coalesce(question_seq,-1),coalesce(answer_seq,-1),coalesce(interim_seq,-1),coalesce(candidate_seq,-1))';
+      // A message from another thread or plugin is stored under the agent's reply, not its own seq: land on the first item that ends at or after it.
+      const target = db.prepare(`SELECT *,${at} AS list_at FROM items WHERE thread_id=? AND ${typeof p.anchor === 'number' ? `(question_seq=? OR answer_seq=? OR interim_seq=? OR candidate_seq=?)` : 'id=?'} LIMIT 1`).get(p.threadId, ...(typeof p.anchor === 'number' ? [p.anchor,p.anchor,p.anchor,p.anchor] : [p.anchor])) as Row | undefined
+        ?? (typeof p.anchor === 'number' ? db.prepare(`SELECT *,${at} AS list_at FROM items WHERE thread_id=? AND ${last}>=? ORDER BY ${last} LIMIT 1`).get(p.threadId,p.anchor) as Row | undefined : undefined);
       if (!target) return {items:[],nextCursor:null,newerCursor:null};
       where.push(`(${at}<? OR (${at}=? AND id<=?))`); args.push(target.list_at,target.list_at,target.id);
     }
@@ -167,7 +207,7 @@ function start(bb: BbPluginApi, migrationError: string | null) {
     const rows = db.prepare(`SELECT *,${at} AS list_at FROM items WHERE ${where.join(' AND ')} ORDER BY ${at} ${direction},id ${direction} LIMIT ?`).all(...args,limit+1) as Row[];
     const more = rows.length>limit; rows.splice(limit); if (p.after) rows.reverse();
     const titles = new Map<string,string>();
-    const ids = [...new Set(rows.filter(r=>!r.thread_deleted).map(r=>r.thread_id as string))];
+    const ids = [...new Set(rows.filter(r=>!r.thread_deleted && r.thread_id!==NOTICE_THREAD).map(r=>r.thread_id as string))];
     if (ids.length) for (const t of await displayThreads(ids)) titles.set(t.id,t.title ?? t.id);
     // Update captions name the child or sender thread; one that left the sidebar (archived) is looked up by id.
     const sources = [...new Set(rows.filter(r=>r.trigger_kind==='system' || r.trigger_kind==='agent').map(r=>r.trigger_source as string|null).filter((id):id is string=>!!id && !titles.has(id)))];
@@ -175,28 +215,32 @@ function start(bb: BbPluginApi, migrationError: string | null) {
     await Promise.all(sources.filter(id=>!titles.has(id)).map(id=>bb.sdk.threads.get({threadId:id}).then(t=>{titles.set(id,t.title ?? id); threadCache.set(id,{expires:Date.now()+30000,thread:{id:t.id,title:t.title,projectId:t.projectId}});},()=>{})));
     const names = new Map<string,string>();
     if (rows.some(r=>r.project_id)) for (const p of await displayProjects()) names.set(p.id,p.name);
+    const notices = new Map((rows.length ? db.prepare(`SELECT id,source,manager_thread_id,bytes,length(body) AS chars FROM notices WHERE id IN (${rows.map(()=>'?').join(',')})`).all(...rows.map(r=>r.id)) as {id:string;source:string;manager_thread_id:string|null;bytes:number;chars:number}[] : []).map(n=>[n.id,{source:n.source,managerThreadId:n.manager_thread_id,bytes:n.bytes,truncated:n.chars>NOTICE_PREVIEW}]));
     const items: Item[] = rows.map(row => {
       const value: Row = {};
       for (const [key,v] of Object.entries(row)) if (key !== 'dedupe_key' && key !== 'list_at') value[key.replace(/_([a-z])/g,(_,c:string)=>c.toUpperCase())]=v;
-      return itemSchema.parse({...value,attachments:JSON.parse(row.attachments),snoozedUntil:row.snoozed_until,failedAt:row.failed_at,failureReason:row.failure_reason,interruptedAt:row.interrupted_at,likelyInterim:!!row.likely_interim,asks:!!row.asks,chatAsked:!!row.chat_asked,options:row.options===null ? null : JSON.parse(row.options),questions:row.questions===null ? null : JSON.parse(row.questions),recommended:row.recommended,recommendReason:row.recommend_reason,taskKey:row.task_key,trigger:row.trigger_kind ? {kind:row.trigger_kind,sourceId:row.trigger_source,sourceTitle:row.trigger_source ? titles.get(row.trigger_source) ?? null : null} : null,pinned:!!row.pinned,threadDeleted:!!row.thread_deleted,threadTitle:titles.get(row.thread_id) ?? null,projectName:names.get(row.project_id) ?? null});
+      return itemSchema.parse({...value,notice:notices.get(row.id) ?? null,attachments:JSON.parse(row.attachments),snoozedUntil:row.snoozed_until,declinedAt:row.declined_at,failedAt:row.failed_at,failureReason:row.failure_reason,interruptedAt:row.interrupted_at,likelyInterim:!!row.likely_interim,asks:!!row.asks,chatAsked:!!row.chat_asked,options:row.options===null ? null : JSON.parse(row.options),questions:row.questions===null ? null : JSON.parse(row.questions),recommended:row.recommended,recommendReason:row.recommend_reason,taskKey:row.task_key,trigger:row.trigger_kind ? {kind:row.trigger_kind,sourceId:row.trigger_source,sourceTitle:row.trigger_source ? titles.get(row.trigger_source) ?? null : null} : null,pinned:!!row.pinned,threadDeleted:!!row.thread_deleted,threadTitle:titles.get(row.thread_id) ?? null,projectName:names.get(row.project_id) ?? null});
     });
     const last = rows.at(-1);
     const first = rows[0], newer = first && (p.anchor !== undefined || p.after) && db.prepare(`SELECT 1 FROM items WHERE thread_id=? AND (${at}>? OR (${at}=? AND id>?)) LIMIT 1`).get(p.threadId,first.list_at,first.list_at,first.id);
     return {items,nextCursor:more && last ? `${last.list_at}|${last.id}` : null,...(p.anchor !== undefined || p.after ? {newerCursor:newer ? `${first!.list_at}|${first!.id}` : null} : {})};
   }
+  // Reading an archived chat's rows must stick (the chat shows them as unread), though they stay out of the counts.
+  const READABLE_SQL = ATTENTION_SQL.replace(' AND thread_id NOT IN (SELECT thread_id FROM archived_threads)','');
   function markRead(raw: {all:true;threadId?:string}): {ok:true;batch:string|null;count:number};
   function markRead(raw: z.infer<typeof inputs.markRead>): {ok:true;batch?:string|null;count?:number};
   function markRead(raw: z.infer<typeof inputs.markRead>) {
     const p=inputs.markRead.parse(raw), now=Date.now();
-    if ('ids' in p) return commit(`UPDATE items SET read_at=?,read_batch=NULL WHERE id IN (${p.ids.map(()=>'?').join(',')}) AND ${ATTENTION_SQL}`,now,...p.ids);
+    if ('ids' in p) return commit(`UPDATE items SET read_at=?,read_batch=NULL WHERE id IN (${p.ids.map(()=>'?').join(',')}) AND ${READABLE_SQL}`,now,...p.ids);
     // Reading does not answer an open agent question; it stays counted until answered.
-    const batch=randomUUID(), count=db.prepare(`UPDATE items SET read_at=?,read_batch=? WHERE ${ATTENTION_SQL} AND NOT (kind='for_me' AND status='open')${p.threadId ? ' AND thread_id=?' : ''}`).run(now,batch,...(p.threadId ? [p.threadId] : [])).changes;
+    const batch=randomUUID(), count=db.prepare(`UPDATE items SET read_at=?,read_batch=? WHERE ${p.threadId ? READABLE_SQL : ATTENTION_SQL} AND NOT (kind='for_me' AND status='open')${p.threadId ? ` AND thread_id=? AND ${NOT_NOTICE_SQL}` : ''}`).run(now,batch,...(p.threadId ? [p.threadId] : [])).changes;
     invalidate(); return {ok:true as const,batch:count ? batch : null,count};
   }
   // Reads made in Agent Hub's UI also clear bb's own unread mark on a thread once nothing there is left unread here,
   // and an undo restores it. The CLI path (`bb agent-hub read`) is not a person reading, so it leaves bb alone.
   async function syncBbRead(threadIds: Iterable<string>, read: boolean) {
     for (const threadId of new Set(threadIds)) {
+      if (threadId===NOTICE_THREAD) continue;
       if (read && db.prepare(`SELECT 1 FROM items WHERE thread_id=? AND ${ATTENTION_SQL} LIMIT 1`).get(threadId)) continue;
       try { await (read ? bb.sdk.threads.markRead({threadId}) : bb.sdk.threads.markUnread({threadId})); }
       catch (e) { bb.log.warn(`Agent Hub read sync: ${String(e)}`); }
@@ -217,7 +261,7 @@ function start(bb: BbPluginApi, migrationError: string | null) {
     const count=db.transaction(()=>db.prepare('UPDATE items SET snoozed_until=NULL,read_at=NULL,notify_state=1 WHERE snoozed_until<=?').run(Date.now()).changes)();
     if (count) {invalidate(); onAttention();}
     if(remindHours>0) {
-      const reminders=db.prepare("UPDATE items SET notify_state=1,reminded_at=?,reminders=reminders+1 WHERE kind='for_me' AND urgency='blocking' AND status='open' AND dismissed_at IS NULL AND thread_deleted=0 AND reminders<3 AND coalesce(reminded_at,created_at)+?<=? AND (deadline_at IS NULL OR deadline_at>?)").run(Date.now(),remindHours*3600000,Date.now(),Date.now()).changes;
+      const reminders=db.prepare("UPDATE items SET notify_state=1,reminded_at=?,reminders=reminders+1 WHERE kind='for_me' AND urgency='blocking' AND status='open' AND dismissed_at IS NULL AND thread_deleted=0 AND declined_at IS NULL AND reminders<3 AND coalesce(reminded_at,created_at)+?<=? AND (deadline_at IS NULL OR deadline_at>?)").run(Date.now(),remindHours*3600000,Date.now(),Date.now()).changes;
       if(reminders) {invalidate();onAttention();}
     }
     const due=db.prepare("SELECT * FROM items WHERE kind='for_me' AND status='open' AND dismissed_at IS NULL AND thread_deleted=0 AND deadline_at<=?").all(Date.now()) as Row[];
@@ -234,7 +278,7 @@ function start(bb: BbPluginApi, migrationError: string | null) {
         } catch(e) {bb.log.warn(`Agent Hub deadline: ${String(e)}`); commit('UPDATE items SET deadline_at=NULL WHERE id=?',item.id);}
       }).finally(()=>{deadlinePending.delete(row.id);wakeDue();});
     }
-    const next=db.prepare("SELECT min(at) AS at FROM (SELECT CASE WHEN ?>0 THEN coalesce(reminded_at,created_at)+? END AS at FROM items WHERE kind='for_me' AND urgency='blocking' AND status='open' AND dismissed_at IS NULL AND thread_deleted=0 AND reminders<3 UNION ALL SELECT snoozed_until AS at FROM items WHERE snoozed_until IS NOT NULL UNION ALL SELECT deadline_at FROM items WHERE kind='for_me' AND status='open' AND dismissed_at IS NULL AND thread_deleted=0 AND deadline_at IS NOT NULL)").get(remindHours,remindHours*3600000) as {at:number|null};
+    const next=db.prepare("SELECT min(at) AS at FROM (SELECT CASE WHEN ?>0 THEN coalesce(reminded_at,created_at)+? END AS at FROM items WHERE kind='for_me' AND urgency='blocking' AND status='open' AND dismissed_at IS NULL AND thread_deleted=0 AND declined_at IS NULL AND reminders<3 UNION ALL SELECT snoozed_until AS at FROM items WHERE snoozed_until IS NOT NULL UNION ALL SELECT deadline_at FROM items WHERE kind='for_me' AND status='open' AND dismissed_at IS NULL AND thread_deleted=0 AND deadline_at IS NOT NULL)").get(remindHours,remindHours*3600000) as {at:number|null};
     if (next.at!==null) {wakeTimer=setTimeout(wakeDue,Math.min(Math.max(1000,next.at-Date.now()),2147483647)); wakeTimer.unref();}
   }
   async function guarded<T>(threadId:string, send:()=>Promise<T>): Promise<T> {
@@ -269,7 +313,14 @@ function start(bb: BbPluginApi, migrationError: string | null) {
       db.prepare("UPDATE items SET status='replied',answer=?,answer_source='user',updated_at=? WHERE id=? AND thread_id=? AND kind='for_me' AND status='open'").run(answer,Date.now(),id,threadId);
     }
   }
+  async function noticeThread(id?: string) {
+    if (!id || id===NOTICE_THREAD) return NOTICE_THREAD;
+    if (db.prepare('SELECT 1 FROM archived_threads WHERE thread_id=? UNION ALL SELECT 1 FROM sub_threads WHERE thread_id=?').get(id,id)) return NOTICE_THREAD;
+    try {const thread=await bb.sdk.threads.get({threadId:id}); return thread.archivedAt || thread.deletedAt || thread.parentThreadId ? NOTICE_THREAD : id;}
+    catch (e) {if (notFound(e)) return NOTICE_THREAD; throw e;}
+  }
   const handlers = {
+    'notifier.beat': notifier.beat,
     'config.get':config.get,
     'config.set':config.set,
     list, async counts() { await syncReadFromBb(); return counts(); },
@@ -287,7 +338,7 @@ function start(bb: BbPluginApi, migrationError: string | null) {
       const p=inputs.snooze.parse(raw),item=get(p.id),now=Date.now();
       if (item.kind==='saved') throw new Error('saved items cannot be snoozed');
       if (p.until!==null && (p.until<=now || p.until>now+30*86400000)) throw new Error('Snooze must be within the next 30 days');
-      const result=commit('UPDATE items SET snoozed_until=?,read_at=NULL,notify_state=?,updated_at=? WHERE id=?',p.until,p.until===null ? 1 : 0,now,p.id);
+      const result=commit('UPDATE items SET snoozed_until=?,declined_at=NULL,read_at=NULL,notify_state=?,updated_at=? WHERE id=?',p.until,p.until===null ? 1 : 0,now,p.id);
       if (p.until===null) onAttention(); wakeDue(); return result;
     },
     async retryTurn(raw:z.infer<typeof inputs.retryTurn>) {
@@ -314,6 +365,16 @@ function start(bb: BbPluginApi, migrationError: string | null) {
       catch { /* not installed, not running, or another shape */ }
       return {available:false,own:null,total:null,descendantCount:0};
     },
+    // Today, last 7 days and per-model cost from Tokenomos; one failure hides all three, so the popover never shows a mix.
+    async threadCostDetails(raw:z.infer<typeof inputs.threadCostDetails>) {
+      const p=inputs.threadCostDetails.parse(raw);
+      const sum=async(input:Record<string,any>)=>tokenomosSum.parse(await bb.sdk.plugins.callRpc({pluginId:'tokenomos',method:'costs.sum',input,outputSchema:tokenomosSum,signal:AbortSignal.timeout(3000)}));
+      try {
+        const [today,week,all]=await Promise.all([sum({spans:[{threadId:p.threadId,from:p.today,to:null}],includeDescendants:true}),sum({spans:[{threadId:p.threadId,from:p.week,to:null}],includeDescendants:true}),sum({threadIds:[p.threadId],includeDescendants:true,breakdown:true})]);
+        return {available:true,today:today.cost,week:week.cost,models:all.models??[]};
+      } catch { /* not installed, slow, or another shape */ }
+      return {available:false,today:null,week:null,models:[]};
+    },
     async workBoardProjects(raw:z.infer<typeof inputs.workBoardProjects>) {
       inputs.workBoardProjects.parse(raw);
       const outputSchema=z.object({projects:z.array(z.object({id:z.string(),name:z.string(),prefix:z.string()}))});
@@ -323,26 +384,26 @@ function start(bb: BbPluginApi, migrationError: string | null) {
     async createTask(raw:z.infer<typeof inputs.createTask>) {
       const p=inputs.createTask.parse(raw),item=get(p.id);
       const outputSchema=z.discriminatedUnion('ok',[z.object({ok:z.literal(true),task:z.object({key:z.string().min(1)})}),z.object({ok:z.literal(false),error:z.object({message:z.string()})})]);
-      const path=item.project_id ? '/projects/'+item.project_id+'/threads/'+item.thread_id : '/threads/'+item.thread_id;
-      const result=outputSchema.parse(await bb.sdk.plugins.callRpc({pluginId:'work-board',method:'createTask',input:{projectId:p.projectId,title:(inlineCommentPreview(item.question).split('\n').find((line:string)=>line.trim()) ?? '').trim().slice(0,120),description:[item.question,item.answer,`[Open thread](${path})`].filter(Boolean).join('\n\n'),requesterThreadId:item.thread_id},outputSchema}));
+      const real=item.thread_id!==NOTICE_THREAD, path=item.project_id ? '/projects/'+item.project_id+'/threads/'+item.thread_id : '/threads/'+item.thread_id;
+      const result=outputSchema.parse(await bb.sdk.plugins.callRpc({pluginId:'work-board',method:'createTask',input:{projectId:p.projectId,title:(inlineCommentPreview(item.question).split('\n').find((line:string)=>line.trim()) ?? '').trim().slice(0,120),description:[item.question,item.answer,real ? `[Open thread](${path})` : ''].filter(Boolean).join('\n\n'),...(real ? {requesterThreadId:item.thread_id} : {})},outputSchema}));
       if (!result.ok) throw new Error(result.error.message);
       commit('UPDATE items SET task_key=? WHERE id=?',result.task.key,p.id); return {key:result.task.key};
     },
     async recipients(raw:z.infer<typeof inputs.recipients>) {
-      const p=inputs.recipients.parse(raw);
+      const p={...inputs.recipients.parse(raw)}; if (p.selected===NOTICE_THREAD) delete p.selected;
       if (!migrationPending && p.selected && !db.prepare('SELECT 1 FROM threads_state WHERE thread_id=? AND (last_seq>0 OR ingested_thread_updated_at IS NOT NULL)').get(p.selected)) await driver.schedule(p.selected);
       // A contact counts its own open agent questions too; explicit sub-agent asks live only in Questions.
       const contactAttention = ATTENTION_SQL;
       const chosenAttention=contactAttention.replaceAll('thread_id NOT IN','chosen.thread_id NOT IN');
       // shortcut: show at most 200 conversations; paginate when larger inboxes need it.
       const rows=db.prepare(`WITH grouped AS (
-        SELECT thread_id,sum(CASE WHEN ${contactAttention} THEN 1 ELSE 0 END) AS unread,max(updated_at) AS last_at
-        FROM items WHERE thread_deleted=0 AND ${ACTIVE_THREAD_SQL} AND thread_id NOT IN (SELECT thread_id FROM sub_threads)
+        SELECT thread_id,sum(CASE WHEN ${contactAttention} THEN 1 ELSE 0 END) AS unread,sum(CASE WHEN ${contactAttention} AND kind='for_me' THEN 1 ELSE 0 END) AS questions,max(updated_at) AS last_at
+        FROM items WHERE thread_deleted=0 AND thread_id<>'${NOTICE_THREAD}' AND ${ACTIVE_THREAD_SQL} AND thread_id NOT IN (SELECT thread_id FROM sub_threads)
         GROUP BY thread_id
         -- A thread with only agent questions lives in Questions; an open top-level chat stays listed.
         HAVING sum(kind<>'for_me')>0 OR thread_id=?
         ORDER BY (thread_id=?) DESC,(unread>0) DESC,last_at DESC,thread_id LIMIT 200
-      ) SELECT grouped.*,chosen.project_id,
+      ) SELECT grouped.*,chosen.project_id,chosen.trigger_kind,chosen.trigger_source,
         CASE WHEN ${chosenAttention} AND chosen.kind IN ('mine','update') AND chosen.status='answered' THEN chosen.answer
              WHEN ${chosenAttention} AND chosen.kind='mine' THEN 'Turn failed: '||chosen.question
              WHEN ${chosenAttention} THEN chosen.question ELSE coalesce(chosen.answer,chosen.question) END AS preview
@@ -369,11 +430,20 @@ function start(bb: BbPluginApi, migrationError: string | null) {
       for(const t of threads) threadMap.set(t.id,t);
       // A quote reply previews as its note (the quote is context, as in a messenger); a bare quote as its text without '>'.
       const unquote=(text:string)=>{const note=text.split('\n').filter(line=>!/^\s*>/.test(line)).join('\n').trim(); return note || text.replace(/^\s*>[ \t]?/gm,'');};
+      const names=await pluginNames();
+      // A plugin's or an automation's message previews as "Plugin name: text", without the sender's leading [tag], as its chat card shows it.
       // Another thread's message previews as "Sender: text", as its chat card names the sender instead of the [bb message from …] header.
-      const plain=(text:string)=>unquote(text.replace(/^\[bb message from thread:(thr_[A-Za-z0-9_-]+)\]\s*/,(_,id:string)=>threadMap.get(id)?.title ? `${threadMap.get(id)!.title}: ` : '')).replace(/^\s*(?:#{1,6}|[-*+]|\d+[.)])\s+/gm,'').replace(/@thread:(thr_[A-Za-z0-9_-]+)(?:#msg=\d+)?/g,(_,id:string)=>'@'+(threadMap.get(id)?.title ?? 'thread')).replace(/\[([^\]]+)\]\([^)\s]+\)/g,'$1').replace(/\*\*|`/g,'').replace(/\s+/g,' ').trim();
+      const previewFor = (r: Row) => {
+        const text = (r.preview ?? '') as string;
+        if (r.trigger_kind !== 'plugin' || r.trigger_source !== 'spawn-gate') return text;
+        const body = spawnGateMessageBody(text);
+        if (body === text || body.startsWith('[bb message from plugin:spawn-gate]')) return body;
+        return `[bb message from plugin:spawn-gate]\n\n${body}`;
+      };
+      const plain=(text:string)=>unquote(text.replace(/^\[bb message from thread:(thr_[A-Za-z0-9_-]+)\]\s*/,(_,id:string)=>threadMap.get(id)?.title ? `${threadMap.get(id)!.title}: ` : '').replace(/^\[bb (?:message from plugin:([\w.-]+)|automation\b[^\]\n]*)\]\s*(?:\[(?![A-Z][A-Z0-9]*-\d)[^\]\n]{2,40}\](?![(:])\s+)?/,(_,id:string|undefined)=>`${names.get(id ?? 'automations') ?? id ?? 'Automations'}: `)).replace(/^\s*(?:#{1,6}|[-*+]|\d+[.)])\s+/gm,'').replace(/@thread:(thr_[A-Za-z0-9_-]+)(?:#msg=\d+)?/g,(_,id:string)=>'@'+(threadMap.get(id)?.title ?? 'thread')).replace(/\[([^\]]+)\]\([^)\s]+\)/g,'$1').replace(/\*\*|`/g,'').replace(/\s+/g,' ').trim();
       // Threads with an open question to the owner, so contacts can surface a sub-session that asks under its collapsed parent.
-      const asking=(db.prepare(`SELECT DISTINCT thread_id FROM items WHERE kind='for_me' AND status='open' AND dismissed_at IS NULL AND thread_deleted=0 AND ${ACTIVE_THREAD_SQL} AND ${OWNER_ITEM_SQL}`).all() as {thread_id:string}[]).map(r=>r.thread_id);
-      return {asking,recipients:rows.map(r=>{const t=threadMap.get(r.thread_id),projectId=t?.projectId ?? r.project_id ?? null; return {threadId:r.thread_id,threadTitle:t?.title ?? null,projectId,projectName:projectMap.get(projectId)?.name ?? null,unread:r.unread,lastAt:r.last_at,preview:plain(inlineCommentPreview(((r.preview ?? '') as string).replace(/<!--[\s\S]*?-->\s*/g,''))).slice(0,160)};})};
+      const asking=(db.prepare(`SELECT DISTINCT thread_id FROM items WHERE kind='for_me' AND status='open' AND dismissed_at IS NULL AND declined_at IS NULL AND thread_deleted=0 AND ${ACTIVE_THREAD_SQL} AND ${OWNER_ITEM_SQL}`).all() as {thread_id:string}[]).map(r=>r.thread_id);
+      return {asking,recipients:rows.map(r=>{const t=threadMap.get(r.thread_id),projectId=t?.projectId ?? r.project_id ?? null; return {threadId:r.thread_id,threadTitle:t?.title ?? null,projectId,projectName:projectMap.get(projectId)?.name ?? null,unread:r.unread,questions:r.questions,lastAt:r.last_at,preview:plain(inlineCommentPreview(previewFor(r).replace(/<!--[\s\S]*?-->\s*/g,''))).slice(0,160)};})};
     },
     // A UI crash caught by the app's CrashGuard, so its stack reaches `bb plugin logs agent-hub`.
     logClientError(raw:z.infer<typeof inputs.logClientError>) {const p=inputs.logClientError.parse(raw); bb.log.error(`Agent Hub UI crash (${p.where}): ${p.message}${p.stack ? `\n${p.stack}` : ''}`); return {ok:true as const};},
@@ -454,7 +524,11 @@ function start(bb: BbPluginApi, migrationError: string | null) {
         : commit('UPDATE items SET dismissed_at=?,wait_children=NULL,updated_at=? WHERE id=?',now,now,p.id);
     },
     setPinned(raw: z.infer<typeof inputs.setPinned>) {const p=inputs.setPinned.parse(raw); get(p.id); return commit('UPDATE items SET pinned=?,updated_at=? WHERE id=?',Number(p.pinned),Date.now(),p.id);},
-    setDismissed(raw: z.infer<typeof inputs.setDismissed>) {const p=inputs.setDismissed.parse(raw); get(p.id); return commit('UPDATE items SET dismissed_at=?,wait_children=CASE WHEN ? THEN NULL ELSE wait_children END,updated_at=? WHERE id=?',p.dismissed ? Date.now() : null,Number(p.dismissed),Date.now(),p.id);},
+    setDismissed(raw: z.infer<typeof inputs.setDismissed>) {
+      const p=inputs.setDismissed.parse(raw), item=get(p.id), now=Date.now();
+      // Won't reply is not an answer: the question stays open and listed for the agent; only the owner's attention is quieted.
+      if (p.dismissed && item.kind==='for_me' && item.status==='open' && !item.chat_asked && item.dismissed_at===null) return commit('UPDATE items SET declined_at=?,notify_state=0,snoozed_until=NULL,updated_at=? WHERE id=?',now,now,p.id);
+      return commit('UPDATE items SET dismissed_at=?,wait_children=CASE WHEN ? THEN NULL ELSE wait_children END,updated_at=? WHERE id=?',p.dismissed ? Date.now() : null,Number(p.dismissed),Date.now(),p.id);},
     async reply(raw: z.infer<typeof inputs.reply>) {
       const p=inputs.reply.parse(raw), threadId=get(p.id).thread_id as string;
       return guarded(threadId,async()=>{
@@ -465,6 +539,27 @@ function start(bb: BbPluginApi, migrationError: string | null) {
         if (item.kind==='for_me') commit("UPDATE items SET status='replied',answer=?,answer_source='user',updated_at=? WHERE id=? AND status='open'",p.text,Date.now(),p.id);
         return result;
       });
+    },
+    // The manager thread when it can show the notice; otherwise the placeholder, so the report still reaches the owner.
+    async notice(raw: z.infer<typeof inputs.notice>) {
+      const p=inputs.notice.parse(raw);
+      if (migrationPending) throw new Error('Agent Hub migration failed; restart to retry before writing');
+      const id='ans_'+createHash('sha256').update(JSON.stringify([p.source,p.tickId])).digest('hex');
+      if (db.prepare('SELECT 1 FROM notices WHERE id=?').get(id)) return {id,created:false};
+      const threadId=await noticeThread(p.threadId), now=Date.now();
+      // The insert is re-checked here: a concurrent call with the same key may have committed during the lookup above.
+      const created=db.transaction(()=>{
+        if (!db.prepare('INSERT OR IGNORE INTO notices(id,source,tick_id,project_id,manager_thread_id,body,bytes,created_at) VALUES (?,?,?,?,?,?,?,?)').run(id,p.source,p.tickId,p.projectId,p.threadId ?? null,p.markdown,Buffer.byteLength(p.markdown),now).changes) return false;
+        db.prepare("INSERT INTO items(id,kind,thread_id,project_id,status,question,answer,answer_source,answered_at,asks,notify_state,trigger_kind,trigger_source,created_at,updated_at) VALUES (?,'update',?,?,'answered',?,?,'agent',?,1,1,'plugin',?,?,?)").run(id,threadId,p.projectId,p.title,p.markdown.length>NOTICE_PREVIEW ? p.markdown.slice(0,NOTICE_PREVIEW)+'\n\n… (truncated)' : p.markdown,now,p.source,now,now);
+        return true;
+      })();
+      if (created) {invalidate(); onAttention();}
+      return {id,created};
+    },
+    noticeBody(raw: z.infer<typeof inputs.noticeBody>) {
+      const row=db.prepare('SELECT body FROM notices WHERE id=?').get(inputs.noticeBody.parse(raw).id) as {body:string}|undefined;
+      if (!row) throw new Error('notice not found');
+      return {markdown:row.body};
     },
     async save(raw: z.infer<typeof inputs.save>) {
       const p=inputs.save.parse(raw);
@@ -481,7 +576,7 @@ function start(bb: BbPluginApi, migrationError: string | null) {
   bb.rpc.register(rpcContract,handlers);
   for (const method of Object.keys(toolInputs) as (keyof typeof toolInputs)[]) {
     // answers_* are deprecated aliases for sessions that bound the tools before the rename; drop them at the post-rename cleanup.
-    for (const prefix of ['agent_hub','answers'] as const) bb.agents.registerTool({name:`${prefix}_${method}`,description:(prefix==='answers' ? `Deprecated alias of agent_hub_${method}; call agent_hub_${method} instead. ` : '')+{list:'List this thread’s pending user questions and your own open questions to the user.',withdraw:'Withdraw your open question to the user (from agent_hub_ask or one Agent Hub caught in your reply text) once it no longer needs an answer. It closes with your reason and stays in the user’s history.',defer:'Defer a user question until a later turn.',resolve:'Use this turn’s final message to answer a pending question.',report:'Show this turn’s final message in the user’s history as a report, not a background update. Use it when work the user gave you finishes in a turn they did not start (another agent, a child, a script) and no question of theirs is pending.',ask:'Ask the user a question, including a decision that blocks your work. Do not wait in this turn: the reply arrives later as a user message quoting the question. Optional: 1–6 unique options (≤200 chars each), multiSelect to let the user tick several, recommended (must equal one option) and a short reason. For several related decisions ask once with questions (2–10, each with its own header, options, multiSelect, recommended): the user answers them in one form and you get one reply. Asks in the same turn merge up to 10 parts. Parts may return Skipped or Your call (decide yourself). urgency: blocking (own push, first in lists), normal, low (no push). deadlineMinutes (5–10080 integer) auto-answers with recommended; required on singles, missing part defaults to Your call.'}[method],parameters:toolInputs[method],
+    for (const prefix of ['agent_hub','answers'] as const) bb.agents.registerTool({name:`${prefix}_${method}`,description:(prefix==='answers' ? `Deprecated alias of agent_hub_${method}; call agent_hub_${method} instead. ` : '')+{list:'List this thread’s pending user questions (ids for agent_hub_resolve and agent_hub_defer) and your own open questions to the user (ids for agent_hub_withdraw). Takes no arguments.',withdraw:'Withdraw your own open question (from agent_hub_ask, or one Agent Hub caught in your reply text) once it needs no answer. id and reason are both required. It closes with your reason and stays in the user’s history. Only an unanswered question of this thread can be withdrawn, and a merged multi-part form is withdrawn whole.',defer:'Defer an owner message until a later turn, for example while delegated work runs. Without id it defers this thread’s newest waiting message; pass an id from agent_hub_list to pick another. It also defers the owner messages this same turn handles together.',resolve:'When a deferred answer arrives: call agent_hub_list, then this with the listed id (required). This turn’s final message becomes the answer to that question. Refused if the id is not a waiting or deferred question of this thread.',report:'Show this turn’s final message in the user’s history as a report, not a background update. Call it in the turn that delivers a result the owner awaits or hands work to the owner (ready for review, decisions awaiting them) when no question of theirs is pending, for example work they gave you finishing in a turn they did not start. Takes no arguments.',ask:'Ask the user a question, including a decision that blocks your work; you must use this instead of writing the question in your reply. Do not wait in this turn: end it, and the reply arrives later as a user message quoting the question. Several items go one per line as a Markdown list, not inside one paragraph. A single question needs question; optional options (1–6 unique, ≤200 chars each), multiSelect (needs options), recommended (must equal one option) and reason (explains recommended, so it needs recommended). Example: {question:\"Which database?\",options:[\"SQLite\",\"Postgres\"],recommended:\"SQLite\",reason:\"No server to run\"}. For several related decisions pass questions (2–10 parts, each with question, header, options, multiSelect, recommended) instead of question; question then only titles the form and may be left out. The user answers a form in one go and you get one reply; asks in the same turn merge into one form of up to 10 parts. Parts may return Skipped or Your call (decide yourself). urgency: blocking (own push, first in lists), normal, low (no push). deadlineMinutes (optional integer 5–10080) auto-answers with recommended if the owner does not reply: on a single question it needs recommended, a part without recommended defaults to Your call.'}[method],parameters:toolInputs[method],
       async execute(raw,ctx) {
         if (migrationPending) throw new Error('Agent Hub migration failed; restart to retry before writing');
         const p=toolInputs[method].parse(raw);
@@ -499,11 +594,19 @@ function start(bb: BbPluginApi, migrationError: string | null) {
             const id='ans_'+randomUUID();
             const ask=p as z.infer<typeof toolInputs.ask>;
             // Several questions or checkboxes go to bb's question form; the text keeps every part for the quote, push and search.
-            const form=ask.questions ? ask.questions.map((q,i)=>formQuestion(`q${i+1}`,q.question,q)) : ask.multiSelect ? [formQuestion('q1',ask.question,ask)] : null;
-            const text=ask.questions ? `${ask.question}\n\n${ask.questions.map((q,i)=>`${i+1}. ${q.header ? `**${q.header}.** ` : ''}${q.question}`).join('\n')}` : ask.question;
+            const form=ask.questions ? ask.questions.map((q,i)=>formQuestion(`q${i+1}`,q.question,q)) : ask.multiSelect ? [formQuestion('q1',ask.question!,ask)] : null;
+            const text=ask.questions ? `${ask.question ? ask.question+'\n\n' : ''}${ask.questions.map((q,i)=>`${i+1}. ${q.header ? `**${q.header}.** ` : ''}${q.question}`).join('\n')}` : ask.question!;
             const turn=(db.prepare('SELECT active_turn_id FROM threads_state WHERE thread_id=?').get(ctx.threadId) as Row|undefined)?.active_turn_id ?? null, deadline=ask.deadlineMinutes===undefined ? null : now+ask.deadlineMinutes*60000;
             const candidates=turn ? db.prepare("SELECT * FROM items WHERE thread_id=? AND turn_id=? AND kind='for_me' AND chat_asked=0 AND status='open' AND dismissed_at IS NULL ORDER BY created_at DESC,rowid DESC").all(ctx.threadId,turn) as Row[] : [];
-            const added=form ?? [formQuestion('q1',ask.question,ask)], partsText=(parts:FormQuestion[])=>parts.map((q,i)=>`${i+1}. ${q.shortLabel ? `**${q.shortLabel}.** ` : ''}${q.prompt}`).join('\n');
+            const added=form ?? [formQuestion('q1',ask.question!,ask)], partsText=(parts:FormQuestion[])=>parts.map((q,i)=>`${i+1}. ${q.shortLabel ? `**${q.shortLabel}.** ` : ''}${q.prompt}`).join('\n');
+            // The in-chat question warning started this turn: the ask replaces the copy Agent Hub caught in the reply, so the owner gets one question.
+            const caught=turn && !sending.has(ctx.threadId) && (db.prepare('SELECT question FROM turn_updates WHERE thread_id=? AND turn_id=?').get(ctx.threadId,turn) as Row|undefined)?.question?.startsWith(CHAT_QUESTION_WARNING) ? db.prepare("SELECT id FROM items WHERE thread_id=? AND kind='for_me' AND chat_asked=1 AND status='open' AND dismissed_at IS NULL ORDER BY question_seq DESC LIMIT 1").get(ctx.threadId) as Row|undefined : undefined;
+            if (caught) {
+              commit("UPDATE items SET question=?,options=?,questions=?,recommended=?,recommend_reason=?,deadline_at=?,urgency=?,chat_asked=0,turn_id=?,notify_state=CASE WHEN ? THEN 1 ELSE notify_state END,updated_at=? WHERE id=?",text,JSON.stringify(form ? null : ask.options ?? null),form && JSON.stringify(form),ask.recommended ?? null,ask.reason ?? null,deadline,ask.urgency ?? null,turn,Number(ask.urgency==='blocking'),now,caught.id);
+              commit('UPDATE turn_updates SET asked=1 WHERE thread_id=? AND turn_id=?',ctx.threadId,turn);
+              onAttention(); wakeDue();
+              return `${caught.id}\nReplaced the question Agent Hub caught in your reply; the user sees it once.`;
+            }
             for(const old of candidates) {
               if(sending.has(ctx.threadId)) break;
               const parts:FormQuestion[]=old.questions ? JSON.parse(old.questions) : [formQuestion('q1',old.question,{options:old.options ? JSON.parse(old.options) ?? undefined : undefined,recommended:old.recommended ?? undefined,reason:old.recommend_reason ?? undefined})];
@@ -513,41 +616,45 @@ function start(bb: BbPluginApi, migrationError: string | null) {
               const merged=[...parts,...added].map((q,i)=>({...q,id:`q${i+1}`})), rank=(v:string|null|undefined)=>v==='blocking' ? 2 : v==='low' ? 0 : 1;
               const urgency=rank(ask.urgency)>rank(old.urgency) ? ask.urgency! : old.urgency, raised=urgency==='blocking' && old.urgency!=='blocking';
               const due=old.deadline_at===null ? deadline : deadline===null ? old.deadline_at : Math.min(old.deadline_at,deadline);
-              commit("UPDATE items SET question=?,questions=?,options=NULL,recommended=NULL,recommend_reason=NULL,urgency=?,deadline_at=?,notify_state=CASE WHEN ? THEN 1 ELSE notify_state END,updated_at=? WHERE id=? AND status='open'",(intro ? intro+'\n\n' : '')+partsText(merged),JSON.stringify(merged),urgency,due,Number(raised),now,old.id);
-              if(raised) onAttention(); wakeDue();
+              commit("UPDATE items SET question=?,questions=?,options=NULL,recommended=NULL,recommend_reason=NULL,urgency=?,deadline_at=?,declined_at=NULL,notify_state=CASE WHEN ? OR declined_at IS NOT NULL THEN 1 ELSE notify_state END,updated_at=? WHERE id=? AND status='open'",(intro ? intro+'\n\n' : '')+partsText(merged),JSON.stringify(merged),urgency,due,Number(raised),now,old.id);
+              if(raised || old.declined_at!==null) onAttention(); wakeDue();
               return `${old.id}\nMerged into your earlier question from this turn; the user answers all parts in one form.`;
             }
             commit("INSERT INTO items(id,kind,thread_id,project_id,status,question,options,questions,recommended,recommend_reason,deadline_at,urgency,notify_state,turn_id,created_at,updated_at) VALUES (?,'for_me',?,?,'open',?,?,?,?,?,?,?,?,?,?,?)",id,ctx.threadId,ctx.projectId ?? null,text,JSON.stringify(form ? null : ask.options ?? null),form && JSON.stringify(form),ask.recommended ?? null,ask.reason ?? null,deadline,ask.urgency ?? null,ask.urgency==='low' ? 0 : 1,turn,now,now);
+            // Like agent_hub_report: the turn is marked here, so a reply that also ends on '?' gets no in-chat question warning even if the tool call's event is missed.
+            if (turn) commit('INSERT INTO turn_updates(thread_id,turn_id,started_at,asked) VALUES (?,?,?,1) ON CONFLICT(thread_id,turn_id) DO UPDATE SET asked=1',ctx.threadId,turn,now);
             onAttention(); wakeDue();
             return id;
           }
           if (method==='report') {
             if (db.prepare('SELECT 1 FROM sub_threads WHERE thread_id=?').get(ctx.threadId)) return 'This sub-thread’s final message stays in its read chat history.';
             const state=db.prepare('SELECT active_turn_id FROM threads_state WHERE thread_id=?').get(ctx.threadId) as {active_turn_id:string|null} | undefined;
-            if (!state?.active_turn_id) throw new Error('no active turn');
+            if (!state?.active_turn_id) throw new Error(NO_TURN);
             commit('INSERT INTO turn_updates(thread_id,turn_id,started_at,report) VALUES (?,?,?,1) ON CONFLICT(thread_id,turn_id) DO UPDATE SET report=1',ctx.threadId,state.active_turn_id,now);
             return 'This turn’s final message will reach the user as a report.';
           }
           if (method==='withdraw') {
             const {id,reason}=p as z.infer<typeof toolInputs.withdraw>;
             const item=db.prepare('SELECT * FROM items WHERE id=?').get(id) as Row | undefined;
-            if (!item || item.thread_id!==ctx.threadId || item.kind!=='for_me' || item.status!=='open' || item.dismissed_at!==null) throw new Error('open question not found in calling thread');
+            if (!item || item.thread_id!==ctx.threadId || item.kind!=='for_me') throw new Error('open question not found in calling thread; call agent_hub_list and pass an id from "Your open questions to the user" (questions you asked with agent_hub_ask in this thread). To answer an owner message, use agent_hub_resolve or your final reply instead.');
+            if (item.status!=='open' || item.dismissed_at!==null) throw new Error('that question is already answered or withdrawn, so there is nothing to withdraw; call agent_hub_list to see which of your questions are still open');
             // answer_source='agent' tells a withdrawal from the owner's "Won't reply"; an owner reply still goes through afterwards.
             commit("UPDATE items SET dismissed_at=?,answer_source='agent',note=?,notify_state=0,updated_at=? WHERE id=?",now,reason,now,id);
             return 'Withdrawn.';
           }
           const params=p as {id?:string;note?:string};
-          const item=params.id ? get(params.id) : db.prepare("SELECT * FROM items WHERE thread_id=? AND kind='mine' AND status='waiting' ORDER BY question_seq DESC LIMIT 1").get(ctx.threadId) as Row | undefined;
+          const item=(params.id ? db.prepare('SELECT * FROM items WHERE id=?').get(params.id) : db.prepare("SELECT * FROM items WHERE thread_id=? AND kind='mine' AND status='waiting' ORDER BY question_seq DESC LIMIT 1").get(ctx.threadId)) as Row | undefined;
           // The owner may mark an owed question answered before the agent's report lands; resolving it still attaches that report.
           const settledByOwner=method==='resolve' && item?.status==='answered' && item.answer_source==='user' && item.answer===null && item.dismissed_at===null;
-          if (!item || item.thread_id!==ctx.threadId || item.kind!=='mine' || !(['waiting','deferred'].includes(item.status) || settledByOwner)) throw new Error('pending question not found in calling thread');
+          if (!item || item.thread_id!==ctx.threadId || item.kind!=='mine') throw new Error(params.id ? 'pending question not found in calling thread; call agent_hub_list and pass an id from its list of pending questions (ids under "Your open questions to the user" are yours: agent_hub_withdraw closes those)' : `no waiting message in this thread to ${method}; if you deferred it earlier, call agent_hub_list and pass its id`);
+          if (!(['waiting','deferred'].includes(item.status) || settledByOwner)) throw new Error(`pending question not found: ${item.id} is already answered; call agent_hub_list and pass the id of a waiting or deferred question`);
           // The owner's messages one turn handles (a question and the steers added to it) are deferred and resolved together,
           // so the turn's reply is not an answer to one and an interim to another.
           const mates="(id=? OR (thread_id=? AND kind='mine' AND turn_id IS NOT NULL AND turn_id=? AND steer_seq IS NULL AND status IN ('waiting','deferred')))";
           if (method==='defer') commit(`UPDATE items SET status='deferred',note=?,wait_children=NULL,updated_at=? WHERE ${mates}`,params.note ?? null,now,item.id,ctx.threadId,item.turn_id ?? null);
           else {
             const state=db.prepare('SELECT active_turn_id FROM threads_state WHERE thread_id=?').get(ctx.threadId) as {active_turn_id:string|null};
-            if (!state?.active_turn_id) throw new Error('no active turn');
+            if (!state?.active_turn_id) throw new Error(NO_TURN);
             commit(`UPDATE items SET resolve_turn_id=?,candidate=NULL,candidate_seq=NULL,updated_at=? WHERE ${mates}`,state.active_turn_id,now,item.id,ctx.threadId,item.turn_id ?? null);
           }
           return item.id as string;
@@ -578,5 +685,5 @@ function start(bb: BbPluginApi, migrationError: string | null) {
   void notifier.settings.get().then(next=>{if(reminderSettingsChanged) return;remindHours=next.remindHours;wakeDue();}).catch(e=>bb.log.warn(`Agent Hub reminders: ${String(e)}`));
   wakeDue();
   const startup = (migrationPending ? Promise.resolve() : driver.reconcile()).catch(e=>bb.log.warn(`Agent Hub discovery: ${String(e)}`));
-  bb.onDispose(async()=>{disposed=true; projectCache=undefined; threadCache.clear(); if (wakeTimer) clearTimeout(wakeTimer); await driver.dispose(); await startup; await notifier.dispose(); invOff=true; if (invTimer) clearTimeout(invTimer);});
+  bb.onDispose(async()=>{disposed=true; projectCache=undefined; threadCache.clear(); if (wakeTimer) clearTimeout(wakeTimer); await driver.dispose(); await startup; await notifier.dispose(); invOff=true; if (invTimer) clearTimeout(invTimer); if (recTimer) clearTimeout(recTimer);});
 }

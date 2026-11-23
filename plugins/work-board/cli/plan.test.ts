@@ -32,6 +32,8 @@ async function setup() {
   disposers.push(() => harness.dispose());
   await plugin(bb);
   await harness.runCli(["project", "create", "--name", "Example", "--prefix", "EXA"]);
+  // Planning is the owner's setting (the CLI refuses to write it), so the fixture sets it directly.
+  bb.storage.database().prepare("UPDATE projects SET planning = 'optional'").run();
   await harness.runCli(["create", "--project", "EXA", "--title", "Planned work"]);
   const file = async (name: string, content: string) => {
     const path = join(dir, name);
@@ -151,13 +153,18 @@ describe("bb work-board plan", () => {
 
   it("submits the plan for review", async () => {
     const { ok, run } = await setup();
-    expect((await run(["plan", "submit", "EXA-1"])).stderr).toContain("no plan to submit");
+    expect((await run(["plan", "submit", "EXA-1", "--reviewer", "owner"])).stderr).toContain("no plan to submit");
     await ok(["plan", "set", "EXA-1", "--body", "# Plan", "--base-version", "0", "--summary", "Initial"]);
-    expect(await ok(["plan", "submit", "EXA-1"])).toBe("EXA-1 plan v1 submitted for review");
-    expect((await run(["plan", "submit", "EXA-1"])).stderr).toContain("already in review");
+    // The first submit names its reviewer.
+    expect((await run(["plan", "submit", "EXA-1"])).stderr).toContain("never submitted with a reviewer");
+    expect((await run(["plan", "submit", "EXA-1", "--reviewer", "someone"])).stderr).toContain("--reviewer");
+    expect(await ok(["plan", "submit", "EXA-1", "--reviewer", "owner"])).toBe("EXA-1 plan v1 submitted for review by the owner\nThe owner reviews it in the Plan tab");
+    expect(await ok(["plan", "submit", "EXA-1"])).toBe("EXA-1 plan v1 is already in review by the owner; the wake was sent again\nThe owner reviews it in the Plan tab");
     expect(await ok(["plan", "show", "EXA-1"])).toContain("Plan v1 · in_review");
     const comments = JSON.parse(await ok(["comment", "list", "EXA-1", "--kind", "system", "--json"]));
-    expect(JSON.stringify(comments)).toContain("Plan v1 submitted for review by cli");
+    expect(JSON.stringify(comments)).toContain("Plan v1 submitted for review by the owner");
+    // A repeat adds no new event.
+    expect(JSON.stringify(comments).match(/submitted for review/g)).toHaveLength(1);
   });
 
   it("adds one plan line to show, and the full plan only with --with-plan", async () => {
@@ -166,16 +173,18 @@ describe("bb work-board plan", () => {
     expect(JSON.parse(await ok(["show", "EXA-1", "--json"])).plan).toBeNull();
 
     await ok(["plan", "set", "EXA-1", "--body", PLAN, "--base-version", "0", "--summary", "Initial"], "thr_example");
-    await ok(["plan", "submit", "EXA-1"]);
+    await ok(["plan", "submit", "EXA-1", "--reviewer", "owner"]);
     const text = await ok(["show", "EXA-1"]);
-    expect(text).toMatch(/^Plan\s+v1 · in_review · bb work-board plan show EXA-1$/m);
+    expect(text).toMatch(/^Plan\s+v1 · in_review · reviewer owner · bb work-board plan show EXA-1$/m);
+    expect(text).toContain("Plan warning\nPlan v1 is in review (not approved): taking this card into work is not recommended until it is approved");
     expect(text).not.toContain("- first");
     const withPlan = await ok(["show", "EXA-1", "--with-plan"]);
     expect(withPlan).toContain("Plan v1 (in_review)\n# Plan");
     expect(withPlan.indexOf("Description\n")).toBeLessThan(withPlan.indexOf("Plan v1 (in_review)"));
 
     const json = JSON.parse(await ok(["show", "EXA-1", "--json"]));
-    expect(json.plan).toEqual({ version: 1, state: "in_review", noteCounts: { draft: 0, open: 0, addressed: 0, resolved: 0 }, updatedAt: expect.any(String), updatedBy: "agent (thr_example)" });
+    expect(json).toMatchObject({ planning: "optional", planWarning: expect.stringContaining("not approved") });
+    expect(json.plan).toEqual({ version: 1, state: "in_review", reviewer: { kind: "owner", threadId: null }, review: { paused: false }, noteCounts: { draft: 0, open: 0, addressed: 0, resolved: 0 }, updatedAt: expect.any(String), updatedBy: "agent (thr_example)" });
     expect(JSON.parse(await ok(["show", "EXA-1", "--json", "--with-plan"])).plan.body).toBe(PLAN);
   });
 
@@ -199,13 +208,14 @@ describe("bb work-board plan", () => {
       await call("sendPlanFeedback", { taskId, author: owner });
       const text = await ok(["plan", "notes", "EXA-1"], "thr_example");
       expect(text.startsWith("YOUR PLAN WAS NOT APPROVED.")).toBe(true);
-      expect(text).toContain("Owner's notes on v1 (3), in plan order:");
+      expect(text).toContain("Notes on v1 (3), in plan order:");
+      expect(text).toContain("bb work-board plan submit EXA-1 --reviewer owner");
       expect(text).toContain('N1 · Comment · section "Plan > Steps 1–4"\n> second\nSay what second means.\n\nN2 · Remove · section "Plan > Risks"\n> None.\n\nN3 · General\nAdd a rollback.');
       const json = JSON.parse(await ok(["plan", "notes", "EXA-1", "--json"]));
       expect(json).toMatchObject({ taskKey: "EXA-1", version: 1, noteCounts: { open: 3 } });
       expect(json.notes.map((note: { number: number; placement: string }) => `${note.number}:${note.placement}`)).toEqual(["1:anchored", "2:anchored", "3:general"]);
       expect(await ok(["plan", "show", "EXA-1"])).toMatch(/^Plan v1 · changes_requested · updated \S+ by .* · 3 open notes$/m);
-      expect(await ok(["show", "EXA-1"])).toMatch(/^Plan\s+v1 · changes_requested · 3 open notes · bb work-board plan show EXA-1$/m);
+      expect(await ok(["show", "EXA-1"])).toMatch(/^Plan\s+v1 · changes_requested · 3 open notes · reviewer owner · bb work-board plan show EXA-1$/m);
       expect(JSON.parse(await ok(["show", "EXA-1", "--json"])).plan.noteCounts).toEqual({ draft: 0, open: 3, addressed: 0, resolved: 0 });
     });
 
@@ -218,7 +228,7 @@ describe("bb work-board plan", () => {
       expect(await ok(["plan", "reply", "EXA-1", "N1", "--body", "Looking at it."], "thr_example")).toBe("EXA-1 N1 answered · not marked addressed");
       expect(await ok(["plan", "reply", "EXA-1", "n1", "--body", "Explained in the text.", "--addressed"], "thr_example")).toBe("EXA-1 N1 answered · addressed in v1");
       const open = await ok(["plan", "notes", "EXA-1"]);
-      expect(open).toContain("Owner's notes on v1 (2)");
+      expect(open).toContain("Notes on v1 (2)");
       expect(open).not.toContain("Say what second means.");
       const all = await ok(["plan", "notes", "EXA-1", "--all"]);
       expect(all).toContain("N1 · Comment · section \"Plan > Steps 1–4\" · addressed in v1\n> second\nSay what second means.\nReply from agent (thr_example): Explained in the text.");
@@ -232,8 +242,8 @@ describe("bb work-board plan", () => {
       await call("sendPlanFeedback", { taskId, author: owner });
       await ok(["plan", "reply", "EXA-1", "N2", "--body", "Done.", "--addressed"], "thr_example");
       await ok(["plan", "edit", "EXA-1", "--section", "Risks", "--body", "## Risks\nSome.", "--base-version", "1", "--summary", "Changed"], "thr_example");
-      const submitted = await ok(["plan", "submit", "EXA-1"], "thr_example");
-      expect(submitted).toBe('EXA-1 plan v2 submitted for review\nWarning: 2 notes are still unanswered: N1, N3. Answer each with `bb work-board plan reply EXA-1 N1 --body "…" --addressed`.');
+      const submitted = await ok(["plan", "submit", "EXA-1", "--reviewer", "owner"], "thr_example");
+      expect(submitted).toBe('EXA-1 plan v2 submitted for review by the owner\nThe owner reviews it in the Plan tab\nWarning: 2 notes are still unanswered: N1, N3. Answer each with `bb work-board plan reply EXA-1 N1 --body "…" --addressed`.');
       expect(await ok(["plan", "show", "EXA-1"])).toContain("Plan v2 · in_review");
     });
 
@@ -242,7 +252,7 @@ describe("bb work-board plan", () => {
       await call("sendPlanFeedback", { taskId, author: owner });
       for (const n of ["N1", "N2", "N3"]) await ok(["plan", "reply", "EXA-1", n, "--body", "Done.", "--addressed"], "thr_example");
       await ok(["plan", "edit", "EXA-1", "--section", "Risks", "--body", "## Risks\nSome.", "--base-version", "1", "--summary", "Changed"], "thr_example");
-      expect(await ok(["plan", "submit", "EXA-1"], "thr_example")).toBe("EXA-1 plan v2 submitted for review");
+      expect(await ok(["plan", "submit", "EXA-1", "--reviewer", "owner"], "thr_example")).toBe("EXA-1 plan v2 submitted for review by the owner\nThe owner reviews it in the Plan tab");
     });
   });
 });

@@ -4,6 +4,9 @@ import { createStore } from "../api";
 import { gitSyncConfigSchema, prLinkSchema, prSnapshotSchema, prIdentity } from "../shared/git-sync";
 import { createGitSyncStore } from "./store";
 
+const link = (taskId: string, number: number) => prLinkSchema.parse({ taskId, repository: "org/repo", number, url: `https://github.com/org/repo/pull/${number}`, source: "manual", confirmed: true, createdAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-01-01T00:00:00.000Z" });
+const snapshot = (number: number, filename: string) => prSnapshotSchema.parse({ repository: "org/repo", number, remoteId: String(number), url: `https://github.com/org/repo/pull/${number}`, title: "test", state: "open", headSha: "a".repeat(40), mergeSha: null, mergedAt: null, baseBranch: "main", updatedAt: "2026-01-01", observedAt: "2026-01-01T00:00:00.000Z", checks: [], requirementsKnown: false, ci: "no_checks", mergeState: null, mergeable: null, review: null, unresolvedThreads: null, coverage: [], files: { entries: [{ filename, status: "added" }], truncated: false } });
+
 it("refreshes cached overlaps after database, snapshot, link and rule changes", async () => {
   const host = createFakePluginHost({ pluginId: "work-board" });
   try {
@@ -15,8 +18,6 @@ it("refreshes cached overlaps after database, snapshot, link and rule changes", 
     const store = createGitSyncStore(db);
     const config = gitSyncConfigSchema.parse({ repositories: ["org/repo"] });
     store.setConfig(project.id, config);
-    const link = (taskId: string, number: number) => prLinkSchema.parse({ taskId, repository: "org/repo", number, url: `https://github.com/org/repo/pull/${number}`, source: "manual", confirmed: true, createdAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-01-01T00:00:00.000Z" });
-    const snapshot = (number: number, filename: string) => prSnapshotSchema.parse({ repository: "org/repo", number, remoteId: String(number), url: `https://github.com/org/repo/pull/${number}`, title: "test", state: "open", headSha: "a".repeat(40), mergeSha: null, mergedAt: null, baseBranch: "main", updatedAt: "2026-01-01", observedAt: "2026-01-01T00:00:00.000Z", checks: [], requirementsKnown: false, ci: "no_checks", mergeState: null, mergeable: null, review: null, unresolvedThreads: null, coverage: [], files: { entries: [{ filename, status: "added" }], truncated: false } });
     const la = link(a.id, 1), lb = link(b.id, 2);
     store.saveLink(la); store.saveLink(lb);
     store.saveSnapshot(project.id, la, snapshot(1, "same")); store.saveSnapshot(project.id, lb, snapshot(2, "same"));
@@ -37,5 +38,38 @@ it("refreshes cached overlaps after database, snapshot, link and rule changes", 
     expect(store.overlaps(a.id)).toHaveLength(2);
     db.prepare("DELETE FROM task_pr_links WHERE task_id=?").run(b.id);
     expect(store.overlaps(a.id)).toHaveLength(0);
+  } finally { await host.harness.dispose(); }
+});
+
+it("drops only rule matches while shared-file rules are off and brings them back with the saved rules", async () => {
+  const host = createFakePluginHost({ pluginId: "work-board" });
+  try {
+    const tasks = createStore(host.bb).tasks;
+    const project = tasks.createProject({ name: "Example", prefix: "ABC", color: "blue" });
+    const a = tasks.createTask({ projectId: project.id, title: "A" });
+    const b = tasks.createTask({ projectId: project.id, title: "B" });
+    const db = host.bb.storage.database();
+    const store = createGitSyncStore(db);
+    const rules = [{ pattern: "migrations/**", match: "changed" as const }];
+    const config = gitSyncConfigSchema.parse({ repositories: ["org/repo"], overlapRules: rules });
+    store.setConfig(project.id, config);
+    const la = link(a.id, 1), lb = link(b.id, 2);
+    store.saveLink(la); store.saveLink(lb);
+    store.saveSnapshot(project.id, la, snapshot(1, "migrations/1.sql")); store.saveSnapshot(project.id, lb, snapshot(2, "migrations/1.sql"));
+    const matches = () => store.overlaps(a.id).map((overlap) => overlap.rule);
+    // The same cached PR pair, read before disabling, while disabled and after re-enabling.
+    expect(matches()).toEqual([rules[0], null]);
+    store.setConfig(project.id, { ...config, overlapEnabled: false });
+    expect(matches()).toEqual([null]);
+    expect(store.overlaps(a.id)[0]?.files).toEqual(["migrations/1.sql"]);
+    // The rules survive being switched off and a reload of the stored configuration.
+    expect(createGitSyncStore(db).config(project.id)).toMatchObject({ overlapEnabled: false, overlapRules: rules });
+    store.setConfig(project.id, { ...config, overlapEnabled: true });
+    expect(matches()).toEqual([rules[0], null]);
+    // Without the key the rules decide: they are on with rules and off without.
+    store.setConfig(project.id, config);
+    expect(matches()).toEqual([rules[0], null]);
+    store.setConfig(project.id, gitSyncConfigSchema.parse({ repositories: ["org/repo"] }));
+    expect(matches()).toEqual([null]);
   } finally { await host.harness.dispose(); }
 });

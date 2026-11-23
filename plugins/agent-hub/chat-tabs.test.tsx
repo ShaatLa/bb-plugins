@@ -65,22 +65,35 @@ it('renders files and saves and clears revision-aware Viewed marks', async () =>
   fireEvent.change(slot.getByRole('combobox', { name: 'Diff target' }), { target: { value: 'branch' } });
   await waitFor(() => expect(files).toHaveBeenCalledWith({ environmentId: 'env', target: { type: 'branch_committed', mergeBaseBranch: 'main' }, ignoreWhitespace: false }));
 });
-it('shows linked tasks and opens their in-app route', async () => {
-  const { slot } = setup(WorkBoardTab, { threadTasks: () => ({ tasks: [{ key: 'WB-1', title: 'Task', status: { id: 'done', name: 'Done', icon: 'Check', color: '#008800', future: true }, projectName: 'Project', archived: true, url: '/plugins/work-board/work-board/task/WB-1', future: true }] }) });
-  const moved = vi.fn(); window.addEventListener('popstate', moved);
-  fireEvent.click(await slot.findByRole('button', { name: 'Open WB-1: Task' }));
-  expect(window.location.pathname).toBe('/plugins/work-board/work-board/task/WB-1'); expect(moved).toHaveBeenCalledOnce(); window.removeEventListener('popstate', moved);
-  expect(slot.getByText('Done')).toBeTruthy();
-  expect(slot.getByText('WB-1').className).toContain('w-14');
-});
-it('draws Work Board\'s own status glyph and color once it sends them', async () => {
-  const { slot } = setup(WorkBoardTab, { threadTasks: () => ({ tasks: [{ key: 'WB-2', title: 'Glyph', status: { id: 'in_progress', name: 'In Progress', iconName: 'work-board/status-in_progress', cssColor: 'goldenrod' }, projectName: 'P', archived: false, url: '/plugins/work-board/work-board/task/WB-2' }] }) });
-  const glyph = await slot.findByLabelText('In Progress');
-  expect(glyph.getAttribute('style')).toContain('goldenrod'); expect(slot.queryByText('In Progress')).toBeNull();
-});
-it.each([undefined, () => { throw new Error('offline'); }])('fails softly without Work Board', async handler => {
-  const { slot } = setup(WorkBoardTab, handler ? { threadTasks: handler } : {});
+it('leaves an empty host for Work Board to portal its board into, and waits for it', async () => {
+  const { slot } = setup(WorkBoardTab);
+  const host = slot.container.querySelector<HTMLElement>('[data-work-board-host="board"]')!;
+  expect(host.dataset.threadId).toBe('thr_one'); expect(host.childElementCount).toBe(0);
+  expect(slot.getByText('Loading…')).toBeTruthy();
+  host.setAttribute('data-work-board-ready', 'true');
+  await waitFor(() => expect(slot.queryByText('Loading…')).toBeNull());
+  act(() => setOpenChat('thr_two', false));
+  expect(slot.container.querySelector<HTMLElement>('[data-work-board-host]')!.dataset.threadId).toBe('thr_two');
+  await waitFor(() => expect(slot.queryByText('Loading…')).toBeNull());
+  host.removeAttribute('data-work-board-ready');
   await slot.findByText('Work Board unavailable');
+});
+it('opens links Work Board hands over in bb\'s browser', () => {
+  const { slot } = setup(WorkBoardTab, {}, { openUrl: () => true });
+  const host = slot.container.querySelector<HTMLElement>('[data-work-board-host]')!, link = document.createElement('a');
+  host.append(link);
+  const event = new CustomEvent('work-board:open-url', { bubbles: true, cancelable: true, detail: { url: 'https://example.com/' } });
+  link.dispatchEvent(event);
+  expect(event.defaultPrevented).toBe(true);
+  expect(slot.navigateCalls).toContainEqual({ method: 'openUrl', url: 'https://example.com/' });
+});
+it('says Work Board is unavailable when nothing fills the host', async () => {
+  vi.useFakeTimers();
+  try {
+    const { slot } = setup(WorkBoardTab);
+    act(() => { vi.advanceTimersByTime(3100); });
+    expect(slot.getByText('Work Board unavailable')).toBeTruthy();
+  } finally { vi.useRealTimers(); }
 });
 it('loads on-demand patches using the file revision and surfaces truncation', async () => {
   const patches = vi.fn(({ keys }: { keys: string[] }) => ({ [keys[0]!]: { outcome: 'available', patch: { ...patch, truncated: true } } }));
@@ -106,10 +119,7 @@ it('does not mark a file Viewed when the save fails', async () => {
   await slot.findByText('Cannot save Viewed');
   expect((slot.getByRole('checkbox') as HTMLInputElement).checked).toBe(false);
 });
-it('shows no linked tasks and avoids Work Board reads while hidden', async () => {
-  const threadTasks = vi.fn(() => ({ tasks: [] }));
-  const hidden = setup(WorkBoardTab, { threadTasks }, { tabVisible: false });
-  expect(threadTasks).not.toHaveBeenCalled(); hidden.slot.unmount();
-  const { slot } = setup(WorkBoardTab, { threadTasks });
-  await slot.findByText('No linked tasks');
+it('removes the host while the tab is hidden', () => {
+  const { slot } = setup(WorkBoardTab, {}, { tabVisible: false });
+  expect(slot.container.querySelector('[data-work-board-host]')).toBeNull();
 });

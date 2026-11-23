@@ -44,15 +44,42 @@ it("reports merged delivery evidence without changing workflow or dependencies, 
   expect(await f.read()).toEqual([]);
 });
 
+const pendingDeploy = { workflow: "Deploy", state: "pending" as const, runId: null, sha: null, url: null, superseded: false, originalRunId: null };
+
+it("keeps merged evidence valid for its polling freshness: an hour when settled, one poll when pending or terminal", async () => {
+  const f = fixture();
+  const ago = (ms: number) => new Date(Date.now() - ms).toISOString();
+  const settled = { ...f.snapshot, observedAt: ago(30 * 60_000) };
+  f.git.saveSnapshot(f.project.id, f.link, settled);
+  expect(await f.read()).toMatchObject([{ kind: "merged-predecessor", validUntil: new Date(Date.parse(settled.observedAt) + 3_600_000).toISOString() }]);
+  f.git.setConfig(f.project.id, { ...f.config, postMergeWorkflows: ["Deploy"] });
+  f.git.saveSnapshot(f.project.id, f.link, { ...f.snapshot, observedAt: ago(6 * 60_000), coverage: [pendingDeploy] });
+  expect(await f.read()).toEqual([]);
+  f.git.setConfig(f.project.id, f.config);
+  // A forced refresh of an eight-day-old merge is fresh evidence for one poll interval, as before.
+  const terminal = { ...f.snapshot, mergedAt: ago(8 * 86_400_000), observedAt: ago(1000) };
+  f.git.saveSnapshot(f.project.id, f.link, terminal);
+  expect(await f.read()).toMatchObject([{ kind: "merged-predecessor", validUntil: new Date(Date.parse(terminal.observedAt) + 5 * 60_000).toISOString() }]);
+  f.git.saveSnapshot(f.project.id, f.link, { ...terminal, observedAt: ago(5 * 60_000 + 1000) });
+  expect(await f.read()).toEqual([]);
+  f.git.fail(f.project.id, f.link, "provider unavailable");
+  expect(await f.read()).toEqual([]);
+});
+
 it("excludes unrelated/design/excluded/unconfirmed links and unknown or stale merge data", async () => {
   const f = fixture();
   for (const patch of [{ role: "related" as const }, { role: "design" as const }, { excluded: true }, { confirmed: false }]) {
     f.git.saveLink({ ...f.link, ...patch }); expect(await f.read()).toEqual([]);
   }
   f.git.saveLink(f.link);
-  for (const patch of [{ mergeSha: null }, { mergedAt: null }, { state: "closed" as const }, { observedAt: new Date(Date.now() - 301_000).toISOString() }, { observedAt: new Date(Date.now() + 60_000).toISOString() }]) {
+  for (const patch of [{ mergeSha: null }, { mergedAt: null }, { state: "closed" as const }, { observedAt: new Date(Date.now() + 60_000).toISOString() }]) {
     f.git.saveSnapshot(f.project.id, f.link, { ...f.snapshot, ...patch }); expect(await f.read()).toEqual([]);
   }
+  // Settled evidence (no post-merge workflow to wait for) lasts an hour; pending coverage only one poll interval.
+  f.git.saveSnapshot(f.project.id, f.link, { ...f.snapshot, observedAt: new Date(Date.now() - 3_601_000).toISOString() }); expect(await f.read()).toEqual([]);
+  f.git.setConfig(f.project.id, { ...f.config, postMergeWorkflows: ["Deploy"] });
+  f.git.saveSnapshot(f.project.id, f.link, { ...f.snapshot, observedAt: new Date(Date.now() - 301_000).toISOString(), coverage: [pendingDeploy] }); expect(await f.read()).toEqual([]);
+  f.git.setConfig(f.project.id, f.config);
   f.git.saveSnapshot(f.project.id, f.link, f.snapshot);
   f.git.fail(f.project.id, f.link, "provider unavailable"); expect(await f.read()).toEqual([]);
   f.git.saveSnapshot(f.project.id, f.link, f.snapshot);

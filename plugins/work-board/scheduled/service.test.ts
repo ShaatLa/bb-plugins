@@ -4,6 +4,7 @@ import { createStore, registerTasksApi } from '../api';
 import { scheduledService } from './service';
 import { registerScheduled } from './index';
 import { scheduledRunMarker } from './acceptance';
+import { createPlanStore } from '../plans/store';
 import type { ScheduleRun } from '../shared/scheduled';
 
 afterEach(()=>vi.useRealTimers());
@@ -51,6 +52,67 @@ describe('Scheduled execution',()=>{
    await f.service.reconcileAll();await f.service.runNow(s.id,'unknown');
    expect(f.harness.sdk.callsTo('threads.send')).toHaveLength(count);
    await expect(f.service.retry(r.id,'retry')).rejects.toThrow('unknown');
+  }finally{await f.harness.dispose();}
+ });
+ it('skips a plan-gated status move at acceptance but keeps the run tracked, and warns the executor once only when the prompt had no advisory',async()=>{
+  for(const warnedInPrompt of [false,true]) {
+   const f=fixture();try{
+    f.store.tasks.updateProject(f.project.id,{planning:warnedInPrompt?'required':'optional'});
+    const s=f.create(),r=await f.service.runNow(s.id,'gated');
+    const author={kind:'agent' as const,threadId:'thr_example',name:'agent (thr_example)'};
+    const plans=createPlanStore(f.bb.storage.database(),f.store.tasks);
+    plans.save({taskId:r.taskId!,op:'replace',baseVersion:0,body:'# Plan\n',summary:'Draft',author});
+    f.store.tasks.updateProject(f.project.id,{planning:'required'});
+    const before=f.store.tasks.getTask(r.taskId!)!.status;
+    f.accept([r],'thread');await f.service.reconcileThread(f.thread.id);
+    // The run is tracked with its start time, the card did not move, and nothing was dispatched twice.
+    expect(f.data.run(r.id)).toMatchObject({state:'running'});expect(f.data.run(r.id).startedAt).not.toBeNull();
+    expect(f.store.tasks.getTask(r.taskId!)!.status).toBe(before);expect(before).not.toBe('in_progress');
+    const texts=(f.harness.sdk.callsTo('threads.send') as Array<[{input:Array<{text:string}>}]>).map(entry=>entry[0].input[0]!.text);
+    expect(texts[0]).toContain(warnedInPrompt?'No plan yet: planning is required in this project':'Daily check');
+    if(warnedInPrompt)expect(texts).toHaveLength(1);
+    else{expect(texts).toHaveLength(2);expect(texts[1]).toContain('Plan v1 is draft (not approved)');expect(texts[1]).toContain('was not moved to In progress');}
+    await f.service.reconcileThread(f.thread.id);expect(f.harness.sdk.callsTo('threads.send')).toHaveLength(texts.length);
+   }finally{await f.harness.dispose();}
+  }
+ });
+ it('records an occurrence as skipped with the planning-flags reason when the flags changed after the schedule was enabled, and does not retry it',async()=>{
+  const f=fixture();try{
+   const s=f.create();
+   f.store.tasks.updateProject(f.project.id,{planning:'required'});
+   f.store.tasks.updateProject(f.project.id,{statuses:f.store.tasks.getProject(f.project.id)!.statuses!.map(status=>({...status,requiresApprovedPlan:status.id!=='done'&&status.id!=='canceled'}))});
+   const r=await f.service.runNow(s.id,'flags');
+   expect(r).toMatchObject({state:'skipped'});expect(r.reason).toContain('planning flags');expect(r.taskId).toBeNull();
+   const sends=f.harness.sdk.callsTo('threads.send').length;
+   await f.service.reconcileAll();const again=await f.service.runNow(s.id,'flags');
+   expect(again.id).toBe(r.id);expect(f.data.run(r.id).state).toBe('skipped');expect(f.harness.sdk.callsTo('threads.send')).toHaveLength(sends);
+  }finally{await f.harness.dispose();}
+ });
+ it('retries an occurrence after a one-time storage failure while creating its card, and dispatches exactly once',async()=>{
+  const f=fixture();try{
+   const s=f.create(),create=f.store.tasks.createTask;let failed=false;
+   f.store.tasks.createTask=((...args:Parameters<typeof create>)=>{if(!failed){failed=true;throw new Error('database is locked');}return create(...args);}) as typeof create;
+   await expect(f.service.runNow(s.id,'flaky')).rejects.toThrow('database is locked');
+   expect(f.harness.sdk.callsTo('threads.send')).toHaveLength(0);
+   // Not recorded as skipped: the next attempt for the same occurrence goes through and sends once.
+   const retry=await f.service.runNow(s.id,'flaky');
+   expect(retry.state).toBe('starting');
+   // Recovery picks the occurrence up, creates its card and sends exactly once.
+   await f.service.reconcileAll();
+   expect(f.data.run(retry.id)).toMatchObject({state:'queued'});expect(f.data.run(retry.id).taskId).not.toBeNull();
+   expect(f.harness.sdk.callsTo('threads.send')).toHaveLength(1);
+   await f.service.reconcileAll();expect(f.harness.sdk.callsTo('threads.send')).toHaveLength(1);
+  }finally{await f.harness.dispose();}
+ });
+ it('closes a canceled queued run through the same hook, once',async()=>{
+  const f=fixture();try{
+   const s=f.create(),r=await f.service.runNow(s.id,'cancel');
+   const seen:string[]=[];f.store.tasks.onClosure(id=>{seen.push(id);});
+   f.harness.sdk.stub('threads.queuedMessages.delete',async()=>{const [entry]=f.getQueue();f.clearQueue();await f.harness.emitThreadEvent('message.cancelled',{entry:entry!});return {ok:true};});
+   expect((await f.service.cancel(r.id)).state).toBe('canceled');
+   await new Promise(resolve=>setTimeout(resolve,0));
+   expect(seen).toEqual([f.store.tasks.closures.currentId(r.taskId!)]);
+   expect(seen).toHaveLength(1);
   }finally{await f.harness.dispose();}
  });
  it.each(['backlog','done'] as const)('requires cancellation evidence and preserves an existing %s result',async status=>{

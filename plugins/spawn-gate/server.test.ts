@@ -143,6 +143,8 @@ it("reads and writes individual project settings over RPC and CLI with identical
   expect(await rpc("config.set", { projectId: PROJECT, key: "ttlMinutes", value: 15 })).toEqual({ ttlMinutes: 15 });
   await expect(rpc("config.set", { projectId: PROJECT, key: "ttlMinutes", value: "15" })).rejects.toThrow();
   await expect(rpc("config.set", { projectId: PROJECT, key: "ttlMinutes", value: 0 })).rejects.toThrow();
+  const repeated = await h.harness.behavior.runCli(["config", "set", "enabled", "false", "--project", PROJECT, "--project", "proj_other"]);
+  expect(repeated).toMatchObject({ exitCode: 1, stderr: "Pass --project only once" });
   const saved = await h.harness.behavior.runCli(["config", "set", "script", "tools/spawn.py", "--project", PROJECT]);
   expect(saved.exitCode).toBe(0);
   expect(JSON.parse(saved.stdout!)).toEqual({ script: "tools/spawn.py" });

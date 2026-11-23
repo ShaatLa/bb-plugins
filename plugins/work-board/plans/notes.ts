@@ -3,9 +3,13 @@ import type { TasksStore } from "../db";
 import { createUlid } from "../db/store";
 import type { CreatePlanNoteInput, PlanAuthor, PlanNote, PlanNoteCounts, TaskPlanHead } from "../shared/contract";
 import type { PlanNoteKind, PlanNoteState } from "../shared/plan-notes";
-import { noteLabel } from "../shared/plan-notes";
+import { noteLabel, PLAN_NOTE_BODY_MAX, PLAN_NOTE_HEADING_MAX, PLAN_NOTE_QUOTE_MAX } from "../shared/plan-notes";
+import { buildAnchor, fold, markdownPlainText, resolveAnchor } from "../shared/plan-anchor";
+import { findSection, getSection } from "../shared/plan";
 import { assertNoSecrets } from "../shared/secret-guard.js";
-import { PlanError } from "./store";
+import { reviewerRefusal } from "./pause";
+import { syncPlanDebt } from "../plan-debt/store";
+import { assertPlanning, closePendingReview, PlanError } from "./store";
 
 type Database = ReturnType<BbPluginApi["storage"]["database"]>;
 
@@ -28,6 +32,8 @@ interface NoteRow {
   replied_at: string | null;
   addressed_in_version: number | null;
   author_name: string;
+  author_kind: "person" | "thread";
+  author_thread: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -35,6 +41,9 @@ interface PlanRow {
   version: number;
   body: string;
   state: string;
+  reviewer_kind: "owner" | "thread" | null;
+  reviewer_thread: string | null;
+  review_version: number | null;
 }
 
 /** A note as it is stored in an export: the task is the record that holds it. */
@@ -59,6 +68,8 @@ const noteOf = (row: NoteRow): PlanNote => ({
   repliedAt: row.replied_at,
   addressedInVersion: row.addressed_in_version,
   authorName: row.author_name,
+  authorKind: row.author_kind,
+  authorThread: row.author_thread,
   createdAt: row.created_at,
   updatedAt: row.updated_at,
 });
@@ -67,15 +78,19 @@ const capturedOf = ({ taskId: _taskId, ...note }: PlanNote): CapturedPlanNote =>
 const COMMENT_NOTE_CAP = 300;
 const plural = (count: number, word: string) => `${count} ${word}${count === 1 ? "" : "s"}`;
 
-/** The owner's notes on task plans: draft → sent → addressed → resolved, and the two review decisions. */
+/**
+ * The notes on task plans: draft → sent → addressed → resolved, and the two review decisions. The owner writes notes
+ * through the app; a reviewer thread writes them through the CLI-only functions below, which check who is calling.
+ */
 export function createPlanNoteStore(db: Database, tasks: TasksStore, head: (taskId: string) => TaskPlanHead | null) {
   function requireEditable(taskId: string) {
     const task = tasks.getTask(taskId);
     if (!task) throw new Error(`Task not found: ${taskId}`);
+    assertPlanning(tasks, task);
     if (task.archivedAt) throw new PlanError("plan_archived", `${task.key} is archived; restore the task before changing its plan`);
     return task;
   }
-  const planRow = (taskId: string) => db.prepare<[string], PlanRow>("SELECT version, body, state FROM task_plans WHERE task_id = ?").get(taskId);
+  const planRow = (taskId: string) => db.prepare<[string], PlanRow>("SELECT version, body, state, reviewer_kind, reviewer_thread, review_version FROM task_plans WHERE task_id = ?").get(taskId);
   function requirePlan(taskId: string) {
     const task = requireEditable(taskId);
     const row = planRow(taskId);
@@ -90,27 +105,37 @@ export function createPlanNoteStore(db: Database, tasks: TasksStore, head: (task
     return row;
   }
   const fresh = (noteId: string) => noteOf(noteRow(noteId)!);
-  const draftRows = (taskId: string) =>
-    db.prepare<[string], NoteRow>("SELECT * FROM task_plan_notes WHERE task_id = ? AND state = 'draft' ORDER BY number").all(taskId);
+  /** Drafts are scoped per author: the owner's feedback sends the owner's drafts, a reviewer's sends the reviewer threads'. */
+  const draftRows = (taskId: string, author: "person" | "thread") =>
+    db.prepare<[string, string], NoteRow>("SELECT * FROM task_plan_notes WHERE task_id = ? AND state = 'draft' AND author_kind = ? ORDER BY number").all(taskId, author);
+
+  /** Every note of a task without the planning check, for export and import. */
+  const capturedNotes = (taskId: string): PlanNote[] => db.prepare<[string], NoteRow>("SELECT * FROM task_plan_notes WHERE task_id = ? ORDER BY number").all(taskId).map(noteOf);
 
   function list(taskId: string): PlanNote[] {
-    if (!tasks.getTask(taskId)) throw new Error(`Task not found: ${taskId}`);
-    return db.prepare<[string], NoteRow>("SELECT * FROM task_plan_notes WHERE task_id = ? ORDER BY number").all(taskId).map(noteOf);
+    const task = tasks.getTask(taskId);
+    if (!task) throw new Error(`Task not found: ${taskId}`);
+    assertPlanning(tasks, task);
+    return capturedNotes(taskId);
   }
 
   function counts(taskId: string): PlanNoteCounts {
     const result: PlanNoteCounts = { draft: 0, open: 0, addressed: 0, resolved: 0 };
-    for (const row of db.prepare<[string], { state: PlanNoteState; count: number }>("SELECT state, COUNT(*) AS count FROM task_plan_notes WHERE task_id = ? GROUP BY state").all(taskId))
+    for (const row of db.prepare<[string], { state: PlanNoteState; count: number }>("SELECT state, COUNT(*) AS count FROM task_plan_notes WHERE task_id = ? AND NOT (state = 'draft' AND author_kind = 'thread') GROUP BY state").all(taskId))
       result[row.state === "sent" ? "open" : row.state] = row.count;
     return result;
   }
+
+  /** Notes that block a reviewer's approval: drafts and unresolved notes of reviewer threads, inherited ones included. */
+  const blockingCount = (taskId: string): number =>
+    db.prepare<[string], { count: number }>("SELECT COUNT(*) AS count FROM task_plan_notes WHERE task_id = ? AND author_kind = 'thread' AND state != 'resolved'").get(taskId)!.count;
 
   function guardText(body: string, kind: PlanNoteKind) {
     if (kind !== "remove" && body.trim() === "") throw new PlanError("plan_invalid", "A note needs text");
     assertNoSecrets(body, "plan note");
   }
 
-  const create = db.transaction((input: CreatePlanNoteInput & { body: string; authorName: string }): PlanNote => {
+  const create = db.transaction((input: CreatePlanNoteInput & { body: string; authorName: string; authorThread?: string }): PlanNote => {
     const { task, plan } = requirePlan(input.taskId);
     const quote = input.exact ?? null;
     if (input.kind === "general") {
@@ -125,9 +150,9 @@ export function createPlanNoteStore(db: Database, tasks: TasksStore, head: (task
     const now = new Date().toISOString();
     const general = input.kind === "general";
     db.prepare(
-      `INSERT INTO task_plan_notes (id, task_id, number, kind, exact, prefix, suffix, heading_path, made_on_version, body, state, author_name, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'draft', ?, ?, ?)`,
-    ).run(id, input.taskId, number, input.kind, general ? null : quote, general ? null : (input.prefix ?? ""), general ? null : (input.suffix ?? ""), general ? null : (input.headingPath ?? null), version, input.body.trim(), input.authorName, now, now);
+      `INSERT INTO task_plan_notes (id, task_id, number, kind, exact, prefix, suffix, heading_path, made_on_version, body, state, author_name, author_kind, author_thread, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'draft', ?, ?, ?, ?, ?)`,
+    ).run(id, input.taskId, number, input.kind, general ? null : quote, general ? null : (input.prefix ?? ""), general ? null : (input.suffix ?? ""), general ? null : (input.headingPath ?? null), version, input.body.trim(), input.authorName, input.authorThread ? "thread" : "person", input.authorThread ?? null, now, now);
     return fresh(id);
   });
 
@@ -153,11 +178,13 @@ export function createPlanNoteStore(db: Database, tasks: TasksStore, head: (task
     if (row.state === state) return noteOf(row);
     const now = new Date().toISOString();
     if (state === "resolved") {
-      if (row.state === "draft") throw new PlanError("plan_state", `${label} is a draft; send it, or delete it`);
+      // A reopened note was sent once and keeps its reply: it can be resolved again. A draft that never went out cannot.
+      if (row.state === "draft" && row.sent_at === null) throw new PlanError("plan_state", `${label} is a draft; send it, or delete it`);
       db.prepare("UPDATE task_plan_notes SET state = 'resolved', updated_at = ? WHERE id = ?").run(now, noteId);
     } else {
       if (row.state === "sent") throw new PlanError("plan_state", `${label} is waiting for the agent's answer`);
-      db.prepare("UPDATE task_plan_notes SET state = 'draft', sent_in_version = NULL, sent_at = NULL, addressed_in_version = NULL, updated_at = ? WHERE id = ?").run(now, noteId);
+      // A reopened note keeps when it was first sent, which tells it from a draft that never went out.
+      db.prepare("UPDATE task_plan_notes SET state = 'draft', addressed_in_version = NULL, updated_at = ? WHERE id = ?").run(now, noteId);
     }
     return fresh(noteId);
   });
@@ -185,31 +212,167 @@ export function createPlanNoteStore(db: Database, tasks: TasksStore, head: (task
     return fresh(row.id);
   });
 
-  /** All draft notes become sent, the plan goes to "changes requested" and the task log says so, in one transaction. */
-  const sendFeedback = db.transaction((taskId: string, by: PlanAuthor) => {
+  /** Who the revised plan goes back to: the assigned reviewer thread, else the owner. */
+  const reviewerOf = (plan: PlanRow) => (plan.reviewer_kind === "thread" && plan.reviewer_thread ? plan.reviewer_thread : "owner");
+
+  /**
+   * The checks every reviewer command makes in its own transaction: the caller is the assigned reviewer, the plan is in
+   * review, and `version` is the version that was submitted and is still current. A decision on text the reviewer did
+   * not read, or after the owner decided, is refused here.
+   */
+  function requireReviewer(taskId: string, caller: string | null, version: number) {
     const { task, plan } = requirePlan(taskId);
-    const drafts = draftRows(taskId);
+    if (!caller) throw new PlanError("plan_state", "Reviewer commands run from the reviewer's own thread; this call has no thread id");
+    if (plan.reviewer_kind !== "thread" || plan.reviewer_thread !== caller)
+      throw new PlanError("plan_state", `${caller} is not the reviewer of ${task.key} plan${plan.reviewer_kind === "thread" ? ` (that is ${plan.reviewer_thread})` : " (the owner reviews it)"}`);
+    if (plan.state !== "in_review") throw new PlanError("plan_state", `${task.key} plan v${plan.version} is ${plan.state.replace("_", " ")}, not in review; a decision on it is no longer yours to make`);
+    if (version !== plan.version || version !== plan.review_version)
+      throw new PlanError("plan_conflict", `You reviewed v${version}, but the plan under review is v${plan.review_version ?? plan.version} (current v${plan.version}); read it again and pass --version ${plan.version}`);
+    return { task, plan };
+  }
+
+  /** A reviewer decides inside its own transaction against the live decisions: while the owner has one open, the review is paused. */
+  function pausedGuard(key: string, version: number, taskId: string) {
+    const refused = reviewerRefusal(db, key, version, taskId);
+    if (refused) throw new PlanError("plan_state", refused);
+  }
+
+  /** Reviewer-thread notes by number; the owner's notes are never reachable from a reviewer command. */
+  function reviewerNotes(taskId: string, numbers: readonly number[]): NoteRow[] {
+    return numbers.map((number) => {
+      const row = db.prepare<[string, number], NoteRow>("SELECT * FROM task_plan_notes WHERE task_id = ? AND number = ?").get(taskId, number);
+      if (!row) throw new PlanError("plan_invalid", `The plan has no note ${noteLabel(number)}`);
+      if (row.author_kind !== "thread") throw new PlanError("plan_state", `${noteLabel(number)} is the owner's note; only the owner changes it`);
+      return row;
+    });
+  }
+
+  /**
+   * All draft notes of one author kind become sent, the plan goes to "changes requested" and the task log says so, in one
+   * transaction. The owner's call (no `reviewerVersion`) sends the owner's drafts; a reviewer's call sends the drafts of
+   * every reviewer thread, each keeping its author.
+   */
+  const sendFeedback = db.transaction((taskId: string, by: PlanAuthor, reviewerVersion?: number) => {
+    const { task, plan } = reviewerVersion === undefined ? requirePlan(taskId) : requireReviewer(taskId, by.threadId, reviewerVersion);
+    if (reviewerVersion !== undefined) pausedGuard(task.key, plan.version, taskId);
+    const drafts = draftRows(taskId, reviewerVersion === undefined ? "person" : "thread");
     if (drafts.length === 0) throw new PlanError("plan_state", `${task.key} has no draft notes to send`);
     const now = new Date().toISOString();
-    db.prepare("UPDATE task_plan_notes SET state = 'sent', sent_in_version = ?, sent_at = ?, updated_at = ? WHERE task_id = ? AND state = 'draft'").run(plan.version, now, now, taskId);
+    const ids = drafts.map((row) => row.id);
+    db.prepare(`UPDATE task_plan_notes SET state = 'sent', sent_in_version = ?, sent_at = ?, updated_at = ? WHERE id IN (${ids.map(() => "?").join(", ")})`).run(plan.version, now, now, ...ids);
     db.prepare("UPDATE task_plans SET state = 'changes_requested', updated_at = ? WHERE task_id = ?").run(now, taskId);
+    syncPlanDebt(db, taskId);
+    closePendingReview(db, taskId, "changes_requested", reviewerVersion === undefined ? by.name : by.threadId!);
     tasks.createComment({ taskId, kind: "system", authorName: by.name, body: `Plan v${plan.version}: changes requested by ${by.name} · ${plural(drafts.length, "note")}` });
-    return { plan: head(taskId)!, version: plan.version, body: plan.body, taskKey: task.key, notes: drafts.map((row) => fresh(row.id)) };
+    return { plan: head(taskId)!, version: plan.version, body: plan.body, taskKey: task.key, notes: drafts.map((row) => fresh(row.id)), reviewer: reviewerOf(plan) };
   });
 
-  /** Approval is refused while drafts exist: they would never reach the agent. */
-  const approve = db.transaction((taskId: string, by: PlanAuthor, note?: string) => {
-    const { task, plan } = requirePlan(taskId);
+  /**
+   * Approval is refused while unsent drafts of the approver exist: they would never reach the agent. A reviewer also
+   * needs every note of a reviewer thread resolved (the convergence rule); the owner can always override.
+   */
+  const approve = db.transaction((taskId: string, by: PlanAuthor, note?: string, reviewerVersion?: number) => {
+    const { task, plan } = reviewerVersion === undefined ? requirePlan(taskId) : requireReviewer(taskId, by.threadId, reviewerVersion);
+    if (reviewerVersion !== undefined) pausedGuard(task.key, plan.version, taskId);
     if (plan.state === "approved") throw new PlanError("plan_state", `Plan v${plan.version} is already approved`);
-    const drafts = draftRows(taskId).length;
-    if (drafts > 0) throw new PlanError("plan_state", `${task.key} has ${plural(drafts, "draft note")} not sent yet; send them as feedback or delete them before approving`);
+    if (reviewerVersion === undefined) {
+      const drafts = draftRows(taskId, "person").length;
+      if (drafts > 0) throw new PlanError("plan_state", `${task.key} has ${plural(drafts, "draft note")} not sent yet; send them as feedback or delete them before approving`);
+    } else {
+      const open = db.prepare<[string], { number: number; state: string }>("SELECT number, state FROM task_plan_notes WHERE task_id = ? AND author_kind = 'thread' AND state != 'resolved' ORDER BY number").all(taskId);
+      if (open.length)
+        throw new PlanError(
+          "plan_state",
+          `${task.key} has ${plural(open.length, "reviewer note")} still open: ${open.map((row) => `${noteLabel(row.number)} (${row.state})`).join(", ")}. Dismiss or send drafts, resolve answered notes, then approve`,
+        );
+    }
     const text = note?.trim() || undefined;
     assertNoSecrets(text, "plan approval note");
     const now = new Date().toISOString();
     db.prepare("UPDATE task_plans SET state = 'approved', updated_at = ? WHERE task_id = ?").run(now, taskId);
+    syncPlanDebt(db, taskId);
+    closePendingReview(db, taskId, "approved", reviewerVersion === undefined ? by.name : by.threadId!);
+    // A dedicated reviewer that approved is archived on its first idle after this turn (when the project allows it).
+    if (reviewerVersion !== undefined) tasks.closures.reviewerIntent(taskId, by.threadId!);
     const shown = text && (text.length > COMMENT_NOTE_CAP ? `${text.slice(0, COMMENT_NOTE_CAP)}…` : text);
     tasks.createComment({ taskId, kind: "system", authorName: by.name, body: `Plan v${plan.version}: approved by ${by.name}${shown ? ` · note: ${shown}` : ""}` });
     return { plan: head(taskId)!, version: plan.version, taskKey: task.key, note: text ?? null };
+  });
+
+  /** The reviewer's note on a passage: the quote must occur exactly once in the section (or the whole plan); the anchor is the UI's own. */
+  const createByReviewer = db.transaction(
+    (input: { taskId: string; by: PlanAuthor; version: number; kind?: PlanNoteKind; body: string; quote?: string; section?: string }): PlanNote => {
+      const { task, plan } = requireReviewer(input.taskId, input.by.threadId, input.version);
+      if (input.body.length > PLAN_NOTE_BODY_MAX) throw new PlanError("plan_invalid", `A note is at most ${PLAN_NOTE_BODY_MAX} characters`);
+      const kind = input.kind ?? (input.quote === undefined ? "general" : "comment");
+      let anchor: { exact: string; prefix: string; suffix: string; headingPath: string | null } | null = null;
+      if (input.quote !== undefined) {
+        const plain = markdownPlainText(plan.body);
+        let scope = plain;
+        let base = 0;
+        let where = "the plan";
+        let headingPath: string | null = null;
+        if (input.section !== undefined) {
+          let found;
+          try {
+            found = findSection(plan.body, input.section);
+            getSection(plan.body, input.section);
+          } catch (error) {
+            throw new PlanError("plan_invalid", error instanceof Error ? error.message : String(error));
+          }
+          const lines = plan.body.split("\n");
+          scope = markdownPlainText(lines.slice(found.start, found.end).join("\n"));
+          base = markdownPlainText(lines.slice(0, found.end).join("\n")).length - scope.length;
+          headingPath = found.heading.path.join(" > ");
+          where = `section "${headingPath}"`;
+        }
+        const wanted = fold(input.quote).folded;
+        if (!wanted) throw new PlanError("plan_invalid", "The quote has no letters or digits to find");
+        const text = fold(scope);
+        let count = 0;
+        for (let at = text.folded.indexOf(wanted); at !== -1; at = text.folded.indexOf(wanted, at + 1)) count++;
+        if (count === 0) throw new PlanError("plan_invalid", `The quote was not found in ${where} of ${task.key} v${plan.version} (0 matches); copy it from \`plan show\``);
+        if (count > 1)
+          throw new PlanError("plan_invalid", `The quote occurs ${count} times in ${where}; ${input.section === undefined ? "name its section with --section, or " : ""}quote a longer passage so it occurs once`);
+        const span = resolveAnchor(text, { exact: input.quote, prefix: "", suffix: "" })!;
+        const built = buildAnchor(plain, base + span.start, base + span.end);
+        if (!built || built.exact.length > PLAN_NOTE_QUOTE_MAX) throw new PlanError("plan_invalid", `The quote must be 1–${PLAN_NOTE_QUOTE_MAX} characters`);
+        // The stored path must pass the output limit, or the note could never be listed or exported.
+        if (headingPath !== null && headingPath.length > PLAN_NOTE_HEADING_MAX) throw new PlanError("plan_invalid", `The section path is longer than ${PLAN_NOTE_HEADING_MAX} characters; quote without --section`);
+        anchor = { ...built, headingPath };
+      }
+      return create({
+        taskId: input.taskId,
+        kind,
+        exact: anchor?.exact ?? null,
+        prefix: anchor?.prefix ?? null,
+        suffix: anchor?.suffix ?? null,
+        headingPath: anchor?.headingPath ?? null,
+        madeOnVersion: input.version,
+        body: input.body,
+        authorName: input.by.name,
+        authorThread: input.by.threadId!,
+      });
+    },
+  );
+
+  /** A reviewer withdraws unsent drafts of reviewer threads. Like a deleted draft, this leaves no log entry: numbers of unsent drafts can be reused. */
+  const dismissByReviewer = db.transaction((taskId: string, by: PlanAuthor, version: number, numbers: readonly number[]) => {
+    requireReviewer(taskId, by.threadId, version);
+    const rows = reviewerNotes(taskId, numbers);
+    for (const row of rows) {
+      if (row.state !== "draft") throw new PlanError("plan_state", `${noteLabel(row.number)} was already sent; resolve it instead of dismissing it`);
+      // A reopened note is a draft again, but it was sent once and holds the author's reply: it is feedback, not a withdrawn finding.
+      if (row.sent_at !== null) throw new PlanError("plan_state", `${noteLabel(row.number)} was sent before and reopened; send it again or resolve it, dismissing would delete its history`);
+    }
+    for (const row of rows) db.prepare("DELETE FROM task_plan_notes WHERE id = ?").run(row.id);
+    return { taskId, removed: [...numbers] };
+  });
+
+  /** A reviewer resolves or reopens notes of reviewer threads, including a previous reviewer's. */
+  const setStateByReviewer = db.transaction((taskId: string, by: PlanAuthor, version: number, numbers: readonly number[], state: "resolved" | "draft") => {
+    requireReviewer(taskId, by.threadId, version);
+    return reviewerNotes(taskId, numbers).map((row) => setState(row.id, state));
   });
 
   /** Every note of a project in one statement, for export. */
@@ -224,20 +387,20 @@ export function createPlanNoteStore(db: Database, tasks: TasksStore, head: (task
     }
     return result;
   }
-  const capture = (taskId: string): CapturedPlanNote[] => list(taskId).map(capturedOf);
+  const capture = (taskId: string): CapturedPlanNote[] => capturedNotes(taskId).map(capturedOf);
 
   /** Replaces a task's notes with imported ones. */
   function restore(taskId: string, notes: readonly CapturedPlanNote[]): void {
     db.prepare("DELETE FROM task_plan_notes WHERE task_id = ?").run(taskId);
     const insert = db.prepare(
-      `INSERT INTO task_plan_notes (id, task_id, number, kind, exact, prefix, suffix, heading_path, made_on_version, body, state, sent_in_version, sent_at, reply, reply_by, replied_at, addressed_in_version, author_name, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO task_plan_notes (id, task_id, number, kind, exact, prefix, suffix, heading_path, made_on_version, body, state, sent_in_version, sent_at, reply, reply_by, replied_at, addressed_in_version, author_name, author_kind, author_thread, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     );
     for (const n of notes)
-      insert.run(n.id, taskId, n.number, n.kind, n.exact, n.prefix, n.suffix, n.headingPath, n.madeOnVersion, n.body, n.state, n.sentInVersion, n.sentAt, n.reply, n.replyBy, n.repliedAt, n.addressedInVersion, n.authorName, n.createdAt, n.updatedAt);
+      insert.run(n.id, taskId, n.number, n.kind, n.exact, n.prefix, n.suffix, n.headingPath, n.madeOnVersion, n.body, n.state, n.sentInVersion, n.sentAt, n.reply, n.replyBy, n.repliedAt, n.addressedInVersion, n.authorName, n.authorKind, n.authorThread, n.createdAt, n.updatedAt);
   }
 
-  return { list, counts, create, update, remove, setState, reply, sendFeedback, approve, capture, captureProject, restore };
+  return { list, counts, create, update, remove, setState, reply, blockingCount, sendFeedback, approve, createByReviewer, dismissByReviewer, setStateByReviewer, capture, captureProject, restore };
 }
 
 export type PlanNoteStore = ReturnType<typeof createPlanNoteStore>;

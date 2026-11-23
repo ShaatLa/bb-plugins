@@ -85,7 +85,7 @@ export function useListTasks(
 ) {
   const query = useTasksQuery<Task[]>(
     (rpc, publish) => activeOnly
-      ? listAllTasks(rpc, { ...(projectId ? { projectId } : {}), activeOnly: true, ...(filters.subtasks ? {} : { parentTaskId: null }) })
+      ? listAllTasks(rpc, { ...(projectId ? { projectId } : {}), activeOnly: true, omitBodies: true, ...(filters.subtasks ? {} : { parentTaskId: null }) })
       : loadTaskDataset(rpc, projectId, publish),
     activeOnly ? ["tasks:changed", "threads:changed"] : ["tasks:changed", "projects:changed"],
     [projectId, activeOnly, activeOnly && filters.subtasks],

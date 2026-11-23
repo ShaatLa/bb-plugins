@@ -1131,6 +1131,19 @@ describe("tasks app shell", () => {
     expect(slot.queryByText("No agents working right now")).toBeNull();
   });
 
+  it("reads the active-only list without task bodies", async () => {
+    const inputs: Array<{ activeOnly?: boolean; omitBodies?: boolean }> = [];
+    const rpc = seededRpc({
+      listLabels: () => ({ labels: [] }),
+      listTasks: (input: { activeOnly?: boolean; omitBodies?: boolean }) => { inputs.push(input); return { tasks: [], nextCursor: null }; },
+    });
+    const slot = renderSlot(app.navPanels[0]!, { subPath: "active" }, { rpc });
+    await slot.findByText("No agents working right now");
+    const active = inputs.filter((input) => input.activeOnly === true);
+    expect(active.length).toBeGreaterThan(0);
+    expect(active.every((input) => input.omitBodies === true)).toBe(true);
+  });
+
   it("shows the empty state and opens the New project dialog", async () => {
     const slot = renderSlot(
       app.navPanels[0]!,
@@ -1405,6 +1418,24 @@ describe("tasks app shell", () => {
       await new Promise((resolve) => setTimeout(resolve, 150));
     });
     expect(projectCalls).toBe(settled);
+  });
+
+  it("reloads an open project board on projects:changed but not on a settings-only signal", async () => {
+    let listTaskCalls = 0;
+    const slot = renderSlot(
+      app.navPanels[0]!,
+      { subPath: `${PROJECT_ID}?view=board` },
+      { rpc: seededRpc({ listLabels: () => ({ labels: [] }), listTasks: () => { listTaskCalls += 1; return { tasks: [] }; } }) },
+    );
+    await waitFor(() => expect(listTaskCalls).toBeGreaterThan(0));
+    const settle = () => act(async () => { await new Promise((resolve) => setTimeout(resolve, 400)); });
+    await settle();
+    const settled = listTaskCalls;
+    await slot.emitRealtime("settings:changed", { projectId: PROJECT_ID });
+    await settle();
+    expect(listTaskCalls).toBe(settled);
+    await slot.emitRealtime("projects:changed", { projectId: PROJECT_ID });
+    await waitFor(() => expect(listTaskCalls).toBeGreaterThan(settled));
   });
 });
 

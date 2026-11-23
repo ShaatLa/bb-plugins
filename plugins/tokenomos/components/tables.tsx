@@ -83,19 +83,20 @@ export function Compactions({ range, project }: { range: Range; project?: string
         <Card className={stale ? "p-0 opacity-60" : "p-0"}>
           <ul className="divide-y divide-border">
             {data.items.map((c) => {
-              const net = fmtSaving(c.saving, t);
+              const net = fmtSaving(c.saving, t), none = !hasSaving(c.saving);
               return (
                 <li key={c.id}>
                   <button type="button" onClick={() => toThread(c.threadId)}
                     className="grid w-full grid-cols-[minmax(0,1fr)_auto] items-baseline gap-x-4 gap-y-0.5 px-3 py-2 text-left text-sm hover:bg-state-hover focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring">
                     <span className="min-w-0 truncate">{c.title || c.threadId}</span>
-                    <span className={`${num} font-medium`}>{net ? `${net}${c.saving.usd! < 0 ? ` ${t("compactions.cost")}` : ""}` : t("tokShort", { value: fmtTokens(c.saving.tokens, t) })}</span>
+                    {/* No known size or no call after it yet: nothing to show, not "0 tok." or "$0.00". */}
+                    <span className={`${num} font-medium`}>{none ? "—" : net ? `${net}${c.saving.usd! < 0 ? ` ${t("compactions.cost")}` : ""}` : t("tokShort", { value: fmtTokens(c.saving.tokens, t) })}</span>
                     <span className="flex flex-wrap items-center gap-x-2 text-xs text-muted-foreground tabular-nums">
-                      {fmtWhen(c.at, t)} · {fmtTokens(c.beforeTokens, t)} → {fmtTokens(c.afterTokens, t)}
+                      {fmtWhen(c.at, t)} · {c.beforeTokens > 0 ? fmtTokens(c.beforeTokens, t) : "?"} → {c.afterTokens > 0 ? fmtTokens(c.afterTokens, t) : "?"}
                       <Badge variant="outline" className="px-1.5 py-0 font-normal">{t(`origin.${c.origin}`)}</Badge>
                     </span>
                     <span className="text-right text-xs text-muted-foreground">
-                      {c.saving.excludesOwnCost && t("saving.excludesOwnCost")}{c.saving.excludesOwnCost && c.saving.partial && " · "}{c.saving.partial && t("saving.partial")}
+                      {!none && <>{c.saving.excludesOwnCost && t("saving.excludesOwnCost")}{c.saving.excludesOwnCost && c.saving.partial && " · "}{c.saving.partial && t("saving.partial")}</>}
                     </span>
                   </button>
                 </li>
@@ -109,9 +110,12 @@ export function Compactions({ range, project }: { range: Range; project?: string
 }
 
 /** Overall saving for the period: sum of known estimates, with the count of compactions that have no estimate. */
-function CompactionTotal({ items }: { items: { saving: { usd: number | null; partial: boolean; excludesOwnCost: boolean } }[] }) {
+const hasSaving = (s: { usd: number | null; tokens: number }) => s.tokens !== 0 || !!s.usd;
+
+function CompactionTotal({ items }: { items: { saving: { usd: number | null; tokens: number; partial: boolean; excludesOwnCost: boolean } }[] }) {
   const t = useT();
-  const known = items.filter((c) => c.saving.usd !== null);
+  // A row shown as "—" counts as without data here too, not as a $0 saving.
+  const known = items.filter((c) => c.saving.usd !== null && hasSaving(c.saving));
   const usd = known.reduce((sum, c) => sum + (c.saving.usd ?? 0), 0);
   const unknown = items.length - known.length;
   const approx = known.some((c) => c.saving.partial || c.saving.excludesOwnCost);

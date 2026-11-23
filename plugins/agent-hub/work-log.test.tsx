@@ -17,6 +17,17 @@ it('groups consecutive work through nested turns and omits the final answer', ()
   const groups = groupRows([work('a'), { kind: 'turn', children: [work('b'), conversation('progress', 10), work('c'), conversation('answer', 20)] } as Row], 20);
   expect(groups.map(g => Array.isArray(g) ? g.map(r => r.id) : g.id)).toEqual([['a', 'b'], 'progress', ['c']]);
 });
+it('hides the messages written in a row before the answer when their text is in the answer, and no other message', () => {
+  const ids = (rows: Row[], answer: string) => groupRows(rows, 30, answer).map(g => Array.isArray(g) ? g.map(r => r.id) : g.id);
+  const system = (id: string, operationKind = 'reasoning') => ({ id, kind: 'system', operationKind } as unknown as Row);
+  expect(ids([work('a'), conversation('part one', 10), conversation('part two', 20), conversation('part three', 30)], 'part one\n\npart two\n\npart three')).toEqual([['a']]);
+  // A work row, a reasoning system row or another system row between two messages ends the run, so the earlier message stays in the log.
+  for (const between of [work('b'), system('b'), system('b', 'compaction')]) expect(ids([conversation('part one', 10), between, conversation('part two', 20), conversation('part three', 30)], 'part one\n\npart two\n\npart three')).toContain('part one');
+  // A message whose text is not in the answer (for example one cut by the length cap) stays in the log.
+  expect(ids([conversation('part one', 10), conversation('part two', 30)], 'part two')).toEqual(['part one']);
+  // Without the answer text only the answer row is hidden, as before.
+  expect(groupRows([conversation('part one', 10), conversation('part two', 30)], 30).map(g => (g as { id: string }).id)).toEqual(['part one']);
+});
 it('summarizes bb action categories and counts failures without treating interruption as an error', () => {
   const groups = groupRows([work('a'), work('b', 'command', { status: 'error' }), work('c', 'file-read', { path: 'a' }), work('d', 'file-change', { change: { path: 'b' } }), work('e', 'web-search', { queries: ['a', 'b'], status: 'interrupted' })]);
   expect(summarize(groups[0] as any)).toEqual({ text: 'Ran 2 commands, explored 1 file, edited 1 file, researched 2 search queries', errors: 1 });

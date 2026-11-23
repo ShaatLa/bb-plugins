@@ -132,4 +132,39 @@ BEGIN
 END;`,
   `ALTER TABLE items ADD COLUMN failure_reason TEXT;
 ALTER TABLE items ADD COLUMN interrupted_at INTEGER;`,
+  // A steer from another thread or a plugin seen mid-turn: candidate holds what the agent had written for the owner by then, steer_tools the tool results since.
+  `ALTER TABLE items ADD COLUMN steer_tools INTEGER NOT NULL DEFAULT 0;`,
+  // Unused since the echo pairing was dropped; bb checks a ran migration's text, so this statement must stay byte for byte.
+  `ALTER TABLE turn_updates ADD COLUMN accepted INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE turn_updates ADD COLUMN echoes INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE turn_updates ADD COLUMN echoing INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE items ADD COLUMN steer_n INTEGER;
+ALTER TABLE items ADD COLUMN snap TEXT;
+ALTER TABLE items ADD COLUMN snap_seq INTEGER;`,
+  // turn_updates.tail: the last top-level item of the turn was an assistant message, so the next one continues the reply as one run.
+  `ALTER TABLE turn_updates ADD COLUMN tail INTEGER NOT NULL DEFAULT 0;`,
+  // declined_at: Won't reply quiets an open question without closing it; old owner dismissals of agent questions close as withdrawn.
+  `ALTER TABLE items ADD COLUMN declined_at INTEGER;
+UPDATE items SET answer_source='agent',note='Closed without an answer: the owner chose Won’t reply.' WHERE kind='for_me' AND status='open' AND dismissed_at IS NOT NULL AND answer_source IS NULL AND chat_asked=0;`,
+  // Notices other plugins send through the notice RPC: the full report is kept here, the item carries a preview. A notice
+  // whose thread is archived or becomes a sub thread moves to the placeholder thread so it is never hidden.
+  `CREATE TABLE notices (
+  id                TEXT PRIMARY KEY,
+  source            TEXT NOT NULL,
+  tick_id           TEXT NOT NULL,
+  project_id        TEXT NOT NULL,
+  manager_thread_id TEXT,
+  body              TEXT NOT NULL,
+  bytes             INTEGER NOT NULL,
+  created_at        INTEGER NOT NULL,
+  UNIQUE(source, tick_id)
+);
+CREATE TRIGGER notices_rehome_archived AFTER INSERT ON archived_threads
+BEGIN
+  UPDATE items SET thread_id='thr_notice_inbox' WHERE thread_id=NEW.thread_id AND id IN (SELECT id FROM notices);
+END;
+CREATE TRIGGER notices_rehome_sub AFTER INSERT ON sub_threads
+BEGIN
+  UPDATE items SET thread_id='thr_notice_inbox' WHERE thread_id=NEW.thread_id AND id IN (SELECT id FROM notices);
+END;`,
 ];

@@ -1,6 +1,6 @@
 {
   "name": "bb-plugin-local-models",
-  "version": "0.2.1",
+  "version": "0.2.4",
   "type": "module",
   "engines": {
     "bb": ">=0.46.1",

@@ -1,6 +1,32 @@
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
+import { DEFAULT_TASK_STATUSES, taskStatusesSchema } from "../shared/statuses.js";
+import { ensurePlanningStatus, withPlanningStatus, workflowPolicySchema } from "../shared/workflow-policy.js";
+import type { PlanState } from "../shared/plan";
+import { hasPlanDebt } from "../shared/plan-debt";
 
 type PluginDatabase = ReturnType<BbPluginApi["storage"]["database"]>;
+type Log = (message: string) => void;
+
+/** 0.62.0: a project that already plans gets its planning status settled; one bad board is logged and skipped. */
+function settlePlanningStatuses(db: PluginDatabase, log: Log): void {
+  const rows = db.prepare<[], { id: string; prefix: string; statuses: string | null; workflow_policy: string | null }>("SELECT id, prefix, statuses, workflow_policy FROM projects WHERE planning IN ('optional', 'required')").all();
+  for (const row of rows) {
+    try {
+      const statuses = row.statuses == null ? null : taskStatusesSchema.parse(JSON.parse(row.statuses));
+      const policy = row.workflow_policy == null ? null : workflowPolicySchema.parse(JSON.parse(row.workflow_policy));
+      const ensured = ensurePlanningStatus({ statuses, workflowPolicy: policy });
+      if (ensured.planningStatus === null) {
+        log(`planning status not set for ${row.prefix}: ${ensured.reason}`);
+        continue;
+      }
+      const next = withPlanningStatus(policy, ensured.planningStatus);
+      const inserted = ensured.statuses.length !== (statuses ?? DEFAULT_TASK_STATUSES).length;
+      db.prepare("UPDATE projects SET statuses = CASE WHEN ? THEN ? ELSE statuses END, workflow_policy = ? WHERE id = ?").run(inserted ? 1 : 0, JSON.stringify(ensured.statuses), next ? JSON.stringify(next) : null, row.id);
+    } catch (error) {
+      log(`planning status not set for ${row.prefix}: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+}
 
 const MIGRATIONS = [
   `
@@ -511,9 +537,302 @@ const MIGRATIONS = [
      updated_at TEXT NOT NULL,
      UNIQUE (task_id, number)
    );`,
+  // 0.59.0: planning is a project setting (optional only where plans already exist); a plan names its approver (null = the owner, so existing plans stay reviewable by the owner), and every
+  // review attempt is kept. Notes remember whether the owner or a reviewer thread wrote them.
+  `ALTER TABLE task_plans ADD COLUMN reviewer_kind TEXT CHECK (reviewer_kind IS NULL OR reviewer_kind IN ('owner', 'thread'));
+   ALTER TABLE task_plans ADD COLUMN reviewer_thread TEXT;
+   ALTER TABLE task_plans ADD COLUMN review_version INTEGER;
+   ALTER TABLE task_plan_notes ADD COLUMN author_kind TEXT NOT NULL DEFAULT 'person' CHECK (author_kind IN ('person', 'thread'));
+   ALTER TABLE task_plan_notes ADD COLUMN author_thread TEXT;
+   CREATE TABLE task_plan_reviews (
+     id INTEGER PRIMARY KEY AUTOINCREMENT,
+     task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+     version INTEGER NOT NULL CHECK (version >= 1),
+     reviewer_kind TEXT NOT NULL CHECK (reviewer_kind IN ('owner', 'thread')),
+     reviewer_thread TEXT,
+     submitted_by_thread TEXT,
+     submitted_at TEXT NOT NULL,
+     outcome TEXT NOT NULL CHECK (outcome IN ('pending', 'changes_requested', 'approved', 'superseded', 'reassigned')),
+     decided_at TEXT,
+     decided_by TEXT
+   );
+   CREATE INDEX idx_task_plan_reviews_task ON task_plan_reviews(task_id, id);
+   ALTER TABLE projects ADD COLUMN planning TEXT CHECK (planning IN ('off', 'optional', 'required'));
+   ALTER TABLE projects ADD COLUMN plan_flags_initialized INTEGER NOT NULL DEFAULT 0 CHECK (plan_flags_initialized IN (0, 1));
+   ALTER TABLE projects ADD COLUMN planning_changed_at TEXT;
+   ALTER TABLE projects ADD COLUMN planning_previous TEXT CHECK (planning_previous IS NULL OR planning_previous IN ('off', 'optional', 'required'));
+   UPDATE projects SET planning = 'optional' WHERE id IN (SELECT t.project_id FROM tasks t JOIN task_plans p ON p.task_id = t.id);`,
+  // 0.60.0: threads of closed cards. A link records whether Work Board spawned its session and who wrote it; a closure
+  // records each open -> closed change with a snapshot of the card's links, the archive action and the notice state of each.
+  `ALTER TABLE task_threads ADD COLUMN created_for_task INTEGER NOT NULL DEFAULT 0 CHECK (created_for_task IN (0, 1));
+   ALTER TABLE task_threads ADD COLUMN link_origin TEXT CHECK (link_origin IS NULL OR link_origin IN
+     ('delegate_spawn', 'delegate_existing', 'scheduled_spawn', 'scheduled_existing', 'discovery', 'parent', 'manual'));
+   CREATE TABLE task_closures (
+     id TEXT PRIMARY KEY,
+     task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+     closed_at TEXT NOT NULL,
+     closed_by_thread TEXT,
+     reopened_at TEXT
+   );
+   CREATE INDEX idx_task_closures_task ON task_closures(task_id);
+   CREATE TABLE closure_threads (
+     closure_id TEXT NOT NULL REFERENCES task_closures(id) ON DELETE CASCADE,
+     thread_id TEXT NOT NULL,
+     link_id TEXT,
+     live_status TEXT NOT NULL,
+     link_origin TEXT,
+     link_created INTEGER NOT NULL DEFAULT 0,
+     action TEXT NOT NULL CHECK (action IN ('candidate', 'on_idle', 'evaluating', 'archiving', 'archived', 'kept')),
+     reason TEXT,
+     attempt_id TEXT,
+     seen_active INTEGER NOT NULL DEFAULT 0 CHECK (seen_active IN (0, 1)),
+     self_notice TEXT NOT NULL DEFAULT 'none' CHECK (self_notice IN ('none', 'sending', 'sent', 'failed', 'unknown')),
+     parent_notice TEXT NOT NULL DEFAULT 'none' CHECK (parent_notice IN ('none', 'sending', 'sent', 'failed', 'unknown')),
+     self_attempts INTEGER NOT NULL DEFAULT 0,
+     parent_attempts INTEGER NOT NULL DEFAULT 0,
+     PRIMARY KEY (closure_id, thread_id)
+   );
+   CREATE INDEX idx_closure_threads_thread ON closure_threads(thread_id);
+   ALTER TABLE projects ADD COLUMN archive_threads_on_close TEXT NOT NULL DEFAULT 'on' CHECK (archive_threads_on_close IN ('on', 'off'));
+   ALTER TABLE projects ADD COLUMN archive_reviewer_on_approval TEXT NOT NULL DEFAULT 'on' CHECK (archive_reviewer_on_approval IN ('on', 'off'));
+   ALTER TABLE task_plan_reviews ADD COLUMN dedicated_reviewer INTEGER NOT NULL DEFAULT 0 CHECK (dedicated_reviewer IN (0, 1));
+   ALTER TABLE task_plan_reviews ADD COLUMN archive_state TEXT CHECK (archive_state IS NULL OR archive_state IN ('pending', 'archiving', 'archived', 'kept'));
+   ALTER TABLE task_plan_reviews ADD COLUMN archive_seen_active INTEGER NOT NULL DEFAULT 0;`,
+  // 0.61.0: the attention ledger for manager notices. Local state only (never exported): per-tracker revision counter, the
+  // off/shadow/live selector with its transition, handback and ack records, occurrences, delivery attempts and observations.
+  `CREATE TABLE IF NOT EXISTS attention_rev (tracker_id TEXT PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE, rev INTEGER NOT NULL DEFAULT 0);
+   CREATE TABLE IF NOT EXISTS attention_modes (
+     tracker_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+     kind TEXT NOT NULL,
+     bound_tracker_id TEXT,
+     bound_bb_project_id TEXT,
+     effective_mode TEXT NOT NULL DEFAULT 'off' CHECK (effective_mode IN ('off', 'shadow', 'live')),
+     effective_generation INTEGER NOT NULL DEFAULT 0,
+     requested_mode TEXT CHECK (requested_mode IS NULL OR requested_mode IN ('shadow', 'live')),
+     requested_generation INTEGER,
+     transition_token TEXT,
+     transition_direction TEXT CHECK (transition_direction IS NULL OR transition_direction IN ('to_live', 'to_shadow')),
+     transition_state TEXT CHECK (transition_state IS NULL OR transition_state IN ('preparing', 'ready')),
+     ready_at TEXT,
+     ready_rev INTEGER,
+     parity_reviewed INTEGER NOT NULL DEFAULT 0 CHECK (parity_reviewed IN (0, 1)),
+     shadow_started_at TEXT,
+     changed_at TEXT,
+     previous_mode TEXT,
+     PRIMARY KEY (tracker_id, kind)
+   );
+   CREATE TABLE IF NOT EXISTS attention_handback (
+     tracker_id TEXT NOT NULL, kind TEXT NOT NULL, generation INTEGER NOT NULL, occurrence_id TEXT NOT NULL,
+     -- The key the card had when the handback became ready: a published handback never changes under its token.
+     task_key TEXT NOT NULL,
+     PRIMARY KEY (tracker_id, kind, generation, occurrence_id)
+   );
+   CREATE TABLE IF NOT EXISTS attention_acks (
+     tracker_id TEXT NOT NULL, kind TEXT NOT NULL, token TEXT NOT NULL, generation INTEGER NOT NULL, direction TEXT NOT NULL,
+     fence_id TEXT NOT NULL, ids_hash TEXT NOT NULL, result_json TEXT NOT NULL,
+     PRIMARY KEY (tracker_id, kind, token)
+   );
+   CREATE TABLE IF NOT EXISTS manager_attention (
+     id TEXT PRIMARY KEY,
+     tracker_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+     task_id TEXT NOT NULL,
+     task_key TEXT NOT NULL,
+     kind TEXT NOT NULL,
+     signal TEXT NOT NULL,
+     first_seen_at TEXT NOT NULL,
+     eligible_at TEXT NOT NULL,
+     cleared_at TEXT,
+     retired_reason TEXT,
+     sweep_baselined_generation INTEGER,
+     created_rev INTEGER NOT NULL,
+     rev INTEGER NOT NULL
+   );
+   CREATE INDEX IF NOT EXISTS idx_manager_attention_rev ON manager_attention(tracker_id, kind, rev);
+   CREATE INDEX IF NOT EXISTS idx_manager_attention_task ON manager_attention(task_id, kind, signal, cleared_at);
+   CREATE TABLE IF NOT EXISTS attention_attempts (
+     attempt_id TEXT PRIMARY KEY,
+     tracker_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+     kind TEXT NOT NULL,
+     generation INTEGER NOT NULL,
+     batch_id TEXT NOT NULL UNIQUE,
+     recipient_thread_id TEXT NOT NULL,
+     recipient_source TEXT NOT NULL CHECK (recipient_source IN ('manager', 'sweep_fallback', 'parent')),
+     started_at TEXT NOT NULL,
+     transport_started_at TEXT,
+     outcome TEXT NOT NULL CHECK (outcome IN ('claimed', 'sending', 'appended', 'queued', 'inline', 'failed', 'unknown')),
+     queued_message_id TEXT,
+     inline_event_ref TEXT,
+     accepted_at TEXT,
+     disposition TEXT CHECK (disposition IS NULL OR disposition IN ('waived_loss', 'retry')),
+     disposition_at TEXT,
+     error TEXT,
+     -- Where the history search for this attempt's marker got to, so passes continue instead of restarting.
+     recovery_cursor TEXT,
+     rev INTEGER NOT NULL
+   );
+   CREATE INDEX IF NOT EXISTS idx_attention_attempts_rev ON attention_attempts(tracker_id, kind, rev);
+   CREATE TABLE IF NOT EXISTS attention_attempt_items (
+     attempt_id TEXT NOT NULL REFERENCES attention_attempts(attempt_id) ON DELETE CASCADE,
+     occurrence_id TEXT NOT NULL,
+     PRIMARY KEY (attempt_id, occurrence_id)
+   );
+   CREATE INDEX IF NOT EXISTS idx_attention_attempt_items_occurrence ON attention_attempt_items(occurrence_id);
+   CREATE TABLE IF NOT EXISTS attention_observations (
+     id INTEGER PRIMARY KEY AUTOINCREMENT,
+     tracker_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+     kind TEXT NOT NULL, at TEXT NOT NULL, task_id TEXT NOT NULL, signal TEXT NOT NULL,
+     validity TEXT NOT NULL CHECK (validity IN ('valid', 'unknown')), rev INTEGER NOT NULL
+   );
+   CREATE INDEX IF NOT EXISTS idx_attention_observations_rev ON attention_observations(tracker_id, kind, rev);
+   CREATE TABLE IF NOT EXISTS attention_unknown (tracker_id TEXT NOT NULL, kind TEXT NOT NULL, task_id TEXT NOT NULL, signal TEXT NOT NULL, PRIMARY KEY (tracker_id, kind, task_id, signal));
+   CREATE TABLE IF NOT EXISTS attention_manager (
+     tracker_id TEXT PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
+     manager TEXT, changed_at TEXT, previous TEXT
+   );`,
+  // 0.62.0: a project that already plans gets a Planning status (see settlePlanningStatuses). The log is bound per run.
+  (db: PluginDatabase, log: Log) => settlePlanningStatuses(db, log),
+  // 0.64.0: the repository-check runner (checks/). Local state only (never exported), keyed by tracker. Every staged report and
+  // committed snapshot records the bb project it belongs to, so a relink never applies state recorded for another project; history rows are keyed by it too.
+  `CREATE TABLE IF NOT EXISTS checks_config (
+     tracker_id TEXT PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
+     enabled INTEGER NOT NULL DEFAULT 0 CHECK (enabled IN (0, 1)),
+     enabled_changed_at TEXT,
+     enabled_previous INTEGER,
+     branch TEXT, script TEXT, args TEXT, interval_minutes INTEGER, timeout_seconds INTEGER, snapshots INTEGER
+   );
+   CREATE TABLE IF NOT EXISTS checks_state (
+     tracker_id TEXT PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
+     value TEXT NOT NULL
+   );
+   CREATE TABLE IF NOT EXISTS checks_delivery (
+     tracker_id TEXT PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
+     committed BLOB,
+     committed_project TEXT,
+     report_id TEXT,
+     pending_project TEXT,
+     pending_exit INTEGER,
+     pending_tick TEXT,
+     pending_body TEXT,
+     pending_snapshot BLOB,
+     pending_at TEXT
+   );
+   CREATE TABLE IF NOT EXISTS checks_attempts (
+     attempt_id TEXT PRIMARY KEY,
+     tracker_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+     report_id TEXT NOT NULL,
+     tick_id TEXT NOT NULL,
+     bb_project_id TEXT NOT NULL,
+     manager_thread_id TEXT NOT NULL,
+     marker TEXT NOT NULL UNIQUE,
+     started_at TEXT NOT NULL,
+     transport_started_at TEXT,
+     pending_since TEXT,
+     outcome TEXT NOT NULL CHECK (outcome IN ('sending', 'appended', 'queued', 'inline', 'failed', 'unknown', 'superseded')),
+     queued_message_id TEXT,
+     inline_event_ref TEXT,
+     accepted_at TEXT,
+     error TEXT,
+     recovery_cursor TEXT
+   );
+   CREATE INDEX IF NOT EXISTS idx_checks_attempts_report ON checks_attempts(tracker_id, report_id, started_at);
+   CREATE TABLE IF NOT EXISTS checks_ticks (
+     tick TEXT PRIMARY KEY, tracker_id TEXT NOT NULL, project TEXT NOT NULL, at INTEGER NOT NULL,
+     executed INTEGER NOT NULL DEFAULT 0, delivered INTEGER NOT NULL DEFAULT 0, repeated INTEGER NOT NULL DEFAULT 0,
+     suppressed INTEGER NOT NULL DEFAULT 0, refresh_failed INTEGER NOT NULL DEFAULT 0, script_failed INTEGER NOT NULL DEFAULT 0,
+     delivery_failed INTEGER NOT NULL DEFAULT 0, delivery_unknown INTEGER NOT NULL DEFAULT 0
+   );
+   CREATE INDEX IF NOT EXISTS idx_checks_ticks_tracker_at ON checks_ticks(tracker_id, project, at);
+   CREATE TABLE IF NOT EXISTS checks_items (
+     tracker_id TEXT NOT NULL, project TEXT NOT NULL, fingerprint TEXT NOT NULL, kind TEXT NOT NULL, first_at INTEGER NOT NULL, last_at INTEGER NOT NULL,
+     PRIMARY KEY (tracker_id, project, fingerprint)
+   );
+   CREATE INDEX IF NOT EXISTS idx_checks_items_tracker_first ON checks_items(tracker_id, project, first_at);`,
+  // 0.70.0: plan debt. An episode is one stretch of a card working without an approved plan; its events and notices form the reminder outbox.
+  // The backfill opens an episode for each card already in debt, dated at install: history cannot prove when it entered the zone.
+  (db: PluginDatabase) => {
+    db.exec(`CREATE TABLE plan_debt_episodes (
+       id INTEGER PRIMARY KEY AUTOINCREMENT,
+       task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+       since TEXT NOT NULL,
+       ended_at TEXT
+     );
+     CREATE UNIQUE INDEX idx_plan_debt_open ON plan_debt_episodes(task_id) WHERE ended_at IS NULL;
+     CREATE TABLE plan_debt_events (
+       episode_id INTEGER NOT NULL REFERENCES plan_debt_episodes(id) ON DELETE CASCADE,
+       trigger TEXT NOT NULL,
+       created_at TEXT NOT NULL,
+       expanded INTEGER NOT NULL DEFAULT 0,
+       PRIMARY KEY (episode_id, trigger)
+     );
+     CREATE TABLE plan_debt_notices (
+       episode_id INTEGER NOT NULL REFERENCES plan_debt_episodes(id) ON DELETE CASCADE,
+       trigger TEXT NOT NULL,
+       destination TEXT NOT NULL,
+       marker TEXT NOT NULL UNIQUE,
+       state TEXT NOT NULL CHECK (state IN ('pending', 'sending', 'sent', 'failed', 'unknown')),
+       attempts INTEGER NOT NULL DEFAULT 0,
+       last_error TEXT,
+       updated_at TEXT NOT NULL,
+       PRIMARY KEY (episode_id, trigger, destination)
+     );`);
+    const now = new Date().toISOString();
+    const open = db.prepare("INSERT INTO plan_debt_episodes (task_id, since) VALUES (?, ?)");
+    const cards = db.prepare<[], { id: string; type: string; status: string; archived_at: string | null; planning: string | null; statuses: string | null; workflow_policy: string | null; plan_state: PlanState | null }>(
+      `SELECT t.id, t.type, t.status, t.archived_at, p.planning, p.statuses, p.workflow_policy, pl.state AS plan_state FROM tasks t JOIN projects p ON p.id = t.project_id
+       LEFT JOIN task_plans pl ON pl.task_id = t.id WHERE p.planning = 'required'`,
+    ).all();
+    for (const card of cards)
+      if (hasPlanDebt({ planning: card.planning, workflowPolicy: card.workflow_policy ? JSON.parse(card.workflow_policy) : null, statuses: card.statuses ? JSON.parse(card.statuses) : null }, { type: card.type, status: card.status, archivedAt: card.archived_at }, card.plan_state)) open.run(card.id, now);
+  },
+  // 0.70.0: the marker search of an unresolved plan-debt notice resumes from its cursor on the next drain.
+  `ALTER TABLE plan_debt_notices ADD COLUMN cursor TEXT;`,
+  // 0.70.0: the recipients of an event are fixed when it is first expanded; `candidates` holds the executor threads whose state is still unread.
+  `ALTER TABLE plan_debt_events ADD COLUMN candidates TEXT;`,
+  // 0.71.0: the runner-ownership row of a bb project (checks/transfer.ts): who runs the repository checks, and the handoff ids that tie a transfer with Sweep together.
+  `CREATE TABLE IF NOT EXISTS checks_runner_owner (
+     bb_project_id TEXT PRIMARY KEY,
+     owner TEXT NOT NULL CHECK (owner IN ('sweep', 'work-board')),
+     tracker_id TEXT,
+     sent_id TEXT,
+     sent_confirmed INTEGER NOT NULL DEFAULT 0 CHECK (sent_confirmed IN (0, 1)),
+     received_id TEXT,
+     updated_at TEXT NOT NULL
+   );`,
+  // Repository checks: a notice is a second delivery route for the staged report, recorded like a manager attempt (checks/notice.ts).
+  // `tick_id` is the original staged tick and the idempotency key at the receiver; `ticks.notices` counts reports delivered as a notice.
+  (db: PluginDatabase) => {
+    db.exec(`CREATE TABLE IF NOT EXISTS checks_notice_attempts (
+     attempt_id TEXT PRIMARY KEY,
+     tracker_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+     report_id TEXT NOT NULL,
+     tick_id TEXT NOT NULL,
+     bb_project_id TEXT NOT NULL,
+     manager_thread_id TEXT,
+     started_at TEXT NOT NULL,
+     outcome TEXT NOT NULL CHECK (outcome IN ('sending', 'accepted', 'refused', 'unavailable', 'unknown', 'superseded')),
+     notice_id TEXT,
+     accepted_at TEXT,
+     error TEXT,
+     passes INTEGER NOT NULL DEFAULT 0,
+     first_error_at TEXT
+   );
+   CREATE INDEX IF NOT EXISTS idx_checks_notice_attempts_report ON checks_notice_attempts(tracker_id, report_id, started_at);
+   `);
+    // Guarded so a re-run of the migrations (a partly reset version table) stays harmless.
+    if (!db.prepare<[], { name: string }>("PRAGMA table_info(checks_ticks)").all().some((column) => column.name === "notices")) db.exec("ALTER TABLE checks_ticks ADD COLUMN notices INTEGER NOT NULL DEFAULT 0");
+  },
+  // Reverse PR-link lookups (snapshot writes, orphan cleanup) start from the identity; the primary key starts with task_id.
+  `CREATE INDEX IF NOT EXISTS idx_task_pr_links_identity ON task_pr_links(identity, task_id);`,
+  // 0.74.0: the latest return from live to shadow (a `to_shadow` acknowledgement) whose stale-status lines the checks runner has resent
+  // (checks/service.ts). Local only, never exported. Seeded with every existing return, so the upgrade alone resends nothing. Acknowledgements
+  // that no current mode row has reached go first: a deleted tracker (restored or not) starts its generations over and must not inherit them.
+  `CREATE TABLE IF NOT EXISTS checks_stale_rollback (tracker_id TEXT PRIMARY KEY, consumed_generation INTEGER NOT NULL);
+   DELETE FROM attention_acks WHERE NOT EXISTS (SELECT 1 FROM attention_modes m WHERE m.tracker_id=attention_acks.tracker_id AND m.kind=attention_acks.kind AND m.effective_generation >= attention_acks.generation);
+   INSERT OR IGNORE INTO checks_stale_rollback (tracker_id, consumed_generation)
+   SELECT tracker_id, MAX(generation) FROM attention_acks WHERE kind='stale-status' AND direction='to_shadow' GROUP BY tracker_id;`,
 ] as const;
 
-export function initializeTasksSchema(db: PluginDatabase): void {
+export function initializeTasksSchema(db: PluginDatabase, log: Log = () => {}): void {
   db.pragma("foreign_keys = ON");
   // A large transaction must not retain its peak WAL allocation after checkpoints can reset it.
   db.pragma("journal_size_limit = 4194304");
@@ -538,7 +857,7 @@ export function initializeTasksSchema(db: PluginDatabase): void {
       const version = index + 1;
       if (hasVersion.get(version)) continue;
       if (typeof sql === "string") db.exec(sql);
-      else sql(db);
+      else sql(db, log);
       recordVersion.run(version, new Date().toISOString());
     }
   });

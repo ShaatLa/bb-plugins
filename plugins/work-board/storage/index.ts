@@ -120,7 +120,7 @@ function createStorageService(bb: BbPluginApi) {
       for (const sql of [
         "DELETE FROM task_activity_claims WHERE NOT EXISTS (SELECT 1 FROM task_threads t WHERE t.task_id=task_activity_claims.task_id AND t.thread_id=task_activity_claims.thread_id)",
         "DELETE FROM task_activity_queue WHERE NOT EXISTS (SELECT 1 FROM task_threads t WHERE t.task_id=task_activity_queue.task_id AND t.thread_id=task_activity_queue.thread_id)",
-        "DELETE FROM git_pr_snapshots WHERE NOT EXISTS (SELECT 1 FROM task_pr_links l JOIN tasks t ON t.id=l.task_id WHERE t.project_id=git_pr_snapshots.project_id AND l.identity=git_pr_snapshots.identity)",
+        "DELETE FROM git_pr_snapshots WHERE NOT EXISTS (SELECT 1 FROM task_pr_links l CROSS JOIN tasks t ON t.id=l.task_id WHERE t.project_id=git_pr_snapshots.project_id AND l.identity=git_pr_snapshots.identity)",
       ]) count += db.prepare(sql).run().changes;
       return count;
     })();

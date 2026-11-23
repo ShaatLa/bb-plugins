@@ -1,5 +1,6 @@
+import { createHash } from "node:crypto";
 import { UNANSWERED_QUESTION } from "../db/waiting-on-owner";
-import { getWorkflowPolicy } from "../shared/workflow-policy";
+import { getWorkflowPolicy, isClosedStatus } from "../shared/workflow-policy";
 import { observeStatusNotifications } from "../status-notifications";
 import { ordinaryTaskVisibilitySql } from "../scheduled/visibility";
 import { taskAdvisories } from "../advisories";
@@ -9,13 +10,18 @@ import { activityService } from "../activity/index.js";
 import { createDependencyStore } from "../dependencies/store";
 import { createPlanStore, PlanError } from "../plans/store";
 import { createPlanNoteStore } from "../plans/notes";
-import { deliverPlanReview } from "../plans/delivery";
-import { buildApprovalMessage, buildFeedbackMessage, orderNotes } from "../shared/plan-notes";
+import { deliverPlanReview, reviewerProblem, wakeReviewer } from "../plans/delivery";
+import { cardInWork, noticeLeftApproved } from "../plans/notice";
+import { actorLabel, buildApprovalMessage, buildFeedbackMessage, buildResultCopyMessage, buildStateChangeMessage, buildReviewRequestMessage, orderNotes, type PlanNoteKind } from "../shared/plan-notes";
 import { storageService } from "../storage";
 import { gitSyncService } from "../git-sync/service";
 import { projectConfigHandlers } from "../config";
+import { attentionUiHandlers } from "../attention/rpc";
+import { checksUiHandlers } from "../checks/rpc";
 import { createLockHandlers } from "../locks/service";
 import { statusLabel } from "../shared/statuses.js";
+import { createClosureService, type ClosureService } from "../closure/service";
+import { attachManualLink, canTakeWorkerLink } from "../delegate/attach";
 import type { BbPluginApi, PluginRpcHandlers } from "@get-bb/plugin-sdk";
 import {
   createTasksStore,
@@ -23,6 +29,7 @@ import {
   type Attachment as StoredAttachment,
   type Comment as StoredComment,
   type Task as StoredTask,
+  type TaskThreadLiveStatus,
   type TasksStore,
 } from "../db";
 import {
@@ -32,7 +39,8 @@ import {
 } from "../attachments";
 import { deliverCommentToLatestAgent, notifyThread } from "../steer";
 import { getTaskCostSpans } from "../costs";
-import { reconcileTaskThreads } from "../lifecycle/thread-links";
+import { reconcileTaskThreads, threadLiveStatus } from "../lifecycle/thread-links";
+import { truncateToWidth } from "../shared/text-measure";
 import { discoverRunningTaskThreads } from "../lifecycle/discovery";
 import { displayName } from "../shared/display-name";
 import { evaluateThreadHealth } from "../shared/thread-health";
@@ -42,7 +50,7 @@ import { BADGE_CRITERIA, DEFAULT_BADGE_CRITERIA } from "../shared/badge";
 import { errorMessage } from "../shared/errors";
 import { SecretDetectedError } from "../shared/secret-guard.js";
 import { createStructuredStore } from "../structured/store";
-import type { Evidence, PlanNote } from "../shared/contract";
+import type { Evidence, PlanAuthor, PlanNote } from "../shared/contract";
 import { isSideChatShapedThread } from "../shared/side-chat";
 import {
   tasksRpcContract,
@@ -81,6 +89,8 @@ const MAX_THREAD_SEARCH_RESULTS = 10;
 
 export interface TasksApiStore {
   readonly tasks: TasksStore;
+  /** What happens to the threads of a card after it closed (archive decisions, turn-bound intents, notices). */
+  readonly closures: ClosureService;
   transaction<T>(operation: () => T): T;
   taskLabelIds(taskIds: readonly string[]): Map<string, string[]>;
   projectTaskCount(projectId: string): number;
@@ -91,13 +101,19 @@ export interface TasksApiStore {
 
 export function createStore(bb: BbPluginApi): TasksApiStore {
   const database = bb.storage.database();
-  const tasks = createTasksStore(database);
+  const tasks = createTasksStore(database, (message) => bb.log.info(message));
   observeStatusNotifications(bb, tasks);
+  const closures = createClosureService(bb, tasks);
+  // A closure is evaluated once, after the commit that wrote it; the RPC and CLI paths ask the same evaluation.
+  tasks.onClosure((closureId) => void closures.onClosed(closureId));
+  // An epic the store moved automatically is published after the commit, whichever path wrote the child.
+  tasks.onEpicMoved(({ epicId, projectId }) => { publishTasksChanged(bb, epicId, projectId); publishCommentsChanged(bb, epicId); });
 
   return {
     tasks,
+    closures,
     transaction<T>(operation: () => T): T {
-      return database.transaction(operation)();
+      return tasks.closureScope(() => database.transaction(operation)());
     },
     taskLabelIds(taskIds: readonly string[]): Map<string, string[]> {
       const labelsByTask = new Map<string, string[]>();
@@ -233,6 +249,12 @@ export function publishProjectsChanged(
   bb.realtime.publish("projects:changed", payload);
 }
 
+/** Background status changes (a check tick, a manager re-read): only the settings views read these, so the board is not reloaded. */
+export function publishSettingsChanged(bb: BbPluginApi, projectId: string): void {
+  const payload: ProjectsChangedEvent = { projectId };
+  bb.realtime.publish("settings:changed", payload);
+}
+
 export function publishCommentsChanged(bb: BbPluginApi, taskId: string): void {
   const payload: CommentsChangedEvent = { taskId };
   bb.realtime.publish("comments:changed", payload);
@@ -345,6 +367,27 @@ function labelChangeBody(
     : `Labels changed to ${names.join(", ")} by ${authorName}`;
 }
 
+/** An agent may not close a card while a question to the owner is open; the owner and automatic moves are not checked. */
+function assertNoOpenOwnerQuestions(
+  bb: BbPluginApi,
+  store: TasksApiStore,
+  task: StoredTask,
+  targetStatus: string | undefined,
+  agentThreadId: string | null | undefined,
+): void {
+  const project = store.tasks.getProject(task.projectId);
+  if (!agentThreadId || !targetStatus || !project || !isClosedStatus(project, targetStatus) || isClosedStatus(project, task.status)) return;
+  const open = bb.storage.database().prepare<[string], { payload: string }>(
+    `SELECT q.payload FROM task_questions q WHERE q.task_id = ? AND ${UNANSWERED_QUESTION} ORDER BY q.id`,
+  ).all(task.id).map((row) => JSON.parse(row.payload) as { id: string; revision: number; kind?: string; prompt: string });
+  if (!open.length) return;
+  const list = open.map((q) => `${q.id} rev ${q.revision} (${q.kind ?? "decision"}) "${q.prompt.length > 60 ? `${q.prompt.slice(0, 60)}…` : q.prompt}"`).join("; ");
+  throw new Error(
+    `${task.key} cannot move to ${statusLabel(targetStatus, project.statuses)}: ${open.length} owner question${open.length > 1 ? "s are" : " is"} still open: ${list}. ` +
+    `Wait for the answers, or withdraw a question that is no longer needed (${open.map((q) => `\`bb work-board question delete ${task.key} --question ${q.id} --revision ${q.revision}\``).join("; ")}), then move the card.`,
+  );
+}
+
 function writeSystemComments(
   store: TasksApiStore,
   taskId: string,
@@ -391,51 +434,96 @@ interface AgentThreadInfo {
   providerId: string;
 }
 
+function sdkErrorCode(error: unknown): string | undefined {
+  return typeof error === "object" && error !== null && "code" in error && typeof error.code === "string" ? error.code : undefined;
+}
+
+const THREAD_LIST_CHUNK = 200; // SDK `threads.list` limit
+const THREAD_GET_CONCURRENCY = 5;
+
+/** Distinct worker threads of agent comments; system comments may reuse a thread id but never show its metadata. */
+function agentThreadIds(comments: readonly StoredComment[]): Set<string> {
+  const ids = new Set<string>();
+  for (const comment of comments) {
+    if (comment.kind === "agent" && comment.threadId !== null) ids.add(comment.threadId);
+  }
+  return ids;
+}
+
+type SdkThreadRow = Awaited<ReturnType<BbPluginApi["sdk"]["threads"]["get"]>>;
+
+function agentThreadInfo(
+  thread: Pick<SdkThreadRow, "title" | "titleFallback" | "providerId" | "originKind" | "originPluginId" | "visibility">,
+): AgentThreadInfo {
+  const title = isSideChatShapedThread(thread)
+    ? undefined
+    : [thread.title, thread.titleFallback].find(
+        (candidate) => candidate !== null && candidate.trim() !== "",
+      );
+  return { title: title ?? null, providerId: thread.providerId };
+}
+
+/**
+ * Titles and providers of worker threads, same reach as one `threads.get` per id: a batched `list` (active, then
+ * archived; `list` omits deleted and unknown ids), then `get` for every id still missing, a few at a time. A
+ * not-found `get` is an authoritative absence; any other failure leaves the result `complete: false` so it is retried.
+ */
 async function resolveAgentThreadInfo(
   bb: BbPluginApi,
-  comments: readonly StoredComment[],
-): Promise<Map<string, AgentThreadInfo>> {
-  const threadIds = new Set<string>();
-  for (const comment of comments) {
-    if (comment.kind === "agent" && comment.threadId !== null) {
-      threadIds.add(comment.threadId);
-    }
-  }
+  threadIds: Iterable<string>,
+): Promise<{ infos: Map<string, AgentThreadInfo>; complete: boolean }> {
   const infos = new Map<string, AgentThreadInfo>();
-  await Promise.all(
-    [...threadIds].map(async (threadId) => {
+  let pending = [...threadIds];
+  // A failed batched list makes the result incomplete even when the per-id reads recover every id: it is retried.
+  let complete = true;
+  for (const archived of [false, true]) {
+    if (pending.length === 0) break;
+    for (let offset = 0; offset < pending.length; offset += THREAD_LIST_CHUNK) {
+      const chunk = pending.slice(offset, offset + THREAD_LIST_CHUNK);
       try {
-        const thread = await bb.sdk.threads.get({ threadId });
-        const isSideChat = isSideChatShapedThread(thread);
-        const title = isSideChat
-          ? undefined
-          : [thread.title, thread.titleFallback].find(
-              (candidate) => candidate !== null && candidate.trim() !== "",
-            );
-        infos.set(threadId, {
-          title: title ?? null,
-          providerId: thread.providerId,
+        const rows = await bb.sdk.threads.list({
+          threadIds: chunk,
+          limit: chunk.length,
+          includeHidden: true,
+          ...(archived ? { archived: true } : {}),
         });
-      } catch {}
+        for (const row of rows) infos.set(row.id, agentThreadInfo(row));
+      } catch {
+        complete = false; // the ids stay pending and fall through to the per-id read below
+      }
+    }
+    pending = pending.filter((id) => !infos.has(id));
+  }
+  let next = 0;
+  await Promise.all(
+    Array.from({ length: Math.min(THREAD_GET_CONCURRENCY, pending.length) }, async () => {
+      while (next < pending.length) {
+        const threadId = pending[next++]!;
+        try {
+          infos.set(threadId, agentThreadInfo(await bb.sdk.threads.get({ threadId })));
+        } catch (error) {
+          if (sdkErrorCode(error) !== "thread_not_found") complete = false;
+        }
+      }
     }),
   );
-  return infos;
+  return { infos, complete };
 }
 
 async function resolveProviderBadges(
   bb: BbPluginApi,
   threadInfo: ReadonlyMap<string, AgentThreadInfo>,
-): Promise<Map<string, CommentProvider>> {
+): Promise<{ badges: Map<string, CommentProvider>; complete: boolean }> {
   const providerIds = new Set(
     [...threadInfo.values()].map((info) => info.providerId),
   );
   const badges = new Map<string, CommentProvider>();
-  if (providerIds.size === 0) return badges;
+  if (providerIds.size === 0) return { badges, complete: true };
   let providers: Awaited<ReturnType<typeof bb.sdk.providers.list>>;
   try {
     providers = await bb.sdk.providers.list();
   } catch {
-    return badges;
+    return { badges, complete: false };
   }
   for (const provider of providers) {
     if (providerIds.has(provider.id)) {
@@ -448,7 +536,56 @@ async function resolveProviderBadges(
       });
     }
   }
-  return badges;
+  return { badges, complete: true };
+}
+
+/** Title and provider badge per thread id; a provider missing from the catalog falls back to its id. */
+async function resolveCommentThreads(
+  bb: BbPluginApi,
+  threadIds: Iterable<string>,
+): Promise<{
+  byThread: Map<string, { threadTitle: string | null; provider: CommentProvider }>;
+  complete: boolean;
+}> {
+  const { infos, complete: threadsComplete } = await resolveAgentThreadInfo(bb, threadIds);
+  const { badges, complete: providersComplete } = await resolveProviderBadges(bb, infos);
+  const byThread = new Map<string, { threadTitle: string | null; provider: CommentProvider }>();
+  for (const [threadId, info] of infos) {
+    byThread.set(threadId, {
+      threadTitle: info.title,
+      provider: badges.get(info.providerId) ?? {
+        id: info.providerId,
+        name: info.providerId,
+        logoUrl: null,
+        icon: null,
+        strings: { iconTint: null },
+      },
+    });
+  }
+  return { byThread, complete: threadsComplete && providersComplete };
+}
+
+function commentsRevisionPart(bb: BbPluginApi, taskId: string): string {
+  const row = bb.storage
+    .database()
+    .prepare<[string], { n: number; last: string | null; notified: number | null }>(
+      "/* comments revision */ SELECT COUNT(*) AS n, MAX(id) AS last, SUM(notified_count) AS notified FROM comments WHERE task_id = ?",
+    )
+    .get(taskId)!;
+  return `${row.n}:${row.last ?? ""}:${row.notified ?? 0}`;
+}
+
+/** Count plus a digest of the whole ordered id set: a replaced non-maximum attachment still changes the token. */
+function attachmentsRevisionPart(bb: BbPluginApi, taskId: string): string {
+  const ids = bb.storage
+    .database()
+    .prepare<[string], { id: string }>(
+      "/* attachments revision */ SELECT id FROM attachments WHERE comment_id IN (SELECT id FROM comments WHERE task_id = ?) ORDER BY id",
+    )
+    .all(taskId);
+  const digest = createHash("sha1");
+  for (const { id } of ids) digest.update(id).update("\n");
+  return `${ids.length}:${digest.digest("hex")}`;
 }
 
 interface CreateCommentInput {
@@ -550,8 +687,8 @@ export function ownQuestionRefusal(kind: ReportKind, taskKey: string): string {
 /** How a calling thread stands on a card: its own session, or a helper whose parent already holds the card. */
 export async function cardRole(bb: BbPluginApi, store: TasksApiStore, taskId: string, threadId: string) {
   const thread = await bb.sdk.threads.get({ threadId });
-  // The parent fallback link only marks a card nobody works on; it makes no one a helper.
-  const sessions = store.tasks.listTaskThreads(taskId).filter((link) => link.presetName !== "Parent thread").map((link) => link.threadId);
+  // The parent fallback link only marks a card nobody works on; it makes no one a helper. One predicate, shared with the attach path.
+  const sessions = store.tasks.closures.holders(taskId);
   const parentThreadId = thread.parentThreadId ?? null;
   return { parentThreadId, attached: sessions.includes(threadId), helper: parentThreadId !== null && sessions.includes(parentThreadId) };
 }
@@ -729,6 +866,80 @@ async function listTaskPullRequests(
 }
 
 
+/** Runs a note write; refusals come back as results, and a success refreshes the task feeds. */
+function runNoteWrite<T extends { taskId: string }>(bb: BbPluginApi, store: TasksApiStore, write: () => T, options: { comments?: boolean } = {}) {
+  try {
+    const result = store.transaction(write);
+    const task = store.tasks.getTask(result.taskId)!;
+    publishTasksChanged(bb, task.id, task.projectId);
+    if (options.comments) publishCommentsChanged(bb, task.id);
+    return { ok: true as const, result };
+  } catch (error) {
+    if (error instanceof PlanError) return { ok: false as const, error: { code: error.code, message: error.message } };
+    if (error instanceof SecretDetectedError) return { ok: false as const, error: { code: "secret_detected" as const, message: error.message } };
+    throw error;
+  }
+}
+
+/**
+ * Plan decisions: feedback and approval by the owner (RPC) or by the assigned reviewer thread (CLI only; `version` is
+ * then the version the reviewer read), with the message to the session that waits on the review. Reviewer-only writes
+ * (notes, dismiss, resolve, reopen) live here too and are not RPCs, so no caller-supplied author can act as a reviewer.
+ */
+export function createPlanReviewFlow(bb: BbPluginApi, store: TasksApiStore) {
+  const plans = createPlanStore(bb.storage.database(), store.tasks);
+  const notes = createPlanNoteStore(bb.storage.database(), store.tasks, plans.head);
+  const noteResult = (taskId: string, write: () => PlanNote) => {
+    const outcome = runNoteWrite(bb, store, () => ({ taskId, note: write() }));
+    return outcome.ok ? { ok: true as const, note: outcome.result.note } : outcome;
+  };
+  return {
+    sendFeedback: async (taskId: string, by: PlanAuthor, reviewerVersion?: number) => {
+      const before = plans.head(taskId)?.state;
+      const outcome = runNoteWrite(bb, store, () => ({ taskId, ...notes.sendFeedback(taskId, by, reviewerVersion) }), { comments: true });
+      if (!outcome.ok) return outcome;
+      const { plan, version, body, taskKey, notes: sent, reviewer } = outcome.result;
+      // Eligibility for the executor notice is read at the commit, before the delivery below can take any time.
+      const inWork = before === "approved" && cardInWork(store.tasks, taskId);
+      // The feedback is saved above; delivery only wakes the author, and its failure is reported, not undone.
+      const text = buildFeedbackMessage({ taskKey, version, notes: orderNotes(sent, body), by: reviewerVersion === undefined ? "the owner" : actorLabel(by), reviewer });
+      const recipients = plans.resultRecipients(taskId, version);
+      const delivery = await deliverPlanReview(bb, {
+        taskId,
+        recipients,
+        text,
+        copyText: (actor) => buildResultCopyMessage({ taskKey, headline: text.split("\n")[0]!, actor }),
+      });
+      if (before === "approved")
+        await noticeLeftApproved(bb, store.tasks, { taskId, version, state: plan.state, reason: "changes were requested", changedBy: by.threadId, inWork, exclude: [...Object.values(recipients), ...delivery.deliveries.map((entry) => entry.threadId)] });
+      return { ok: true as const, plan, ...delivery, notes: sent.length };
+    },
+    approve: async (taskId: string, by: PlanAuthor, text?: string, reviewerVersion?: number) => {
+      const outcome = runNoteWrite(bb, store, () => ({ taskId, ...notes.approve(taskId, by, text, reviewerVersion) }), { comments: true });
+      if (!outcome.ok) return outcome;
+      const { plan, version, taskKey, note: given } = outcome.result;
+      const message = buildApprovalMessage({ taskKey, version, by: reviewerVersion === undefined ? "the owner" : actorLabel(by), note: given });
+      const delivery = await deliverPlanReview(bb, {
+        taskId,
+        recipients: plans.resultRecipients(taskId, version),
+        text: message,
+        copyText: (actor) => buildResultCopyMessage({ taskKey, headline: message.split("\n")[0]!, actor }),
+      });
+      return { ok: true as const, plan, ...delivery, notes: 0 };
+    },
+    addNote: (input: { taskId: string; by: PlanAuthor; version: number; kind?: PlanNoteKind; body: string; quote?: string; section?: string }) =>
+      noteResult(input.taskId, () => notes.createByReviewer(input)),
+    dismiss: (taskId: string, by: PlanAuthor, version: number, numbers: readonly number[]) => {
+      const outcome = runNoteWrite(bb, store, () => notes.dismissByReviewer(taskId, by, version, numbers));
+      return outcome.ok ? { ok: true as const, removed: outcome.result.removed } : outcome;
+    },
+    setState: (taskId: string, by: PlanAuthor, version: number, numbers: readonly number[], state: "resolved" | "draft") => {
+      const outcome = runNoteWrite(bb, store, () => ({ taskId, notes: notes.setStateByReviewer(taskId, by, version, numbers, state) }));
+      return outcome.ok ? { ok: true as const, notes: outcome.result.notes } : outcome;
+    },
+  };
+}
+
 export function registerHandlers(
   bb: BbPluginApi,
   store: TasksApiStore,
@@ -751,20 +962,9 @@ export function registerHandlers(
     }
   }
   const planNotes = createPlanNoteStore(bb.storage.database(), store.tasks, plans.head);
+  const review = createPlanReviewFlow(bb, store);
   /** Runs a note write; refusals come back as results, and a success refreshes the task feeds. */
-  function noteWrite<T extends { taskId: string }>(write: () => T, options: { comments?: boolean } = {}) {
-    try {
-      const result = store.transaction(write);
-      const task = store.tasks.getTask(result.taskId)!;
-      publishTasksChanged(bb, task.id, task.projectId);
-      if (options.comments) publishCommentsChanged(bb, task.id);
-      return { ok: true as const, result };
-    } catch (error) {
-      if (error instanceof PlanError) return { ok: false as const, error: { code: error.code, message: error.message } };
-      if (error instanceof SecretDetectedError) return { ok: false as const, error: { code: "secret_detected" as const, message: error.message } };
-      throw error;
-    }
-  }
+  const noteWrite = <T extends { taskId: string }>(write: () => T, options: { comments?: boolean } = {}) => runNoteWrite(bb, store, write, options);
   const noteResult = (write: () => PlanNote) => {
     const outcome = noteWrite(write);
     return outcome.ok ? { ok: true as const, note: outcome.result } : outcome;
@@ -806,7 +1006,7 @@ export function registerHandlers(
       const plan = plans.get(taskId, version);
       return { plan: plan && { ...plan, noteCounts: planNotes.counts(taskId) } };
     },
-    listTaskPlanVersions: ({ taskId }) => ({ ...plans.listVersions(taskId), noteCounts: planNotes.counts(taskId) }),
+    listTaskPlanVersions: ({ taskId }) => ({ ...plans.listVersions(taskId), noteCounts: planNotes.counts(taskId), paused: plans.paused(taskId) }),
     listPlanNotes: ({ taskId }) => ({ notes: planNotes.list(taskId) }),
     createPlanNote: (input) => noteResult(() => planNotes.create(input as Parameters<typeof planNotes.create>[0])),
     updatePlanNote: ({ noteId, body }) => noteResult(() => planNotes.update(noteId, body)),
@@ -816,30 +1016,64 @@ export function registerHandlers(
     },
     setPlanNoteState: ({ noteId, state }) => noteResult(() => planNotes.setState(noteId, state)),
     replyPlanNote: (input) => noteResult(() => planNotes.reply(input)),
-    sendPlanFeedback: async ({ taskId, author }) => {
-      const outcome = noteWrite(() => ({ taskId, ...planNotes.sendFeedback(taskId, author) }), { comments: true });
-      if (!outcome.ok) return outcome;
-      const { plan, version, body, taskKey, notes } = outcome.result;
-      // The feedback is saved above; delivery only wakes the agent, and its failure is reported, not undone.
-      const text = buildFeedbackMessage({ taskKey, version, notes: orderNotes(notes, body) });
-      const delivery = await deliverPlanReview(bb, store.tasks, { taskId, authorThread: plans.latestAgentThread(taskId), text });
-      return { ok: true as const, plan, ...delivery, notes: notes.length };
-    },
-    approvePlan: async ({ taskId, author, note }) => {
-      const outcome = noteWrite(() => ({ taskId, ...planNotes.approve(taskId, author, note) }), { comments: true });
-      if (!outcome.ok) return outcome;
-      const { plan, version, taskKey, note: given } = outcome.result;
-      const text = buildApprovalMessage({ taskKey, version, note: given });
-      const delivery = await deliverPlanReview(bb, store.tasks, { taskId, authorThread: plans.latestAgentThread(taskId), text });
-      return { ok: true as const, plan, ...delivery, notes: 0 };
-    },
+    // The owner's decisions: an `author` passed here names the actor in the log but never acts as a reviewer.
+    sendPlanFeedback: ({ taskId, author }) => review.sendFeedback(taskId, author),
+    approvePlan: ({ taskId, author, note }) => review.approve(taskId, author, note),
+    listPlanReviews: ({ taskId }) => ({ reviews: plans.listReviews(taskId), paused: plans.paused(taskId) }),
     diffTaskPlan: ({ taskId, from, to }) => plans.diff(taskId, from, to),
-    saveTaskPlan: (input) => planWrite(() => plans.save(input)),
-    submitTaskPlan: ({ taskId, author }) => planWrite(() => plans.submit(taskId, author)),
-    setTaskPlanState: ({ taskId, state, author }) => {
+    saveTaskPlan: async (input) => {
+      const before = plans.head(input.taskId)?.state;
+      const result = planWrite(() => plans.save(input));
+      if (result.ok && before === "approved")
+        await noticeLeftApproved(bb, store.tasks, { taskId: input.taskId, version: result.plan.version, state: result.plan.state, reason: "a new version was saved", changedBy: input.author.threadId });
+      return result;
+    },
+    submitTaskPlan: async ({ taskId, author, reviewer, dedicatedReviewer }) => {
+      const task = store.tasks.getTask(taskId);
+      // Without a reviewer a revised plan goes back to the reviewer of the latest attempt.
+      let latest;
+      try {
+        latest = plans.listReviews(taskId).at(-1)?.reviewer;
+      } catch (error) {
+        if (error instanceof PlanError) return { ok: false as const, error: { code: error.code, message: error.message } };
+        throw error;
+      }
+      const chosen = reviewer ?? (latest ? (latest.kind === "owner" ? "owner" : latest.threadId) : undefined);
+      if (!chosen) return { ok: false as const, error: { code: "plan_invalid" as const, message: "This plan was never submitted with a reviewer: pass --reviewer owner (only when the user asked to approve the plan) or --reviewer <thread id>" } };
+      const thread = chosen === "owner" ? null : chosen;
+      const problem = thread ? await reviewerProblem(bb, thread, task?.key ?? taskId) : null;
+      const result = planWrite(() => plans.submit(taskId, author, thread, problem, reviewer === undefined ? (latest ?? null) : null, dedicatedReviewer === true));
+      if (!result.ok) return result;
+      if (!thread) return { ...result, delivered: null, deliveryHint: null };
+      const text = buildReviewRequestMessage({
+        taskKey: task!.key,
+        version: result.plan.version,
+        decidedVersion: plans.lastDecidedVersion(taskId, thread),
+        blockingNotes: planNotes.blockingCount(taskId),
+      });
+      const wake = await wakeReviewer(bb, { taskId, taskKey: task!.key, threadId: thread, text });
+      return { ...result, delivered: wake.delivered, deliveryHint: wake.hint };
+    },
+    setTaskPlanState: async ({ taskId, state, author }) => {
+      const before = plans.head(taskId)?.state;
       const result = planWrite(() => plans.setState(taskId, state, author));
-      // Drops the store's internal changed flag; a repeated state wrote no system comment.
-      return result.ok ? { ok: true as const, plan: result.plan, version: result.version } : result;
+      if (!result.ok) return result;
+      // A repeated state changed nothing and sends nothing. An approval or a request for changes reaches the waiting
+      // author like the dedicated owner commands do, and the outcome is returned.
+      const inWork = before === "approved" && cardInWork(store.tasks, taskId);
+      let deliveries: Awaited<ReturnType<typeof deliverPlanReview>>["deliveries"] = [];
+      if (result.changed && (state === "approved" || state === "changes_requested")) {
+        const task = store.tasks.getTask(taskId)!;
+        const { version } = result.plan;
+        const text = state === "approved"
+          ? buildApprovalMessage({ taskKey: task.key, version, by: "the owner" })
+          : buildStateChangeMessage({ taskKey: task.key, version, reviewer: result.plan.reviewer.kind === "thread" && result.plan.reviewer.threadId ? result.plan.reviewer.threadId : "owner" });
+        const recipients = plans.resultRecipients(taskId, version);
+        deliveries = (await deliverPlanReview(bb, { taskId, recipients, text, copyText: (actor) => buildResultCopyMessage({ taskKey: task.key, headline: text.split("\n")[0]!, actor }) })).deliveries;
+      }
+      if (before === "approved" && state !== "approved")
+        await noticeLeftApproved(bb, store.tasks, { taskId, version: result.plan.version, state, reason: "the owner changed its state", changedBy: author.threadId, inWork, exclude: deliveries.map((entry) => entry.threadId) });
+      return { ok: true as const, plan: result.plan, version: result.version, deliveries };
     },
     listTaskDependencies: ({ taskId }) => dependencies.list(taskId),
     addTaskRelation: (input) => changeRelation(input, true),
@@ -859,6 +1093,8 @@ export function registerHandlers(
     ...structured.handlers,
     ...gitSyncService(bb, store).handlers,
     ...projectConfigHandlers(bb, store),
+    ...attentionUiHandlers(bb, store),
+    ...checksUiHandlers(bb),
     ...createLockHandlers(bb, store),
     createFolder(input) {
       const folder = store.tasks.createFolder(input);
@@ -902,7 +1138,10 @@ export function registerHandlers(
     },
     updateProject(input) {
       const { projectId, ...changes } = input;
+      const before = store.tasks.getProject(projectId)?.planning ?? "off";
       const project = store.tasks.updateProject(projectId, changes);
+      // The platform cannot tell the app from another caller, so a change is only made visible: a log entry.
+      if ((project.planning ?? "off") !== before) bb.log.info(`planning for ${project.prefix}: ${before} → ${project.planning}`);
       publishProjectsChanged(bb, project.id);
       return { project };
     },
@@ -1014,11 +1253,38 @@ export function registerHandlers(
           validateTaskLabels(store, current.projectId, input.labelIds);
         }
 
+        // The SDK reads that attaching the caller needs come first; the transaction below re-checks the local conditions.
+        let attachment: { threadId: string; parentThreadId: string | null; title: string; liveStatus: TaskThreadLiveStatus } | undefined;
+        let attachWarning: string | undefined;
+        if (input.attachCaller) {
+          const caller = input.agentThreadId;
+          try {
+            if (!caller || input.progressNote == null) throw new Error("it needs the calling thread and a progress note");
+            // One read: its parent id is the one the write checks, so the two cannot disagree.
+            const thread = await bb.sdk.threads.get({ threadId: caller });
+            if (thread.parentThreadId) {
+              if (thread.archivedAt != null || thread.deletedAt != null || thread.status === "stopping")
+                throw new Error("Choose a thread that is not archived, deleted, or stopping");
+              attachment = { threadId: caller, parentThreadId: thread.parentThreadId, title: truncateToWidth(thread.title ?? thread.titleFallback ?? current.key, 120), liveStatus: threadLiveStatus(thread) };
+            }
+          } catch (error) {
+            attachWarning = `Could not attach ${caller ?? "the caller"} to the card: ${errorMessage(error)}; run bb work-board attach KEY`;
+          }
+        }
+        const closureBefore = store.tasks.closures.currentId(current.id);
         const result = store.transaction(() => {
           const beforeLabelIds = store.tasks
             .listTaskLabels(current.id)
             .map((link) => link.labelId);
+          // The card as it is now, after the SDK reads: its archive state and the old values the history lines compare.
+          const before = store.tasks.getTask(current.id);
+          if (!before) throw new Error(`Task not found: ${input.taskId}`);
+          // The caller's own session is attached first, so the closure snapshot below includes it.
+          assertNoOpenOwnerQuestions(bb, store, before, input.status, input.agentThreadId);
+          const attached = attachment && !before.archivedAt && canTakeWorkerLink(bb, current.id)
+            ? attachManualLink(store.tasks, current.id, attachment) : undefined;
           const updated = store.tasks.updateTask(current.id, {
+            closerThreadId: input.agentThreadId ?? null,
             title: input.title,
             description: input.description,
             notifyStatus: Boolean(input.agentThreadId),
@@ -1036,12 +1302,12 @@ export function registerHandlers(
           }
 
           const bodies: string[] = [];
-          if (updated.type !== current.type) {
+          if (updated.type !== before.type) {
             bodies.push(
               `Type changed to ${displayName(updated.type)} by ${input.authorName}`,
             );
           }
-          if (updated.epicId !== current.epicId) {
+          if (updated.epicId !== before.epicId) {
             const epic = updated.epicId
               ? store.tasks.getTask(updated.epicId)
               : null;
@@ -1051,17 +1317,17 @@ export function registerHandlers(
                 : `Removed from epic by ${input.authorName}`,
             );
           }
-          if (updated.status !== current.status) {
+          if (updated.status !== before.status) {
             bodies.push(
               `Status changed to ${statusLabel(updated.status, store.tasks.getProject(updated.projectId)?.statuses)} by ${input.authorName}`,
             );
           }
-          if (updated.priority !== current.priority) {
+          if (updated.priority !== before.priority) {
             bodies.push(
               `Priority changed to ${displayName(updated.priority)} by ${input.authorName}`,
             );
           }
-          if (updated.dueDate !== current.dueDate) {
+          if (updated.dueDate !== before.dueDate) {
             bodies.push(
               updated.dueDate === null
                 ? `Due date removed by ${input.authorName}`
@@ -1075,6 +1341,7 @@ export function registerHandlers(
           return {
             task: apiTask(store, updated),
             systemCommentsWritten: bodies.length,
+            attached,
           };
         });
 
@@ -1082,7 +1349,10 @@ export function registerHandlers(
         if (result.systemCommentsWritten > 0) {
           publishCommentsChanged(bb, result.task.id);
         }
-        return { ok: true, task: result.task };
+        if (result.attached) bb.realtime.publish("threads:changed", { taskId: result.task.id });
+        const closureAfter = store.tasks.closures.currentId(current.id);
+        const closedThreads = closureAfter && closureAfter !== closureBefore ? await store.closures.onClosed(closureAfter) : undefined;
+        return { ok: true, task: result.task, ...(closedThreads ? { closedThreads } : {}), ...(result.attached === undefined ? {} : { attached: result.attached }), ...(attachWarning ? { attachWarning } : {}) };
       } catch (error) {
         if (error instanceof SecretDetectedError) {
           return {
@@ -1136,6 +1406,7 @@ export function registerHandlers(
         activeOnly: input.activeOnly,
         staleStatus: input.staleStatus,
         waitingOnOwner: input.waitingOnOwner,
+        planDebt: input.planDebt,
         parentTaskId: input.parentTaskId,
         type: input.type,
         epicId: input.epicId,
@@ -1146,8 +1417,9 @@ export function registerHandlers(
         allowStaleCursor: input.allowStaleCursor,
       });
       const flags = store.tasks.staleStatusFlags(page.tasks.map((task) => task.id));
+      const tasks = apiTasks(store, page.tasks);
       return {
-        tasks: apiTasks(store, page.tasks),
+        tasks: input.omitBodies ? tasks.map((task) => ({ ...task, description: "", progressNote: null })) : tasks,
         staleStatusFlags: page.tasks.map((task) => ({ taskId: task.id, flags: flags.get(task.id) ?? [] })),
         nextCursor: page.nextCursor,
       };
@@ -1155,8 +1427,13 @@ export function registerHandlers(
     async boardMove(input) {
       const current = store.tasks.getTask(input.taskId);
       if (!current) throw new Error(`Task not found: ${input.taskId}`);
+      const closureBefore = store.tasks.closures.currentId(current.id);
       const result = store.transaction(() => {
+        const before = store.tasks.getTask(current.id);
+        if (!before) throw new Error(`Task not found: ${input.taskId}`);
+        assertNoOpenOwnerQuestions(bb, store, before, input.status, input.agentThreadId);
         const moved = store.tasks.updatePosition(current.id, {
+          closerThreadId: input.agentThreadId ?? null,
           status: input.status,
           notifyStatus: Boolean(input.agentThreadId),
           beforeTaskId: input.beforeTaskId,
@@ -1172,7 +1449,9 @@ export function registerHandlers(
       });
       publishTasksChanged(bb, result.task.id, result.task.projectId);
       if (result.statusChanged) publishCommentsChanged(bb, result.task.id);
-      return { ok: true, task: result.task };
+      const closureAfter = store.tasks.closures.currentId(current.id);
+      const closedThreads = closureAfter && closureAfter !== closureBefore ? await store.closures.onClosed(closureAfter) : undefined;
+      return { ok: true, task: result.task, ...(closedThreads ? { closedThreads } : {}) };
     },
     moveTaskToProject(input) {
       const current = store.tasks.getTask(input.taskId);
@@ -1245,32 +1524,38 @@ export function registerHandlers(
     },
     async listComments(input) {
       const comments = store.tasks.listComments(input.taskId);
+      // Taken in the same synchronous step as the rows, so the token is never newer than the data it came with.
+      const revision = input.withRevision ? { revision: commentsRevisionPart(bb, input.taskId) } : {};
       if (input.resolveMetadata === false) {
-        return { comments: comments.map((comment) => ({ ...comment, threadTitle: null, provider: null })) };
+        return { comments: comments.map((comment) => ({ ...comment, threadTitle: null, provider: null })), ...revision };
       }
-      const threadInfo = await resolveAgentThreadInfo(bb, comments);
-      const providerBadges = await resolveProviderBadges(bb, threadInfo);
+      const { byThread } = await resolveCommentThreads(bb, agentThreadIds(comments));
       return {
         comments: comments.map((comment) => {
-          const info =
+          const meta =
             comment.kind === "agent" && comment.threadId !== null
-              ? threadInfo.get(comment.threadId)
+              ? byThread.get(comment.threadId)
               : undefined;
-          return {
-            ...comment,
-            threadTitle: info?.title ?? null,
-            provider:
-              info === undefined
-                ? null
-                : (providerBadges.get(info.providerId) ?? {
-                    id: info.providerId,
-                    name: info.providerId,
-                    logoUrl: null,
-                    icon: null,
-                    strings: { iconTint: null },
-                  }),
-          };
+          return { ...comment, threadTitle: meta?.threadTitle ?? null, provider: meta?.provider ?? null };
         }),
+        ...revision,
+      };
+    },
+    commentsRevision(input) {
+      return { revision: `${commentsRevisionPart(bb, input.taskId)}|${attachmentsRevisionPart(bb, input.taskId)}` };
+    },
+    async listCommentThreads(input) {
+      const ids = bb.storage
+        .database()
+        .prepare<[string], { id: string }>(
+          "SELECT DISTINCT thread_id AS id FROM comments WHERE task_id = ? AND kind = 'agent' AND thread_id IS NOT NULL",
+        )
+        .all(input.taskId)
+        .map((row) => row.id);
+      const { byThread, complete } = await resolveCommentThreads(bb, ids);
+      return {
+        threads: [...byThread].map(([threadId, meta]) => ({ threadId, ...meta })),
+        complete,
       };
     },
     listAttachments(input) {
@@ -1284,6 +1569,9 @@ export function registerHandlers(
               );
       return {
         attachments: attachments.map(attachmentMetadata),
+        ...("commentsOfTaskId" in input && input.withRevision
+          ? { revision: attachmentsRevisionPart(bb, input.commentsOfTaskId) }
+          : {}),
       };
     },
     async deleteAttachment(input) {
@@ -1358,14 +1646,15 @@ export function registerHandlers(
         `SELECT task_id, COUNT(*) AS count FROM attachments WHERE task_id IN (${ids.map(() => "?").join(",")}) GROUP BY task_id`,
       ).all(...ids).map((row) => [row.task_id, row.count]));
       const threads = new Map<string, TaskThread[]>();
-      for (const thread of store.tasks.listTaskThreadsForTasks(ids)) {
+      const allLinks = store.tasks.listTaskThreadsForTasks(ids);
+      for (const thread of allLinks) {
         const entries = threads.get(thread.taskId) ?? [];
         entries.push(thread);
         threads.set(thread.taskId, entries);
       }
       const flags = store.tasks.staleStatusFlags(ids);
       const activity = store.tasks.listTaskActivity(ids);
-      const scopedActivity = await activityService(bb, store).metadata(ids, discoveryComplete);
+      const scopedActivity = await activityService(bb, store).metadata(ids, discoveryComplete, allLinks);
       const blockedBy = dependencies.blockers(ids);
       const advisories = taskAdvisories(bb, activity, blockedBy, scopedActivity, threads);
       const projects = store.tasks.listProjects();

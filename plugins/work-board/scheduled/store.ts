@@ -1,3 +1,4 @@
+import { snapshotLateLink } from "../delegate/attach";
 import { randomUUID } from "node:crypto";
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import type { z } from "zod";
@@ -6,6 +7,7 @@ import type { Task as StoredTask } from "../db";
 import { createDependencyStore } from "../dependencies/store";
 import { createScheduleInputSchema, updateScheduleInputSchema, scheduleSchema, scheduleRunSchema, scheduleSourceSchema, type Schedule, type ScheduleRun, type ScheduleSource, type Recurrence } from "../shared/scheduled";
 import { nextOccurrence } from "./recurrence";
+import { effectiveInProgressStatus, startsFromStatus } from "../shared/workflow-policy";
 
 export { ordinaryTaskVisibilitySql } from "./visibility";
 type Page = { projectId?:string; scheduleId?:string; search?:string; needsAttention?:boolean; limit?:number; cursor?:string };
@@ -38,7 +40,7 @@ export function createScheduledStore(bb:BbPluginApi,store:TasksApiStore) {
   if(input.enabled&&input.target.kind==="unassigned")throw new Error("Choose an execution target before enabling this schedule");
   return store.transaction(()=>{
    if(input.enabled&&input.rule.kind==="once"&&new Date(input.rule.at)<new Date(now.valueOf()-30*60_000))throw new Error("One-time date is more than 30 minutes in the past");
-   const task=store.tasks.createTask({projectId:input.projectId,title:input.title,description:input.description,priority:input.priority});
+   const task=store.tasks.createTask({projectId:input.projectId,title:input.title,description:input.description,priority:input.priority,status:store.tasks.scheduledStatus(input.projectId)});
    const id=randomUUID(),stamp=now.toISOString();
    const due=input.rule.kind==="once"?new Date(input.rule.at).toISOString():nextOccurrence(input.rule,now)?.toISOString()??null;
    db.prepare("INSERT INTO task_schedules(id,project_id,template_task_id,rule,target,enabled,next_due_at,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?)").run(id,input.projectId,task.id,JSON.stringify(input.rule),JSON.stringify(input.target),Number(input.enabled),input.enabled?due:null,stamp,stamp);
@@ -123,7 +125,7 @@ export function createScheduledStore(bb:BbPluginApi,store:TasksApiStore) {
   return store.transaction(()=>{
    const r=run(runId);if(r.taskId)return requireTask(r.taskId);
    const s=get(r.scheduleId),template=requireTask(s.templateTaskId);
-   const task=store.tasks.createTask({projectId:s.projectId,title:template.title,description:template.description,priority:template.priority,type:"task"});
+   const task=store.tasks.createTask({projectId:s.projectId,title:template.title,description:template.description,priority:template.priority,type:"task",status:store.tasks.scheduledStatus(s.projectId)});
    let description=template.description;
    for(const a of store.tasks.listAttachmentsForTask(template.id)) {
     const clone=store.tasks.createAttachment({taskId:task.id,fileName:a.fileName,mime:a.mime,sizeBytes:a.sizeBytes,blobPath:a.blobPath,isImage:a.isImage});
@@ -142,9 +144,14 @@ export function createScheduledStore(bb:BbPluginApi,store:TasksApiStore) {
    const r=run(runId);if(r.startedAt)return r;
    if(!r.taskId)throw new Error("Run task is missing");
    const task=requireTask(r.taskId);
-   if(task.status==="backlog"||task.status==="todo")store.tasks.updateTask(r.taskId,{status:"in_progress"});
+   // A card whose plan is not approved is tracked and dispatched as usual, but its status stays where it is.
+   const project=store.tasks.getProject(task.projectId)!,inProgress=effectiveInProgressStatus(project);
+   if(startsFromStatus(project,task.status)&&inProgress&&!store.tasks.planGate(task,inProgress))store.tasks.updateTask(r.taskId,{status:inProgress});
    db.prepare("UPDATE task_scheduled_sources SET started_at=? WHERE task_id=?").run(now.toISOString(),r.taskId);
-   store.tasks.upsertTaskThread({taskId:r.taskId,threadId:input.threadId,title:input.title,presetName:input.presetName,liveStatus:input.liveStatus??"working"});
+   // The run's stored execution target tells a fresh spawn from a reused session; only a spawn is Work Board's to archive.
+   const spawned=r.execution!==null&&r.execution.targetThreadId===undefined;
+   const link=store.tasks.upsertTaskThread({taskId:r.taskId,threadId:input.threadId,title:input.title,presetName:input.presetName,liveStatus:input.liveStatus??"working",linkOrigin:spawned?"scheduled_spawn":"scheduled_existing",createdForTask:spawned});
+   snapshotLateLink(store.tasks,r.taskId,link,spawned,spawned?"scheduled_spawn":"scheduled_existing");
    return updateRun(runId,{state:task.status==="done"?"completed":task.status==="canceled"?"canceled":"running",threadId:input.threadId,requestId:input.requestId,startedAt:now.toISOString(),resolvedAt:null,finishedAt:["done","canceled"].includes(task.status)?now.toISOString():null,reason:null},now);
   });
  }

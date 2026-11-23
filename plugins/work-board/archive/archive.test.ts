@@ -1,4 +1,4 @@
-import { workflowPolicySchema } from "../shared/workflow-policy";
+import { planningStatusOf, workflowPolicySchema } from "../shared/workflow-policy";
 import { isUtf8 } from "node:buffer";
 import {
   mkdtemp,
@@ -13,6 +13,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, relative } from "node:path";
 import {
   createFakePluginHost,
+  makeThreadResponse,
   type FakePluginHarness,
 } from "@get-bb/plugin-sdk/testing";
 import { afterEach, describe, expect, it } from "vitest";
@@ -30,6 +31,8 @@ import { DEFAULT_TASK_STATUSES, type TaskStatusDefinition } from "../shared/stat
 import { createStructuredStore } from "../structured/store";
 import { createPlanStore } from "../plans/store";
 import { createPlanNoteStore } from "../plans/notes";
+import { createGitSyncStore } from "../git-sync/store";
+import { prIdentity, prLinkSchema } from "../shared/git-sync";
 
 const harnesses: FakePluginHarness[] = [];
 const directories: string[] = [];
@@ -170,6 +173,7 @@ async function seed() {
     folderId: folder.id,
     linkedBbProjectId: "proj_original",
   });
+  source.store.tasks.updateProject(project.id, { planning: "optional" });
   const epic = source.store.tasks.createTask({
     projectId: project.id,
     title: "Epic",
@@ -825,7 +829,7 @@ it("exports v17 typed questions and imports v16 owner tasks as plain tasks", asy
   await exportProject(source.bb, source.store, source.project.id, out);
   const manifestPath = join(out, "project.json");
   const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
-  expect(manifest.version).toBe(19);
+  expect(manifest.version).toBe(21);
   const path = join(out, "tasks", `${source.task.id}.json`);
   const record = JSON.parse(await readFile(path, "utf8"));
   expect(record.task).not.toHaveProperty("executionTarget");
@@ -857,15 +861,16 @@ it("exports plans (v18+) with every version, refuses a differing local plan with
   const write = (plans: typeof sourcePlans, taskId: string, input: object) => plans.save({ taskId, summary: "Edit", author, ...input } as Parameters<typeof plans.save>[0]);
   write(sourcePlans, source.task.id, { op: "replace", baseVersion: 0, body: "# Plan\n\n## Steps\n- one\n" });
   write(sourcePlans, source.task.id, { op: "section", baseVersion: 1, section: "Steps", body: "## Steps\n- one\n- two\n" });
-  sourcePlans.submit(source.task.id, author);
+  sourcePlans.submit(source.task.id, author, "thr_reviewer");
   const out = join(await directory(), "plans-v18");
   await exportProject(source.bb, source.store, source.project.id, out);
   const manifestPath = join(out, "project.json");
   const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
-  expect(manifest.version).toBe(19);
+  expect(manifest.version).toBe(21);
   const recordPath = join(out, "tasks", `${source.task.id}.json`);
   const record = JSON.parse(await readFile(recordPath, "utf8"));
-  expect(record.plan).toMatchObject({ format: "markdown", version: 2, state: "in_review", body: "# Plan\n\n## Steps\n- one\n- two\n" });
+  expect(record.plan).toMatchObject({ format: "markdown", version: 2, state: "in_review", body: "# Plan\n\n## Steps\n- one\n- two\n", reviewer: { kind: "thread", threadId: "thr_reviewer" }, reviewVersion: 2 });
+  expect(record.planReviews).toMatchObject([{ version: 2, reviewer: { kind: "thread", threadId: "thr_reviewer" }, outcome: "pending" }]);
   expect(record.plan.versions.map((version: { version: number; op: string }) => [version.version, version.op])).toEqual([[1, "create"], [2, "section"]]);
   expect(record.plan.versions[0].body).toBe("# Plan\n\n## Steps\n- one\n");
 
@@ -873,6 +878,7 @@ it("exports plans (v18+) with every version, refuses a differing local plan with
   await importProject(target.bb, target.store, out, false);
   const targetPlans = createPlanStore(target.bb.storage.database(), target.store.tasks);
   expect(targetPlans.capture(source.task.id)).toEqual(sourcePlans.capture(source.task.id));
+  expect(targetPlans.captureReviews(source.task.id)).toEqual(sourcePlans.captureReviews(source.task.id));
   // The restored task logs (system comments) travel with it, and a second export is byte-identical.
   const again = join(await directory(), "plans-again");
   await exportProject(target.bb, target.store, source.project.id, again);
@@ -890,6 +896,7 @@ it("exports plans (v18+) with every version, refuses a differing local plan with
   manifest.version = 17;
   await writeFile(manifestPath, jsonText(manifest));
   delete record.plan;
+  delete record.planReviews;
   await writeFile(recordPath, jsonText(record));
   write(targetPlans, source.task.id, { op: "replace", baseVersion: 2, body: "# Newer local\n" });
   await importProject(target.bb, target.store, out, true);
@@ -972,13 +979,14 @@ it("round-trips configurable project statuses, their order and custom task stage
   statuses[2]!.name = "Development";
   statuses.splice(4, 0, { id: "in_testing", name: "In testing", icon: "testing", color: "steelblue" });
   const workflowPolicy = workflowPolicySchema.parse({ bugfixStatus: "repair" });
-  source.store.tasks.updateProject(source.project.id, { statuses, workflowPolicy, autoArchiveAfterDays: "14", staleIdleMinutes: "120" });
+  // Planning off: an import that creates a planning project settles a Planning status, which this round trip does not cover.
+  source.store.tasks.updateProject(source.project.id, { statuses, workflowPolicy, autoArchiveAfterDays: "14", staleIdleMinutes: "120", planning: "off" });
   source.store.tasks.updateTask(source.task.id, { status: "in_testing" });
   source.bb.storage.database().prepare("INSERT OR IGNORE INTO task_activity_history(task_id) VALUES (?)").run(source.task.id);
   const out = join(await directory(), "statuses-v6");
   await exportProject(source.bb, source.store, source.project.id, out);
   const manifest = JSON.parse(await readFile(join(out, "project.json"), "utf8"));
-  expect(manifest.version).toBe(19);
+  expect(manifest.version).toBe(21);
   expect(manifest.project.statuses).toEqual(statuses);
   expect(manifest.project).toMatchObject({ autoArchiveAfterDays: "14", staleIdleMinutes: "120" });
   const target = setup();
@@ -1079,7 +1087,7 @@ describe("archive v13 scheduled tasks", () => {
     const out = join(await directory(), "scheduled-v13");
     await exportProject(f.bb, f.store, f.project.id, out);
     const manifest = JSON.parse(await readFile(join(out, "project.json"), "utf8"));
-    expect(manifest.version).toBe(19);
+    expect(manifest.version).toBe(21);
     expect(manifest.schedules).toHaveLength(2);
     expect(JSON.stringify(manifest)).not.toMatch(/thr_server_local|thr_gone|q_live|req_live|01ARZ3NDEKTSV4RRFFQ69G5FAV/);
     const target = setup();
@@ -1213,7 +1221,7 @@ it("round-trips v16 current state and imports v15 without it", async () => {
   await exportProject(source.bb, source.store, source.project.id, out);
   const manifestPath = join(out, "project.json");
   const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
-  expect(manifest.version).toBe(19);
+  expect(manifest.version).toBe(21);
   const target = setup();
   await importProject(target.bb, target.store, out, false);
   expect(target.store.tasks.getTask(source.task.id)).toEqual(source.store.tasks.getTask(source.task.id));
@@ -1230,4 +1238,713 @@ it("round-trips v16 current state and imports v15 without it", async () => {
   const legacy = setup();
   await importProject(legacy.bb, legacy.store, out, false);
   expect(legacy.store.tasks.getTask(source.task.id)).toMatchObject({ progressNote: null, progressUpdatedAt: null, progressUpdatedBy: null });
+});
+
+describe("archive v20: reviewers, review history and planning", () => {
+  const authorA = { kind: "agent" as const, threadId: "thr_example", name: "agent (thr_example)" };
+  const reviewerA = { kind: "agent" as const, threadId: "thr_reviewer_a", name: "agent (thr_reviewer_a)" };
+  const owner = { kind: "person" as const, threadId: null, name: "Owner" };
+
+  /** A task whose plan went through two reviewers on the same version, with a reviewer note that was sent. */
+  async function reviewed() {
+    const source = await seed();
+    const db = source.bb.storage.database();
+    const plans = createPlanStore(db, source.store.tasks);
+    const notes = createPlanNoteStore(db, source.store.tasks, plans.head);
+    plans.save({ taskId: source.task.id, op: "replace", baseVersion: 0, body: "# Plan\n\n## Steps\n- one\n", summary: "Plan", author: authorA });
+    plans.submit(source.task.id, authorA, "thr_reviewer_a");
+    notes.createByReviewer({ taskId: source.task.id, by: reviewerA, version: 1, body: "Say more.", quote: "one" });
+    plans.submit(source.task.id, authorA, "thr_reviewer_b");
+    return { ...source, db, plans, notes };
+  }
+  /** Rewrites an exported v20 snapshot as a v19 one: no planning, reviewers, review history or note authors; legacy notes are resolved. */
+  async function toV19(out: string) {
+  const manifestPath = join(out, "project.json");
+  const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
+  manifest.version = 19;
+  delete manifest.project.planning;
+  await writeFile(manifestPath, jsonText(manifest));
+  for (const id of manifest.taskIds) {
+    const path = join(out, "tasks", `${id}.json`);
+    const record = JSON.parse(await readFile(path, "utf8"));
+    delete record.planReviews;
+    if (record.plan) {
+      delete record.plan.reviewer;
+      delete record.plan.reviewVersion;
+      record.plan.state = "in_review";
+    }
+    for (const note of record.planNotes ?? []) {
+      delete note.authorKind;
+      delete note.authorThread;
+      // An old owner's draft would block the owner's approval; the legacy note here is already resolved.
+      note.state = "resolved";
+      note.sentInVersion = 1;
+      note.sentAt = note.createdAt;
+    }
+    await writeFile(path, jsonText(record));
+  }
+  }
+
+  const exported = async (source: Awaited<ReturnType<typeof seed>>, name: string) => {
+    const out = join(await directory(), name);
+    await exportProject(source.bb, source.store, source.project.id, out);
+    return out;
+  };
+
+  it("round-trips an off project with its setting, plans, notes with their authors, and both reviewers' attempts", async () => {
+    const source = await reviewed();
+    source.store.tasks.updateProject(source.project.id, { planning: "off" });
+    const out = await exported(source, "v20-off");
+    const record = JSON.parse(await readFile(join(out, "tasks", `${source.task.id}.json`), "utf8"));
+    expect(JSON.parse(await readFile(join(out, "project.json"), "utf8")).project.planning).toBe("off");
+    expect(record.plan.reviewer).toEqual({ kind: "thread", threadId: "thr_reviewer_b" });
+    expect(record.planNotes[0]).toMatchObject({ authorKind: "thread", authorThread: "thr_reviewer_a" });
+    expect(record.planReviews.map((review: { reviewer: { threadId: string }; outcome: string }) => [review.reviewer.threadId, review.outcome])).toEqual([["thr_reviewer_a", "reassigned"], ["thr_reviewer_b", "pending"]]);
+    const target = setup();
+    await importProject(target.bb, target.store, out, false);
+    expect(target.store.tasks.getProject(source.project.id)!.planning).toBe("off");
+    const targetPlans = createPlanStore(target.bb.storage.database(), target.store.tasks);
+    expect(targetPlans.capture(source.task.id)).toEqual(source.plans.capture(source.task.id));
+    expect(targetPlans.captureReviews(source.task.id)).toEqual(source.plans.captureReviews(source.task.id));
+    expect(createPlanNoteStore(target.bb.storage.database(), target.store.tasks, targetPlans.head).capture(source.task.id)).toEqual(source.notes.capture(source.task.id));
+    // A second export of the imported project is byte-identical.
+    const again = join(await directory(), "v20-again");
+    await exportProject(target.bb, target.store, source.project.id, again);
+    expect(await readFile(join(again, "tasks", `${source.task.id}.json`), "utf8")).toBe(await readFile(join(out, "tasks", `${source.task.id}.json`), "utf8"));
+  });
+
+  it("never changes the planning of an existing project, or when and from what it changed, with or without --overwrite", async () => {
+    const source = await reviewed();
+    source.store.tasks.updateProject(source.project.id, { planning: "off" });
+    const out = await exported(source, "v20-keep");
+    // The snapshot carries the change record, and a fresh import takes it.
+    const snapshot = JSON.parse(await readFile(join(out, "project.json"), "utf8")).project;
+    expect(snapshot).toMatchObject({ planning: "off", planningPrevious: "optional", planningChangedAt: expect.any(String) });
+    const target = setup();
+    await importProject(target.bb, target.store, out, false);
+    expect(target.store.tasks.getProject(source.project.id)).toMatchObject({ planning: "off", planningPrevious: "optional", planningChangedAt: snapshot.planningChangedAt });
+    target.store.tasks.updateProject(source.project.id, { planning: "required" });
+    const local = target.store.tasks.getProject(source.project.id)!;
+    expect(local.planningPrevious).toBe("off");
+    await importProject(target.bb, target.store, out, false);
+    expect(target.store.tasks.getProject(source.project.id)).toMatchObject({ planning: "required", planningPrevious: "off", planningChangedAt: local.planningChangedAt });
+    await importProject(target.bb, target.store, out, true);
+    expect(target.store.tasks.getProject(source.project.id)).toMatchObject({ planning: "required", planningPrevious: "off", planningChangedAt: local.planningChangedAt });
+  });
+
+  it("refuses, before writing anything, a v19 overwrite that would rewind a plan below its local review history, and a v20 round trip still works", async () => {
+    const source = await reviewed();
+    const out = await exported(source, "v19-rewind");
+    await toV19(out);
+    // Locally the plan moved on to v2 and was submitted again.
+    source.plans.save({ taskId: source.task.id, op: "replace", baseVersion: 1, body: "# Plan\n\n## Steps\n- one\n- two\n", summary: "Second", author: authorA });
+    source.plans.submit(source.task.id, authorA, "thr_reviewer_b");
+    const history = source.plans.captureReviews(source.task.id);
+    expect(history.map((review) => review.version)).toEqual([1, 1, 2]);
+    await expect(importProject(source.bb, source.store, out, true)).rejects.toThrow(/would be rewound to v1.*review history refers to v2/);
+    expect(source.plans.head(source.task.id)?.version).toBe(2);
+    expect(source.plans.captureReviews(source.task.id)).toEqual(history);
+    const again = await exported(source, "v20-after-refusal");
+    const target = setup();
+    await importProject(target.bb, target.store, again, false);
+    expect(createPlanStore(target.bb.storage.database(), target.store.tasks).captureReviews(source.task.id)).toEqual(history);
+  });
+
+  describe("planning status and open decisions", () => {
+    const editProject = async (out: string, edit: (manifest: Record<string, any>) => void) => {
+      const path = join(out, "project.json");
+      const manifest = JSON.parse(await readFile(path, "utf8"));
+      edit(manifest);
+      await writeFile(path, jsonText(manifest));
+    };
+    const projectRow = (bb: { storage: { database(): ReturnType<typeof setup>["bb"]["storage"]["database"] extends () => infer D ? D : never } }, id: string) =>
+      bb.storage.database().prepare("SELECT statuses, workflow_policy FROM projects WHERE id = ?").get(id);
+
+    it("reads a v20 snapshot with a pending thread review and an open decision as paused, with no stored fields, and its last answer sends the resume wake", async () => {
+      const source = await reviewed();
+      await createStructuredStore(source.bb, source.store).handlers.createQuestion({ taskId: source.task.id, kind: "decision", askedByThread: null, prompt: "Which one?", steps: [], options: ["A", "B"], mode: "single" });
+      const out = await exported(source, "v20-paused");
+      await editProject(out, (manifest) => {
+        manifest.version = 20;
+        delete manifest.project.archiveThreadsOnClose;
+        delete manifest.project.archiveReviewerOnApproval;
+      });
+      const record = JSON.parse(await readFile(join(out, "tasks", `${source.task.id}.json`), "utf8"));
+      expect(JSON.stringify(record.plan)).not.toMatch(/paus/i);
+      const target = setup();
+      await importProject(target.bb, target.store, out, false);
+      target.harness.sdk.stub("threads.get", async ({ threadId }: { threadId: string }) => makeThreadResponse({ id: threadId, status: "active" }));
+      const plans = createPlanStore(target.bb.storage.database(), target.store.tasks);
+      expect(plans.paused(source.task.id)).toBe(true);
+      const handlers = createStructuredStore(target.bb, target.store).handlers;
+      const [question] = (await handlers.listQuestions({ taskId: source.task.id })).questions;
+      const settled = await handlers.answerQuestion({ questionId: question!.id, revision: question!.revision, selectedOptionIds: [question!.options[0]!.id], authorName: "Owner" });
+      expect(settled.planWake).toMatchObject({ event: "resumed" });
+      const sends = target.harness.sdk.callsTo("threads.send") as Array<[{ threadId: string; input: Array<{ text: string }> }]>;
+      expect(sends.map((call) => call[0].threadId)).toContain("thr_reviewer_b");
+      expect(sends.find((call) => call[0].threadId === "thr_reviewer_b")![0].input[0]!.text).toContain("the owner's decision is settled");
+      expect(plans.paused(source.task.id)).toBe(false);
+    });
+
+    it("settles Planning on the proposed project: an older snapshot without the column still validates a local card in Planning, and a repeated import changes nothing", async () => {
+      const source = await reviewed();
+      const out = await exported(source, "planning-older");
+      source.store.tasks.createTask({ projectId: source.project.id, title: "Local", status: "planning" });
+      await editProject(out, (manifest) => {
+        manifest.project.statuses = manifest.project.statuses.filter((status: { id: string }) => status.id !== "planning");
+        if (manifest.project.workflowPolicy) manifest.project.workflowPolicy.planningStatus = null;
+      });
+      for (const file of await readdir(join(out, "tasks"))) {
+        const path = join(out, "tasks", file);
+        const task = JSON.parse(await readFile(path, "utf8"));
+        if (task.task.status === "planning") task.task.status = "todo";
+        await writeFile(path, jsonText(task));
+      }
+      const before = projectRow(source.bb as never, source.project.id);
+      await importProject(source.bb, source.store, out, true);
+      expect(projectRow(source.bb as never, source.project.id)).toEqual(before);
+      expect(source.store.tasks.getProject(source.project.id)!.statuses!.map((status) => status.id)).toContain("planning");
+      expect(source.store.tasks.getProject(source.project.id)!.workflowPolicy?.planningStatus).toBe("planning");
+      expect(source.store.tasks.listTasks({ projectId: source.project.id }).filter((task) => task.status === "planning").map((task) => task.title)).toEqual(["Local"]);
+      await importProject(source.bb, source.store, out, true);
+      expect(projectRow(source.bb as never, source.project.id)).toEqual(before);
+    });
+
+    it("gives a project that a legacy archive creates as optional its Planning status", async () => {
+      const source = await reviewed();
+      const out = await exported(source, "planning-legacy");
+      await toV19(out);
+      await editProject(out, (manifest) => {
+        manifest.project.statuses = manifest.project.statuses.filter((status: { id: string }) => status.id !== "planning");
+        if (manifest.project.workflowPolicy) manifest.project.workflowPolicy.planningStatus = null;
+      });
+      for (const file of await readdir(join(out, "tasks"))) {
+        const path = join(out, "tasks", file);
+        const task = JSON.parse(await readFile(path, "utf8"));
+        if (task.task.status === "planning") task.task.status = "todo";
+        await writeFile(path, jsonText(task));
+      }
+      const target = setup();
+      await importProject(target.bb, target.store, out, false);
+      const imported = target.store.tasks.getProject(source.project.id)!;
+      expect(imported.planning).toBe("optional");
+      expect(imported.statuses!.map((status) => status.id)).toEqual(["backlog", "todo", "planning", "in_progress", "in_review", "done", "canceled"]);
+      expect(imported.workflowPolicy?.planningStatus).toBe("planning");
+    });
+
+    it("restores an unchanged snapshot of a planning-off project whose stored policy predates planningStatus, without --overwrite", async () => {
+      const source = await seed();
+      source.store.tasks.updateProject(source.project.id, { planning: "off" });
+      source.bb.storage.database().prepare("UPDATE projects SET workflow_policy = ? WHERE id = ?").run(
+        JSON.stringify({ bugfixStatus: "bugfix", doneStatus: "done", inProgressStatus: "in_progress", reviewStatus: "in_review", testingStatus: "in_testing", earlyStatuses: ["todo"], ownerDecisionLabel: "owner decision" }),
+        source.project.id,
+      );
+      const out = await exported(source, "policy-predates");
+      await importProject(source.bb, source.store, out, false);
+      expect(source.store.tasks.getProject(source.project.id)!.workflowPolicy).toMatchObject({ bugfixStatus: "bugfix", earlyStatuses: ["todo"], planningStatus: null });
+    });
+
+    it("imports a project whose policy maps the absent id planning to Done without inserting a Planning column", async () => {
+      const source = await seed();
+      source.bb.storage.database().prepare("UPDATE projects SET planning = 'optional', statuses = ?, workflow_policy = ? WHERE id = ?").run(
+        JSON.stringify(DEFAULT_TASK_STATUSES),
+        JSON.stringify(workflowPolicySchema.parse({ doneStatus: "planning" })),
+        source.project.id,
+      );
+      const out = await exported(source, "planning-id-claimed");
+      const target = setup();
+      await importProject(target.bb, target.store, out, false);
+      const imported = target.store.tasks.getProject(source.project.id)!;
+      expect(imported.statuses!.map((status) => status.id)).toEqual(DEFAULT_TASK_STATUSES.map((status) => status.id));
+      expect(planningStatusOf(imported)).toBeNull();
+    });
+
+    it.each([
+      ["a pending attempt of an older version", (review: { version: number; reviewer: { threadId: string } }) => void (review.version = 1)],
+      ["a pending attempt that names another reviewer", (review: { version: number; reviewer: { threadId: string } }) => void (review.reviewer.threadId = "thr_other")],
+    ])("treats the review as not paused, and wakes nobody, when the history has %s", async (_label, tamper) => {
+      const source = await reviewed();
+      source.plans.save({ taskId: source.task.id, op: "replace", baseVersion: 1, body: "# Plan\n\n## Steps\n- two\n", summary: "Plan v2", author: authorA });
+      source.plans.submit(source.task.id, authorA, "thr_reviewer_b");
+      await createStructuredStore(source.bb, source.store).handlers.createQuestion({ taskId: source.task.id, kind: "decision", askedByThread: null, prompt: "Which one?", steps: [], options: ["A", "B"], mode: "single" });
+      const out = await exported(source, "inconsistent-history");
+      const path = join(out, "tasks", `${source.task.id}.json`);
+      const record = JSON.parse(await readFile(path, "utf8"));
+      tamper(record.planReviews.filter((review: { outcome: string }) => review.outcome === "pending").at(-1));
+      await writeFile(path, jsonText(record));
+      const target = setup();
+      await importProject(target.bb, target.store, out, false);
+      target.harness.sdk.stub("threads.get", async ({ threadId }: { threadId: string }) => makeThreadResponse({ id: threadId, status: "active" }));
+      const plans = createPlanStore(target.bb.storage.database(), target.store.tasks);
+      expect(plans.head(source.task.id)).toMatchObject({ version: 2, state: "in_review" });
+      expect(plans.paused(source.task.id)).toBe(false);
+      const handlers = createStructuredStore(target.bb, target.store).handlers;
+      const [question] = (await handlers.listQuestions({ taskId: source.task.id })).questions;
+      const settled = await handlers.answerQuestion({ questionId: question!.id, revision: question!.revision, selectedOptionIds: [question!.options[0]!.id], authorName: "Owner" });
+      expect(settled.planWake).toBeUndefined();
+      // The answer's own notice to the asker is not a plan wake: no send mentions the plan review.
+      const texts = (target.harness.sdk.callsTo("threads.send") as Array<[{ input: Array<{ text: string }> }]>).map((call) => call[0].input[0]!.text);
+      expect(texts.filter((text) => /plan v\d/.test(text))).toEqual([]);
+    });
+
+    it("reads the submitter of the resume copy from the bound attempt, not from a same-version row of another reviewer", async () => {
+      const source = await reviewed();
+      await createStructuredStore(source.bb, source.store).handlers.createQuestion({ taskId: source.task.id, kind: "decision", askedByThread: null, prompt: "Which one?", steps: [], options: ["A", "B"], mode: "single" });
+      const out = await exported(source, "same-version-rows");
+      const path = join(out, "tasks", `${source.task.id}.json`);
+      const record = JSON.parse(await readFile(path, "utf8"));
+      const pending = record.planReviews.filter((review: { outcome: string }) => review.outcome === "pending").at(-1);
+      // The bound attempt was submitted by a thread other than the version's author; a later pending row of another reviewer was not.
+      pending.submittedByThread = "thr_submitter";
+      record.planReviews.push({ ...pending, reviewer: { kind: "thread", threadId: "thr_other" }, submittedByThread: "thr_other_submitter" });
+      await writeFile(path, jsonText(record));
+      const target = setup();
+      await importProject(target.bb, target.store, out, false);
+      target.harness.sdk.stub("threads.get", async ({ threadId }: { threadId: string }) => makeThreadResponse({ id: threadId, status: "active" }));
+      target.harness.sdk.stub("threads.send", async () => undefined);
+      const handlers = createStructuredStore(target.bb, target.store).handlers;
+      const [question] = (await handlers.listQuestions({ taskId: source.task.id })).questions;
+      const settled = await handlers.answerQuestion({ questionId: question!.id, revision: question!.revision, selectedOptionIds: [question!.options[0]!.id], authorName: "Owner" });
+      expect(settled.planWake).toMatchObject({ event: "resumed", delivered: "sent" });
+      const told = (target.harness.sdk.callsTo("threads.send") as Array<[{ threadId: string; input: Array<{ text: string }> }]>).filter((call) => /plan v\d/.test(call[0].input[0]!.text)).map((call) => call[0].threadId);
+      // The reviewer of the bound attempt, its submitter and the version's author; nobody of the other row.
+      expect(told.sort()).toEqual(["thr_example", "thr_reviewer_b", "thr_submitter"]);
+    });
+
+    it("enables and imports a board whose Done is named Planning, with the id planning free, and keeps its statuses unchanged", async () => {
+      const source = await seed();
+      const statuses = DEFAULT_TASK_STATUSES.map((status) => (status.id === "done" ? { ...status, name: "Planning" } : { ...status }));
+      source.store.tasks.updateProject(source.project.id, { planning: "off", statuses });
+      source.store.tasks.updateProject(source.project.id, { planning: "optional" });
+      const enabled = source.store.tasks.getProject(source.project.id)!;
+      expect(enabled.statuses).toEqual(statuses);
+      expect(planningStatusOf(enabled)).toBeNull();
+      const out = await exported(source, "planning-done-named");
+      const target = setup();
+      await importProject(target.bb, target.store, out, false);
+      expect(target.store.tasks.getProject(source.project.id)!.statuses).toEqual(statuses);
+      expect(planningStatusOf(target.store.tasks.getProject(source.project.id)!)).toBeNull();
+    });
+  });
+
+  describe("status flags", () => {
+    const flagged = (project: { statuses?: Array<{ id: string; requiresApprovedPlan?: boolean }> }) => (project.statuses ?? []).filter((status) => status.requiresApprovedPlan).map((status) => status.id);
+    const unmark = (store: Awaited<ReturnType<typeof seed>>["store"], projectId: string, id: string) =>
+      store.tasks.updateProject(projectId, { statuses: store.tasks.getProject(projectId)!.statuses!.map((status) => (status.id === id ? { ...status, requiresApprovedPlan: false } : status)) });
+    const editSnapshot = async (out: string, edit: (project: Record<string, any>) => void) => {
+      const path = join(out, "project.json");
+      const manifest = JSON.parse(await readFile(path, "utf8"));
+      edit(manifest.project);
+      await writeFile(path, jsonText(manifest));
+    };
+
+    it("carries flags and their marker in the export, and a fresh import takes them", async () => {
+      const source = await reviewed();
+      source.store.tasks.updateProject(source.project.id, { planning: "required" });
+      unmark(source.store, source.project.id, "done");
+      const out = await exported(source, "flags-roundtrip");
+      const snapshot = JSON.parse(await readFile(join(out, "project.json"), "utf8")).project;
+      expect(flagged(snapshot)).toEqual(["in_progress", "in_review"]);
+      expect(snapshot.planFlagsInitialized).toBe(true);
+      const target = setup();
+      await importProject(target.bb, target.store, out, false);
+      expect(target.store.tasks.getProject(source.project.id)).toMatchObject({ planning: "required", planFlagsInitialized: true });
+      expect(flagged(target.store.tasks.getProject(source.project.id)!)).toEqual(["in_progress", "in_review"]);
+    });
+
+    it("keeps an existing project's flags and marker: a flag-only difference is no conflict and no write, with or without --overwrite", async () => {
+      const source = await reviewed();
+      source.store.tasks.updateProject(source.project.id, { planning: "required" });
+      const out = await exported(source, "flags-keep");
+      const target = setup();
+      await importProject(target.bb, target.store, out, false);
+      // The owner changes the flags locally; the snapshot still has the old ones.
+      unmark(target.store, source.project.id, "in_review");
+      target.store.tasks.updateProject(source.project.id, { statuses: target.store.tasks.getProject(source.project.id)!.statuses!.map((status) => (status.id === "backlog" ? { ...status, requiresApprovedPlan: true } : status)) });
+      const local = target.store.tasks.getProject(source.project.id)!;
+      for (const overwrite of [false, true]) {
+        await importProject(target.bb, target.store, out, overwrite);
+        expect(flagged(target.store.tasks.getProject(source.project.id)!)).toEqual(["backlog", "in_progress", "done"]);
+        expect(target.store.tasks.getProject(source.project.id)!.planFlagsInitialized).toBe(local.planFlagsInitialized);
+      }
+    });
+
+    it("gives a status that is new to the project the default, and forces a marked canceled to false", async () => {
+      const source = await reviewed();
+      source.store.tasks.updateProject(source.project.id, { planning: "required" });
+      const out = await exported(source, "flags-new");
+      const target = setup();
+      await importProject(target.bb, target.store, out, false);
+      // The snapshot adds a status after Done that it marks false, and marks canceled; the local project is required.
+      await editSnapshot(out, (project) => {
+        project.statuses.splice(project.statuses.findIndex((status: { id: string }) => status.id === "canceled"), 0, { id: "after_done", name: "After done", requiresApprovedPlan: false });
+        for (const status of project.statuses) if (status.id === "canceled") status.requiresApprovedPlan = true;
+      });
+      // A genuinely new status is a real difference, so this import needs --overwrite; the flags are merged either way.
+      await importProject(target.bb, target.store, out, true);
+      const merged = target.store.tasks.getProject(source.project.id)!;
+      expect(flagged(merged)).toEqual(["in_progress", "in_review", "done", "after_done"]);
+      expect(merged.statuses!.find((status) => status.id === "canceled")).not.toHaveProperty("requiresApprovedPlan");
+      // A fresh import also forces canceled to false.
+      const fresh = setup();
+      await importProject(fresh.bb, fresh.store, out, false);
+      expect(fresh.store.tasks.getProject(source.project.id)!.statuses!.find((status) => status.id === "canceled")).not.toHaveProperty("requiresApprovedPlan");
+    });
+
+    it("starts a legacy fresh import uninitialized, so its prefill happens at the first activation", async () => {
+      const source = await reviewed();
+      const out = await exported(source, "flags-legacy");
+      await editSnapshot(out, (project) => {
+        delete project.planFlagsInitialized;
+        delete project.planning;
+        for (const status of project.statuses) delete status.requiresApprovedPlan;
+      });
+      const fresh = setup();
+      await importProject(fresh.bb, fresh.store, out, false);
+      expect(fresh.store.tasks.getProject(source.project.id)).toMatchObject({ planning: "optional", planFlagsInitialized: false });
+      expect(flagged(fresh.store.tasks.getProject(source.project.id)!)).toEqual([]);
+      fresh.store.tasks.updateProject(source.project.id, { planning: "required" });
+      expect(flagged(fresh.store.tasks.getProject(source.project.id)!)).toEqual(["in_progress", "in_review", "done"]);
+    });
+
+    it("does not bring a flag back after clearing all of them, switching to optional, an export, a restore and a second required", async () => {
+      const source = await reviewed();
+      source.store.tasks.updateProject(source.project.id, { planning: "required" });
+      for (const id of ["in_progress", "in_review", "done"]) unmark(source.store, source.project.id, id);
+      source.store.tasks.updateProject(source.project.id, { planning: "optional" });
+      const out = await exported(source, "flags-cleared");
+      const target = setup();
+      await importProject(target.bb, target.store, out, false);
+      target.store.tasks.updateProject(source.project.id, { planning: "required" });
+      expect(flagged(target.store.tasks.getProject(source.project.id)!)).toEqual([]);
+    });
+  });
+
+  async function pendingV19(name: string, edit: (record: { plan: any }) => void) {
+    const source = await reviewed();
+    const out = await exported(source, name);
+    await toV19(out);
+    for (const id of JSON.parse(await readFile(join(out, "project.json"), "utf8")).taskIds) {
+      const path = join(out, "tasks", `${id}.json`);
+      const record = JSON.parse(await readFile(path, "utf8"));
+      if (record.plan) edit(record);
+      await writeFile(path, jsonText(record));
+    }
+    return { source, out };
+  }
+
+  it("refuses a v19 overwrite that would replace the head of a plan with a pending attempt, so the reviewer can still act", async () => {
+    // The snapshot has the same version in_review but different text: restoring it would detach the recorded reviewer.
+    const { source, out } = await pendingV19("v19-detach", (record) => {
+      record.plan.body = "# Plan\n\n## Steps\n- other\n";
+      record.plan.versions[0].body = record.plan.body;
+    });
+    const history = source.plans.captureReviews(source.task.id);
+    await expect(importProject(source.bb, source.store, out, true)).rejects.toThrow(/pending review of v1 that this import would detach/);
+    expect(source.plans.head(source.task.id)).toMatchObject({ state: "in_review", reviewer: { kind: "thread", threadId: "thr_reviewer_b" }, reviewVersion: 1 });
+    expect(source.plans.captureReviews(source.task.id)).toEqual(history);
+    // The recorded reviewer's command still works, and a decision closes the one pending attempt.
+    const reviewerB = { kind: "agent" as const, threadId: "thr_reviewer_b", name: "agent (thr_reviewer_b)" };
+    expect(() => source.notes.createByReviewer({ taskId: source.task.id, by: reviewerB, version: 1, body: "Still reviewing." })).not.toThrow();
+    source.plans.setState(source.task.id, "approved", owner);
+    expect(source.plans.captureReviews(source.task.id).filter((review) => review.outcome === "pending")).toEqual([]);
+    const again = await exported(source, "v20-after-detach-refusal");
+    const target = setup();
+    await importProject(target.bb, target.store, again, false);
+    expect(createPlanStore(target.bb.storage.database(), target.store.tasks).captureReviews(source.task.id)).toEqual(source.plans.captureReviews(source.task.id));
+  });
+
+  it("refuses a same-text v19 import whose version history names the pending reviewer as an author, leaving the plan and attempt intact", async () => {
+    const { source, out } = await pendingV19("v19-reviewer-author", (record) => {
+      record.plan.versions[0].summary = "Rewritten summary";
+      record.plan.versions[0].author = { kind: "agent", threadId: "thr_reviewer_b", name: "agent (thr_reviewer_b)" };
+    });
+    const history = source.plans.captureReviews(source.task.id);
+    const before = source.plans.capture(source.task.id);
+    await expect(importProject(source.bb, source.store, out, true)).rejects.toThrow(/names as the author of a plan version/);
+    expect(source.plans.capture(source.task.id)).toEqual(before);
+    expect(source.plans.captureReviews(source.task.id)).toEqual(history);
+    expect(source.plans.head(source.task.id)).toMatchObject({ state: "in_review", reviewer: { threadId: "thr_reviewer_b" }, reviewVersion: 1 });
+  });
+
+  it("keeps the review binding of a pending attempt when a v19 import replaces the head with the same text and version", async () => {
+    // Same text and version, but the version record differs, so the head really is replaced.
+    const { source, out } = await pendingV19("v19-same-text", (record) => {
+      record.plan.versions[0].summary = "Rewritten summary";
+      record.plan.state = "draft";
+    });
+    await importProject(source.bb, source.store, out, true);
+    expect(source.plans.listVersions(source.task.id).versions[0]!.summary).toBe("Rewritten summary");
+    expect(source.plans.head(source.task.id)).toMatchObject({ state: "in_review", reviewer: { kind: "thread", threadId: "thr_reviewer_b" }, reviewVersion: 1 });
+    const reviewerB = { kind: "agent" as const, threadId: "thr_reviewer_b", name: "agent (thr_reviewer_b)" };
+    expect(() => source.notes.createByReviewer({ taskId: source.task.id, by: reviewerB, version: 1, body: "Still bound." })).not.toThrow();
+    expect(source.plans.captureReviews(source.task.id).filter((review) => review.outcome === "pending")).toHaveLength(1);
+  });
+
+  it("refuses a v18 overwrite that would rewind below a retained note, and the refused project stays exportable and restorable", async () => {
+    const source = await seed();
+    const plans = createPlanStore(source.bb.storage.database(), source.store.tasks);
+    const notes = createPlanNoteStore(source.bb.storage.database(), source.store.tasks, plans.head);
+    plans.save({ taskId: source.task.id, op: "replace", baseVersion: 0, body: "# Plan\n\nOne.\n", summary: "One", author: authorA });
+    const out = await exported(source, "v18-note-rewind");
+    await toV19(out);
+    const manifestPath = join(out, "project.json");
+    const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
+    manifest.version = 18;
+    await writeFile(manifestPath, jsonText(manifest));
+    for (const id of manifest.taskIds) {
+      const path = join(out, "tasks", `${id}.json`);
+      const record = JSON.parse(await readFile(path, "utf8"));
+      delete record.planNotes;
+      await writeFile(path, jsonText(record));
+    }
+    // Locally the plan moved on to v2 and the owner left a note on it.
+    plans.save({ taskId: source.task.id, op: "replace", baseVersion: 1, body: "# Plan\n\nTwo.\n", summary: "Two", author: authorA });
+    notes.create({ taskId: source.task.id, kind: "general", body: "A note on v2.", authorName: "You" });
+    await expect(importProject(source.bb, source.store, out, true)).rejects.toThrow(/rewound to v1, but its local notes refer to v2/);
+    expect(plans.head(source.task.id)?.version).toBe(2);
+    const again = await exported(source, "v20-after-note-refusal");
+    const target = setup();
+    await importProject(target.bb, target.store, again, false);
+    expect(createPlanStore(target.bb.storage.database(), target.store.tasks).head(source.task.id)?.version).toBe(2);
+  });
+
+  it("reads a v19 snapshot as the owner's, infers optional for a fresh project with a plan, and keeps local review history", async () => {
+    const source = await reviewed();
+    const out = await exported(source, "v19-legacy");
+    await toV19(out);
+    // A fresh project comes up optional because the snapshot has a plan; the plan is reviewable by the owner at once.
+    const fresh = setup();
+    await importProject(fresh.bb, fresh.store, out, false);
+    expect(fresh.store.tasks.getProject(source.project.id)!.planning).toBe("optional");
+    const head = (await fresh.harness.callRpc("getTaskPlan", { taskId: source.task.id })) as { plan: { state: string; reviewer: unknown } };
+    expect(head.plan).toMatchObject({ state: "in_review", reviewer: { kind: "owner", threadId: null } });
+    expect(await fresh.harness.callRpc("approvePlan", { taskId: source.task.id, author: owner })).toMatchObject({ ok: true, plan: { state: "approved" } });
+    expect(createPlanStore(fresh.bb.storage.database(), fresh.store.tasks).captureReviews(source.task.id)).toEqual([]);
+
+    // Over a task with local review history, the v19 snapshot leaves that history alone, even with --overwrite.
+    const local = source;
+    const history = local.plans.captureReviews(local.task.id);
+    expect(history).toHaveLength(2);
+    local.store.tasks.updateProject(local.project.id, { planning: "optional" });
+    await importProject(local.bb, local.store, out, true);
+    expect(local.plans.captureReviews(local.task.id)).toEqual(history);
+    expect(local.store.tasks.getProject(local.project.id)!.planning).toBe("optional");
+    // The imported note is the owner's note of a legacy export.
+    const imported = createPlanNoteStore(local.bb.storage.database(), local.store.tasks, local.plans.head).capture(local.task.id);
+    expect(imported.every((note) => note.authorKind === "person" && note.authorThread === null)).toBe(true);
+  });
+});
+
+it("lets the migration turn planning on only for projects that already have a plan, as optional", async () => {
+  const source = setup();
+  const db = source.bb.storage.database();
+  const withPlan = source.store.tasks.createProject({ name: "With plan", prefix: "WTH", color: "blue" });
+  const without = source.store.tasks.createProject({ name: "Without", prefix: "WTO", color: "red" });
+  const task = source.store.tasks.createTask({ projectId: withPlan.id, title: "Planned" });
+  source.store.tasks.createTask({ projectId: without.id, title: "Plain" });
+  const now = new Date().toISOString();
+  db.prepare("INSERT INTO task_plans (task_id, format, version, body, state, updated_at, author_kind, author_thread, author_name) VALUES (?, 'markdown', 1, '# Plan', 'in_review', ?, 'agent', NULL, 'agent')").run(task.id, now);
+  // Roll the 0.60.0 migration back first, then the 0.59.0 one, and apply both again to the data of an older install.
+  db.exec(`
+    DROP TABLE closure_threads;
+    DROP TABLE task_closures;
+    ALTER TABLE task_threads DROP COLUMN created_for_task;
+    ALTER TABLE task_threads DROP COLUMN link_origin;
+    ALTER TABLE projects DROP COLUMN archive_threads_on_close;
+    ALTER TABLE projects DROP COLUMN archive_reviewer_on_approval;
+    DELETE FROM schema_version WHERE version = 37;
+  `);
+  db.exec(`
+    DROP TABLE task_plan_reviews;
+    ALTER TABLE task_plans DROP COLUMN reviewer_kind;
+    ALTER TABLE task_plans DROP COLUMN reviewer_thread;
+    ALTER TABLE task_plans DROP COLUMN review_version;
+    ALTER TABLE task_plan_notes DROP COLUMN author_kind;
+    ALTER TABLE task_plan_notes DROP COLUMN author_thread;
+    ALTER TABLE projects DROP COLUMN plan_flags_initialized;
+    ALTER TABLE projects DROP COLUMN planning_changed_at;
+    ALTER TABLE projects DROP COLUMN planning_previous;
+    ALTER TABLE projects DROP COLUMN planning;
+    DELETE FROM schema_version WHERE version = 36;
+  `);
+  const { initializeTasksSchema } = await import("../db/schema");
+  initializeTasksSchema(db);
+  const planning = (id: string) => (db.prepare("SELECT planning FROM projects WHERE id = ?").get(id) as { planning: string | null }).planning;
+  expect(planning(withPlan.id)).toBe("optional");
+  expect(planning(without.id)).toBeNull();
+  expect(source.store.tasks.getProject(without.id)!.planning).toBe("off");
+  expect(source.store.tasks.getProject(withPlan.id)!.planning).toBe("optional");
+  // The existing in-review plan has the owner as its reviewer and can be approved at once.
+  expect(createPlanStore(db, source.store.tasks).head(task.id)).toMatchObject({ state: "in_review", reviewer: { kind: "owner", threadId: null }, reviewVersion: null });
+});
+
+describe("archive v21: thread-archive settings and links", () => {
+  const exportOf = async (source: Awaited<ReturnType<typeof seed>>, name: string) => {
+    const out = join(await directory(), name);
+    await exportProject(source.bb, source.store, source.project.id, out);
+    return out;
+  };
+  const asV20 = async (out: string) => {
+    const path = join(out, "project.json");
+    const manifest = JSON.parse(await readFile(path, "utf8"));
+    manifest.version = 20;
+    delete manifest.project.archiveThreadsOnClose;
+    delete manifest.project.archiveReviewerOnApproval;
+    await writeFile(path, jsonText(manifest));
+  };
+
+  it("round-trips both settings into a new project", async () => {
+    const source = await seed();
+    source.store.tasks.updateProject(source.project.id, { archiveThreadsOnClose: "off", archiveReviewerOnApproval: "off" });
+    const out = await exportOf(source, "v21-settings");
+    const manifest = JSON.parse(await readFile(join(out, "project.json"), "utf8"));
+    expect(manifest.version).toBe(21);
+    expect(manifest.project).toMatchObject({ archiveThreadsOnClose: "off", archiveReviewerOnApproval: "off" });
+    const target = setup();
+    await importProject(target.bb, target.store, out, false);
+    expect(target.store.tasks.getProject(source.project.id)).toMatchObject({ archiveThreadsOnClose: "off", archiveReviewerOnApproval: "off" });
+  });
+
+  it("gives a v20 snapshot's new project the defaults and never changes an existing project's own settings", async () => {
+    const source = await seed();
+    const out = await exportOf(source, "v20-defaults");
+    await asV20(out);
+    const fresh = setup();
+    await importProject(fresh.bb, fresh.store, out, false);
+    expect(fresh.store.tasks.getProject(source.project.id)).toMatchObject({ archiveThreadsOnClose: "on", archiveReviewerOnApproval: "on" });
+    fresh.store.tasks.updateProject(source.project.id, { archiveThreadsOnClose: "off", archiveReviewerOnApproval: "off" });
+    await importProject(fresh.bb, fresh.store, out, false);
+    await importProject(fresh.bb, fresh.store, out, true);
+    expect(fresh.store.tasks.getProject(source.project.id)).toMatchObject({ archiveThreadsOnClose: "off", archiveReviewerOnApproval: "off" });
+    // A v21 snapshot with other values does not overwrite them either.
+    const v21 = await exportOf(source, "v21-other");
+    await importProject(fresh.bb, fresh.store, v21, true);
+    expect(fresh.store.tasks.getProject(source.project.id)).toMatchObject({ archiveThreadsOnClose: "off", archiveReviewerOnApproval: "off" });
+  });
+
+  it("imports a closed card's links as never archivable and replays no close action", async () => {
+    const source = await seed();
+    source.store.tasks.upsertTaskThread({ taskId: source.task.id, threadId: "thr_example", presetName: "Preset", title: "Worker", liveStatus: "idle", linkOrigin: "delegate_spawn", createdForTask: true });
+    source.store.tasks.updateTask(source.task.id, { status: "done" });
+    const out = await exportOf(source, "v21-links");
+    const target = setup();
+    await importProject(target.bb, target.store, out, false);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const db = target.bb.storage.database();
+    expect(db.prepare("SELECT thread_id, created_for_task, link_origin FROM task_threads ORDER BY thread_id").all()).toEqual([
+      { thread_id: "thr_example", created_for_task: 0, link_origin: null },
+      { thread_id: "thr_saved_worker", created_for_task: 0, link_origin: null },
+    ]);
+    expect(db.prepare("SELECT COUNT(*) AS n FROM task_closures").get()).toEqual({ n: 0 });
+    expect(target.harness.sdk.callsTo("threads.archive")).toEqual([]);
+  });
+
+  it("C1.3: an overwrite that gives a link id to another thread drops the local authority to archive it", async () => {
+    const source = await seed();
+    const link = source.store.tasks.upsertTaskThread({ taskId: source.task.id, threadId: "thr_one", presetName: "Preset", title: "Worker", liveStatus: "idle" });
+    const target = setup();
+    await importProject(target.bb, target.store, await exportOf(source, "link-one"), false);
+    const targetDb = target.bb.storage.database();
+    targetDb.prepare("UPDATE task_threads SET created_for_task = 1, link_origin = 'delegate_spawn' WHERE id = ?").run(link.id);
+    source.bb.storage.database().prepare("UPDATE task_threads SET thread_id = 'thr_two' WHERE id = ?").run(link.id);
+    await importProject(target.bb, target.store, await exportOf(source, "link-two"), true);
+    expect(targetDb.prepare("SELECT thread_id, created_for_task, link_origin FROM task_threads WHERE id = ?").get(link.id)).toEqual({ thread_id: "thr_two", created_for_task: 0, link_origin: null });
+  });
+});
+
+it("never exports manager-attention state, and an import, --overwrite included, changes no mode, ack, ledger, manager or link", async () => {
+  const source = await seed();
+  const db = source.bb.storage.database();
+  const { requestMode } = await import("../attention/modes");
+  requestMode(db, { trackerId: source.project.id, mode: "shadow" });
+  db.prepare("INSERT INTO attention_manager(tracker_id, manager, changed_at, previous) VALUES (?, 'thr_example', ?, NULL)").run(source.project.id, new Date().toISOString());
+  db.prepare("INSERT INTO attention_acks(tracker_id, kind, token, generation, direction, fence_id, ids_hash, result_json) VALUES (?, 'stale-status', 't1', 1, 'to_live', 'f1', 'h', '{}')").run(source.project.id);
+  const out = join(await directory(), "snapshot");
+  await exportProject(source.bb, source.store, source.project.id, out);
+  const archive = await readProjectArchive(source.bb, undefined, out);
+  expect(JSON.stringify(archive)).not.toMatch(/attention|manager_attention|thr_example|fence/i);
+  source.store.tasks.updateTask(source.task.id, { title: "Changed locally" });
+  const tables = ["attention_modes", "attention_acks", "attention_manager", "attention_rev", "manager_attention", "attention_attempts", "attention_handback"];
+  const state = () => JSON.stringify([tables.map((table) => db.prepare(`SELECT * FROM ${table} ORDER BY 1, 2`).all()), source.store.tasks.getProject(source.project.id)?.linkedBbProjectId]);
+  const before = state();
+  await importProject(source.bb, source.store, out, false).catch(() => undefined);
+  await importProject(source.bb, source.store, out, true);
+  expect(source.store.tasks.getTask(source.task.id)?.title).not.toBe("Changed locally");
+  expect(state()).toBe(before);
+  expect(source.store.tasks.getProject(source.project.id)?.linkedBbProjectId).toBe("proj_original");
+});
+
+it("C1.1: a restore cannot relink a bound tracker or add a second tracker to a bound BB project", async () => {
+  const source = await seed();
+  const { requestMode } = await import("../attention/modes");
+  const out = join(await directory(), "snapshot");
+  await exportProject(source.bb, source.store, source.project.id, out);
+  const relink = async (link: string) => {
+    const path = join(out, "project.json");
+    const manifest = JSON.parse(await readFile(path, "utf8"));
+    manifest.project.linkedBbProjectId = link;
+    await writeFile(path, jsonText(manifest));
+  };
+  // An overwrite whose snapshot names another BB project must not relink a bound tracker.
+  requestMode(source.bb.storage.database(), { trackerId: source.project.id, mode: "shadow" });
+  await relink("proj_elsewhere");
+  await expect(importProject(source.bb, source.store, out, true)).rejects.toThrow(/not off/);
+  expect(source.store.tasks.getProject(source.project.id)?.linkedBbProjectId).toBe("proj_original");
+  // A new import that carries the link of a bound BB project is a second tracker on it.
+  await relink("proj_original");
+  const target = setup();
+  const bound = target.store.tasks.createProject({ name: "Bound", prefix: "BND", color: "blue", linkedBbProjectId: "proj_original" });
+  requestMode(target.bb.storage.database(), { trackerId: bound.id, mode: "shadow" });
+  await expect(importProject(target.bb, target.store, out, false)).rejects.toThrow(/bound/);
+  expect(target.store.tasks.getProject(source.project.id)).toBeUndefined();
+});
+
+describe("plan debt and imports", () => {
+  const debtor = async () => {
+    const f = setup();
+    const project = f.store.tasks.createProject({ name: "Example", prefix: "EXA", color: "blue" });
+    f.store.tasks.updateProject(project.id, { planning: "optional" });
+    const task = f.store.tasks.createTask({ projectId: project.id, title: "Debt", status: "in_progress" });
+    const db = f.bb.storage.database();
+    const episodes = () => db.prepare<[string], { id: number; since: string; ended_at: string | null }>("SELECT * FROM plan_debt_episodes WHERE task_id = ? ORDER BY id").all(task.id);
+    const exported = async (name: string) => { const out = join(await directory(), name); await exportProject(f.bb, f.store, project.id, out); return out; };
+    return { ...f, project, task, db, episodes, exported };
+  };
+
+  it("settles episodes inside the import, so moving a debtor to Done and back keeps no stale deadline", async () => {
+    const f = await debtor();
+    const inWork = await f.exported("in-work");
+    f.store.tasks.updatePosition(f.task.id, { status: "done" });
+    const closed = await f.exported("closed");
+    // The card is back in progress without a plan while planning is required: the debt of the card is open.
+    f.db.prepare("UPDATE tasks SET status = 'in_progress' WHERE id = ?").run(f.task.id);
+    f.store.tasks.updateProject(f.project.id, { planning: "required" });
+    const first = f.episodes();
+    expect(first).toMatchObject([{ ended_at: null }]);
+    // No scan between the imports: the import itself closes and opens the episodes.
+    await importProject(f.bb, f.store, closed, true);
+    expect(f.episodes()).toMatchObject([{ ended_at: expect.any(String) }]);
+    await importProject(f.bb, f.store, inWork, true);
+    const after = f.episodes();
+    expect(after).toHaveLength(2);
+    expect(after[1]).toMatchObject({ ended_at: null });
+    expect(after[1]!.id).not.toBe(first[0]!.id);
+  });
+
+  it("records a newly confirmed PR link against the open episode, once", async () => {
+    const f = await debtor();
+    const now = new Date().toISOString();
+    const git = createGitSyncStore(f.db);
+    git.saveLink(prLinkSchema.parse({ repository: "owner/repo", number: 7, url: "https://github.com/owner/repo/pull/7", taskId: f.task.id, source: "manual", role: "delivers", part: null, confirmed: true, excluded: false, remoteId: null, createdAt: now, updatedAt: now }));
+    const withLink = await f.exported("with-link");
+    f.db.prepare("DELETE FROM task_pr_links WHERE task_id = ?").run(f.task.id);
+    f.store.tasks.updateProject(f.project.id, { planning: "required" });
+    const events = () => f.db.prepare("SELECT trigger FROM plan_debt_events").all();
+    expect(events()).toEqual([]);
+    await importProject(f.bb, f.store, withLink, true);
+    expect(events()).toEqual([{ trigger: `pr:${prIdentity({ repository: "owner/repo", number: 7 })}` }]);
+    await importProject(f.bb, f.store, withLink, true);
+    expect(events()).toHaveLength(1);
+  });
 });

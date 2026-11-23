@@ -27,15 +27,17 @@ describe("prune", () => {
     const cand = (key: string, ts: number) => db.prepare("INSERT INTO bb_candidate (key, ts) VALUES (?, ?)").run(key, ts);
     cand("c-old", NOW - 25 * 3_600_000);
     cand("c-new", NOW - 3_600_000);
+    db.prepare("INSERT INTO compaction_seen (key, at) VALUES ('s-old', ?), ('s-new', ?)").run(NOW - 31 * DAY, NOW - 29 * DAY);
 
-    // raw: old + rollup-old (2); hourly: rollup-old (1); requests/bb_candidate: 1 each (2); ext_pending is never pruned
-    expect(prune(db, { rawRetentionDays: 30, rollupRetentionDays: 200, now: NOW })).toBe(5);
+    // raw: old + rollup-old (2); hourly: rollup-old (1); requests/bb_candidate/compaction_seen: 1 each (3); ext_pending is never pruned
+    expect(prune(db, { rawRetentionDays: 30, rollupRetentionDays: 200, now: NOW })).toBe(6);
 
     expect(db.prepare("SELECT key FROM usage_raw").all()).toEqual([{ key: "fresh" }]);
     expect(db.prepare("SELECT COUNT(*) AS n FROM usage_hourly").get()).toEqual({ n: 2 });
     expect(db.prepare("SELECT request_id FROM requests").all()).toEqual([{ request_id: "r-new" }]);
     expect(db.prepare("SELECT id FROM ext_pending ORDER BY id").all()).toEqual([{ id: "e-new" }, { id: "e-old" }]);
     expect(db.prepare("SELECT key FROM bb_candidate").all()).toEqual([{ key: "c-new" }]);
+    expect(db.prepare("SELECT key FROM compaction_seen").all()).toEqual([{ key: "s-new" }]);
     expect(prune(db, { rawRetentionDays: 30, rollupRetentionDays: 200, now: NOW })).toBe(0);
   });
 

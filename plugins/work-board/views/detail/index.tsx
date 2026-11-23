@@ -10,6 +10,7 @@ import { PrLinksProvider, PullRequestsSection } from "../../components/pr-links"
 import { ArchiveTaskControl } from "../../components/archive-task-control";
 import { useTaskStatuses } from "../../shell/task-statuses.js";
 import {
+  useCallback,
   useEffect,
   useRef,
   useState,
@@ -32,6 +33,7 @@ import {
   useTasksRpc,
 } from "../../shell/data.js";
 import { useTasksNavigation } from "../../shell/routes.js";
+import { useTasksRefresh } from "../../shell/refresh.js";
 import { TasksEditor } from "../../editor/tasks-editor.js";
 import { TaskActivity } from "../activity/task-activity.js";
 import { QuestionsSection } from "./questions";
@@ -72,6 +74,8 @@ interface DetailViewProps {
 
 const DESCRIPTION_SAVE_DELAY_MS = 800;
 const ACTIVE_PULL_REQUEST_REFRESH_MS = 60_000;
+/** Window focus revalidates PR state only when the last lookup began longer ago than this. */
+export const PR_FOCUS_STALE_MS = 15_000;
 
 function SubTaskDonut({
   subtasks,
@@ -90,7 +94,7 @@ function SubTaskDonut({
       type="button"
       title={epic ? "Tasks completed" : "Sub-tasks completed"}
       onClick={onClick}
-      className="inline-flex items-center gap-1.5 rounded-full border border-border bg-secondary px-2.5 py-0.5 text-xs text-muted-foreground shadow-2xs hover:border-input hover:text-foreground"
+      className="inline-flex shrink-0 items-center whitespace-nowrap gap-1.5 rounded-full border border-border bg-secondary px-2.5 py-0.5 text-xs text-muted-foreground shadow-2xs hover:border-input hover:text-foreground"
     >
       <span
         aria-hidden
@@ -390,11 +394,26 @@ function TaskDetail({
     [task.id],
     { relevantTaskIds: [task.id] },
   );
+  // Reloads that began with an attachment on screen; the PR follow-up reads the accepted result below.
+  // Loads that begin without one (first load, first attachment) are covered by the PR query becoming enabled.
+  const hasThreadsRef = useRef(false);
+  const reloadedWithThreads = useRef(new WeakSet<object>());
+  // A "Refresh tasks" generation reloads the PR query itself, so the thread reload it causes needs no follow-up.
+  const { generation } = useTasksRefresh();
+  const generationRef = useRef(generation);
+  generationRef.current = generation;
+  const threadsGeneration = useRef(generation);
   const threads = useTasksQuery<TaskThread[]>(
     async (query, publish) => {
+      // Captured on entry, before any await, so an older overlapping read cannot record a newer generation.
+      const coveredByRefresh = threadsGeneration.current !== generationRef.current;
+      threadsGeneration.current = generationRef.current;
+      const startedWithThreads = hasThreadsRef.current && !coveredByRefresh;
       const cached = await query.call("listTaskThreads", { taskId: task.id, reconcile: false });
       publish(cached.taskThreads);
-      return (await query.call("listTaskThreads", { taskId: task.id })).taskThreads;
+      const list = (await query.call("listTaskThreads", { taskId: task.id })).taskThreads;
+      if (startedWithThreads) reloadedWithThreads.current.add(list);
+      return list;
     },
     ["threads:changed"],
     [task.id],
@@ -416,21 +435,52 @@ function TaskDetail({
     async (query) => (await query.call("listPresets")).presets,
     ["projects:changed"],
   );
-  const pullRequests = useTasksQuery(
-    async (query) => query.call("listTaskPullRequests", { taskId: task.id }),
-    ["threads:changed"],
+  // Pull-request lookups only matter for a task with attached threads.
+  const hasThreads = (threads.data?.length ?? 0) > 0;
+  hasThreadsRef.current = hasThreads;
+  // Written inside the fetcher, so every start counts (mount, signal, poll, focus), however React batches state.
+  const pullRequestLookup = useRef({ startedAt: 0, outstanding: 0 });
+  const pullRequestsQuery = useTasksQuery(
+    async (query) => {
+      const lookup = pullRequestLookup.current;
+      lookup.startedAt = Date.now();
+      // A count, not a flag: overlapping lookups (poll + refresh) must all settle before focus may start another.
+      lookup.outstanding += 1;
+      try {
+        return await query.call("listTaskPullRequests", { taskId: task.id });
+      } finally {
+        lookup.outstanding -= 1;
+      }
+    },
+    // No channel of its own: thread events refresh it below, once the updated thread list is in.
+    [],
     [task.id],
-    { relevantTaskIds: [task.id] },
+    { enabled: hasThreads, relevantTaskIds: [task.id] },
   );
+  // Without threads the last result is stale (e.g. the final thread was detached): show nothing.
+  const pullRequests = hasThreads ? pullRequestsQuery : { ...pullRequestsQuery, data: undefined };
   const refreshPullRequests = pullRequests.refresh;
+  const refreshPullRequestsOnFocus = useCallback(() => {
+    const { startedAt, outstanding } = pullRequestLookup.current;
+    if (outstanding > 0 || Date.now() - startedAt < PR_FOCUS_STALE_MS) return;
+    refreshPullRequests();
+  }, [refreshPullRequests]);
+  // A thread event is acted on once the reloaded list is the accepted result (an unmounted or superseded
+  // fetch never gets here), and only if an attachment remains.
+  const refreshPullRequestsRef = useRef(refreshPullRequests);
+  refreshPullRequestsRef.current = refreshPullRequests;
+  useEffect(() => {
+    const list = threads.data;
+    if (list !== undefined && list.length > 0 && reloadedWithThreads.current.has(list)) refreshPullRequestsRef.current();
+  }, [threads.data]);
   const hasActivePullRequest = (pullRequests.data?.pullRequests ?? []).some(
     (pullRequest) =>
       pullRequest.state === "open" || pullRequest.state === "draft",
   );
   useEffect(() => {
-    window.addEventListener("focus", refreshPullRequests);
-    return () => window.removeEventListener("focus", refreshPullRequests);
-  }, [refreshPullRequests]);
+    window.addEventListener("focus", refreshPullRequestsOnFocus);
+    return () => window.removeEventListener("focus", refreshPullRequestsOnFocus);
+  }, [refreshPullRequestsOnFocus]);
   useEffect(() => {
     if (!hasActivePullRequest) return;
     const timer = window.setInterval(() => {
@@ -553,19 +603,19 @@ function TaskDetail({
           subtasks.data?.length ? (
             <div className="mb-4 flex flex-wrap items-center gap-2">
               {task.type === "epic" ? (
-                <span className="rounded-full border border-border px-2.5 py-0.5 text-xs font-medium">
+                <span className="shrink-0 whitespace-nowrap rounded-full border border-border px-2.5 py-0.5 text-xs font-medium">
                   Epic
                 </span>
               ) : null}
               {epic.data ? (
                 <button
                   type="button"
-                  className="inline-flex max-w-full items-center gap-1.5 rounded-full border border-border bg-secondary px-2.5 py-0.5 text-xs hover:border-input"
+                  className="inline-flex min-w-0 max-w-full items-center gap-1.5 whitespace-nowrap rounded-full border border-border bg-secondary px-2.5 py-0.5 text-xs hover:border-input"
                   onClick={() =>
                     navigation.go({ kind: "task", taskKey: epic.data!.key })
                   }
                 >
-                  <Icon name="Zap" className="size-3" />
+                  <Icon name="Zap" className="size-3 shrink-0" />
                   <span className="truncate">
                     {epic.data.key} · {epic.data.title}
                   </span>
@@ -574,14 +624,15 @@ function TaskDetail({
               {parentTask ? (
                 <button
                   type="button"
-                  className="inline-flex max-w-full items-center gap-1.5 rounded-full border border-border bg-secondary px-2.5 py-0.5 text-xs text-muted-foreground shadow-2xs hover:border-input"
+                  className="inline-flex min-w-0 max-w-full items-center gap-1.5 whitespace-nowrap rounded-full border border-border bg-secondary px-2.5 py-0.5 text-xs text-muted-foreground shadow-2xs hover:border-input"
                   onClick={() =>
                     navigation.go({ kind: "task", taskKey: parentTask.key })
                   }
                 >
-                  Sub-task of
-                  <StatusIcon projectId={parentTask.projectId} status={parentTask.status} className="size-3" />
-                  <span className="font-medium text-foreground">
+                  {/* Only the title shrinks; the label and the key never wrap. */}
+                  <span className="shrink-0">Sub-task of</span>
+                  <StatusIcon projectId={parentTask.projectId} status={parentTask.status} className="size-3 shrink-0" />
+                  <span className="shrink-0 font-medium text-foreground">
                     {parentTask.key}
                   </span>
                   <span className="min-w-0 truncate">{parentTask.title}</span>
@@ -704,8 +755,8 @@ function TaskDetail({
                     taskId: task.id,
                     threadId: thread.threadId,
                   });
+                  // The pull requests refresh once the reloaded list is in, and only if a thread is left.
                   threads.refresh();
-                  pullRequests.refresh();
                 }}
                 onError={(message) => push(message)}
               />
@@ -743,7 +794,7 @@ function TaskDetail({
         >
           <TaskCostSection key={`cost-${task.id}`} taskId={task.id} epic={task.type === "epic"} />
           <ClaimsLine key={`claims-${task.id}`} taskId={task.id} />
-          <PullRequestsSection key={task.id} taskId={task.id} projectId={task.projectId} loading={pullRequests.isFetching} />
+          <PullRequestsSection key={task.id} taskId={task.id} projectId={task.projectId} />
         </PropertiesRail>
       </div>
       <DetailToasts toasts={toasts} onDismiss={dismiss} />

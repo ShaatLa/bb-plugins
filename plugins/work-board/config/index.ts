@@ -1,21 +1,31 @@
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import type { z } from "zod";
 import type { TasksApiStore } from "../api";
+import { planGatedStatuses } from "../shared/workflow-policy";
 import { publishProjectsChanged } from "../api";
 import { gitSyncService } from "../git-sync/service";
 import { createGitSyncStore } from "../git-sync/store";
-import { gitSyncConfigSchema } from "../shared/git-sync";
-import { autoArchiveAfterDaysSchema, staleIdleThresholdSchema, statusNotificationsSchema } from "../shared/project-settings";
+import { gitSyncConfigSchema, overlapEnabled } from "../shared/git-sync";
+import { ATTENTION_OWNER_ONLY } from "../shared/attention";
+import { getModeRow } from "../attention/modes";
+import { CHECK_FIELDS, CHECKS_CONFIG_KEYS, CHECKS_ENABLED_OWNER_ONLY, CHECKS_PREFIX, type CheckField } from "../checks/config";
+import { checksService } from "../checks/service";
+import { archiveSettingSchema, autoArchiveAfterDaysSchema, PLANNING_OWNER_ONLY, planningSchema, staleIdleThresholdSchema, statusNotificationsSchema } from "../shared/project-settings";
 
 // Per-project settings addressable one key at a time; Git settings carry a "git." prefix.
 const PROJECT_KEYS = {
   autoArchiveAfterDays: autoArchiveAfterDaysSchema,
   staleIdleMinutes: staleIdleThresholdSchema,
   statusNotifications: statusNotificationsSchema,
+  archiveThreadsOnClose: archiveSettingSchema,
+  archiveReviewerOnApproval: archiveSettingSchema,
+  planning: planningSchema,
 } as const;
 type ProjectKey = keyof typeof PROJECT_KEYS;
 const GIT_KEYS = Object.keys(gitSyncConfigSchema.shape) as (keyof z.infer<typeof gitSyncConfigSchema>)[];
-export const PROJECT_CONFIG_KEYS = [...Object.keys(PROJECT_KEYS), ...GIT_KEYS.map((key) => `git.${key}`)];
+// Manager attention is the owner's to change in the project settings; the keys are readable here and refused by `config.set`.
+const ATTENTION_KEYS = ["attentionMode", "manager"];
+export const PROJECT_CONFIG_KEYS = [...Object.keys(PROJECT_KEYS), ...ATTENTION_KEYS, ...GIT_KEYS.map((key) => `git.${key}`), ...CHECKS_CONFIG_KEYS];
 
 function requireKey(key: string) {
   if (!PROJECT_CONFIG_KEYS.includes(key)) throw new Error(`Unknown setting ${key}; known: ${PROJECT_CONFIG_KEYS.join(", ")}`);
@@ -33,18 +43,36 @@ export function projectConfigHandlers(bb: BbPluginApi, store: TasksApiStore) {
     return {
       ...Object.fromEntries((Object.keys(PROJECT_KEYS) as ProjectKey[]).map((key) => [key, project[key]])),
       ...Object.fromEntries(GIT_KEYS.map((key) => [`git.${key}`, git[key] ?? null])),
+      "git.overlapEnabled": overlapEnabled(git),
+      ...checksService(bb).configValues(projectId),
+      attentionMode: getModeRow(bb.storage.database(), projectId).effective_mode,
+      manager: bb.storage.database().prepare<[string], { manager: string | null }>("SELECT manager FROM attention_manager WHERE tracker_id=?").get(projectId)?.manager ?? null,
     };
   };
   return {
     "config.get"({ projectId, key }: { projectId: string; key?: string }) {
       const all = values(projectId);
-      if (key === undefined) return { projectId, values: all };
+      const project = requireProject(projectId);
+      // Planning shows when it last changed and what it was before.
+      const planningHistory = { planningChangedAt: project.planningChangedAt ?? null, planningPrevious: project.planningPrevious ?? null, planGatedStatuses: planGatedStatuses(project) };
+      if (key === undefined) return { projectId, values: { ...all, ...planningHistory } };
       requireKey(key);
-      return { projectId, values: { [key]: all[key] ?? null } };
+      return { projectId, values: { [key]: all[key] ?? null, ...(key === "planning" ? planningHistory : {}) } };
     },
     async "config.set"({ projectId, key, value }: { projectId: string; key: string; value?: unknown }) {
       requireKey(key);
+      // The owner changes planning in the project settings (updateProject from the app); no setting call proves the caller is the owner.
+      if (key === "planning") throw new Error(PLANNING_OWNER_ONLY);
+      if (ATTENTION_KEYS.includes(key)) throw new Error(ATTENTION_OWNER_ONLY);
       requireProject(projectId);
+      if (key.startsWith(CHECKS_PREFIX)) {
+        // `enabled` is the owner's, changed only from the project settings UI; every other field is validated and written alone.
+        if (key === `${CHECKS_PREFIX}enabled`) throw new Error(CHECKS_ENABLED_OWNER_ONLY);
+        const field = key.slice(CHECKS_PREFIX.length) as CheckField;
+        if (!CHECK_FIELDS.includes(field)) throw new Error(`Unknown setting ${key}`);
+        checksService(bb).setField(projectId, field, value);
+        return { projectId, key, value: checksService(bb).configValues(projectId)[key] ?? null };
+      }
       if (key.startsWith("git.")) {
         const field = key.slice(4);
         const current = createGitSyncStore(bb.storage.database()).config(projectId);
@@ -54,7 +82,7 @@ export function projectConfigHandlers(bb: BbPluginApi, store: TasksApiStore) {
         if (!parsed.success && typeof value === "string") parsed = next(value.split(",").map((item) => item.trim()).filter(Boolean));
         if (!parsed.success) throw new Error(`Invalid value for ${key}: ${parsed.error.issues.map((issue) => issue.message).join("; ")}`);
         const { config } = await gitSyncService(bb, store).handlers.setGitSyncConfig({ projectId, config: parsed.data });
-        return { projectId, key, value: (config as Record<string, unknown>)[field] ?? null };
+        return { projectId, key, value: field === "overlapEnabled" ? overlapEnabled(config) : (config as Record<string, unknown>)[field] ?? null };
       }
       // Project settings are string enums; "45" parsed as JSON arrives as a number.
       const parsed = PROJECT_KEYS[key as ProjectKey].parse(typeof value === "number" ? String(value) : value);

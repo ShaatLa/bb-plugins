@@ -1,5 +1,10 @@
+import { markTrackerDirty } from "../attention/ledger";
+import { assertLinkChangeAllowed } from "../attention/modes";
+import { releaseOwner } from "../checks/transfer";
 import { createGitSyncStore } from "../git-sync/store";
-import { prIdentity } from "../shared/git-sync";
+import { prIdentity, prLinkSchema } from "../shared/git-sync";
+import { planDebtService } from "../plan-debt/service";
+import { recordPlanDebtEvent, syncProjectPlanDebt } from "../plan-debt/store";
 import { DEFAULT_TASK_STATUSES } from "../shared/statuses.js";
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import type { TasksApiStore } from "../api";
@@ -12,6 +17,8 @@ import {
 import { createStructuredStore } from "../structured/store";
 import { createPlanStore } from "../plans/store";
 import { createPlanNoteStore } from "../plans/notes";
+import { ensurePlanningStatus, getWorkflowPolicy, settlePlanFlags, withPlanningStatus, workflowPolicySchema } from "../shared/workflow-policy";
+import { planningOn } from "../shared/project-settings";
 import { scheduleRunSchema, scheduleSchema, scheduleSourceSchema, type ScheduleRun } from "../shared/scheduled";
 import {
   archiveProjectSchema,
@@ -22,6 +29,7 @@ import {
   type ArchiveTask,
   type ProjectArchive,
 } from "./contract";
+import { planReviewSchema } from "../shared/contract";
 
 // Imported history is never operational: server-local thread/queue/request IDs must not be resumed on another BB.
 export const historicalRun = (run: ScheduleRun): ScheduleRun => ({ ...run, threadId: null, queueId: null, requestId: null, historical: true });
@@ -64,7 +72,7 @@ export function captureProject(
     const taskIdSet = new Set(tasks.map(task => task.id));
     const manifest = archiveProjectSchema.parse({
       format: "bb-work-board",
-      version: 19,
+      version: 21,
       gitSync: createGitSyncStore(bb.storage.database()).config(projectId),
       project,
       folders,
@@ -115,6 +123,7 @@ export function captureProject(
     const planStore = createPlanStore(bb.storage.database(), store.tasks);
     const plansByTask = planStore.captureProject(projectId);
     const notesByTask = createPlanNoteStore(bb.storage.database(), store.tasks, planStore.head).captureProject(projectId);
+    const reviewsByTask = planStore.captureReviewsProject(projectId);
     const linksByTask = group(createGitSyncStore(db).linksForProject(projectId), (l) => l.taskId);
     const dependenciesByTask = group(db.prepare<[string], { taskId: string; blockingTaskId: string }>(`
       SELECT d.task_id AS taskId, d.blocking_task_id AS blockingTaskId
@@ -156,6 +165,7 @@ export function captureProject(
       questions: questionsByTask.get(task.id) ?? [],
       plan: plansByTask.get(task.id) ?? null,
       planNotes: notesByTask.get(task.id) ?? [],
+      planReviews: reviewsByTask.get(task.id) ?? [],
       attachments: [...(attachmentsByTask.get(task.id) ?? [])].sort(byId),
       threads: [...(threadsByTask.get(task.id) ?? [])].sort(byId),
       aliases: (aliasesByTask.get(task.id) ?? []).map(({ prefix, number }) => ({ prefix, number })),
@@ -190,6 +200,16 @@ export async function archiveRecords(
     records.push(archiveTaskSchema.parse({ ...record, attachments }));
   }
   return records;
+}
+
+/** A stored workflow policy as the schema reads it, so a missing field and its default compare equal. */
+function normalizedPolicy(value: unknown): unknown {
+  if (typeof value !== "string") return value;
+  try {
+    return JSON.stringify(workflowPolicySchema.parse(JSON.parse(value)));
+  } catch {
+    return value;
+  }
 }
 
 function dbRow(value: object): Row {
@@ -253,6 +273,9 @@ export function restoreProject(
   const db = bb.storage.database();
   const { manifest, records } = archive;
   const projectId = manifest.project.id;
+  // An import never touches attention state; the cards it changes reach the ledger through the debounced scan.
+  markTrackerDirty(projectId);
+  let confirmedLinks = false;
   store.transaction(() => {
     const localTaskIds = new Set(db.prepare<[string], { id: string }>("SELECT id FROM tasks WHERE project_id=?").all(projectId).map(row => row.id));
     const localDependencies = new Map<string, string[]>();
@@ -279,16 +302,55 @@ export function restoreProject(
     // Archives before v18 cannot carry plans, so they leave local plans untouched.
     const plans = createPlanStore(db, store.tasks);
     const planOf = (record: (typeof records)[number]) => (manifest.version >= 18 ? record.plan ?? null : undefined);
+    // Archives before v20 carry no reviewer (the parser reads it as the owner), so they are compared without it.
+    const planKey = (plan: ReturnType<typeof archivePlanSchema.parse> | null) =>
+      JSON.stringify(manifest.version >= 20 || !plan ? plan : { ...plan, reviewer: undefined, reviewVersion: undefined });
     for (const record of records) if (planOf(record) !== undefined && localTaskIds.has(record.task.id) && !overwrite) {
       const local = plans.capture(record.task.id);
       const imported = planOf(record)!;
-      if (JSON.stringify(local && archivePlanSchema.parse(local)) !== JSON.stringify(imported))
+      if (planKey(local && archivePlanSchema.parse(local)) !== planKey(imported))
         throw new Error(`Import conflict: plan ${record.task.key}; use --overwrite`);
+    }
+    // Archives before v20 leave the local review history alone, and those before v19 the local notes. A plan they replace
+    // must not fall below a version that history still refers to, or orphan a pending review attempt: either would leave
+    // a project that fails the validation of its own export. Checked before anything is written.
+    for (const record of records) {
+      const imported = planOf(record);
+      if (imported === undefined || !localTaskIds.has(record.task.id)) continue;
+      const local = plans.capture(record.task.id);
+      if (planKey(local && archivePlanSchema.parse(local)) === planKey(imported)) continue;
+      const to = imported?.version ?? 0;
+      if (manifest.version < 20) {
+        const reviews = plans.captureReviews(record.task.id);
+        const newest = Math.max(0, ...reviews.map((review) => review.version));
+        if (newest > to)
+          throw new Error(`Import conflict: plan ${record.task.key} would be rewound to v${to}, but its local review history refers to v${newest}; import a v20 snapshot, or remove the review history first`);
+        // An older-format plan has no reviewer, so replacing the head of a plan with a pending attempt would detach that
+        // thread from its review. The one exception is a head with the same text and version, whose binding is kept.
+        const pending = reviews.find((review) => review.outcome === "pending");
+        if (pending && !(imported && local && imported.version === local.version && imported.body === local.body))
+          throw new Error(`Import conflict: plan ${record.task.key} has a pending review of v${pending.version} that this import would detach; finish or reassign the review first, or import a v20 snapshot`);
+        // Keeping the binding must not make the assigned reviewer the author of a version it reviews.
+        if (pending && imported?.versions.some((version) => version.author.threadId !== null && version.author.threadId === pending.reviewer.threadId))
+          throw new Error(`Import conflict: plan ${record.task.key} has a pending review by ${pending.reviewer.threadId}, which the snapshot names as the author of a plan version; finish or reassign the review first`);
+      }
+      if (manifest.version < 19) {
+        const refs = createPlanNoteStore(db, store.tasks, plans.head).capture(record.task.id).flatMap((note) => [note.madeOnVersion, note.sentInVersion ?? 0, note.addressedInVersion ?? 0]);
+        const newest = Math.max(0, ...refs);
+        if (newest > to) throw new Error(`Import conflict: plan ${record.task.key} would be rewound to v${to}, but its local notes refer to v${newest}; import a v19 or later snapshot, or delete those notes first`);
+      }
     }
     // Archives before v19 cannot carry plan notes either, so they leave local notes untouched.
     const planNotes = createPlanNoteStore(db, store.tasks, plans.head);
     const notesOf = (record: (typeof records)[number]) => (manifest.version >= 19 ? record.planNotes ?? [] : undefined);
     const localNotes = (taskId: string) => archivePlanNoteSchema.array().parse(planNotes.capture(taskId));
+    // Review history exists from v20; older archives leave the local history untouched.
+    const reviewsOf = (record: (typeof records)[number]) => (manifest.version >= 20 ? record.planReviews ?? [] : undefined);
+    const localReviews = (taskId: string) => planReviewSchema.array().parse(plans.captureReviews(taskId));
+    for (const record of records) if (reviewsOf(record) !== undefined && localTaskIds.has(record.task.id) && !overwrite) {
+      if (JSON.stringify(localReviews(record.task.id)) !== JSON.stringify(reviewsOf(record)))
+        throw new Error(`Import conflict: plan reviews ${record.task.key}; use --overwrite`);
+    }
     for (const record of records) if (notesOf(record) !== undefined && localTaskIds.has(record.task.id) && !overwrite) {
       if (JSON.stringify(localNotes(record.task.id)) !== JSON.stringify(notesOf(record)))
         throw new Error(`Import conflict: plan notes ${record.task.key}; use --overwrite`);
@@ -321,16 +383,17 @@ export function restoreProject(
           );
         if (table === "projects" && current.statuses == null)
           current.statuses = JSON.stringify(DEFAULT_TASK_STATUSES);
-        const differs = Object.keys(row).some(
-          (key) => current[key] !== row[key],
-        );
+        // A stored policy that predates a field reads, and so exports, with that field's default; compare them as read.
+        const differ = (key: string) =>
+          current[key] !== row[key] && !(table === "projects" && key === "workflow_policy" && normalizedPolicy(current[key]) === normalizedPolicy(row[key]));
+        const differs = Object.keys(row).some(differ);
         if (!differs) return;
         if (
           !overwrite &&
           Object.keys(row).some(
             (key) =>
               !(table === "projects" && key === "next_task_number") &&
-              current[key] !== row[key],
+              differ(key),
           )
         )
           throw new Error(
@@ -341,21 +404,47 @@ export function restoreProject(
     };
     for (const folder of manifest.folders) plan("folders", dbRow(folder));
     const currentProject = store.tasks.getProject(projectId);
+    // The snapshot carries the BB project link; a restore may not relink a bound tracker or add a second tracker to a bound BB project.
+    assertLinkChangeAllowed(db, projectId, currentProject?.linkedBbProjectId ?? null, manifest.project.linkedBbProjectId ?? null);
     const maxNumber = [
       ...store.tasks.listTasks({ projectId }),
       ...records.map((r) => r.task),
     ].reduce((max, task) => Math.max(max, task.number), 0);
     if (!Number.isSafeInteger(maxNumber + 1))
       throw new Error("Task number exceeds the supported range");
+    // Planning is the owner's setting: an import never changes an existing project's. A project the import creates takes
+    // the snapshot's value; a snapshot from before v20 has none, so it is inferred from its plans.
+    const { planning: snapshotPlanning, planningChangedAt, planningPrevious, planFlagsInitialized, archiveThreadsOnClose, archiveReviewerOnApproval, ...manifestProject } = manifest.project;
+    // The two thread-archive switches are the project owner's too: an existing project keeps its own, a project the
+    // import creates takes a v21 snapshot's value, and an older snapshot has none, so the defaults (on) apply.
+    const snapshotArchiveSettings = manifest.version >= 21 ? { ...(archiveThreadsOnClose === undefined ? {} : { archiveThreadsOnClose }), ...(archiveReviewerOnApproval === undefined ? {} : { archiveReviewerOnApproval }) } : {};
+    // The flags and their marker are the owner's too. They are merged by status id before the lists are compared: an
+    // existing project keeps the local flag of every status it has (a new id gets the default), a project the import
+    // creates takes the snapshot's flags, and `canceled` is never marked. A flag-only difference is never a conflict or a write.
+    const incomingStatuses: Array<{ id: string; name: string; requiresApprovedPlan?: boolean }> = manifest.project.statuses ?? DEFAULT_TASK_STATUSES;
+    const settledStatuses = currentProject
+      ? settlePlanFlags({ statuses: incomingStatuses.map(({ requiresApprovedPlan: _flag, ...status }) => status), previous: currentProject.statuses, planning: currentProject.planning ?? "off", initialized: true, workflowPolicy: manifest.project.workflowPolicy }).statuses
+      : settlePlanFlags({ statuses: incomingStatuses, previous: null, planning: "off", initialized: true }).statuses;
     const project = {
-      ...manifest.project,
-      statuses: manifest.project.statuses ?? DEFAULT_TASK_STATUSES,
+      ...manifestProject,
+      ...(currentProject ? {} : { ...snapshotArchiveSettings, planning: snapshotPlanning ?? (records.some((record) => record.plan) ? "optional" : "off"), ...(planningChangedAt === undefined ? {} : { planningChangedAt, planningPrevious }), planFlagsInitialized: planFlagsInitialized ?? false }),
+      statuses: settledStatuses,
       nextTaskNumber: Math.max(
         manifest.project.nextTaskNumber,
         currentProject?.nextTaskNumber ?? 1,
         maxNumber + 1,
       ),
     };
+    // The planning status is settled on the proposed project, before the comparison and the merged-task validation: an older
+    // snapshot without the Planning column still validates local cards in Planning, and preview and apply agree.
+    const proposedPlanning = currentProject ? currentProject.planning : project.planning;
+    if (planningOn({ planning: proposedPlanning })) {
+      const policy = project.workflowPolicy ?? currentProject?.workflowPolicy;
+      const ensured = ensurePlanningStatus({ statuses: project.statuses, workflowPolicy: policy });
+      project.statuses = ensured.statuses;
+      if (ensured.planningStatus !== null && getWorkflowPolicy({ workflowPolicy: policy }).planningStatus !== ensured.planningStatus)
+        project.workflowPolicy = withPlanningStatus(policy, ensured.planningStatus) ?? undefined;
+    }
     plan("projects", dbRow(project), ["id"]);
     const labels = new Map(
       store.tasks.listLabels(projectId).map((label) => [label.id, label]),
@@ -532,12 +621,22 @@ export function restoreProject(
       }, ["id"], ["project_id", "schedule_id"]);
     }
     db.pragma("defer_foreign_keys = ON");
+    // An import that relinks the project gives up the owner row of the old link, as a relink does (the assertion above refused a row that must stay).
+    if (currentProject?.linkedBbProjectId && currentProject.linkedBbProjectId !== (manifest.project.linkedBbProjectId ?? null)) releaseOwner(db, projectId, currentProject.linkedBbProjectId);
+    // The links this import confirms: a plan-debt trigger, unless the same link was confirmed here already.
+    const confirmedNow = (payload: string | undefined) => { const link = payload ? prLinkSchema.parse(JSON.parse(payload)) : null; return Boolean(link?.confirmed && !link.excluded); };
+    const newlyConfirmed = changes.filter(({ table, row }) => table === "task_pr_links" && confirmedNow(row.payload as string) && !confirmedNow(db.prepare<[SqlValue, SqlValue], { payload: string }>("SELECT payload FROM task_pr_links WHERE task_id=? AND identity=?").get(row.task_id!, row.identity!)?.payload))
+      .map(({ row }) => ({ taskId: row.task_id as string, identity: row.identity as string }));
     for (const { table, row, keys } of changes) {
+      // An overwrite that gives a link id to another thread must not keep the local authority to archive it.
+      const previousThread = table === "task_threads" ? db.prepare<[SqlValue], { thread_id: string }>("SELECT thread_id FROM task_threads WHERE id = ?").get(row.id!)?.thread_id : undefined;
+      const replacedLink = previousThread !== undefined && previousThread !== row.thread_id;
       const columns = Object.keys(row);
       const updates = columns.filter((key) => !keys.includes(key));
       db.prepare<SqlValue[]>(
         `INSERT INTO ${table} (${columns.join(", ")}) VALUES (${columns.map(() => "?").join(", ")}) ON CONFLICT (${keys.join(", ")}) DO UPDATE SET ${updates.map((key) => `${key} = excluded.${key}`).join(", ")}`,
       ).run(...columns.map((key) => row[key]!));
+      if (replacedLink) db.prepare<[SqlValue]>("UPDATE task_threads SET created_for_task = 0, link_origin = NULL WHERE id = ?").run(row.id!);
     }
     for (const record of records)
       if (record.activityHistory)
@@ -555,11 +654,19 @@ export function restoreProject(
       const imported = planOf(record);
       if (imported === undefined) continue;
       const local = plans.capture(record.task.id);
-      if (JSON.stringify(local && archivePlanSchema.parse(local)) !== JSON.stringify(imported)) plans.restore(record.task.id, imported);
+      if (planKey(local && archivePlanSchema.parse(local)) !== planKey(imported)) {
+        // An older-format import of the same text and version keeps the review binding of its pending attempt.
+        const bound = manifest.version < 20 && local && imported && plans.captureReviews(record.task.id).some((review) => review.outcome === "pending");
+        plans.restore(record.task.id, bound ? { ...imported, state: local.state, reviewer: local.reviewer, reviewVersion: local.reviewVersion } : imported);
+      }
     }
     for (const record of records) {
       const imported = notesOf(record);
       if (imported !== undefined && JSON.stringify(localNotes(record.task.id)) !== JSON.stringify(imported)) planNotes.restore(record.task.id, imported);
+    }
+    for (const record of records) {
+      const imported = reviewsOf(record);
+      if (imported !== undefined && JSON.stringify(localReviews(record.task.id)) !== JSON.stringify(imported)) plans.restoreReviews(record.task.id, imported);
     }
     if (manifest.gitSync) db.prepare<[string]>("DELETE FROM git_pr_snapshots WHERE project_id=?").run(projectId);
     for (const { task } of records) {
@@ -579,5 +686,9 @@ export function restoreProject(
           "INSERT INTO task_labels (task_id, label_id) VALUES (?, ?)",
         ).run(task.id, labelId);
     }
+    // Tasks, policy and plans are all written: settle plan-debt episodes now, so a scan never sees a stale one, then record the new confirmations against them.
+    syncProjectPlanDebt(db, projectId);
+    for (const { taskId, identity } of newlyConfirmed) if (recordPlanDebtEvent(db, taskId, `pr:${identity}`)) confirmedLinks = true;
   });
+  if (confirmedLinks) void planDebtService(bb, store.tasks).drain();
 }

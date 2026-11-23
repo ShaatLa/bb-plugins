@@ -1,8 +1,8 @@
 import { PluginCliError, cliCommand, type BbPluginApi, type PluginCliContext, type PluginCliResult } from "@get-bb/plugin-sdk";
-import type { registerHandlers } from "../api";
-import { tasksRpcContract, type PlanAuthor, type SaveTaskPlanInput, type Task } from "../shared/contract";
+import type { createPlanReviewFlow, registerHandlers } from "../api";
+import { planReviewerInputSchema, tasksRpcContract, type PlanAuthor, type SaveTaskPlanInput, type Task } from "../shared/contract";
 import { getSection } from "../shared/plan";
-import { buildFeedbackBody, noteLabel, orderNotes, parseNoteNumber, renderNote } from "../shared/plan-notes";
+import { buildFeedbackBody, noteLabel, orderNotes, parseNoteNumber, PLAN_NOTE_KINDS, renderNote } from "../shared/plan-notes";
 import { oneLine, table } from "./format";
 
 type Domain = ReturnType<typeof registerHandlers>;
@@ -11,6 +11,8 @@ type Domain = ReturnType<typeof registerHandlers>;
 export interface PlanCliDeps {
   bb: BbPluginApi;
   domain: Domain;
+  /** Reviewer commands and decisions; not part of the RPC contract. */
+  review: ReturnType<typeof createPlanReviewFlow>;
   guard: (action: () => Promise<string | PluginCliResult>) => Promise<PluginCliResult>;
   resolveTask: (domain: Domain, address: string) => Promise<Task>;
   resolveClientHostId: (bb: BbPluginApi, domain: Domain, machine: string | undefined, ctx: PluginCliContext) => Promise<string | undefined>;
@@ -31,7 +33,7 @@ const MAX_VERSION = 1_000_000;
 const lines = (added: number, removed: number) => `+${added} −${removed} lines`;
 
 export function planCommands(deps: PlanCliDeps) {
-  const { bb, domain, guard, resolveTask, resolveClientHostId, readTextOption, taskAuthor } = deps;
+  const { bb, domain, review, guard, resolveTask, resolveClientHostId, readTextOption, taskAuthor } = deps;
   const common = { json: deps.jsonOption };
   const writeOptions = {
     "base-version": { type: "integer" as const, min: 0, max: MAX_VERSION, required: true as const, placeholder: "N", description: "Plan version you edited from (0 for the first version); `plan show` prints it" },
@@ -42,6 +44,30 @@ export function planCommands(deps: PlanCliDeps) {
   const fail = (message: string, code?: string): never => {
     throw new PluginCliError(message, code ? { code } : undefined);
   };
+
+  /** The calling thread of a reviewer command; a call without one is refused. */
+  function reviewerOf(ctx: PluginCliContext): PlanAuthor {
+    if (!ctx.threadId) return fail("Reviewer commands run from the reviewer's own bb thread; this call has no thread id", "no_thread");
+    return authorOf(ctx);
+  }
+  const versionOption = { type: "integer" as const, min: 1, max: MAX_VERSION, required: true as const, placeholder: "N", description: "The plan version you read; a decision on any other version is refused" };
+  /** Note numbers such as `N1 3`, as printed by `plan notes`. */
+  function noteNumbers(key: string, tokens: readonly string[]): number[] {
+    if (tokens.length === 0) return fail("Name at least one note, for example N1", "missing_required");
+    return tokens.map((token) => parseNoteNumber(token) ?? fail(`"${token}" is not a note number; use N1, N2 … as printed by \`bb work-board plan notes ${key} --all\``, "invalid_value"));
+  }
+  /** Who got a result, and what to do by hand when someone did not. A failed delivery never undoes the decision. */
+  function deliveryReport(key: string, version: number, verdict: string, deliveries: ReadonlyArray<{ role: "actor" | "copy"; delivered: string; threadId: string | null }>): string {
+    const lines = deliveries.map((entry) =>
+      entry.delivered === "sent" ? `${entry.role === "actor" ? "Notified" : "Copy sent to"} ${entry.threadId}` : `Not delivered${entry.threadId ? ` to ${entry.threadId}` : ""} (${entry.delivered})`,
+    );
+    const missed = deliveries.filter((entry) => entry.delivered !== "sent");
+    if (missed.length)
+      lines.push(
+        `Saved, but tell ${missed.map((entry) => entry.threadId ?? "the plan author").join(", ")} yourself: ${key} plan v${version} ${verdict}. They read it with \`bb work-board plan show ${key}\` and \`bb work-board plan notes ${key} --all\`.`,
+      );
+    return lines.join("\n");
+  }
 
   /** Unwraps a mutation result; refusals keep their multi-line message for the agent. */
   function unwrap<T extends { ok: boolean }>(result: T): Extract<T, { ok: true }> {
@@ -73,7 +99,8 @@ export function planCommands(deps: PlanCliDeps) {
     );
     const version = result.version!;
     const summary = `${task.key} plan saved as v${version.version} · ${lines(version.added, version.removed)} · state ${result.plan.state}. Next edit: --base-version ${version.version}`;
-    return input.options.json ? JSON.stringify({ plan: result.plan, version }) : summary;
+    // Printed only for a move that was committed with this save.
+    return input.options.json ? JSON.stringify({ plan: result.plan, version, movedTo: result.movedTo }) : result.movedTo ? `${summary}\n${task.key} moved to ${result.movedTo.label}` : summary;
   }
 
   /** Text from a file on the calling machine, or inline when no file is given. */
@@ -97,11 +124,19 @@ export function planCommands(deps: PlanCliDeps) {
         "  bb work-board plan restore KEY --version N --base-version N --summary TEXT",
         "  bb work-board plan log KEY",
         "  bb work-board plan diff KEY [--from N] [--to M]",
-        "  bb work-board plan submit KEY",
+        "  bb work-board plan submit KEY --reviewer owner|thr_x [--dedicated-reviewer]   (owner only when the user asked to approve the plan; spawn a fresh reviewer thread for the review and pass the flag, and it is archived after it approves)",
         "  bb work-board plan notes KEY [--all]",
         "  bb work-board plan reply KEY N1 --body TEXT [--addressed]",
+        "  bb work-board plan reviews KEY",
+        "Reviewer commands, from the reviewer thread only (every one takes --version N, the version you read):",
+        '  bb work-board plan note KEY --version N --body TEXT [--quote TEXT [--section HEADING]] [--kind comment|remove|general]',
+        "  bb work-board plan feedback KEY --version N",
+        "  bb work-board plan dismiss KEY N1 … --version N",
+        "  bb work-board plan resolve KEY N1 … --version N",
+        "  bb work-board plan reopen KEY N1 … --version N",
+        "  bb work-board plan approve KEY --version N [--note TEXT]",
       ].join("\n"),
-      positionals: [{ name: "subcommand", description: "show, set, edit, restore, log, diff, submit, notes or reply", variadic: true }],
+      positionals: [{ name: "subcommand", description: "show, set, edit, restore, log, diff, submit, notes, reply, reviews, note, feedback, dismiss, resolve, reopen or approve", variadic: true }],
       options: common,
       run(input) {
         const [subcommand] = input.positionals.subcommand;
@@ -134,7 +169,7 @@ export function planCommands(deps: PlanCliDeps) {
             return JSON.stringify({ taskKey: task.key, plan: { ...plan, requested: undefined }, requested: { ...plan.requested, body: undefined }, section: input.options.section ?? null, body: text });
           const historical = plan.requested.version !== plan.version;
           return [
-            `Plan v${plan.version} · ${plan.state} · updated ${plan.updatedAt} by ${plan.updatedBy.name}${plan.noteCounts.open ? ` · ${plan.noteCounts.open} open note${plan.noteCounts.open === 1 ? "" : "s"}` : ""}`,
+            `Plan v${plan.version} · ${plan.state}${plan.paused ? " · waiting for the owner's decision" : ""} · updated ${plan.updatedAt} by ${plan.updatedBy.name}${plan.noteCounts.open ? ` · ${plan.noteCounts.open} open note${plan.noteCounts.open === 1 ? "" : "s"}` : ""}`,
             `Next edit: --base-version ${plan.version}`,
             ...(historical ? [`Showing historical v${plan.requested.version} (${plan.requested.summary}); do not use it as a base version`] : []),
             ...(input.options.section !== undefined ? [`Section: ${input.options.section}`] : []),
@@ -240,26 +275,53 @@ export function planCommands(deps: PlanCliDeps) {
       },
     }),
     "plan submit": cliCommand({
-      summary: "Mark the plan ready for the owner's review",
+      summary: "Submit the plan for review by a reviewer thread, or by the owner when the user asked to approve it",
       positionals: [deps.keyPositional],
-      options: common,
+      options: {
+        reviewer: {
+          type: "string",
+          placeholder: "owner|thr_x",
+          description: "Who approves the plan: a reviewer thread, or `owner` only when the user asked to approve the plan. Required on the first submit; later it defaults to the current reviewer. Another reviewer takes the review over",
+        },
+        "dedicated-reviewer": {
+          type: "boolean",
+          description: "The reviewer thread was spawned only for this review: it is archived after it approves the plan (when the project allows it). Pass it on every submit that should count; a reused thread is never archived",
+        },
+        ...common,
+      },
       run(input, ctx) {
         return guard(async () => {
           const task = await resolveTask(domain, input.positionals["key-or-id"]);
-          // Notes the owner sent and nobody answered: submitting does not refuse, but the agent should know.
+          let reviewer: string | undefined;
+          if (input.options.reviewer !== undefined) {
+            const parsed = planReviewerInputSchema.safeParse(input.options.reviewer);
+            if (!parsed.success) return fail(`--reviewer: ${parsed.error.issues[0]?.message ?? "invalid"}`, "invalid_value");
+            reviewer = parsed.data;
+          }
+          // Notes sent to the author and nobody answered: submitting does not refuse, but the agent should know.
           // A new version already moved the plan from changes_requested back to draft, so the notes decide, not the state.
           const unanswered = (await domain.listPlanNotes({ taskId: task.id })).notes.filter((note) => note.state === "sent");
-          const result = unwrap(tasksRpcContract.submitTaskPlan.output.parse(await domain.submitTaskPlan({ taskId: task.id, author: authorOf(ctx) })));
-          if (input.options.json) return JSON.stringify({ plan: result.plan, unansweredNotes: unanswered.map((note) => note.number) });
+          const result = unwrap(tasksRpcContract.submitTaskPlan.output.parse(await domain.submitTaskPlan({ taskId: task.id, author: authorOf(ctx), ...(reviewer ? { reviewer } : {}), ...(input.options["dedicated-reviewer"] ? { dedicatedReviewer: true } : {}) })));
+          if (input.options.json) return JSON.stringify({ plan: result.plan, outcome: result.outcome, delivered: result.delivered, deliveryHint: result.deliveryHint, unansweredNotes: unanswered.map((note) => note.number) });
+          const asked = result.plan.reviewer.kind === "thread" ? result.plan.reviewer.threadId : "the owner";
+          const headline = {
+            submitted: `${task.key} plan v${result.plan.version} submitted for review by ${asked}`,
+            resent: `${task.key} plan v${result.plan.version} is already in review by ${asked}; the wake was sent again`,
+            reassigned: `${task.key} plan v${result.plan.version}: review reassigned to ${asked}`,
+          }[result.outcome];
+          const delivery = result.delivered === "sent" ? `Reviewer ${asked} notified` : result.delivered === "failed" ? `Reviewer ${asked} not notified: ${result.deliveryHint}` : "The owner reviews it in the Plan tab";
           const warning = unanswered.length
             ? `\nWarning: ${unanswered.length} note${unanswered.length === 1 ? " is" : "s are"} still unanswered: ${unanswered.map((note) => noteLabel(note.number)).join(", ")}. Answer each with \`bb work-board plan reply ${task.key} N1 --body "…" --addressed\`.`
             : "";
-          return oneLine(`${task.key} plan v${result.plan.version} submitted for review`) + warning;
+          const hint = result.plan.reviewer.kind === "thread" && result.outcome !== "resent" && !input.options["dedicated-reviewer"]
+            ? "\nTip: spawn a fresh reviewer thread for each review and pass --dedicated-reviewer; that reviewer is archived after it approves (a reused thread never is)."
+            : "";
+          return `${oneLine(headline)}\n${delivery}${warning}${hint}`;
         });
       },
     }),
     "plan notes": cliCommand({
-      summary: "The owner's notes on the plan: the open ones by default, in the order of the review message",
+      summary: "The notes on the plan (the owner's and the reviewer's): the open ones by default, in the order of the review message",
       positionals: [deps.keyPositional],
       options: {
         all: { type: "boolean", description: "Every note with its state and your reply, not only the sent ones you have not answered" },
@@ -276,12 +338,12 @@ export function planCommands(deps: PlanCliDeps) {
           if (ordered.length === 0) return input.options.all ? `${task.key} plan has no notes` : `${task.key} plan has no open notes`;
           if (input.options.all)
             return [`Notes on ${task.key} plan v${plan.version} (${ordered.length}), in plan order:`, "", ordered.map(({ note, placement }) => renderNote(note, placement, { detail: true })).join("\n\n")].join("\n");
-          return buildFeedbackBody({ taskKey: task.key, version: plan.version, notes: ordered });
+          return buildFeedbackBody({ taskKey: task.key, version: plan.version, notes: ordered, reviewer: plan.reviewer.kind === "thread" && plan.reviewer.threadId ? plan.reviewer.threadId : "owner" });
         });
       },
     }),
     "plan reply": cliCommand({
-      summary: "Answer one of the owner's notes; --addressed marks it done in the current plan version",
+      summary: "Answer one of the notes sent to you; --addressed marks it done in the current plan version",
       positionals: [deps.keyPositional, { name: "note", description: "Note number, for example N1", required: true }],
       options: {
         body: { type: "string", required: true, description: "What changed, or why not" },
@@ -299,6 +361,112 @@ export function planCommands(deps: PlanCliDeps) {
           return input.options.json
             ? JSON.stringify({ note: result.note })
             : oneLine(`${task.key} ${noteLabel(number)} answered${result.note.state === "addressed" ? ` · addressed in v${result.note.addressedInVersion}` : " · not marked addressed"}`);
+        });
+      },
+    }),
+    "plan reviews": cliCommand({
+      summary: "The review attempts of the plan: version, reviewer thread, outcome and dates",
+      positionals: [deps.keyPositional],
+      options: common,
+      run(input) {
+        return guard(async () => {
+          const task = await resolveTask(domain, input.positionals["key-or-id"]);
+          const { reviews, paused } = tasksRpcContract.listPlanReviews.output.parse(await domain.listPlanReviews({ taskId: task.id }));
+          if (input.options.json) return JSON.stringify({ taskKey: task.key, paused, reviews });
+          const rows = table(
+            ["VERSION", "REVIEWER", "SUBMITTED", "OUTCOME", "DECIDED", "BY"],
+            reviews.map((review) => [`v${review.version}`, review.reviewer.kind === "thread" ? review.reviewer.threadId! : "owner", review.submittedAt, review.outcome, review.decidedAt ?? "-", review.decidedBy ?? "-"]),
+            "(none)",
+          );
+          return paused ? `Waiting for the owner's decision: the review is paused until it is settled.\n${rows}` : rows;
+        });
+      },
+    }),
+    "plan note": cliCommand({
+      summary: "Reviewer: add a draft note on the plan; `plan feedback` sends the drafts",
+      positionals: [deps.keyPositional],
+      options: {
+        version: versionOption,
+        body: { type: "string", description: "The note; required unless --kind remove" },
+        quote: { type: "string", description: "Exact text of the passage; it must occur exactly once in the section (or in the whole plan without --section)" },
+        section: { type: "string", placeholder: "heading", description: "Heading text or \"Parent > Child\" path that scopes the quote" },
+        kind: { type: "string", placeholder: "comment|remove|general", choices: [...PLAN_NOTE_KINDS], description: "Default: comment with --quote, else general" },
+        json: deps.jsonOption,
+      },
+      constraints: [{ kind: "requires", option: "section", needs: ["quote"] }],
+      run(input, ctx) {
+        return guard(async () => {
+          const by = reviewerOf(ctx);
+          const task = await resolveTask(domain, input.positionals["key-or-id"]);
+          const { quote, section, kind } = input.options;
+          const result = unwrap(await review.addNote({ taskId: task.id, by, version: input.options.version, body: input.options.body ?? "", ...(quote !== undefined ? { quote } : {}), ...(section !== undefined ? { section } : {}), ...(kind ? { kind: kind as (typeof PLAN_NOTE_KINDS)[number] } : {}) }));
+          return input.options.json ? JSON.stringify({ note: result.note }) : oneLine(`${task.key} ${noteLabel(result.note.number)} saved as a draft on v${result.note.madeOnVersion}; \`plan feedback ${task.key} --version ${result.note.madeOnVersion}\` sends your drafts`);
+        });
+      },
+    }),
+    "plan feedback": cliCommand({
+      summary: "Reviewer: send every reviewer draft to the plan author and request changes",
+      positionals: [deps.keyPositional],
+      options: { version: versionOption, json: deps.jsonOption },
+      run(input, ctx) {
+        return guard(async () => {
+          const by = reviewerOf(ctx);
+          const task = await resolveTask(domain, input.positionals["key-or-id"]);
+          const result = unwrap(await review.sendFeedback(task.id, by, input.options.version));
+          if (input.options.json) return JSON.stringify({ plan: result.plan, notes: result.notes, delivered: result.delivered, deliveries: result.deliveries });
+          return [`${task.key} plan v${input.options.version}: changes requested · ${result.notes} note${result.notes === 1 ? "" : "s"} sent`, deliveryReport(task.key, input.options.version, "needs changes", result.deliveries)].join("\n");
+        });
+      },
+    }),
+    "plan dismiss": cliCommand({
+      summary: "Reviewer: withdraw unsent drafts written by a reviewer thread (yours or a previous reviewer's)",
+      positionals: [deps.keyPositional, { name: "notes", description: "Note numbers, for example N1 N2", required: true, variadic: true }],
+      options: { version: versionOption, json: deps.jsonOption },
+      run(input, ctx) {
+        return guard(async () => {
+          const by = reviewerOf(ctx);
+          const task = await resolveTask(domain, input.positionals["key-or-id"]);
+          const numbers = noteNumbers(task.key, input.positionals.notes);
+          const result = unwrap(await review.dismiss(task.id, by, input.options.version, numbers));
+          return input.options.json ? JSON.stringify({ removed: result.removed }) : oneLine(`${task.key} dismissed ${result.removed.map(noteLabel).join(", ")}`);
+        });
+      },
+    }),
+    ...Object.fromEntries(
+      (
+        [
+          ["resolve", "resolved", "Reviewer: resolve notes written by a reviewer thread (including a previous reviewer's) once the author's answer is enough"],
+          ["reopen", "draft", "Reviewer: take notes written by a reviewer thread back to drafts, so the next feedback sends them again"],
+        ] as const
+      ).map(([action, state, summary]) => [
+        `plan ${action}`,
+        cliCommand({
+          summary,
+          positionals: [deps.keyPositional, { name: "notes", description: "Note numbers, for example N1 N2", required: true, variadic: true }],
+          options: { version: versionOption, json: deps.jsonOption },
+          run(input, ctx) {
+            return guard(async () => {
+              const by = reviewerOf(ctx);
+              const task = await resolveTask(domain, input.positionals["key-or-id"]);
+              const numbers = noteNumbers(task.key, input.positionals.notes);
+              const result = unwrap(await review.setState(task.id, by, input.options.version, numbers, state));
+              return input.options.json ? JSON.stringify({ notes: result.notes }) : oneLine(`${task.key} ${numbers.map(noteLabel).join(", ")} ${state === "resolved" ? "resolved" : "reopened as a draft"}`);
+            });
+          },
+        }),
+      ]),
+    ),
+    "plan approve": cliCommand({
+      summary: "Reviewer: approve the plan; refused while any reviewer note is a draft or unresolved",
+      positionals: [deps.keyPositional],
+      options: { version: versionOption, note: { type: "string", description: "An optional remark that goes to the author" }, json: deps.jsonOption },
+      run(input, ctx) {
+        return guard(async () => {
+          const by = reviewerOf(ctx);
+          const task = await resolveTask(domain, input.positionals["key-or-id"]);
+          const result = unwrap(await review.approve(task.id, by, input.options.note, input.options.version));
+          if (input.options.json) return JSON.stringify({ plan: result.plan, delivered: result.delivered, deliveries: result.deliveries });
+          return [`${task.key} plan v${input.options.version} approved`, deliveryReport(task.key, input.options.version, "is approved", result.deliveries)].join("\n");
         });
       },
     }),

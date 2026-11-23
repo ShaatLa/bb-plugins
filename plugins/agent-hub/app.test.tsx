@@ -24,7 +24,8 @@ async function questionsSetup(overrides: Record<string, (...args: any[]) => any>
   const app = await loadPluginApp(() => import('./app'));
   const ask = { ...item, id: 'ans_ask', kind: 'for_me' as const, status: 'open' as const, question: 'Choose?', answer: null, ...extra };
   const slot = renderSlot(app.navPanels[0]!, { subPath: '' }, { rpc: { recipients: () => ({ recipients: [] }), list: (input: unknown) => ({ items: (input as { view: string }).view === 'for_me' ? [ask] : [], nextCursor: null }), counts: () => ({ unread: 0, waiting: 0, forMe: 1, inbox: 0 }), ...overrides } });
-  await slot.findByText('Choose?');
+  // A question of several parts shows its prompts only in the form, so wait for the card itself.
+  await waitFor(() => expect(slot.container.querySelector('[data-pending-title="Choose?"]')).toBeTruthy());
   return slot;
 }
 async function setup(overrides: Record<string, (...args: any[]) => any> = {}) {
@@ -45,6 +46,28 @@ describe('Answers app', () => {
     expect(slot.getByText('Quoted passage')).toBeTruthy();
     expect(slot.getByText('My comment')).toBeTruthy();
     expect(slot.queryByText(/resolved by plugin/)).toBeNull();
+  });
+
+  it('a question card in the chat has no link out to the chat it is in, and its More menu has no dismiss entry, which sits with the choices', async () => {
+    const { ItemCard } = await import('./app');
+    const ask = { ...item, id: 'ans_ask', kind: 'for_me' as const, status: 'open' as const, question: 'Choose?', answer: null };
+    const slot = renderSlot({ component: () => <ul><ItemCard item={ask} chat compact /></ul> }, {}, {} as any);
+    expect(slot.queryByRole('link', { name: 'Open in chat' })).toBeNull();
+    fireEvent.click(slot.getByRole('button', { name: 'More' }));
+    expect(slot.queryByRole('menuitem', { name: 'Won’t reply' })).toBeNull();
+    expect(slot.getByRole('button', { name: 'Won’t reply' })).toBeTruthy();
+  });
+
+  it('offers yes and no in the question\'s language when the agent gave no choices', async () => {
+    const { ItemCard } = await import('./app');
+    const reply = vi.fn(() => ({ ok: true }));
+    const ask = (question: string) => ({ ...item, id: 'ans_ask', kind: 'for_me' as const, status: 'open' as const, question, answer: null, options: null });
+    const ru = renderSlot({ component: () => <ul><ItemCard item={ask('Запушить?')} chat compact /></ul> }, {}, { rpc: { reply } } as any);
+    expect(ru.getByRole('button', { name: 'Да' })).toBeTruthy(); expect(ru.getByRole('button', { name: 'Нет' })).toBeTruthy();
+    ru.unmount();
+    const en = renderSlot({ component: () => <ul><ItemCard item={ask('Ship it?')} chat compact /></ul> }, {}, { rpc: { reply } } as any);
+    fireEvent.click(en.getByRole('button', { name: 'Yes' }));
+    await waitFor(() => expect(reply).toHaveBeenCalledWith(expect.objectContaining({ id: 'ans_ask', text: 'Yes' })));
   });
 
   it('names the dismiss action per item and hides it where it does nothing', async () => {
@@ -113,6 +136,13 @@ describe('Answers app', () => {
     expect(list).toHaveBeenCalledWith(expect.objectContaining({ view: 'all', threadId: 'thr_one', limit: 50 }));
     pickView(slot, 'Awaiting answer');
     await waitFor(() => expect(list).toHaveBeenCalledWith(expect.objectContaining({ view: 'waiting' })));
+  });
+  it('still marks a thread tab row read once it is scrolled past, a rule only the Inbox chat leaves', async () => {
+    const zero = { top:0, bottom:0, left:0, right:0, width:0, height:0 } as DOMRect;
+    // The row ends above the top of the scroll area: scrolled past, never in view.
+    vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (this: HTMLElement) { return this.classList.contains('overflow-auto') ? { ...zero, top:500, bottom:1000 } as DOMRect : this instanceof HTMLLIElement && this.closest('[aria-label=Answers]') ? { ...zero, top:-300, bottom:-100, height:200 } as DOMRect : zero; });
+    const { markRead } = await setup();
+    await waitFor(() => expect(markRead).toHaveBeenCalledWith({ ids: ['ans_one'] }));
   });
   it('marks an item or all items read, with no link out of the chat it is already in', async () => {
     const { slot, markRead } = await setup();
@@ -470,13 +500,15 @@ it('offers quick replies on agent questions in the Questions section', async () 
   fireEvent.click(slot.getByRole('button', { name: 'Yes (recommended)' }));
   await waitFor(() => expect(reply).toHaveBeenCalledWith({ id: 'ans_ask', text: 'Yes' }));
 });
-it('marks a question filed from the agent\'s reply text as asked in chat, dismissable as not a question', async () => {
+it('marks a question filed from the agent\'s reply text as asked in chat, closed as not a question from beside its choices', async () => {
   const setDismissed = vi.fn(() => ({ ok: true }));
   const slot = await questionsSetup({ setDismissed }, { chatAsked: true });
   expect(slot.getByText('Asked in chat')).toBeTruthy();
   fireEvent.click(slot.getByRole('button', { name: 'More' }));
-  fireEvent.click(await slot.findByRole('menuitem', { name: 'Not a question' }));
-  await waitFor(() => expect(setDismissed).toHaveBeenCalledWith(expect.objectContaining({ id: 'ans_ask', dismissed: true })));
+  await slot.findByRole('menuitem', { name: 'Save' });
+  expect(slot.queryByRole('menuitem', { name: 'Not a question' })).toBeNull();
+  fireEvent.click(slot.getByRole('button', { name: 'Not a question' }));
+  await waitFor(() => expect(setDismissed).toHaveBeenCalledWith({ id: 'ans_ask', dismissed: true }));
 });
 it('answers a composite question with checkboxes in one reply', async () => {
   const reply = vi.fn(() => ({ delivery: 'sent' }));
@@ -873,16 +905,14 @@ it('saves an attachment through the host file API', async () => {
   await waitFor(() => expect(saveFile).toHaveBeenCalledWith({ fileName: 'notes.txt', blob: expect.any(Blob) }));
 });
 
-it('copies the agent Markdown and its message link from More', async () => {
+it('copies the agent Markdown and its message link from separate icons', async () => {
   const { ItemCard } = await import('./app');
   const slot = renderSlot({ component: () => <ItemCard item={{ ...item, threadId: 'thr_example', projectId: 'proj_example', answerSeq: 12 }} chat /> }, {});
   fireEvent.click(slot.getAllByRole('button', { name: 'Copy' }).at(-1)!);
   await slot.findByRole('button', { name: 'Copied' });
   expect(slot.inspection.experimental_clipboardWrites).toContainEqual({ text: 'The answer' });
-  fireEvent.click(slot.getByRole('button', { name: 'More' }));
-  fireEvent.click(slot.getByRole('menuitem', { name: 'Copy link' }));
-  await slot.findByRole('menuitem', { name: 'Copied' });
-  expect(slot.inspection.experimental_clipboardWrites).toContainEqual({ text: window.location.origin + '/projects/proj_example/threads/thr_example?msg=12' });
+  fireEvent.click(slot.getAllByRole('button', { name: 'Copy link' }).at(-1)!);
+  await waitFor(() => expect(slot.inspection.experimental_clipboardWrites).toContainEqual({ text: window.location.origin + '/projects/proj_example/threads/thr_example?msg=12' }));
 });
 
 it('shows the failure reason and a quiet interruption label', async () => {
@@ -918,4 +948,23 @@ it.each(['header', 'entry'])('drops files onto the pool %s without creating dupl
     await waitFor(() => expect(poolAdd).toHaveBeenCalledWith({ threadId: item.threadId, quote: '', note: '', attachments: [{ type: 'localFile', path: 'file.txt', name: 'file.txt' }] }));
     expect(poolUpdate).not.toHaveBeenCalled();
   }
+});
+
+it('opens a thread link from the chat in Agent Hub, while a bb-chat link and a modified click keep bb routing', async () => {
+  const app = await loadPluginApp(() => import('./app'));
+  const incoming = { ...item, id: 'ans_in', kind: 'update' as const, question: '[bb message from thread:thr_two]\n\nHello', answer: 'Thanks', trigger: { kind: 'agent' as const, sourceId: 'thr_two', sourceTitle: 'Two' } } as Item;
+  const list = vi.fn((input: unknown) => ({ items: (input as { threadId?: string }).threadId === 'thr_two' ? [{ ...item, id: 'ans_two', threadId: 'thr_two', question: 'Second question', answer: 'Second answer' }] : [incoming], nextCursor: null }));
+  const contact = (threadId: string, threadTitle: string) => ({ threadId, threadTitle, projectId: 'pr_one', projectName: 'P', unread: 0, lastAt: 1, preview: 'x' });
+  const slot = renderSlot(app.navPanels[0]!, { subPath: '' }, { rpc: { recipients: () => ({ recipients: [contact('thr_one', 'One'), contact('thr_two', 'Two')] }), pools: () => ({ pools: [] }), list, counts: () => ({ unread: 0, waiting: 0, forMe: 0 }), markRead: () => ({ ok: true }), markThreadRead: () => ({ ok: true }) } });
+  fireEvent.click((await slot.findAllByRole('option'))[0]!);
+  const link = (await slot.findByText('Message from')).parentElement!.querySelector('a')!;
+  expect(link.getAttribute('href')).toBe('/projects/pr_one/threads/thr_two');
+  // A modified click is bb's split view, and a data-bb-chat link needs bb's chat, so both stay with bb.
+  expect(fireEvent.click(link, { metaKey: true })).toBe(true);
+  link.setAttribute('data-bb-chat', '');
+  expect(fireEvent.click(link)).toBe(true);
+  link.removeAttribute('data-bb-chat');
+  expect(fireEvent.click(link)).toBe(false);
+  expect(await slot.findByText('Second answer')).toBeTruthy();
+  expect(list).toHaveBeenCalledWith(expect.objectContaining({ threadId: 'thr_two' }));
 });

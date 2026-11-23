@@ -1,4 +1,4 @@
-import { useTaskStatuses } from "../../shell/task-statuses.js";
+import { useProjectList, useTaskStatuses } from "../../shell/task-statuses.js";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   TASK_PRIORITIES,
@@ -17,7 +17,7 @@ import {
   useStagedAttachmentRetry,
   type StagedAttachment,
 } from "../../components/staged-attachments.js";
-import { useProjects, useTasksQuery, useTasksRpc } from "../../shell/data.js";
+import { useTasksQuery, useTasksRpc } from "../../shell/data.js";
 import { useTasksNavigation } from "../../shell/routes.js";
 import { TasksEditor } from "../../editor/tasks-editor.js";
 import {
@@ -188,7 +188,7 @@ export function NewTaskDialog({
 }: NewTaskDialogProps) {
   const rpc = useTasksRpc();
   const navigation = useTasksNavigation();
-  const projects = useProjects();
+  const projectList = useProjectList();
 
   const [draft, setDraft] = useState(() =>
     blankDraft(projectId, defaultStatus),
@@ -246,13 +246,14 @@ export function NewTaskDialog({
   }, [open]);
 
   const { title, description, status, priority, dueDate, type, epicId } = draft;
-  const projectList = projects.data ?? [];
-  const project =
+  const listed =
     projectList.find((entry) => entry.id === draft.projectId) ??
-    projectList.find((entry) => entry.id === projectId) ??
-    projectList[0] ??
-    null;
-  const effectiveProjectId = project?.id ?? null;
+    projectList.find((entry) => entry.id === projectId);
+  // The caller's project is never swapped for the first one while the list does not hold it yet.
+  const callerPending =
+    listed === undefined && projectId !== null && draft.projectId === projectId;
+  const project = listed ?? (callerPending ? null : projectList[0] ?? null);
+  const effectiveProjectId = callerPending ? projectId : (project?.id ?? null);
   const { ids: statusIds, label: statusLabel } = useTaskStatuses(effectiveProjectId);
 
   useEffect(() => {
@@ -275,6 +276,7 @@ export function NewTaskDialog({
     }),
     ["projects:changed"],
     [effectiveProjectId],
+    { enabled: open },
   );
   const labels = {
     ...labelsQuery,

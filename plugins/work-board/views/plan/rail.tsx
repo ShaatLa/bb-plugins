@@ -33,7 +33,7 @@ export function PlanRail({
   return (
     <aside
       aria-label="Plan sidebar"
-      className="order-first w-full shrink-0 space-y-2 @[56rem]:sticky @[56rem]:top-0 @[56rem]:order-last @[56rem]:w-64 @[56rem]:self-start @[56rem]:border-l @[56rem]:border-border-hairline @[56rem]:pl-4"
+      className="order-first w-full shrink-0 space-y-2 @[56rem]:sticky @[56rem]:top-0 @[56rem]:order-last @[56rem]:w-80 @[72rem]:w-96 @[56rem]:self-start @[56rem]:border-l @[56rem]:border-border-hairline @[56rem]:pl-4"
     >
       {contents !== null ? (
         <div role="tablist" aria-label="Plan sidebar" className="hidden gap-1 @[56rem]:flex">

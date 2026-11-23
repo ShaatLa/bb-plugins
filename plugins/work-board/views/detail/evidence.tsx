@@ -4,6 +4,7 @@ import { evidenceFlags, evidenceIndex } from "../../structured/evidence";
 import { useMemo, useState } from "react";
 import { usePrLinks } from "../../components/pr-links";
 import { Button } from "@/components/ui/button";
+import { Icon } from "@/components/ui/icon";
 import { useOpenThread } from "../../components/open-thread";
 
 export function EvidenceSection({
@@ -28,124 +29,132 @@ export function EvidenceSection({
   }, [index, visibleCount]);
   if (index.records.length === 0) return null;
   return (
-    <section aria-label="Evidence" className="my-5 space-y-2">
-      <h2 className="text-sm font-semibold">Evidence</h2>
-      <div className="overflow-x-auto rounded-md border border-border">
-        <table className="w-full text-left text-xs">
-          <thead>
-            <tr className="border-b border-border text-muted-foreground">
-              {["Time", "Kind", "PR / head", "Verdict", "Thread", "Remark"].map(
-                (label) => (
-                  <th key={label} className="p-2 font-medium">
-                    {label}
-                  </th>
-                ),
-              )}
-            </tr>
-          </thead>
-          <tbody>
-            {records.map((record) => {
-              const pr = pullRequests.find(
-                (candidate) => candidate.number === record.indexedPr,
-              );
-              return (
-                <tr
-                  key={record.commentId}
-                  className={`border-b border-border last:border-0 ${record.superseded ? "text-muted-foreground" : ""}`}
-                >
-                  <td className="whitespace-nowrap p-2">
-                    <time dateTime={record.createdAt}>
-                      {record.createdAt.slice(0, 16).replace("T", " ")}
-                    </time>
-                  </td>
-                  <td className="p-2">
-                    {record.kind}
-                    {flags.filter((flag) => flag.commentId === record.commentId).map((flag) => <span key={flag.kind} className="block rounded bg-amber-100 px-1 text-amber-900">⚠ {flag.message}</span>)}
-                    {record.superseded ? (
-                      <span className="block">superseded</span>
-                    ) : null}
-                  </td>
-                  <td className="p-2">
-                    {record.indexedPr ? (
-                      pr ? (
-                        <BbLink className="underline" href={pr.url}>
-                          #{record.indexedPr}
-                        </BbLink>
+    <section aria-label="Evidence" className="my-5">
+      {/* Collapsed by default: the records are an audit trail, and a warning count stays visible in the summary. */}
+      <details className="group space-y-2">
+        <summary className="flex cursor-pointer list-none items-center gap-1.5 rounded-md focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring [&::-webkit-details-marker]:hidden">
+          <Icon name="ChevronRight" className="size-3.5 text-muted-foreground transition-transform group-open:rotate-90" />
+          <h2 className="text-sm font-semibold">Evidence</h2>
+          <span className="text-xs text-muted-foreground">· {index.records.length}</span>
+          {flags.length ? <span className="text-xs text-amber-700">· ⚠ {flags.length}</span> : null}
+        </summary>
+        <div className="overflow-x-auto rounded-md border border-border">
+          <table className="w-full text-left text-xs">
+            <thead>
+              <tr className="border-b border-border text-muted-foreground">
+                {["Time", "Kind", "PR / head", "Verdict", "Thread", "Remark"].map(
+                  (label) => (
+                    <th key={label} className="p-2 font-medium">
+                      {label}
+                    </th>
+                  ),
+                )}
+              </tr>
+            </thead>
+            <tbody>
+              {records.map((record) => {
+                const pr = pullRequests.find(
+                  (candidate) => candidate.number === record.indexedPr,
+                );
+                return (
+                  <tr
+                    key={record.commentId}
+                    className={`border-b border-border last:border-0 ${record.superseded ? "text-muted-foreground" : ""}`}
+                  >
+                    <td className="whitespace-nowrap p-2">
+                      <time dateTime={record.createdAt}>
+                        {record.createdAt.slice(0, 16).replace("T", " ")}
+                      </time>
+                    </td>
+                    <td className="p-2">
+                      {record.kind}
+                      {flags.filter((flag) => flag.commentId === record.commentId).map((flag) => <span key={flag.kind} className="block rounded bg-amber-100 px-1 text-amber-900">⚠ {flag.message}</span>)}
+                      {record.superseded ? (
+                        <span className="block">superseded</span>
+                      ) : null}
+                    </td>
+                    <td className="p-2">
+                      {record.indexedPr ? (
+                        pr ? (
+                          <BbLink className="underline" href={pr.url}>
+                            #{record.indexedPr}
+                          </BbLink>
+                        ) : (
+                          `#${record.indexedPr}`
+                        )
                       ) : (
-                        `#${record.indexedPr}`
-                      )
-                    ) : (
-                      "—"
-                    )}
-                    <span
-                      className="block font-mono"
-                      title={record.indexedHead ?? undefined}
-                    >
-                      {record.indexedHead?.slice(0, 9)}
-                    </span>
-                  </td>
-                  <td className="p-2">
-                    {"verdict" in record ? record.verdict : "—"}
-                  </td>
-                  <td className="p-2">
-                    {"thread" in record ? (
-                      <button
-                        className="underline"
-                        onClick={() => {
-                          if ("thread" in record)
-                            openThread(record.thread);
-                        }}
+                        "—"
+                      )}
+                      <span
+                        className="block font-mono"
+                        title={record.indexedHead ?? undefined}
                       >
-                        {record.thread}
-                      </button>
-                    ) : (
-                      "—"
-                    )}
-                    {record.recordedByThread && (!("thread" in record) || record.recordedByThread !== record.thread) ? <span className="block">recorded by {record.recordedByThread}</span> : null}
-                  </td>
-                  <td className="min-w-40 p-2 whitespace-pre-wrap">
-                    {record.body}
-                    {Object.entries(record)
-                      .filter(([key]) =>
-                        [
-                          "merge",
-                          "run",
-                          "env",
-                          "lens",
-                          "target",
-                          "note",
-                          "part",
-                          "row",
-                          "reason",
-                          "ownerQuote",
-                          "date",
-                        ].includes(key),
-                      )
-                      .map(([key, value]) => (
-                        <div
-                          key={key}
-                          className="break-all text-muted-foreground"
+                        {record.indexedHead?.slice(0, 9)}
+                      </span>
+                    </td>
+                    <td className="p-2">
+                      {"verdict" in record ? record.verdict : "—"}
+                    </td>
+                    <td className="p-2">
+                      {"thread" in record ? (
+                        <button
+                          className="underline"
+                          onClick={() => {
+                            if ("thread" in record)
+                              openThread(record.thread);
+                          }}
                         >
-                          {key}: {String(value)}
-                        </div>
-                      ))}
-                  </td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
-      </div>
-      {index.records.length > 15 ? (
-        <div className="flex items-center gap-2 text-xs text-muted-foreground">
-          <span>Showing {records.length} of {index.records.length}</span>
-          {records.length < index.records.length ? (
-            <Button size="sm" variant="ghost" onClick={() => setVisibleCount((count) => count + 15)}>
-              Show earlier evidence
-            </Button>
-          ) : null}
+                          {record.thread}
+                        </button>
+                      ) : (
+                        "—"
+                      )}
+                      {record.recordedByThread && (!("thread" in record) || record.recordedByThread !== record.thread) ? <span className="block">recorded by {record.recordedByThread}</span> : null}
+                    </td>
+                    <td className="min-w-40 p-2 whitespace-pre-wrap">
+                      {record.body}
+                      {Object.entries(record)
+                        .filter(([key]) =>
+                          [
+                            "merge",
+                            "run",
+                            "env",
+                            "lens",
+                            "target",
+                            "note",
+                            "part",
+                            "row",
+                            "reason",
+                            "ownerQuote",
+                            "date",
+                          ].includes(key),
+                        )
+                        .map(([key, value]) => (
+                          <div
+                            key={key}
+                            className="break-all text-muted-foreground"
+                          >
+                            {key}: {String(value)}
+                          </div>
+                        ))}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
         </div>
-      ) : null}
+        {index.records.length > 15 ? (
+          <div className="flex items-center gap-2 text-xs text-muted-foreground">
+            <span>Showing {records.length} of {index.records.length}</span>
+            {records.length < index.records.length ? (
+              <Button size="sm" variant="ghost" onClick={() => setVisibleCount((count) => count + 15)}>
+                Show earlier evidence
+              </Button>
+            ) : null}
+          </div>
+        ) : null}
+      </details>
     </section>
   );
 }

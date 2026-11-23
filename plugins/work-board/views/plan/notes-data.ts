@@ -54,15 +54,26 @@ export function usePlanReviewActions(taskId: string | null, refresh: () => void)
     update: (noteId: string, body: string) => run(() => rpc.call("updatePlanNote", { noteId, body }), () => ({})),
     remove: (noteId: string) => run(() => rpc.call("deletePlanNote", { noteId }), () => ({})),
     setState: (noteId: string, state: "resolved" | "draft") => run(() => rpc.call("setPlanNoteState", { noteId, state }), () => ({})),
-    send: () => run(() => rpc.call("sendPlanFeedback", { taskId: taskId!, author: PERSON_AUTHOR }), (result) => ({ delivered: result.delivered, notes: result.notes })),
+    send: () => run(() => rpc.call("sendPlanFeedback", { taskId: taskId!, author: PERSON_AUTHOR }), (result) => ({ delivered: result.delivered, deliveries: result.deliveries, notes: result.notes, version: result.plan.version })),
     approve: (note: string) =>
-      run(() => rpc.call("approvePlan", { taskId: taskId!, author: PERSON_AUTHOR, ...(note.trim() ? { note: note.trim() } : {}) }), (result) => ({ delivered: result.delivered })),
+      run(() => rpc.call("approvePlan", { taskId: taskId!, author: PERSON_AUTHOR, ...(note.trim() ? { note: note.trim() } : {}) }), (result) => ({ delivered: result.delivered, deliveries: result.deliveries, version: result.plan.version })),
   };
 }
 
-/** What the owner is told after sending feedback or approving: the review is saved either way. */
-export function deliveryNotice(delivered: "sent" | "failed" | "no_thread", what: string): { tone: "ok" | "warn"; text: string } {
-  if (delivered === "sent") return { tone: "ok", text: `${what} sent to the agent` };
-  if (delivered === "failed") return { tone: "warn", text: "Saved, but the agent could not be notified" };
-  return { tone: "warn", text: "Saved, but there is no agent thread to notify" };
+type DeliveryResult = { delivered: "sent" | "failed" | "no_thread"; deliveries: ReadonlyArray<{ delivered: "sent" | "failed" | "no_thread"; threadId: string | null }> };
+
+/**
+ * What the owner is told after sending feedback or approving: the decision is saved either way. Every thread that was not
+ * reached is named with the version and the verdict, and the commands it reads them with, so the owner can hand the
+ * result over by hand.
+ */
+export function deliveryNotice(result: DeliveryResult, what: string, handoff: { key: string; version: number; verdict: string }): { tone: "ok" | "warn"; text: string } {
+  const missed = result.deliveries.filter((entry) => entry.delivered !== "sent");
+  if (missed.length === 0) return { tone: "ok", text: `${what} sent to the agent` };
+  const who = missed.map((entry) => entry.threadId ?? "the plan author").join(", ");
+  const why = missed.every((entry) => entry.delivered === "no_thread") ? "there is no thread to notify" : "not delivered";
+  return {
+    tone: "warn",
+    text: `${what} saved, but ${why}: tell ${who} yourself that ${handoff.key} plan v${handoff.version} ${handoff.verdict}. They read it with bb work-board plan show ${handoff.key} and bb work-board plan notes ${handoff.key} --all`,
+  };
 }

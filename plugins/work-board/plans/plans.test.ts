@@ -18,6 +18,8 @@ function setup() {
   const store = createStore(host.bb);
   registerTasksApi(host.bb, store);
   const project = store.tasks.createProject({ name: "Example", prefix: "EXA", color: "blue" });
+  // Plans only work in a project whose planning is on; the setting is the owner's, so the store sets it directly.
+  store.tasks.updateProject(project.id, { planning: "optional" });
   const task = store.tasks.createTask({ projectId: project.id, title: "Planned work" });
   const plans = createPlanStore(host.bb.storage.database(), store.tasks);
   const save = (input: Record<string, unknown>) =>
@@ -122,7 +124,7 @@ describe("task plan store", () => {
     store.tasks.updateTask(task.id, { status: "done" });
     store.tasks.setTaskArchived(task.id, true);
     expect(() => save({ op: "replace", baseVersion: 1, body: "# New\n" })).toThrow(/archived; restore the task/);
-    expect(() => plans.submit(task.id, agent)).toThrow(/archived/);
+    expect(() => plans.submit(task.id, agent, null)).toThrow(/archived/);
     expect(() => plans.setState(task.id, "approved", owner)).toThrow(/archived/);
     expect(plans.get(task.id)?.requested.body).toBe(BODY);
     expect(plans.diff(task.id, 0, 1).added).toBeGreaterThan(0);
@@ -130,29 +132,34 @@ describe("task plan store", () => {
 
   it("moves through the review states and returns to draft on any new version", () => {
     const { plans, task, save, systemComments } = setup();
-    expect(() => plans.submit(task.id, agent)).toThrow(/no plan to submit/);
+    expect(() => plans.submit(task.id, agent, null)).toThrow(/no plan to submit/);
     save({ op: "replace", baseVersion: 0, body: BODY });
-    expect(plans.submit(task.id, agent).plan.state).toBe("in_review");
-    expect(() => plans.submit(task.id, agent)).toThrow(/already in review/);
-    // An edit during review does not silently drop the review.
+    expect(plans.submit(task.id, agent, null)).toMatchObject({ outcome: "submitted", plan: { state: "in_review" } });
+    // The same reviewer again changes nothing: no new event, only a wake for a thread reviewer.
+    expect(plans.submit(task.id, agent, null)).toMatchObject({ outcome: "resent" });
+    // A review is bound to one version: an edit during review returns the plan to draft.
     save({ op: "replace", baseVersion: 1, body: `${BODY}a\n`, summary: "Tweak" });
-    expect(plans.head(task.id)?.state).toBe("in_review");
+    expect(plans.head(task.id)?.state).toBe("draft");
+    plans.submit(task.id, agent, null);
     expect(plans.setState(task.id, "changes_requested", owner).plan.state).toBe("changes_requested");
     expect(plans.setState(task.id, "changes_requested", owner)).toMatchObject({ changed: false });
+    // Changes requested needs a new version before a resubmit.
+    expect(() => plans.submit(task.id, agent, null)).toThrow(/changes requested; revise it and save a new version/);
     save({ op: "replace", baseVersion: 2, body: `${BODY}b\n`, summary: "Address review" });
     expect(plans.head(task.id)?.state).toBe("draft");
-    plans.submit(task.id, agent);
+    plans.submit(task.id, agent, null);
     plans.setState(task.id, "approved", owner);
-    expect(() => plans.submit(task.id, agent)).toThrow(/already approved/);
+    expect(() => plans.submit(task.id, agent, null)).toThrow(/already approved/);
     save({ op: "replace", baseVersion: 3, body: `${BODY}c\n`, summary: "After approval" });
     expect(plans.head(task.id)?.state).toBe("draft");
     expect(systemComments()).toEqual([
       "Plan v1 by agent (thr_example): Edit · new plan · +8 −0 lines",
-      "Plan v1 submitted for review by agent (thr_example)",
-      "Plan v2 by agent (thr_example): Tweak · full rewrite · +1 −0 lines",
+      "Plan v1 submitted for review by the owner",
+      "Plan v2 by agent (thr_example): Tweak · full rewrite · +1 −0 lines · state in_review → draft",
+      "Plan v2 submitted for review by the owner",
       "Plan v2 changes requested by Owner",
       "Plan v3 by agent (thr_example): Address review · full rewrite · +1 −1 lines · state changes_requested → draft",
-      "Plan v3 submitted for review by agent (thr_example)",
+      "Plan v3 submitted for review by the owner",
       "Plan v3 approved by Owner",
       "Plan v4 by agent (thr_example): After approval · full rewrite · +1 −1 lines · state approved → draft",
     ]);
@@ -212,9 +219,12 @@ describe("task plan RPC", () => {
     expect(await save({ op: "replace", baseVersion: 1, body: BODY })).toMatchObject({ ok: false, error: { code: "plan_no_change" } });
     expect(await save({ op: "replace", baseVersion: 1, body: `x ${"ghp_" + "a".repeat(36)}` })).toMatchObject({ ok: false, error: { code: "secret_detected" } });
     expect(await save({ op: "section", baseVersion: 1, section: "Nope", body: "x" })).toMatchObject({ ok: false, error: { code: "plan_invalid" } });
-    expect(await harness.callRpc("submitTaskPlan", { taskId: task.id, author: agent })).toMatchObject({ ok: true, plan: { state: "in_review" } });
-    expect(await harness.callRpc("submitTaskPlan", { taskId: task.id, author: agent })).toMatchObject({ ok: false, error: { code: "plan_state" } });
+    // The first submit names its reviewer; a repeat defaults to the reviewer of the latest attempt.
+    expect(await harness.callRpc("submitTaskPlan", { taskId: task.id, author: agent })).toMatchObject({ ok: false, error: { code: "plan_invalid", message: expect.stringContaining("--reviewer") } });
+    expect(await harness.callRpc("submitTaskPlan", { taskId: task.id, author: agent, reviewer: "owner" })).toMatchObject({ ok: true, outcome: "submitted", delivered: null, plan: { state: "in_review", reviewer: { kind: "owner" } } });
+    expect(await harness.callRpc("submitTaskPlan", { taskId: task.id, author: agent })).toMatchObject({ ok: true, outcome: "resent" });
     expect(await harness.callRpc("setTaskPlanState", { taskId: task.id, state: "approved", author: owner })).toMatchObject({ ok: true, plan: { state: "approved" } });
+    expect(await harness.callRpc("submitTaskPlan", { taskId: task.id, author: agent })).toMatchObject({ ok: false, error: { code: "plan_state" } });
     expect(tasksRpcContract.setTaskPlanState.input.safeParse({ taskId: task.id, state: "draft", author: owner }).success).toBe(false);
     expect(SETTABLE_PLAN_STATES).toEqual(["in_review", "approved", "changes_requested"]);
     expect(await harness.callRpc("diffTaskPlan", { taskId: task.id })).toMatchObject({ from: 0, to: 1, added: 8 });

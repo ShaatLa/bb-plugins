@@ -26,6 +26,8 @@ function combine(rows: Group[], overrides: Overrides): Cost {
   return rows.map(price).reduce(add);
 }
 
+const TOP_MODELS_PER_PROVIDER = 3;
+
 // Calendar buckets follow the server timezone, including daylight-saving transitions.
 export function rangeBounds(range: Range, now: number) {
   const count = { day: 24, week: 7, month: 30, '3m': 13 }[range];
@@ -57,13 +59,24 @@ export function summary(db: Database, o: SummaryOptions) {
   const price = priceContext(o.overrides);
   const totals = combine(rows, o.overrides), f = flags(db, from, to + 1, o.includeOutsideBb, o.projectId);
   totals.partial ||= !!f.partial; totals.estimated ||= !!f.estimated;
-  const modelCosts = new Map<string, number>();
-  for (const r of rows) modelCosts.set(r.model, (modelCosts.get(r.model) ?? 0) + (price(r).usd ?? 0));
-  const top = new Set([...modelCosts].sort((a,b) => b[1]-a[1] || a[0].localeCompare(b[0])).slice(0,4).map(([k]) => k));
-  const key = (r: Hour) => o.by === 'provider' ? r.provider : top.has(r.model) ? r.model : 'other';
-  const keys = [...new Set(rows.map(key))];
+  // The model view keeps each provider's top models and folds the rest into `other:<provider>`.
+  const modelCosts = new Map<string, { provider: string; model: string; usd: number }>();
+  for (const r of rows) {
+    const id = `${r.provider}\0${r.model}`, m = modelCosts.get(id) ?? { provider: r.provider, model: r.model, usd: 0 };
+    m.usd += price(r).usd ?? 0; modelCosts.set(id, m);
+  }
+  const top = new Set<string>(), perProvider = new Map<string, number>();
+  for (const m of [...modelCosts.values()].sort((a,b) => b.usd-a.usd || a.model.localeCompare(b.model))) {
+    const n = perProvider.get(m.provider) ?? 0;
+    if (n < TOP_MODELS_PER_PROVIDER) { top.add(`${m.provider}\0${m.model}`); perProvider.set(m.provider, n+1); }
+  }
+  const key = (r: Hour) => o.by === 'provider' ? r.provider : top.has(`${r.provider}\0${r.model}`) ? r.model : `other:${r.provider}`;
+  // shortcut: a model name served by two providers merges into one key under the first provider seen; split keys if that happens.
+  const providerOf = new Map<string, string>();
+  for (const r of rows) if (!providerOf.has(key(r))) providerOf.set(key(r), r.provider);
+  const keys = [...providerOf.keys()];
   const buckets: { start: number; series: Record<string, Cost & { calls: number }>; localSavedUsd?: number }[] = starts.map(start => ({ start, series: Object.fromEntries(keys.map(k => [k, { ...empty(), calls: 0 }])) }));
-  const breakdown = new Map(keys.map(k => [k, { key: k, label: k, cost: empty(), calls: 0 }]));
+  const breakdown = new Map(keys.map(k => [k, { key: k, label: k, provider: providerOf.get(k)!, cost: empty(), calls: 0 }]));
   // Start accumulators at the first priced row so an entirely unknown group stays null.
   const seen = new Set<string>();
   rows.forEach(r => {

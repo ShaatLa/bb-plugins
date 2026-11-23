@@ -7,7 +7,7 @@ import { PendingInteractions, QuestionForm, answerText } from './interactions';
 const host = vi.hoisted(() => ({ bound: true, choices: [] as ((n: number) => boolean)[] }));
 vi.mock('@get-bb/plugin-sdk/app', async importOriginal => ({ ...await importOriginal<typeof import('@get-bb/plugin-sdk/app')>(), experimental_useQuestionFormHost: () => ({ shortcuts: host.bound ? new Map([['0', { label: '1', ariaKeyshortcuts: '1' }], ['1', { label: '2', ariaKeyshortcuts: '2' }], ['2', { label: '3', ariaKeyshortcuts: '3' }]]) : new Map(), actionShortcuts: new Map([['cancel', { ariaKeyshortcuts: 'Meta+.' }], ['submit', { ariaKeyshortcuts: 'Meta+Enter' }]]), registerChoiceHandler: (handler: (n: number) => boolean) => { host.choices.push(handler); return () => { host.choices.splice(host.choices.indexOf(handler), 1); }; }, registerActionHandler: () => () => {} }) }));
 
-afterEach(() => { cleanup(); host.bound = true; });
+afterEach(() => { cleanup(); host.bound = true; localStorage.clear(); });
 const question = (overrides = {}) => ({ id: 'i1', threadId: 'thr_one', status: 'pending', payload: { kind: 'user_question', questions: [{ id: 'q1', prompt: 'Choose?', shortLabel: 'Choice', required: true, multiSelect: false, allowFreeText: true, options: [{ value: 'a', label: 'Alpha', description: 'First' }, { value: 'b', label: 'Beta', description: 'Second' }] }] }, ...overrides });
 function setup(rows: any[], pending = true) {
   const list = vi.fn(async () => rows), resolve = vi.fn(async () => ({})), respond = vi.fn(async () => ({})), cancel = vi.fn(async () => ({})), stop = vi.fn(async () => ({}));
@@ -47,6 +47,15 @@ it('allows multiple selections and free text', async () => {
   fireEvent.change(other.slot.getByRole('textbox', { name: 'Choice answer' }), { target: { value: 'Custom' } }); fireEvent.click(other.slot.getByRole('button', { name: 'Submit answer' }));
   await waitFor(() => expect(other.resolve).toHaveBeenCalledWith(expect.objectContaining({ resolution: { kind: 'user_answer', answers: { q1: { selected: [], freeText: 'Custom' } } } })));
 });
+it('keeps a typed Other answer across a remount, and forgets it once submitted', async () => {
+  const first = setup([question()]); fireEvent.click(await first.slot.findByRole('button', { name: /Other/ }));
+  fireEvent.change(first.slot.getByRole('textbox', { name: 'Choice answer' }), { target: { value: 'Half written' } });
+  cleanup(); const again = setup([question()]);
+  await waitFor(() => expect((again.slot.getByRole('textbox', { name: 'Choice answer' }) as HTMLTextAreaElement).value).toBe('Half written'));
+  fireEvent.click(again.slot.getByRole('button', { name: 'Submit answer' }));
+  await waitFor(() => expect(again.resolve).toHaveBeenCalledWith(expect.objectContaining({ resolution: { kind: 'user_answer', answers: { q1: { selected: [], freeText: 'Half written' } } } })));
+  await waitFor(() => expect(Object.keys(localStorage).some(key => key.includes('question-draft'))).toBe(false));
+});
 it('stops the turn on Cancel', async () => {
   const { slot, stop } = setup([question()]); fireEvent.click(await slot.findByRole('button', { name: 'Cancel' }));
   await waitFor(() => expect(stop).toHaveBeenCalledWith({ threadId: 'thr_one' }));
@@ -84,7 +93,7 @@ it('lets host shortcuts act only on the focused form when several share a page',
   const press = () => { let handled = 0; act(() => { handled = host.choices.filter(handler => handler(0)).length; }); return handled; };
   expect(press()).toBe(0);
   second!.focus();
-  expect(press()).toBe(1);
+  await waitFor(() => expect(press()).toBe(1));
   await waitFor(() => expect(second!.querySelector('button[aria-pressed="true"]')).toBeTruthy());
   expect(first!.querySelector('button[aria-pressed="true"]')).toBeNull();
 });
