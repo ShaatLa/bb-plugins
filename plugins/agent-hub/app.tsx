@@ -134,6 +134,11 @@ function useReadOnView(ref: React.RefObject<HTMLElement | null>, enabled: boolea
 // bb's icon set has no double check; drawn in its stroke style (geometry as Lucide's check-check).
 // Set by the chat: opens bb's "Editing message" box for one of the owner's sent messages.
 export const EditSentContext = createContext<((item: Item) => void) | null>(null);
+// A chat shares one workBoardProjects query: a query of its own in every card and mention re-renders each on every fetch.
+export const useWorkBoardQuery = () => useQuery({ contract: rpcContract, method: 'workBoardProjects', input: {} }).data;
+// The context is undefined only outside a chat; null means the chat's query has no data yet.
+export const WorkBoardContext = createContext<ReturnType<typeof useWorkBoardQuery> | null | undefined>(undefined);
+export const useWorkBoard = () => { const shared = useContext(WorkBoardContext), own = shared === undefined ? useWorkBoardQuery() : undefined; return shared === undefined ? own : shared ?? undefined; };
 
 function ReadTicks({ at }: { at: number }) {
   const label = `Read ${new Date(at).toLocaleString()}`;
@@ -277,7 +282,7 @@ export function ItemCard({ item, members, late, live = true, chat = false, marka
     place(); window.addEventListener('scroll', close, true); window.addEventListener('resize', place); document.addEventListener('pointerdown', close, true);
     return () => { window.removeEventListener('scroll', close, true); window.removeEventListener('resize', place); document.removeEventListener('pointerdown', close, true); setMenuAt(null); };
   }, [menu]);
-  const { data: workBoard } = useQuery({ contract: rpcContract, method: 'workBoardProjects', input: {} });
+  const workBoard = useWorkBoard();
   const [expanded, setExpanded] = useState(false);
   const question = useRef<HTMLDivElement>(null);
   const [clamped, setClamped] = useState(false);
@@ -537,7 +542,7 @@ export function quoteSegments(text: string) {
 export function UserText({ text, prefixes, threadId }: { text: string; prefixes?: string[]; threadId?: string }) {
   // Only prefixes of real Work Board projects, so look-alikes such as GPT-6 or UTF-8 stay text.
   const contextThread = useContext(ComposerThread), commands = useThreadCommands(threadId ?? contextThread);
-  const { data: workBoard } = useQuery({ contract: rpcContract, method: 'workBoardProjects', input: {} });
+  const workBoard = useWorkBoard();
   const task = taskKeyRegex(prefixes ?? workBoard?.projects.map(p => p.prefix) ?? []);
   const plain = (text: string, start: boolean) => text.split(/((?:^|\s)[/$][^\s]+)/).map((part, i) => {
     const match = /^(\s*)([/$])([^\s]+)$/.exec(part), command = match && commands.find(c => c.name === match[3]);

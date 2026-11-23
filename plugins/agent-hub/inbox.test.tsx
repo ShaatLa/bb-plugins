@@ -579,13 +579,13 @@ it('hides a queued row as soon as the chat records its message, before the queue
   const row = (id: string, createdAt: number) => ({ id, threadId:'thr_one', content:[{ type:'text', text:'Sent meanwhile', mentions:[] }], createdAt, updatedAt:createdAt });
   const { slot, recipients } = setup({ list: () => ({ items:[{ ...base, id:'ans_sent', question:'Sent meanwhile', questionSeq:9, createdAt:5 }], nextCursor:null }), queuedMessages: { list: () => Promise.resolve([row('q1', 1), row('q2', 2)]) } }); fireEvent.click(await recipients.findByRole('option'));
   await waitFor(() => expect(slot.container.querySelector('[data-queue-row="q2"]')).toBeTruthy());
-  expect(slot.container.querySelector('[data-queue-row="q1"]')).toBeNull();
+  await waitFor(() => expect(slot.container.querySelector('[data-queue-row="q1"]')).toBeNull());
 });
 it('hides a queued row whose recorded message spells its mention or line break differently', async () => {
   const row = { id:'q1', threadId:'thr_one', content:[{ type:'text', text:'@thread:thr_example#msg=7', mentions:[] }, { type:'text', text:'Why twice?', mentions:[] }], createdAt:1, updatedAt:1 };
   const { slot, recipients } = setup({ list: () => ({ items:[{ ...base, id:'ans_sent', question:'@thread:thr_example#msg=7 Why twice?', questionSeq:9, createdAt:5 }], nextCursor:null }), queuedMessages: { list: () => Promise.resolve([row, { ...row, id:'q2', content:[{ type:'text', text:'Why twice?', mentions:[] }], createdAt:2 }]) } }); fireEvent.click(await recipients.findByRole('option'));
   await waitFor(() => expect(slot.container.querySelector('[data-queue-row="q2"]')).toBeTruthy());
-  expect(slot.container.querySelector('[data-queue-row="q1"]')).toBeNull();
+  await waitFor(() => expect(slot.container.querySelector('[data-queue-row="q1"]')).toBeNull());
 });
 it('drops a queued row bb already sent: Send now answers 404 quietly and the row does not come back', async () => {
   const row = { id:'q1', threadId:'thr_one', content:[{ type:'text', text:'Already sent', mentions:[] }], createdAt:1, updatedAt:1 };
