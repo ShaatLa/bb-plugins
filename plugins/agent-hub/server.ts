@@ -7,7 +7,7 @@ import { z } from 'zod';
 import { deliveryError } from './delivery';
 import { NOTICE_THREAD, rpcContract, inputs, itemSchema, ITEMS_TAG, COUNTS_TAG, RECIPIENTS_TAG, RECIPIENTS_THROTTLE_MS, POOLS_TAG, QUEUE_TAG, CONTEXT_TAG, inlinePreviewSchema, tokenomosThreads, tokenomosSum, type Item, type ListInput, type Counts, type Attachment, type SendOptions, type FormQuestion, YOUR_CALL, defaultAnswer } from './contract';
 import { migrations } from './schema';
-import { cap, ATTENTION_SQL, ACTIVE_THREAD_SQL, OWNER_ITEM_SQL, failRequest } from './ingest';
+import { cap, CHAT_QUESTION_WARNING, ATTENTION_SQL, ACTIVE_THREAD_SQL, OWNER_ITEM_SQL, failRequest } from './ingest';
 import { createDriver, notFound } from './driver';
 import { registerCli } from './cli';
 import { createNotifier } from './notify';
@@ -599,6 +599,14 @@ function start(bb: BbPluginApi, migrationError: string | null) {
             const turn=(db.prepare('SELECT active_turn_id FROM threads_state WHERE thread_id=?').get(ctx.threadId) as Row|undefined)?.active_turn_id ?? null, deadline=ask.deadlineMinutes===undefined ? null : now+ask.deadlineMinutes*60000;
             const candidates=turn ? db.prepare("SELECT * FROM items WHERE thread_id=? AND turn_id=? AND kind='for_me' AND chat_asked=0 AND status='open' AND dismissed_at IS NULL ORDER BY created_at DESC,rowid DESC").all(ctx.threadId,turn) as Row[] : [];
             const added=form ?? [formQuestion('q1',ask.question!,ask)], partsText=(parts:FormQuestion[])=>parts.map((q,i)=>`${i+1}. ${q.shortLabel ? `**${q.shortLabel}.** ` : ''}${q.prompt}`).join('\n');
+            // The in-chat question warning started this turn: the ask replaces the copy Agent Hub caught in the reply, so the owner gets one question.
+            const caught=turn && !sending.has(ctx.threadId) && (db.prepare('SELECT question FROM turn_updates WHERE thread_id=? AND turn_id=?').get(ctx.threadId,turn) as Row|undefined)?.question?.startsWith(CHAT_QUESTION_WARNING) ? db.prepare("SELECT id FROM items WHERE thread_id=? AND kind='for_me' AND chat_asked=1 AND status='open' AND dismissed_at IS NULL ORDER BY question_seq DESC LIMIT 1").get(ctx.threadId) as Row|undefined : undefined;
+            if (caught) {
+              commit("UPDATE items SET question=?,options=?,questions=?,recommended=?,recommend_reason=?,deadline_at=?,urgency=?,chat_asked=0,turn_id=?,notify_state=CASE WHEN ? THEN 1 ELSE notify_state END,updated_at=? WHERE id=?",text,JSON.stringify(form ? null : ask.options ?? null),form && JSON.stringify(form),ask.recommended ?? null,ask.reason ?? null,deadline,ask.urgency ?? null,turn,Number(ask.urgency==='blocking'),now,caught.id);
+              commit('UPDATE turn_updates SET asked=1 WHERE thread_id=? AND turn_id=?',ctx.threadId,turn);
+              onAttention(); wakeDue();
+              return `${caught.id}\nReplaced the question Agent Hub caught in your reply; the user sees it once.`;
+            }
             for(const old of candidates) {
               if(sending.has(ctx.threadId)) break;
               const parts:FormQuestion[]=old.questions ? JSON.parse(old.questions) : [formQuestion('q1',old.question,{options:old.options ? JSON.parse(old.options) ?? undefined : undefined,recommended:old.recommended ?? undefined,reason:old.recommend_reason ?? undefined})];
