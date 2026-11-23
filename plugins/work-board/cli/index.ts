@@ -1100,7 +1100,7 @@ export function registerTasksCli(
           },
         }),
         "git-config": cliCommand({ summary: "Show or replace project Git/PR configuration from JSON", options: { project: REQUIRED_PROJECT_OPTION, file: { type: "string", description: "JSON configuration file on the invoking machine" }, machine: MACHINE_OPTION, json: JSON_OPTION }, run(input, ctx) { return guard(async () => { const project = await requiredProject(domain, ctx, input.options.project); if (input.options.file) { const hostId = await resolveClientHostId(bb, domain, input.options.machine, ctx); const text = await readTextOption(bb, ctx, hostId, undefined, input.options.file); return JSON.stringify(await domain.setGitSyncConfig(tasksRpcContract.setGitSyncConfig.input.parse({ projectId: project.id, config: JSON.parse(text ?? "") }))); } return JSON.stringify(await domain.getGitSyncConfig({ projectId: project.id })); }); } }),
-        pr: groupCommand("pr", "Manage persistent task-to-PR links and wait for PR CI", [["link", "Link/confirm a PR"], ["list", "Show PR, CI and merge state"], ["unlink", "Exclude a PR from rediscovery"], ["wait --url URL", "Block until the PR head's required checks settle (exit 0 green, 1 red, 2 cancelled/superseded, 3 no verdict)"]]),
+        pr: groupCommand("pr", "Manage persistent task-to-PR links and wait for PR CI", [["link", "Link/confirm a PR"], ["list", "Show PR, CI and merge state"], ["unlink", "Exclude a PR from rediscovery"], ["events", "Show a card's PR lifecycle messages and their delivery"], ["wait --url URL", "Block until the PR head's required checks settle (exit 0 green, 1 red, 2 cancelled/superseded, 3 no verdict)"]]),
         "pr wait": cliCommand({
           summary: "Block until every required check of a PR head settles; exit 0 green, 1 red, 2 cancelled or superseded, 3 no verdict",
           options: {
@@ -1135,6 +1135,15 @@ export function registerTasksCli(
                 ? JSON.stringify({ url: result.url || input.options.url, repository: match[1], number: Number(match[2]), sha: result.sha, shaFrom: from, verdict: result.verdict, exitCode: result.exitCode, message: result.message, failed: result.failed ?? [], ignored: [...ignored], waitedMs: result.waitedMs })
                 : `${match[1]}#${match[2]} at ${result.sha || "unknown head"} (from ${from}), waited ${Math.round(result.waitedMs / 60_000)} min\n${result.message}`,
             };
+          }); },
+        }),
+        "pr events": cliCommand({
+          summary: "List a card's recent PR lifecycle messages (CI verdict, merge queue removal, merge, deployment) and their delivery state",
+          positionals: [KEY_POSITIONAL], options: { json: JSON_OPTION },
+          run(input) { return guard(async () => {
+            const task = await resolveTask(domain, input.positionals["key-or-id"]);
+            const { events } = await domain.listPrEvents({ taskId: task.id, limit: 50 });
+            return input.options.json ? JSON.stringify({ events }) : events.map((event) => `${event.createdAt} · ${event.pr} · ${event.kind} · ${event.role} · ${event.state}${event.threadId ? ` → ${event.threadId}` : ""}${event.error ? ` (${event.error})` : ""}\n  ${event.text}`).join("\n") || "No PR events.";
           }); },
         }),
         ...Object.fromEntries((["link", "list", "unlink"] as const).map(action => [`pr ${action}`, cliCommand({

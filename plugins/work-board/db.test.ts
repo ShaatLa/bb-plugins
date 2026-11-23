@@ -78,7 +78,7 @@ describe("tasks storage", () => {
             "SELECT COUNT(*) AS count FROM schema_version",
           )
           .get()?.count,
-      ).toBe(48);
+      ).toBe(49);
       expect(db.prepare<[], { name: string }>("PRAGMA index_info(idx_task_pr_links_identity)").all().map((column) => column.name)).toEqual(["identity", "task_id"]);
       const columns = db.prepare<[], { name: string }>("PRAGMA table_info(tasks)").all().map(column => column.name);
       expect(columns).toEqual(expect.arrayContaining(["progress_note", "progress_updated_at", "progress_updated_by"]));

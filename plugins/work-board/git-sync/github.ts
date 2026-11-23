@@ -40,6 +40,7 @@ const workflowRun = z.object({
   conclusion: z.string().nullable(),
   html_url: z.string().url(),
   created_at: z.string(),
+  updated_at: z.string().optional(),
   run_attempt: z.number().default(1),
   head_repository: z.object({ id: z.number() }).nullable(),
 });
@@ -498,6 +499,8 @@ export function createGithubClient(options: {
             url: value.html_url,
             superseded,
             originalRunId: direct?.id ?? null,
+            completedAt: value.status === "completed" ? value.updated_at ?? null : null,
+            attempt: value.run_attempt,
           });
           if (direct && direct.conclusion !== "cancelled")
             return result(direct, false);
@@ -672,6 +675,9 @@ export function createGithubClient(options: {
     const details = parsed.success
       ? parsed.data.data?.repository?.pullRequest
       : null;
+    // A field error can come with `mergeQueueEntry: null`; that null is not a known absence, so the queue reads as unknown.
+    const queueErrors = z.object({ errors: z.array(z.object({ path: z.array(z.union([z.string(), z.number()])).optional() }).passthrough()).optional() }).passthrough().safeParse(detail);
+    const queueUnknown = !queueErrors.success || (queueErrors.data.errors ?? []).some((error) => !error.path || error.path.includes("mergeQueueEntry"));
     if (details) {
       review = details.reviewDecision;
       mergeState = details.mergeStateStatus;
@@ -717,9 +723,10 @@ export function createGithubClient(options: {
       mergeable: pr.mergeable ?? null,
       review,
       inMergeQueue:
-        details?.mergeQueueEntry === undefined
+        details?.mergeQueueEntry === undefined || queueUnknown
           ? null
           : details.mergeQueueEntry !== null,
+      queueEntryId: details?.mergeQueueEntry === undefined || queueUnknown ? undefined : details.mergeQueueEntry?.id ?? null,
       autoMerge:
         details?.autoMergeRequest === undefined
           ? null
@@ -736,8 +743,44 @@ export function createGithubClient(options: {
     }).parse(await request(`/repos/${repository}/pulls/${number}`));
     return [pr.title, pr.head.ref, pr.body ?? ""].join("\n");
   }
-  return { discover, snapshot, referenceText, ciState };
+  /**
+   * A PR's merge-queue removals from its timeline between two observations, oldest first; merge-generated removals do not count.
+   * Timeline times have whole seconds, so the window spans both observations' seconds: the caller treats those boundary seconds as ambiguous.
+   */
+  async function queueRemovals(repository: string, number: number, after: string | null, before: string): Promise<QueueRemoval[]> {
+    const [owner, name] = repository.split("/");
+    const data = z.object({ data: z.object({ repository: z.object({ pullRequest: z.object({ timelineItems: z.object({
+      nodes: z.array(z.object({ id: z.string(), createdAt: z.string(), reason: z.string().nullable().optional() }).partial().nullable()),
+    }) }).nullable() }).nullable() }) }).parse(await request("/graphql", {
+      query: "query($owner:String!,$repo:String!,$number:Int!){repository(owner:$owner,name:$repo){pullRequest(number:$number){timelineItems(last:20,itemTypes:[REMOVED_FROM_MERGE_QUEUE_EVENT]){nodes{... on RemovedFromMergeQueueEvent{id createdAt reason}}}}}}",
+      variables: { owner, repo: name, number },
+    }));
+    const removals = (data.data.repository?.pullRequest?.timelineItems.nodes ?? [])
+      .flatMap((node) => node?.id && node.createdAt ? [{ id: node.id, createdAt: node.createdAt, reason: node.reason ?? null }] : [])
+      .filter((node) => (after === null || Date.parse(node.createdAt) >= wholeSecond(after)) && Date.parse(node.createdAt) < wholeSecond(before) + 1000 && !/merged/i.test(node.reason ?? ""));
+    return removals.sort((left, right) => Date.parse(left.createdAt) - Date.parse(right.createdAt));
+  }
+  const deployRun = (value: WorkflowRun): DeployRun => ({ id: value.id, workflowId: value.workflow_id, name: value.name, headSha: value.head_sha, headBranch: value.head_branch, event: value.event, status: value.status, conclusion: value.conclusion, createdAt: value.created_at, updatedAt: value.updated_at ?? null, attempt: value.run_attempt });
+  /** One page of a branch's push runs created in `range` (`lo..hi`, inclusive), newest first as GitHub lists them, with the total count. */
+  async function pushRuns(repository: string, branch: string, range: string, page: number) {
+    const data = z.object({ total_count: z.number(), workflow_runs: z.array(workflowRun) }).parse(await request(
+      `/repos/${repository}/actions/runs?event=push&branch=${encodeURIComponent(branch)}&created=${encodeURIComponent(range)}&per_page=100&page=${page}`,
+    ));
+    return { total: data.total_count, runs: data.workflow_runs.map(deployRun) };
+  }
+  async function workflowRunById(repository: string, id: number) {
+    return deployRun(workflowRun.parse(await request(`/repos/${repository}/actions/runs/${id}`)));
+  }
+  async function compareStatus(repository: string, base: string, head: string) {
+    return z.object({ status: z.string() }).parse(await request(`/repos/${repository}/compare/${base}...${head}`)).status;
+  }
+  return { discover, snapshot, referenceText, ciState, queueRemovals, pushRuns, workflowRunById, compareStatus };
   }
   return { ...withSignal(options.signal), withSignal };
 }
-export type GithubClient = Pick<ReturnType<typeof createGithubClient>, "discover" | "snapshot" | "referenceText">;
+export const wholeSecond = (iso: string) => Math.floor(Date.parse(iso) / 1000) * 1000;
+export type QueueRemoval = { id: string; createdAt: string; reason: string | null };
+export type DeployRun = { id: number; workflowId: number; name: string | null; headSha: string; headBranch: string | null; event: string; status: string; conclusion: string | null; createdAt: string; updatedAt: string | null; attempt: number };
+type FullClient = ReturnType<typeof createGithubClient>;
+/** The PR-event lookups are optional so a client that lacks them (an older test double) reads as "unavailable". */
+export type GithubClient = Pick<FullClient, "discover" | "snapshot" | "referenceText"> & Partial<Pick<FullClient, "queueRemovals" | "pushRuns" | "workflowRunById" | "compareStatus">>;

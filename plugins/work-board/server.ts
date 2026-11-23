@@ -68,6 +68,7 @@ export default async function plugin(bb: BbPluginApi) {
   });
 
   bb.background.schedule("git-pr-sync", "* * * * *", () => gitSyncService(bb, store).runDue());
+  void gitSyncService(bb, store).startEvents().catch((error: unknown) => bb.log.warn(`PR event startup failed: ${error instanceof Error ? error.message : String(error)}`));
   bb.background.schedule("storage-maintenance", "17 3 * * *", async () => {
     const result = await storageService(bb).run(false);
     if (result.removedFiles || result.removedRows) bb.log.info(`Storage cleanup removed ${result.removedFiles} files and ${result.removedRows} cache rows`);

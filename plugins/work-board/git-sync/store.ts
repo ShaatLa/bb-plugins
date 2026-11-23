@@ -137,8 +137,10 @@ export function createGitSyncStore(db: Database) {
       return new Map(db.prepare<[string], {
         identity: string; lastAttemptAt: number | null; failureCount: number; error: string | null;
         state: PrSnapshot["state"] | null; mergedAt: string | null; updatedAt: string | null; observedAt: string | null; coverage: string | null;
+        remoteId: string | null; mergeSha: string | null;
       }>(
         `SELECT identity, last_attempt_at AS lastAttemptAt, failure_count AS failureCount, error,
+          json_extract(payload, '$.remoteId') AS remoteId, json_extract(payload, '$.mergeSha') AS mergeSha,
           json_extract(payload, '$.state') AS state, json_extract(payload, '$.mergedAt') AS mergedAt,
           json_extract(payload, '$.updatedAt') AS updatedAt, json_extract(payload, '$.observedAt') AS observedAt,
           json_extract(payload, '$.coverage') AS coverage

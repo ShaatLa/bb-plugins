@@ -296,6 +296,7 @@ function githubFixture(
     queued?: boolean;
     headSha?: string;
     baseSha?: string;
+    queueError?: boolean;
   } = {},
 ) {
   const requests: string[] = [];
@@ -377,7 +378,7 @@ function githubFixture(
           repository: {
             pullRequest: {
               reviewDecision: "REVIEW_REQUIRED",
-              mergeQueueEntry: { id: "MQ_entry" },
+              mergeQueueEntry: options.queueError ? null : { id: "MQ_entry" },
               autoMergeRequest: { enabledAt: "2026-10-25T12:00:00Z" },
               mergeStateStatus: "BLOCKED",
               reviewThreads: {
@@ -387,6 +388,7 @@ function githubFixture(
             },
           },
         },
+        ...(options.queueError ? { errors: [{ message: "Resource not accessible", path: ["repository", "pullRequest", "mergeQueueEntry"] }] } : {}),
       };
     else if (url.pathname.endsWith("/required_status_checks"))
       return new Response("{}", { status: 404 });
@@ -479,7 +481,14 @@ it("uses the latest CI attempt on the current head and keeps CI success separate
   expect(value.mergeState).toBe("BLOCKED");
   expect(value.unresolvedThreads).toBe(1);
   expect(value.inMergeQueue).toBe(true);
+  expect(value.queueEntryId).toBe("MQ_entry");
   expect(value.autoMerge).toBe(true);
+});
+it("reads the merge queue as unknown when GraphQL reports an error on that field", async () => {
+  const value = await githubFixture({ queueError: true }).client.snapshot("example/service", 42, gitSyncConfigSchema.parse({}));
+  expect(value.inMergeQueue).toBeNull();
+  expect(value.queueEntryId).toBeUndefined();
+  expect(value.review).toBe("REVIEW_REQUIRED");
 });
 it.each(["success", "failure"])(
   "covers a cancelled merge run only through a proven descendant (%s)",

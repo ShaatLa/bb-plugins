@@ -171,25 +171,52 @@ export async function deliverCommentToLatestAgent(
     ]),
   ];
   const prompt = () => steerPrompt(task.key, input.authorName, typeof input.body === "function" ? input.body() : input.body, input.replyHint);
-  for (const threadId of candidates) {
-    try {
-      const thread = await bb.sdk.threads.get({ threadId });
-      if (isSideChatShapedThread(thread)) continue;
-      if (thread.archivedAt != null || thread.deletedAt != null) {
-        // An archived asker's work moved up to its parent, so the message follows it there.
-        if (thread.parentThreadId && !candidates.includes(thread.parentThreadId)) candidates.push(thread.parentThreadId);
-        continue;
-      }
-      if (thread.status === "stopping") continue;
-      return (await appendOrSend(bb, threadId, prompt, input.mode ?? "steer-if-active", input.wanted)) ? 1 : 0;
-    } catch (error) {
-      bb.log.warn(
-        `failed to deliver comment ${input.commentId} to thread ${threadId}: ${errorMessage(error)}`,
-      );
-      return 0;
-    }
+  const at: { threadId?: string } = {};
+  try {
+    const threadId = await firstReachable(bb, candidates, at);
+    if (!threadId) return 0;
+    return (await appendOrSend(bb, threadId, prompt, input.mode ?? "steer-if-active", input.wanted)) ? 1 : 0;
+  } catch (error) {
+    bb.log.warn(
+      `failed to deliver comment ${input.commentId} to thread ${at.threadId}: ${errorMessage(error)}`,
+    );
+    return 0;
   }
-  return 0;
+}
+
+/** The first candidate that can take a message; `candidates` grows with the parents of archived ones. Throws when a read fails. */
+async function firstReachable(bb: BbPluginApi, candidates: string[], at: { threadId?: string } = {}, skipMissing = false): Promise<string | undefined> {
+  for (const threadId of candidates) {
+    at.threadId = threadId;
+    let thread: Awaited<ReturnType<BbPluginApi["sdk"]["threads"]["get"]>>;
+    try {
+      thread = await bb.sdk.threads.get({ threadId });
+    } catch (error) {
+      // The platform's authoritative "no such thread" rules a candidate out; any other failure is transient and still throws.
+      if (skipMissing && typeof error === "object" && error !== null && "code" in error && error.code === "thread_not_found") continue;
+      throw error;
+    }
+    if (isSideChatShapedThread(thread)) continue;
+    if (thread.archivedAt != null || thread.deletedAt != null) {
+      // An archived asker's work moved up to its parent, so the message follows it there.
+      if (thread.parentThreadId && !candidates.includes(thread.parentThreadId)) candidates.push(thread.parentThreadId);
+      continue;
+    }
+    if (thread.status === "stopping") continue;
+    return threadId;
+  }
+  return undefined;
+}
+
+/**
+ * The session a message about a card goes to, in the order answer notifications use: the default thread (first pinned work thread,
+ * else the latest agent comment's), then the other linked workers, then the parents of archived ones. A thread that no longer exists
+ * is skipped; undefined when none can take it; throws when a thread read fails for another reason.
+ */
+export async function resolveTaskRecipient(bb: BbPluginApi, store: TasksStore, taskId: string): Promise<string | undefined> {
+  const preferred = defaultTaskThreadId(store, taskId);
+  const links = await reconcileTaskThreads(bb, store, taskId);
+  return firstReachable(bb, [...new Set([...(preferred ? [preferred] : []), ...links.map((link) => link.threadId)])], {}, true);
 }
 
 export type Receipt =

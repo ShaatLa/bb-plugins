@@ -147,6 +147,9 @@ export const coverageSchema = z
     url: webUrl.nullable(),
     superseded: z.boolean(),
     originalRunId: z.number().nullable(),
+    // When the shown run's latest attempt completed, and which attempt that was; absent on snapshots saved before.
+    completedAt: z.string().nullable().optional(),
+    attempt: z.number().int().positive().optional(),
   })
   .strict();
 export const prSnapshotSchema = z
@@ -169,6 +172,8 @@ export const prSnapshotSchema = z
     requirementsKnown: z.boolean(),
     ci: z.enum(["passing", "failing", "pending", "no_checks", "unknown"]),
     inMergeQueue: z.boolean().nullable().default(null),
+    // The merge queue entry id; null when the PR is not queued, absent when the queue could not be read.
+    queueEntryId: z.string().nullable().optional(),
     autoMerge: z.boolean().nullable().default(null),
     mergeState: z.string().nullable(),
     mergeable: z.boolean().nullable(),
@@ -279,6 +284,13 @@ export const gitSyncMethods = {
   unlinkPr: {
     input: z.object({ taskId: z.string(), url: prUrlSchema }).strict(),
     output: z.object({ excluded: z.literal(true) }).strict(),
+  },
+  listPrEvents: {
+    input: z.object({ taskId: z.string(), limit: z.number().int().min(1).max(200).default(50) }).strict(),
+    output: z.object({ events: z.array(z.object({
+      deliveryId: z.string(), kind: z.string(), role: z.string(), state: z.string(), threadId: z.string().nullable(), attempts: z.number(),
+      error: z.string().nullable(), createdAt: z.string(), updatedAt: z.string(), pr: z.string(), text: z.string(),
+    }).strict()) }).strict(),
   },
   syncGit: {
     input: z.object({ projectId: z.string() }).strict(),
