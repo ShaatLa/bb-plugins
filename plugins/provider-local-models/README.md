@@ -3,7 +3,8 @@
 A native provider for models served locally by an OpenAI-compatible server
 such as the llama.cpp router (`llama serve`). Threads run a native agent loop
 inside the provider shim, talking directly to the local server via
-`/v1/chat/completions`. The provider ID is `local-models`.
+`/v1/chat/completions`; no Codex or other agent CLI is involved. The provider ID
+is `local-models`.
 
 Requires BB 0.46.1 / Plugin SDK 0.6.49 or newer and a local server with
 `/v1/models` and `/v1/chat/completions`.
@@ -42,6 +43,8 @@ bb plugin config local-models set defaultModel 'ggml-org/gpt-oss-20b-GGUF:MXFP4'
   chat completions, built-in file and shell tools, MCP tools, reasoning effort
   mapping via `reasoning.ts`, and permission handling for accept-edits mode.
 - BB's own MCP tools are pre-approved in the shim.
+- Threads saved by the earlier Codex-based version continue without their
+  earlier context.
 - Permission modes are `full` and `accept-edits`; gated tool calls request user
   approval inside the shim.
 - A thread spawned by an agent must use `--permission-mode full`: BB denies
@@ -68,6 +71,8 @@ and known reasoning levels.
 bb local-models ask "<prompt>" [--model <id>] [--system <text>] [--max-tokens <n>] [--effort <none|low|medium|high|xhigh>] [--timeout <duration>] [--json]
 ```
 One-shot chat completion without tools. Use `--json` for machine-readable output.
+Run from a thread, it takes a Machine Slots `local-model` use first, like
+`local_models_ask`.
 
 ```sh
 bb local-models unload <model> | --all
@@ -153,8 +158,10 @@ bb local-models install-splash
 ```
 
 The CLI uses the same download, context, detection and explicit install functions
-as the settings RPCs. `install-splash` upgrades an outdated installation and logs
-the exact command before execution. SDK CLI output is buffered; live command
+as the settings RPCs. `install-splash` detects requirements again, upgrades an
+outdated installation or installs a missing one, and logs the exact command before
+execution. Updates are found with `brew outdated incoai/tap/splash`, so they appear
+once Homebrew has refreshed the tap. SDK CLI output is buffered; live command
 output is available in settings and the plugin log. Tests use temporary GGUF,
 INI and draft fixtures, fake downloads, fake commands and a fake Splash HTTP
 process; they never install or start real engines.
@@ -173,7 +180,7 @@ The loopback HTTP tests are written but cannot execute in a sandbox that rejects
 - `splash.test.ts`: streaming/switching/idle/disposal; startup cancellation/readiness
   failure; user context restart and above-native flag omission.
 
-These are 13 HTTP-dependent tests. Config editing, GGUF native metadata, fake
+Config editing, GGUF native metadata, fake
 transfers and cancellation, receipts and tamper rejection, shared controls,
 requirements/install fakes, provider registration, URL/name helpers and routing
 with an in-memory fetch transport can run without listeners. Real install,

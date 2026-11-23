@@ -9,7 +9,7 @@ A collection of independently installable [BB](https://getbb.app/) plugins maint
 | **Antigravity provider** | Google Gemini agents through your existing Antigravity CLI, with BB tools, live quotas and machine diagnostics. | `antigravity` | [README](plugins/provider-antigravity/README.md) |
 | **CI Dashboard** | GitHub Actions health, run timings, agent-readable CI metrics, and PR/deployment context with cached history. | `ci-dashboard` / `delivery-dashboard` | [README](plugins/ci-dashboard/README.md) |
 | **Idle Compact** | Compacts a Claude Code thread idle for 50 minutes with 100k+ tokens of context while its prompt cache is still warm, so waking it does not rewrite the whole context. | `idle-compact` | [README](plugins/idle-compact/README.md) |
-| **Local models provider** | Local llama.cpp (OpenAI-compatible) models through the installed Codex CLI, with BB tools, a context indicator and unlimited usage. | `local-models` | [README](plugins/provider-local-models/README.md) |
+| **Local models provider** | Local llama.cpp (OpenAI-compatible) models with a built-in agent loop, BB tools, a context indicator, optional Splash engine and unlimited usage. | `local-models` | [README](plugins/provider-local-models/README.md) |
 | **Machine Slots** | Advisory per-host pools, gate checks, transferable leases and dev-server ports. | `slots` | [README](plugins/slots/README.md) |
 | **Tokenomos** | Token usage and API-equivalent cost across Claude Code, Codex, local-model and Antigravity threads: four ranges, project filter, token mix, hourly heatmap, compaction and local-model savings estimates, top threads, and a watchlist of large live contexts. | `tokenomos` | [README](plugins/tokenomos/README.md) |
 | **Work Board** | Tasks, epics, kanban, delegation to existing threads, owner actions, structured questions, evidence and Git-friendly project snapshots. | `work-board` | [README](plugins/work-board/README.md) |
@@ -23,7 +23,7 @@ Use **BB 0.46.1 or newer**, with **Plugin SDK 0.6.49 or newer**. Exact compatibi
 Additional requirements depend on the plugin:
 
 - **Antigravity:** an installed, signed-in **`agy` 1.4.6 or newer on each execution machine**. Login and the CLI installation remain managed by Antigravity.
-- **Local models:** an installed **`codex` CLI** and a running local OpenAI-compatible server (for example llama.cpp's `llama serve`) on each execution machine.
+- **Local models:** a running local OpenAI-compatible server (for example llama.cpp's `llama serve`) on each execution machine. No Codex or other agent CLI is needed. The optional Splash engine needs Homebrew, arm64, macOS 26.4+ and Apple M3 or later.
 - **Work Board:** disable BB's built-in `tasks` plugin before enabling this replacement. To retain its existing data, migrate **before the first Work Board installation**, as described below.
 - **CI Dashboard:** GitHub.com repositories. For authenticated access, use the signed-in GitHub CLI on the **BB server machine**, `GH_TOKEN` / `GITHUB_TOKEN`, or the plugin's secret token override. Private repositories require appropriate read access; commit and line statistics require authentication even for public repositories. Other public metrics can use anonymous access with lower rate limits.
 
@@ -133,11 +133,14 @@ An optional **Deploy to production** action appears on the production card when 
 
 ### Local models provider
 
-Select **Local models** in BB's provider picker. Models come from the local server's `/v1/models`; turns run through the installed `codex` CLI pointed at that server. Your global Codex config, MCP servers and Apps connectors are not loaded for local threads.
+Select **Local models** in BB's provider picker. Models come from the local servers' `/v1/models`; the plugin runs its own agent loop against `/v1/chat/completions`, without Codex or another agent CLI.
 
-- Streaming, resume, cancellation and BB agent tools; a request adapter handles strict chat templates such as Qwen and Gemma.
-- Context window indicator under the composer; provider usage shows each model with `∞`.
-- Settings for the server URL, `codex` path and default model.
+- Streaming, resume, cancellation, file and shell tools, MCP and BB agent tools; strict chat templates keep their user/assistant alternation.
+- Context window indicator under the composer. Local models have no quota, so the provider is not listed in Provider usage.
+- `local_models_ask` agent tool and `bb local-models ask` for one-shot prompts from other threads; they queue behind Machine Slots `local-model` work.
+- Optional Splash engine: a settings section checks requirements, installs or updates Splash with Homebrew after confirmation, and adds `splash/<id>` model variants.
+- A token-only usage journal that Tokenomos reads; no prompt or reply text is stored.
+- Settings for server URLs, default model and Splash.
 
 ```sh
 bb provider models local-models
@@ -194,7 +197,7 @@ Each plugin owns its dependencies, tests and build; there is no root install or 
 | `plugins/provider-antigravity` | `npm ci --include=dev` | Node with `--experimental-strip-types` support for its native tests; signed-in `agy` for live checks. |
 | `plugins/ci-dashboard` | `npm ci --include=dev` | GitHub access for live data checks. |
 | `plugins/idle-compact` | `npm ci` | None; `python3 scripts/measure.py` reads local Claude transcripts. |
-| `plugins/provider-local-models` | `npm ci --include=dev` | Node with `--experimental-strip-types` support; `codex` and a running local model server for live checks. |
+| `plugins/provider-local-models` | `npm ci --include=dev` | Node with `--experimental-strip-types` support; a running local model server for live checks. |
 | `plugins/work-board` | `bun install --frozen-lockfile` | `python3 -m unittest discover -s scripts -p 'test_*.py'` for the migration helper. |
 
 From the chosen plugin directory, after installing its dependencies:
