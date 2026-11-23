@@ -176,6 +176,8 @@ export const prSnapshotSchema = z
     inMergeQueue: z.boolean().nullable().default(null),
     // The merge queue entry id; null when the PR is not queued, absent when the queue could not be read.
     queueEntryId: z.string().nullable().optional(),
+    // When the current queue entry was enqueued; it names the entry's add event on the timeline.
+    queueEnqueuedAt: z.string().nullable().optional(),
     autoMerge: z.boolean().nullable().default(null),
     mergeState: z.string().nullable(),
     mergeable: z.boolean().nullable(),

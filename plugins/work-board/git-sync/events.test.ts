@@ -4,8 +4,8 @@ import { registerTasksCli } from "../cli";
 import { historyLimits, receiptPolling } from "../steer";
 import { prSnapshotSchema, type PrSnapshot } from "../shared/git-sync";
 import { createGitSyncService } from "./service";
-import { createGithubClient, GithubError, type DeployRun } from "./github";
-import { claimLease, ciVerdict, createPrEventService, deployBudgets, environmentLookup, prEventService, recordPrEvents, setPrEventSetting } from "./events";
+import { createGithubClient, GithubError, type DeployRun, type FailedChecks, type QueueEvent, type QueueTimeline } from "./github";
+import { claimLease, ciVerdict, createPrEventService, deployBudgets, environmentLookup, pairRemoval, prEventService, prEventText, recordPrEvents, setPrEventSetting } from "./events";
 import { createGitSyncStore } from "./store";
 
 const URL = "https://github.com/owner/repo/pull/7";
@@ -48,7 +48,8 @@ function setup(config: Record<string, unknown> = {}) {
     discover: vi.fn(async () => []),
     referenceText: vi.fn(async () => ""),
     snapshot: vi.fn(async () => structuredClone(next)),
-    queueRemovals: vi.fn(async (_repository: string, _number: number, _after: string | null, _before: string): Promise<{ id: string; createdAt: string; reason: string | null }[]> => []),
+    queueTimeline: vi.fn(async (_repository: string, _number: number): Promise<QueueTimeline> => ({ events: [], truncated: false })),
+    failedChecks: vi.fn(async (_repository: string, _oid: string): Promise<FailedChecks | null> => null),
     // GitHub lists runs created in an inclusive range newest first, with the total count, and serves at most 1,000 of them.
     pushRuns: vi.fn(async (_repository: string, _branch: string, range: string, page: number) => {
       const [lo, hi] = range.split("..").map((value) => Date.parse(value));
@@ -174,82 +175,244 @@ describe("transitions", () => {
 });
 
 describe("merge queue", () => {
-  // Inside the interval and clear of both observations' seconds.
-  const removal = (id: string, reason: string | null = "CI_FAILED", createdAt = new Date(Math.floor((Date.now() - 1_800_000) / 1000) * 1000).toISOString()) => ({ id, createdAt, reason });
-  /** Date the last queued sighting an hour back, as a poll interval apart would. */
-  const ageSighting = (f: ReturnType<typeof setup>) => {
-    const at = new Date(Date.now() - 3_600_000).toISOString();
-    f.db.prepare("UPDATE pr_event_state SET queue_seen_at=?").run(at);
-    return at;
-  };
-  it("reads the removal reason only on a departure, once per PR, and names each removal", async () => {
+  const T = Math.floor((Date.now() - 3_600_000) / 1000) * 1000;
+  /** A timeline time `minutes` after T, in whole seconds as GitHub gives them; the matching enqueue time carries milliseconds. */
+  const at = (minutes: number) => new Date(T + Math.round(minutes * 60_000)).toISOString();
+  const enqueued = (minutes: number) => new Date(T + minutes * 60_000 + 250).toISOString();
+  const add = (id: string, minutes: number): QueueEvent => ({ kind: "added", id, createdAt: at(minutes), reason: null, beforeCommit: null });
+  const remove = (id: string, minutes: number, reason: string | null = "MANUAL", beforeCommit: string | null = null): QueueEvent => ({ kind: "removed", id, createdAt: at(minutes), reason, beforeCommit });
+  const timeline = (...events: (QueueEvent | null)[]): QueueTimeline => ({ events, truncated: false });
+  const hhmm = (minutes: number) => at(minutes).slice(11, 16);
+  const onceKeys = (f: ReturnType<typeof setup>) => f.db.prepare<[], { once_key: string }>("SELECT once_key FROM pr_events WHERE kind='queue_removed' ORDER BY created_at").all().map((row) => row.once_key);
+
+  it("reads the timeline only on a departure, once per PR, and names each removal", async () => {
     const f = setup();
+    const warn = vi.spyOn(f.bb.log, "warn");
     const first = f.card("One"), second = f.card("Two", "in_review", "thr_other");
-    await f.sync({ queueEntryId: "MQE_1" });
+    await f.sync({ queueEntryId: "MQE_1", queueEnqueuedAt: enqueued(0) });
     await f.sync();
     await f.sync({ queueEntryId: undefined });
-    const seenAt = ageSighting(f);
-    expect(f.client.queueRemovals).not.toHaveBeenCalled();
-    f.client.queueRemovals.mockResolvedValueOnce([removal("RE_1")]);
+    expect(f.client.queueTimeline).not.toHaveBeenCalled();
+    f.client.queueTimeline.mockResolvedValueOnce(timeline(add("AE_1", 0), remove("RE_1", 10)));
     await f.sync({ queueEntryId: null });
-    expect(f.client.queueRemovals).toHaveBeenCalledTimes(1);
-    // Bounded by the last queued sighting and this observation.
-    expect(f.client.queueRemovals).toHaveBeenCalledWith("owner/repo", 7, seenAt, expect.any(String));
-    const [, , after, before] = f.client.queueRemovals.mock.calls[0]!;
-    expect(Date.parse(before)).toBeGreaterThan(Date.parse(after!));
-    expect(f.to("thr_worker")).toEqual([`${first.key} · PR #7 was removed from the merge queue (reason: CI_FAILED). Head aaaaaaa.`]);
-    expect(f.to("thr_other")).toEqual([`${second.key} · PR #7 was removed from the merge queue (reason: CI_FAILED). Head aaaaaaa.`]);
-    // The same head queued again, then replaced and gone with an unreadable reason: a second, separate event.
-    await f.sync({ queueEntryId: "MQE_2" });
-    f.client.queueRemovals.mockRejectedValueOnce(new Error("timeline unavailable"));
-    await f.sync({ queueEntryId: "MQE_3" });
-    expect(f.to("thr_worker")[1]).toBe(`${first.key} · PR #7 was removed from the merge queue (reason: reason unavailable). Head aaaaaaa.`);
-    expect(f.client.queueRemovals).toHaveBeenCalledTimes(2);
+    expect(f.client.queueTimeline).toHaveBeenCalledWith("owner/repo", 7);
+    const text = `PR #7 was removed from the merge queue at ${hhmm(10)} UTC (reason: MANUAL). Head aaaaaaa. At the next poll, the PR was out of the merge queue.`;
+    expect(f.to("thr_worker")).toEqual([`${first.key} · ${text}`]);
+    expect(f.to("thr_other")).toEqual([`${second.key} · ${text}`]);
+    // A non-failed-checks removal reads no rollup.
+    expect(f.client.failedChecks).not.toHaveBeenCalled();
+    // Queued again, then replaced with an unreadable timeline: a separate event under the entry id, with a warning.
+    await f.sync({ queueEntryId: "MQE_2", queueEnqueuedAt: enqueued(20) });
+    f.client.queueTimeline.mockRejectedValueOnce(new Error("timeline unavailable"));
+    await f.sync({ queueEntryId: "MQE_3", queueEnqueuedAt: enqueued(30) });
+    expect(f.to("thr_worker")[1]).toBe(`${first.key} · PR #7 was removed from the merge queue (reason: reason unavailable). Head aaaaaaa. At the next poll, the PR was back in the merge queue.`);
+    expect(onceKeys(f)).toEqual(["RE_1", "entry:MQE_2"]);
+    expect(warn).toHaveBeenCalledWith(expect.stringMatching(/owner\/repo#7 failed: timeline unavailable/));
   });
 
-  it("falls back to the departed entry when the timeline does not single out one removal", async () => {
+  it("pairs the departed entry's add and removal even when the last sighting came after the removal", async () => {
     const f = setup();
     const task = f.card();
-    await f.sync({ queueEntryId: "MQE_1" });
-    f.client.queueRemovals.mockResolvedValueOnce([removal("RE_1"), removal("RE_2", "MANUAL")]);
-    await f.sync({ queueEntryId: null });
-    expect(f.to("thr_worker")).toEqual([`${task.key} · PR #7 was removed from the merge queue (reason: reason unavailable). Head aaaaaaa.`]);
-    expect(f.db.prepare("SELECT once_key FROM pr_events").all()).toEqual([{ once_key: "entry:MQE_1" }]);
-    // The removals' own ids stay free for the departures they belong to.
-    await f.sync({ queueEntryId: "MQE_2" });
-    ageSighting(f);
-    f.client.queueRemovals.mockResolvedValueOnce([removal("RE_2", "MANUAL")]);
-    await f.sync({ queueEntryId: null });
-    expect(f.to("thr_worker")[1]).toBe(`${task.key} · PR #7 was removed from the merge queue (reason: MANUAL). Head aaaaaaa.`);
+    await f.sync({ queueEntryId: "MQE_1", queueEnqueuedAt: enqueued(0) });
+    // A lagging read saw the old entry a second after its removal; the old time window missed such a removal.
+    f.db.prepare("UPDATE pr_event_state SET queue_seen_at=?").run(new Date(Date.parse(at(10)) + 1_000).toISOString());
+    f.client.queueTimeline.mockResolvedValueOnce(timeline(add("AE_1", 0), remove("RE_1", 10, "FAILED_CHECKS"), add("AE_2", 11)));
+    await f.sync({ queueEntryId: "MQE_2", queueEnqueuedAt: enqueued(11) });
+    expect(f.to("thr_worker")).toEqual([`${task.key} · PR #7 was removed from the merge queue at ${hhmm(10)} UTC (reason: FAILED CHECKS). Head aaaaaaa. At the next poll, the PR was back in the merge queue.`]);
   });
 
-  it("treats a sole removal in either observation's second as ambiguous", async () => {
+  it("chooses the departed entry's removal over an earlier and a later entry's, leaving the later one free", async () => {
     const f = setup();
     const task = f.card();
-    await f.sync({ queueEntryId: "MQE_1" });
-    // The timeline's whole second matches the last queued sighting: it may be this entry's removal or a later one's.
-    const seenAt = ageSighting(f);
-    f.client.queueRemovals.mockResolvedValueOnce([removal("RE_B", "MANUAL", new Date(Math.floor(Date.parse(seenAt) / 1000) * 1000).toISOString())]);
+    const events = [add("AE_0", 0), remove("RE_0", 1), add("AE_A", 2), remove("RE_A", 3, "CI_TIMEOUT"), add("AE_B", 4), remove("RE_B", 5, "MANUAL")];
+    // The snapshot still shows A after B was added.
+    await f.sync({ queueEntryId: "MQE_A", queueEnqueuedAt: enqueued(2) });
+    f.client.queueTimeline.mockResolvedValueOnce(timeline(...events));
     await f.sync({ queueEntryId: null });
-    expect(f.to("thr_worker")).toEqual([`${task.key} · PR #7 was removed from the merge queue (reason: reason unavailable). Head aaaaaaa.`]);
-    expect(f.db.prepare("SELECT once_key FROM pr_events").all()).toEqual([{ once_key: "entry:MQE_1" }]);
+    expect(onceKeys(f)).toEqual(["RE_A"]);
+    expect(f.to("thr_worker")[0]).toContain("(reason: CI TIMEOUT)");
+    await f.sync({ queueEntryId: "MQE_B", queueEnqueuedAt: enqueued(4) });
+    f.client.queueTimeline.mockResolvedValueOnce(timeline(...events));
+    await f.sync({ queueEntryId: null });
+    expect(onceKeys(f)).toEqual(["RE_A", "RE_B"]);
+    expect(f.to("thr_worker")[1]).toBe(`${task.key} · PR #7 was removed from the merge queue at ${hhmm(5)} UTC (reason: MANUAL). Head aaaaaaa. At the next poll, the PR was out of the merge queue.`);
   });
 
-  it("returns removals between both observations' seconds and drops merge-generated ones", async () => {
-    const body = { data: { repository: { pullRequest: { timelineItems: { nodes: [
-      { id: "RE_old", createdAt: "2026-01-01T00:00:00Z", reason: "CI_FAILED" },
-      { id: "RE_new", createdAt: "2026-01-03T00:00:00Z", reason: "MANUAL" },
-      { id: "RE_merge", createdAt: "2026-01-03T12:00:00Z", reason: "MERGED" },
-      { id: "RE_later", createdAt: "2026-01-04T00:00:00Z", reason: "MANUAL" },
-      {},
-    ] } } } } };
-    const fetcher = vi.fn(async () => new Response(JSON.stringify(body), { status: 200 }));
+  it("falls back to the entry id when a cut page may hide another add in the enqueue second, keeping the removal id free", async () => {
+    const f = setup();
+    const task = f.card();
+    await f.sync({ queueEntryId: "MQE_A", queueEnqueuedAt: enqueued(0) });
+    f.client.queueTimeline.mockResolvedValueOnce({ events: [add("AE_B", 0), remove("RE_B", 1)], truncated: true });
+    await f.sync({ queueEntryId: null });
+    expect(f.to("thr_worker")).toEqual([`${task.key} · PR #7 was removed from the merge queue (reason: reason unavailable). Head aaaaaaa. At the next poll, the PR was out of the merge queue.`]);
+    expect(onceKeys(f)).toEqual(["entry:MQE_A"]);
+    await f.sync({ queueEntryId: "MQE_B", queueEnqueuedAt: enqueued(0) });
+    f.client.queueTimeline.mockResolvedValueOnce(timeline(add("AE_B", 0), remove("RE_B", 1)));
+    await f.sync({ queueEntryId: null });
+    expect(onceKeys(f)).toEqual(["entry:MQE_A", "RE_B"]);
+  });
+
+  it("falls back to the entry id across an unreadable item after the add, keeping the next removal id free", async () => {
+    const f = setup();
+    f.card();
+    await f.sync({ queueEntryId: "MQE_A", queueEnqueuedAt: enqueued(0) });
+    // The gap may hide A's removal and B's add, so the readable removal after it may be B's.
+    f.client.queueTimeline.mockResolvedValueOnce(timeline(add("AE_A", 0), null, remove("RE_B", 2)));
+    await f.sync({ queueEntryId: null });
+    expect(onceKeys(f)).toEqual(["entry:MQE_A"]);
+    await f.sync({ queueEntryId: "MQE_B", queueEnqueuedAt: enqueued(1) });
+    // The gap now lies well before B's window: A's removal, read after it, bounds it.
+    f.client.queueTimeline.mockResolvedValueOnce(timeline(add("AE_A", 0), null, remove("RE_A", 0.5), add("AE_B", 1), remove("RE_B", 2)));
+    await f.sync({ queueEntryId: null });
+    expect(onceKeys(f)).toEqual(["entry:MQE_A", "RE_B"]);
+  });
+
+  it("matches a merged reason exactly", async () => {
+    const f = setup();
+    f.card();
+    await f.sync({ queueEntryId: "MQE_1", queueEnqueuedAt: enqueued(0) });
+    f.client.queueTimeline.mockResolvedValueOnce(timeline(add("AE_1", 0), remove("RE_1", 5, "not_merged")));
+    await f.sync({ queueEntryId: null });
+    expect(onceKeys(f)).toEqual(["RE_1"]);
+  });
+
+  it("keeps a known enqueue time through repeat sightings without one, and clears it on a change", async () => {
+    const f = setup();
+    f.card();
+    const stored = () => f.db.prepare<[], { queue_enqueued_at: string | null }>("SELECT queue_enqueued_at FROM pr_event_state").get()!.queue_enqueued_at;
+    await f.sync({ queueEntryId: "MQE_1", queueEnqueuedAt: enqueued(0) });
+    await f.sync({ queueEnqueuedAt: null });
+    expect(stored()).toBe(enqueued(0));
+    await f.sync({ queueEntryId: undefined });
+    expect(stored()).toBe(enqueued(0));
+    await f.sync({ queueEntryId: "MQE_2", queueEnqueuedAt: null });
+    expect(stored()).toBeNull();
+    await f.sync({ queueEntryId: "MQE_3", queueEnqueuedAt: enqueued(5) });
+    expect(stored()).toBe(enqueued(5));
+    await f.sync({ queueEntryId: null });
+    expect(stored()).toBeNull();
+  });
+
+  it("sends nothing for a paired merge-generated removal but still advances the queue state", async () => {
+    const f = setup();
+    f.card();
+    await f.sync({ queueEntryId: "MQE_1", queueEnqueuedAt: enqueued(0) });
+    f.client.queueTimeline.mockResolvedValueOnce(timeline(add("AE_1", 0), remove("RE_1", 5, "MERGED")));
+    await f.sync({ queueEntryId: null });
+    expect(onceKeys(f)).toEqual([]);
+    expect(f.to("thr_worker")).toEqual([]);
+    expect(f.db.prepare("SELECT queue_entry, queue_enqueued_at FROM pr_event_state").get()).toEqual({ queue_entry: null, queue_enqueued_at: null });
+  });
+
+  it("pairs only when the add is certain and the removal visible", () => {
+    const observed = new Date(T + 60 * 60_000).toISOString();
+    const events = [add("AE_1", 0), remove("RE_1", 10)];
+    expect(pairRemoval(timeline(...events), enqueued(0), observed)?.id).toBe("RE_1");
+    expect(pairRemoval(timeline(...events), null, observed)).toBeNull();
+    // GitHub may date the add a second after the enqueue time.
+    expect(pairRemoval(timeline(add("AE_1", 1 / 60), remove("RE_1", 10)), enqueued(0), observed)?.id).toBe("RE_1");
+    // The add is not on the page, or two adds fall within 2 s of the enqueue time.
+    expect(pairRemoval(timeline(remove("RE_1", 10)), enqueued(0), observed)).toBeNull();
+    expect(pairRemoval(timeline(add("AE_0", 0), ...events), enqueued(0), observed)).toBeNull();
+    expect(pairRemoval(timeline(add("AE_0", -2 / 60), remove("RE_0", -1 / 60), add("AE_1", 1 / 60), remove("RE_1", 10)), enqueued(0), observed)).toBeNull();
+    expect(pairRemoval(timeline(add("AE_0", -3 / 60), remove("RE_0", -1 / 60), add("AE_1", 1 / 60), remove("RE_1", 10)), enqueued(0), observed)?.id).toBe("RE_1");
+    // Not removed yet, or removed after this observation's second.
+    expect(pairRemoval(timeline(add("AE_1", 0)), enqueued(0), observed)).toBeNull();
+    expect(pairRemoval(timeline(add("AE_1", 0), add("AE_2", 5)), enqueued(0), observed)).toBeNull();
+    expect(pairRemoval(timeline(add("AE_1", 0), remove("RE_1", 61)), enqueued(0), observed)).toBeNull();
+    expect(pairRemoval(timeline(add("AE_1", 0), remove("RE_1", 60)), enqueued(0), new Date(T + 60 * 60_000 + 900).toISOString())?.id).toBe("RE_1");
+    // An unreadable item right after the add, or as the oldest of a cut page, leaves the pairing uncertain.
+    expect(pairRemoval(timeline(add("AE_1", 0), null, remove("RE_1", 10)), enqueued(0), observed)).toBeNull();
+    // A gap between events that bracket the window may hide an add in it; one with both neighbors well before it does not.
+    expect(pairRemoval(timeline(null, ...events), enqueued(0), observed)).toBeNull();
+    expect(pairRemoval(timeline(add("AE_0", -10), remove("RE_0", -5), null, ...events), enqueued(0), observed)).toBeNull();
+    expect(pairRemoval(timeline(add("AE_0", -10), null, remove("RE_0", -5), ...events), enqueued(0), observed)?.id).toBe("RE_1");
+    expect(pairRemoval(timeline(...events, null), enqueued(0), observed)?.id).toBe("RE_1");
+    expect(pairRemoval({ events: [null, ...events], truncated: true }, enqueued(0), observed)).toBeNull();
+    // A leading gap on a cut page before an event far older than the window does not block.
+    expect(pairRemoval({ events: [null, remove("RE_0", -24 * 60), ...events], truncated: true }, enqueued(0), observed)?.id).toBe("RE_1");
+    // A cut page matters only when its oldest event is within 2 s of the enqueue time.
+    expect(pairRemoval({ events, truncated: true }, enqueued(0), observed)).toBeNull();
+    expect(pairRemoval({ events: [add("AE_1", 1 / 60), remove("RE_1", 10)], truncated: true }, enqueued(0), observed)).toBeNull();
+    expect(pairRemoval({ events: [add("AE_0", -3 / 60), remove("RE_0", -2.5 / 60), add("AE_1", 1 / 60), remove("RE_1", 10)], truncated: true }, enqueued(0), observed)?.id).toBe("RE_1");
+    expect(pairRemoval({ events: [add("AE_0", -1), ...events], truncated: true }, enqueued(0), observed)?.id).toBe("RE_1");
+  });
+
+  it("names the failed checks of the tested commit for a failed-checks removal only", async () => {
+    const f = setup();
+    const warn = vi.spyOn(f.bb.log, "warn");
+    const task = f.card();
+    const cycle = async (entry: number, reason: string, failed: FailedChecks | null | Error) => {
+      await f.sync({ queueEntryId: `MQE_${entry}`, queueEnqueuedAt: enqueued(entry) });
+      f.client.queueTimeline.mockResolvedValueOnce(timeline(add(`AE_${entry}`, entry), remove(`RE_${entry}`, entry + 0.5, reason, `oid${entry}`)));
+      if (failed instanceof Error) f.client.failedChecks.mockRejectedValueOnce(failed);
+      else f.client.failedChecks.mockResolvedValueOnce(failed);
+      await f.sync({ queueEntryId: null });
+      return f.to("thr_worker").at(-1)!.replace(`${task.key} · PR #7 was removed from the merge queue at ${hhmm(entry + 0.5)} UTC `, "").replace(" Head aaaaaaa. At the next poll, the PR was out of the merge queue.", "");
+    };
+    const seven = ["A", "B", "C", "D", "E", "F", "G"];
+    expect(await cycle(1, "FAILED_CHECKS", { names: seven, hasNextPage: false })).toBe("(reason: FAILED CHECKS; failed: A, B, C, D, E, +2 more).");
+    expect(f.client.failedChecks).toHaveBeenLastCalledWith("owner/repo", "oid1");
+    expect(await cycle(2, "failed_checks", { names: seven, hasNextPage: true })).toBe("(reason: failed checks; failed: A, B, C, D, E and more).");
+    expect(await cycle(3, "FAILED_CHECKS", { names: ["lint"], hasNextPage: true })).toBe("(reason: FAILED CHECKS; failed: lint (first 100 checks inspected)).");
+    expect(await cycle(7, "FAILED_CHECKS", { names: [], hasNextPage: true })).toBe("(reason: FAILED CHECKS; failed: none found (first 100 checks inspected)).");
+    expect(await cycle(8, "FAILED_CHECKS", { names: [], hasNextPage: false })).toBe("(reason: FAILED CHECKS).");
+    expect(f.db.prepare("SELECT payload FROM pr_events WHERE once_key='RE_1'").get()).toEqual({ payload: expect.stringContaining('"failedChecks":["A","B","C","D","E"],"failedMore":2,"checksTruncated":false') });
+    // An unreadable or missing rollup keeps the reason and the time, with a warning.
+    expect(await cycle(4, "FAILED_CHECKS", new Error("rollup unavailable"))).toBe("(reason: FAILED CHECKS).");
+    expect(await cycle(5, "FAILED_CHECKS", null)).toBe("(reason: FAILED CHECKS).");
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining("failed checks unreadable: rollup unavailable"));
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining("commit oid5 has no check rollup"));
+    expect(f.client.failedChecks).toHaveBeenCalledTimes(7);
+    await cycle(6, "MANUAL", null);
+    expect(f.client.failedChecks).toHaveBeenCalledTimes(7);
+  });
+
+  it("renders the removal text, keeping old payloads as they were", () => {
+    const base = { number: 7, head: a, reason: "FAILED_CHECKS" };
+    expect(prEventText("queue_removed", base, "EXA-1")).toBe("EXA-1 · PR #7 was removed from the merge queue (reason: FAILED_CHECKS). Head aaaaaaa.");
+    expect(prEventText("queue_removed", { ...base, reason: null }, "EXA-1")).toBe("EXA-1 · PR #7 was removed from the merge queue (reason: reason unavailable). Head aaaaaaa.");
+    expect(prEventText("queue_removed", { ...base, reason: null, requeued: true }, "EXA-1"))
+      .toBe("EXA-1 · PR #7 was removed from the merge queue (reason: reason unavailable). Head aaaaaaa. At the next poll, the PR was back in the merge queue.");
+    expect(prEventText("queue_removed", { ...base, removedAt: "2026-01-02T03:04:05Z", failedChecks: ["Check A", "Check B"], failedMore: 0, checksTruncated: false, requeued: false }, "EXA-1"))
+      .toBe("EXA-1 · PR #7 was removed from the merge queue at 03:04 UTC (reason: FAILED CHECKS; failed: Check A, Check B). Head aaaaaaa. At the next poll, the PR was out of the merge queue.");
+  });
+
+  it("reads queue adds and removals oldest first, and the failed contexts of a commit", async () => {
+    const responses: unknown[] = [];
+    const fetcher = vi.fn(async () => new Response(JSON.stringify(responses.shift()), { status: 200 }));
     const client = createGithubClient({ token: async () => "token", signal: new AbortController().signal, fetcher: fetcher as never });
-    expect(await client.queueRemovals("owner/repo", 7, "2026-01-02T00:00:00.000Z", "2026-01-03T23:00:00.000Z")).toEqual([{ id: "RE_new", createdAt: "2026-01-03T00:00:00Z", reason: "MANUAL" }]);
-    expect(await client.queueRemovals("owner/repo", 7, "2026-01-02T00:00:00.000Z", "2026-01-04T00:00:00.000Z")).toHaveLength(2);
-    // A removal in the first observation's second is returned too, for the caller to treat as ambiguous.
-    expect(await client.queueRemovals("owner/repo", 7, "2026-01-04T00:00:00.400Z", "2026-01-05T00:00:00.000Z")).toEqual([{ id: "RE_later", createdAt: "2026-01-04T00:00:00Z", reason: "MANUAL" }]);
-    expect(await client.queueRemovals("owner/repo", 7, "2026-01-04T00:00:01.000Z", "2026-01-05T00:00:00.000Z")).toEqual([]);
+    responses.push({ data: { repository: { pullRequest: { timelineItems: { pageInfo: { hasPreviousPage: true }, nodes: [
+      { __typename: "AddedToMergeQueueEvent", id: "AE_1", createdAt: "2026-01-01T00:00:00Z" },
+      { __typename: "RemovedFromMergeQueueEvent", id: "RE_1", createdAt: "2026-01-02T00:00:00Z", reason: "MANUAL", beforeCommit: { oid: "c1" } },
+      {},
+      { __typename: "RemovedFromMergeQueueEvent", id: "RE_2", createdAt: "2026-01-03T00:00:00Z", reason: null, beforeCommit: null },
+      null,
+    ] } } } } });
+    // Unreadable items stay in place as gaps.
+    expect(await client.queueTimeline("owner/repo", 7)).toEqual({ truncated: true, events: [
+      { kind: "added", id: "AE_1", createdAt: "2026-01-01T00:00:00Z", reason: null, beforeCommit: null },
+      { kind: "removed", id: "RE_1", createdAt: "2026-01-02T00:00:00Z", reason: "MANUAL", beforeCommit: "c1" },
+      null,
+      { kind: "removed", id: "RE_2", createdAt: "2026-01-03T00:00:00Z", reason: null, beforeCommit: null },
+      null,
+    ] });
+    const run = (name: string, conclusion: string | null) => ({ __typename: "CheckRun", name, conclusion });
+    const status = (context: string, state: string) => ({ __typename: "StatusContext", context, state });
+    responses.push({ data: { repository: { object: { statusCheckRollup: { contexts: { pageInfo: { hasNextPage: true }, nodes: [
+      run("unit", "FAILURE"), run("unit", "FAILURE"), run("e2e", "TIMED_OUT"), run("lint", "CANCELLED"), run("deploy", "ACTION_REQUIRED"), run("boot", "STARTUP_FAILURE"),
+      run("ok", "SUCCESS"), run("skip", "SKIPPED"), run("neutral", "NEUTRAL"), run("running", null),
+      status("ci/legacy", "FAILURE"), status("ci/error", "ERROR"), status("ci/pending", "PENDING"), status("ci/ok", "SUCCESS"), null,
+    ] } } } } } });
+    expect(await client.failedChecks("owner/repo", "c1")).toEqual({ names: ["unit", "e2e", "lint", "deploy", "boot", "ci/legacy", "ci/error"], hasNextPage: true });
+    expect(JSON.parse((fetcher.mock.calls.at(-1) as unknown as [string, RequestInit])[1].body as string).variables).toEqual({ owner: "owner", repo: "repo", oid: "c1" });
+    responses.push({ data: { repository: { object: { statusCheckRollup: null } } } });
+    expect(await client.failedChecks("owner/repo", "c1")).toBeNull();
+    // Top-level GraphQL errors throw even beside partial data, so the caller falls back and warns.
+    responses.push({ data: { repository: { pullRequest: { timelineItems: { pageInfo: { hasPreviousPage: false }, nodes: [] } } } }, errors: [{ message: "timeline field failed" }] });
+    await expect(client.queueTimeline("owner/repo", 7)).rejects.toThrow("timeline field failed");
+    responses.push({ data: null, errors: [{ message: "rollup field failed" }] });
+    await expect(client.failedChecks("owner/repo", "c1")).rejects.toThrow("rollup field failed");
   });
 });
 

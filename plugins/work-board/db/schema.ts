@@ -916,6 +916,8 @@ const MIGRATIONS = [
   // A PR message held for an owner keeps its deadline through retries and recovery; an owner designation marks it woken.
   `ALTER TABLE pr_event_deliveries ADD COLUMN held_until TEXT;
    ALTER TABLE pr_event_deliveries ADD COLUMN woken_at TEXT;`,
+  // The known queue entry's enqueue time pairs its departure with its own add and removal on the timeline.
+  `ALTER TABLE pr_event_state ADD COLUMN queue_enqueued_at TEXT;`,
 ] as const;
 
 export function initializeTasksSchema(db: PluginDatabase, log: Log = () => {}): void {

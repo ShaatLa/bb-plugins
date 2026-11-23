@@ -8,7 +8,7 @@ import { errorMessage } from "../shared/errors";
 import { isClosedStatus } from "../shared/workflow-policy";
 import { parsePrUrl, prIdentity, prLinkSchema, type GitSyncConfig, type PrLink, type PrSnapshot } from "../shared/git-sync";
 import { environmentPullRequests, type EnvironmentPullRequest } from "./environment-prs";
-import type { DeployRun, GithubClient, QueueRemoval } from "./github";
+import { wholeSecond, type DeployRun, type GithubClient, type QueueEvent, type QueueRemoval, type QueueTimeline } from "./github";
 import { createGitSyncStore } from "./store";
 
 type Database = ReturnType<BbPluginApi["storage"]["database"]>;
@@ -39,9 +39,10 @@ export const prEventMarker = (deliveryId: string, attempt: number) => `<!-- work
 
 type Payload = {
   number: number; head?: string; verdict?: "green" | "red"; failed?: string[]; reason?: string | null;
+  removedAt?: string; failedChecks?: string[]; failedMore?: number; checksTruncated?: boolean; requeued?: boolean;
   mergeSha?: string; mergedAt?: string; workflow?: string; runId?: number; workflows?: string[]; days?: number; outcome?: "expired" | "unverifiable";
 };
-type StateRow = { verdict_key: string | null; queue_entry: string | null; queue_seen_at: string | null; merge_sha: string | null; merge_seen_at: string | null };
+type StateRow = { verdict_key: string | null; queue_entry: string | null; queue_seen_at: string | null; queue_enqueued_at: string | null; merge_sha: string | null; merge_seen_at: string | null };
 type WaitRow = {
   project_id: string; remote_id: string; identity: string; repository: string; number: number; base_branch: string; merge_sha: string;
   merged_at: string; deadline: string; workflows: string; days: number; state: string; baseline_at: string | null; walk: string | null; kept: string;
@@ -94,7 +95,17 @@ export function prEventText(kind: PrEventKind, payload: Payload, taskKey: string
     return payload.verdict === "green"
       ? `${head} CI green on ${short(payload.head!)} (required checks passed).`
       : `${head} CI red on ${short(payload.head!)}: failed ${payload.failed!.join(", ")}.`;
-  if (kind === "queue_removed") return `${head} was removed from the merge queue (reason: ${payload.reason ?? "reason unavailable"}). Head ${short(payload.head!)}.`;
+  if (kind === "queue_removed") {
+    // Rows written before the removal time and queue state were recorded keep their original text.
+    if (payload.requeued === undefined) return `${head} was removed from the merge queue (reason: ${payload.reason ?? "reason unavailable"}). Head ${short(payload.head!)}.`;
+    const at = payload.removedAt ? ` at ${payload.removedAt.slice(11, 16)} UTC` : "";
+    const names = payload.failedChecks?.join(", "), inspected = payload.checksTruncated ? " (first 100 checks inspected)" : "";
+    // Only failures actually seen are counted: past the first 100 contexts the total is unknown.
+    const more = payload.failedMore ? (payload.checksTruncated ? " and more" : `, +${payload.failedMore} more`) : inspected;
+    const failed = names ? `; failed: ${names}${more}` : inspected && `; failed: none found${inspected}`;
+    const reason = payload.reason ? payload.reason.replace(/_/g, " ") : "reason unavailable";
+    return `${head} was removed from the merge queue${at} (reason: ${reason}${failed}). Head ${short(payload.head!)}. At the next poll, the PR was ${payload.requeued ? "back in" : "out of"} the merge queue.`;
+  }
   if (kind === "merged") return `${head} merged as ${short(payload.mergeSha!)} at ${utc(payload.mergedAt!)}.`;
   if (kind === "deployed")
     return `${head}: ${payload.workflow} run ${payload.runId} succeeded with merge ${short(payload.mergeSha!)}. Collect the deployment evidence, run the final check and close the card; Work Board does not close it.`;
@@ -140,14 +151,40 @@ function emit(db: Database, tasks: TasksStore, projectId: string, remoteId: stri
 }
 
 const loadState = (db: Database, projectId: string, remoteId: string) =>
-  db.prepare<[string, string], StateRow>("SELECT verdict_key, queue_entry, queue_seen_at, merge_sha, merge_seen_at FROM pr_event_state WHERE project_id=? AND remote_id=?").get(projectId, remoteId);
+  db.prepare<[string, string], StateRow>("SELECT verdict_key, queue_entry, queue_seen_at, queue_enqueued_at, merge_sha, merge_seen_at FROM pr_event_state WHERE project_id=? AND remote_id=?").get(projectId, remoteId);
 const active = (snapshot: PrSnapshot) => snapshot.state === "open" || snapshot.state === "draft";
 
-/** The queue entry this observation shows gone (removed or replaced) while the PR is still open, and since when it was last seen queued. */
-export function queueDeparture(db: Database, projectId: string, snapshot: PrSnapshot): { entry: string; since: string | null } | null {
+/** The queue entry this observation shows gone (removed or replaced) while the PR is still open, and when it was enqueued. */
+export function queueDeparture(db: Database, projectId: string, snapshot: PrSnapshot): { entry: string; enqueuedAt: string | null } | null {
   const state = loadState(db, projectId, snapshot.remoteId);
   if (!state?.queue_entry || snapshot.queueEntryId === undefined || !active(snapshot) || snapshot.queueEntryId === state.queue_entry) return null;
-  return { entry: state.queue_entry, since: state.queue_seen_at };
+  return { entry: state.queue_entry, enqueuedAt: state.queue_enqueued_at };
+}
+
+/**
+ * The departed entry's removal: the event right after its own add, which is the one add within 2 s of the entry's enqueue time
+ * (GitHub can date the add a second after `enqueuedAt`). Null when the pairing is not certain: no enqueue time, no or several adds
+ * in that window, a page whose cut or an unreadable item may hide another add in it, or no removal visible by this observation.
+ */
+export function pairRemoval(timeline: QueueTimeline, enqueuedAt: string | null, observedAt: string): QueueEvent | null {
+  if (!enqueuedAt) return null;
+  const second = wholeSecond(enqueuedAt), { events } = timeline;
+  const near = (event: QueueEvent | null) => event !== null && Math.abs(wholeSecond(event.createdAt) - second) <= 2000;
+  // A cut page may hide another add in the window when its oldest readable event is in it; leading gaps fall to the gap rule below.
+  if (timeline.truncated && near(events.find((event) => event !== null) ?? null)) return null;
+  // Items are in time order, so an unreadable one lies between its readable neighbors; a missing neighbor leaves that side open.
+  const time = (event: QueueEvent | undefined) => (event ? wholeSecond(event.createdAt) : undefined);
+  const hidden = events.some((event, index) => {
+    if (event) return false;
+    const before = time(events.slice(0, index).reverse().find((value) => value !== null) ?? undefined);
+    const after = time(events.slice(index + 1).find((value) => value !== null) ?? undefined);
+    return (before === undefined || before <= second + 2000) && (after === undefined || after >= second - 2000);
+  });
+  if (hidden) return null;
+  const adds = events.flatMap((event, index) => (event?.kind === "added" && near(event) ? [index] : []));
+  if (adds.length !== 1) return null;
+  const removal = events[adds[0]! + 1];
+  return removal?.kind === "removed" && Date.parse(removal.createdAt) < wholeSecond(observedAt) + 1000 ? removal : null;
 }
 
 /**
@@ -200,16 +237,24 @@ export function recordPrEvents(db: Database, tasks: TasksStore, input: { project
   if (state && on && verdict && verdictKey !== state.verdict_key)
     added = emit(db, tasks, projectId, remoteId, identity, "ci", verdictKey!, { number: snapshot.number, head: snapshot.headSha, verdict: verdict.verdict, failed: verdict.failed }) || added;
   if (state && on && input.removal !== undefined) {
-    const departed = state.queue_entry!;
-    added = emit(db, tasks, projectId, remoteId, identity, "queue_removed", input.removal?.id ?? `entry:${departed}`, { number: snapshot.number, head: snapshot.headSha, reason: input.removal?.reason ?? null }) || added;
+    const departed = state.queue_entry!, removal = input.removal, failed = removal?.failed?.names ?? [];
+    added = emit(db, tasks, projectId, remoteId, identity, "queue_removed", removal?.id ?? `entry:${departed}`, {
+      number: snapshot.number, head: snapshot.headSha, reason: removal?.reason ?? null, ...(removal ? { removedAt: removal.createdAt } : {}),
+      ...(removal?.failed ? { failedChecks: failed.slice(0, 5), failedMore: Math.max(0, failed.length - 5), checksTruncated: removal.failed.hasNextPage } : {}),
+      requeued: snapshot.queueEntryId != null,
+    }) || added;
   }
   // An unknown queue read keeps the last known entry; a known one replaces it and dates when it was last seen queued.
   const known = snapshot.queueEntryId !== undefined;
   const queueEntry = known ? snapshot.queueEntryId ?? null : state?.queue_entry ?? null;
   const queueSeenAt = known ? (snapshot.queueEntryId ? snapshot.observedAt : null) : state?.queue_seen_at ?? null;
-  db.prepare(`INSERT INTO pr_event_state(project_id, remote_id, initialized_at, verdict_key, queue_entry, queue_seen_at, merge_sha, merge_seen_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    ON CONFLICT(project_id, remote_id) DO UPDATE SET verdict_key=excluded.verdict_key, queue_entry=excluded.queue_entry, queue_seen_at=excluded.queue_seen_at, merge_sha=excluded.merge_sha, merge_seen_at=excluded.merge_seen_at, unlinked_at=NULL`)
-    .run(projectId, remoteId, new Date(now).toISOString(), verdictKey ?? state?.verdict_key ?? null, queueEntry, queueSeenAt, mergeSha, mergeSeenAt);
+  // A repeat sighting without an enqueue time keeps the one stored for that same entry.
+  const queueEnqueuedAt = !known ? state?.queue_enqueued_at ?? null
+    : !snapshot.queueEntryId ? null
+      : snapshot.queueEnqueuedAt ?? (snapshot.queueEntryId === state?.queue_entry ? state.queue_enqueued_at : null);
+  db.prepare(`INSERT INTO pr_event_state(project_id, remote_id, initialized_at, verdict_key, queue_entry, queue_seen_at, queue_enqueued_at, merge_sha, merge_seen_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(project_id, remote_id) DO UPDATE SET verdict_key=excluded.verdict_key, queue_entry=excluded.queue_entry, queue_seen_at=excluded.queue_seen_at, queue_enqueued_at=excluded.queue_enqueued_at, merge_sha=excluded.merge_sha, merge_seen_at=excluded.merge_seen_at, unlinked_at=NULL`)
+    .run(projectId, remoteId, new Date(now).toISOString(), verdictKey ?? state?.verdict_key ?? null, queueEntry, queueSeenAt, queueEnqueuedAt, mergeSha, mergeSeenAt);
   return added;
 }
 

@@ -378,7 +378,7 @@ function githubFixture(
           repository: {
             pullRequest: {
               reviewDecision: "REVIEW_REQUIRED",
-              mergeQueueEntry: options.queueError ? null : { id: "MQ_entry" },
+              mergeQueueEntry: options.queueError ? null : { id: "MQ_entry", enqueuedAt: "2026-01-01T00:00:00Z" },
               autoMergeRequest: { enabledAt: "2026-10-25T12:00:00Z" },
               mergeStateStatus: "BLOCKED",
               reviewThreads: {
@@ -482,6 +482,7 @@ it("uses the latest CI attempt on the current head and keeps CI success separate
   expect(value.unresolvedThreads).toBe(1);
   expect(value.inMergeQueue).toBe(true);
   expect(value.queueEntryId).toBe("MQ_entry");
+  expect(value.queueEnqueuedAt).toBe("2026-01-01T00:00:00Z");
   expect(value.autoMerge).toBe(true);
 });
 it("reads the merge queue as unknown when GraphQL reports an error on that field", async () => {

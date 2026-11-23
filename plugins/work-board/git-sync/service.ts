@@ -20,7 +20,8 @@ import {
   STALE_GIT_CONFIG,
 } from "../shared/git-sync";
 import { createGitSyncStore } from "./store";
-import { prEventService, prEventSettings, queueDeparture, recordPrEvents } from "./events";
+import { errorMessage } from "../shared/errors";
+import { pairRemoval, prEventService, prEventSettings, queueDeparture, recordPrEvents } from "./events";
 import { planDebtService } from "../plan-debt/service";
 import { hasPlanDebtEvent } from "../plan-debt/store";
 import {
@@ -28,7 +29,7 @@ import {
   githubToken,
   type GithubClient,
   GithubError,
-  wholeSecond,
+  type QueueRemoval,
 } from "./github";
 
 const SYNC_DEADLINE_MS = 4 * 60_000;
@@ -390,15 +391,25 @@ export function createGitSyncService(
           if (!current()) break;
           // The timeline is read only when a known queue entry is gone, so ordinary polls cost no extra request.
           const departure = config.enabled && prEventSettings(db, projectId).events === "on" ? queueDeparture(db, projectId, snapshot) : null;
-          let removal: Awaited<ReturnType<NonNullable<GithubClient["queueRemovals"]>>>[number] | null | undefined;
+          // Undefined: no departure to report, which includes a paired merge-generated removal; null: the reason is unknown.
+          let removal: QueueRemoval | null | undefined;
           if (departure) {
-            // Only a single removal between the last queued sighting and this observation names the departure. One that falls in either
-            // observation's second may belong to another entry, and nothing else tells which, so the departed entry's id is used instead.
             try {
-              const found = client.queueRemovals ? await client.queueRemovals(snapshot.repository, snapshot.number, departure.since, snapshot.observedAt) : [];
-              const edge = (value: { createdAt: string }) => [departure.since, snapshot.observedAt].some((bound) => bound !== null && wholeSecond(value.createdAt) === wholeSecond(bound));
-              removal = found.length === 1 && !edge(found[0]!) ? found[0]! : null;
-            } catch {
+              const paired = client.queueTimeline ? pairRemoval(await client.queueTimeline(snapshot.repository, snapshot.number), departure.enqueuedAt, snapshot.observedAt) : null;
+              const merge = paired?.reason?.toLowerCase() === "merged";
+              removal = merge ? undefined : paired && { id: paired.id, createdAt: paired.createdAt, reason: paired.reason };
+              if (removal && paired?.beforeCommit && client.failedChecks && /^failed[ _]checks$/i.test(removal.reason ?? "")) {
+                // The rollup only adds detail: without it the message still carries the reason and the time.
+                try {
+                  const failed = await client.failedChecks(snapshot.repository, paired.beforeCommit);
+                  if (failed) removal.failed = failed;
+                  else bb.log.warn(`Merge queue removal of ${prIdentity(snapshot)}: commit ${paired.beforeCommit} has no check rollup`);
+                } catch (error) {
+                  bb.log.warn(`Merge queue removal of ${prIdentity(snapshot)}: failed checks unreadable: ${errorMessage(error)}`);
+                }
+              }
+            } catch (error) {
+              bb.log.warn(`Merge queue removal lookup for ${prIdentity(snapshot)} failed: ${errorMessage(error)}`);
               removal = null;
             }
             if (!current()) break;
@@ -431,7 +442,7 @@ export function createGitSyncService(
               data.attempted(projectId);
               publishProjectsChanged(bb, projectId);
             }
-            delivers = recordPrEvents(db, store.tasks, { projectId, config, snapshot, ...(departure ? { removal } : {}) });
+            delivers = recordPrEvents(db, store.tasks, { projectId, config, snapshot, ...(removal !== undefined ? { removal } : {}) });
           });
           // Messages go out while the pass reads the next PRs; the drain chain runs one drain at a time.
           if (delivers) void events.drain();

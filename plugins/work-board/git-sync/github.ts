@@ -634,7 +634,7 @@ export function createGithubClient(options: {
     let mergeState = pr.mergeable_state ?? null;
     const detail = await optional("/graphql", {
       query:
-        "query($owner:String!,$repo:String!,$number:Int!){repository(owner:$owner,name:$repo){pullRequest(number:$number){reviewDecision mergeStateStatus mergeQueueEntry{id} autoMergeRequest{enabledAt} reviewThreads(first:100){nodes{isResolved} pageInfo{hasNextPage}}}}}",
+        "query($owner:String!,$repo:String!,$number:Int!){repository(owner:$owner,name:$repo){pullRequest(number:$number){reviewDecision mergeStateStatus mergeQueueEntry{id enqueuedAt} autoMergeRequest{enabledAt} reviewThreads(first:100){nodes{isResolved} pageInfo{hasNextPage}}}}}",
       variables: {
         owner: repo.split("/")[0],
         repo: repo.split("/")[1],
@@ -651,7 +651,7 @@ export function createGithubClient(options: {
                   .object({
                     reviewDecision: z.string().nullable(),
                     mergeQueueEntry: z
-                      .object({ id: z.string() })
+                      .object({ id: z.string(), enqueuedAt: z.string().nullable().optional() })
                       .nullable()
                       .optional(),
                     autoMergeRequest: z
@@ -727,6 +727,7 @@ export function createGithubClient(options: {
           ? null
           : details.mergeQueueEntry !== null,
       queueEntryId: details?.mergeQueueEntry === undefined || queueUnknown ? undefined : details.mergeQueueEntry?.id ?? null,
+      queueEnqueuedAt: details?.mergeQueueEntry?.enqueuedAt ?? null,
       autoMerge:
         details?.autoMergeRequest === undefined
           ? null
@@ -743,22 +744,53 @@ export function createGithubClient(options: {
     }).parse(await request(`/repos/${repository}/pulls/${number}`));
     return [pr.title, pr.head.ref, pr.body ?? ""].join("\n");
   }
+  /** A GraphQL response; top-level errors throw, since a partial `data` would read as a known answer. */
+  async function graphql(body: unknown): Promise<unknown> {
+    const response = await request("/graphql", body);
+    const failed = z.object({ errors: z.array(z.object({ message: z.string() }).passthrough()).min(1) }).safeParse(response);
+    if (failed.success) throw new Error(`GitHub GraphQL error: ${failed.data.errors.map((error) => error.message).join("; ")}`);
+    return response;
+  }
   /**
-   * A PR's merge-queue removals from its timeline between two observations, oldest first; merge-generated removals do not count.
-   * Timeline times have whole seconds, so the window spans both observations' seconds: the caller treats those boundary seconds as ambiguous.
+   * A PR's merge-queue additions and removals among its last 50 such timeline items, in GitHub's oldest-first order; `truncated`
+   * when older ones exist. An unreadable item stays as a null gap, so the caller never pairs events across it.
    */
-  async function queueRemovals(repository: string, number: number, after: string | null, before: string): Promise<QueueRemoval[]> {
+  async function queueTimeline(repository: string, number: number): Promise<QueueTimeline> {
     const [owner, name] = repository.split("/");
     const data = z.object({ data: z.object({ repository: z.object({ pullRequest: z.object({ timelineItems: z.object({
-      nodes: z.array(z.object({ id: z.string(), createdAt: z.string(), reason: z.string().nullable().optional() }).partial().nullable()),
-    }) }).nullable() }).nullable() }) }).parse(await request("/graphql", {
-      query: "query($owner:String!,$repo:String!,$number:Int!){repository(owner:$owner,name:$repo){pullRequest(number:$number){timelineItems(last:20,itemTypes:[REMOVED_FROM_MERGE_QUEUE_EVENT]){nodes{... on RemovedFromMergeQueueEvent{id createdAt reason}}}}}}",
+      pageInfo: z.object({ hasPreviousPage: z.boolean() }),
+      nodes: z.array(z.object({
+        __typename: z.string(), id: z.string(), createdAt: z.string(), reason: z.string().nullable(), beforeCommit: z.object({ oid: z.string() }).nullable(),
+      }).partial().nullable()),
+    }) }).nullable() }).nullable() }) }).parse(await graphql({
+      query: "query($owner:String!,$repo:String!,$number:Int!){repository(owner:$owner,name:$repo){pullRequest(number:$number){timelineItems(last:50,itemTypes:[ADDED_TO_MERGE_QUEUE_EVENT,REMOVED_FROM_MERGE_QUEUE_EVENT]){pageInfo{hasPreviousPage} nodes{__typename ... on AddedToMergeQueueEvent{id createdAt} ... on RemovedFromMergeQueueEvent{id createdAt reason beforeCommit{oid}}}}}}}",
       variables: { owner, repo: name, number },
     }));
-    const removals = (data.data.repository?.pullRequest?.timelineItems.nodes ?? [])
-      .flatMap((node) => node?.id && node.createdAt ? [{ id: node.id, createdAt: node.createdAt, reason: node.reason ?? null }] : [])
-      .filter((node) => (after === null || Date.parse(node.createdAt) >= wholeSecond(after)) && Date.parse(node.createdAt) < wholeSecond(before) + 1000 && !/merged/i.test(node.reason ?? ""));
-    return removals.sort((left, right) => Date.parse(left.createdAt) - Date.parse(right.createdAt));
+    const timeline = data.data.repository?.pullRequest?.timelineItems;
+    const events = (timeline?.nodes ?? []).map((node): QueueEvent | null => {
+      if (!node?.id || !node.createdAt) return null;
+      if (node.__typename === "AddedToMergeQueueEvent") return { kind: "added", id: node.id, createdAt: node.createdAt, reason: null, beforeCommit: null };
+      if (node.__typename === "RemovedFromMergeQueueEvent") return { kind: "removed", id: node.id, createdAt: node.createdAt, reason: node.reason ?? null, beforeCommit: node.beforeCommit?.oid ?? null };
+      return null;
+    });
+    return { events, truncated: timeline?.pageInfo.hasPreviousPage ?? false };
+  }
+  /** Distinct failed check names among a commit's first 100 status contexts; null when the commit has no rollup. */
+  async function failedChecks(repository: string, oid: string): Promise<FailedChecks | null> {
+    const [owner, name] = repository.split("/");
+    const data = z.object({ data: z.object({ repository: z.object({ object: z.object({ statusCheckRollup: z.object({ contexts: z.object({
+      pageInfo: z.object({ hasNextPage: z.boolean() }),
+      nodes: z.array(z.object({ __typename: z.string(), name: z.string(), conclusion: z.string().nullable(), context: z.string(), state: z.string() }).partial().nullable()),
+    }) }).nullable().optional() }).nullable() }).nullable() }) }).parse(await graphql({
+      query: "query($owner:String!,$repo:String!,$oid:GitObjectID!){repository(owner:$owner,name:$repo){object(oid:$oid){... on Commit{statusCheckRollup{contexts(first:100){pageInfo{hasNextPage} nodes{__typename ... on CheckRun{name conclusion} ... on StatusContext{context state}}}}}}}}",
+      variables: { owner, repo: name, oid },
+    }));
+    const rollup = data.data.repository?.object?.statusCheckRollup;
+    if (!rollup) return null;
+    const names = rollup.contexts.nodes.flatMap((node) =>
+      node?.__typename === "CheckRun" && node.name && FAILED_CONCLUSIONS.includes(node.conclusion ?? "") ? [node.name]
+        : node?.__typename === "StatusContext" && node.context && ["FAILURE", "ERROR"].includes(node.state ?? "") ? [node.context] : []);
+    return { names: [...new Set(names)], hasNextPage: rollup.contexts.pageInfo.hasNextPage };
   }
   const deployRun = (value: WorkflowRun): DeployRun => ({ id: value.id, workflowId: value.workflow_id, name: value.name, headSha: value.head_sha, headBranch: value.head_branch, event: value.event, status: value.status, conclusion: value.conclusion, createdAt: value.created_at, updatedAt: value.updated_at ?? null, attempt: value.run_attempt });
   /** One page of a branch's push runs created in `range` (`lo..hi`, inclusive), newest first as GitHub lists them, with the total count. */
@@ -774,13 +806,18 @@ export function createGithubClient(options: {
   async function compareStatus(repository: string, base: string, head: string) {
     return z.object({ status: z.string() }).parse(await request(`/repos/${repository}/compare/${base}...${head}`)).status;
   }
-  return { discover, snapshot, referenceText, ciState, queueRemovals, pushRuns, workflowRunById, compareStatus };
+  return { discover, snapshot, referenceText, ciState, queueTimeline, failedChecks, pushRuns, workflowRunById, compareStatus };
   }
   return { ...withSignal(options.signal), withSignal };
 }
 export const wholeSecond = (iso: string) => Math.floor(Date.parse(iso) / 1000) * 1000;
-export type QueueRemoval = { id: string; createdAt: string; reason: string | null };
+const FAILED_CONCLUSIONS = ["FAILURE", "TIMED_OUT", "CANCELLED", "ACTION_REQUIRED", "STARTUP_FAILURE"];
+export type QueueEvent = { kind: "added" | "removed"; id: string; createdAt: string; reason: string | null; beforeCommit: string | null };
+export type QueueTimeline = { events: (QueueEvent | null)[]; truncated: boolean };
+export type FailedChecks = { names: string[]; hasNextPage: boolean };
+/** A departed entry's removal; `failed` is read only for a failed-checks removal. */
+export type QueueRemoval = { id: string; createdAt: string; reason: string | null; failed?: FailedChecks };
 export type DeployRun = { id: number; workflowId: number; name: string | null; headSha: string; headBranch: string | null; event: string; status: string; conclusion: string | null; createdAt: string; updatedAt: string | null; attempt: number };
 type FullClient = ReturnType<typeof createGithubClient>;
 /** The PR-event lookups are optional so a client that lacks them (an older test double) reads as "unavailable". */
-export type GithubClient = Pick<FullClient, "discover" | "snapshot" | "referenceText"> & Partial<Pick<FullClient, "queueRemovals" | "pushRuns" | "workflowRunById" | "compareStatus">>;
+export type GithubClient = Pick<FullClient, "discover" | "snapshot" | "referenceText"> & Partial<Pick<FullClient, "queueTimeline" | "failedChecks" | "pushRuns" | "workflowRunById" | "compareStatus">>;
