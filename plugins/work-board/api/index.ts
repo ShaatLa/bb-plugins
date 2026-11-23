@@ -5,7 +5,7 @@ import { observeStatusNotifications } from "../status-notifications";
 import { ordinaryTaskVisibilitySql } from "../scheduled/visibility";
 import { taskAdvisories } from "../advisories";
 import { idleThreshold } from "../shared/project-settings";
-import { getBadgeCriteria, getBoardPreferences, setBadgeCriteria, setBoardPreferences } from "../global-settings";
+import { getBadgeCriteria, getBoardPreferences, setBadgeCriteria, setBoardPreferences, setGlobalSettings } from "../global-settings";
 import { activityService } from "../activity/index.js";
 import { createDependencyStore } from "../dependencies/store";
 import { createPlanStore, PlanError } from "../plans/store";
@@ -19,7 +19,7 @@ import { projectConfigHandlers } from "../config";
 import { attentionUiHandlers } from "../attention/rpc";
 import { checksUiHandlers } from "../checks/rpc";
 import { createLockHandlers } from "../locks/service";
-import { statusLabel } from "../shared/statuses.js";
+import { DEFAULT_TASK_STATUSES, STALE_STATUSES, statusLabel, taskStatusesSchema } from "../shared/statuses.js";
 import { createClosureService, type ClosureService } from "../closure/service";
 import { attachManualLink, canTakeWorkerLink } from "../delegate/attach";
 import type { BbPluginApi, PluginRpcHandlers } from "@get-bb/plugin-sdk";
@@ -1130,6 +1130,9 @@ export function registerHandlers(
     getBoardPreferences() {
       return getBoardPreferences(bb);
     },
+    async "globalSettings.set"({ values }) {
+      return { values: await setGlobalSettings(bb, values) };
+    },
     async setBoardPreferences(input) {
       await setBoardPreferences(bb, input);
       publishProjectsChanged(bb, null);
@@ -1141,9 +1144,13 @@ export function registerHandlers(
       return { project };
     },
     updateProject(input) {
-      const { projectId, ...changes } = input;
+      const { projectId, baseStatuses, ...changes } = input;
       const before = store.tasks.getProject(projectId)?.planning ?? "off";
-      const project = store.tasks.updateProject(projectId, changes);
+      const canonical = (statuses: unknown) => JSON.stringify(taskStatusesSchema.parse(statuses));
+      const project = store.transaction(() => {
+        if (baseStatuses && canonical(store.tasks.getProject(projectId)?.statuses ?? DEFAULT_TASK_STATUSES) !== canonical(baseStatuses)) throw new Error(STALE_STATUSES);
+        return store.tasks.updateProject(projectId, changes);
+      });
       // The platform cannot tell the app from another caller, so a change is only made visible: a log entry.
       if ((project.planning ?? "off") !== before) bb.log.info(`planning for ${project.prefix}: ${before} → ${project.planning}`);
       publishProjectsChanged(bb, project.id);

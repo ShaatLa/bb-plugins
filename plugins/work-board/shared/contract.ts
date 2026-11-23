@@ -20,6 +20,7 @@ import {
 
 import { taskStatusSchema, taskStatusesSchema } from "./statuses.js";
 import { BADGE_CRITERIA } from "./badge.js";
+import { globalSettingsPatchSchema } from "./global-settings";
 export { TASK_STATUSES } from "./statuses.js";
 export type { TaskStatusDefinition } from "./statuses.js";
 
@@ -610,6 +611,8 @@ const updateProjectInputSchema = z
     name: nonBlankStringSchema.optional(),
     workflowPolicy: workflowPolicySchema.optional(),
     statuses: taskStatusesSchema.optional(),
+    // The stored statuses `statuses` was built on: the write is refused when they changed meanwhile.
+    baseStatuses: taskStatusesSchema.optional(),
     autoArchiveAfterDays: autoArchiveAfterDaysSchema.optional(),
     staleIdleMinutes: staleIdleThresholdSchema.optional(),
     statusNotifications: statusNotificationsSchema.optional(),
@@ -888,9 +891,15 @@ export const tasksRpcContract = {
     input: z.object({ projectId: z.string(), key: z.string().optional() }).strict(),
     output: z.object({ projectId: z.string(), values: z.record(z.string(), z.unknown()) }).strict(),
   },
+  // `expected` (git.* keys): the stored value the change was built on; the write is refused when it differs.
   "config.set": {
-    input: z.object({ projectId: z.string(), key: z.string(), value: z.unknown() }).strict(),
+    input: z.object({ projectId: z.string(), key: z.string(), value: z.unknown(), expected: z.unknown().optional() }).strict(),
     output: z.object({ projectId: z.string(), key: z.string(), value: z.unknown() }).strict(),
+  },
+  // The native global fields Work Board owns, written only for the keys given; the settings page's General group.
+  "globalSettings.set": {
+    input: z.object({ values: globalSettingsPatchSchema }).strict(),
+    output: z.object({ values: globalSettingsPatchSchema }).strict(),
   },
   ...storageMethods,
   listTaskDependencies: {

@@ -3,6 +3,7 @@ import { Button } from "@/components/ui/button";
 import { formatRelativeTime } from "./activity/time.js";
 import { useTasksQuery, useTasksRpc } from "../shell/data.js";
 import { errorMessage } from "../shared/errors.js";
+import { SettingsCard, SwitchRow } from "./settings-card.js";
 
 type Key = "branch" | "script" | "args" | "intervalMinutes" | "timeoutSeconds";
 const FIELDS: { key: Key; label: string; hint: string }[] = [
@@ -26,48 +27,52 @@ export function ChecksSettings({ projectId }: { projectId: string }) {
     setBusy(true); setError(null);
     try { await action(); query.refresh(); } catch (failure) { setError(errorMessage(failure)); } finally { setBusy(false); }
   };
-  const shown = (key: Key) => drafts[key] ?? (key === "args" ? JSON.stringify(status!.config.args) : String(status!.config[key] ?? ""));
-  const save = (key: Key) => run(async () => {
-    const raw = shown(key).trim();
-    const value = key === "args" ? JSON.parse(raw) : key === "intervalMinutes" || key === "timeoutSeconds" ? Number(raw) : raw;
-    await rpc.call("updateChecksSetting", { projectId, key, value });
-    setDrafts(({ [key]: _saved, ...rest }) => rest);
+  const shown = (key: Key) => drafts[key] ?? stored(key);
+  const stored = (key: Key) => (key === "args" ? JSON.stringify(status!.config.args) : String(status!.config[key] ?? ""));
+  const changed = status ? FIELDS.map(({ key }) => key).filter((key) => drafts[key] !== undefined && drafts[key] !== stored(key)) : [];
+  // One Save sends only the changed fields; the server validates them together and writes all or nothing.
+  const save = () => run(async () => {
+    const patch = Object.fromEntries(changed.map((key) => {
+      const raw = shown(key).trim();
+      return [key, key === "args" ? JSON.parse(raw) : key === "intervalMinutes" || key === "timeoutSeconds" ? Number(raw) : raw];
+    }));
+    await rpc.call("checks.configPatch", { projectId, patch });
+    setDrafts({});
   });
   return (
-    <section aria-label="Repository checks" className="space-y-3 border-t border-border pt-4">
-      <h3 className="text-sm font-medium">Repository checks</h3>
+    <SettingsCard title="Repository checks" description="Run the repository check script on a schedule and send its findings to the manager thread."
+      actions={status ? <>
+        {changed.length ? <Button size="sm" variant="ghost" className="h-7 px-2.5" disabled={busy} onClick={() => setDrafts({})}>Discard</Button> : null}
+        <Button size="sm" className="h-7 px-2.5" disabled={busy || !changed.length} onClick={() => void save()}>Save</Button>
+      </> : undefined}>
+      <p className="text-xs text-muted-foreground">Runner paths: General → Repository-check runner.</p>
       {query.error && !status ? <p className="text-xs text-destructive">{query.error}</p> : null}
       {status ? (
         <>
           <div className="divide-y divide-border rounded-lg border border-border">
-            <div className="flex flex-wrap items-center justify-between gap-2 px-4 py-3">
-              <div className="space-y-1">
-                <h4 className="text-sm font-medium">Run the repository check script</h4>
-                <p className="text-xs text-muted-foreground">Off by default. Findings go to the manager thread chosen in Manager attention.</p>
-                <p className="text-xs text-muted-foreground">Runner owner: {status.runnerOwner}{status.unconfirmedSend ? ` · send to Sweep ${status.unconfirmedSend} is not confirmed` : ""}</p>
-                {status.ownedByOtherTracker ? <p className="text-xs text-amber-600 dark:text-amber-400">Another project linked to this BB project owns the runner.</p> : null}
-                {!status.bbProjectId ? <p className="text-xs text-muted-foreground">Link a BB project to enable.</p> : null}
-              </div>
-              <label className="flex items-center gap-1.5 text-xs">
-                <input type="checkbox" aria-label="Run repository checks" checked={status.config.enabled} disabled={busy || (!status.config.enabled && !status.bbProjectId)}
-                  onChange={(event) => void run(() => rpc.call("updateChecksEnabled", { projectId, enabled: event.target.checked }))} />
-                Enabled
-              </label>
+            <div className="space-y-2 px-4 py-3">
+              <SwitchRow label="Run repository checks" checked={status.config.enabled}
+                disabled={busy || (!status.config.enabled && (!status.bbProjectId || changed.length > 0))}
+                onChange={(enabled) => void run(() => rpc.call("updateChecksEnabled", { projectId, enabled }))}
+                hint="Off by default. Findings go to the manager thread chosen in Manager. Enabling follows an owner-only convention and is logged." />
+              {!status.config.enabled && changed.length ? <p className="text-xs text-amber-600 dark:text-amber-400">Save or discard your changes first.</p> : null}
+              <p className="text-xs text-muted-foreground">Runner owner: {status.runnerOwner}{status.unconfirmedSend ? ` · send to Sweep ${status.unconfirmedSend} is not confirmed` : ""}</p>
+              {status.ownedByOtherTracker ? <p className="text-xs text-amber-600 dark:text-amber-400">Another project linked to this BB project owns the runner.</p> : null}
+              {!status.bbProjectId ? <p className="text-xs text-muted-foreground">Link a BB project to enable.</p> : null}
             </div>
             {FIELDS.map(({ key, label, hint }) => (
-              <div key={key} className="flex flex-col gap-1 px-4 py-2 sm:flex-row sm:items-center sm:justify-between">
-                <label className="min-w-0 text-xs"><span className="font-medium">{label}</span> <span className="text-muted-foreground">{hint}</span>
+              <div key={key} className="px-4 py-2">
+                <label className="block min-w-0 text-xs"><span className="font-medium">{label}</span> <span className="text-muted-foreground">{hint}</span>
                   <input aria-label={label} className="mt-1 block h-8 w-full rounded-md border border-input bg-background px-2 text-sm sm:w-80" value={shown(key)} disabled={busy}
                     onChange={(event) => setDrafts((current) => ({ ...current, [key]: event.target.value }))} />
                 </label>
-                <Button size="sm" className="h-8" variant="outline" disabled={busy || drafts[key] === undefined} onClick={() => void save(key)}>Save</Button>
               </div>
             ))}
-            <label className="flex items-center gap-1.5 px-4 py-3 text-xs">
-              <input type="checkbox" aria-label="Snapshots" checked={status.config.snapshots} disabled={busy}
-                onChange={(event) => void run(() => rpc.call("updateChecksSetting", { projectId, key: "snapshots", value: event.target.checked }))} />
-              Snapshots: pass <code>--committed-state</code> and <code>--candidate-snapshot</code> to the script
-            </label>
+            <div className="px-4 py-3">
+              <SwitchRow label="Snapshots" checked={status.config.snapshots} disabled={busy}
+                onChange={(snapshots) => void run(() => rpc.call("checks.configPatch", { projectId, patch: { snapshots } }))}
+                hint={<>Pass <code>--committed-state</code> and <code>--candidate-snapshot</code> to the script.</>} />
+            </div>
           </div>
           <div className="space-y-1 text-xs" data-testid="checks-status">
             <p>Last run {when(status.lastRun)} · next run {when(status.nextRun)} · exit {status.exitCode ?? "–"}{status.failureStage ? ` · ${status.failureStage} failure` : ""}</p>
@@ -88,10 +93,10 @@ export function ChecksSettings({ projectId }: { projectId: string }) {
               </p>
             ) : null}
           </div>
-          <p className="text-xs text-muted-foreground">Enabling follows an owner-only convention and is logged. The script path and Git URL come from the repository and the BB project settings.</p>
+          <p className="text-xs text-muted-foreground">The script path and Git URL come from the repository and the BB project settings.</p>
         </>
       ) : null}
       {error ? <p role="alert" className="text-xs text-destructive">{error}</p> : null}
-    </section>
+    </SettingsCard>
   );
 }

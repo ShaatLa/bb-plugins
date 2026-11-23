@@ -61,6 +61,14 @@ export const checksUiMethods = {
     input: z.object({ projectId: trackerProjectId, key: z.enum(["branch", "script", "args", "intervalMinutes", "timeoutSeconds", "snapshots"]), value: z.unknown() }).strict(),
     output: z.object({ ok: z.literal(true) }),
   },
+  // The settings section's one Save: only the changed fields, validated together and written in one transaction; never `enabled`.
+  "checks.configPatch": {
+    input: z.object({
+      projectId: trackerProjectId,
+      patch: z.object({ branch: z.unknown(), script: z.unknown(), args: z.unknown(), intervalMinutes: z.unknown(), timeoutSeconds: z.unknown(), snapshots: z.unknown() }).partial().strict(),
+    }).strict(),
+    output: z.object({ ok: z.literal(true) }),
+  },
   updateChecksEnabled: { input: z.object({ projectId: trackerProjectId, enabled: z.boolean() }).strict(), output: z.object({ enabled: z.boolean() }) },
   retryChecksReport: { input: z.object({ projectId: trackerProjectId }).strict(), output: z.object({ ok: z.literal(true) }) },
   resetChecksState: { input: z.object({ projectId: trackerProjectId }).strict(), output: z.object({ ok: z.literal(true) }) },

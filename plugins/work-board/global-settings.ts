@@ -1,31 +1,25 @@
 import { isAbsolute } from "node:path";
 import { z } from "zod";
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
-import { BADGE_CRITERIA, BADGE_CRITERION_LABELS, DEFAULT_BADGE_CRITERIA, type BadgeCriterion } from "./shared/badge";
+import { BADGE_CRITERIA, DEFAULT_BADGE_CRITERIA, type BadgeCriterion } from "./shared/badge";
 import { BOARD_PREFERENCES_KEY, DEFAULT_BOARD_PREFERENCES, boardPreferencesSchema, type BoardPreferences } from "./shared/project-settings";
+import { BADGE_FIELDS, GLOBAL_SETTING_DEFAULTS, GLOBAL_SETTING_LABELS, OPEN_THREADS_IN, OPEN_THREADS_IN_LABELS, START_SCREENS, type GlobalSettingKey, type GlobalSettingsPatch } from "./shared/global-settings";
 
 // Global preferences are native plugin settings, so `bb plugin config work-board set KEY VALUE` changes one field.
-const BADGE_FIELDS: Record<BadgeCriterion, string> = {
-  open: "badgeOpen",
-  waiting_on_owner: "badgeWaitingOnOwner",
-  in_review: "badgeInReview",
-  needs_answer: "badgeNeedsAnswer",
-  failed_thread: "badgeFailedThread",
-  stale_idle: "badgeStaleIdle",
-};
 const descriptors = {
   // Not "defaultScreen": that native key holds the stale pre-0.20 value.
-  startScreen: { type: "select", label: "Start screen", options: [...boardPreferencesSchema.shape.defaultScreen.options], default: DEFAULT_BOARD_PREFERENCES.defaultScreen },
+  startScreen: { type: "select", label: GLOBAL_SETTING_LABELS.startScreen, options: [...START_SCREENS], default: DEFAULT_BOARD_PREFERENCES.defaultScreen },
   // Read by the app (components/open-thread.ts): "agent-hub" opens Agent Hub and falls back to bb chat when it is not
   // installed.
-  openThreadsIn: { type: "select", label: "Open thread links in", options: ["bb", "agent-hub"], experimental_optionLabels: { bb: "bb chat", "agent-hub": "Agent Hub" }, default: "bb" },
+  openThreadsIn: { type: "select", label: GLOBAL_SETTING_LABELS.openThreadsIn, options: [...OPEN_THREADS_IN], experimental_optionLabels: OPEN_THREADS_IN_LABELS, default: "bb" },
   // Repository-check runner: how the script is launched. Empty values inherit the server environment.
-  checksBbCli: { type: "string", label: "Repository checks: BB CLI absolute path (empty: use the server environment)", default: "", experimental_schema: z.string().refine((path) => path === "" || isAbsolute(path), "Enter the absolute path to bb (for example /opt/bin/bb), or clear it to use the server environment.") },
-  checksRuntimePath: { type: "string", label: "Repository checks: script PATH (empty: inherit the server PATH)", default: "" },
+  checksBbCli: { type: "string", label: GLOBAL_SETTING_LABELS.checksBbCli, default: "", experimental_schema: z.string().refine((path) => path === "" || isAbsolute(path), "Enter the absolute path to bb (for example /opt/bin/bb), or clear it to use the server environment.") },
+  checksRuntimePath: { type: "string", label: GLOBAL_SETTING_LABELS.checksRuntimePath, default: "" },
   ...Object.fromEntries(BADGE_CRITERIA.map((criterion) => [BADGE_FIELDS[criterion], {
-    type: "boolean", label: `Navigation badge counts: ${BADGE_CRITERION_LABELS[criterion]}`, default: DEFAULT_BADGE_CRITERIA.includes(criterion),
+    type: "boolean", label: GLOBAL_SETTING_LABELS[BADGE_FIELDS[criterion]], default: DEFAULT_BADGE_CRITERIA.includes(criterion),
   }])),
 } as const;
+type Descriptor = { type: string; options?: readonly string[]; experimental_schema?: z.ZodType };
 
 type Values = Record<string, string | number | boolean | null | undefined>;
 type Handle = { get(): Promise<Values>; experimental_set(values: Values): Promise<Values>; onChange(listener: (next: Values, prev: Values) => void): void };
@@ -59,6 +53,28 @@ export async function getBadgeCriteria(bb: BbPluginApi): Promise<BadgeCriterion[
 export async function setBadgeCriteria(bb: BbPluginApi, criteria: readonly BadgeCriterion[]) {
   await handle(bb).experimental_set(Object.fromEntries(BADGE_CRITERIA.map((criterion) => [BADGE_FIELDS[criterion], criteria.includes(criterion)])));
   return getBadgeCriteria(bb);
+}
+
+/**
+ * Writes only the given native fields. Every value is checked against its descriptor first, so one invalid value
+ * rejects the whole patch and nothing is written.
+ */
+export async function setGlobalSettings(bb: BbPluginApi, patch: GlobalSettingsPatch): Promise<GlobalSettingsPatch> {
+  const keys = Object.keys(patch) as GlobalSettingKey[];
+  const problems = keys.flatMap((key) => {
+    const descriptor = (descriptors as Record<string, Descriptor>)[key];
+    const value = patch[key];
+    if (!descriptor) return [`Unknown setting ${key}`];
+    if (descriptor.type === "boolean" ? typeof value !== "boolean" : typeof value !== "string") return [`Invalid value for ${key}`];
+    if (descriptor.options && !descriptor.options.includes(value as string)) return [`Invalid value for ${key}: use ${descriptor.options.join(", ")}`];
+    const parsed = descriptor.experimental_schema?.safeParse(value);
+    return parsed && !parsed.success ? parsed.error.issues.map((issue) => issue.message) : [];
+  });
+  if (problems.length) throw new Error(problems.join("; "));
+  if (!keys.length) return {};
+  await handle(bb).experimental_set(patch);
+  const values = await handle(bb).get();
+  return Object.fromEntries(keys.map((key) => [key, values[key] ?? GLOBAL_SETTING_DEFAULTS[key]])) as GlobalSettingsPatch;
 }
 
 const LEGACY_BADGE_KEY = "navigation-badge:criteria";

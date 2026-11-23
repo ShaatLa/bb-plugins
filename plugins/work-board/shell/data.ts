@@ -187,7 +187,8 @@ interface TasksQuery<T> {
   error: string | null;
   isLoading: boolean;
   isFetching: boolean;
-  refresh: () => void;
+  /** Resolves once this read settles; a read started earlier can no longer replace its result. */
+  refresh: () => Promise<void>;
   patch: (update: (rpc: TasksRpc, current: T) => Promise<T>) => Promise<void>;
 }
 
@@ -550,3 +551,12 @@ export function useActiveTasks() {
 
 const sidebarSignalDelay = (channel: InvalidationChannel) =>
   channel === "projects:changed" ? 0 : 1500;
+
+/**
+ * Orders reads against writes in one view: stamp a read when it starts and a write when it is acknowledged. A written
+ * value then outlives every read stamped before it, even one that answers later or fails.
+ */
+export function useOrderClock() {
+  const clock = useRef(0);
+  return useCallback(() => ++clock.current, []);
+}

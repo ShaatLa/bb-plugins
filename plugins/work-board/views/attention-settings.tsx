@@ -4,11 +4,13 @@ import { Button } from "@/components/ui/button";
 import { Command, CommandEmpty, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
 import { Icon } from "@/components/ui/icon";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { DisclosureSummary } from "../components/disclosure.js";
 import { formatRelativeTime } from "./activity/time.js";
 import { useThreadNames } from "../components/thread-names.js";
-import { useTasksQuery, useTasksRpc } from "../shell/data.js";
+import { useOrderClock, useTasksQuery, useTasksRpc } from "../shell/data.js";
 import { errorMessage } from "../shared/errors.js";
+import { SettingsCard, SwitchRow } from "./settings-card.js";
 
 // Outside live the repository checks send stale-status findings: Sweep's runner, or Work Board's when it owns the project's checks.
 const texts = (sender: string) => ({
@@ -30,7 +32,7 @@ const selectable = (thread: ManagerThread) => thread.archivedAt == null && threa
   && thread.visibility !== "hidden" && thread.status !== "stopping";
 
 function ManagerPicker({ projectId, value, disabled, onChange }: {
-  projectId: string | null; value: string; disabled: boolean; onChange: (value: string) => void;
+  projectId: string | null; value: string; disabled: boolean; onChange: (value: string, title: string) => void;
 }) {
   const sdk = useSdk();
   const [open, setOpen] = useState(false);
@@ -74,7 +76,7 @@ function ManagerPicker({ projectId, value, disabled, onChange }: {
     return () => abort.abort();
   }, [exactId, open, sdk, threads]);
 
-  const choose = (next: string) => { onChange(next); setOpen(false); };
+  const choose = (next: string, title: string) => { onChange(next, title); setOpen(false); };
   const options = threads ?? [];
   const exactMatch = byId?.id === exactId && !options.some((thread) => thread.id === exactId) ? byId : undefined;
   const filter = exactId.toLocaleLowerCase();
@@ -95,9 +97,9 @@ function ManagerPicker({ projectId, value, disabled, onChange }: {
         <Command label="Search threads" shouldFilter={false}>
           <CommandInput placeholder="Search by thread name" value={search} onValueChange={setSearch} />
           <CommandList>
-            {!filter ? <CommandItem value={noManager} onSelect={() => choose("")}>{noManager}</CommandItem> : null}
+            {!filter ? <CommandItem value={noManager} onSelect={() => choose("", noManager)}>{noManager}</CommandItem> : null}
             {(exactMatch ? [...matches, exactMatch] : matches).map((thread) => (
-              <CommandItem key={thread.id} value={thread.id} onSelect={() => choose(thread.id)}>
+              <CommandItem key={thread.id} value={thread.id} onSelect={() => choose(thread.id, threadTitle(thread))}>
                 <span className="truncate" title={threadTitle(thread)}>{threadTitle(thread)}</span>
               </CommandItem>
             ))}
@@ -111,14 +113,63 @@ function ManagerPicker({ projectId, value, disabled, onChange }: {
   );
 }
 
+const PR_SWITCHES = [
+  { key: "prEvents", label: "PR lifecycle messages", hint: "Post a message to the card's threads when its pull request opens, merges, closes or its CI changes." },
+  { key: "prEventsManager", label: "Copy PR messages to the manager", hint: "Also send those messages to the manager thread." },
+] as const;
+type PrKey = (typeof PR_SWITCHES)[number]["key"];
+
+/** Two per-project keys, read and written one at a time through `config.get`/`config.set`; stored as "on" or "off". */
+function PrMessages({ projectId }: { projectId: string }) {
+  const rpc = useTasksRpc();
+  const stamp = useOrderClock();
+  const query = useTasksQuery((client) => { const readAt = stamp(); return client.call("config.get", { projectId }).then((data) => ({ ...data, readAt })); }, ["projects:changed"], [projectId]);
+  // Acknowledged values win over every read that started before the write, including one that fails.
+  const [acknowledged, setAcknowledged] = useState<Partial<Record<PrKey, { value: unknown; at: number }>>>({});
+  const value = (key: PrKey) => {
+    const ack = acknowledged[key];
+    return ack && ack.at > (query.data?.readAt ?? 0) ? ack.value : query.data?.values[key];
+  };
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const write = async (key: PrKey, on: boolean) => {
+    setBusy(true);
+    setError(null);
+    try {
+      const result = await rpc.call("config.set", { projectId, key, value: on ? "on" : "off" });
+      const at = stamp();
+      setAcknowledged((current) => ({ ...current, [key]: { value: result.value, at } }));
+      await query.refresh();
+    } catch (failure) {
+      setError(errorMessage(failure));
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <div className="space-y-3">
+      <h4 className="text-sm font-medium">Pull request messages</h4>
+      {PR_SWITCHES.map(({ key, label, hint }) => (
+        <SwitchRow key={key} label={label} hint={hint} disabled={busy || !query.data}
+          checked={value(key) === "on"} onChange={(on) => void write(key, on)} />
+      ))}
+      {error || (query.error && !query.data) ? <p role="alert" className="text-xs text-destructive">{error ?? query.error}</p> : null}
+    </div>
+  );
+}
+
 /** Owner-only setting: the platform cannot tell the app from an agent, so a change is only recorded and shown here. */
 export function AttentionSettings({ projectId }: { projectId: string }) {
   const rpc = useTasksRpc();
-  const query = useTasksQuery((client) => client.call("getAttentionSettings", { projectId }), ["projects:changed", "settings:changed"], [projectId]);
+  const stamp = useOrderClock();
+  const query = useTasksQuery((client) => { const readAt = stamp(); return client.call("getAttentionSettings", { projectId }).then((data) => ({ ...data, readAt })); }, ["projects:changed", "settings:changed"], [projectId]);
+  // The manager the last write stored; it wins over every read that started before that write, including a failed one.
+  const [managerAck, setManagerAck] = useState<{ manager: string | null; at: number }>();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [parityGeneration, setParityGeneration] = useState<number>();
-  const [manager, setManager] = useState<string | null>(null);
+  // A replacement or removal of a set manager waits here for the owner's confirmation.
+  const [confirming, setConfirming] = useState<{ id: string; title: string } | null>(null);
   const settings = query.data;
   const generation = settings?.state.effective.generation;
   const parity = generation !== undefined && parityGeneration === generation;
@@ -127,7 +178,8 @@ export function AttentionSettings({ projectId }: { projectId: string }) {
     setError(null);
     try {
       await action();
-      query.refresh();
+      // The controls stay locked until the refreshed settings land, so a second pick sees the manager just set.
+      await query.refresh();
     } catch (failure) {
       setError(errorMessage(failure));
     } finally {
@@ -140,17 +192,28 @@ export function AttentionSettings({ projectId }: { projectId: string }) {
   const gateHours = settings ? Math.ceil(settings.gateRemainingMs / 3_600_000) : 0;
   const previousManager = settings?.managerPrevious;
   const previousNames = useThreadNames(previousManager ? [previousManager] : []);
+  const current = (managerAck && managerAck.at > (settings?.readAt ?? 0) ? managerAck.manager : settings?.manager) ?? "";
+  const currentNames = useThreadNames(current ? [current] : []);
   const unresolved = settings?.unresolvedAttempts.length ?? 0;
+  const saveManager = (id: string) => run(async () => {
+    const result = await rpc.call("updateAttentionManager", { projectId, manager: id || null });
+    setManagerAck({ manager: result.manager, at: stamp() });
+  });
+  // Picking is the commit gesture; picking the current manager again does nothing.
+  const pick = (id: string, title: string) => {
+    if (id === current) return;
+    if (current) setConfirming({ id, title });
+    else void saveManager(id);
+  };
   const { label: MODE_LABEL, sender: SENDER, note: MODE_NOTE } = settings?.workBoardRunsChecks ? RUNNER_TEXTS : SWEEP_TEXTS;
   return (
-    <section aria-label="Manager attention" className="space-y-3">
-      <h4 className="text-sm font-medium">Manager attention</h4>
+    <SettingsCard title="Manager" description="The manager thread, stale-status delivery and pull request messages for this project.">
       {query.error && !settings ? <p className="text-xs text-destructive" data-testid="attention-load-error">{query.error}</p> : null}
       {settings ? (
         <>
           <div className="flex flex-col gap-3 rounded-lg border border-border px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
             <div className="min-w-0 space-y-1">
-              <h5 className="text-sm font-medium">Manager thread</h5>
+              <h4 className="text-sm font-medium">Manager thread</h4>
               <p className="text-xs text-muted-foreground">Receives notices when Work Board is live.</p>
               {settings.managerChangedAt ? <p className="text-xs text-muted-foreground">
                 Changed <time dateTime={settings.managerChangedAt}>{formatRelativeTime(settings.managerChangedAt, Date.now())}</time>
@@ -158,12 +221,27 @@ export function AttentionSettings({ projectId }: { projectId: string }) {
               </p> : null}
             </div>
             <div className="flex min-w-0 items-center gap-2">
-              <ManagerPicker key={settings.linkedBbProjectId} projectId={settings.linkedBbProjectId} value={manager ?? settings.manager ?? ""} disabled={busy} onChange={setManager} />
-              <Button size="sm" className="h-8" disabled={busy || manager === null || manager === (settings.manager ?? "")}
-                onClick={() => void run(async () => { await rpc.call("updateAttentionManager", { projectId, manager: manager || null }); setManager(null); })}>Save</Button>
+              <ManagerPicker key={settings.linkedBbProjectId} projectId={settings.linkedBbProjectId} value={current} disabled={busy} onChange={pick} />
             </div>
           </div>
           <p className="text-xs text-muted-foreground">Changes follow an owner-only convention and are logged.</p>
+          <Dialog open={confirming !== null} onOpenChange={(open) => { if (!open) setConfirming(null); }}>
+            <DialogContent>
+              <DialogHeader>
+                <DialogTitle>{confirming?.id ? "Replace the manager thread?" : "Remove the manager thread?"}</DialogTitle>
+                <DialogDescription>
+                  From {currentNames.get(current) ?? current} to {confirming?.title ?? noManager}. Stale-status notices and copied PR messages go to the new manager.
+                </DialogDescription>
+              </DialogHeader>
+              <DialogFooter>
+                <Button type="button" variant="outline" onClick={() => setConfirming(null)}>Cancel</Button>
+                <Button type="button" onClick={() => { const next = confirming!.id; setConfirming(null); void saveManager(next); }}>
+                  {confirming?.id ? "Replace manager" : "Remove manager"}
+                </Button>
+              </DialogFooter>
+            </DialogContent>
+          </Dialog>
+          <PrMessages projectId={projectId} />
           <details className="rounded-md border border-border text-sm">
             <DisclosureSummary className="px-3 py-2.5">
               <span className="min-w-0 space-y-0.5">
@@ -189,10 +267,9 @@ export function AttentionSettings({ projectId }: { projectId: string }) {
               ) : mode === "shadow" ? (
                 <div className="flex flex-wrap items-center justify-between gap-2 rounded-md bg-muted/50 px-3 py-2">
                   {gateHours > 0 ? <p className="text-xs text-muted-foreground" data-testid="attention-gate">Live delivery requires 48 hours in shadow. About {gateHours} {gateHours === 1 ? "hour" : "hours"} left.</p>
-                    : <label className="flex items-center gap-1.5 text-xs">
-                        <input type="checkbox" checked={parity} onChange={(event) => setParityGeneration(event.target.checked ? generation : undefined)} />
-                        I reviewed the differences between Work Board and Sweep
-                      </label>}
+                    : <SwitchRow label="I reviewed the differences between Work Board and Sweep" checked={parity} disabled={busy}
+                        onChange={(on) => setParityGeneration(on ? generation : undefined)}
+                        hint="Not saved: applies to this shadow period only and lets Go live request the switch." />}
                   <Button size="sm" className="h-8" disabled={busy || !parity || gateHours > 0} onClick={() => void setMode("live")}>Go live</Button>
                 </div>
               ) : null}
@@ -217,6 +294,6 @@ export function AttentionSettings({ projectId }: { projectId: string }) {
         </>
       ) : null}
       {error ? <p role="alert" className="text-xs text-destructive">{error}</p> : null}
-    </section>
+    </SettingsCard>
   );
 }

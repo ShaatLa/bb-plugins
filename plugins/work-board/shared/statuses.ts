@@ -112,3 +112,6 @@ export function statusGlyph(status: string, icon?: StatusIconName): StatusIconNa
 export function statusCssColor(status: string, color?: StatusColor): string {
   return paletteColor(color) ?? STATUS_CSS_COLOR[status] ?? "var(--timeline-accent)";
 }
+
+/** Refused write of statuses built on an older stored list; the caller rereads them and applies its change again. */
+export const STALE_STATUSES = "The project's statuses changed meanwhile; reload them and apply the change again.";

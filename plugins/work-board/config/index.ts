@@ -5,7 +5,7 @@ import { planGatedStatuses } from "../shared/workflow-policy";
 import { publishProjectsChanged } from "../api";
 import { gitSyncService } from "../git-sync/service";
 import { createGitSyncStore } from "../git-sync/store";
-import { gitSyncConfigSchema, overlapEnabled } from "../shared/git-sync";
+import { STALE_GIT_CONFIG, gitSyncConfigSchema, overlapEnabled } from "../shared/git-sync";
 import { ATTENTION_OWNER_ONLY } from "../shared/attention";
 import { getModeRow } from "../attention/modes";
 import { CHECK_FIELDS, CHECKS_CONFIG_KEYS, CHECKS_ENABLED_OWNER_ONLY, CHECKS_PREFIX, type CheckField } from "../checks/config";
@@ -27,6 +27,10 @@ const GIT_KEYS = Object.keys(gitSyncConfigSchema.shape) as (keyof z.infer<typeof
 // Manager attention is the owner's to change in the project settings; the keys are readable here and refused by `config.set`.
 const ATTENTION_KEYS = ["attentionMode", "manager"];
 export const PROJECT_CONFIG_KEYS = [...Object.keys(PROJECT_KEYS), ...ATTENTION_KEYS, ...Object.keys(PR_EVENT_KEYS), ...GIT_KEYS.map((key) => `git.${key}`), ...CHECKS_CONFIG_KEYS];
+
+/** JSON with object keys sorted, so two values compare equal regardless of key order; array order is kept. */
+const structural = (value: unknown) => JSON.stringify(value, (_key, entry: unknown) =>
+  entry && typeof entry === "object" && !Array.isArray(entry) ? Object.fromEntries(Object.entries(entry).sort(([a], [b]) => (a < b ? -1 : 1))) : entry);
 
 function requireKey(key: string) {
   if (!PROJECT_CONFIG_KEYS.includes(key)) throw new Error(`Unknown setting ${key}; known: ${PROJECT_CONFIG_KEYS.join(", ")}`);
@@ -62,8 +66,9 @@ export function projectConfigHandlers(bb: BbPluginApi, store: TasksApiStore) {
       requireKey(key);
       return { projectId, values: { [key]: all[key] ?? null, ...(key === "planning" ? planningHistory : {}) } };
     },
-    async "config.set"({ projectId, key, value }: { projectId: string; key: string; value?: unknown }) {
+    async "config.set"({ projectId, key, value, expected }: { projectId: string; key: string; value?: unknown; expected?: unknown }) {
       requireKey(key);
+      if (expected !== undefined && !key.startsWith("git.")) throw new Error(`expected applies to git.* keys only, not ${key}`);
       // The owner changes planning in the project settings (updateProject from the app); no setting call proves the caller is the owner.
       if (key === "planning") throw new Error(PLANNING_OWNER_ONLY);
       if (ATTENTION_KEYS.includes(key)) throw new Error(ATTENTION_OWNER_ONLY);
@@ -81,12 +86,16 @@ export function projectConfigHandlers(bb: BbPluginApi, store: TasksApiStore) {
       if (key.startsWith("git.")) {
         const field = key.slice(4);
         const current = createGitSyncStore(bb.storage.database()).config(projectId);
+        // Compared with the value `config.get` returns (an absent overlapEnabled is its effective boolean), structurally.
+        const stored = field === "overlapEnabled" ? overlapEnabled(current) : (current as Record<string, unknown>)[field] ?? null;
+        if (expected !== undefined && structural(stored) !== structural(expected)) throw new Error(STALE_GIT_CONFIG);
         const next = (candidate: unknown) => gitSyncConfigSchema.safeParse({ ...current, [field]: candidate });
         let parsed = next(value);
         // A list setting also takes "a, b" so a shell caller needs no JSON.
         if (!parsed.success && typeof value === "string") parsed = next(value.split(",").map((item) => item.trim()).filter(Boolean));
         if (!parsed.success) throw new Error(`Invalid value for ${key}: ${parsed.error.issues.map((issue) => issue.message).join("; ")}`);
-        const { config } = await gitSyncService(bb, store).handlers.setGitSyncConfig({ projectId, config: parsed.data });
+        // The write is refused inside its transaction when the configuration changed since `current` was read.
+        const { config } = await gitSyncService(bb, store).handlers.setGitSyncConfig({ projectId, config: parsed.data, ...(expected !== undefined ? { baseConfig: current } : {}) });
         return { projectId, key, value: field === "overlapEnabled" ? overlapEnabled(config) : (config as Record<string, unknown>)[field] ?? null };
       }
       // Project settings are string enums; "45" parsed as JSON arrives as a number.

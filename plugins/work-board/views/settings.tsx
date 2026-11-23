@@ -1,6 +1,8 @@
 import { GitSyncSettings } from "./git-sync-settings";
 import { formatRelativeTime } from "./activity/time.js";
-import { StorageSettings } from "./storage-settings";
+import { GeneralSettings } from "./general-settings";
+import { SelectRow, SettingsCard, SwitchRow } from "./settings-card";
+import { SETTINGS_MARKER, useHideNativeSettings } from "./native-settings";
 import { AttentionSettings } from "./attention-settings";
 import { ChecksSettings } from "./checks-settings";
 import { TasksRefreshProvider } from "../shell/refresh.js";
@@ -11,11 +13,10 @@ import {
   SelectContent,
   SelectItem,
 } from "@/components/ui/select";
-import { useEffect, useId, useLayoutEffect, useRef, useState, type ComponentType, type ReactNode } from "react";
+import { useEffect, useId, useLayoutEffect, useRef, useState, type ComponentType } from "react";
 import { useBbNavigate } from "@get-bb/plugin-sdk/app";
 import { Button } from "@/components/ui/button";
 import { Popover, PopoverTrigger, PopoverContent } from "@/components/ui/popover";
-import { Switch } from "@/components/ui/switch";
 import { cn } from "@/lib/utils";
 import { Input } from "@/components/ui/input";
 import { Icon } from "@/components/ui/icon";
@@ -24,6 +25,7 @@ import { StatusIcon, StatusColorDot } from "../components/status-icon.js";
 import { useProjects, useTasksRpc } from "../shell/data.js";
 import {
   DEFAULT_TASK_STATUSES,
+  STALE_STATUSES,
   TASK_STATUSES,
   STATUS_ICONS,
   statusIconSchema,
@@ -36,19 +38,66 @@ import type { archiveSettingSchema, autoArchiveAfterDaysSchema, planningSchema, 
 import type { z } from "zod";
 import { NewProjectDialog } from "./manage/new-project-dialog.js";
 
-/** `onBusy` reports a save in flight or a rejected draft, so the editor is not closed over a draft or an error. */
+type Addition = { key: number; name: string };
+/** A status id from its name, unique among `taken`; ids are never derived any other way. */
+function statusId(name: string, taken: readonly string[]) {
+  let base = name.trim().toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_|_$/g, "");
+  if (!/^[a-z]/.test(base)) base = `status_${base}`;
+  base = base.slice(0, 58).replace(/_$/g, "");
+  let id = base;
+  for (let suffix = 2; taken.includes(id); suffix++) id = `${base}_${suffix}`;
+  return id;
+}
+/** Renames and additions replayed by status id onto the latest stored statuses, so a flag changed meanwhile is kept. */
+function withDrafts(latest: TaskStatusDefinition[], renames: Record<string, string>, additions: Addition[]) {
+  const next = latest.map((status) => (renames[status.id] === undefined ? status : { ...status, name: renames[status.id]! }));
+  const added: TaskStatusDefinition[] = [];
+  for (const { name } of additions) {
+    if (!name.trim()) continue;
+    added.push({ id: statusId(name, [...next, ...added].map((status) => status.id)), name: name.trim() });
+  }
+  const done = next.findIndex((status) => status.id === "done");
+  next.splice(done < 0 ? next.length : done, 0, ...added);
+  return next;
+}
+
+type TasksRpc = ReturnType<typeof useTasksRpc>;
+/**
+ * Writes `change` applied to the stored statuses it was built on. The server refuses it when they changed meanwhile
+ * (a planning flag, another editor), so the change is applied once more to the reread list and nothing is undone.
+ */
+async function writeStatuses(rpc: TasksRpc, projectId: string, base: TaskStatusDefinition[], change: (latest: TaskStatusDefinition[]) => TaskStatusDefinition[]) {
+  const send = (from: TaskStatusDefinition[]) => rpc.call("updateProject", { projectId, baseStatuses: from, statuses: taskStatusesSchema.parse(change(from)) });
+  try {
+    return await send(base);
+  } catch (error) {
+    if (!errorMessage(error).includes(STALE_STATUSES)) throw error;
+    const { projects } = await rpc.call("listProjects", {});
+    return send(projects.find((entry) => entry.id === projectId)?.statuses ?? DEFAULT_TASK_STATUSES);
+  }
+}
+
+/**
+ * Names and new statuses are drafts until Save; icon, color, order and removal are written at once, each on the latest
+ * stored statuses, so the drafts survive them. `onBusy` reports a save in flight or unsaved drafts, so the editor is not
+ * closed over them.
+ */
 function ProjectStatuses({ project, onBusy }: { project: Project; onBusy: (busy: boolean) => void }) {
   const rpc = useTasksRpc();
-  const [statuses, setStatuses] = useState<TaskStatusDefinition[]>(
-    () => project.statuses ?? DEFAULT_TASK_STATUSES,
-  );
-  const [saved, setSaved] = useState(statuses);
+  const stored = project.statuses ?? DEFAULT_TASK_STATUSES;
+  const [persisted, setPersisted] = useState<TaskStatusDefinition[]>(stored);
+  useEffect(() => setPersisted(stored), [JSON.stringify(stored)]);
+  const [renames, setRenames] = useState<Record<string, string>>({});
+  const [additions, setAdditions] = useState<Addition[]>([]);
+  const nextKey = useRef(0);
+  const [dragOrder, setDragOrder] = useState<TaskStatusDefinition[] | null>(null);
   const [colorPicker, setColorPicker] = useState<string | null>(null);
-  const [adding, setAdding] = useState(false);
-  const [name, setName] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [didSave, setDidSave] = useState(false);
+  const named = withDrafts(persisted, renames, []);
+  const statuses = dragOrder ?? named;
+  const dirty = persisted.some((status) => renames[status.id] !== undefined && renames[status.id] !== status.name) || additions.length > 0;
   const drag = useRef<{
     id: string;
     initial: TaskStatusDefinition[];
@@ -66,64 +115,41 @@ function ProjectStatuses({ project, onBusy }: { project: Project; onBusy: (busy:
         )
         ?.focus({ preventScroll: true });
   }, [draggedId, statuses]);
-  // A rejection with nothing left to correct (a refused removal) does not hold the editor open.
-  const failedDraft = error !== null && (adding || JSON.stringify(statuses) !== JSON.stringify(saved));
   useEffect(() => {
-    onBusy(saving || failedDraft);
+    onBusy(saving || dirty);
     return () => onBusy(false);
-  }, [saving, failedDraft]);
-  const save = async (next: TaskStatusDefinition[]) => {
-    if (JSON.stringify(next) === JSON.stringify(saved)) return;
+  }, [saving, dirty]);
+  /** Writes `change(latest stored statuses)`; resolves whether it was stored. */
+  const write = async (change: (latest: TaskStatusDefinition[]) => TaskStatusDefinition[]) => {
+    const next = change(persisted);
+    if (JSON.stringify(next) === JSON.stringify(persisted)) return true;
     setSaving(true);
     setError(null);
     try {
-      const parsed = taskStatusesSchema.parse(next);
-      const result = await rpc.call("updateProject", {
-        projectId: project.id,
-        statuses: parsed,
-      });
-      const updated = result.project.statuses ?? parsed;
-      setStatuses(updated);
-      setSaved(updated);
-      setAdding(false);
-      setName("");
+      const result = await writeStatuses(rpc, project.id, persisted, change);
+      setPersisted(result.project.statuses ?? DEFAULT_TASK_STATUSES);
       setDidSave(true);
+      return true;
     } catch (error) {
       setError(errorMessage(error));
+      return false;
     } finally {
       setSaving(false);
     }
   };
-  const add = () => {
-    if (!name.trim()) {
-      setAdding(false);
-      return;
+  const replace = (id: string, change: (status: TaskStatusDefinition) => TaskStatusDefinition) =>
+    void write((latest) => latest.map((entry) => (entry.id === id ? change(entry) : entry)));
+  const save = async () => {
+    const drafts = { renames, additions };
+    if (await write((latest) => withDrafts(latest, drafts.renames, drafts.additions))) {
+      setRenames({});
+      setAdditions([]);
     }
-    let base = name
-      .trim()
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/g, "_")
-      .replace(/^_|_$/g, "");
-    if (!/^[a-z]/.test(base)) base = `status_${base}`;
-    base = base.slice(0, 58).replace(/_$/g, "");
-    let id = base;
-    for (
-      let suffix = 2;
-      statuses.some((status) => status.id === id);
-      suffix++
-    ) {
-      id = `${base}_${suffix}`;
-    }
-    const next = [...statuses];
-    next.splice(
-      next.findIndex((status) => status.id === "done"),
-      0,
-      {
-        id,
-        name: name.trim(),
-      },
-    );
-    void save(next);
+  };
+  const discard = () => {
+    setRenames({});
+    setAdditions([]);
+    setError(null);
   };
   const startDrag = (id: string, pointerId: number | null) => {
     drag.current = { id, initial: statuses, current: statuses, pointerId };
@@ -137,15 +163,17 @@ function ProjectStatuses({ project, onBusy }: { project: Project; onBusy: (busy:
     if (index === target) return;
     next.splice(target, 0, next.splice(index, 1)[0]!);
     current.current = next;
-    setStatuses(next);
+    setDragOrder(next);
   };
   const finishDrag = (commit: boolean) => {
     const current = drag.current;
     if (!current) return;
     drag.current = null;
     setDraggedId(null);
-    setStatuses(current.initial);
-    if (commit) void save(current.current);
+    setDragOrder(null);
+    const order = current.current.map((status) => status.id);
+    const rank = (status: TaskStatusDefinition) => (order.includes(status.id) ? order.indexOf(status.id) : order.length);
+    if (commit) void write((latest) => [...latest].sort((a, b) => rank(a) - rank(b)));
   };
   return (
     <div className="max-w-2xl space-y-2">
@@ -206,7 +234,6 @@ function ProjectStatuses({ project, onBusy }: { project: Project; onBusy: (busy:
               aria-label={`Move ${status.name}`}
               aria-describedby={dragInstructions}
               aria-pressed={draggedId === status.id}
-              disabled={adding}
               onPointerDown={(event) => {
                 if (event.button !== 0 || drag.current) return;
                 event.preventDefault();
@@ -244,14 +271,9 @@ function ProjectStatuses({ project, onBusy }: { project: Project; onBusy: (busy:
             </Button>
             <Select
               value={status.icon ?? "default"}
-              disabled={saving || adding || draggedId !== null}
-              onValueChange={(value) => {
-                const { icon: _icon, ...definition } = status;
-                const updated = value === "default"
-                  ? definition
-                  : { ...definition, icon: statusIconSchema.parse(value) };
-                void save(statuses.map((entry) => entry.id === status.id ? updated : entry));
-              }}
+              disabled={saving || draggedId !== null}
+              onValueChange={(value) => replace(status.id, ({ icon: _icon, ...definition }) =>
+                value === "default" ? definition : { ...definition, icon: statusIconSchema.parse(value) })}
             >
               <SelectTrigger aria-label={`Icon for ${status.name}`} className="h-7 w-12 shrink-0 px-1.5">
                 <SelectValue>
@@ -271,7 +293,7 @@ function ProjectStatuses({ project, onBusy }: { project: Project; onBusy: (busy:
             </Select>
             <Popover open={colorPicker === status.id} onOpenChange={(open) => setColorPicker(open ? status.id : null)}>
               <PopoverTrigger asChild>
-                <Button type="button" variant="outline" aria-label={`Color for ${status.name}`} className="h-7 w-12 shrink-0 gap-1 px-1.5" disabled={saving || adding || draggedId !== null}>
+                <Button type="button" variant="outline" aria-label={`Color for ${status.name}`} className="h-7 w-12 shrink-0 gap-1 px-1.5" disabled={saving || draggedId !== null}>
                   <StatusColorDot status={status.id} color={status.color} />
                   <Icon name="ChevronDown" className="size-3 opacity-50" />
                 </Button>
@@ -287,9 +309,8 @@ function ProjectStatuses({ project, onBusy }: { project: Project; onBusy: (busy:
                       aria-pressed={status.color === color.value}
                       className={cn("flex size-8 items-center justify-center rounded-md hover:bg-state-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring", status.color === color.value && "ring-1 ring-ring")}
                       onClick={() => {
-                        const updated = { ...status, color: color.value };
                         setColorPicker(null);
-                        void save(statuses.map((entry) => entry.id === status.id ? updated : entry));
+                        replace(status.id, (entry) => ({ ...entry, color: color.value }));
                       }}
                     >
                       <StatusColorDot status={status.id} color={color.value} />
@@ -302,23 +323,12 @@ function ProjectStatuses({ project, onBusy }: { project: Project; onBusy: (busy:
               aria-label={`Status name ${status.id}`}
               className="h-7 min-w-0 flex-1 text-xs"
               value={status.name}
-              onChange={(event) =>
-                setStatuses((current) =>
-                  current.map((entry) =>
-                    entry.id === status.id
-                      ? { ...entry, name: event.target.value }
-                      : entry,
-                  ),
-                )
-              }
-              onBlur={() => {
-                if (!drag.current) void save(statuses);
-              }}
+              onChange={(event) => setRenames((current) => ({ ...current, [status.id]: event.target.value }))}
               onKeyDown={(event) => {
                 if (event.nativeEvent.isComposing) return;
-                if (event.key === "Enter") event.currentTarget.blur();
+                if (event.key === "Enter") void save();
                 if (event.key === "Escape") {
-                  setStatuses(saved);
+                  setRenames(({ [status.id]: _dropped, ...rest }) => rest);
                   setError(null);
                 }
               }}
@@ -333,33 +343,26 @@ function ProjectStatuses({ project, onBusy }: { project: Project; onBusy: (busy:
                 className="size-7"
                 aria-label={`Remove ${status.name}`}
                 onPointerDown={(event) => event.preventDefault()}
-                onClick={() =>
-                  void save(statuses.filter((entry) => entry.id !== status.id))
-                }
+                onClick={() => void write((latest) => latest.filter((entry) => entry.id !== status.id))}
               >
                 <Icon name="Trash2" className="size-3.5" />
               </Button>
             )}
           </div>
         ))}
-        {adding ? (
-          <div className="flex items-center gap-1.5">
+        {additions.map((addition) => (
+          <div key={addition.key} className="flex items-center gap-1.5">
             <Input
               autoFocus
               aria-label="New status name"
               placeholder="Status name"
               className="ml-[142px] h-7 min-w-0 flex-1 text-xs"
-              value={name}
-              onChange={(event) => setName(event.target.value)}
-              onBlur={add}
+              value={addition.name}
+              onChange={(event) => setAdditions((current) => current.map((entry) => (entry.key === addition.key ? { ...entry, name: event.target.value } : entry)))}
               onKeyDown={(event) => {
                 if (event.nativeEvent.isComposing) return;
-                if (event.key === "Enter") event.currentTarget.blur();
-                if (event.key === "Escape") {
-                  setAdding(false);
-                  setName("");
-                  setError(null);
-                }
+                if (event.key === "Enter") void save();
+                if (event.key === "Escape") setAdditions((current) => current.filter((entry) => entry.key !== addition.key));
               }}
             />
             <Button
@@ -368,30 +371,29 @@ function ProjectStatuses({ project, onBusy }: { project: Project; onBusy: (busy:
               size="icon"
               className="size-7"
               aria-label="Cancel new status"
-              onPointerDown={(event) => event.preventDefault()}
-              onClick={() => {
-                setAdding(false);
-                setName("");
-                setError(null);
-              }}
+              onClick={() => setAdditions((current) => current.filter((entry) => entry.key !== addition.key))}
             >
               <Icon name="Trash2" className="size-3.5" />
             </Button>
           </div>
-        ) : (
-          <Button
-            type="button"
-            variant="ghost"
-            size="sm"
-            className="h-7 gap-1.5 px-2.5"
-            disabled={statuses.length >= 32}
-            onClick={() => setAdding(true)}
-          >
-            <Icon name="Plus" className="size-3.5" />
-            Add status
-          </Button>
-        )}
+        ))}
+        <Button
+          type="button"
+          variant="ghost"
+          size="sm"
+          className="h-7 gap-1.5 px-2.5"
+          disabled={statuses.length + additions.length >= 32}
+          onClick={() => setAdditions((current) => [...current, { key: nextKey.current++, name: "" }])}
+        >
+          <Icon name="Plus" className="size-3.5" />
+          Add status
+        </Button>
       </fieldset>
+      <div className="flex flex-wrap items-center gap-2">
+        <Button size="sm" className="h-7 px-2.5" disabled={saving || !dirty} onClick={() => void save()}>Save</Button>
+        {dirty ? <Button size="sm" variant="ghost" className="h-7 px-2.5" disabled={saving} onClick={discard}>Discard</Button> : null}
+        {dirty ? <span className="text-xs text-muted-foreground">Unsaved names</span> : null}
+      </div>
       {error ? (
         <p role="alert" className="text-xs text-destructive">
           {error}
@@ -413,7 +415,6 @@ type ProjectChanges = {
   archiveThreadsOnClose?: z.infer<typeof archiveSettingSchema>;
   archiveReviewerOnApproval?: z.infer<typeof archiveSettingSchema>;
   planning?: z.infer<typeof planningSchema>;
-  statuses?: TaskStatusDefinition[];
 };
 
 /** Saves one project setting at a time and reports the failure beside the section's controls. */
@@ -421,11 +422,11 @@ function useProjectUpdate(project: Project, onSaved: () => void) {
   const rpc = useTasksRpc();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const update = async (changes: ProjectChanges) => {
+  const run = async (action: () => Promise<unknown>) => {
     setBusy(true);
     setError(null);
     try {
-      await rpc.call("updateProject", { projectId: project.id, ...changes });
+      await action();
       onSaved();
     } catch (error) {
       setError(errorMessage(error));
@@ -433,57 +434,25 @@ function useProjectUpdate(project: Project, onSaved: () => void) {
       setBusy(false);
     }
   };
-  return { busy, error, update };
+  const update = (changes: ProjectChanges) => run(() => rpc.call("updateProject", { projectId: project.id, ...changes }));
+  return { busy, error, update, run, rpc };
 }
 
-function SelectRow<T extends string>({ label, value, options, disabled, onChange, hint }: {
-  label: string; value: T; options: readonly (readonly [T, string])[]; disabled: boolean; onChange: (value: T) => void; hint: ReactNode;
-}) {
-  return (
-    <div className="space-y-1">
-      <label className="flex flex-wrap items-center justify-between gap-2 text-sm">
-        {label}
-        <Select value={value} disabled={disabled} onValueChange={(next) => onChange(next as T)}>
-          <SelectTrigger aria-label={label} className="h-8 w-48"><SelectValue /></SelectTrigger>
-          <SelectContent>
-            {options.map(([option, text]) => <SelectItem key={option} value={option}>{text}</SelectItem>)}
-          </SelectContent>
-        </Select>
-      </label>
-      <p className="text-xs text-muted-foreground">{hint}</p>
-    </div>
-  );
-}
-
-function SwitchRow({ label, checked, disabled, onChange, hint }: {
-  label: string; checked: boolean; disabled: boolean; onChange: (checked: boolean) => void; hint: ReactNode;
-}) {
-  const id = useId();
-  return (
-    <div className="space-y-1">
-      <div className="flex flex-wrap items-center justify-between gap-2 text-sm">
-        <label htmlFor={id} className="cursor-pointer">{label}</label>
-        <Switch id={id} aria-label={label} aria-describedby={`${id}-hint`} checked={checked} disabled={disabled} onCheckedChange={onChange} />
-      </div>
-      <p id={`${id}-hint`} className="text-xs text-muted-foreground">{hint}</p>
-    </div>
-  );
-}
-
-function StatusesSection({ project }: SectionProps) {
+function StatusesBlock({ project }: { project: Project }) {
   const [editing, setEditing] = useState(false);
   const [busy, setBusy] = useState(false);
+  const heading = useId();
   const statuses: TaskStatusDefinition[] = project.statuses ?? DEFAULT_TASK_STATUSES;
   return (
-    <section aria-label="Project task statuses" className="space-y-3 border-t border-border pt-4">
+    <section aria-labelledby={heading} className="space-y-3">
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <h3 className="text-sm font-medium">Statuses</h3>
+        <h4 id={heading} className="text-sm font-medium">Statuses</h4>
         <Button size="sm" variant="outline" className="h-7 px-2.5" aria-expanded={editing} disabled={editing && busy}
           aria-label={editing ? "Done editing statuses" : "Edit statuses"} onClick={() => setEditing(!editing)}>
           {editing ? "Done" : "Edit"}
         </Button>
       </div>
-      {editing ? <ProjectStatuses key={`${project.id}:${JSON.stringify(project.statuses)}`} project={project} onBusy={setBusy} /> : (
+      {editing ? <ProjectStatuses project={project} onBusy={setBusy} /> : (
         <ol aria-label="Status order" className="flex flex-wrap items-center gap-x-1 gap-y-1.5 text-xs">
           {statuses.map((status, index) => (
             <li key={status.id} className="inline-flex items-center gap-1">
@@ -500,16 +469,18 @@ function StatusesSection({ project }: SectionProps) {
   );
 }
 
-function PlanningSection({ project, onSaved }: SectionProps) {
-  const { busy, error, update } = useProjectUpdate(project, onSaved);
+function PlanningBlock({ project, onSaved }: SectionProps) {
+  const { busy, error, update, run, rpc } = useProjectUpdate(project, onSaved);
+  const heading = useId();
   const statuses: TaskStatusDefinition[] = project.statuses ?? DEFAULT_TASK_STATUSES;
   const marked = statuses.filter((status) => status.requiresApprovedPlan === true && status.id !== "canceled");
   const unmarked = statuses.filter((status) => status.requiresApprovedPlan !== true);
-  const setFlag = (id: string, on: boolean) => void update({ statuses: statuses.map((status) => (status.id === id ? { ...status, requiresApprovedPlan: on } : status)) });
+  const setFlag = (id: string, on: boolean) => void run(() => writeStatuses(rpc, project.id, statuses,
+    (latest) => latest.map((status) => (status.id === id ? { ...status, requiresApprovedPlan: on } : status))));
   const planning = project.planning ?? "off";
   return (
-    <section aria-label="Project planning" className="space-y-3 border-t border-border pt-4">
-      <h3 className="text-sm font-medium">Planning</h3>
+    <section aria-labelledby={heading} className="space-y-3 border-t border-border pt-4">
+      <h4 id={heading} className="text-sm font-medium">Planning</h4>
       <SelectRow label="Mode" value={planning} disabled={busy} onChange={(value) => void update({ planning: value })}
         options={[["off", "Off"], ["optional", "Optional"], ["required", "Required"]]}
         hint="Off hides plans for this project (existing plans are kept). Optional turns on plans and their review. Required keeps a card out of the statuses below until its plan is approved; epics are exempt." />
@@ -521,7 +492,7 @@ function PlanningSection({ project, onSaved }: SectionProps) {
       ) : null}
       {planning === "required" ? (
         <div className="space-y-2" data-testid="plan-gated-statuses">
-          <h4 className="text-sm font-medium">Statuses that need an approved plan</h4>
+          <h5 className="text-sm font-medium">Statuses that need an approved plan</h5>
           <div className="flex flex-wrap items-center gap-1.5">
             {marked.map((status) => (
               <span key={status.id} className="inline-flex h-7 items-center gap-1.5 rounded-md border border-border pl-2 pr-1 text-xs">
@@ -561,8 +532,7 @@ function PlanningSection({ project, onSaved }: SectionProps) {
 function ArchivingSection({ project, onSaved }: SectionProps) {
   const { busy, error, update } = useProjectUpdate(project, onSaved);
   return (
-    <section aria-label="Project archiving" className="space-y-4 border-t border-border pt-4">
-      <h3 className="text-sm font-medium">Archiving</h3>
+    <SettingsCard title="Archiving" description="When completed cards and the threads of closed cards are archived.">
       <SelectRow label="Archive completed tasks after" value={project.autoArchiveAfterDays ?? "off"} disabled={busy}
         onChange={(value) => void update({ autoArchiveAfterDays: value })}
         options={[["off", "Off"], ["3", "3 days"], ["7", "7 days"], ["14", "14 days"], ["30", "30 days"]]}
@@ -571,15 +541,14 @@ function ArchivingSection({ project, onSaved }: SectionProps) {
         onChange={(on) => void update({ archiveThreadsOnClose: on ? "on" : "off" })}
         hint="When a card goes to Done or Canceled, the sessions Work Board created for it are archived once they are idle. Sessions made outside Work Board, or linked to another open card, are kept." />
       {error ? <p role="alert" className="text-xs text-destructive">{error}</p> : null}
-    </section>
+    </SettingsCard>
   );
 }
 
 function ActivitySection({ project, onSaved }: SectionProps) {
   const { busy, error, update } = useProjectUpdate(project, onSaved);
   return (
-    <section aria-label="Project activity and notifications" className="space-y-4 border-t border-border pt-4">
-      <h3 className="text-sm font-medium">Activity and notifications</h3>
+    <SettingsCard title="Activity and notifications" description="Idle-thread markers and your notifications for this project.">
       <SelectRow label="Flag idle threads after" value={project.staleIdleMinutes ?? "45"} disabled={busy}
         onChange={(value) => void update({ staleIdleMinutes: value })}
         options={[["off", "Off"], ["30", "30 minutes"], ["45", "45 minutes"], ["60", "60 minutes"], ["120", "2 hours"]]}
@@ -589,17 +558,25 @@ function ActivitySection({ project, onSaved }: SectionProps) {
         options={[["off", "Off"], ["all", "All status changes"], ["done", "Done only"]]}
         hint="Applies only to this project and uses the enabled channels in BB Push notifications. Status changes you make yourself in the board are not notified." />
       {error ? <p role="alert" className="text-xs text-destructive">{error}</p> : null}
-      <AttentionSettings projectId={project.id} />
-    </section>
+    </SettingsCard>
+  );
+}
+
+function WorkflowSection({ project, onSaved }: SectionProps) {
+  return (
+    <SettingsCard title="Workflow" description="The statuses of this project's cards and whether they need an approved plan.">
+      <StatusesBlock project={project} />
+      <PlanningBlock project={project} onSaved={onSaved} />
+    </SettingsCard>
   );
 }
 
 /** The project sections in page order. Add a section by adding one entry; it receives the selected project. */
 const PROJECT_SECTIONS: { id: string; Section: ComponentType<SectionProps> }[] = [
-  { id: "statuses", Section: StatusesSection },
-  { id: "planning", Section: PlanningSection },
+  { id: "workflow", Section: WorkflowSection },
   { id: "archiving", Section: ArchivingSection },
   { id: "activity", Section: ActivitySection },
+  { id: "manager", Section: ({ project }) => <AttentionSettings projectId={project.id} /> },
   { id: "git", Section: ({ project }) => <GitSyncSettings projectId={project.id} /> },
   { id: "checks", Section: ({ project }) => <ChecksSettings projectId={project.id} /> },
 ];
@@ -607,35 +584,49 @@ const PROJECT_SECTIONS: { id: string; Section: ComponentType<SectionProps> }[] =
 function TasksSettingsContent() {
   const navigate = useBbNavigate();
   const projects = useProjects();
+  const root = useRef<HTMLDivElement>(null);
+  useHideNativeSettings(root);
+  const general = useId();
+  const projectHeading = useId();
   const [newProjectOpen, setNewProjectOpen] = useState(false);
   const [projectId, setProjectId] = useState("");
   const project = projects.data?.find((entry) => entry.id === projectId) ?? projects.data?.[0];
   return (
-    <div className="space-y-5">
-      <div className="flex flex-wrap items-center gap-2">
-        {project ? <Select value={project.id} onValueChange={setProjectId}>
-          <SelectTrigger aria-label="Settings project" className="h-8 w-56"><SelectValue /></SelectTrigger>
-          <SelectContent>{projects.data?.map((entry) => (
-            <SelectItem key={entry.id} value={entry.id}>{entry.name}</SelectItem>
-          ))}</SelectContent>
-        </Select> : null}
-        <Button size="sm" variant="outline" className="h-8 px-2.5" onClick={() => setNewProjectOpen(true)}>
-          <Icon name="Plus" className="size-3.5" />New project
-        </Button>
-        <Button size="sm" variant="outline" className="h-8 px-2.5"
-          onClick={() => navigate.toPluginPanel("work-board", { subPath: "manage" })}>Manage labels and presets</Button>
-      </div>
-      {projects.error ? <div role="alert" className="text-xs text-destructive">
-        {projects.error}<Button size="sm" variant="ghost" onClick={projects.refresh}>Retry</Button>
-      </div> : null}
-      {newProjectOpen ? <NewProjectDialog open onOpenChange={setNewProjectOpen}
-        onCreated={(created) => { setProjectId(created.id); projects.refresh(); }} /> : null}
-      {project ? PROJECT_SECTIONS.map(({ id, Section }) => (
-        <Section key={`${id}:${project.id}`} project={project} onSaved={projects.refresh} />
-      )) : !projects.error ? <p className="text-xs text-muted-foreground">
-        {projects.data ? "Create a project to configure its workflow." : "Loading projects…"}
-      </p> : null}
-      <StorageSettings />
+    <div ref={root} {...{ [SETTINGS_MARKER]: "" }} className="space-y-8">
+      <section aria-labelledby={general} className="space-y-3">
+        <h2 id={general} className="text-base font-semibold">General</h2>
+        <GeneralSettings />
+      </section>
+      <section aria-labelledby={projectHeading} className="space-y-3">
+        <div className="flex flex-wrap items-center gap-2">
+          <h2 id={projectHeading} className="mr-1 text-base font-semibold">Project</h2>
+          {project ? <Select value={project.id} onValueChange={setProjectId}>
+            <SelectTrigger aria-label="Settings project" className="h-8 w-56"><SelectValue /></SelectTrigger>
+            <SelectContent>{projects.data?.map((entry) => (
+              <SelectItem key={entry.id} value={entry.id}>{entry.name}</SelectItem>
+            ))}</SelectContent>
+          </Select> : null}
+          <Button size="sm" variant="outline" className="h-8 px-2.5" onClick={() => setNewProjectOpen(true)}>
+            <Icon name="Plus" className="size-3.5" />New project
+          </Button>
+          <Button size="sm" variant="outline" className="h-8 px-2.5"
+            onClick={() => navigate.toPluginPanel("work-board", { subPath: "manage" })}>Manage labels and presets</Button>
+        </div>
+        {projects.error ? <div role="alert" className="text-xs text-destructive">
+          {projects.error}<Button size="sm" variant="ghost" onClick={projects.refresh}>Retry</Button>
+        </div> : null}
+        {newProjectOpen ? <NewProjectDialog open onOpenChange={setNewProjectOpen}
+          onCreated={(created) => { setProjectId(created.id); projects.refresh(); }} /> : null}
+        {project ? (
+          <div data-testid="project-settings" className="space-y-4 rounded-xl border-l-2 border-primary/40 bg-muted/30 p-3">
+            {PROJECT_SECTIONS.map(({ id, Section }) => (
+              <Section key={`${id}:${project.id}`} project={project} onSaved={projects.refresh} />
+            ))}
+          </div>
+        ) : !projects.error ? <p className="text-xs text-muted-foreground">
+          {projects.data ? "Create a project to configure its workflow." : "Loading projects…"}
+        </p> : null}
+      </section>
       <div className="flex flex-wrap gap-2 border-t border-border pt-4">
         <Button size="sm" className="h-7 px-2.5" variant="outline"
           onClick={() => navigate.toPluginPanel("work-board", project ? { subPath: project.id } : undefined)}>Open Work Board</Button>

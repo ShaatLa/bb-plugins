@@ -17,6 +17,7 @@ import {
   settledSpreadMs,
   type PrLink,
   type PrSnapshot,
+  STALE_GIT_CONFIG,
 } from "../shared/git-sync";
 import { createGitSyncStore } from "./store";
 import { prEventService, prEventSettings, queueDeparture, recordPrEvents } from "./events";
@@ -546,12 +547,13 @@ export function createGitSyncService(
         availableRepositories: [...available].sort(),
       };
     },
-    setGitSyncConfig({ projectId, config }) {
+    setGitSyncConfig({ projectId, config, baseConfig }) {
       requireProject(projectId);
-      const saved = data.setConfig(
-        projectId,
-        gitSyncConfigSchema.parse(config),
-      );
+      const canonical = (value: unknown) => JSON.stringify(gitSyncConfigSchema.parse(value));
+      const saved = db.transaction(() => {
+        if (baseConfig && canonical(data.config(projectId)) !== canonical(baseConfig)) throw new Error(STALE_GIT_CONFIG);
+        return data.setConfig(projectId, gitSyncConfigSchema.parse(config));
+      })();
       discovery.clear();
       publishProjectsChanged(bb, projectId);
       publishProjectPrs(projectId);

@@ -261,7 +261,8 @@ export const gitSyncMethods = {
   },
   setGitSyncConfig: {
     input: z
-      .object({ projectId: z.string(), config: gitSyncConfigSchema })
+      // `baseConfig`: the stored configuration the new one was built on; the write is refused when it changed meanwhile.
+      .object({ projectId: z.string(), config: gitSyncConfigSchema, baseConfig: gitSyncConfigSchema.optional() })
       .strict(),
     output: z.object({ config: gitSyncConfigSchema }).strict(),
   },
@@ -299,3 +300,6 @@ export const gitSyncMethods = {
       .strict(),
   },
 } as const;
+
+/** Refused whole-configuration write built on an older stored configuration. */
+export const STALE_GIT_CONFIG = "Git/PR settings changed elsewhere; reload them and apply your edits again.";
