@@ -811,9 +811,11 @@ function InboxChat({ onBulkRead, bbChat = false, search: searchProp, onSearch, t
     // A narrower or wider chat rewraps every card; the card at the top of the view (and its offset), noted on each scroll,
     // is put back where it was so the reader keeps their place (the browser's own scroll anchoring is off here).
     // Kept by its first id too: a card re-rendered under the same id (an answer split from its question) is found again.
-    let anchor: { el: HTMLElement; id: string; offset: number } | null = null;
-    const remember = () => { const view = node.getBoundingClientRect().top, el = Array.from(node.querySelectorAll<HTMLElement>('[aria-label=History] [data-history-ids]')).find(row => row.getBoundingClientRect().bottom > view + 1); anchor = el ? { el, id: el.dataset.historyIds!.split(' ')[0]!, offset: el.getBoundingClientRect().top - view } : null; };
-    const anchored = () => anchor && live(node, anchor.el, rowOf(anchor.id));
+    // el is the first visible block of that card (its row when it has none): an image above the reading line growing inside the
+    // card's first block moves the blocks under it, not the card's top. rowOffset serves the row found again by id.
+    let anchor: { el: HTMLElement; id: string; offset: number; rowOffset: number } | null = null;
+    const remember = () => { const view = node.getBoundingClientRect().top, row = Array.from(node.querySelectorAll<HTMLElement>('[aria-label=History] [data-history-ids]')).find(row => row.getBoundingClientRect().bottom > view + 1), el = row && (Array.from(row.firstElementChild?.children ?? []) as HTMLElement[]).find(block => block.getBoundingClientRect().bottom > view + 1) || row; anchor = row && el ? { el, id: row.dataset.historyIds!.split(' ')[0]!, offset: el.getBoundingClientRect().top - view, rowOffset: row.getBoundingClientRect().top - view } : null; };
+    const anchored = () => { const el = anchor && live(node, anchor.el, rowOf(anchor.id)); if (anchor && el && el !== anchor.el) anchor = { ...anchor, el, offset: anchor.rowOffset }; return el; };
     let anchorFrame = 0;
     const track = () => { if (!node.clientHeight || Date.now() - resizedAt.current < 500) return; if (node.clientHeight === height) gap = node.scrollHeight - node.scrollTop - node.clientHeight; content = node.scrollHeight; if (!anchorFrame) anchorFrame = requestAnimationFrame(() => { anchorFrame = 0; remember(); }); };
     // The conversation also grows at its end after a send (the bubble, the robot, the actions render a moment later):

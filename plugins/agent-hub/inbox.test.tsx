@@ -3,7 +3,7 @@ import { afterEach, expect, it, vi } from 'vitest';
 import { act, cleanup, fireEvent, waitFor, within } from '@testing-library/react';
 const change = (element: Element, init: { target: { value?: string; files?: File[] } }) => { if (element.getAttribute('contenteditable') !== null) { (element as HTMLElement).dataset.testValue = init.target.value ?? ''; fireEvent.input(element); } else fireEvent.change(element, init); };
 import { renderSlot as sdkRenderSlot } from '@get-bb/plugin-sdk/testing/app';
-const renderSlot = ((slot: any, props: any, options: any = {}) => sdkRenderSlot(slot, props, { ...options, sdk: { ...options.sdk, threads: { ...options.sdk?.threads, queuedMessages: { list: () => Promise.resolve([]), ...options.sdk?.threads?.queuedMessages }, context: options.sdk?.threads?.context ?? (() => Promise.resolve({ usage: null })) } } })) as typeof sdkRenderSlot;
+const renderSlot = ((slot: any, props: any, options: any = {}) => sdkRenderSlot(slot, props, { ...options, sdk: { ...options.sdk, projects: { ...options.sdk?.projects, attachments: { read: () => new Promise(() => {}), ...options.sdk?.projects?.attachments } }, threads: { ...options.sdk?.threads, queuedMessages: { list: () => Promise.resolve([]), ...options.sdk?.threads?.queuedMessages }, context: options.sdk?.threads?.context ?? (() => Promise.resolve({ usage: null })) } } })) as typeof sdkRenderSlot;
 const cards = vi.hoisted(() => ({ renders: 0, byThread: {} as Record<string, number> }));
 // The harness fixes sidebar threads at render; a test that needs a sidebar change sets sidebarOverride.threads and re-renders.
 const sidebarOverride = vi.hoisted(() => ({ threads: undefined as any[] | undefined }));
@@ -163,6 +163,41 @@ it('keeps the card a scrolled-up reader is on in place when something above it c
     await new Promise(resolve => setTimeout(resolve, 30));
     cardTop = 160; act(() => observers.forEach(run => run())); // a card above grew by 60px
     expect(tops.get(view)).toBe(60);
+  } finally { spies.forEach(spy => spy.mockRestore()); vi.unstubAllGlobals(); }
+});
+// A turn's row wraps the owner's message (with its image), the work log and the answer: the image growing from its pill must not move the text the reader is on.
+it.each([
+  ['an image above the reading line grows', -300, 0, 0, 0, 160],
+  ['a reader at the bottom follows the growth to the newest', -300, 0, 1500, 1500, 1660],
+  ['an image below the reading line grows', -300, 2, 0, 0, 0],
+  ['an image in a row whose top is in view grows', 100, 0, 0, 0, 0],
+])('keeps a scrolled-up reader\'s text in place when %s', async (_name, rowTop, grower, start, _from, expected) => {
+  const observers: (() => void)[] = [];
+  vi.stubGlobal('ResizeObserver', class { constructor(private callback: () => void) { observers.push(() => this.callback()); } observe() {} disconnect() {} });
+  const tops = new WeakMap<Element, number>(), heights = [200, 300, 300, 300]; let grown = 0;
+  const spies = [
+    vi.spyOn(HTMLElement.prototype, 'clientHeight', 'get').mockReturnValue(500),
+    vi.spyOn(HTMLElement.prototype, 'clientWidth', 'get').mockReturnValue(400),
+    vi.spyOn(HTMLElement.prototype, 'scrollHeight', 'get').mockImplementation(() => 2000 + grown),
+    vi.spyOn(HTMLElement.prototype, 'scrollTop', 'get').mockImplementation(function (this: HTMLElement) { return tops.get(this) ?? 0; }),
+    vi.spyOn(HTMLElement.prototype, 'scrollTop', 'set').mockImplementation(function (this: HTMLElement, value: number) { tops.set(this, value); }),
+    vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (this: HTMLElement) {
+      const rect = (top: number, height: number) => ({ top, bottom: top + height, left:0, right:0, width:0, height }) as DOMRect;
+      if (this.dataset.historyIds === 'ans_two') return rect(rowTop, heights.reduce((sum, height) => sum + height, 0));
+      const row = this.parentElement?.parentElement, index = Array.from(this.parentElement?.children ?? []).indexOf(this);
+      if (row?.dataset.historyIds === 'ans_two') return rect(rowTop + heights.slice(0, index).reduce((sum, height) => sum + height, 0), heights[index] ?? 0);
+      return rect(0, 0);
+    }),
+  ];
+  try {
+    const items = [{ ...base, id:'ans_two', question:'Second', answer:'Answer two', attachments:[{ type:'localImage' as const, path:'/pic.png', name:'pic.png' }], readAt:1, createdAt:2, answeredAt:2 }, { ...base, readAt:1 }];
+    const { slot, recipients } = setup({ list: () => ({ items, nextCursor:null }) }); fireEvent.click(await recipients.findByRole('option'));
+    await slot.findByText('Answer two');
+    const view = document.querySelector('[aria-label=History]')!.closest('.overflow-auto') as HTMLElement;
+    fireEvent.wheel(view); tops.set(view, start); fireEvent.scroll(view); // the reader takes over
+    await new Promise(resolve => setTimeout(resolve, 30));
+    heights[grower]! += 160; grown = 160; act(() => observers.forEach(run => run()));
+    expect(tops.get(view)).toBe(expected);
   } finally { spies.forEach(spy => spy.mockRestore()); vi.unstubAllGlobals(); }
 });
 it('groups consecutive questions with a shared answer', async () => {
