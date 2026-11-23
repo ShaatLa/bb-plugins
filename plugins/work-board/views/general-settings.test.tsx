@@ -149,6 +149,19 @@ it("hides only Work Board's native list in its own settings section, including o
   expect(shown(own.title)).toBe(true);
 });
 
+it("hides the list when the host also heads the plugin's own block with the plugin name in an h3", async () => {
+  // The host page: h1 title, the native list, then a block headed by an h3 with the same name around the plugin view.
+  const own = page();
+  const native = nativeList();
+  own.section.insertBefore(native.wrapper, own.mount);
+  const block = own.mount.appendChild(document.createElement("div"));
+  block.appendChild(document.createElement("h3")).textContent = "Work Board";
+  render(<Page />, { container: block.appendChild(document.createElement("div")) });
+  await waitFor(() => expect(shown(native.list)).toBe(false));
+  expect(shown(native.heading)).toBe(false);
+  expect(shown(own.title)).toBe(true);
+});
+
 it("never leaves its own host section: a complete list in a sibling page stays visible, and without the page title nothing is hidden", async () => {
   const sibling = page("Example Plugin");
   const complete = nativeList();

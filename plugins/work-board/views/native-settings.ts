@@ -4,9 +4,10 @@ import { GLOBAL_SETTING_LABELS } from "../shared/global-settings";
 export const SETTINGS_MARKER = "data-work-board-settings";
 const LABELS = Object.values(GLOBAL_SETTING_LABELS);
 const HEADING = 'h2, h3, [role="heading"]';
-// The host titles this plugin's settings page with the plugin's name (package.json bb.name).
+// The host titles this plugin's settings page with the plugin's name (package.json bb.name) in an h1. Only the h1
+// bounds the search: the host also heads the plugin's own settings block with the same name in an h3, below the list.
 const PAGE_TITLE = "Work Board";
-const TITLES = 'h1, h2, h3, h4, [role="heading"]';
+const TITLES = "h1";
 
 /**
  * What bb's own flat list of Work Board's native fields occupies next to `root`: the list (with the wrappers that hold
