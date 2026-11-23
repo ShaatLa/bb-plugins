@@ -40,6 +40,23 @@ export function asksOwner(text: string) {
  // A handoff counts only when it is due now: "когда оба одобрят, нужна ваша команда" is a status line, not a request.
  return prose.split(/[.!;\n]+/).some(sentence => HANDOFF_RE.test(sentence) && !CONDITION_RE.test(sentence));
 }
+const SUBJECT_RE = /\b[A-Z][A-Z0-9]*-\d+\b|#\d+\b|\bans_[0-9a-f]{6,}\b/g, LIST_LINE = /^\s*(?:(?:[-*+]|\d+[.)])\s.*)?$/;
+// "The rest still wait on you" names nothing but points back at items the owner already has.
+const STANDING_RE = /остальн|прежн|по-прежнему|вс[её] ещё|\b(?:still|remaining|other|else)\b/i;
+// A reply hands nothing new over when every phrase that hands work over names only tasks, PRs or questions that text already
+// shown to the owner named, or names nothing and points back at standing items; a header takes the names of the list under it.
+export function restatesOnly(text: string, shown: string) {
+ const known = new Set(shown.match(SUBJECT_RE) ?? []), lines = text.split('\n');
+ let handoffs = 0;
+ for (let i = 0; i < lines.length; i++) for (const phrase of lines[i]!.split(/(?<=[.!?？;])\s+/)) {
+  if (!asksOwner(phrase)) continue;
+  handoffs++;
+  const subjects: string[] = phrase.match(SUBJECT_RE) ?? [];
+  if (!subjects.length) for (let j = i + 1; j < lines.length && LIST_LINE.test(lines[j]!); j++) subjects.push(...lines[j]!.match(SUBJECT_RE) ?? []);
+  if (subjects.length ? !subjects.every(x => known.has(x)) : !STANDING_RE.test(phrase)) return false;
+ }
+ return handoffs > 0;
+}
 const CONDITION_RE = /(?:^|[^а-яё])(?:когда|после|как только|если|потом)(?![а-яё])|\b(?:when|once|after|if)\b/i;
 // Work handed to the owner with no '?': "EXA-1 готова к вашей проверке", "снова у вас", "ваших решений ждут", "ready for your review".
 const HANDOFF_RE = /готов[аоы]? к ваш(?:ей|ему|им) (?:проверк|приёмк|приемк|ревью|решени|оценк)|(?:снова|теперь) у вас(?![а-яё])|жд[ёе]т ваш|ждут ваш|ваш(?:его|ей|их|е|и|у|а)?\s+(?:решени|ответ|провер|при[её]мк|оценк|ревью|команд|одобрени|подтвержд|выбор)[а-яё]*\s+(?:жд(?:[ёе]т|ут)|нужн)|жд[ёе]т вас(?![а-яё])|нужн[оаы]? ваш|на вашей стороне|поставил вас|перев[её]л[аи]? (?:её |его |их )?на вас|ready for your (?:review|acceptance|approval|decision|check)|(?:waiting|wait) (?:for|on) you|awaits? your|awaiting your|needs? your (?:review|approval|decision|input|answer|go-ahead|command|ok)|(?:back|over) to you|assigned (?:it |this )?to you|your call(?![a-z])/i;
@@ -63,6 +80,8 @@ export type Event = { seq: number; type: string; scope?: { kind?: string; turnId
 /** `trackQuestions` is false for sub-threads: their history stays read and never files chat questions. */
 // One message from another thread or a plugin per turn: the chat item shown when the turn took it.
 // shortcut: a length and work-count heuristic for "the owner's answer came before the steer"; replace it if agents get a way to say which message answers whom.
+// shortcut: what the owner was shown in the last day counts as already handed over; widen it if standing items outlive it.
+const RESTATE_WINDOW = 86_400_000;
 const STEER_ANSWER_MIN = 400, STEER_TOOLS_MAX = 3;
 const turnUpdateId = (threadId: string, turn: string) => 'ans_'+createHash('sha256').update(threadId+'|turn-update|'+turn).digest('hex');
 export function applyEvents(db: Database.Database, threadId: string, events: Event[], projectId: string | null = null, now = 0, trackQuestions = true, live = false, onWarning?: (text: string, at: number, turn: string, seq: number) => void, channelCommands: string[] = projectSchema.parse({}).channelCommands): boolean {
@@ -166,7 +185,7 @@ export function applyEvents(db: Database.Database, threadId: string, events: Eve
     const asked = trackQuestions && update?.answer && !update.asked && (!warningTriggered || update.report) ? chatQuestion(update.answer) : null;
     if (trackQuestions && !warningTriggered && update?.answer && !update.asked && !db.prepare('SELECT 1 FROM archived_threads WHERE thread_id=?').get(threadId)) {
      if (asked) onWarning?.('[agent-hub] Your last reply asks the owner a question in chat. Call `agent_hub_ask` now with that question (add options and recommended if you have them), then end the turn without waiting; the answer arrives as a new message.', e.createdAt ?? 0, turn, e.seq);
-     else if (!update.report && ['agent','plugin','other','script'].includes(update.kind ?? '') && (update.kind !== 'other' || !!update.question) && asksOwner(update.answer)) onWarning?.('[agent-hub] Your last reply hands work to the owner but did not call `agent_hub_report`. Call `agent_hub_report` now and restate the handoff in this turn’s final message: that message becomes the report the owner sees as needing them.', e.createdAt ?? 0, turn, e.seq);
+     else if (!update.report && ['agent','plugin','other','script'].includes(update.kind ?? '') && (update.kind !== 'other' || !!update.question) && asksOwner(update.answer) && !restatesOnly(update.answer,(db.prepare(`SELECT group_concat(CASE kind WHEN 'update' THEN answer ELSE question END,char(10)) AS t FROM items WHERE thread_id=? AND ((kind='update' AND asks=1) OR kind='for_me') AND coalesce(answered_at,created_at)>=?`).get(threadId,(e.createdAt ?? now)-RESTATE_WINDOW) as {t:string|null}).t ?? '')) onWarning?.('[agent-hub] Your last reply hands work to the owner but did not call `agent_hub_report`. Call `agent_hub_report` now and restate the handoff in this turn’s final message: that message becomes the report the owner sees as needing them.', e.createdAt ?? 0, turn, e.seq);
     }
     if (asked) db.prepare(`INSERT OR IGNORE INTO items(id,kind,thread_id,project_id,status,question,question_seq,chat_asked,notify_state,created_at,updated_at) VALUES (?,'for_me',?,?,'open',?,?,1,?,?,?)`).run('ans_'+createHash('sha256').update(threadId+'|chat-question|'+update!.answer_seq).digest('hex'),threadId,projectId,asked,update!.answer_seq,Number(live),e.createdAt ?? now,now);
     // Only an update that asks the owner something, or one the agent marked a report, is pushed; the rest collapse into a quiet group.

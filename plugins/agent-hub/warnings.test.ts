@@ -44,6 +44,11 @@ it('allows an explicit report from a warning reply',async () => {
  await s.turn(undefined,{originPluginId:'agent-hub',input:[{type:'text',text:handoff}]},'agent_hub_report');
  expect(s.send).not.toHaveBeenCalled(); expect(s.db.prepare('SELECT count(*) AS n FROM items WHERE read_at IS NULL AND notify_state=1').get()).toEqual({n:1});
 });
+it('does not warn when a reply only restates items already shown to the owner, and warns for a new one',async () => {
+ const s=setup(); await s.turn('EXA-1 is ready for your review.'); s.send.mockClear();
+ await s.turn('Nothing new; EXA-1 still awaits your review.'); expect(s.send).not.toHaveBeenCalled();
+ await s.turn('EXA-1 still awaits your review. EXA-2 is ready for your review.'); expect(s.send).toHaveBeenCalledOnce();
+});
 it.each(['sub-thread','archived','backfill','disabled','owner-handoff'])('does not warn for %s',async mode => {
  const s=setup(); await s.control();
  if(mode==='sub-thread') s.harness.sdk.stub('threads.get',async ({threadId}) => makeThreadResponse({id:threadId,parentThreadId:'thr_parent'}));
