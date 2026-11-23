@@ -1,4 +1,4 @@
-import { WAITING_ON_OWNER, NEWEST_UNANSWERED } from "./waiting-on-owner";
+import { WAITING_ON_OWNER, NEWEST_UNANSWERED, UNANSWERED_QUESTION } from "./waiting-on-owner";
 import { ensurePlanningStatus, getWorkflowPolicy, inWorkZone, isClosedStatus, planningStatusOf, settlePlanFlags, usableStartTarget, withPlanningStatus, workflowPolicySchema } from "../shared/workflow-policy.js";
 import { syncPlanDebt, syncProjectPlanDebt } from "../plan-debt/store";
 import { createClosureStore } from "../closure/store";
@@ -1900,8 +1900,8 @@ export function createTasksStore(db: PluginDatabase, log: (message: string) => v
             EXISTS (SELECT 1 FROM comments WHERE task_id = @taskId AND created_at > @cutoff)
             OR EXISTS (SELECT 1 FROM attachments a LEFT JOIN comments c ON c.id = a.comment_id
               WHERE (a.task_id = @taskId OR c.task_id = @taskId) AND a.created_at > @cutoff)
-            OR EXISTS (SELECT 1 FROM task_questions WHERE task_id = @taskId AND
-              (json_extract(payload, '$.answeredBy') IS NULL OR json_extract(payload, '$.updatedAt') > @cutoff))
+            OR EXISTS (SELECT 1 FROM task_questions q WHERE q.task_id = @taskId AND
+              ((${UNANSWERED_QUESTION}) OR json_extract(q.payload, '$.updatedAt') > @cutoff))
             OR EXISTS (SELECT 1 FROM task_threads WHERE task_id = @taskId AND live_status IN ('starting', 'working'))
         `).get({ taskId: member.id, cutoff: inactiveBefore })
       ))) continue;

@@ -260,8 +260,14 @@ export const questionSchema = questionStateSchema
     taskId: idSchema,
     createdAt: z.string(),
     history: z.array(questionStateSchema).default([]),
+    /** Supersession links live outside the revision history: replacing a check keeps its revision and answer. */
+    supersedes: idSchema.optional(),
+    supersededBy: idSchema.optional(),
+    supersededAt: z.iso.datetime().optional(),
   })
   .superRefine((value, ctx) => {
+    if ((value.supersededBy === undefined) !== (value.supersededAt === undefined))
+      ctx.addIssue({ code: "custom", message: "supersededBy and supersededAt go together" });
     let previous = 0;
     for (const entry of value.history) {
       if (entry.revision <= previous || entry.revision >= value.revision)
@@ -1061,9 +1067,11 @@ export const tasksRpcContract = {
           )
           .min(0)
           .max(20).default([]),
+        /** A check whose state changed replaces this check at the named revision; the old one closes. */
+        supersedes: z.object({ questionId: idSchema, revision: z.number().int().positive() }).strict().optional(),
       })
       .strict(),
-    output: z.object({ question: questionSchema, planWake: planWakeSchema.optional() }).strict(),
+    output: z.object({ question: questionSchema, planWake: planWakeSchema.optional(), warnings: z.array(z.string()).optional() }).strict(),
   },
   answerQuestion: {
     input: z

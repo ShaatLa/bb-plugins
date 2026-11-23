@@ -7,12 +7,15 @@ import { isSideChatShapedThread } from "../shared/side-chat";
 interface DeliverCommentInput {
   taskId: string;
   commentId: string;
-  body: string;
+  /** A function is read when the thread's turn to receive comes, so the text reflects the state at dispatch. */
+  body: string | (() => string);
   authorName: string;
   threadId?: string;
   mode?: "steer-if-active" | "queue-if-active";
   /** Question answers carry their own next step, so they skip the reply hint. */
   replyHint?: boolean;
+  /** Checked right before the transport call; a notice that went stale is dropped and counts as not delivered. */
+  wanted?: () => boolean;
 }
 
 function steerPrompt(
@@ -51,7 +54,7 @@ export const withPluginHeader = (pluginId: string, text: string) => `[bb message
 async function appendToQueuedNotice(
   bb: BbPluginApi,
   threadId: string,
-  text: string,
+  text: () => string,
   wanted?: () => boolean,
 ): Promise<"appended" | "skipped" | "none"> {
   // A conflict means the row changed under us, so list once more before giving up.
@@ -75,7 +78,7 @@ async function appendToQueuedNotice(
         threadId,
         queuedMessageId: last.id,
         expectedUpdatedAt: last.updatedAt,
-        input: [{ ...part, text: part.text + QUEUED_NOTICE_SEPARATOR + text }],
+        input: [{ ...part, text: part.text + QUEUED_NOTICE_SEPARATOR + text() }],
       });
       return "appended";
     } catch {
@@ -101,7 +104,7 @@ function serialPerThread<T>(threadId: string, job: () => Promise<T>): Promise<T>
 function appendOrSend(
   bb: BbPluginApi,
   threadId: string,
-  text: string,
+  message: string | (() => string),
   mode: "steer-if-active" | "queue-if-active",
   wanted?: () => boolean,
 ): Promise<boolean> {
@@ -109,6 +112,8 @@ function appendOrSend(
     // The check runs inside the serialized job, right before each transport call, so a notice that went stale while it
     // waited for its turn or for the queue read is dropped.
     if (wanted && !wanted()) return false;
+    // Built right before each transport call, retries included, so it reflects the state after every await.
+    const text = () => (typeof message === "function" ? message() : message);
     // The outcome is the transport's own: once the update or send has started, its success is a delivery.
     const appended = await appendToQueuedNotice(bb, threadId, text, wanted);
     if (appended === "appended") return true;
@@ -116,7 +121,7 @@ function appendOrSend(
     await bb.sdk.threads.send({
       threadId,
       originPluginId: bb.pluginId,
-      input: [{ type: "text", text: withPluginHeader(bb.pluginId, text), mentions: [] }],
+      input: [{ type: "text", text: withPluginHeader(bb.pluginId, text()), mentions: [] }],
       mode,
     });
     return true;
@@ -165,7 +170,7 @@ export async function deliverCommentToLatestAgent(
       ...links.map((link) => link.threadId),
     ]),
   ];
-  const prompt = steerPrompt(task.key, input.authorName, input.body, input.replyHint);
+  const prompt = () => steerPrompt(task.key, input.authorName, typeof input.body === "function" ? input.body() : input.body, input.replyHint);
   for (const threadId of candidates) {
     try {
       const thread = await bb.sdk.threads.get({ threadId });
@@ -176,8 +181,7 @@ export async function deliverCommentToLatestAgent(
         continue;
       }
       if (thread.status === "stopping") continue;
-      await appendOrSend(bb, threadId, prompt, input.mode ?? "steer-if-active");
-      return 1;
+      return (await appendOrSend(bb, threadId, prompt, input.mode ?? "steer-if-active", input.wanted)) ? 1 : 0;
     } catch (error) {
       bb.log.warn(
         `failed to deliver comment ${input.commentId} to thread ${threadId}: ${errorMessage(error)}`,

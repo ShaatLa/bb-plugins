@@ -439,6 +439,61 @@ describe("project archives", () => {
     ).toEqual([{ ...question, allowOther: false }]);
   });
 
+  it("round-trips supersede links and refuses an import that would strand one", async () => {
+    const source = await seed();
+    const structured = createStructuredStore(source.bb, source.store);
+    const ask = (prompt: string, supersedes?: { questionId: string; revision: number }) =>
+      structured.handlers.createQuestion({ kind: "check", askedByThread: null, taskId: source.task.id, prompt, mode: "single", options: [], ...(supersedes ? { supersedes } : {}) });
+    const { question: old } = await ask("Does the page load?");
+    await structured.handlers.answerQuestion({ questionId: old.id, revision: 1, selectedOptionIds: [], answerText: "Problem found", authorName: "Owner" });
+    const { question: next } = await ask("Does the page load now?", { questionId: old.id, revision: 2 });
+    const out = join(await directory(), "snapshot");
+    await exportProject(source.bb, source.store, source.project.id, out);
+    const target = setup();
+    await importProject(target.bb, target.store, out, false);
+    const restored = createStructuredStore(target.bb, target.store);
+    const imported = restored.listQuestions(source.task.id);
+    expect(imported).toEqual(structured.listQuestions(source.task.id));
+    expect(imported.map((question) => [question.supersedes, question.supersededBy])).toEqual([[undefined, next.id], [old.id, undefined]]);
+    // An overwrite that drops the predecessor's link, from an archive without the successor, would strand the local successor.
+    const path = join(out, "tasks", `${source.task.id}.json`);
+    const record = JSON.parse(await readFile(path, "utf8"));
+    record.questions = record.questions.filter((question: { id: string }) => question.id !== next.id);
+    delete record.questions[0].supersededBy;
+    delete record.questions[0].supersededAt;
+    await writeFile(path, jsonText(record));
+    await expect(importProject(target.bb, target.store, out, true)).rejects.toThrow(`Question ${next.id} has a supersede link without its other end on the same card`);
+    expect(restored.listQuestions(source.task.id)).toEqual(imported);
+    // The links need v22; a v21 snapshot without them still imports.
+    const manifestPath = join(out, "project.json");
+    const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
+    expect(manifest.version).toBe(22);
+    manifest.version = 21;
+    await writeFile(manifestPath, jsonText(manifest));
+    const linked = { ...record, questions: [{ ...record.questions[0], supersededBy: next.id, supersededAt: new Date().toISOString() }] };
+    await writeFile(path, jsonText(linked));
+    const refused = setup();
+    await expect(importProject(refused.bb, refused.store, out, false)).rejects.toThrow("Question supersede links require archive v22");
+    // Presence counts, whatever the value; a timestamp without its link is refused by the schema.
+    for (const fields of [{ supersedes: next.id }, { supersededAt: "" }, { supersededAt: new Date().toISOString() }]) {
+      await writeFile(path, jsonText({ ...record, questions: [{ ...record.questions[0], ...fields }] }));
+      await expect(importProject(refused.bb, refused.store, out, false)).rejects.toThrow();
+    }
+    manifest.version = 22;
+    await writeFile(manifestPath, jsonText(manifest));
+    for (const fields of [{ supersededBy: next.id }, { supersededBy: next.id, supersededAt: "yesterday" }]) {
+      await writeFile(path, jsonText({ ...record, questions: [{ ...record.questions[0], ...fields }] }));
+      await expect(importProject(refused.bb, refused.store, out, false)).rejects.toThrow();
+    }
+    expect(refused.store.tasks.listProjects()).toEqual([]);
+    manifest.version = 21;
+    await writeFile(manifestPath, jsonText(manifest));
+    await writeFile(path, jsonText(record));
+    const legacy = setup();
+    await importProject(legacy.bb, legacy.store, out, false);
+    expect(createStructuredStore(legacy.bb, legacy.store).listQuestions(source.task.id).map((question) => question.id)).toEqual([old.id]);
+  });
+
   it("rejects foreign or invalid answers on import, even with overwrite", async () => {
     const source = await seed();
     const structured = createStructuredStore(source.bb, source.store);
@@ -829,7 +884,7 @@ it("exports v17 typed questions and imports v16 owner tasks as plain tasks", asy
   await exportProject(source.bb, source.store, source.project.id, out);
   const manifestPath = join(out, "project.json");
   const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
-  expect(manifest.version).toBe(21);
+  expect(manifest.version).toBe(22);
   const path = join(out, "tasks", `${source.task.id}.json`);
   const record = JSON.parse(await readFile(path, "utf8"));
   expect(record.task).not.toHaveProperty("executionTarget");
@@ -866,7 +921,7 @@ it("exports plans (v18+) with every version, refuses a differing local plan with
   await exportProject(source.bb, source.store, source.project.id, out);
   const manifestPath = join(out, "project.json");
   const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
-  expect(manifest.version).toBe(21);
+  expect(manifest.version).toBe(22);
   const recordPath = join(out, "tasks", `${source.task.id}.json`);
   const record = JSON.parse(await readFile(recordPath, "utf8"));
   expect(record.plan).toMatchObject({ format: "markdown", version: 2, state: "in_review", body: "# Plan\n\n## Steps\n- one\n- two\n", reviewer: { kind: "thread", threadId: "thr_reviewer" }, reviewVersion: 2 });
@@ -986,7 +1041,7 @@ it("round-trips configurable project statuses, their order and custom task stage
   const out = join(await directory(), "statuses-v6");
   await exportProject(source.bb, source.store, source.project.id, out);
   const manifest = JSON.parse(await readFile(join(out, "project.json"), "utf8"));
-  expect(manifest.version).toBe(21);
+  expect(manifest.version).toBe(22);
   expect(manifest.project.statuses).toEqual(statuses);
   expect(manifest.project).toMatchObject({ autoArchiveAfterDays: "14", staleIdleMinutes: "120" });
   const target = setup();
@@ -1087,7 +1142,7 @@ describe("archive v13 scheduled tasks", () => {
     const out = join(await directory(), "scheduled-v13");
     await exportProject(f.bb, f.store, f.project.id, out);
     const manifest = JSON.parse(await readFile(join(out, "project.json"), "utf8"));
-    expect(manifest.version).toBe(21);
+    expect(manifest.version).toBe(22);
     expect(manifest.schedules).toHaveLength(2);
     expect(JSON.stringify(manifest)).not.toMatch(/thr_server_local|thr_gone|q_live|req_live|01ARZ3NDEKTSV4RRFFQ69G5FAV/);
     const target = setup();
@@ -1221,7 +1276,7 @@ it("round-trips v16 current state and imports v15 without it", async () => {
   await exportProject(source.bb, source.store, source.project.id, out);
   const manifestPath = join(out, "project.json");
   const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
-  expect(manifest.version).toBe(21);
+  expect(manifest.version).toBe(22);
   const target = setup();
   await importProject(target.bb, target.store, out, false);
   expect(target.store.tasks.getTask(source.task.id)).toEqual(source.store.tasks.getTask(source.task.id));
@@ -1799,7 +1854,7 @@ describe("archive v21: thread-archive settings and links", () => {
     source.store.tasks.updateProject(source.project.id, { archiveThreadsOnClose: "off", archiveReviewerOnApproval: "off" });
     const out = await exportOf(source, "v21-settings");
     const manifest = JSON.parse(await readFile(join(out, "project.json"), "utf8"));
-    expect(manifest.version).toBe(21);
+    expect(manifest.version).toBe(22);
     expect(manifest.project).toMatchObject({ archiveThreadsOnClose: "off", archiveReviewerOnApproval: "off" });
     const target = setup();
     await importProject(target.bb, target.store, out, false);

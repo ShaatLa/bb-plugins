@@ -364,9 +364,11 @@ Rules for owner questions (long questions are hard to answer):
 
 `question add` warns (stderr; `warnings` in JSON) when a prompt is longer than 300 characters; it still saves the question.
 
-`question update --reopen` asks the same check again and makes your thread the asker, so the new answer comes to you. It refuses new steps or links the answered revision did not have: a new state is a new question.
+`question update --reopen` asks the same check again and makes your thread the asker, so the new answer comes to you. For an answered check the ordered steps and the prompt's links must stay exactly the same; any change is refused with the `--supersedes` command. An answered decision refuses new steps or links; ask the changed decision as a fresh decision question.
 
-The owner can withdraw a saved answer. You then get a notification "Answer withdrawn (was: …)": treat the question as open again, stop acting on the earlier answer, undo or report what you already did because of it (for example move the task back from Done), and wait for the new answer.
+When an existing check's state changes, never add a parallel check. Open check: edit it with `question update`. Answered check, same prompt and steps: `--reopen`. Any changed prompt link or step: replace it with `bb work-board question add KEY --kind check --supersedes ID --supersedes-revision N --prompt ...` (N is the revision you read; RPC `supersedes: {questionId, revision}`). The old check closes with its answer and remark kept and gets `supersededBy`/`supersededAt`; the new one gets `supersedes`. A superseded check is never open (Waiting on me, badges, plan pause, auto-archive) and refuses answer, clear, update and reopen: act on its `supersededBy`. Refused: a target on another card, a decision target, an already superseded target, a newer revision or answer than N, `--supersedes` on a decision, and plan debt. Questions in a supersede chain cannot be deleted. A `--kind check` without `--supersedes` whose prompt matches a non-superseded check on the card is saved with a warning naming that check's id, revision and state and what to do with it.
+
+The owner can withdraw a saved answer. You then get a notification "Answer withdrawn (was: …)": stop acting on the earlier answer and undo or report what you already did because of it (for example move the task back from Done). Then read the question with `question list KEY`: when it has `supersededBy`, act on that successor; otherwise wait for the new answer.
 
 ```sh
 bb work-board question add ABC-12 --kind decision --prompt 'Which approach?' --option 'Use the existing service'

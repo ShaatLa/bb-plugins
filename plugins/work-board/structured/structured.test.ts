@@ -2,6 +2,7 @@ import { registerAttachments } from "../attachments";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   createFakePluginHost,
+  makeQueueEntry,
   makeThreadResponse,
   type FakePluginHarness,
 } from "@get-bb/plugin-sdk/testing";
@@ -117,11 +118,13 @@ describe("task questions", () => {
     const { question } = await ask("Does [the page](https://example.com/a) look right?", ["Open https://example.com/a", "Press Save"]);
     const answered = (await structured.handlers.answerQuestion({ questionId: question.id, revision: question.revision, selectedOptionIds: [question.options[0]!.id], authorName: "Owner" })).question;
     const reopen = (steps: string[], askedByThread?: string) => structured.handlers.updateQuestion({ questionId: question.id, revision: answered.revision, prompt: answered.prompt, steps, mode: answered.mode, options: answered.options, reopen: true, authorName: "Agent", ...(askedByThread ? { askedByThread } : {}) });
-    await expect(reopen([...(answered.steps ?? []), "Dismiss the notice"])).rejects.toThrow(/cannot add steps.*new question/);
-    await expect(reopen(["Open https://example.com/c", "Press Save"])).rejects.toThrow(/at most one link|cannot add links/);
-    const reopened = (await reopen(["Open https://example.com/a", "Press Save twice"], "thr_reopener")).question;
+    // Any change to an answered check's ordered steps is a new state: added, changed or removed, it needs a successor.
+    for (const steps of [[...(answered.steps ?? []), "Dismiss the notice"], ["Open https://example.com/a", "Press Save twice"], ["Open https://example.com/a"], ["Press Save", "Open https://example.com/a"]])
+      await expect(reopen(steps)).rejects.toThrow(`its steps changed, so this is a new state. Replace it: \`bb work-board question add ${task.key} --kind check --supersedes ${question.id} --supersedes-revision ${answered.revision}`);
+    await expect(reopen(["Open https://example.com/c", "Press Save"])).rejects.toThrow(/at most one link|steps changed/);
+    const reopened = (await reopen(["Open https://example.com/a", "Press Save"], "thr_reopener")).question;
     expect(reopened.askedByThread).toBe("thr_reopener");
-    expect(reopened.steps).toEqual(["Open https://example.com/a", "Press Save twice"]);
+    expect(reopened.steps).toEqual(["Open https://example.com/a", "Press Save"]);
   });
 
   it("refuses plan-approval questions: any link to a task plan, and approval wording once the task has a plan, but only with planning on", async () => {
@@ -1203,5 +1206,244 @@ describe("evidence index", () => {
     expect(
       index.records.find((entry) => entry.kind === "deploy"),
     ).toMatchObject({ indexedPr: 1, indexedHead: b });
+  });
+});
+
+describe("superseding an owner check", () => {
+  const checkInput = (taskId: string, prompt: string, steps: string[] = [], supersedes?: { questionId: string; revision: number }) =>
+    ({ kind: "check" as const, askedByThread: "thr_example", taskId, prompt, steps, mode: "single" as const, options: [], ...(supersedes ? { supersedes } : {}) });
+  const confirm = (structured: ReturnType<typeof setup>["structured"], question: { id: string; revision: number; options: { id: string }[] }, answerText?: string) =>
+    structured.handlers.answerQuestion({ questionId: question.id, revision: question.revision, selectedOptionIds: answerText ? [] : [question.options[0]!.id], answerText: answerText ?? null, authorName: "Owner" });
+  const counts = async (structured: ReturnType<typeof setup>["structured"], taskId: string) => (await structured.handlers.questionCounts({ taskIds: [taskId] })).counts[0]!;
+
+  it("closes an answered check with its remark kept, opens the successor and exposes the links", async () => {
+    const { structured, task, cli } = setup();
+    const { question: old } = await structured.handlers.createQuestion(checkInput(task.id, "Does [the list](https://example.com/a) render?"));
+    const answered = (await confirm(structured, old, "Problem found: the header overlaps")).question;
+    const { question: next } = await structured.handlers.createQuestion(checkInput(task.id, "Does [the list](https://example.com/b) render?", [], { questionId: old.id, revision: answered.revision }));
+    const [before, after] = structured.listQuestions(task.id);
+    expect(before).toMatchObject({ id: old.id, revision: answered.revision, answerText: "Problem found: the header overlaps", supersededBy: next.id, history: answered.history });
+    expect(before!.supersededAt).toBeTruthy();
+    expect(after).toMatchObject({ id: next.id, supersedes: old.id, answeredBy: null });
+    expect(isQuestionOpen(before!)).toBe(false);
+    expect(isQuestionOpen(after!)).toBe(true);
+    expect(await counts(structured, task.id)).toMatchObject({ unanswered: 1, checks: 1, waitingOnOwner: true });
+    const listed = (await cli("question", "list", task.key, "--json")).questions;
+    expect(listed.map((question: { supersedes?: string; supersededBy?: string }) => [question.supersedes, question.supersededBy])).toEqual([[undefined, next.id], [old.id, undefined]]);
+    const brief = (await cli("show", task.key, "--json", "--brief")).questions;
+    expect(brief[0]).toMatchObject({ id: old.id, supersededBy: next.id, supersededAt: before!.supersededAt });
+  });
+
+  it("stops waiting on an unanswered predecessor and lets the card archive once the successor is answered", async () => {
+    const { structured, store, project, task } = setup();
+    const { question: old } = await structured.handlers.createQuestion(checkInput(task.id, "Does the form save?"));
+    const { question: next } = await structured.handlers.createQuestion(checkInput(task.id, "Does the form save twice?", [], { questionId: old.id, revision: old.revision }));
+    expect(await counts(structured, task.id)).toMatchObject({ unanswered: 1 });
+    await confirm(structured, next);
+    expect(await counts(structured, task.id)).toMatchObject({ unanswered: 0, waitingOnOwner: false });
+    store.tasks.updateTask(task.id, { status: "done" });
+    expect(store.tasks.archiveCompletedTasks(project.id, "2999-01-01T00:00:00.000Z").map((archived) => archived.id)).toEqual([task.id]);
+  });
+
+  it("refuses a foreign, decision or already superseded target, a decision successor and any change to a superseded check", async () => {
+    const { structured, store, project, task } = setup();
+    const other = store.tasks.createTask({ projectId: project.id, title: "Other" });
+    const { question: foreign } = await structured.handlers.createQuestion(checkInput(other.id, "Does the other page load?"));
+    const { question: decision } = await structured.handlers.createQuestion({ kind: "decision", askedByThread: null, taskId: task.id, prompt: "Which layout?", mode: "single", options: ["A", "B"] });
+    const { question: old } = await structured.handlers.createQuestion(checkInput(task.id, "Does the page load?"));
+    await expect(structured.handlers.createQuestion(checkInput(task.id, "Next?", [], { questionId: foreign.id, revision: 1 }))).rejects.toThrow(`Question ${foreign.id} is not on ${task.key}`);
+    await expect(structured.handlers.createQuestion(checkInput(task.id, "Next?", [], { questionId: decision.id, revision: 1 }))).rejects.toThrow(/is a decision; --supersedes replaces only a check/);
+    await expect(structured.handlers.createQuestion({ ...checkInput(task.id, "Next?", [], { questionId: old.id, revision: 1 }), kind: "decision", options: ["A"] })).rejects.toThrow(/must be --kind check/);
+    const { question: next } = await structured.handlers.createQuestion(checkInput(task.id, "Does the page load now?", [], { questionId: old.id, revision: 1 }));
+    await expect(structured.handlers.createQuestion(checkInput(task.id, "Again?", [], { questionId: old.id, revision: 1 }))).rejects.toThrow(`already superseded by ${next.id}`);
+    const redirect = `Question ${old.id} is superseded by ${next.id}; act on that question`;
+    // Stale revisions get the redirect too, before any revision check or no-op return.
+    for (const revision of [1, 7]) {
+      await expect(structured.handlers.answerQuestion({ questionId: old.id, revision, selectedOptionIds: [old.options[0]!.id], authorName: "Owner" })).rejects.toThrow(redirect);
+      await expect(structured.handlers.answerQuestion({ questionId: old.id, revision, selectedOptionIds: [], answerText: null, authorName: "Owner" })).rejects.toThrow(redirect);
+      await expect(structured.handlers.updateQuestion({ questionId: old.id, revision, prompt: old.prompt, mode: "single", options: old.options, authorName: "Agent" })).rejects.toThrow(redirect);
+      await expect(structured.handlers.updateQuestion({ questionId: old.id, revision, prompt: old.prompt, mode: "single", options: old.options, reopen: true, authorName: "Agent" })).rejects.toThrow(redirect);
+    }
+  });
+
+  it("lets only one of two replacements win and refuses a replacement of a revision the owner already answered", async () => {
+    const { structured, task } = setup();
+    const { question: old } = await structured.handlers.createQuestion(checkInput(task.id, "Does the export finish?"));
+    const results = await Promise.allSettled([
+      structured.handlers.createQuestion(checkInput(task.id, "Does the export finish (A)?", [], { questionId: old.id, revision: 1 })),
+      structured.handlers.createQuestion(checkInput(task.id, "Does the export finish (B)?", [], { questionId: old.id, revision: 1 })),
+    ]);
+    expect(results.map((result) => result.status).sort()).toEqual(["fulfilled", "rejected"]);
+    expect(structured.listQuestions(task.id)).toHaveLength(2);
+    const { question: second } = await structured.handlers.createQuestion(checkInput(task.id, "Does the import finish?"));
+    // The answer lands just before the replacement that was based on the unanswered revision.
+    const answered = (await confirm(structured, second, "Problem found")).question;
+    await expect(structured.handlers.createQuestion(checkInput(task.id, "Does the import finish now?", [], { questionId: second.id, revision: 1 })))
+      .rejects.toThrow(`Question ${second.id} is now at revision ${answered.revision} (answered "Problem found"), not 1`);
+    expect(structured.listQuestions(task.id).find((question) => question.id === second.id)).toEqual(answered);
+  });
+
+  it("refuses a superseding check during plan debt and leaves the old check open and unchanged", async () => {
+    const { structured, store, project } = setup();
+    const card = store.tasks.createTask({ projectId: project.id, title: "Debt", status: "in_progress" });
+    const { question: old } = await structured.handlers.createQuestion(checkInput(card.id, "Does the chart render?"));
+    store.tasks.updateProject(project.id, { planning: "required" });
+    await expect(structured.handlers.createQuestion(checkInput(card.id, "Does the chart render now?", [], { questionId: old.id, revision: 1 }))).rejects.toThrow(/Owner checks wait for an approved plan/);
+    expect(structured.listQuestions(card.id)).toEqual([old]);
+  });
+
+  it("refuses to delete any question of a supersede chain", async () => {
+    const { structured, task } = setup();
+    const { question: head } = await structured.handlers.createQuestion(checkInput(task.id, "Step one?"));
+    const { question: middle } = await structured.handlers.createQuestion(checkInput(task.id, "Step two?", [], { questionId: head.id, revision: 1 }));
+    const { question: tail } = await structured.handlers.createQuestion(checkInput(task.id, "Step three?", [], { questionId: middle.id, revision: 1 }));
+    for (const question of [head, middle, tail])
+      await expect(structured.handlers.deleteQuestion({ questionId: question.id, revision: 1 })).rejects.toThrow(/part of a supersede chain.*cannot be deleted on its own/);
+    // The revision check runs in the same write: a stale revision is still the reload error.
+    await expect(structured.handlers.deleteQuestion({ questionId: tail.id, revision: 9 })).rejects.toThrow("Question changed; reload it before deleting");
+    expect(structured.listQuestions(task.id)).toHaveLength(3);
+  });
+
+  it("keeps the links out of revision history through answer, reload and reopen, and reads legacy questions", async () => {
+    const { bb, structured, task } = setup();
+    const { question: old } = await structured.handlers.createQuestion(checkInput(task.id, "Does the banner show?"));
+    const { question: next } = await structured.handlers.createQuestion(checkInput(task.id, "Does the banner hide?", [], { questionId: old.id, revision: 1 }));
+    const answered = (await confirm(structured, next)).question;
+    const reopened = (await structured.handlers.updateQuestion({ questionId: next.id, revision: answered.revision, prompt: next.prompt, mode: "single", options: answered.options, reopen: true, authorName: "Agent" })).question;
+    const reloaded = structured.listQuestions(task.id).find((question) => question.id === next.id)!;
+    expect(reloaded).toEqual(reopened);
+    expect(reloaded.supersedes).toBe(old.id);
+    for (const entry of reloaded.history) expect(Object.keys(entry).filter((key) => key.startsWith("supersed"))).toEqual([]);
+    // A question written before supersession existed has none of the fields and stays open.
+    const legacy = (await structured.handlers.createQuestion(checkInput(task.id, "Does the footer show?"))).question;
+    bb.storage.database().prepare("UPDATE task_questions SET payload = json_remove(payload, '$.supersedes') WHERE id = ?").run(legacy.id);
+    expect(isQuestionOpen(structured.listQuestions(task.id).find((question) => question.id === legacy.id)!)).toBe(true);
+  });
+
+  it("names --supersedes when a reopen changes the prompt link with the steps unchanged", async () => {
+    const { structured, task } = setup();
+    const { question } = await structured.handlers.createQuestion(checkInput(task.id, "Does [the page](https://example.com/a) look right?", ["Press Save"]));
+    const answered = (await confirm(structured, question)).question;
+    await expect(structured.handlers.updateQuestion({ questionId: question.id, revision: answered.revision, prompt: "Does [the page](https://example.com/b) look right?", steps: ["Press Save"], mode: "single", options: answered.options, reopen: true, authorName: "Agent" }))
+      .rejects.toThrow(`--supersedes ${question.id} --supersedes-revision ${answered.revision}`);
+  });
+
+  it("saves a check with a duplicate prompt and warns with the existing id, revision, state and what to do", async () => {
+    const { harness, structured, task } = setup();
+    const { question: open } = await structured.handlers.createQuestion(checkInput(task.id, "Does the list render?", ["Open [state A](https://example.com/a)"]));
+    const add = (...args: string[]) => harness.runCli(["question", "add", task.key, ...args]);
+    // Same prompt after trimming, case-folding and collapsing whitespace, with a different step link: saved and warned.
+    const text = await add("--kind", "check", "--prompt", "  does the   LIST render? ", "--step", "Open [state B](https://example.com/b)");
+    expect(text.exitCode).toBe(0);
+    expect(text.stderr).toContain(`Check ${open.id} (revision 1, open) on ${task.key} has the same prompt; both are saved. It is still open: edit it with \`bb work-board question update ${task.key} --question ${open.id} --revision 1\`.`);
+    expect(structured.listQuestions(task.id)).toHaveLength(2);
+    await confirm(structured, open, "Problem found");
+    const json = JSON.parse((await add("--kind", "check", "--prompt", "Does the list render?", "--step", "Open [state A](https://example.com/a)", "--json")).stdout);
+    expect(json.warnings.join("\n")).toContain(`Check ${open.id} (revision 2, answered "Problem found") on ${task.key} has the same prompt; both are saved. Its prompt and steps are unchanged: reopen it`);
+    const changed = JSON.parse((await add("--kind", "check", "--prompt", "Does the list render?", "--step", "Open [state C](https://example.com/c)", "--json")).stdout);
+    expect(changed.warnings.join("\n")).toContain(`--supersedes ${open.id} --supersedes-revision 2`);
+    for (const args of [["--kind", "check", "--prompt", "Does the grid render?"], ["--kind", "decision", "--prompt", "Does the list render?", "--option", "Yes"]]) {
+      const result = await add(...args);
+      expect(result.exitCode).toBe(0);
+      expect(result.stderr).not.toContain("has the same prompt");
+    }
+    // With --supersedes the add is the fix, so it is not warned about.
+    const latest = structured.listQuestions(task.id).filter((question) => question.kind === "check" && question.prompt === "Does the list render?").at(-1)!;
+    const replaced = await add("--kind", "check", "--prompt", "Does the list render?", "--supersedes", latest.id, "--supersedes-revision", "1");
+    expect(replaced).toMatchObject({ exitCode: 0 });
+    expect(replaced.stderr).not.toContain("has the same prompt");
+    expect((await add("--kind", "check", "--prompt", "X?", "--supersedes", latest.id)).stderr).toContain("--supersedes and --supersedes-revision go together");
+    expect((await harness.runCli(["question", "list", task.key])).stderr).toContain(`Question ${latest.id} is superseded by`);
+  });
+
+  it("drops an answer delivery when the check is superseded before dispatch", async () => {
+    const { harness, structured, task } = setup();
+    const { question: old } = await structured.handlers.createQuestion(checkInput(task.id, "Does the menu open?"));
+    harness.sdk.stub("threads.get", async ({ threadId }) => {
+      // The replacement commits while the answer notice is on its way.
+      await structured.handlers.createQuestion(checkInput(task.id, "Does the menu open twice?", [], { questionId: old.id, revision: 2 }));
+      return makeThreadResponse({ id: threadId, status: "idle" });
+    });
+    harness.sdk.stub("threads.send", async () => {});
+    const result = await confirm(structured, old);
+    expect(result.notification).toBe("none");
+    expect(harness.sdk.callsTo("threads.send")).toEqual([]);
+  });
+
+  it("delivers a withdrawal that a replacement overtakes, naming the successor known at dispatch", async () => {
+    const { harness, structured, task } = setup();
+    harness.sdk.stub("threads.send", async () => {});
+    harness.sdk.stub("threads.get", async ({ threadId }) => makeThreadResponse({ id: threadId, status: "idle" }));
+    const { question: old } = await structured.handlers.createQuestion(checkInput(task.id, "Does the dialog close?"));
+    const answered = (await confirm(structured, old)).question;
+    let successor = "";
+    harness.sdk.stub("threads.get", async ({ threadId }) => {
+      // The replacement commits after the withdrawal is saved and before it reaches the thread.
+      if (!successor) successor = (await structured.handlers.createQuestion(checkInput(task.id, "Does the dialog close twice?", [], { questionId: old.id, revision: answered.revision + 1 }))).question.id;
+      return makeThreadResponse({ id: threadId, status: "idle" });
+    });
+    const result = await structured.handlers.answerQuestion({ questionId: old.id, revision: answered.revision, selectedOptionIds: [], answerText: null, authorName: "Owner" });
+    expect(result.notification).toBe("sent");
+    const sent = JSON.stringify(harness.sdk.callsTo("threads.send").at(-1));
+    expect(sent).toContain("Answer withdrawn");
+    expect(sent).toContain(`This check is superseded by ${successor}: act on that question.`);
+  });
+
+  it.each([false, true])("builds the withdrawal text after the queue read, so a replacement during it is named (queued row: %s)", async (queued) => {
+    const { harness, structured, task } = setup();
+    harness.sdk.stub("threads.send", async () => {});
+    harness.sdk.stub("threads.queuedMessages.update", async () => ({ ok: true }) as never);
+    harness.sdk.stub("threads.get", async ({ threadId }) => makeThreadResponse({ id: threadId, status: "idle" }));
+    const { question: old } = await structured.handlers.createQuestion(checkInput(task.id, "Does the toast fade?"));
+    const answered = (await confirm(structured, old)).question;
+    let successor = "";
+    harness.sdk.stub("threads.queuedMessages.list", async ({ threadId }) => {
+      if (!successor) successor = (await structured.handlers.createQuestion(checkInput(task.id, "Does the toast fade twice?", [], { questionId: old.id, revision: answered.revision + 1 }))).question.id;
+      return queued ? [makeQueueEntry({ id: "queued_1", threadId, originPluginId: "work-board", state: "queued", content: [{ type: "text", text: "[bb message from plugin:work-board]\n\nEarlier", mentions: [] }] })] : [];
+    });
+    await structured.handlers.answerQuestion({ questionId: old.id, revision: answered.revision, selectedOptionIds: [], answerText: null, authorName: "Owner" });
+    const delivered = JSON.stringify(harness.sdk.callsTo(queued ? "threads.queuedMessages.update" : "threads.send").at(-1));
+    expect(delivered).toContain("Answer withdrawn");
+    expect(delivered).toContain(`This check is superseded by ${successor}: act on that question.`);
+  });
+
+  it("points a changed answered decision to a fresh decision question, never --supersedes", async () => {
+    const { structured, task } = setup();
+    const { question } = await structured.handlers.createQuestion({ kind: "decision", askedByThread: null, taskId: task.id, prompt: "Which layout?", mode: "single", options: ["A", "B"] });
+    const answered = (await confirm(structured, question)).question;
+    const reopen = structured.handlers.updateQuestion({ questionId: question.id, revision: answered.revision, prompt: "Which [layout](https://example.com/a)?", mode: "single", options: answered.options, reopen: true, authorName: "Agent" });
+    await expect(reopen).rejects.toThrow(`Ask the changed decision as a fresh decision question: \`bb work-board question add ${task.key} --kind decision`);
+    await expect(structured.handlers.updateQuestion({ questionId: question.id, revision: answered.revision, prompt: "Which [layout](https://example.com/a)?", mode: "single", options: answered.options, reopen: true, authorName: "Agent" })).rejects.not.toThrow(/--supersedes/);
+  });
+
+  it("marks superseded rows in show --brief and keeps delete commands out of the close refusal for a linked successor", async () => {
+    const { harness, structured, task } = setup();
+    const { question: old } = await structured.handlers.createQuestion(checkInput(task.id, "Does the table sort?"));
+    await confirm(structured, old, "Problem found: wrong order");
+    const { question: next } = await structured.handlers.createQuestion(checkInput(task.id, "Does the table sort now?", [], { questionId: old.id, revision: 2 }));
+    const { question: plain } = await structured.handlers.createQuestion(checkInput(task.id, "Does the filter work?"));
+    const brief = (await harness.runCli(["show", task.key, "--brief"])).stdout;
+    expect(brief).toContain(`superseded by ${next.id}: Does the table sort? → Problem found: wrong order (${old.id})`);
+    expect(brief).not.toContain(`✓ Does the table sort?`);
+    const close = await harness.runCli(["update", task.key, "--status", "done"], { threadId: "thr_example" });
+    expect(close.exitCode).not.toBe(0);
+    expect(close.stderr).toContain(`--question ${plain.id} --revision 1`);
+    expect(close.stderr).not.toContain(`--question ${next.id}`);
+    expect(close.stderr).toContain(`${next.id} replaces an earlier check and cannot be deleted: wait for the owner's answer.`);
+  });
+
+  it("tells a withdrawal's recipient to read supersededBy instead of treating the question as open", async () => {
+    const { harness, structured, task } = setup();
+    harness.sdk.stub("threads.get", async ({ threadId }) => makeThreadResponse({ id: threadId, status: "idle" }));
+    harness.sdk.stub("threads.send", async () => {});
+    const { question: old } = await structured.handlers.createQuestion(checkInput(task.id, "Does the tooltip show?"));
+    const answered = (await confirm(structured, old)).question;
+    await structured.handlers.answerQuestion({ questionId: old.id, revision: answered.revision, selectedOptionIds: [], answerText: null, authorName: "Owner" });
+    // The withdrawal is queued first; the replacement commits before the thread reads it.
+    await structured.handlers.createQuestion(checkInput(task.id, "Does the tooltip hide?", [], { questionId: old.id, revision: answered.revision + 1 }));
+    const sent = JSON.stringify(harness.sdk.callsTo("threads.send").at(-1));
+    expect(sent).toContain("Answer withdrawn");
+    expect(sent).toContain("read this question's id, revision and `supersededBy` with `bb work-board question list " + task.key + "`; when `supersededBy` is set, act on that successor");
+    expect(sent).not.toMatch(/open again/);
   });
 });

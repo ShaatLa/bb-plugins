@@ -111,6 +111,86 @@ function OptionText({ option }: { option: TaskQuestion["options"][number] }) {
   );
 }
 
+/** Read-only revision history; shared by live questions and superseded checks. */
+function QuestionHistory({ question }: { question: TaskQuestion }) {
+  return meaningfulHistory(question).length ? (
+    <details className="text-xs text-muted-foreground">
+      <DisclosureSummary>
+        History · {meaningfulHistory(question).length}
+      </DisclosureSummary>
+      <ol className="mt-2 space-y-3">
+        {[...meaningfulHistory(question)].reverse().map((entry) => (
+          <li
+            key={entry.revision}
+            className="space-y-1 border-t border-border pt-2"
+          >
+            <p>
+              Revision {entry.revision} · {new Date(entry.updatedAt).toLocaleString()}
+            </p>
+            <p className="whitespace-pre-wrap break-words">
+              <LinkedText text={entry.prompt} />
+            </p>
+            <p>
+              {entry.mode === "single"
+                ? "Single choice"
+                : "Multiple choice"}
+            </p>
+            <ul>
+              {entry.options.map((option) => (
+                <li key={option.id} className="break-words">
+                  {entry.selectedOptionIds.includes(option.id)
+                    ? "✓ "
+                    : "• "}
+                  <OptionText option={option} />
+                </li>
+              ))}
+            </ul>
+            <p className="whitespace-pre-wrap break-words">
+              Answer:{" "}
+              {[
+                ...entry.options
+                  .filter((option) =>
+                    entry.selectedOptionIds.includes(option.id),
+                  )
+                  .map((option) => option.label),
+                ...(entry.answerText ? [entry.answerText] : []),
+              ].join("; ") || "none, replaced before an answer"}
+              {entry.answeredBy ? ` · ${entry.answeredBy}` : ""}
+            </p>
+          </li>
+        ))}
+      </ol>
+    </details>
+  ) : null;
+}
+
+/** A check replaced by a newer one: read-only, with its answer, attachments and history kept as the record of the earlier state. */
+function SupersededQuestion({ question, successor }: { question: TaskQuestion; successor: TaskQuestion | undefined }) {
+  const answerOf = (state: Pick<TaskQuestion, "options" | "selectedOptionIds" | "answerText">) => [
+    ...state.options.filter((option) => state.selectedOptionIds.includes(option.id)).map((option) => option.label),
+    ...(state.answerText ? [state.answerText] : []),
+  ].join("; ");
+  const answer = answerOf(question);
+  // A withdrawal, a reopen and an edit all leave the earlier answer only in history; the history view shows which.
+  const previous = !answer && question.history.some((entry) => entry.answeredBy);
+  return (
+    <div aria-label={`Superseded check: ${question.prompt}`} className="space-y-1 rounded-md border border-dashed border-border p-3 text-sm opacity-70">
+      <p className="break-words"><LinkedText text={question.prompt} /> <span className="text-xs text-muted-foreground">Check</span></p>
+      <p className="text-xs text-muted-foreground break-words">
+        Superseded by {successor ? <LinkedText text={successor.prompt} /> : question.supersededBy}
+        {question.supersededAt ? ` · ${new Date(question.supersededAt).toLocaleString()}` : ""}
+      </p>
+      <p className="whitespace-pre-wrap break-words text-xs">
+        {answer ? <>Answer: {answer}{question.answeredBy ? <> · <ActorLabel name={question.answeredBy} /></> : null}</>
+          : previous ? "Previously answered; no current answer when superseded"
+          : "No answer before it was superseded"}
+      </p>
+      {question.answerCommentId ? <AnswerAttachments commentId={question.answerCommentId} /> : null}
+      <QuestionHistory question={question} />
+    </div>
+  );
+}
+
 function QuestionAnswer({
   question,
   onSave,
@@ -305,55 +385,7 @@ function QuestionAnswer({
       <Button size="sm" variant="ghost" onClick={onEdit}>
         Edit question
       </Button>
-      {meaningfulHistory(question).length ? (
-        <details className="text-xs text-muted-foreground">
-          <DisclosureSummary>
-            History · {meaningfulHistory(question).length}
-          </DisclosureSummary>
-          <ol className="mt-2 space-y-3">
-            {[...meaningfulHistory(question)].reverse().map((entry) => (
-              <li
-                key={entry.revision}
-                className="space-y-1 border-t border-border pt-2"
-              >
-                <p>
-                  Revision {entry.revision} · {new Date(entry.updatedAt).toLocaleString()}
-                </p>
-                <p className="whitespace-pre-wrap break-words">
-                  <LinkedText text={entry.prompt} />
-                </p>
-                <p>
-                  {entry.mode === "single"
-                    ? "Single choice"
-                    : "Multiple choice"}
-                </p>
-                <ul>
-                  {entry.options.map((option) => (
-                    <li key={option.id} className="break-words">
-                      {entry.selectedOptionIds.includes(option.id)
-                        ? "✓ "
-                        : "• "}
-                      <OptionText option={option} />
-                    </li>
-                  ))}
-                </ul>
-                <p className="whitespace-pre-wrap break-words">
-                  Answer:{" "}
-                  {[
-                    ...entry.options
-                      .filter((option) =>
-                        entry.selectedOptionIds.includes(option.id),
-                      )
-                      .map((option) => option.label),
-                    ...(entry.answerText ? [entry.answerText] : []),
-                  ].join("; ") || "none, replaced before an answer"}
-                  {entry.answeredBy ? ` · ${entry.answeredBy}` : ""}
-                </p>
-              </li>
-            ))}
-          </ol>
-        </details>
-      ) : null}
+      <QuestionHistory question={question} />
     </fieldset>
   );
 }
@@ -395,7 +427,27 @@ export function QuestionsSection({
     setEditing(null);
     onAddingChange(false);
   };
-  const renderQuestion = (question: TaskQuestion) => (
+  // The edit form holds the revision it opened; once the question moved on or was superseded, saving it can only fail.
+  useEffect(() => {
+    if (!editing || !query.data) return;
+    const fresh = query.data.find((question) => question.id === editing.id);
+    if (fresh && !fresh.supersededBy && fresh.revision === editing.revision) return;
+    setEditing(null);
+    onError(fresh?.supersededBy ? "This check was replaced by a newer one, so the edit was closed." : "This question changed, so the edit was closed. Open it again to edit the current version.");
+  }, [query.data, editing, onError]);
+  const all = query.data ?? [];
+  const byId = new Map(all.map((question) => [question.id, question]));
+  // A superseded check sits under its successor; one whose successor is missing stays in the timeline, still read-only.
+  const nested = (question: TaskQuestion) => Boolean(question.supersededBy && byId.has(question.supersededBy));
+  const predecessors = (question: TaskQuestion) => {
+    const chain: TaskQuestion[] = [];
+    for (let at = question.supersedes ? byId.get(question.supersedes) : undefined; at && chain.length < all.length; at = at.supersedes ? byId.get(at.supersedes) : undefined) chain.push(at);
+    return chain;
+  };
+  const renderQuestion = (question: TaskQuestion) => question.supersededBy ? (
+    <SupersededQuestion key={question.id} question={question} successor={byId.get(question.supersededBy)} />
+  ) : (
+    <div key={question.id} className="space-y-2">
         <QuestionAnswer
           key={`${question.id}:${question.revision}`}
           question={question}
@@ -433,11 +485,22 @@ export function QuestionsSection({
               );
           }}
         />
+      {predecessors(question).length ? (
+        <details className="pl-3">
+          <DisclosureSummary className="text-xs text-muted-foreground">
+            Superseded checks · {predecessors(question).length}
+          </DisclosureSummary>
+          <div className="mt-2 space-y-2">
+            {predecessors(question).map((previous) => <SupersededQuestion key={previous.id} question={previous} successor={byId.get(previous.supersededBy!)} />)}
+          </div>
+        </details>
+      ) : null}
+    </div>
   );
   // Open questions read in the order they were asked, like the Earlier list below.
-  const open = (query.data ?? []).filter(isQuestionOpen)
+  const open = all.filter(isQuestionOpen)
     .sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id));
-  const earlier = (query.data ?? []).filter(question => !isQuestionOpen(question))
+  const earlier = all.filter(question => !isQuestionOpen(question) && !nested(question))
     .sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id));
   if (!adding && !editing && !query.error && !query.data?.length) return null;
   return (
