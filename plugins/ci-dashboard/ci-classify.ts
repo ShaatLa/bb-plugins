@@ -5,8 +5,8 @@ import type { ClassifiedJob, FailureClass, JobRecord, RerunSummary } from "./ci-
 export const BAD = new Set(["failure", "cancelled", "timed_out", "startup_failure"]);
 const TRANSIENT = [/http_50[234]/i, / 50[234] /, /Bad Gateway/i, /Gateway Time-?out/i, /Service Unavailable/i, /ECONNRESET/, /ETIMEDOUT/, /EAI_AGAIN/,
   /TLS handshake timeout/i, /i\/o timeout/i, /connection reset/i, /429 Too Many Requests/i, /download\w*?[_ -](?:unavailable|timed[_ -]?out)/i,
-  // An HTTP client's "<METHOD> <url>: <status>" error (Go net/http style) answered with a server error.
-  /\b(?:GET|POST|PUT|PATCH|DELETE) https?:\/\/\S+: 5\d\d\b/];
+  // An HTTP client's "<METHOD> <url>: <status>" error (Go net/http style; containerd/buildx: "<METHOD> request to <url>") answered with a server error.
+  /\b(?:GET|HEAD|POST|PUT|PATCH|DELETE)(?: request to)? https?:\/\/\S+: 5\d\d\b/];
 const stripTimestamp = (line: string) => line.replace(/^\s*\d{4}-\d\d-\d\dT[\d:.]+Z\s*/, "").trim();
 const ms = (job: JobRecord) => job.startedAt && job.completedAt ? Math.max(0, Date.parse(job.completedAt) - Date.parse(job.startedAt)) : 0;
 /** PR number of a merge queue run: head branch gh-readonly-queue/<base>/pr-<N>-<sha>; <base> may contain slashes. */
