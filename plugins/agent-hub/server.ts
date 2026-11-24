@@ -411,6 +411,8 @@ function start(bb: BbPluginApi, migrationError: string | null) {
           SELECT id FROM items WHERE items.thread_id=grouped.thread_id AND thread_deleted=0
           ORDER BY CASE WHEN ${contactAttention.replaceAll('thread_id NOT IN','items.thread_id NOT IN')} THEN 0 ELSE 1 END,updated_at DESC,id DESC LIMIT 1
         )`).all(p.selected ?? '',p.selected ?? '') as Row[];
+      // A top-level thread waiting for its first events (e.g. queued behind bb's concurrency limit) is listed, as bb's sidebar lists it.
+      for (const r of db.prepare(`SELECT thread_id,updated_at FROM threads_state s WHERE thread_id<>'${NOTICE_THREAD}' AND ${ACTIVE_THREAD_SQL} AND thread_id NOT IN (SELECT thread_id FROM sub_threads) AND NOT EXISTS (SELECT 1 FROM items WHERE items.thread_id=s.thread_id)`).all() as Row[]) if (rows.length<200 && !rows.some(x=>x.thread_id===r.thread_id)) rows.push({thread_id:r.thread_id,unread:0,last_at:r.updated_at,preview:''});
       // The open chat stays listed even without items yet, unless it was archived or deleted.
       if (p.selected && !rows.some(r=>r.thread_id===p.selected) && !db.prepare('SELECT 1 FROM archived_threads WHERE thread_id=? UNION ALL SELECT 1 FROM items WHERE thread_id=? AND thread_deleted=1 UNION ALL SELECT 1 FROM sub_threads WHERE thread_id=?').get(p.selected,p.selected,p.selected)) {if(rows.length===200) rows.pop(); rows.push({thread_id:p.selected,unread:0,last_at:0,preview:''});}
       rows.sort((a,b)=>Number(b.unread>0)-Number(a.unread>0) || b.last_at-a.last_at || a.thread_id.localeCompare(b.thread_id));
@@ -675,6 +677,8 @@ function start(bb: BbPluginApi, migrationError: string | null) {
   // is queued, dispatched or deleted anywhere (bb's chat, an agent's thread tell, a script).
   for (const name of ['message.queued','message.dispatched','message.cancelled'] as const) bb.events.on(name,({entry})=>{queueStamps.set(entry.threadId,(queueStamps.get(entry.threadId) ?? 0)+1); bb.rpc.experimental_invalidate([QUEUE_TAG]);});
   bb.events.on('thread.deleted',({thread})=>driver.deleteThread(thread.id));
+  // A new thread's first events can wait (e.g. behind bb's concurrency limit); tracking it now lists it as a contact at once.
+  if (!migrationPending) bb.events.on('thread.created',({thread})=>{if (!thread.parentThreadId && thread.visibility!=='hidden' && !thread.archivedAt) driver.schedule(thread.id,thread).then(invalidateRecipients,e=>bb.log.warn(`Agent Hub ingest: ${String(e)}`));});
   const hasItems = (id: string) => !!db.prepare('SELECT 1 FROM items WHERE thread_id=? LIMIT 1').get(id);
   bb.events.on('thread.archived',({thread})=>{db.prepare('INSERT OR IGNORE INTO archived_threads VALUES (?)').run(thread.id); if (hasItems(thread.id)) invalidate();});
   bb.events.on('thread.unarchived',({thread})=>{db.prepare('DELETE FROM archived_threads WHERE thread_id=?').run(thread.id); if (hasItems(thread.id)) invalidate();});
