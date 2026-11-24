@@ -1,9 +1,14 @@
-import { experimental_useRpcQuery as useQuery } from "@get-bb/plugin-sdk/app";
+import { experimental_Icon as Icon, experimental_useRpcQuery as useQuery, useSettings } from "@get-bb/plugin-sdk/app";
 import type { z } from "zod";
 import { rpcContract, type limitWindowSchema } from "../contract";
-import { fmtDay, fmtPercent, fmtSpan, fmtUsd } from "./format";
+import { accountName, fmtDay, fmtPercent, fmtPlan, fmtSpan, fmtUsd, providerName } from "./format";
 import { useT, type T } from "./i18n";
-import { Card, Hint, Section } from "./shared";
+import { Row } from "./limits-footer";
+import { isPool, parseSizes, poolAccounts, type Account, type Pool } from "./pool";
+import { Card, Hint, Section, useOpen } from "./shared";
+
+/** A subscription inside a pool goes by its plan; the provider name is the pool's. */
+export const poolMember = (a: { label: string; plan: string | null }) => (a.plan ? fmtPlan(a.plan) : a.label);
 
 export type LimitWindow = z.infer<typeof limitWindowSchema>;
 export const WARN = "var(--warning-text, #b45309)";
@@ -98,7 +103,8 @@ function Window({ w, target }: { w: LimitWindow; target: number | null }) {
           </p>
         </Hint>
       )}
-      {(u?.heavyShare != null || u?.usdPerPercent != null) && <dl className="grid grid-cols-2 gap-4 border-t border-border pt-2.5">
+      {/* A five-hour window is too short for the heavy-model share and the cost per percent to say much. */}
+      {w.kind !== "five-hour" && (u?.heavyShare != null || u?.usdPerPercent != null) && <dl className="grid grid-cols-2 gap-4 border-t border-border pt-2.5">
         {u?.heavyShare != null && (
           <Stat label={t("limits.heavyLabel")} value={fmtPercent(u.heavyShare, t)} color={over ? WARN : undefined} title={`${target === null ? t("footer.heavyTitle") : t("footer.heavyTitleTarget", { pct: fmtPercent(target, t) })}. ${t("limits.heavyCallsHint")}`}
             unit={t("limits.heavyUnit")} detail={t("limits.heavyCalls", { calls: fmtPercent(calls ? u.heavy.calls / calls : 0, t) })} />
@@ -109,20 +115,70 @@ function Window({ w, target }: { w: LimitWindow; target: number | null }) {
   );
 }
 
+/** A provider's subscriptions as one pool: what is left, whether it lasts to the next reset, what to spend first. */
+function PoolCard({ pool, target }: { pool: Pool; target: number | null }) {
+  const t = useT();
+  const now = Date.now(), o = pool.outlook, f = pool.first;
+  const [open, toggle] = useOpen(`limits-pool:${pool.providerId}`, false);
+  const outlook = !o ? { text: t("pool.noForecast") }
+    : o.kind === "lasts" ? { text: t("pool.lasts", { span: fmtSpan(o.until - now, t) }) }
+    : { text: o.refillAt === null ? t("pool.runsOutNoRefill", { span: fmtSpan(o.at - now, t) }) : t("pool.runsOut", { span: fmtSpan(o.at - now, t), gap: fmtSpan(o.refillAt - o.at, t) }), color: WARN, hint: fmtDay(o.at, t) };
+  return (
+    <Card className="space-y-3">
+      <h3 className="text-sm font-medium text-foreground">{providerName(pool.providerId, t)}<span className="font-normal text-muted-foreground"> · {t("pool.title", { n: pool.accounts.length })}</span></h3>
+      <div className="space-y-1">
+        <Hint text={pool.estimated ? t("pool.estimated") : undefined}>
+          <div className="w-fit cursor-default">
+            <span className="text-xl font-semibold tabular-nums text-foreground">{pool.estimated ? "≈" : ""}{t("pool.left", { pct: fmtPercent(pool.leftShare, t) })}</span>
+            {pool.leftUsd !== null && <span className="ml-2 text-[11px] text-muted-foreground">{t("pool.leftUsd", { usd: fmtUsd(pool.leftUsd, t) })}</span>}
+          </div>
+        </Hint>
+        <Hint text={"hint" in outlook ? outlook.hint : undefined}><p className="w-fit text-xs font-medium" style={{ color: "color" in outlook ? outlook.color : "var(--foreground)" }}>{outlook.text}</p></Hint>
+        {pool.ratePerHour !== null && pool.runway !== null && (
+          <p className="text-xs text-muted-foreground">{t("pool.pace", { usd: fmtUsd(pool.ratePerHour, t), span: fmtSpan(pool.runway, t) })}</p>
+        )}
+        {f && <p className="text-xs text-muted-foreground">{f.burnsShare >= 0.005
+          ? t("pool.firstBurns", { name: poolMember(f.account), pct: fmtPercent(f.burnsShare, t), span: fmtSpan(f.resetsAt - now, t) })
+          : t("pool.first", { name: poolMember(f.account), span: fmtSpan(f.resetsAt - now, t) })}</p>}
+      </div>
+      <ul className="grid grid-cols-[max-content_minmax(2rem,1fr)_max-content_max-content] items-center gap-x-2 gap-y-1 border-t border-border pt-2.5">
+        {pool.rows.map((w) => <Row key={w.id} w={w} now={now} target={target} mode="forecast" easter={false} onClick={() => {}} />)}
+      </ul>
+      <button type="button" onClick={toggle} aria-expanded={open}
+        className="flex items-center gap-1 rounded-sm text-xs text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring">
+        <Icon name={open ? "ChevronDown" : "ChevronRight"} className="size-3.5" aria-hidden />{t("pool.accounts", { n: pool.accounts.length })}
+      </button>
+      {open && pool.accounts.map((a) => (
+        <div key={a.label} className="space-y-3 border-l-2 border-border pl-3">
+          <h4 className="text-sm font-medium text-foreground" title={a.label}>{poolMember(a)}</h4>
+          <AccountWindows a={a} target={target} />
+        </div>
+      ))}
+    </Card>
+  );
+}
+
+function AccountWindows({ a, target }: { a: Account; target: number | null }) {
+  const t = useT();
+  return a.status !== "ok" || a.windows.length === 0
+    ? <p className="text-xs text-muted-foreground">{t("limits.unavailable", { status: a.message ?? a.status })}</p>
+    : <ul className="space-y-5">{a.windows.map((w) => <Window key={w.id} w={w} target={target} />)}</ul>;
+}
+
 /** Provider limit windows next to what Tokenomos counted in them; absent when no plugin reports limits. */
 export function Limits() {
   const t = useT();
   const { data } = useQuery({ contract: rpcContract, method: "limits", input: {} });
+  const settings = useSettings().values;
+  const pooled = settings?.poolAccounts !== false, sizes = parseSizes(String(settings?.planMultipliers ?? ""));
   if (!data || data.accounts.length === 0) return null;
   return (
     <Section title={t("limits.title")} subtitle={t("limits.subtitle", { models: data.heavyModels.join(", ") })} collapseKey="limits">
       <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
-        {data.accounts.map((a, i) => (
+        {(pooled ? poolAccounts(data.accounts, Date.now(), sizes) : data.accounts).map((a, i) => isPool(a) ? <PoolCard key={`pool:${a.providerId}`} pool={a} target={data.heavyTarget} /> : (
           <Card key={`${a.providerId}:${i}`} className="space-y-3">
-            <h3 className="flex flex-wrap items-baseline justify-between gap-x-2 text-sm font-medium text-foreground"><span>{a.label}{a.plan && <span className="font-normal text-muted-foreground"> · {a.plan}</span>}</span></h3>
-            {a.status !== "ok" || a.windows.length === 0
-              ? <p className="text-xs text-muted-foreground">{t("limits.unavailable", { status: a.message ?? a.status })}</p>
-              : <ul className="space-y-5">{a.windows.map((w) => <Window key={w.id} w={w} target={data.heavyTarget} />)}</ul>}
+            <h3 className="flex flex-wrap items-baseline justify-between gap-x-2 text-sm font-medium text-foreground"><span title={a.label}>{accountName(a, data.accounts, t)}{a.plan && <span className="font-normal text-muted-foreground"> · {fmtPlan(a.plan)}</span>}</span></h3>
+            <AccountWindows a={a} target={data.heavyTarget} />
           </Card>
         ))}
       </div>

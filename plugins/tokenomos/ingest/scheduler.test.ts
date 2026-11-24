@@ -82,6 +82,17 @@ it('records a file error and retries the thread without stopping other sources',
   const s=setup();s.file.locate.mockRejectedValueOnce(new Error('unreadable'));await s.emit();await s.step();
   expect(s.harness.logEntries.some(e=>e.level==='warn')).toBe(true);await s.step();expect(s.source()).toMatchObject({source:'claude-file'});
 });
+it('stops reading a thread deleted from bb instead of failing its source on every pass',async()=>{
+  const s=setup('antigravity',false,false);
+  s.events.flushThread.mockRejectedValue(new Error('HTTP 404: Thread not found'));
+  await s.emit();await s.step();
+  expect((s.db.prepare("SELECT deleted_at FROM threads WHERE id='t'").get() as {deleted_at:number}).deleted_at).toBeGreaterThan(0);
+  expect(s.db.prepare("SELECT 1 FROM source_status WHERE last_error IS NOT NULL").get()).toBeUndefined();
+  const calls=s.events.flushThread.mock.calls.length;
+  await s.step();await s.step();
+  expect(s.events.flushThread.mock.calls.length).toBe(calls);
+});
+
 it('applies external calls and outside scans in the service, with a commit for each file batch',async()=>{
   const s=setup('local-models');const commit=vi.fn();
   s.ext.pollUsage.mockResolvedValueOnce({rows:[row({source:'local-log',provider:'local-models'})],available:true});

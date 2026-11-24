@@ -1,10 +1,11 @@
 import { useEffect, useState } from "react";
-import { experimental_useRpcQuery as useQuery } from "@get-bb/plugin-sdk/app";
+import { experimental_Icon as Icon, experimental_useRpcQuery as useQuery, useSettings } from "@get-bb/plugin-sdk/app";
 import { rpcContract } from "../contract";
-import { fmtPercent, fmtSpan } from "./format";
+import { accountName, fmtPercent, fmtPlan, fmtSpan, providerName } from "./format";
 import { useT, type T } from "./i18n";
-import { Hint } from "./shared";
-import { BAD, Tick, WARN, paceColor, tickHint, type LimitWindow } from "./limits";
+import { Hint, useOpen } from "./shared";
+import { BAD, Tick, WARN, paceColor, poolMember, tickHint, type LimitWindow } from "./limits";
+import { isPool, parseSizes, poolAccounts, type Account, type Pool } from "./pool";
 
 const KIND_LABEL: Record<string, string> = { weekly: "7d", daily: "1d", "five-hour": "5h" };
 /** Short window names as bb's usage panel writes them: "7d", "7d · Fable"; custom windows keep their own label. */
@@ -36,9 +37,9 @@ function timeText(w: LimitWindow, now: number, mode: TimeMode, easter: boolean, 
   return { text: toReset };
 }
 
-function Row({ w, now, target, mode, easter, onClick }: { w: LimitWindow; now: number; target: number | null; mode: TimeMode; easter: boolean; onClick(hasForecast: boolean): void }) {
+export function Row({ w, now, target, mode, easter, onClick }: { w: LimitWindow; now: number; target: number | null; mode: TimeMode; easter: boolean; onClick(hasForecast: boolean): void }) {
   const t = useT();
-  const used = Math.min(100, Math.max(0, w.usedPercent)), f = timeText(w, now, mode, easter, t), color = paceColor(w), share = w.usage?.heavyShare ?? null;
+  const used = Math.min(100, Math.max(0, w.usedPercent)), f = timeText(w, now, mode, easter, t), color = paceColor(w), share = w.kind === "five-hour" ? null : w.usage?.heavyShare ?? null;
   const variants = [...new Set([timeText(w, now, "forecast", false, t).text, timeText(w, now, "reset", false, t).text, timeText(w, now, "forecast", true, t).text])];
   // The whole row is the hover target: the time tick explained, plus the heavy-model share for the window that has one.
   const hint = (tickHint(w, t) || share !== null) && (
@@ -74,10 +75,30 @@ function Row({ w, now, target, mode, easter, onClick }: { w: LimitWindow; now: n
   );
 }
 
+/** A provider's subscriptions as one pool: pooled rows, the subscriptions folded under it. */
+function PoolSection({ pool, now, first, rows, account }: { pool: Pool; now: number; first: boolean; rows: React.ReactNode; account: (a: Account) => React.ReactNode }) {
+  const t = useT();
+  const [open, toggle] = useOpen(`footer-pool:${pool.providerId}`, false);
+  return (
+    <section className={`col-span-4 grid grid-cols-subgrid gap-y-1 ${first ? "" : "mt-1.5 border-t border-border pt-2.5"}`}>
+      <button type="button" onClick={toggle} aria-expanded={open} aria-label={t("pool.accounts", { n: pool.accounts.length })}
+        className="col-span-4 flex min-w-0 cursor-default items-center gap-2 rounded-sm text-left focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring">
+        <span className="min-w-0 truncate font-medium text-foreground">{providerName(pool.providerId, t)}</span>
+        <span className="shrink-0 rounded bg-muted px-1 py-px text-[10px] text-muted-foreground">{t("pool.title", { n: pool.accounts.length })}</span>
+        <Icon name={open ? "ChevronDown" : "ChevronRight"} className="ml-auto size-3.5 shrink-0 text-muted-foreground" aria-hidden />
+      </button>
+      {rows}
+      {open && pool.accounts.map(account)}
+    </section>
+  );
+}
+
 /** Sidebar-footer disclosure: every provider limit with its forecast, and the heavy-model share per account. */
 export function LimitsFooter() {
   const t = useT();
   const { data, error } = useQuery({ contract: rpcContract, method: "limits", input: {} });
+  const settings = useSettings().values;
+  const pooled = settings?.poolAccounts !== false, sizes = parseSizes(String(settings?.planMultipliers ?? ""));
   const now = Date.now();
   const [modes, setModes] = useState<Record<string, TimeMode>>(readModes);
   const [easter, setEaster] = useState<string | null>(null);
@@ -97,17 +118,22 @@ export function LimitsFooter() {
     <div className="grid w-full grid-cols-[max-content_minmax(2rem,1fr)_max-content_minmax(0,max-content)] items-center gap-x-2 gap-y-1 overflow-hidden p-3 text-xs">
       {!data ? <p className="col-span-4 text-xs text-muted-foreground">{error ? t("loadError") : t("footer.loading")}</p>
         : data.accounts.length === 0 ? <p className="col-span-4 text-xs text-muted-foreground">{t("footer.empty")}</p>
-        : data.accounts.map((a, i) => {
-          return (
-            <section key={`${a.providerId}:${i}`} className={`col-span-4 grid grid-cols-subgrid gap-y-1 ${i ? "mt-1.5 border-t border-border pt-2.5" : ""}`}>
+        : (pooled ? poolAccounts(data.accounts, now, sizes) : data.accounts).map((x, i) => {
+          const rows = (a: Account | Pool, windows: LimitWindow[]) => (
+            <ul className="col-span-4 grid grid-cols-subgrid gap-y-1">{windows.map((w) => { const k = `${a.providerId}:${w.id}`; return <Row key={w.id} w={w} now={now} target={data.heavyTarget} mode={modes[k] ?? "forecast"} easter={easter === k} onClick={(f) => click(k, f)} />; })}</ul>
+          );
+          const account = (a: Account, nested: boolean) => (
+            <section key={`${a.providerId}:${a.label}`} className={`col-span-4 grid grid-cols-subgrid gap-y-1 ${nested ? "mt-1 border-l-2 border-border pl-2" : i ? "mt-1.5 border-t border-border pt-2.5" : ""}`}>
               <div className="col-span-4 flex items-center gap-2">
-                <span className="truncate font-medium text-foreground">{a.label}{a.plan && <span className="ml-1.5 rounded bg-muted px-1 py-px text-[10px] font-normal text-muted-foreground">{a.plan}</span>}</span>
+                <span className="min-w-0 truncate font-medium text-foreground" title={a.label}>{nested ? poolMember(a) : accountName(a, data.accounts, t)}</span>
+                {a.plan && !nested && <span className="min-w-0 truncate rounded bg-muted px-1 py-px text-[10px] text-muted-foreground" title={a.plan}>{fmtPlan(a.plan)}</span>}
               </div>
               {a.status !== "ok" || a.windows.length === 0
                 ? <p className="col-span-4 text-[11px] text-muted-foreground">{t("limits.unavailable", { status: a.message ?? a.status })}</p>
-                : <ul className="col-span-4 grid grid-cols-subgrid gap-y-1">{a.windows.map((w) => <Row key={w.id} w={w} now={now} target={data.heavyTarget} mode={modes[`${a.providerId}:${w.id}`] ?? "forecast"} easter={easter === `${a.providerId}:${w.id}`} onClick={(f) => click(`${a.providerId}:${w.id}`, f)} />)}</ul>}
+                : rows(a, a.windows)}
             </section>
           );
+          return isPool(x) ? <PoolSection key={`pool:${x.providerId}`} pool={x} now={now} first={i === 0} rows={rows(x, x.rows)} account={(a) => account(a, true)} /> : account(x, false);
         })}
     </div>
   );

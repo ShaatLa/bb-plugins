@@ -8,6 +8,8 @@ export type LimitWindow = {
 };
 export type LimitAccount = {
   providerId: string; label: string; plan: string | null; status: string; message: string | null; observedAt: number | null; windows: LimitWindow[];
+  /** The provider's plan id and, when it reports one, the plan's size relative to its base plan (5 for a 5x plan). */
+  planId?: string | null; multiplier?: number | null;
   /** The source failed this time; these are its last good numbers, measured at `observedAt`. */
   stale?: boolean;
 };
@@ -21,7 +23,10 @@ const windowSchema = z.object({
 });
 const resourceSchema = z.object({
   accountKey: z.string().nullish(), observedAt: z.number().nullish(),
-  usage: z.object({ status: z.string(), planLabel: z.string().nullish(), message: z.string().nullish(), windows: z.array(windowSchema).optional() }),
+  usage: z.object({
+    status: z.string(), planLabel: z.string().nullish(), message: z.string().nullish(), windows: z.array(windowSchema).optional(),
+    plan: z.object({ id: z.string(), multiplier: z.number().positive().nullish() }).nullish().catch(null),
+  }),
 });
 
 const LIST = 'provider-usage.v1.listResources', GET = 'provider-usage.v1.getResource';
@@ -118,7 +123,7 @@ export function createLimitCollector(discover: Discover, callRpc: CallRpc, selfI
 function toAccount(r: z.infer<typeof listSchema>['resources'][number], got: z.infer<typeof resourceSchema>): LimitAccount {
   const u = got.usage;
   return {
-    providerId: r.providerId, label: r.label, plan: u.planLabel ?? null, status: u.status, message: u.message ?? null, observedAt: got.observedAt ?? null,
+    providerId: r.providerId, label: r.label, plan: u.planLabel ?? null, planId: u.plan?.id ?? null, multiplier: u.plan?.multiplier ?? null, status: u.status, message: u.message ?? null, observedAt: got.observedAt ?? null,
     windows: (u.windows ?? []).map((w, i) => {
       const resetsAt = w.resetsAt ? Date.parse(w.resetsAt) : NaN;
       // Sources lowercase a model family after the separator ("Weekly · fable"); names are capitalized as bb writes them.

@@ -28,8 +28,14 @@ export function Section({ title, subtitle, action, children, collapseKey }: { ti
 
 // Collapsed state is a per-browser view preference, so it lives in localStorage.
 const storageKey = (key: string) => `tokenomos:section:${key}`;
-function readOpen(key: string): boolean {
-  try { return localStorage.getItem(storageKey(key)) !== "closed"; } catch { return true; }
+function readOpen(key: string, fallback = true): boolean {
+  try { const v = localStorage.getItem(storageKey(key)); return v === null ? fallback : v === "open"; } catch { return fallback; }
+}
+
+/** Open state of a disclosure, remembered in this browser. */
+export function useOpen(key: string, fallback: boolean): [boolean, () => void] {
+  const [open, setOpen] = useState(() => readOpen(key, fallback));
+  return [open, () => { setOpen(!open); writeOpen(key, !open); }];
 }
 function writeOpen(key: string, open: boolean) {
   try { localStorage.setItem(storageKey(key), open ? "open" : "closed"); } catch { /* storage unavailable */ }

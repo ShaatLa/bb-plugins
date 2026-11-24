@@ -26,6 +26,10 @@ export const SETTINGS = {
   contextWatchTokens: { type: "number", label: "Watchlist context threshold", default: 300000, experimental_schema: int(50000, 1000000) },
   heavyTargetPercent: { type: "number", label: "Heavy model target, % of limit cost (0 turns it off)", default: 50, experimental_schema: int(0, 100) },
   heavyModels: { type: "string", label: "Heavy model families (comma-separated)", default: DEFAULT_HEAVY_MODELS, experimental_schema: z.string().max(500) },
+  // Display only: the limits RPC still reports every subscription.
+  poolAccounts: { type: "boolean", label: "Pool subscriptions of one provider (experimental)", default: true, experimental_schema: z.boolean() },
+  // Used when a provider does not report its plan's multiplier: "pro=20, plus=1".
+  planMultipliers: { type: "string", label: "Plan sizes for the pool (plan=multiplier, comma-separated)", default: "", experimental_schema: z.string().max(500).regex(/^\s*([\w.-]+\s*=\s*\d+(\.\d+)?\s*(,\s*|$))*$/, "Expected plan=number pairs, such as pro=20, plus=1") },
   priceOverrides: { type: "string", label: "Custom prices ($/MTok, JSON)", default: "{}", experimental_multiline: true, experimental_schema: priceOverridesSchema },
 } satisfies Record<string, PluginSettingDescriptor>;
 

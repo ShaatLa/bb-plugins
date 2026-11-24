@@ -84,6 +84,19 @@ export const fmtWhen = (ms: number, t: T) => `${ddmm(new Date(ms), t)} ${hhmm(ne
 /** A moment with its weekday: "Sat, 11/21 11:51". */
 export const fmtDay = (ms: number, t: T) => `${weekday(new Date(ms), t)}, ${fmtWhen(ms, t)}`;
 /** A span in its two largest units: "3 d 15 h", "4 h 59 min", "12 min", "<1 min". */
+// Providers may report a raw plan id such as "self_serve_business_pro".
+export function fmtPlan(plan: string): string {
+  const s = plan.replace(/[_-]+/g, " ").trim();
+  return s.charAt(0).toUpperCase() + s.slice(1);
+}
+
+type Account = { providerId: string; label: string; plan: string | null };
+// Provider name instead of the account label (often an email); the label stays when two accounts would read the same.
+export function accountName(a: Account, all: Account[], t: T): string {
+  const twin = all.some((b) => b !== a && b.providerId === a.providerId && b.plan === a.plan);
+  return twin ? a.label : providerName(a.providerId, t);
+}
+
 export function fmtSpan(ms: number, t: T): string {
   const minutes = Math.floor(Math.max(0, ms) / 60_000), hours = Math.floor(minutes / 60), d = Math.floor(hours / 24);
   if (minutes === 0) return t("span.lessThanMinute");

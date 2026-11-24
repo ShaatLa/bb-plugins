@@ -50,6 +50,9 @@ export function createScheduler(o: {
       ON CONFLICT(source) DO UPDATE SET last_ingest_at=CASE WHEN excluded.last_error IS NULL THEN excluded.last_ingest_at ELSE last_ingest_at END,
       last_error=excluded.last_error,state=excluded.state`).run(id, Date.now(), error, state);
   };
+  // A 404 left by a deleted thread before deleted threads were skipped is not a source failure.
+  db.prepare("UPDATE source_status SET last_error=NULL, state='ok' WHERE last_error LIKE 'HTTP 404%'").run();
+  const notFound = (e: unknown) => (e as { status?: unknown } | null)?.status === 404 || /^HTTP 404\b/.test(e instanceof Error ? e.message : String(e));
   const fail = (id: string, error: unknown) => {
     if (stopped) return;
     const message = error instanceof Error ? error.message : String(error);
@@ -249,7 +252,17 @@ export function createScheduler(o: {
       if (desiredFile && (!found || sourceId === 'bb-events')) dirty.add(id);
       if (eventBatch.touched) invalidate();
       return true;
-    } catch (e) { if (!signal.aborted) { fail(sourceId,e); dirty.add(id); } return false; }
+    } catch (e) {
+      if (signal.aborted) return false;
+      // A thread deleted from bb stays in the store; retrying it would fail forever and mark its source broken.
+      if (notFound(e)) {
+        db.prepare('UPDATE threads SET deleted_at=? WHERE id=? AND deleted_at=0').run(Date.now(), id);
+        db.prepare("UPDATE source_status SET last_error=NULL, state='ok' WHERE source=? AND last_error LIKE 'HTTP 404%'").run(sourceId);
+        bb.log.info(`Tokenomos: thread ${id} is gone from bb; no longer read`);
+        return false;
+      }
+      fail(sourceId,e); dirty.add(id); return false;
+    }
   }
   async function external(signal: AbortSignal) {
     for (const id of ['local-models','antigravity'] as const) {
@@ -258,7 +271,7 @@ export function createScheduler(o: {
         const result = await sources!.ext.pollUsage(id);
         if (stopped) return;
         if (id === 'antigravity') {
-          if (agyAvailable !== result.available) for (const r of db.prepare("SELECT id FROM threads WHERE provider_id='antigravity'").all() as {id:string}[]) dirty.add(r.id);
+          if (agyAvailable !== result.available) for (const r of db.prepare("SELECT id FROM threads WHERE provider_id='antigravity' AND deleted_at=0").all() as {id:string}[]) dirty.add(r.id);
           agyAvailable = result.available;
         }
         await apply([result], signal, () => {

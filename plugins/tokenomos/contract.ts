@@ -133,7 +133,7 @@ export const limitsSchema = z.object({
   /** Target ceiling for the heavy-model share of cost, as a fraction; null when the user turned it off. */
   heavyTarget: nullableNum,
   accounts: z.array(z.object({
-    providerId: z.string(), label: z.string(), plan: z.string().nullable(), status: z.string(), message: z.string().nullable(),
+    providerId: z.string(), label: z.string(), plan: z.string().nullable(), planId: z.string().nullable().optional(), multiplier: nullableNum.optional(), status: z.string(), message: z.string().nullable(),
     observedAt: nullableNum, windows: z.array(limitWindowSchema), stale: z.boolean().optional(),
   })),
 });

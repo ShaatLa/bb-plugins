@@ -5,8 +5,9 @@ import { join } from "node:path";
 import { cleanup, fireEvent, waitFor, within } from "@testing-library/react";
 import { loadPluginApp, renderSlot } from "@get-bb/plugin-sdk/testing/app";
 import type { Cost } from "./contract";
-import { buildChart } from "./components/series";
-import { bucketLabel, fmtCost, fmtSpan, fmtTokens, fmtUsd, parseSubPath, toSubPath } from "./components/format";
+import { buildChart, spread } from "./components/series";
+import { pickColumn, pickSegment } from "./components/usage-chart";
+import { accountName, bucketLabel, fmtCost, fmtPlan, fmtSpan, fmtTokens, fmtUsd, parseSubPath, toSubPath } from "./components/format";
 import { delta } from "./components/kpis";
 import { DICTIONARIES, makeT, translate, type Lang } from "./components/i18n";
 
@@ -74,7 +75,7 @@ const L = {
   en: {
     spend: "Spend (API equivalent)", money: "~$12.40", cacheHit: "Cache hit rate", pct87: "87%", delta: "+24% vs previous period",
     median: "Median thread", medianValue: "$0.42", perCall: "$0.01 per call", footnote: "~ includes list-price estimates", tokensDelta: "+18% vs previous period", callsDelta: "+23% vs previous period",
-    allProjects: "All projects", projectLabel: "Project", saved: "Local models: saved ~", local: "Local models", legendLabel: "Legend", metrics: ["Cost", "Tokens", "Calls"], calls: "Calls", callsUnit: "Interval (calls)",
+    allProjects: "All projects", projectLabel: "Project", local: "Local models", legendLabel: "Legend", metrics: ["Cost", "Tokens", "Calls"], calls: "Calls", callsUnit: "Interval (calls)",
     mixTitle: "Token mix", mixSub: "where tokens go vs where money goes", mixHead: ["Component", "Tokens", "%", "Cost", "%", "$/1M"], mixRows: ["Input", "Cache write", "Cache read", "Output"], reasoning: "↳ reasoning tokens",
     activity: "Activity by hour", busiestCost: "busiest: Sun 09:00, ~$277.00", busiestCalls: "busiest: Wed 14:00, 900 calls", tip: "~$277.00 · 5M tok. · 40 calls", wk: "Mon", children: "3 child threads",
     threadHead: ["Thread", "Calls", "Tokens", "Last 7 days", "Total"], threadSub: "Atlas · gpt-5 · Codex · 3 child threads", threadNums: ["321", "4.5M", "$1.75", "$2.50"],
@@ -86,7 +87,7 @@ const L = {
   ru: {
     spend: "Расход (API-эквивалент)", money: "~$12,40", cacheHit: "Попадание в кэш", pct87: "87 %", delta: "+24 % к прошлому периоду",
     median: "Медианный тред", medianValue: "$0,42", perCall: "$0,01 за вызов", footnote: "~ включает оценки по прайс-листу", tokensDelta: "+18 % к прошлому периоду", callsDelta: "+23 % к прошлому периоду",
-    allProjects: "Все проекты", projectLabel: "Проект", saved: "Локальные модели: экономия ~", local: "Локальные модели", legendLabel: "Легенда", metrics: ["Расход", "Токены", "Вызовы"], calls: "Вызовы", callsUnit: "Интервал (вызовы)",
+    allProjects: "Все проекты", projectLabel: "Проект", local: "Локальные модели", legendLabel: "Легенда", metrics: ["Расход", "Токены", "Вызовы"], calls: "Вызовы", callsUnit: "Интервал (вызовы)",
     mixTitle: "Структура токенов", mixSub: "куда уходят токены и куда — деньги", mixHead: ["Компонент", "Токены", "%", "Стоимость", "%", "$/1 млн"], mixRows: ["Вход", "Запись кэша", "Чтение кэша", "Выход"], reasoning: "↳ токены рассуждений",
     activity: "Активность по часам", busiestCost: "пик: вс 09:00, ~$277,00", busiestCalls: "пик: ср 14:00, 900 вызовов", tip: "~$277,00 · 5M ток. · 40 вызовов", wk: "пн", children: "3 дочерних треда",
     threadHead: ["Тред", "Вызовы", "Токены", "Последние 7 дней", "Всего"], threadSub: "Atlas · gpt-5 · Codex · 3 дочерних треда", threadNums: ["321", "4,5M", "$1,75", "$2,50"],
@@ -250,17 +251,15 @@ describe.each(LANGS)("page (%s)", (lang) => {
     expect(norm(tile)).not.toContain("$");
   });
 
-  it("draws the local-model saving on the cost chart, outside the spend total", async () => {
-    const { slot } = await open("week/provider", { summary: (i: Input) => { const s = summary(i) as { buckets: { localSavedUsd?: number }[] }; s.buckets[2]!.localSavedUsd = 1.5; (s.buckets[2] as unknown as { series: Record<string, unknown> }).series["local-models"] = { ...cost(0), calls: 3 }; return s; } });
+  it("leaves local models and their saving out of the usage chart; the savings card covers them", async () => {
+    const { slot } = await open("week/provider", { summary: (i: Input) => { const s = summary(i) as { buckets: { localSavedUsd?: number }[] }; s.buckets[2]!.localSavedUsd = 1.5; (s.buckets[2] as unknown as { series: Record<string, unknown> }).series["local-models"] = { ...cost(5), calls: 3 }; return s; } });
     await slot.findByText(x.money);
     const legend = slot.getByRole("list", { name: x.legendLabel }).textContent!;
-    expect(legend).toContain(x.saved);
-    // Local calls cost $0, so the plain local-models series stays out of the cost legend.
-    expect(legend.replace(x.saved, "")).not.toContain(x.local);
+    expect(legend).not.toContain(x.local);
     fireEvent.click(slot.getByRole("button", { name: x.table }));
     const table = (await slot.findAllByRole("table"))[0]!;
-    expect(within(table).getAllByRole("columnheader").at(-1)!.textContent).toBe(x.saved);
-    expect(norm(within(table).getAllByRole("row")[3]!)).toContain("$1.50".replace(".", lang === "en" ? "." : ","));
+    expect(within(table).getAllByRole("columnheader").map((h) => h.textContent)).not.toContain(x.local);
+    expect(within(table).getAllByRole("columnheader").at(-1)!.textContent).toBe(lang === "en" ? "Total" : "Всего");
   });
 
   it("switches the metric: the chart table follows Cost / Tokens / Calls", async () => {
@@ -567,6 +566,9 @@ describe("helpers", () => {
     expect(parseSubPath("month", "model")).toMatchObject({ range: "month", by: "model" }); // a URL without grouping takes the default
     expect(parseSubPath("month/provider", "model").by).toBe("provider");
     expect([fmtSpan(87 * 3_600_000 + 59_000, en), fmtSpan(15 * 3_600_000, ru), fmtSpan(48 * 3_600_000, en), fmtSpan(10_000, en)]).toEqual(["3 d 15 h", "15 ч", "2 d", "<1 min"]);
+    const accounts = [{ providerId: "codex", label: "a@example.com", plan: "pro" }, { providerId: "codex", label: "b@example.com", plan: "pro" }, { providerId: "claude-code", label: "c@example.com", plan: "max" }];
+    expect(accounts.map((x) => accountName(x, accounts, en))).toEqual(["a@example.com", "b@example.com", "Claude Code"]);
+    expect(fmtPlan("self_serve_business_pro")).toBe("Self serve business pro");
     expect([fmtSpan(4 * 3_600_000 + 59 * 60_000, en), fmtSpan(12 * 60_000 + 5_000, ru)]).toEqual(["4 h 59 min", "12 мин"]);
     expect(parseSubPath(toSubPath("day", "provider", "~outside"))).toEqual({ range: "day", by: "provider", project: "~outside" });
     expect(toSubPath("day", "provider", "a/b")).toBe("day/provider/a%2Fb");
@@ -602,6 +604,25 @@ describe("helpers", () => {
     expect(byModel.slots[2]!.title).toBe("Claude Code · Other");
     expect(buildChart(m as never, "model", "week", ru).slots[2]!.title).toBe("Claude Code · Другое");
     expect(byModel.rows).toHaveLength(7);
+  });
+
+  it("draws small segments at a minimum height, keeps order and the column total", () => {
+    const h = spread([1000, 10, 0.1, 0], 30);
+    expect(h[3]).toBe(0);
+    expect(h[2]).toBe(30);
+    expect(h[0]!).toBeGreaterThan(h[1]!);
+    expect(h[1]!).toBeGreaterThan(30);
+    expect(h.reduce((a, b) => a + b, 0)).toBeCloseTo(1010.1);
+    expect(spread([1, 2], 30)).toEqual([30, 30]); // a column too short for its minimums grows to hold them
+  });
+
+  it("finds the hovered column only inside the bar and the nearest segment across its gaps", () => {
+    const segs = (pairs: [string, number, number][]) => new Map(pairs.map(([id, a, b]) => [id, [a, b] as [number, number]]));
+    const geo = new Map([[1, { x: 10, w: 20, segs: segs([["s1", 100, 200], ["s2", 50, 96]]) }], [2, { x: 50, w: 20, segs: segs([["s1", 180, 200]]) }]]);
+    // Between the bars, beside a bar and above its top segment there is no column.
+    expect([pickColumn(geo, 20, 98), pickColumn(geo, 60, 190), pickColumn(geo, 40, 190), pickColumn(geo, 5, 150), pickColumn(geo, 20, 40), pickColumn(geo, 60, 150)])
+      .toEqual([1, 2, null, null, null, null]);
+    expect([pickSegment(geo.get(1)!.segs, 98), pickSegment(geo.get(1)!.segs, 60), pickSegment(geo.get(1)!.segs, 150)]).toEqual(["s1", "s2", "s1"]);
   });
 });
 

@@ -3,7 +3,8 @@ import { toast } from "sonner";
 import { experimental_useRpcMutation as useMutation, experimental_useRpcQuery as useQuery, useSettings } from "@get-bb/plugin-sdk/app";
 import { rpcContract } from "../contract";
 import { REFERENCE_MODELS, SETTINGS, type SettingKey } from "../settings";
-import { providerName } from "./format";
+import { fmtPlan, providerName } from "./format";
+import { parseSizes } from "./pool";
 import { useT } from "./i18n";
 import { Input } from "./ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "./ui/select";
@@ -73,12 +74,80 @@ export function Configuration() {
     set.mutate({ key, value }).then(() => true, (e) => { toast.error(e instanceof Error ? e.message : String(e)); return false; });
   return (
     <div className="space-y-6">
-      {GROUPS.map((g) => (
+      {GROUPS.map((g) => [
         <SettingsSection key={g.id} title={t(`cfg.group.${g.id}`)} bodyClassName="space-y-5">
           {g.keys.map((k) => <Field key={k} k={k} value={values?.[k]} save={save} options={k === "referenceModel" ? referenceOptions : undefined} />)}
-        </SettingsSection>
-      ))}
+        </SettingsSection>,
+        g.id === "limits" && (
+          <PlanSizes key="pools" value={String(values?.planMultipliers ?? "")} save={(v) => save("planMultipliers", v)}>
+            <Field k="poolAccounts" value={values?.poolAccounts} save={save} />
+          </PlanSizes>
+        ),
+      ])}
     </div>
+  );
+}
+
+/** One plan's size; saved on blur or Enter, an empty field removes it. */
+function SizeField({ label, description, value, reported, onSave }: { label: string; description: string; value: number | undefined; reported: number | null; onSave: (v: number | null) => Promise<boolean> }) {
+  const t = useT();
+  const shown = reported ?? value;
+  const [draft, setDraft] = useState(shown === undefined ? "" : String(shown));
+  useEffect(() => setDraft(shown === undefined ? "" : String(shown)), [shown]);
+  const commit = () => {
+    const n = draft.trim() === "" ? null : Number(draft);
+    if (n === (value ?? null)) return;
+    if (n !== null && !(n > 0)) { setDraft(value === undefined ? "" : String(value)); return; }
+    void onSave(n).then((ok) => { if (!ok) setDraft(value === undefined ? "" : String(value)); });
+  };
+  return (
+    <SettingsWithControl label={label} description={reported !== null ? `${description} · ${t("cfg.planSizes.reported")}` : description}>
+      <Input aria-label={label} type="number" min={1} step="any" placeholder="—" disabled={reported !== null} className="h-7 w-24 text-right tabular-nums"
+        value={draft} onChange={(e) => setDraft(e.target.value)} onBlur={commit} onKeyDown={(e) => { if (e.key === "Enter") commit(); }} />
+    </SettingsWithControl>
+  );
+}
+
+/**
+ * The subscription pool card: the switch (passed in), then plan sizes, one section per provider with two or
+ * more subscriptions, one field per plan. Sizes are stored in the `planMultipliers` setting as "plan=size"
+ * pairs; pairs for other plans are kept.
+ */
+function PlanSizes({ value, save, children }: { value: string; save: (v: string) => Promise<boolean>; children: React.ReactNode }) {
+  const t = useT();
+  const accounts = useQuery({ contract: rpcContract, method: "limits", input: {} }).data?.accounts ?? [];
+  const sizes = parseSizes(value);
+  const byProvider = new Map<string, typeof accounts>();
+  for (const a of accounts) byProvider.set(a.providerId, [...(byProvider.get(a.providerId) ?? []), a]);
+  const pools = [...byProvider].filter(([, list]) => list.length >= 2);
+  const set = (key: string, size: number | null) => {
+    const next = new Map(sizes);
+    if (size === null) next.delete(key); else next.set(key, size);
+    return save([...next].map(([k, v]) => `${k}=${v}`).join(", "));
+  };
+  return (
+    <SettingsSection title={t("cfg.group.planSizes")} bodyClassName="space-y-5">
+      {children}
+      <p className="text-xs text-muted-foreground">{t("cfg.planSizes.description")}</p>
+      {pools.length === 0 ? <p className="text-xs text-muted-foreground">{t("cfg.planSizes.empty")}</p> : pools.map(([providerId, list]) => {
+        // One field per plan: two subscriptions on the same plan share its size.
+        const plans = new Map<string, { label: string; emails: string[]; reported: number | null }>();
+        for (const a of list) {
+          const key = (a.planId ?? a.plan ?? a.label).toLowerCase().replace(/\s+/g, "_");
+          const p = plans.get(key) ?? { label: a.plan ? fmtPlan(a.plan) : a.label, emails: [], reported: a.multiplier ?? null };
+          p.emails.push(a.label);
+          plans.set(key, p);
+        }
+        return (
+          <div key={providerId} className="space-y-3 border-t border-border pt-4">
+            <h3 className="text-xs font-medium text-muted-foreground">{providerName(providerId, t)}</h3>
+            {[...plans].map(([key, p]) => (
+              <SizeField key={key} label={p.label} description={p.emails.join(", ")} value={sizes.get(key)} reported={p.reported} onSave={(v) => set(key, v)} />
+            ))}
+          </div>
+        );
+      })}
+    </SettingsSection>
   );
 }
 

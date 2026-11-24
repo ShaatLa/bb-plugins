@@ -15,9 +15,9 @@ const shade = (n: number, i: number) => (i === 0 ? seriesColor(n) : `color-mix(i
 export type Slot = { id: string; color: string; label: string; title: string; group?: string; groupLabel?: string };
 /** A cost with the number of calls behind it, as a bucket series carries it. */
 export type CallCost = Cost & { calls: number };
-export type Row = { start: number; label: string; title: string; total: number; costs: Record<string, CallCost> } & Record<string, unknown>;
-// `saved`: local-model calls priced at the reference model, drawn on top of the cost bar but not in its total.
-export type ChartModel = { slots: Slot[]; rows: Row[]; metric: Shown; totalCost: Record<string, CallCost>; saved: boolean };
+export type Row = { start: number; label: string; title: string; total: number; costs: Record<string, CallCost>; disp: Record<string, number> } & Record<string, unknown>;
+// `disp`: drawn segment heights (see `spread`); the real values stay under the slot ids.
+export type ChartModel = { slots: Slot[]; rows: Row[]; metric: Shown; totalCost: Record<string, CallCost> };
 
 const zero = (): CallCost => ({ usd: null, tokens: { freshIn: 0, cacheRead: 0, cacheWrite: 0, output: 0 }, estimated: false, partial: false, calls: 0 });
 export function addCost(a: CallCost, b: CallCost): CallCost {
@@ -33,6 +33,33 @@ export function addCost(a: CallCost, b: CallCost): CallCost {
   };
 }
 
+/** Smallest drawn segment as a share of the tallest column: about 10 px, so a block-edge segment keeps ~5 px of fill. */
+const MIN_SEGMENT = 0.035;
+
+/**
+ * Drawn heights for one column's segments: shares are compressed (value^0.6) so small segments stay visible
+ * and the largest stays largest, then each non-zero segment gets at least `min`. The column keeps its true
+ * total unless it is too short to hold every minimum.
+ */
+export function spread(values: number[], min: number, power = 0.6): number[] {
+  const weight = values.map((v) => (v > 0 ? v ** power : 0));
+  const count = weight.filter(Boolean).length;
+  const height = Math.max(values.reduce((a, b) => a + b, 0), count * min);
+  const out = values.map(() => 0), floored = new Set<number>();
+  // Segments below the minimum are pinned to it; the rest share what is left by weight, until none falls below.
+  for (let changed = true; changed;) {
+    changed = false;
+    const left = height - floored.size * min, sum = weight.reduce((s, w, i) => (floored.has(i) ? s : s + w), 0);
+    weight.forEach((w, i) => {
+      if (!w || floored.has(i)) return;
+      out[i] = (left * w) / sum;
+      if (out[i]! < min) { floored.add(i); changed = true; }
+    });
+  }
+  floored.forEach((i) => { out[i] = min; });
+  return out;
+}
+
 /** The cost metric plots dollars when any segment is priced, otherwise tokens. */
 export function resolveMetric(summary: SummaryOutput, metric: Metric): Shown {
   if (metric !== "cost") return metric;
@@ -41,7 +68,10 @@ export function resolveMetric(summary: SummaryOutput, metric: Metric): Shown {
 
 /** Plots the chosen metric. Colors follow the provider; models are shades of their provider's color. */
 export function buildChart(summary: SummaryOutput, by: By, range: Range, t: T, chosen: Metric = "cost"): ChartModel {
-  const keys = [...new Set(summary.buckets.flatMap((b) => Object.keys(b.series)))];
+  const providers = new Map(summary.breakdown.map((b) => [b.key, b.provider]));
+  const providerOf = (k: string) => (by === "provider" ? k : providers.get(k) ?? (k.startsWith("other:") ? k.slice(6) : ""));
+  // Local models have their own savings card; on this chart they would only be a sliver.
+  const keys = [...new Set(summary.buckets.flatMap((b) => Object.keys(b.series)))].filter((k) => providerOf(k) !== "local-models");
   const labels = new Map(summary.breakdown.map((b) => [b.key, b.label]));
   const metric = resolveMetric(summary, chosen);
   const value = (c: CallCost) => (metric === "usd" ? (c.usd ?? 0) : metric === "calls" ? c.calls : totalTokens(c.tokens));
@@ -59,8 +89,6 @@ export function buildChart(summary: SummaryOutput, by: By, range: Range, t: T, c
     slots = [...names].sort(([a], [b]) => a - b).map(([n, label]) => ({ id: `s${n}`, color: seriesColor(n), label, title: label, group: `s${n}` }));
   } else {
     // Models stack grouped by provider (provider order as in the provider view), costliest first, the provider's rest last.
-    const providers = new Map(summary.breakdown.map((b) => [b.key, b.provider]));
-    const providerOf = (k: string) => providers.get(k) ?? (k.startsWith("other:") ? k.slice(6) : "");
     const weight = (k: string) => summary.buckets.reduce((sum, b) => sum + (b.series[k] ? value(b.series[k]) : 0), 0);
     const rank = (p: string) => PROVIDER_SLOT[p] ?? OTHER_SLOT;
     keys.sort((a, b) => rank(providerOf(a)) - rank(providerOf(b)) || providerOf(a).localeCompare(providerOf(b))
@@ -79,16 +107,21 @@ export function buildChart(summary: SummaryOutput, by: By, range: Range, t: T, c
   const rows = summary.buckets.map((bucket): Row => {
     const costs: Record<string, CallCost> = {};
     for (const [k, cost] of Object.entries(bucket.series)) {
-      const id = slotOf.get(k)!;
+      const id = slotOf.get(k);
+      if (!id) continue;
       costs[id] = addCost(costs[id] ?? zero(), cost);
       totalCost[id] = addCost(totalCost[id] ?? zero(), cost);
     }
-    const row: Row = { start: bucket.start, label: bucketLabel(range, bucket.start, t), title: bucketTitle(range, bucket.start, t), total: 0, costs };
+    const row: Row = { start: bucket.start, label: bucketLabel(range, bucket.start, t), title: bucketTitle(range, bucket.start, t), total: 0, costs, disp: {} };
     for (const [id, cost] of Object.entries(costs)) { row[id] = value(cost); row.total += value(cost); }
-    if (metric === "usd" && bucket.localSavedUsd) row.saved = bucket.localSavedUsd;
     return row;
   });
-  // A series that is zero in this metric (local models in dollars) would only add an empty legend entry.
+  const min = Math.max(0, ...rows.map((r) => r.total)) * MIN_SEGMENT;
+  for (const row of rows) {
+    const heights = spread(slots.map((s) => Number(row[s.id] ?? 0)), min);
+    row.disp = Object.fromEntries(slots.map((s, i) => [s.id, heights[i]!]));
+  }
+  // A series that is zero in this metric would only add an empty legend entry.
   const shown = slots.filter((s) => rows.some((r) => Number(r[s.id]) > 0));
-  return { slots: shown.length ? shown : slots, rows, metric, totalCost, saved: rows.some((r) => Number(r.saved) > 0) };
+  return { slots: shown.length ? shown : slots, rows, metric, totalCost };
 }
