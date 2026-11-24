@@ -22,7 +22,8 @@ const FAR_AHEAD = 150;
  */
 export function paceColor(w: LimitWindow): string | undefined {
   if (w.usedPercent >= 100) return BAD;
-  if (w.forecastPercent === null || w.forecastPercent <= 100) return undefined;
+  // Coloured only when it is called as running out, so the colour and the "out in" always agree.
+  if (w.runsOutAt === null || w.forecastPercent === null) return undefined;
   return w.forecastPercent >= FAR_AHEAD ? BAD : WARN;
 }
 
@@ -53,6 +54,8 @@ function status(w: LimitWindow, now: number, t: T): { tone: Tone; title: string;
   if (w.usedPercent >= 100) return { tone: "bad", title: t("limits.exhausted") };
   if (w.runsOutAt !== null) return { tone: "warn", title: t("limits.runsOut", { span: fmtSpan(w.runsOutAt - now, t) }), hint: fmtDay(w.runsOutAt, t) };
   if (w.usedPercent === 0) return null; // an empty bar says it already
+  // Over 100% at the reset but inside the margin: too close to call either way.
+  if (w.forecastPercent !== null && w.forecastPercent > 100) return { tone: "muted", title: t("limits.tight"), detail: t("limits.lastsDetail", { pct: fmtPercent(w.forecastPercent / 100, t) }) };
   if (w.forecastPercent !== null) return { tone: "ok", title: t("limits.lasts"), detail: t("limits.lastsDetail", { pct: fmtPercent(w.forecastPercent / 100, t) }) };
   return { tone: "muted", title: t("limits.early") };
 }
@@ -115,35 +118,50 @@ function Window({ w, target }: { w: LimitWindow; target: number | null }) {
   );
 }
 
-/** A provider's subscriptions as one pool: what is left, whether it lasts to the next reset, what to spend first. */
+/**
+ * A provider's subscriptions as one pool, each fact once: what is left and the forecast, the bars with their own
+ * times, then one line of pace and what to spend first.
+ */
 function PoolCard({ pool, target }: { pool: Pool; target: number | null }) {
   const t = useT();
   const now = Date.now(), o = pool.outlook, f = pool.first;
   const [open, toggle] = useOpen(`limits-pool:${pool.providerId}`, false);
   const outlook = !o ? { text: t("pool.noForecast") }
-    : o.kind === "lasts" ? { text: t("pool.lasts", { span: fmtSpan(o.until - now, t) }) }
+    : o.kind === "lasts" ? { text: t("pool.lasts") }
     : { text: o.refillAt === null ? t("pool.runsOutNoRefill", { span: fmtSpan(o.at - now, t) }) : t("pool.runsOut", { span: fmtSpan(o.at - now, t), gap: fmtSpan(o.refillAt - o.at, t) }), color: WARN, hint: fmtDay(o.at, t) };
+  // The headline already says when the main window runs out, so its bar shows the reset; times a bar shows are not repeated below.
+  const mainReset = pool.rows.find((w) => w.id === pool.mainId)?.resetsAt ?? null;
+  const runway = pool.runway === null ? null : fmtSpan(pool.runway, t);
+  const runsOut = o?.kind === "runsOut" ? fmtSpan(o.at - now, t) : null;
+  const firstText = f && (() => {
+    const name = poolMember(f.account), shown = f.resetsAt === mainReset;
+    return f.burnsShare >= 0.005
+      ? shown ? t("pool.firstBurns", { name, pct: fmtPercent(f.burnsShare, t) }) : t("pool.firstBurnsIn", { name, pct: fmtPercent(f.burnsShare, t), span: fmtSpan(f.resetsAt - now, t) })
+      : shown ? t("pool.first", { name }) : t("pool.firstIn", { name, span: fmtSpan(f.resetsAt - now, t) });
+  })();
+  const secondary = [
+    pool.ratePerHour !== null ? t("pool.pace", { usd: fmtUsd(pool.ratePerHour, t) }) : null,
+    runway !== null && runway !== runsOut ? t("pool.runway", { span: runway }) : null,
+    firstText,
+  ].filter(Boolean).join(" · ");
   return (
     <Card className="space-y-3">
-      <h3 className="text-sm font-medium text-foreground">{providerName(pool.providerId, t)}<span className="font-normal text-muted-foreground"> · {t("pool.title", { n: pool.accounts.length })}</span></h3>
+      <h3 className="text-sm font-medium text-foreground">{providerName(pool.providerId, t)}</h3>
       <div className="space-y-1">
-        <Hint text={pool.estimated ? t("pool.estimated") : undefined}>
-          <div className="w-fit cursor-default">
-            <span className="text-xl font-semibold tabular-nums text-foreground">{pool.estimated ? "≈" : ""}{t("pool.left", { pct: fmtPercent(pool.leftShare, t) })}</span>
-            {pool.leftUsd !== null && <span className="ml-2 text-[11px] text-muted-foreground">{t("pool.leftUsd", { usd: fmtUsd(pool.leftUsd, t) })}</span>}
-          </div>
-        </Hint>
-        <Hint text={"hint" in outlook ? outlook.hint : undefined}><p className="w-fit text-xs font-medium" style={{ color: "color" in outlook ? outlook.color : "var(--foreground)" }}>{outlook.text}</p></Hint>
-        {pool.ratePerHour !== null && pool.runway !== null && (
-          <p className="text-xs text-muted-foreground">{t("pool.pace", { usd: fmtUsd(pool.ratePerHour, t), span: fmtSpan(pool.runway, t) })}</p>
+        {pool.leftUsd !== null && (
+          <Hint text={pool.estimated ? t("pool.estimated") : undefined}>
+            <div className="w-fit cursor-default">
+              <span className="text-xl font-semibold tabular-nums text-foreground">{t("pool.leftUsd", { usd: `${pool.estimated ? "≈" : "~"}${fmtUsd(pool.leftUsd, t)}` })}</span>
+              <span className="ml-2 text-[11px] text-muted-foreground">{t("pool.apiEquivalent")}</span>
+            </div>
+          </Hint>
         )}
-        {f && <p className="text-xs text-muted-foreground">{f.burnsShare >= 0.005
-          ? t("pool.firstBurns", { name: poolMember(f.account), pct: fmtPercent(f.burnsShare, t), span: fmtSpan(f.resetsAt - now, t) })
-          : t("pool.first", { name: poolMember(f.account), span: fmtSpan(f.resetsAt - now, t) })}</p>}
+        <Hint text={"hint" in outlook ? outlook.hint : undefined}><p className="w-fit text-xs font-medium" style={{ color: "color" in outlook ? outlook.color : "var(--foreground)" }}>{outlook.text}</p></Hint>
       </div>
       <ul className="grid grid-cols-[max-content_minmax(2rem,1fr)_max-content_max-content] items-center gap-x-2 gap-y-1 border-t border-border pt-2.5">
-        {pool.rows.map((w) => <Row key={w.id} w={w} now={now} target={target} mode="forecast" easter={false} onClick={() => {}} />)}
+        {pool.rows.map((w) => <Row key={w.id} w={w} now={now} target={target} mode={w.id === pool.mainId ? "reset" : "forecast"} easter={false} onClick={() => {}} />)}
       </ul>
+      {secondary && <p className="text-xs text-muted-foreground">{secondary}</p>}
       <button type="button" onClick={toggle} aria-expanded={open}
         className="flex items-center gap-1 rounded-sm text-xs text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring">
         <Icon name={open ? "ChevronDown" : "ChevronRight"} className="size-3.5" aria-hidden />{t("pool.accounts", { n: pool.accounts.length })}

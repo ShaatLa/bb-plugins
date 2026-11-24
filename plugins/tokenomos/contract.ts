@@ -122,11 +122,15 @@ export const wakeCostSchema = z.object({
 });
 
 const limitPart = z.object({ usd: num, calls: count });
+/** A limit counts as running out only when the use projected to its reset is this percent of what is left: it still runs out at a tenth less spend. */
+export const RUN_OUT_MARGIN = 110;
 export const limitWindowSchema = z.object({
   id: z.string(), label: z.string(), kind: z.string(), model: z.string().nullable(), usedPercent: num, resetsAt: nullableNum,
   startsAt: nullableNum, elapsedShare: nullableNum, forecastPercent: nullableNum, runsOutAt: nullableNum,
   stale: z.boolean().optional(), seenAt: num.optional(),
-  usage: z.object({ heavy: limitPart, other: limitPart, heavyShare: nullableNum, usdPerPercent: nullableNum, partial: z.boolean() }).nullable(),
+  usage: z.object({ heavy: limitPart, other: limitPart, heavyShare: nullableNum, usdPerPercent: nullableNum, partial: z.boolean(),
+    // Spend per hour over the last seven days, in the window's model scope; set for windows of a week or longer.
+    recentUsdPerHour: nullableNum.optional() }).nullable(),
 });
 export const limitsSchema = z.object({
   heavyModels: z.array(z.string()),

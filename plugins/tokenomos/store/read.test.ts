@@ -32,21 +32,26 @@ it('has 24/7/30/13 buckets, exact totals and share, previous coverage and outsid
 });
 it('includes the current partial hour and uses inclusive now for every range', () => {
   const at=now+HOUR/2, store=createStore(db);
-  const day=rangeBounds('day',at);
-  store.applyRows([row('first',{ts:day.from}),row('current',{ts:at,flags:ESTIMATED}),row('previous',{ts:day.from-HOUR}),row('old',{ts:day.previousFrom-2*HOUR}),row('future',{ts:now+HOUR})]);
+  // Yesterday 13:00 and 12:00, two days back, and the next hour; the current row at 12:30 today.
+  store.applyRows([row('first',{ts:now-23*HOUR}),row('current',{ts:at,flags:ESTIMATED}),row('previous',{ts:now-24*HOUR}),row('old',{ts:now-48*HOUR}),row('future',{ts:now+HOUR})]);
   note('a');
   for (const range of ['day','week','month','3m'] as const) {
     const b=rangeBounds(range,at), s=summary(db,{...opts,range,now:at});
     expect(b.to).toBe(at); expect(s.to).toBe(at);
-    expect(b.from-b.previousFrom).toBe(at-b.from);
-    expect(b.starts.at(-1)).toBe(range==='day' ? now : +new Date(2026,10,range==='3m' ? 9 : 15));
-    expect(s.buckets.at(-1)?.series['claude-code'].tokens.freshIn).toBe(range==='3m' ? 400 : 100);
+    expect(b.previousTo-b.previousFrom).toBe(at-b.from);
+    if (range!=='day') expect(b.starts.at(-1)).toBe(+new Date(2026,10,range==='3m' ? 9 : 15));
+    if (range!=='day') expect(s.buckets.at(-1)?.series['claude-code'].tokens.freshIn).toBe(range==='3m' ? 400 : 100);
   }
+  // Day is today since local midnight: only the 12:30 row; yesterday up to 12:30 holds the 12:00 row, not the 13:00 one.
   const s=summary(db,{...opts,range:'day',now:at});
-  expect(s.from).toBe(now-23*HOUR); expect(s.buckets).toHaveLength(24);
-  expect(s.totals.tokens.freshIn).toBe(200); expect(s.totals.estimated).toBe(true);
+  expect(s.from).toBe(+new Date(2026,10,15)); expect(s.buckets).toHaveLength(24);
+  expect(s.totals.tokens.freshIn).toBe(100); expect(s.totals.estimated).toBe(true);
   expect(s.previous?.tokens.freshIn).toBe(100);
-  expect(topThreads(db,'day',0,50,overrides,at).items[0].rangeCost.tokens.freshIn).toBe(200);
+  expect(topThreads(db,'day',0,50,overrides,at).items[0].rangeCost.tokens.freshIn).toBe(100);
+  // Day equals today's bucket of the week, by provider and in total.
+  const week=summary(db,{...opts,range:'week',now:at});
+  expect(s.totals.usd).toBeCloseTo(Object.values(week.buckets.at(-1)!.series).reduce((n,c)=>n+(c.usd ?? 0),0));
+  expect(s.totals.tokens.freshIn).toBe(week.buckets.at(-1)!.series['claude-code'].tokens.freshIn);
   db.prepare('INSERT INTO compactions(id,thread_id,at) VALUES (?,?,?)').run('current','a',at);
   db.prepare('INSERT INTO compactions(id,thread_id,at) VALUES (?,?,?)').run('future','a',at+1);
   expect(compactionsInRange(db,'day',overrides,at).items.map(i=>i.id)).toEqual(['current']);
@@ -203,7 +208,7 @@ it('returns hand-priced KPIs, mix, project filters and local weekday/hour cells'
     expect(s.heatmap).toEqual({cells:[cell],busiest:cell});
     expect(s.buckets.flatMap(b=>Object.values(b.series)).reduce((n,c)=>n+c.calls,0)).toBe(2);
     expect(s.breakdown[0].calls).toBe(2);
-    store.applyRows([row('coverage',{ts:s.from-48*HOUR}),row('prev',{ts:s.from-HOUR})]);
+    store.applyRows([row('coverage',{ts:s.from-48*HOUR}),row('prev',{ts:s.from-12*HOUR})]);
     expect(summary(db,{...opts,range:'day',now:at,projectId:'p'}).kpis).toMatchObject({spendPrevUsd:0.00036,tokensPrev:185,callsPrev:1});
     expect(summary(db,{...opts,now:at,projectId:'missing'})).toMatchObject({kpis:{tokens:0,calls:0,threads:0,medianThreadUsd:null,perCallUsd:null,cacheHitRate:null},heatmap:{cells:[],busiest:null}});
   } finally { if(tz===undefined) delete process.env.TZ; else process.env.TZ=tz; }

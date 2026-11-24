@@ -29,18 +29,22 @@ function combine(rows: Group[], overrides: Overrides): Cost {
 const TOP_MODELS_PER_PROVIDER = 3;
 
 // Calendar buckets follow the server timezone, including daylight-saving transitions.
+// The previous period is [previousFrom, previousTo): as long as the current one and right before it, except for
+// a day, which compares with yesterday up to the same time.
 export function rangeBounds(range: Range, now: number) {
-  const count = { day: 24, week: 7, month: 30, '3m': 13 }[range];
+  const count = { day: 1, week: 7, month: 30, '3m': 13 }[range];
   const step = range === '3m' ? 7 : 1;
   const end = new Date(now);
-  if (range === 'day') {
-    end.setMinutes(0, 0, 0);
-    const to = now, from = +end - (count - 1) * HOUR;
-    return { from, to, previousFrom: from - (to - from), starts: Array.from({ length: count }, (_, i) => from + i * HOUR) };
-  }
   end.setHours(0, 0, 0, 0); end.setDate(end.getDate() + 1);
   const starts = Array.from({ length: count }, (_, i) => { const d = new Date(end); d.setDate(d.getDate() - (count - i) * step); return +d; });
-  return { from: starts[0], to: now, previousFrom: starts[0] - (now - starts[0]), starts };
+  const from = starts[0]!;
+  if (range === 'day') {
+    // Today since local midnight, the same day as the last bucket of a week; hourly buckets to the next midnight.
+    const yesterday = new Date(from); yesterday.setDate(yesterday.getDate() - 1);
+    const hours = Array.from({ length: Math.round((+end - from) / HOUR) }, (_, i) => from + i * HOUR);
+    return { from, to: now, previousFrom: +yesterday, previousTo: +yesterday + (now - from), starts: hours };
+  }
+  return { from, to: now, previousFrom: from - (now - from), previousTo: from, starts };
 }
 function flags(db: Database, from: number, to: number, outside: boolean, projectId?: string) {
   return db.prepare(`SELECT COALESCE(MAX((r.flags & ?) != 0 OR c.partial = 1),0) AS partial,
@@ -49,13 +53,13 @@ function flags(db: Database, from: number, to: number, outside: boolean, project
 }
 export type SummaryOptions = { range: Range; by: 'provider' | 'model'; now: number; overrides: Overrides; referenceModel: string; includeOutsideBb: boolean; projectId?: string };
 export function summary(db: Database, o: SummaryOptions) {
-  const { from, to, previousFrom, starts } = rangeBounds(o.range, o.now);
+  const { from, to, previousFrom, previousTo, starts } = rangeBounds(o.range, o.now);
   const filter = `${o.includeOutsideBb ? '' : "AND project_id != '~outside'"} ${o.projectId === undefined ? '' : 'AND project_id=?'}`;
   const params = o.projectId === undefined ? [] : [o.projectId];
   type Hour = Group & { hour: number; provider: string; reasoning: number };
   const allRows = db.prepare(`SELECT hour,provider,model,tier,band,${sums},SUM(reasoning) AS reasoning FROM usage_hourly
     WHERE hour>=? AND hour<=? ${filter} GROUP BY hour,provider,model,tier,band`).all(Math.floor(previousFrom / HOUR) * HOUR,to,...params) as Hour[];
-  const rows = allRows.filter(r => r.hour>=from), previousRows = allRows.filter(r => r.hour<from);
+  const rows = allRows.filter(r => r.hour>=from), previousRows = allRows.filter(r => r.hour<from && r.hour<previousTo);
   const price = priceContext(o.overrides);
   const totals = combine(rows, o.overrides), f = flags(db, from, to + 1, o.includeOutsideBb, o.projectId);
   totals.partial ||= !!f.partial; totals.estimated ||= !!f.estimated;
@@ -94,7 +98,7 @@ export function summary(db: Database, o: SummaryOptions) {
   });
   const oldest = (db.prepare(`SELECT MIN(hour) AS hour FROM usage_hourly WHERE 1=1 ${filter}`).get(...params) as { hour: number | null }).hour;
   const previous = oldest === null || previousFrom < oldest ? null : combine(previousRows, o.overrides);
-  if (previous) { const p = flags(db, previousFrom, from, o.includeOutsideBb, o.projectId); previous.partial ||= !!p.partial; previous.estimated ||= !!p.estimated; }
+  if (previous) { const p = flags(db, previousFrom, previousTo, o.includeOutsideBb, o.projectId); previous.partial ||= !!p.partial; previous.estimated ||= !!p.estimated; }
   const localRows = rows.filter(r => r.provider === 'local-models');
   const local = combine(localRows.map(r => ({ ...r, provider: '', model: o.referenceModel, tier: 'standard' })), o.overrides);
   const denominator = totals.tokens.freshIn + totals.tokens.cacheRead + totals.tokens.cacheWrite;

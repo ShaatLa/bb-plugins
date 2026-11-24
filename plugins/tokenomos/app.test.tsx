@@ -170,6 +170,33 @@ describe.each(LANGS)("sidebar footer limits (%s)", (lang) => {
     expect(tip).toContain(lang === "en" ? "(target under 50%)" : "(цель — меньше 50 %)");
   });
 
+  it("shows a pool's rows while folded and only its subscriptions once unfolded", async () => {
+    localStorage.removeItem("tokenomos:section:footer-pool:claude-code"); // the fold state is remembered per browser
+    const app = await loadPluginApp(() => import("./app"));
+    const item = app.experimentalSidebarFooterItems.find((i) => i.id === "limits")!;
+    const now = Date.now(), H = 3_600_000;
+    const win = (id: string) => ({ id, label: "Weekly limit", kind: "weekly", model: null, usedPercent: 10, resetsAt: now + 100 * H, startsAt: now - 68 * H,
+      elapsedShare: 0.4, forecastPercent: 25, runsOutAt: null, usage: null });
+    const acc = (providerId: string, label: string, plan: string, id: string) => ({ providerId, label, plan, status: "ok", message: null, observedAt: 1, windows: [win(id)] });
+    const limits = () => ({ heavyModels: [], heavyTarget: null, accounts: [
+      acc("claude-code", "Work", "Max", "a"), acc("claude-code", "Home", "Pro", "b"), acc("antigravity", "Antigravity", "", "g"),
+    ] });
+    const slot = renderSlot(item as never, { dismiss: () => {} }, { rpc: { limits }, settings: settingsFor(lang) });
+    await slot.findAllByRole("meter");
+    const meters = () => slot.getAllByRole("meter").length;
+    const toggle = slot.getByRole("button", { name: lang === "en" ? "Subscriptions (2)" : "Подписки (2)" });
+    expect(toggle.getAttribute("aria-expanded")).toBe("false");
+    expect(meters()).toBe(2); // the pooled 7d row and Antigravity's own
+    expect(slot.queryByText("Max")).toBeNull();
+    fireEvent.click(toggle);
+    expect(toggle.getAttribute("aria-expanded")).toBe("true");
+    expect(meters()).toBe(3); // each subscription's 7d and Antigravity's; the pooled row is gone
+    expect(slot.getByText("Max")).toBeTruthy();
+    expect(slot.getByText("Pro")).toBeTruthy();
+    fireEvent.click(toggle);
+    expect(meters()).toBe(2);
+  });
+
   it("drops the target from the hint when the user turned it off", async () => {
     const app = await loadPluginApp(() => import("./app"));
     const item = app.experimentalSidebarFooterItems.find((i) => i.id === "limits")!;

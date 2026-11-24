@@ -75,7 +75,7 @@ export function Row({ w, now, target, mode, easter, onClick }: { w: LimitWindow;
   );
 }
 
-/** A provider's subscriptions as one pool: pooled rows, the subscriptions folded under it. */
+/** A provider's subscriptions as one pool: pooled rows when folded, the subscriptions instead of them when unfolded. */
 function PoolSection({ pool, now, first, rows, account }: { pool: Pool; now: number; first: boolean; rows: React.ReactNode; account: (a: Account) => React.ReactNode }) {
   const t = useT();
   const [open, toggle] = useOpen(`footer-pool:${pool.providerId}`, false);
@@ -84,11 +84,9 @@ function PoolSection({ pool, now, first, rows, account }: { pool: Pool; now: num
       <button type="button" onClick={toggle} aria-expanded={open} aria-label={t("pool.accounts", { n: pool.accounts.length })}
         className="col-span-4 flex min-w-0 cursor-default items-center gap-2 rounded-sm text-left focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring">
         <span className="min-w-0 truncate font-medium text-foreground">{providerName(pool.providerId, t)}</span>
-        <span className="shrink-0 rounded bg-muted px-1 py-px text-[10px] text-muted-foreground">{t("pool.title", { n: pool.accounts.length })}</span>
         <Icon name={open ? "ChevronDown" : "ChevronRight"} className="ml-auto size-3.5 shrink-0 text-muted-foreground" aria-hidden />
       </button>
-      {rows}
-      {open && pool.accounts.map(account)}
+      {open ? pool.accounts.map(account) : rows}
     </section>
   );
 }
@@ -123,7 +121,7 @@ export function LimitsFooter() {
             <ul className="col-span-4 grid grid-cols-subgrid gap-y-1">{windows.map((w) => { const k = `${a.providerId}:${w.id}`; return <Row key={w.id} w={w} now={now} target={data.heavyTarget} mode={modes[k] ?? "forecast"} easter={easter === k} onClick={(f) => click(k, f)} />; })}</ul>
           );
           const account = (a: Account, nested: boolean) => (
-            <section key={`${a.providerId}:${a.label}`} className={`col-span-4 grid grid-cols-subgrid gap-y-1 ${nested ? "mt-1 border-l-2 border-border pl-2" : i ? "mt-1.5 border-t border-border pt-2.5" : ""}`}>
+            <section key={`${a.providerId}:${a.label}`} className={`col-span-4 grid grid-cols-subgrid gap-y-1 ${nested ? "mt-1.5 rounded-md bg-muted/50 px-2 py-1.5" : i ? "mt-1.5 border-t border-border pt-2.5" : ""}`}>
               <div className="col-span-4 flex items-center gap-2">
                 <span className="min-w-0 truncate font-medium text-foreground" title={a.label}>{nested ? poolMember(a) : accountName(a, data.accounts, t)}</span>
                 {a.plan && !nested && <span className="min-w-0 truncate rounded bg-muted px-1 py-px text-[10px] text-muted-foreground" title={a.plan}>{fmtPlan(a.plan)}</span>}

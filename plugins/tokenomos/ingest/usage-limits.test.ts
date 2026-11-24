@@ -89,19 +89,24 @@ describe('collectLimits', () => {
     expect((await after(2000)).map(a => [a.label, a.stale, a.windows[0]?.usedPercent])).toEqual([['Claude Code', true, 21]]);
   });
 
-  it('keeps a window a successful report leaves out, marked stale, until it resets', async () => {
+  it('keeps a window a successful report leaves out, marked stale, then empty once it resets', async () => {
     const fable = { kind: 'weekly', id: '1:Fable', label: 'Fable', usedPercent: 4, resetsAt: '2026-11-25T01:00:00.000Z', model: 'fable' };
     let windows: unknown[] = [week(10), fable];
     const callRpc = async (_: string, method: string) => method.endsWith('listResources')
       ? { resources: [{ id: 'r', providerId: 'claude-code', label: 'Claude Code', accountKey: 'acct' }] } : usage('acct', windows);
     const collect = createLimitCollector(async () => [{ pluginId: 'provider-claude-code' }], callRpc, 'tokenomos');
-    await collect(1000);
+    const T = Date.parse('2026-11-24T12:00:00.000Z');
+    await collect(T + 1000);
     windows = [week(11)];
-    expect((await collect(2000))[0]!.windows.map(w => [w.label, w.usedPercent, w.stale, w.seenAt])).toEqual([['Weekly limit', 11, undefined, undefined], ['Fable', 4, true, 1000]]);
+    expect((await collect(T + 2000))[0]!.windows.map(w => [w.label, w.usedPercent, w.stale, w.seenAt])).toEqual([['Weekly limit', 11, undefined, undefined], ['Fable', 4, true, T + 1000]]);
     // Another source names the same window differently: it replaces the kept one, capitalized.
     windows = [week(11), { ...fable, id: 'weekly:fable', label: 'Weekly · fable', usedPercent: 5 }];
-    expect((await collect(2500))[0]!.windows.map(w => [w.label, w.usedPercent, w.stale])).toEqual([['Weekly limit', 11, undefined], ['Weekly · Fable', 5, undefined]]);
+    expect((await collect(T + 2500))[0]!.windows.map(w => [w.label, w.usedPercent, w.stale])).toEqual([['Weekly limit', 11, undefined], ['Weekly · Fable', 5, undefined]]);
+    // Past its reset the source leaves it out until it is used again: an empty window with no known reset.
     windows = [week(11)];
-    expect((await collect(Date.parse('2026-11-25T02:00:00.000Z')))[0]!.windows.map(w => w.label)).toEqual(['Weekly limit']);
+    const reset = Date.parse('2026-11-25T02:00:00.000Z');
+    expect((await collect(reset))[0]!.windows.map(w => [w.label, w.usedPercent, w.resetsAt, w.stale])).toEqual([['Weekly limit', 11, Date.UTC(2026, 10, 25, 1), undefined], ['Weekly · Fable', 0, null, undefined]]);
+    // A day without it in any report drops it.
+    expect((await collect(reset + 25 * 3_600_000))[0]!.windows.map(w => w.label)).toEqual(['Weekly limit']);
   });
 });

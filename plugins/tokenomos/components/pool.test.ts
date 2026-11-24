@@ -12,16 +12,19 @@ const account = (providerId: string, label: string, plan: string, windows: Retur
   ({ providerId, label, plan, status: "ok", message: null, observedAt: NOW, windows });
 
 describe("subscription pool", () => {
-  it("estimates capacity from dollars per percent once 10% is used, borrowing the median otherwise", () => {
-    expect(capacities([win({ used: 50, resetsIn: 10, perPercent: 20 }), win({ used: 5, resetsIn: 10, perPercent: 80 })]))
-      .toEqual({ caps: [2000, 2000], money: true, estimated: true });
+  it("prices the pool with one rate: the provider's spend over the plan units used, once 10% is used", () => {
+    // Spend is per provider: $600 since the earliest start paid for 50% + 10% of two equal plans, so 100% is $1000 each.
+    expect(capacities([win({ used: 50, resetsIn: 10, spend: 600 }), win({ used: 10, resetsIn: 100, spend: 300 })]))
+      .toEqual({ caps: [1000, 1000], money: true, estimated: true });
     expect(capacities([win({ used: 2, resetsIn: 10 }), win({ used: 0, resetsIn: 10 })])).toEqual({ caps: [100, 100], money: false, estimated: true });
   });
 
   it("weighs subscriptions by plan size when every one has a size, with dollars only as the scale", () => {
     // 92% of a 20x plan and 0% of a 5x one: 73.6% of the pool is used, not the 46% of equal weights.
-    const c = capacities([win({ used: 92, resetsIn: 90, perPercent: 16 }), win({ used: 0, resetsIn: 160 })], [20, 5]);
-    expect(c).toEqual({ caps: [1600, 400], money: true, estimated: false });
+    const c = capacities([win({ used: 92, resetsIn: 90, spend: 1472 }), win({ used: 0, resetsIn: 160 })], [20, 5]);
+    expect(c).toMatchObject({ money: true, estimated: false });
+    expect(c.caps[0]).toBeCloseTo(1600);
+    expect(c.caps[1]).toBeCloseTo(400);
     expect((0.92 * c.caps[0]!) / (c.caps[0]! + c.caps[1]!)).toBeCloseTo(0.736);
     expect(capacities([win({ used: 2, resetsIn: 10 }), win({ used: 0, resetsIn: 10 })], [20, 5])).toEqual({ caps: [2000, 500], money: false, estimated: false });
     const sizes = parseSizes(" Pro=20, self_serve_business_prolite = 5,");
@@ -44,26 +47,41 @@ describe("subscription pool", () => {
     const shown = poolAccounts([
       account("claude-code", "a@example.com", "Ultra", [win({ used: 90, resetsIn: 30, perPercent: 20, spend: 1800 })]),
       account("codex", "c@example.com", "Pro", [win({ used: 40, resetsIn: 50, perPercent: 10, spend: 400 })]),
-      account("claude-code", "b@example.com", "Max", [win({ kind: "five-hour", used: 50, resetsIn: 2, length: 5, perPercent: 2, spend: 200 }), win({ used: 5, resetsIn: 160 })]),
+      account("claude-code", "b@example.com", "Max", [win({ kind: "five-hour", used: 80, resetsIn: 2, length: 5, spend: 240 }), win({ used: 5, resetsIn: 160 })]),
     ], NOW);
     expect(shown.map((x) => (isPool(x) ? `pool:${x.providerId}` : x.label))).toEqual(["pool:claude-code", "c@example.com"]);
     const pool = shown[0]!;
     if (!isPool(pool)) throw new Error("expected a pool");
-    // Weekly: 90% of 2000 and 5% of a borrowed 2000 used → 52.5% left; the five-hour window is a row of its own.
-    expect(pool.rows.map((r) => [r.kind, Math.round(r.usedPercent * 10) / 10])).toEqual([["five-hour", 50], ["weekly", 47.5]]);
+    // Weekly: 90% and 5% of two equal plans used → 52.5% left; the five-hour window is a row of its own.
+    expect(pool.rows.map((r) => [r.kind, Math.round(r.usedPercent * 10) / 10])).toEqual([["five-hour", 80], ["weekly", 47.5]]);
     expect(pool.leftShare).toBeCloseTo(0.525);
-    // The five-hour row gets its own "out in": 100 of 200 left at 200 per 3 h runs dry in 1.5 h, before its reset in 2 h.
-    expect((pool.rows[0]!.runsOutAt! - NOW) / H).toBeCloseTo(1.5);
+    // The five-hour row gets its own "out in": $240 bought 80%, so $60 is left; at $80/h it runs dry in 45 min, before its reset in 2 h.
+    expect((pool.rows[0]!.runsOutAt! - NOW) / H).toBeCloseTo(0.75);
     expect(pool.rows[1]!.runsOutAt).toBeNull();
     // Pace tick: Ultra's week is 138/168 through and Max's 8/168; with equal capacity the pool's is the mean.
     expect(pool.rows[1]!.elapsedShare).toBeCloseTo((138 / 168 + 8 / 168) / 2);
-    expect(pool.leftUsd).toBeCloseTo(2100);
+    // $1800 since Ultra's start paid for 95% of one plan: $1894.7 a plan, 52.5% of two left.
+    expect(pool.leftUsd).toBeCloseTo((1800 / 0.95) * 2 * 0.525);
     expect(pool.estimated).toBe(true);
-    // Spend 1800 over 138 h ≈ 13/h: the 200 left on Ultra is used before its reset in 30 h, and the pool lasts.
+    // Spend 1800 over 138 h ≈ 13/h: Ultra's $95 runs dry before its reset in 30 h, Max covers the rest, and the pool lasts.
     expect(pool.outlook).toEqual({ kind: "lasts", until: NOW + 30 * H });
     expect(pool.ratePerHour).toBeCloseTo(1800 / 138);
-    expect(pool.runway! / H).toBeCloseTo(2100 / (1800 / 138));
+    expect(pool.runway! / H).toBeCloseTo(pool.leftUsd! / (1800 / 138));
     expect(pool.first).toMatchObject({ resetsAt: NOW + 30 * H, burnsShare: 0 });
     expect(pool.first!.account.plan).toBe("Ultra");
+  });
+
+  it("takes the last week's pace for long windows and needs a 10% margin to call a run-out", () => {
+    const pool = (perHour: number) => {
+      const w = (used: number, resetsIn: number) => ({ ...win({ used, resetsIn, spend: 1000 }), usage: { ...win({ used, resetsIn, spend: 1000 }).usage, recentUsdPerHour: perHour } });
+      const x = poolAccounts([account("codex", "a@example.com", "Pro", [w(50, 100)]), account("codex", "b@example.com", "Plus", [w(50, 100)])], NOW)[0]!;
+      if (!isPool(x)) throw new Error("expected a pool");
+      return x;
+    };
+    // The provider's $1000 bought 50% of each of two equal plans: $1000 a plan, $1000 left in all, 100 h to the shared reset.
+    expect(pool(5).outlook?.kind).toBe("lasts");
+    expect(pool(10.5).outlook?.kind).toBe("lasts"); // needs $1050 by the reset: under 10% over, not called
+    expect(pool(15).outlook).toMatchObject({ kind: "runsOut", at: NOW + (1000 / 15) * H });
+    expect(pool(15).ratePerHour).toBeCloseTo(15);
   });
 });

@@ -44,6 +44,15 @@ describe('limit windows', () => {
     expect(windowPace(1, now + 7 * DAY - HOUR, 7 * DAY, now)).toMatchObject({ forecastPercent: null, runsOutAt: null }); // too early to tell
     // A reset further out than the window length puts its start in the future: no pace, never an infinite forecast.
     expect(windowPace(6, now + 6 * HOUR, 5 * HOUR, now)).toMatchObject({ elapsedShare: 0, forecastPercent: null, runsOutAt: null });
+    // Half a week gone at 52%: 52 more points for the 48 left is within the margin, so no "runs out"; 60% (120%) is.
+    expect(windowPace(52, now + 3.5 * DAY, 7 * DAY, now)).toMatchObject({ runsOutAt: null });
+    expect(windowPace(60, now + 3.5 * DAY, 7 * DAY, now).runsOutAt).not.toBeNull();
+    // The last week's pace of 10% a day, not the 120% the front-loaded half week projects: 95% at the reset.
+    expect(windowPace(60, now + 3.5 * DAY, 7 * DAY, now, 10 / DAY)).toMatchObject({ runsOutAt: null });
+    expect(windowPace(60, now + 3.5 * DAY, 7 * DAY, now, 10 / DAY).forecastPercent).toBeCloseTo(95);
+    expect(windowPace(60, now + 3.5 * DAY, 7 * DAY, now, 20 / DAY)).toMatchObject({ runsOutAt: now + 2 * DAY });
+    // Nearly exhausted, the margin is on what is left: 99% with 8 points to come runs out.
+    expect(windowPace(99, now + 14 * HOUR, 7 * DAY, now, 0.6 / HOUR).runsOutAt).toBeCloseTo(now + HOUR / 0.6);
     // A fresh week already 10% used (after 4 h) is a burst worth a forecast, not noise.
     expect(windowPace(10, now + 7 * DAY - 4 * HOUR, 7 * DAY, now)).toMatchObject({ runsOutAt: now - 4 * HOUR + 40 * HOUR });
     expect(windowPace(50, null, 7 * DAY, now)).toEqual({ startsAt: null, elapsedShare: null, forecastPercent: null, runsOutAt: null });

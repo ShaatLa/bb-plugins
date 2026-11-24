@@ -1,5 +1,5 @@
 import type { z } from "zod";
-import type { limitsSchema, limitWindowSchema } from "../contract";
+import { RUN_OUT_MARGIN, type limitsSchema, type limitWindowSchema } from "../contract";
 
 type LimitWindow = z.infer<typeof limitWindowSchema>;
 export type Account = z.infer<typeof limitsSchema>["accounts"][number];
@@ -23,6 +23,8 @@ export type Pool = {
   /** Some capacity was borrowed from another subscription, or all of them count as equal. */
   estimated: boolean;
   outlook: Outlook | null;
+  /** Id of the row the outlook is about: the longest general window. */
+  mainId: string;
   /** Spend rate in API-equivalent dollars per hour, and how long what is left lasts at it with no refill. */
   ratePerHour: number | null;
   runway: number | null;
@@ -30,26 +32,21 @@ export type Pool = {
   first: { account: Account; resetsAt: number; burnsShare: number } | null;
 };
 
-const median = (xs: number[]) => { const s = [...xs].sort((a, b) => a - b), m = s.length >> 1; return s.length % 2 ? s[m]! : (s[m - 1]! + s[m]!) / 2; };
 const used = (w: LimitWindow) => Math.min(100, Math.max(0, w.usedPercent)) / 100;
 
 /**
- * Capacity of each window. Plan sizes (multipliers) set the proportions when every subscription has one; the
- * provider's spend per 1% of a window (trusted once 10% is used) only scales them to API-equivalent dollars.
- * Without sizes a window's own spend per 1% is its capacity, else the median of the trusted ones. With no
- * dollars at all the sizes (or equal weights) still give the pooled percent.
+ * Capacity of each window. Plan sizes (multipliers) set the proportions; a subscription without one counts as
+ * size 1 and makes the result an estimate. Spend is known per provider, not per subscription, so one rate covers
+ * the pool: the spend since the earliest window start over the plan units used. It is trusted once the pool is
+ * 10% used; before that the sizes alone still give the pooled percent.
  */
 export function capacities(ws: LimitWindow[], sizes: (number | null)[] = ws.map(() => null)): { caps: number[]; money: boolean; estimated: boolean } {
-  const own = ws.map((w) => (w.usedPercent >= RELIABLE && w.usage?.usdPerPercent ? w.usage.usdPerPercent * 100 : null));
-  const known = own.filter((c): c is number => c !== null);
-  if (sizes.every((s) => s !== null)) {
-    // Dollars per unit of plan size, from every trusted window; spend shared by parallel subscriptions averages out.
-    const units = own.flatMap((c, i) => (c === null ? [] : [c / sizes[i]!]));
-    return { caps: sizes.map((s) => s! * (units.length ? median(units) : 100)), money: units.length > 0, estimated: false };
-  }
-  if (!known.length) return { caps: ws.map(() => 100), money: false, estimated: true };
-  const fill = median(known);
-  return { caps: own.map((c) => c ?? fill), money: true, estimated: own.some((c) => c === null) };
+  const s = sizes.map((x) => x ?? 1), total = s.reduce((n, x) => n + x, 0);
+  const first = ws.filter((w) => w.startsAt !== null && w.usage).sort((x, y) => x.startsAt! - y.startsAt!)[0];
+  const spent = first ? first.usage!.heavy.usd + first.usage!.other.usd : 0;
+  const units = ws.reduce((n, w, i) => n + used(w) * s[i]!, 0);
+  const money = spent > 0 && units / total >= RELIABLE / 100;
+  return { caps: s.map((x) => x * (money ? spent / units : 100)), money, estimated: sizes.some((x) => x === null) };
 }
 
 /** "pro=20, plus=1" as a map; the settings schema has validated it. */
@@ -128,15 +125,18 @@ function makePool(providerId: string, accounts: Account[], now: number, sizes: M
     if (ws.length === 1) row.runsOutAt = ws[0]!.runsOutAt;
     if (!c.money) return row;
     if (main) leftUsd = total * leftShare;
-    // Spend rate: the provider's spend over the longest-running window, which is the steadiest average.
+    // Spend rate: the provider's last week for long windows (as their own forecasts), else its spend over the longest-running window.
     const longest = ws.filter((w) => w.startsAt !== null && w.usage).sort((x, y) => x.startsAt! - y.startsAt!)[0];
     const elapsed = longest ? now - longest.startsAt! : 0;
-    const rate = longest && elapsed >= HOUR ? (longest.usage!.heavy.usd + longest.usage!.other.usd) / elapsed : null;
+    const recent = longest?.usage?.recentUsdPerHour;
+    const rate = recent != null ? recent / HOUR : longest && elapsed >= HOUR ? (longest.usage!.heavy.usd + longest.usage!.other.usd) / elapsed : null;
     if (rate === null) return row;
     const slots = ws.map((w, i) => ({ left: c.caps[i]! * (1 - used(w)), cap: c.caps[i]!, resetsAt: w.resetsAt, length: w.resetsAt !== null && w.startsAt !== null ? w.resetsAt - w.startsAt : null }));
-    const o = simulate(slots, rate, now);
-    // The pool's own walk gives every row its "out in" and colour: over 100 draws a limit that runs out, null a calm one.
-    if (o.kind === "runsOut") { row.runsOutAt = o.at; row.forecastPercent = 101; } else { row.runsOutAt = null; row.forecastPercent = null; }
+    let o = simulate(slots, rate, now);
+    // The same margin as a window's forecast: a pool that lasts at a tenth less spend is not called as running out.
+    if (o.kind === "runsOut") { const calm = simulate(slots, rate / (RUN_OUT_MARGIN / 100), now); if (calm.kind === "lasts") o = calm; }
+    // The pool's own walk gives every row its "out in" and colour: the margin draws a limit that runs out, null a calm one.
+    if (o.kind === "runsOut") { row.runsOutAt = o.at; row.forecastPercent = RUN_OUT_MARGIN; } else { row.runsOutAt = null; row.forecastPercent = null; }
     if (!main) return row;
     ratePerHour = rate * HOUR;
     outlook = o;
@@ -147,7 +147,7 @@ function makePool(providerId: string, accounts: Account[], now: number, sizes: M
   // As providers list their windows: shortest first (5h, then weekly), model windows last.
   rows.sort((x, y) => Number(x.model !== null) - Number(y.model !== null) || (RANK[x.kind] ?? 0) - (RANK[y.kind] ?? 0));
   const runway = leftUsd !== null && ratePerHour ? (leftUsd / ratePerHour) * HOUR : null;
-  return { providerId, accounts, rows, leftShare, leftUsd, estimated, outlook, ratePerHour, runway, first };
+  return { providerId, accounts, rows, leftShare, leftUsd, estimated, outlook, mainId: `pool:${mainKey}`, ratePerHour, runway, first };
 }
 
 export const isPool = (x: Account | Pool): x is Pool => "rows" in x;

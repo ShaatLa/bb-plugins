@@ -8,7 +8,7 @@ import { watchlist, wakeCost } from './store/context';
 import { prune } from './store/prune.js';
 import { REFERENCE_MODELS, SETTINGS, type SettingKey } from './settings.js';
 import { resolveModel } from './pricing/price.js';
-import { DEFAULT_HEAVY_MODELS, parseHeavy, windowLength, windowPace, windowUsage } from './store/limits.js';
+import { DEFAULT_HEAVY_MODELS, parseHeavy, RECENT, windowLength, windowPace, windowUsage } from './store/limits.js';
 import { createLimitCollector, type CollectorState, type LimitAccount } from './ingest/usage-limits.js';
 
 export type Settings = { rawRetentionDays: number; rollupRetentionDays: number; referenceModel: string; includeOutsideBb: boolean; priceOverrides: string; contextWatchTokens?:number; heavyModels?: string; heavyTargetPercent?: number; language?: string };
@@ -99,9 +99,15 @@ export function registerRpc(bb: BbPluginApi, db: Database, settings: SettingsHan
         const live = a.windows.filter(w => w.resetsAt === null || w.resetsAt > o.now);
         // All windows over and no fresh report yet: say so, instead of "no data: ok".
         return { ...a, message: live.length || !a.windows.length ? a.message : a.message ?? 'reset, no fresh report yet', windows: live.map(w => {
-          const length = windowLength(w.kind, w.label), pace = windowPace(w.usedPercent, w.resetsAt, length, o.now);
-          const usage = pace.startsAt === null ? null : windowUsage(db, a.providerId, pace.startsAt, w.usedPercent, w.model, heavy, o.overrides);
-          return { ...w, ...pace, usage };
+          const length = windowLength(w.kind, w.label), startsAt = w.resetsAt === null || length === null ? null : w.resetsAt - length;
+          const usage = startsAt === null ? null : windowUsage(db, a.providerId, startsAt, w.usedPercent, w.model, heavy, o.overrides);
+          // shortcut: the last week's spend counts from the first stored hour, so a fresh install underrates the pace for its first week.
+          if (usage && length !== null && length >= RECENT) {
+            const recent = windowUsage(db, a.providerId, o.now - RECENT, 0, w.model, heavy, o.overrides);
+            usage.recentUsdPerHour = ((recent.heavy.usd + recent.other.usd) / RECENT) * 3_600_000;
+          }
+          const perMs = usage?.recentUsdPerHour != null && usage.usdPerPercent ? usage.recentUsdPerHour / 3_600_000 / usage.usdPerPercent : null;
+          return { ...w, ...windowPace(w.usedPercent, w.resetsAt, length, o.now, perMs), usage };
         }) };
       });
       const target = o.heavyTargetPercent ?? 50;

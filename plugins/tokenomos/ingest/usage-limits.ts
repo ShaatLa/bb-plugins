@@ -75,7 +75,8 @@ const KEEP_LAST_GOOD_MS = 24 * 3_600_000;
 /**
  * Remembers each account's last successful report and shows it, marked stale, while the source fails or drops
  * out, instead of hiding the numbers behind an error. A window a successful report leaves out (sources do not always
- * report every window) is kept the same way until it resets or a day passes. A model window is matched by kind and
+ * report every window) is kept the same way for a day; once it resets it shows as empty with no known reset, since
+ * sources leave out a window that has not started again (no use since its reset). A model window is matched by kind and
  * model, since sources name it differently ("Fable", "Weekly · fable"); others by label.
  */
 // Custom windows can share a model scope (an aggregate "Gemini Models" in 5h and 7d), so they keep their label.
@@ -95,7 +96,8 @@ export function createLimitCollector(discover: Discover, callRpc: CallRpc, selfI
     const kept: LimitWindow[] = [];
     for (const [key, s] of seen) {
       if (s.at === now) continue;
-      if (now - s.at > KEEP_LAST_GOOD_MS || (s.w.resetsAt !== null && s.w.resetsAt <= now)) seen.delete(key);
+      if (now - s.at > KEEP_LAST_GOOD_MS) seen.delete(key);
+      else if (s.w.resetsAt !== null && s.w.resetsAt <= now) kept.push({ ...s.w, usedPercent: 0, resetsAt: null });
       else kept.push({ ...s.w, stale: true, seenAt: s.at });
     }
     return kept.length ? { ...account, windows: [...account.windows, ...kept] } : account;

@@ -1,7 +1,10 @@
 import type { Database } from 'better-sqlite3';
+import { RUN_OUT_MARGIN } from '../contract.js';
 import { costUsd, type Overrides } from '../pricing/price.js';
 
 const HOUR = 3_600_000;
+/** How far back the pace of a long window looks: one full week, so busy weekdays and quiet weekends both count. */
+export const RECENT = 7 * 24 * HOUR;
 export const DEFAULT_HEAVY_MODELS = 'fable, opus, sol, astra, argon';
 
 const words = (s: string) => s.toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
@@ -22,7 +25,7 @@ export function windowLength(kind: string, label: string): number | null {
 const scopeWords = (scope: string | null) => (scope ? words(scope).filter(w => w !== 'models' && w !== 'model') : []);
 
 type Part = { usd: number; calls: number };
-export type WindowUsage = { heavy: Part; other: Part; heavyShare: number | null; usdPerPercent: number | null; partial: boolean };
+export type WindowUsage = { heavy: Part; other: Part; heavyShare: number | null; usdPerPercent: number | null; partial: boolean; recentUsdPerHour?: number | null };
 
 /**
  * API-equivalent spend of one provider since a window start, heavy vs other models. Counts usage outside bb too:
@@ -49,17 +52,25 @@ export function windowUsage(db: Database, provider: string, from: number, usedPe
   return result;
 }
 
-/** Pace of a limit window: share of its time elapsed, the percent expected at reset, and when 100% is reached first. */
-export function windowPace(usedPercent: number, resetsAt: number | null, length: number | null, now: number) {
+/**
+ * Pace of a limit window: share of its time elapsed, the percent expected at reset, and when 100% is reached first.
+ * A long window projects the last week's pace (`recentPerMs`, percent per ms) from now: its use since the start is
+ * front-loaded when the window opens on busy days, and stretching that over the quiet ones overstates the forecast.
+ * Short windows project their own pace since the start. "Runs out" needs the projected use to be RUN_OUT_MARGIN of what is left.
+ */
+export function windowPace(usedPercent: number, resetsAt: number | null, length: number | null, now: number, recentPerMs: number | null = null) {
   if (resetsAt === null || length === null) return { startsAt: null, elapsedShare: null, forecastPercent: null, runsOutAt: null };
   const startsAt = resetsAt - length, elapsedShare = Math.min(1, Math.max(0, (now - startsAt) / length));
   // Under 5% of the window gone, a projection from a percent or two mostly amplifies noise; 5 points used is a real signal.
   // A window that has not started yet (a reset further out than its length) has no pace to project.
   const steady = now > startsAt && (elapsedShare >= 0.05 || usedPercent >= 5);
   // An exhausted limit has nothing left to forecast.
-  const forecastPercent = steady && usedPercent < 100 ? usedPercent / elapsedShare : null;
+  const forecastPercent = !steady || usedPercent >= 100 ? null
+    : recentPerMs !== null ? usedPercent + recentPerMs * Math.max(0, resetsAt - now) : usedPercent / elapsedShare;
   let runsOutAt: number | null = null;
   if (usedPercent >= 100) runsOutAt = now;
-  else if (steady && usedPercent > 0) { const at = startsAt + (100 / usedPercent) * (now - startsAt); runsOutAt = at < resetsAt ? at : null; }
+  else if (forecastPercent !== null && forecastPercent - usedPercent >= (RUN_OUT_MARGIN / 100) * (100 - usedPercent)) {
+    runsOutAt = recentPerMs !== null ? now + (100 - usedPercent) / recentPerMs : startsAt + (100 / usedPercent) * (now - startsAt);
+  }
   return { startsAt, elapsedShare, forecastPercent, runsOutAt };
 }
