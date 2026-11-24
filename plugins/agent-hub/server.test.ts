@@ -235,6 +235,16 @@ describe('server',()=>{
   await vi.advanceTimersByTimeAsync(1); expect(recipients()).toBe(2);
   expect(harness.inspection.experimental_rpcInvalidations.some(tags=>tags?.includes(RECIPIENTS_TAG) && tags.length>1)).toBe(false);
  });
+ it('moves a contact under its new parent and back as bb changes the parent',async()=>{
+  const {harness,db}=setup(); seed(db,'ans_a','mine','thr_example');
+  harness.sdk.stub('threads.events.list',async()=>[]);
+  const ids=async()=>((await harness.behavior.callRpc('recipients',{})) as any).recipients.map((r:any)=>r.threadId);
+  expect(await ids()).toEqual(['thr_example']);
+  await harness.behavior.emitThreadEvent('experimental_thread.parentChanged',{thread:makeThreadResponse({id:'thr_example',parentThreadId:'thr_example_parent'}),previousParentThreadId:null} as any);
+  await vi.waitFor(async()=>expect(await ids()).toEqual([]));
+  await harness.behavior.emitThreadEvent('experimental_thread.parentChanged',{thread:makeThreadResponse({id:'thr_example',parentThreadId:null}),previousParentThreadId:'thr_example_parent'} as any);
+  await vi.waitFor(async()=>expect(await ids()).toEqual(['thr_example']));
+ });
  it('lists a new top-level thread as a contact before its first events arrive',async()=>{
   const {harness,db}=setup(), thread=makeThreadResponse({id:'thr_example',parentThreadId:null});
   harness.sdk.stub('threads.get',async()=>thread); harness.sdk.stub('threads.events.list',async()=>[]);
@@ -720,6 +730,14 @@ describe('ingestion driver',()=>{
   expect(harness.inspection.sdk.callsTo('threads.get')).toHaveLength(0);
   expect(eventThreads).toEqual(['changed']);
   expect(db.prepare("SELECT thread_id FROM archived_threads").all()).toEqual([{thread_id:'archived'}]);
+ });
+ it('marks a thread adopted while the plugin was down as a sub-session',async()=>{
+  const {harness,db,driver}=driverSetup();
+  db.prepare("INSERT INTO threads_state(thread_id,last_seq,updated_at,ingested_thread_updated_at) VALUES ('thr_example',1,0,100)").run();
+  harness.sdk.stub('threads.list',async(args:any)=>args.threadIds ? [makeThreadResponse({id:'thr_example',updatedAt:100,parentThreadId:'thr_example_parent'})] : []);
+  harness.sdk.stub('threads.events.list',async()=>[]);
+  await driver.reconcile();
+  expect(db.prepare("SELECT thread_id FROM sub_threads").all()).toEqual([{thread_id:'thr_example'}]);
  });
  it('lists a former sub-session as a contact again once bb clears its parent',async()=>{
   const {harness,db,driver}=driverSetup();

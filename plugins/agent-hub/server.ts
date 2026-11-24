@@ -677,6 +677,8 @@ function start(bb: BbPluginApi, migrationError: string | null) {
   // is queued, dispatched or deleted anywhere (bb's chat, an agent's thread tell, a script).
   for (const name of ['message.queued','message.dispatched','message.cancelled'] as const) bb.events.on(name,({entry})=>{queueStamps.set(entry.threadId,(queueStamps.get(entry.threadId) ?? 0)+1); bb.rpc.experimental_invalidate([QUEUE_TAG]);});
   bb.events.on('thread.deleted',({thread})=>driver.deleteThread(thread.id));
+  // Adopting or releasing a thread sends no thread events, so its contact row would wait for the thread's next turn.
+  if (!migrationPending) bb.events.on('experimental_thread.parentChanged',({thread})=>driver.schedule(thread.id,thread).then(invalidate,e=>bb.log.warn(`Agent Hub ingest: ${String(e)}`)));
   // A new thread's first events can wait (e.g. behind bb's concurrency limit); tracking it now lists it as a contact at once.
   if (!migrationPending) bb.events.on('thread.created',({thread})=>{if (!thread.parentThreadId && thread.visibility!=='hidden' && !thread.archivedAt) driver.schedule(thread.id,thread).then(invalidateRecipients,e=>bb.log.warn(`Agent Hub ingest: ${String(e)}`));});
   const hasItems = (id: string) => !!db.prepare('SELECT 1 FROM items WHERE thread_id=? LIMIT 1').get(id);

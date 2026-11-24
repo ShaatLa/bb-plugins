@@ -171,8 +171,8 @@ export function createDriver(bb: BbPluginApi, db: Database.Database, invalidate:
         await Promise.all(tracked.slice(i,i+200).map(async row => {
           const id=row.thread_id; let thread: Thread|undefined=known.get(id);
           if (thread?.archivedAt) return;
-          // Clearing a parent need not move updatedAt, so a top-level thread still marked as a sub-session is drained anyway.
-          if (thread && !row.last_error && row.ingested_thread_updated_at!==null && thread.updatedAt<=row.ingested_thread_updated_at && (thread.parentThreadId || !db.prepare('SELECT 1 FROM sub_threads WHERE thread_id=?').get(id))) return;
+          // A parent change need not move updatedAt, so a thread whose sub-session mark disagrees with bb is drained anyway.
+          if (thread && !row.last_error && row.ingested_thread_updated_at!==null && thread.updatedAt<=row.ingested_thread_updated_at && !!thread.parentThreadId===!!db.prepare('SELECT 1 FROM sub_threads WHERE thread_id=?').get(id)) return;
           if (!thread) {
             try {thread=await bb.sdk.threads.get({threadId:id,signal});}
             catch (e) {if (notFound(e)) await locked(id,async()=>remove(id)); return;}
