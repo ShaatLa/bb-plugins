@@ -513,6 +513,12 @@ it('groups contacts under project headers when the setting is on', async () => {
   await within(list).findAllByRole('option');
   expect(Array.from(list.querySelectorAll('p, [role=option]')).map(node => node.tagName === 'P' ? node.textContent : node.querySelector('.truncate')!.textContent)).toEqual(['Acme', 'A', 'C', 'Plugins', 'B']);
 });
+it('starts a new thread in a project from its header', async () => {
+  const rows = [{ ...one, threadId:'thr_a', threadTitle:'A', projectId:'pa', projectName:'Acme' }];
+  const slot = renderSlot({ component: Inbox }, {}, { rpc: { getPreferences: () => ({ groupByProject: true }), recipients: () => ({ recipients: rows }), list: () => ({ items:[], nextCursor:null }) } } as any);
+  fireEvent.click(await slot.findByRole('button', { name:'New thread in Acme' }));
+  expect(slot.inspection.navigateCalls).toContainEqual({ method:'toCompose', options:{ projectId:'pa', focusPrompt:true } });
+});
 it('resizes the contact column with the keyboard and remembers the width', async () => {
   const { slot } = setup();
   const handle = slot.getByRole('separator', { name:'Resize contacts' });
