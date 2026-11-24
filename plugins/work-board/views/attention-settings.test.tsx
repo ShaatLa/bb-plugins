@@ -6,6 +6,7 @@ import { createFakePluginHost, makeThreadResponse } from "@get-bb/plugin-sdk/tes
 import { createStore, registerTasksApi } from "../api";
 import { registerAttention } from "../attention/rpc";
 import { transfers } from "../checks/transfer";
+import { prEventSettings, setPrEventSetting } from "../git-sync/events";
 import { tasksRpcContract } from "../shared/contract";
 
 window.matchMedia ??= (media: string) => ({ matches: false, media, onchange: null, addListener() {}, removeListener() {}, addEventListener() {}, removeEventListener() {}, dispatchEvent: () => false });
@@ -34,7 +35,7 @@ function threadSummary(overrides: Parameters<typeof makeThreadResponse>[0]) {
   };
 }
 
-it("shows the mode with its gate, starts shadow, saves the manager and lets the owner resolve an unknown notice", async () => {
+it("shows the mode with its gate, starts shadow, saves the manager on pick and lets the owner resolve an unknown notice", async () => {
   const { bb, harness } = createFakePluginHost({ pluginId: "work-board" });
   try {
     const store = createStore(bb);
@@ -57,7 +58,7 @@ it("shows the mode with its gate, starts shadow, saves the manager and lets the 
       },
     };
     const settings = renderSlot(app.settingsSections[0]!, {}, slotOptions);
-    const section = await settings.findByRole("region", { name: "Manager attention" });
+    const section = await settings.findByRole("region", { name: "Manager" });
     await waitFor(() => expect(within(section).getByTestId("attention-sender").textContent).toBe("Off · Sweep sends"));
     // The write RPC cannot tell the owner from an agent, so the copy must not promise that agents are kept out.
     expect(section.textContent).toMatch(/owner-only convention/);
@@ -92,9 +93,9 @@ it("shows the mode with its gate, starts shadow, saves the manager and lets the 
     expect(menu.queryByRole("option", { name: /Coordination round/ })).toBeNull();
     expect(menu.queryByRole("option", { name: "Worker 1" })).toBeNull();
     expect(menu.queryByRole("option", { name: "No manager" })).toBeNull();
+    // With no manager set, the pick itself is the save: no confirmation and no Save button.
     fireEvent.click(match);
-    expect(picker.textContent).toContain("Release coordinator");
-    fireEvent.click(within(section).getByRole("button", { name: "Save" }));
+    expect(within(section).queryByRole("button", { name: "Save" })).toBeNull();
     await waitFor(() => expect(settings.rpcCalls).toContainEqual({ method: "updateAttentionManager", input: { projectId: project.id, manager: "thr_example" } }));
     const db = bb.storage.database();
     expect(db.prepare("SELECT manager FROM attention_manager WHERE tracker_id=?").get(project.id)).toEqual({ manager: "thr_example" });
@@ -112,7 +113,7 @@ it("shows the mode with its gate, starts shadow, saves the manager and lets the 
     await waitFor(() => expect(db.prepare("SELECT disposition FROM attention_attempts WHERE attempt_id='a1'").get()).toEqual({ disposition: "waived_loss" }));
     fireEvent.click(picker);
     fireEvent.click(await menu.findByRole("option", { name: "No manager" }));
-    fireEvent.click(within(section).getByRole("button", { name: "Save" }));
+    fireEvent.click(await menu.findByRole("button", { name: "Remove manager" }));
     await waitFor(() => expect(db.prepare("SELECT manager FROM attention_manager WHERE tracker_id=?").get(project.id)).toEqual({ manager: null }));
     // Clearing the picker saved no manager, and the empty selection displays as "No manager" again.
     await waitFor(() => expect(within(section).getByRole("button", { name: /^Manager thread:/ }).textContent).toContain("No manager"));
@@ -120,7 +121,7 @@ it("shows the mode with its gate, starts shadow, saves the manager and lets the 
     // Reopened, the saved empty selection still reads "No manager".
     cleanup();
     const reopened = renderSlot(app.settingsSections[0]!, {}, slotOptions);
-    const again = await reopened.findByRole("region", { name: "Manager attention" });
+    const again = await reopened.findByRole("region", { name: "Manager" });
     await waitFor(() => expect(within(again).getByRole("button", { name: /^Manager thread:/ }).textContent).toContain("No manager"));
     expect((await within(again).findByTestId("attention-manager-warning")).textContent).toContain("No manager chosen");
   } finally { cleanup(); await harness.dispose(); }
@@ -149,7 +150,7 @@ it("follows archive, unarchive and delete events of the manager in the open view
       rpc: Object.fromEntries(Object.keys(tasksRpcContract).map((method) => [method, (input: unknown) => harness.callRpc(method, input)])),
       sdk: { threads: { list: async () => [] } },
     });
-    const section = await settings.findByRole("region", { name: "Manager attention" });
+    const section = await settings.findByRole("region", { name: "Manager" });
     await within(section).findByTestId("attention-sender");
     expect(within(section).queryByTestId("attention-manager-warning")).toBeNull();
     // The host's realtime signals are handed to the mounted view, as the platform does for a subscribed slot.
@@ -192,9 +193,290 @@ it("names Work Board's checks runner as the sender when it owns the checks, and 
       rpc: Object.fromEntries(Object.keys(tasksRpcContract).map((method) => [method, (input: unknown) => harness.callRpc(method, input)])),
       sdk: { threads: { list: async () => [] } },
     });
-    const section = await settings.findByRole("region", { name: "Manager attention" });
+    const section = await settings.findByRole("region", { name: "Manager" });
     await waitFor(() => expect(within(section).getByTestId("attention-sender").textContent).toBe("Shadow · comparing, Work Board's checks runner sends"));
     openDelivery(section);
     expect(within(section).getByTestId("attention-pending").textContent).toBe("Going live · A transfer (import-from-sweep) is running for this bb project. Wait for it to finish.");
   } finally { transfers.clear(); cleanup(); await harness.dispose(); }
+});
+
+it("confirms replacing or clearing a set manager, writes once on accept, and keeps the stored manager on cancel or rejection", async () => {
+  const { bb, harness } = createFakePluginHost({ pluginId: "work-board" });
+  try {
+    const store = createStore(bb);
+    registerTasksApi(bb, store);
+    registerAttention(bb, store);
+    const project = store.tasks.createProject({ name: "Alpha", prefix: "ALP", color: "blue", linkedBbProjectId: "proj_example" });
+    const db = bb.storage.database();
+    db.prepare("INSERT INTO attention_manager(tracker_id, manager, changed_at, previous) VALUES (?, 'thr_example', ?, NULL)").run(project.id, new Date().toISOString());
+    const threads = [threadSummary({ id: "thr_example", title: "Release coordinator" }), threadSummary({ id: "thr_example_2", title: "Second coordinator" })];
+    let reject = false;
+    const rpc: Record<string, (input: unknown) => unknown> = Object.fromEntries(Object.keys(tasksRpcContract).map((method) => [method, (input: unknown) => harness.callRpc(method, input)]));
+    rpc.updateAttentionManager = async (input) => {
+      if (reject) throw new Error("Manager change refused");
+      return harness.callRpc("updateAttentionManager", input);
+    };
+    const settings = renderSlot(app.settingsSections[0]!, {}, {
+      rpc,
+      sdk: { threads: { list: async (input) => (input?.threadIds ? threads.filter((thread) => input.threadIds!.includes(thread.id)) : input?.projectId === "proj_example" ? threads : []) } },
+    });
+    const section = await settings.findByRole("region", { name: "Manager" });
+    const picker = () => within(section).getByRole("button", { name: /^Manager thread:/ });
+    const menu = within(document.body);
+    const writes = () => settings.rpcCalls.filter((call) => call.method === "updateAttentionManager");
+    const choose = async (name: string) => {
+      fireEvent.click(picker());
+      fireEvent.click(await menu.findByRole("option", { name }));
+    };
+    await waitFor(() => expect(picker().textContent).toContain("Release coordinator"));
+    // Picking the current manager again does nothing.
+    await choose("Release coordinator");
+    expect(menu.queryByRole("dialog")).toBeNull();
+    expect(writes()).toHaveLength(0);
+    // Cancel keeps the stored manager.
+    await choose("Second coordinator");
+    const dialog = await menu.findByRole("dialog", { name: "Replace the manager thread?" });
+    expect(dialog.textContent).toContain("From Release coordinator to Second coordinator");
+    fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(menu.queryByRole("dialog")).toBeNull());
+    expect(writes()).toHaveLength(0);
+    expect(picker().textContent).toContain("Release coordinator");
+    // A rejected write shows why and keeps the stored manager.
+    reject = true;
+    await choose("Second coordinator");
+    fireEvent.click(await menu.findByRole("button", { name: "Replace manager" }));
+    expect((await within(section).findByRole("alert")).textContent).toBe("Manager change refused");
+    expect(picker().textContent).toContain("Release coordinator");
+    expect(db.prepare("SELECT manager FROM attention_manager WHERE tracker_id=?").get(project.id)).toEqual({ manager: "thr_example" });
+    // Accepting writes exactly once.
+    reject = false;
+    const before = writes().length;
+    await choose("Second coordinator");
+    fireEvent.click(await menu.findByRole("button", { name: "Replace manager" }));
+    await waitFor(() => expect(db.prepare("SELECT manager FROM attention_manager WHERE tracker_id=?").get(project.id)).toEqual({ manager: "thr_example_2" }));
+    expect(writes().slice(before)).toEqual([{ method: "updateAttentionManager", input: { projectId: project.id, manager: "thr_example_2" } }]);
+    await waitFor(() => expect(picker().textContent).toContain("Second coordinator"));
+    // Clearing to no manager asks too and stores null.
+    await choose("No manager");
+    expect((await menu.findByRole("dialog", { name: "Remove the manager thread?" })).textContent).toContain("to No manager");
+    fireEvent.click(menu.getByRole("button", { name: "Remove manager" }));
+    await waitFor(() => expect(db.prepare("SELECT manager FROM attention_manager WHERE tracker_id=?").get(project.id)).toEqual({ manager: null }));
+    expect(writes().at(-1)).toEqual({ method: "updateAttentionManager", input: { projectId: project.id, manager: null } });
+  } finally { cleanup(); await harness.dispose(); }
+});
+
+it("switches the two PR message settings one key at a time, survives a reload and a rejection, and never applies a write to another project", async () => {
+  const { bb, harness } = createFakePluginHost({ pluginId: "work-board" });
+  try {
+    const store = createStore(bb);
+    registerTasksApi(bb, store);
+    registerAttention(bb, store);
+    const alpha = store.tasks.createProject({ name: "Alpha", prefix: "ALP", color: "blue", linkedBbProjectId: "proj_example" });
+    const beta = store.tasks.createProject({ name: "Beta", prefix: "BET", color: "red" });
+    const db = bb.storage.database();
+    setPrEventSetting(db, beta.id, "prEvents", "off");
+    let gate: Promise<void> | null = null;
+    let reject = false;
+    const rpc: Record<string, (input: unknown) => unknown> = Object.fromEntries(Object.keys(tasksRpcContract).map((method) => [method, (input: unknown) => harness.callRpc(method, input)]));
+    rpc["config.set"] = async (input) => {
+      await gate;
+      if (reject) throw new Error("Setting refused");
+      return harness.callRpc("config.set", input);
+    };
+    const options = { rpc, sdk: { threads: { list: async () => [] } } };
+    let settings = renderSlot(app.settingsSections[0]!, {}, options);
+    const lifecycle = () => settings.getByRole("switch", { name: "PR lifecycle messages" });
+    const copy = () => settings.getByRole("switch", { name: "Copy PR messages to the manager" });
+    // Defaults: lifecycle messages on, the manager copy off; each switch is described by its hint.
+    await waitFor(() => expect(lifecycle().hasAttribute("disabled")).toBe(false));
+    expect(lifecycle().getAttribute("aria-checked")).toBe("true");
+    expect(copy().getAttribute("aria-checked")).toBe("false");
+    expect(document.getElementById(lifecycle().getAttribute("aria-describedby")!)?.textContent).toMatch(/pull request/);
+    fireEvent.click(lifecycle());
+    await waitFor(() => expect(prEventSettings(db, alpha.id).events).toBe("off"));
+    await waitFor(() => expect(lifecycle().getAttribute("aria-checked")).toBe("false"));
+    fireEvent.click(copy());
+    await waitFor(() => expect(prEventSettings(db, alpha.id).manager).toBe("on"));
+    await waitFor(() => expect(copy().getAttribute("aria-checked")).toBe("true"));
+    expect(settings.rpcCalls.filter((call) => call.method === "config.set").map((call) => call.input)).toEqual([
+      { projectId: alpha.id, key: "prEvents", value: "off" },
+      { projectId: alpha.id, key: "prEventsManager", value: "on" },
+    ]);
+    fireEvent.click(copy());
+    await waitFor(() => expect(prEventSettings(db, alpha.id).manager).toBe("off"));
+    // A rejection keeps the stored value and says why.
+    reject = true;
+    fireEvent.click(lifecycle());
+    expect((await settings.findByRole("alert")).textContent).toBe("Setting refused");
+    expect(lifecycle().getAttribute("aria-checked")).toBe("false");
+    expect(prEventSettings(db, alpha.id).events).toBe("off");
+    reject = false;
+    // A reload reads the stored values back.
+    cleanup();
+    settings = renderSlot(app.settingsSections[0]!, {}, options);
+    await waitFor(() => expect(lifecycle().hasAttribute("disabled")).toBe(false));
+    expect(lifecycle().getAttribute("aria-checked")).toBe("false");
+    expect(copy().getAttribute("aria-checked")).toBe("false");
+    // A write still pending when the project changes lands on its own project and never shows on the next one.
+    let open!: () => void;
+    gate = new Promise((resolve) => { open = resolve; });
+    fireEvent.click(lifecycle());
+    fireEvent.click(settings.getByRole("combobox", { name: "Settings project" }));
+    fireEvent.click(await settings.findByRole("option", { name: "Beta" }));
+    await waitFor(() => expect(settings.rpcCalls).toContainEqual({ method: "config.get", input: { projectId: beta.id } }));
+    await waitFor(() => expect(lifecycle().hasAttribute("disabled")).toBe(false));
+    open();
+    await waitFor(() => expect(prEventSettings(db, alpha.id).events).toBe("on"));
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(lifecycle().getAttribute("aria-checked")).toBe("false");
+    expect(prEventSettings(db, beta.id).events).toBe("off");
+  } finally { cleanup(); await harness.dispose(); }
+});
+
+it("makes the parity acknowledgement a local switch: no call when toggled, hidden until the gate expires, cleared by a new generation", async () => {
+  const { bb, harness } = createFakePluginHost({ pluginId: "work-board" });
+  try {
+    const store = createStore(bb);
+    registerTasksApi(bb, store);
+    registerAttention(bb, store);
+    const project = store.tasks.createProject({ name: "Alpha", prefix: "ALP", color: "blue", linkedBbProjectId: "proj_example" });
+    const settings = renderSlot(app.settingsSections[0]!, {}, {
+      rpc: Object.fromEntries(Object.keys(tasksRpcContract).map((method) => [method, (input: unknown) => harness.callRpc(method, input)])),
+      sdk: { threads: { list: async () => [] } },
+    });
+    const section = await settings.findByRole("region", { name: "Manager" });
+    await within(section).findByTestId("attention-sender");
+    openDelivery(section);
+    fireEvent.click(within(section).getByRole("button", { name: "Start shadow" }));
+    await within(section).findByTestId("attention-gate");
+    const name = "I reviewed the differences between Work Board and Sweep";
+    expect(within(section).queryByRole("switch", { name })).toBeNull();
+    // The gate expires: the shadow period began 49 hours ago.
+    const db = bb.storage.database();
+    db.prepare("UPDATE attention_modes SET shadow_started_at=? WHERE tracker_id=?").run(new Date(Date.now() - 49 * 3_600_000).toISOString(), project.id);
+    await settings.behavior.emitRealtime("settings:changed", { projectId: project.id });
+    const parity = await within(section).findByRole("switch", { name });
+    const goLive = () => within(section).getByRole("button", { name: "Go live" });
+    expect(parity.getAttribute("aria-checked")).toBe("false");
+    expect(goLive()).toHaveProperty("disabled", true);
+    const calls = settings.rpcCalls.length;
+    // Keyboard-operable: the switch is a focusable button.
+    parity.focus();
+    fireEvent.click(parity);
+    await waitFor(() => expect(within(section).getByRole("switch", { name }).getAttribute("aria-checked")).toBe("true"));
+    expect(goLive()).toHaveProperty("disabled", false);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(settings.rpcCalls.slice(calls)).toEqual([]);
+    // A new generation clears the acknowledgement.
+    db.prepare("UPDATE attention_modes SET effective_generation=effective_generation+1 WHERE tracker_id=?").run(project.id);
+    await settings.behavior.emitRealtime("settings:changed", { projectId: project.id });
+    await waitFor(() => expect(within(section).getByRole("switch", { name }).getAttribute("aria-checked")).toBe("false"));
+    expect(goLive()).toHaveProperty("disabled", true);
+  } finally { cleanup(); await harness.dispose(); }
+});
+
+it("keeps the picker locked until the refreshed manager lands, so a second pick asks to replace it", async () => {
+  const { bb, harness } = createFakePluginHost({ pluginId: "work-board" });
+  try {
+    const store = createStore(bb);
+    registerTasksApi(bb, store);
+    registerAttention(bb, store);
+    store.tasks.createProject({ name: "Alpha", prefix: "ALP", color: "blue", linkedBbProjectId: "proj_example" });
+    const threads = [threadSummary({ id: "thr_example", title: "Release coordinator" }), threadSummary({ id: "thr_example_2", title: "Second coordinator" })];
+    const rpc: Record<string, (input: unknown) => unknown> = Object.fromEntries(Object.keys(tasksRpcContract).map((method) => [method, (input: unknown) => harness.callRpc(method, input)]));
+    let hold: Promise<void> | null = null;
+    rpc.getAttentionSettings = async (input) => { const gate = hold; if (gate) await gate; return harness.callRpc("getAttentionSettings", input); };
+    const settings = renderSlot(app.settingsSections[0]!, {}, {
+      rpc,
+      sdk: { threads: { list: async (input) => (input?.threadIds ? threads.filter((thread) => input.threadIds!.includes(thread.id)) : input?.projectId === "proj_example" ? threads : []) } },
+    });
+    const section = await settings.findByRole("region", { name: "Manager" });
+    const picker = () => within(section).getByRole("button", { name: /^Manager thread:/ });
+    const menu = within(document.body);
+    const writes = () => settings.rpcCalls.filter((call) => call.method === "updateAttentionManager");
+    await waitFor(() => expect(picker().textContent).toContain("No manager"));
+    let release!: () => void;
+    hold = new Promise((resolve) => { release = resolve; });
+    fireEvent.click(picker());
+    fireEvent.click(await menu.findByRole("option", { name: "Release coordinator" }));
+    await waitFor(() => expect(writes()).toHaveLength(1));
+    // The refresh is still out: the picker cannot be used yet.
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(picker().hasAttribute("disabled")).toBe(true);
+    hold = null;
+    release();
+    await waitFor(() => expect(picker().hasAttribute("disabled")).toBe(false));
+    await waitFor(() => expect(picker().textContent).toContain("Release coordinator"));
+    fireEvent.click(picker());
+    fireEvent.click(await menu.findByRole("option", { name: "Second coordinator" }));
+    expect((await menu.findByRole("dialog", { name: "Replace the manager thread?" })).textContent).toContain("From Release coordinator to Second coordinator");
+    expect(writes()).toHaveLength(1);
+  } finally { cleanup(); await harness.dispose(); }
+});
+
+it("never lets a PR settings read that started before a write reverse the switch", async () => {
+  const { bb, harness } = createFakePluginHost({ pluginId: "work-board" });
+  try {
+    const store = createStore(bb);
+    registerTasksApi(bb, store);
+    registerAttention(bb, store);
+    const project = store.tasks.createProject({ name: "Alpha", prefix: "ALP", color: "blue", linkedBbProjectId: "proj_example" });
+    const rpc: Record<string, (input: unknown) => unknown> = Object.fromEntries(Object.keys(tasksRpcContract).map((method) => [method, (input: unknown) => harness.callRpc(method, input)]));
+    let hold: Promise<void> | null = null;
+    // The read takes its values first and answers late, like a request already in flight.
+    rpc["config.get"] = async (input) => { const result = await harness.callRpc("config.get", input); const gate = hold; if (gate) await gate; return result; };
+    const settings = renderSlot(app.settingsSections[0]!, {}, { rpc, sdk: { threads: { list: async () => [] } } });
+    const lifecycle = () => settings.getByRole("switch", { name: "PR lifecycle messages" });
+    await waitFor(() => expect(lifecycle().hasAttribute("disabled")).toBe(false));
+    let release!: () => void;
+    hold = new Promise((resolve) => { release = resolve; });
+    await settings.behavior.emitRealtime("projects:changed", { projectId: project.id });
+    await waitFor(() => expect(settings.rpcCalls.filter((call) => call.method === "config.get")).toHaveLength(2));
+    hold = null;
+    fireEvent.click(lifecycle());
+    await waitFor(() => expect(prEventSettings(bb.storage.database(), project.id).events).toBe("off"));
+    await waitFor(() => expect(lifecycle().getAttribute("aria-checked")).toBe("false"));
+    release();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(lifecycle().getAttribute("aria-checked")).toBe("false");
+  } finally { cleanup(); await harness.dispose(); }
+});
+
+it("keeps an acknowledged manager and PR value when the read after the write fails, so a replacement still asks first", async () => {
+  const { bb, harness } = createFakePluginHost({ pluginId: "work-board" });
+  try {
+    const store = createStore(bb);
+    registerTasksApi(bb, store);
+    registerAttention(bb, store);
+    const project = store.tasks.createProject({ name: "Alpha", prefix: "ALP", color: "blue", linkedBbProjectId: "proj_example" });
+    const threads = [threadSummary({ id: "thr_example", title: "Release coordinator" }), threadSummary({ id: "thr_example_2", title: "Second coordinator" })];
+    const rpc: Record<string, (input: unknown) => unknown> = Object.fromEntries(Object.keys(tasksRpcContract).map((method) => [method, (input: unknown) => harness.callRpc(method, input)]));
+    let failReads = false;
+    rpc.getAttentionSettings = async (input) => { if (failReads) throw new Error("Read failed"); return harness.callRpc("getAttentionSettings", input); };
+    rpc["config.get"] = async (input) => { if (failReads) throw new Error("Read failed"); return harness.callRpc("config.get", input); };
+    const settings = renderSlot(app.settingsSections[0]!, {}, {
+      rpc,
+      sdk: { threads: { list: async (input) => (input?.threadIds ? threads.filter((thread) => input.threadIds!.includes(thread.id)) : input?.projectId === "proj_example" ? threads : []) } },
+    });
+    const section = await settings.findByRole("region", { name: "Manager" });
+    const picker = () => within(section).getByRole("button", { name: /^Manager thread:/ });
+    const lifecycle = () => within(section).getByRole("switch", { name: "PR lifecycle messages" });
+    const menu = within(document.body);
+    await waitFor(() => expect(picker().textContent).toContain("No manager"));
+    await waitFor(() => expect(lifecycle().hasAttribute("disabled")).toBe(false));
+    failReads = true;
+    fireEvent.click(picker());
+    fireEvent.click(await menu.findByRole("option", { name: "Release coordinator" }));
+    await waitFor(() => expect(picker().hasAttribute("disabled")).toBe(false));
+    await waitFor(() => expect(picker().textContent).toContain("Release coordinator"));
+    fireEvent.click(picker());
+    fireEvent.click(await menu.findByRole("option", { name: "Second coordinator" }));
+    expect(await menu.findByRole("dialog", { name: "Replace the manager thread?" })).toBeTruthy();
+    expect(settings.rpcCalls.filter((call) => call.method === "updateAttentionManager")).toHaveLength(1);
+    fireEvent.click(menu.getByRole("button", { name: "Cancel" }));
+    fireEvent.click(lifecycle());
+    await waitFor(() => expect(prEventSettings(bb.storage.database(), project.id).events).toBe("off"));
+    await waitFor(() => expect(lifecycle().hasAttribute("disabled")).toBe(false));
+    expect(lifecycle().getAttribute("aria-checked")).toBe("false");
+  } finally { cleanup(); await harness.dispose(); }
 });

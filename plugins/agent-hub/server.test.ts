@@ -235,6 +235,25 @@ describe('server',()=>{
   await vi.advanceTimersByTimeAsync(1); expect(recipients()).toBe(2);
   expect(harness.inspection.experimental_rpcInvalidations.some(tags=>tags?.includes(RECIPIENTS_TAG) && tags.length>1)).toBe(false);
  });
+ it('moves a contact under its new parent and back as bb changes the parent',async()=>{
+  const {harness,db}=setup(); seed(db,'ans_a','mine','thr_example');
+  harness.sdk.stub('threads.events.list',async()=>[]);
+  const ids=async()=>((await harness.behavior.callRpc('recipients',{})) as any).recipients.map((r:any)=>r.threadId);
+  expect(await ids()).toEqual(['thr_example']);
+  await harness.behavior.emitThreadEvent('experimental_thread.parentChanged',{thread:makeThreadResponse({id:'thr_example',parentThreadId:'thr_example_parent'}),previousParentThreadId:null} as any);
+  await vi.waitFor(async()=>expect(await ids()).toEqual([]));
+  await harness.behavior.emitThreadEvent('experimental_thread.parentChanged',{thread:makeThreadResponse({id:'thr_example',parentThreadId:null}),previousParentThreadId:'thr_example_parent'} as any);
+  await vi.waitFor(async()=>expect(await ids()).toEqual(['thr_example']));
+ });
+ it('lists a new top-level thread as a contact before its first events arrive',async()=>{
+  const {harness,db}=setup(), thread=makeThreadResponse({id:'thr_example',parentThreadId:null});
+  harness.sdk.stub('threads.get',async()=>thread); harness.sdk.stub('threads.events.list',async()=>[]);
+  await harness.behavior.emitThreadEvent('thread.created',{thread} as any);
+  await vi.waitFor(()=>expect(db.prepare("SELECT 1 FROM threads_state WHERE thread_id='thr_example'").get()).toBeTruthy());
+  expect((await harness.behavior.callRpc('recipients',{}) as any).recipients.map((r:any)=>r.threadId)).toEqual(['thr_example']);
+  await harness.behavior.emitThreadEvent('thread.created',{thread:makeThreadResponse({id:'thr_example_child',parentThreadId:'thr_example'})} as any);
+  expect((await harness.behavior.callRpc('recipients',{}) as any).recipients.map((r:any)=>r.threadId)).toEqual(['thr_example']);
+ });
  it.each(['live','list','recipients','legacy-list','legacy-recipients'])('ingests sub-thread history read and outside aggregates via %s',async mode=>{
   const {harness,db}=setup(), sub='thr_example_child', thread=makeThreadResponse({id:sub,parentThreadId:'thr_example'});
   const push=vi.fn(async()=>({channels:['mobile']}));
@@ -427,7 +446,8 @@ describe('reply pools and inbox',()=>{
  it('keeps the open chat listed without items, but not once its thread is archived',async()=>{
   const {harness,db}=setup(); seed(db,'ans_a','mine','a');
   const ids=async(selected:string)=>((await harness.behavior.callRpc('recipients',{selected})) as any).recipients.map((r:any)=>r.threadId);
-  expect(await ids('fresh')).toEqual(['a','fresh']);
+  // A tracked thread without items sorts by when it was tracked, so a new one comes first.
+  expect(await ids('fresh')).toEqual(['fresh','a']);
   db.prepare("INSERT INTO archived_threads VALUES ('fresh')").run();
   expect(await ids('fresh')).toEqual(['a']);
  });
@@ -710,6 +730,23 @@ describe('ingestion driver',()=>{
   expect(harness.inspection.sdk.callsTo('threads.get')).toHaveLength(0);
   expect(eventThreads).toEqual(['changed']);
   expect(db.prepare("SELECT thread_id FROM archived_threads").all()).toEqual([{thread_id:'archived'}]);
+ });
+ it('marks a thread adopted while the plugin was down as a sub-session',async()=>{
+  const {harness,db,driver}=driverSetup();
+  db.prepare("INSERT INTO threads_state(thread_id,last_seq,updated_at,ingested_thread_updated_at) VALUES ('thr_example',1,0,100)").run();
+  harness.sdk.stub('threads.list',async(args:any)=>args.threadIds ? [makeThreadResponse({id:'thr_example',updatedAt:100,parentThreadId:'thr_example_parent'})] : []);
+  harness.sdk.stub('threads.events.list',async()=>[]);
+  await driver.reconcile();
+  expect(db.prepare("SELECT thread_id FROM sub_threads").all()).toEqual([{thread_id:'thr_example'}]);
+ });
+ it('lists a former sub-session as a contact again once bb clears its parent',async()=>{
+  const {harness,db,driver}=driverSetup();
+  db.prepare("INSERT INTO threads_state(thread_id,last_seq,updated_at,ingested_thread_updated_at) VALUES ('thr_example',1,0,100)").run();
+  db.prepare("INSERT INTO sub_threads VALUES ('thr_example')").run();
+  harness.sdk.stub('threads.list',async(args:any)=>args.threadIds ? [makeThreadResponse({id:'thr_example',updatedAt:100})] : []);
+  harness.sdk.stub('threads.events.list',async()=>[]);
+  await driver.reconcile();
+  expect(db.prepare("SELECT thread_id FROM sub_threads").all()).toEqual([]);
  });
  it('records an archived thread that bb leaves out of the list, without ingesting it',async()=>{
   const {harness,db,driver}=driverSetup();

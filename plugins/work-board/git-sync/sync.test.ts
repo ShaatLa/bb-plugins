@@ -256,7 +256,7 @@ it("exports v8 config and links/exclusions, excludes CI snapshots, and restores 
   await f.service.syncProject(f.project.id);
   const capture = captureProject(f.bb, f.store, f.project.id);
   const records = await archiveRecords(f.store, capture, async () => {});
-  expect(capture.manifest.version).toBe(21);
+  expect(capture.manifest.version).toBe(22);
   expect(capture.manifest.gitSync?.repositories).toEqual(["example/service"]);
   expect(JSON.stringify(records)).not.toContain('"checks":');
   expect(
@@ -296,6 +296,7 @@ function githubFixture(
     queued?: boolean;
     headSha?: string;
     baseSha?: string;
+    queueError?: boolean;
   } = {},
 ) {
   const requests: string[] = [];
@@ -377,7 +378,7 @@ function githubFixture(
           repository: {
             pullRequest: {
               reviewDecision: "REVIEW_REQUIRED",
-              mergeQueueEntry: { id: "MQ_entry" },
+              mergeQueueEntry: options.queueError ? null : { id: "MQ_entry", enqueuedAt: "2026-01-01T00:00:00Z" },
               autoMergeRequest: { enabledAt: "2026-10-25T12:00:00Z" },
               mergeStateStatus: "BLOCKED",
               reviewThreads: {
@@ -387,6 +388,7 @@ function githubFixture(
             },
           },
         },
+        ...(options.queueError ? { errors: [{ message: "Resource not accessible", path: ["repository", "pullRequest", "mergeQueueEntry"] }] } : {}),
       };
     else if (url.pathname.endsWith("/required_status_checks"))
       return new Response("{}", { status: 404 });
@@ -479,7 +481,15 @@ it("uses the latest CI attempt on the current head and keeps CI success separate
   expect(value.mergeState).toBe("BLOCKED");
   expect(value.unresolvedThreads).toBe(1);
   expect(value.inMergeQueue).toBe(true);
+  expect(value.queueEntryId).toBe("MQ_entry");
+  expect(value.queueEnqueuedAt).toBe("2026-01-01T00:00:00Z");
   expect(value.autoMerge).toBe(true);
+});
+it("reads the merge queue as unknown when GraphQL reports an error on that field", async () => {
+  const value = await githubFixture({ queueError: true }).client.snapshot("example/service", 42, gitSyncConfigSchema.parse({}));
+  expect(value.inMergeQueue).toBeNull();
+  expect(value.queueEntryId).toBeUndefined();
+  expect(value.review).toBe("REVIEW_REQUIRED");
 });
 it.each(["success", "failure"])(
   "covers a cancelled merge run only through a proven descendant (%s)",
@@ -722,6 +732,21 @@ it("offers unique GitHub repositories from BB projects without changing sync con
     "example/service",
   ]);
   expect(result.config).toMatchObject({ enabled: false, repositories: [] });
+});
+
+it("offers only the linked BB project's repository to a linked project", async () => {
+  const f = setup();
+  const linked = f.store.tasks.createProject({ name: "Linked", prefix: "LNK", color: "green", linkedBbProjectId: "proj_example" });
+  f.harness.sdk.stub("projects.list", async () => [{ id: "proj_other", gitRemoteUrl: "git@github.com:example/other.git" }]);
+  let remote: string | null = "git@github.com:example/service.git";
+  f.harness.sdk.stub("projects.get", async () => ({ id: "proj_example", gitRemoteUrl: remote }));
+  expect(await f.service.handlers.getGitSyncConfig({ projectId: linked.id })).toMatchObject({
+    availableRepositories: ["example/service"], suggestedRepository: "example/service", linkedBbProject: true,
+  });
+  remote = null;
+  expect(await f.service.handlers.getGitSyncConfig({ projectId: linked.id })).toMatchObject({
+    availableRepositories: [], suggestedRepository: null, linkedBbProject: true,
+  });
 });
 
 it("refreshes only PR subscribers after polling and leaves unrelated task indexes alone", async () => {
@@ -1063,7 +1088,7 @@ it("gives a settled merged PR a final in-window read before polling stops at its
   expect((await f.service.handlers.prSummaries({ taskIds: [f.task.id] })).summaries).toMatchObject([{ stale: false }]);
 });
 
-it("promotes a due PR that has waited 15 min ahead of a continuously due open group", async () => {
+it("keeps a continuously due open group ahead of a due merged PR, which is read once the open PRs are done", async () => {
   vi.useFakeTimers({ toFake: ["Date"] });
   const start = Date.parse("2026-11-11T12:00:00.000Z");
   vi.setSystemTime(start);
@@ -1089,7 +1114,64 @@ it("promotes a due PR that has waited 15 min ahead of a continuously due open gr
     }
     return Infinity;
   };
-  expect(await passUntil(50, false)).toBeLessThanOrEqual(4);
+  expect(await passUntil(50, false)).toBe(Infinity);
+  slow = false;
+  vi.setSystemTime(Date.now() + 5 * 60_000);
+  f.client.snapshot.mockClear();
+  await f.service.syncProject(f.project.id);
+  const order = fetched(f);
+  expect(order).toContain(50);
+  expect(Math.max(...open.map((number) => order.indexOf(number)))).toBeLessThan(order.indexOf(50));
+});
+
+it("reads a due open PR before overdue merged PRs that fill a scheduled pass", async () => {
+  vi.useFakeTimers({ toFake: ["Date"] });
+  const start = Date.parse("2026-11-11T12:00:00.000Z");
+  vi.setSystemTime(start);
+  const f = setup();
+  await f.service.handlers.setGitSyncConfig({ projectId: f.project.id, config: gitSyncConfigSchema.parse({ repositories: ["example/service"], titleDiscovery: false, postMergeWorkflows: ["Deploy"] }) });
+  await linkAll(f, [42, 50, 51, 52, 53, 54, 55]);
+  let slow = false;
+  f.client.snapshot.mockImplementation(async (repository, number) => {
+    // Each read takes 70 s once overloaded, so a pass fits three PRs into its three-minute budget.
+    if (slow) vi.setSystemTime(Date.now() + 70_000);
+    return number === 42 ? snapshot(repository, number) : merged(number, "2026-11-11T11:00:00.000Z", deploy("pending"));
+  });
+  await f.service.syncProject(f.project.id);
+  slow = true;
+  vi.setSystemTime(start + 10 * 60_000);
+  f.client.snapshot.mockClear();
+  await f.service.syncProject(f.project.id);
+  expect(fetched(f)).toEqual([42, 50, 51]);
+  // PR 42 has been due 12 min, PRs 52 to 55 for 22 min: four overdue merged PRs, more than the pass can read.
+  vi.setSystemTime(start + 22 * 60_000);
+  f.client.snapshot.mockClear();
+  await expect(f.service.syncProject(f.project.id)).resolves.toMatchObject({ checked: 3 });
+  expect(fetched(f)[0]).toBe(42);
+});
+
+it("keeps a known merged PR whose refresh failed in the merged class of a scheduled pass", async () => {
+  vi.useFakeTimers({ toFake: ["Date"] });
+  const start = Date.parse("2026-11-11T12:00:00.000Z");
+  vi.setSystemTime(start);
+  const f = setup();
+  await f.service.handlers.setGitSyncConfig({ projectId: f.project.id, config: gitSyncConfigSchema.parse({ repositories: ["example/service"], titleDiscovery: false, postMergeWorkflows: ["Deploy"] }) });
+  await linkAll(f, [42, 50]);
+  let failing = false;
+  f.client.snapshot.mockImplementation(async (repository, number) => {
+    if (number === 50 && failing) throw new GithubError(502, "down");
+    return number === 42 ? snapshot(repository, number) : merged(number, "2026-11-11T11:00:00.000Z", deploy("pending"));
+  });
+  await f.service.syncProject(f.project.id);
+  failing = true;
+  vi.setSystemTime(start + 5 * 60_000);
+  await f.service.syncProject(f.project.id);
+  // PR 50 failed 20 min ago, past its backoff; PR 42 has been due for 1 min.
+  vi.setSystemTime(start + 11 * 60_000);
+  f.bb.storage.database().prepare("UPDATE git_pr_snapshots SET last_attempt_at=? WHERE identity=?").run(start - 9 * 60_000, prIdentity({ repository: "example/service", number: 50 }));
+  f.client.snapshot.mockClear();
+  await f.service.syncProject(f.project.id);
+  expect(fetched(f)).toEqual([42, 50]);
 });
 
 it("orders a forced pass by last attempt with open PRs first, so history does not displace open work", async () => {

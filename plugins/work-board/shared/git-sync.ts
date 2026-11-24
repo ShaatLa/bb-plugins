@@ -78,6 +78,8 @@ export const prLinkSchema = z
     source: z.enum(["manual", "title", "environment", "evidence"]),
     confirmed: z.boolean(),
     excluded: z.boolean().default(false),
+    // Set only by an explicit `pr link --owner`; discovery and relinks keep it. PR messages go to this session first.
+    ownerThreadId: z.string().regex(/^thr_/).optional(),
     createdAt: z.iso.datetime({ precision: 3 }),
     updatedAt: z.iso.datetime({ precision: 3 }),
   })
@@ -147,6 +149,9 @@ export const coverageSchema = z
     url: webUrl.nullable(),
     superseded: z.boolean(),
     originalRunId: z.number().nullable(),
+    // When the shown run's latest attempt completed, and which attempt that was; absent on snapshots saved before.
+    completedAt: z.string().nullable().optional(),
+    attempt: z.number().int().positive().optional(),
   })
   .strict();
 export const prSnapshotSchema = z
@@ -169,6 +174,10 @@ export const prSnapshotSchema = z
     requirementsKnown: z.boolean(),
     ci: z.enum(["passing", "failing", "pending", "no_checks", "unknown"]),
     inMergeQueue: z.boolean().nullable().default(null),
+    // The merge queue entry id; null when the PR is not queued, absent when the queue could not be read.
+    queueEntryId: z.string().nullable().optional(),
+    // When the current queue entry was enqueued; it names the entry's add event on the timeline.
+    queueEnqueuedAt: z.string().nullable().optional(),
     autoMerge: z.boolean().nullable().default(null),
     mergeState: z.string().nullable(),
     mergeable: z.boolean().nullable(),
@@ -251,12 +260,15 @@ export const gitSyncMethods = {
         config: gitSyncConfigSchema,
         suggestedRepository: repositorySchema.nullable(),
         availableRepositories: z.array(repositorySchema).default([]),
+        // True when the list holds only the linked BB project's repository.
+        linkedBbProject: z.boolean().default(false),
       })
       .strict(),
   },
   setGitSyncConfig: {
     input: z
-      .object({ projectId: z.string(), config: gitSyncConfigSchema })
+      // `baseConfig`: the stored configuration the new one was built on; the write is refused when it changed meanwhile.
+      .object({ projectId: z.string(), config: gitSyncConfigSchema, baseConfig: gitSyncConfigSchema.optional() })
       .strict(),
     output: z.object({ config: gitSyncConfigSchema }).strict(),
   },
@@ -271,6 +283,8 @@ export const gitSyncMethods = {
         url: prUrlSchema,
         role: z.enum(["delivers", "design", "related"]).default("delivers"),
         part: z.string().nullable().default(null),
+        // The session that opened the PR; its lifecycle messages go there. Omitted keeps the current owner.
+        ownerThreadId: z.string().regex(/^thr_/).optional(),
       })
       .strict(),
     // `note` is set when the confirmed link reminded the card's executors that it works without an approved plan.
@@ -280,6 +294,13 @@ export const gitSyncMethods = {
     input: z.object({ taskId: z.string(), url: prUrlSchema }).strict(),
     output: z.object({ excluded: z.literal(true) }).strict(),
   },
+  listPrEvents: {
+    input: z.object({ taskId: z.string(), limit: z.number().int().min(1).max(200).default(50) }).strict(),
+    output: z.object({ events: z.array(z.object({
+      deliveryId: z.string(), kind: z.string(), role: z.string(), state: z.string(), threadId: z.string().nullable(), attempts: z.number(),
+      error: z.string().nullable(), createdAt: z.string(), updatedAt: z.string(), pr: z.string(), text: z.string(),
+    }).strict()) }).strict(),
+  },
   syncGit: {
     input: z.object({ projectId: z.string() }).strict(),
     output: z
@@ -287,3 +308,6 @@ export const gitSyncMethods = {
       .strict(),
   },
 } as const;
+
+/** Refused whole-configuration write built on an older stored configuration. */
+export const STALE_GIT_CONFIG = "Git/PR settings changed elsewhere; reload them and apply your edits again.";

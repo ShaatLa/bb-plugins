@@ -51,6 +51,9 @@ describe("classifyJobs", () => {
     expect(one(failed({ logExcerpt: "panic: test timed out after 10m0s" }))?.class).toBe("real");
     // A server error from an API the step calls, reported only in the annotation, is not the code's fault.
     expect(one(failed({ annotations: [failure("deploy: merging pull request: All attempts fail:\n#1: PUT https://api.example.com/repos/acme/config/pulls/7/merge: 500  []")] }))).toMatchObject({ class: "transient", evidence: "#1: PUT https://api.example.com/repos/acme/config/pulls/7/merge: 500  []" });
+    // An image registry answering a base-image pull with a server error (buildx/containerd wording).
+    expect(one(failed({ logExcerpt: "#9 ERROR: failed to copy: httpReadSeeker: failed open: unexpected status from GET request to https://registry.example.com/v2/base/blobs/sha256:abc: 500 Internal Server Error\n##[error]buildx failed" }))?.class).toBe("transient");
+    expect(one(failed({ logExcerpt: "ERROR: failed to solve: unexpected status from HEAD request to https://registry.example.com/v2/base/manifests/sha256:abc: 503 Service Unavailable" }))?.class).toBe("transient");
     expect(one(failed({ logExcerpt: "--- FAIL: TestHandler\n    handler_test.go:12: expected 200, got 500" }))?.class).toBe("real");
   });
 

@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { closedThreadsBlock } from "./format";
 import { closureFixture, gate, type ClosureFixture } from "./fixture";
 
@@ -138,13 +138,15 @@ describe("C2.5: a notice is dropped inside the delivery when the card was reopen
     f.world.threads.set("thr_a", { parentThreadId: "thr_parent" });
     f.link(task, "thr_a", { liveStatus: "working" });
     const { id } = await f.close(task);
+    await f.emit("thread.active", "thr_a");
+    f.edit("thr_a");
     const hold = gate();
     f.world.queuedGate = hold.promise;
-    const active = f.emit("thread.active", "thr_a");
-    await tick();
+    const idle = f.emit("thread.idle", "thr_a");
+    await vi.waitFor(() => expect(f.harness.sdk.callsTo("threads.queuedMessages.list").length).toBeGreaterThan(0));
     f.store.tasks.updateTask(task.id, { status: "in_progress" });
     hold.open();
-    await active;
+    await idle;
     expect(f.world.sent).toEqual([]);
     expect(f.row(id, "thr_a")).toMatchObject({ selfNotice: "failed", parentNotice: "failed" });
   });

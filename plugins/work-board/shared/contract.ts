@@ -20,6 +20,7 @@ import {
 
 import { taskStatusSchema, taskStatusesSchema } from "./statuses.js";
 import { BADGE_CRITERIA } from "./badge.js";
+import { globalSettingsPatchSchema } from "./global-settings";
 export { TASK_STATUSES } from "./statuses.js";
 export type { TaskStatusDefinition } from "./statuses.js";
 
@@ -260,8 +261,14 @@ export const questionSchema = questionStateSchema
     taskId: idSchema,
     createdAt: z.string(),
     history: z.array(questionStateSchema).default([]),
+    /** Supersession links live outside the revision history: replacing a check keeps its revision and answer. */
+    supersedes: idSchema.optional(),
+    supersededBy: idSchema.optional(),
+    supersededAt: z.iso.datetime().optional(),
   })
   .superRefine((value, ctx) => {
+    if ((value.supersededBy === undefined) !== (value.supersededAt === undefined))
+      ctx.addIssue({ code: "custom", message: "supersededBy and supersededAt go together" });
     let previous = 0;
     for (const entry of value.history) {
       if (entry.revision <= previous || entry.revision >= value.revision)
@@ -604,6 +611,8 @@ const updateProjectInputSchema = z
     name: nonBlankStringSchema.optional(),
     workflowPolicy: workflowPolicySchema.optional(),
     statuses: taskStatusesSchema.optional(),
+    // The stored statuses `statuses` was built on: the write is refused when they changed meanwhile.
+    baseStatuses: taskStatusesSchema.optional(),
     autoArchiveAfterDays: autoArchiveAfterDaysSchema.optional(),
     staleIdleMinutes: staleIdleThresholdSchema.optional(),
     statusNotifications: statusNotificationsSchema.optional(),
@@ -882,9 +891,15 @@ export const tasksRpcContract = {
     input: z.object({ projectId: z.string(), key: z.string().optional() }).strict(),
     output: z.object({ projectId: z.string(), values: z.record(z.string(), z.unknown()) }).strict(),
   },
+  // `expected` (git.* keys): the stored value the change was built on; the write is refused when it differs.
   "config.set": {
-    input: z.object({ projectId: z.string(), key: z.string(), value: z.unknown() }).strict(),
+    input: z.object({ projectId: z.string(), key: z.string(), value: z.unknown(), expected: z.unknown().optional() }).strict(),
     output: z.object({ projectId: z.string(), key: z.string(), value: z.unknown() }).strict(),
+  },
+  // The native global fields Work Board owns, written only for the keys given; the settings page's General group.
+  "globalSettings.set": {
+    input: z.object({ values: globalSettingsPatchSchema }).strict(),
+    output: z.object({ values: globalSettingsPatchSchema }).strict(),
   },
   ...storageMethods,
   listTaskDependencies: {
@@ -1061,9 +1076,11 @@ export const tasksRpcContract = {
           )
           .min(0)
           .max(20).default([]),
+        /** A check whose state changed replaces this check at the named revision; the old one closes. */
+        supersedes: z.object({ questionId: idSchema, revision: z.number().int().positive() }).strict().optional(),
       })
       .strict(),
-    output: z.object({ question: questionSchema, planWake: planWakeSchema.optional() }).strict(),
+    output: z.object({ question: questionSchema, planWake: planWakeSchema.optional(), warnings: z.array(z.string()).optional() }).strict(),
   },
   answerQuestion: {
     input: z
@@ -1386,7 +1403,8 @@ export const tasksRpcContract = {
     output: z.object({ ok: z.literal(true) }).strict(),
   },
   listTaskCardMeta: {
-    input: z.object({ taskIds: z.array(idSchema).max(500) }).strict(),
+    // A caller that already has the flags of its page skips them here, so they are not computed again at another instant.
+    input: z.object({ taskIds: z.array(idSchema).max(500), skipStaleStatusFlags: z.boolean().optional() }).strict(),
     output: z.object({ metadata: z.array(z.object({
       taskId: idSchema,
       attachmentCount: z.number().int().nonnegative(),

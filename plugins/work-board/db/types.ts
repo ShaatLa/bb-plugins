@@ -226,6 +226,8 @@ export interface ListTasksFilters extends TaskDateFilters {
   labelIds?: readonly string[];
   activeOnly?: boolean;
   staleStatus?: boolean;
+  /** The request's one clock for the stale-status selection, so the flags shown with the page agree with it. */
+  nowMs?: number;
   waitingOnOwner?: boolean;
   /** Only cards with an open plan-debt episode. */
   planDebt?: boolean;

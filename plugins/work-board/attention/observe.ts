@@ -31,6 +31,26 @@ export interface StaleRow {
   /** Open/closed as of a refresh that succeeded; a failed refresh keeps the old payload, which is no longer a known answer. The flags and the ledger both use these. */
   open_known: number;
   closed_known: number;
+  /** JSON array of the `mergedAt` values of the card's merged, non-excluded PRs, as the snapshots hold them (unvalidated). */
+  merged_at: string;
+}
+
+/** A card in the review status whose PR merged this recently is still collecting post-merge evidence, not stale. */
+export const POST_MERGE_REVIEW_GRACE_MS = 2 * 60 * 60 * 1000;
+
+/**
+ * Whether the card's PR question is settled, the one predicate the flags and the attention ledger share: an open PR
+ * settles it; in testing a merged PR does too; in review only a merge inside the grace, using the latest merge instant
+ * that parses and is not in the future, so a malformed or future value neither masks a valid merge nor extends the grace.
+ */
+export function prSettled(row: StaleRow, policy: WorkflowPolicy, nowMs: number): boolean {
+  if (row.open_known) return true;
+  if (row.status === policy.testingStatus) return Boolean(row.merged_pr);
+  if (row.status !== policy.reviewStatus) return false;
+  const merges = (JSON.parse(row.merged_at ?? "[]") as unknown[])
+    .map((value) => (typeof value === "string" ? Date.parse(value) : Number.NaN))
+    .filter((at) => Number.isFinite(at) && at <= nowMs);
+  return merges.length > 0 && nowMs - Math.max(...merges) < POST_MERGE_REVIEW_GRACE_MS;
 }
 
 /** The raw per-card facts behind the stale-status flags; one query for a task list or a whole project. */
@@ -54,6 +74,8 @@ export function staleRows(db: Database, taskIds?: readonly string[], projectId?:
           WHERE l.task_id=t.id AND COALESCE(json_extract(l.payload,'$.excluded'),0)=0 AND s.error IS NULL AND json_extract(s.payload,'$.state') IN ('open','draft')) AS open_known
         , EXISTS(SELECT 1 FROM task_pr_links l JOIN git_pr_snapshots s ON s.project_id=t.project_id AND s.identity=l.identity
           WHERE l.task_id=t.id AND COALESCE(json_extract(l.payload,'$.excluded'),0)=0 AND s.error IS NULL AND json_extract(s.payload,'$.state')='closed') AS closed_known
+        , (SELECT json_group_array(json_extract(s.payload,'$.mergedAt')) FROM task_pr_links l JOIN git_pr_snapshots s ON s.project_id=t.project_id AND s.identity=l.identity
+          WHERE l.task_id=t.id AND COALESCE(json_extract(l.payload,'$.excluded'),0)=0 AND json_extract(s.payload,'$.state')='merged') AS merged_at
       FROM tasks t JOIN projects p ON p.id=t.project_id
       ${ids === null ? "WHERE (? IS NULL OR t.project_id=?)" : "WHERE t.id IN (SELECT value FROM json_each(?)) AND (? IS NULL OR t.project_id=?)"} ORDER BY t.id`)
     // An ID-scoped read must seek by key: an `? IS NULL OR` arm on the ID predicate forces a scan of every task.
@@ -82,7 +104,7 @@ export interface CardObservation {
  * Stale-status observations with a validity per signal. A signal is `unknown` only when a PR snapshot is missing or failed
  * and no definite answer exists; `prSettled` is the same predicate the flags use.
  */
-export function staleStatusObservations(db: Database, taskIds?: readonly string[], projectId?: string): CardObservation[] {
+export function staleStatusObservations(db: Database, taskIds?: readonly string[], projectId?: string, nowMs = Date.now()): CardObservation[] {
   const policies = projectPolicies(db);
   const result: CardObservation[] = [];
   for (const row of staleRows(db, taskIds, projectId)) {
@@ -90,8 +112,7 @@ export function staleStatusObservations(db: Database, taskIds?: readonly string[
     if (!policy) continue;
     const valid = (present: boolean) => ({ present, validity: "valid" as const });
     const reviewOrTesting = row.status === policy.reviewStatus || row.status === policy.testingStatus;
-    const prSettled = Boolean(row.open_known) || (row.status === policy.testingStatus && Boolean(row.merged_pr));
-    const prUnresolved = reviewOrTesting && !prSettled;
+    const prUnresolved = reviewOrTesting && !prSettled(row, policy, nowMs);
     const unknownPr = Boolean(row.unknown_pr);
     result.push({
       taskId: row.id,

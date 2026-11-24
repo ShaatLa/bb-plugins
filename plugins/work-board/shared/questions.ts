@@ -1,11 +1,58 @@
 import type { TaskQuestion } from "./contract";
 
-export function isQuestionOpen(question: Pick<TaskQuestion, "selectedOptionIds"> & { answerText?: string | null }): boolean {
-  return !question.selectedOptionIds.length && !question.answerText;
+/** A superseded check is closed whatever its answer: its successor is the one the owner answers. */
+export function isQuestionOpen(question: Pick<TaskQuestion, "selectedOptionIds"> & { answerText?: string | null; supersededBy?: string }): boolean {
+  return !question.selectedOptionIds.length && !question.answerText && !question.supersededBy;
 }
 
 export const OPEN_QUESTION_SQL = `COALESCE(json_array_length(q.payload, '$.selectedOptionIds'), 0) = 0
-  AND COALESCE(json_extract(q.payload, '$.answerText'), '') = ''`;
+  AND COALESCE(json_extract(q.payload, '$.answerText'), '') = ''
+  AND json_extract(q.payload, '$.supersededBy') IS NULL`;
+
+/** Refusal for any change to a superseded check; stale requests get the same redirect. */
+export function supersededRefusal(question: Pick<TaskQuestion, "id" | "supersededBy">, taskKey: string): string {
+  return `Question ${question.id} is superseded by ${question.supersededBy}; act on that question (\`bb work-board question list ${taskKey}\` shows its revision).`;
+}
+
+/** Trimmed, case-folded, whitespace collapsed: the only equality the duplicate-check warning uses. */
+export const normalizedPrompt = (prompt: string) => prompt.trim().replace(/\s+/g, " ").toLocaleLowerCase();
+
+const supersedeCommand = (taskKey: string, question: Pick<TaskQuestion, "id" | "revision">) =>
+  `bb work-board question add ${taskKey} --kind check --supersedes ${question.id} --supersedes-revision ${question.revision} --prompt ...`;
+
+/**
+ * What to do with an existing check instead of asking a parallel one: an open check is edited, an answered one with the same
+ * prompt and steps is reopened, and any changed prompt link or step is a new state that supersedes it.
+ */
+export function checkGuidance(taskKey: string, existing: TaskQuestion, asked: { prompt: string; steps: readonly string[] }): string {
+  const at = `--question ${existing.id} --revision ${existing.revision}`;
+  if (isQuestionOpen(existing)) return `It is still open: edit it with \`bb work-board question update ${taskKey} ${at}\`.`;
+  const same = existing.prompt.trim() === asked.prompt.trim() && JSON.stringify(existing.steps) === JSON.stringify(asked.steps.map((step) => step.trim()));
+  return same
+    ? `Its prompt and steps are unchanged: reopen it with \`bb work-board question update ${taskKey} ${at} --reopen\`.`
+    : `A link or step changed, so this is a new state: replace it with \`${supersedeCommand(taskKey, existing)}\`.`;
+}
+
+/**
+ * Supersession links on one card must be reciprocal, between checks and acyclic. Imports check the state they leave
+ * behind, because a merge can keep a local link whose other end the archive replaced.
+ */
+export function assertSupersessionLinks(questions: readonly TaskQuestion[]): void {
+  const byId = new Map(questions.map((question) => [question.id, question]));
+  for (const question of questions) {
+    const previous = question.supersedes && byId.get(question.supersedes);
+    const next = question.supersededBy && byId.get(question.supersededBy);
+    if ((question.supersedes && (!previous || previous.supersededBy !== question.id)) || (question.supersededBy && (!next || next.supersedes !== question.id)))
+      throw new Error(`Question ${question.id} has a supersede link without its other end on the same card`);
+    if ((question.supersedes || question.supersededBy) && question.kind !== "check")
+      throw new Error(`Question ${question.id} is linked by a supersede but is not a check`);
+    const seen = new Set<string>();
+    for (let at: TaskQuestion | undefined = question; at?.supersededBy; at = byId.get(at.supersededBy)) {
+      if (seen.has(at.id)) throw new Error(`Question ${question.id} is in a supersede cycle`);
+      seen.add(at.id);
+    }
+  }
+}
 
 const MARKDOWN_LINK = /\]\(\s*<?([^)\s>]+)>?(?:\s+"[^"]*")?\s*\)/g;
 const BARE_URL = /\bhttps?:\/\/[^\s<>()\]]+/g;
@@ -31,12 +78,23 @@ export function assertQuestionShape(prompt: string, steps: readonly string[]): v
     throw new Error(`A question may carry at most one link across its prompt and steps; this one has ${links.length}. ${QUESTION_SPLIT_HINT}`);
 }
 
-/** Reopening asks the same thing again; new steps or links mean a new state, which is a new question. */
-export function assertReopenKeepsScope(previous: { prompt: string; steps: readonly string[] }, next: { prompt: string; steps: readonly string[] }): void {
+/**
+ * Reopening asks the same thing again. For an answered check the ordered steps and the prompt's links must stay exactly the
+ * same: any change is a new state, which supersedes the check. A decision may not gain steps or links; a changed decision is
+ * a fresh decision question, since only checks can be superseded.
+ */
+export function assertReopenKeepsScope(previous: TaskQuestion, next: { prompt: string; steps: readonly string[] }, taskKey: string): void {
+  if (previous.kind === "check") {
+    const trimmed = (steps: readonly string[]) => JSON.stringify(steps.map((step) => step.trim()));
+    const stepsChanged = trimmed(previous.steps) !== trimmed(next.steps);
+    if (stepsChanged || JSON.stringify(questionLinks(previous.prompt, [])) !== JSON.stringify(questionLinks(next.prompt, [])))
+      throw new Error(`Reopening an answered check asks the same check again, with the same steps and prompt link; its ${stepsChanged ? "steps" : "prompt link"} changed, so this is a new state. Replace it: \`${supersedeCommand(taskKey, previous)}\` with the new prompt and steps. ${QUESTION_SPLIT_HINT}`);
+    return;
+  }
   const before = new Set(questionLinks(previous.prompt, previous.steps));
   const added = questionLinks(next.prompt, next.steps).filter((link) => !before.has(link));
   if (next.steps.length > previous.steps.length || added.length)
-    throw new Error(`Reopening an answered question asks the same check again; it cannot add ${added.length ? "links" : "steps"} the answered revision did not have. Ask the new state as a new question instead. ${QUESTION_SPLIT_HINT}`);
+    throw new Error(`Reopening an answered decision asks the same thing again; it cannot add ${added.length ? "links" : "steps"} the answered revision did not have. Ask the changed decision as a fresh decision question: \`bb work-board question add ${taskKey} --kind decision --prompt ... --option ...\`.`);
 }
 
 const PLAN_LINK = /\/plugins\/work-board\/work-board\/task\/[^/\s)]+\/plan(?![\w-])/;

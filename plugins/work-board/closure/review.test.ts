@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { attachManualLink } from "../delegate/attach";
 import { createScheduledStore } from "../scheduled/store";
 import { closureFixture, gate, type ClosureFixture } from "./fixture";
@@ -79,7 +79,7 @@ describe("code review findings", () => {
     expect(f.row(id, "thr_b")?.action).toBe("archived");
   });
 
-  it("C1.5: the new turn that races the idle check notifies the thread and its parent on that turn", async () => {
+  it("C1.5: the new turn that races the idle check notifies the thread and its parent at that turn's end when it changed files", async () => {
     const f = await setup();
     const task = f.card();
     f.world.threads.set("thr_a", { parentThreadId: "thr_parent" });
@@ -93,6 +93,9 @@ describe("code review findings", () => {
     await f.emit("thread.active", "thr_a");
     hold.open();
     await idle;
+    expect(f.world.sent).toEqual([]);
+    f.edit("thr_a");
+    await f.emit("thread.idle", "thr_a");
     expect(f.world.sent.map((entry) => entry.threadId).sort()).toEqual(["thr_a", "thr_parent"]);
     expect(f.world.archived).toEqual([]);
   });
@@ -103,13 +106,15 @@ describe("code review findings", () => {
     f.world.threads.set("thr_a", { parentThreadId: "thr_parent" });
     f.link(task, "thr_a", { liveStatus: "working" });
     const { id } = await f.close(task);
+    await f.emit("thread.active", "thr_a");
+    f.edit("thr_a");
     const hold = gate();
     f.world.getGate = hold.promise;
-    const active = f.emit("thread.active", "thr_a");
-    await tick();
+    const idle = f.emit("thread.idle", "thr_a");
+    await vi.waitFor(() => expect(f.harness.sdk.callsTo("threads.get").length).toBeGreaterThan(0));
     f.store.tasks.updateTask(task.id, { status: "in_progress" });
     hold.open();
-    await active;
+    await idle;
     expect(f.world.sent.filter((entry) => entry.threadId === "thr_parent")).toEqual([]);
     expect(f.row(id, "thr_a")?.parentNotice).toBe("failed");
   });

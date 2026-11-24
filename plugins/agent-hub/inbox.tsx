@@ -5,9 +5,10 @@ import { bindChatCommands, chatShortcut } from './chat-commands';
 import { ThreadHeader } from './thread-header';
 import { COMPOSE_KEY, DRAFTS_EVENT } from './drafts';
 import { QuestionStack } from './question-stack';
-import { ContactsList, useContacts } from './contacts';
+import { ContactsList, useContacts, WARM_CHAT } from './contacts';
 import { JUMP_EVENT, takeJump, useContactSelection } from './open-chat';
 import { mentionsForText } from './mentions';
+import { watchJumps } from './jump-log';
 import { PendingInteractions, usePendingInteractionRows } from './interactions';
 import { Activity, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
@@ -21,13 +22,13 @@ import { CSS as DndCSS } from '@dnd-kit/utilities';
 import { ContextRing, type ContextUsage } from './context-ring';
 import { ThreadCostLabel, useThreadCost } from './cost';
 import { CompactButton } from './compact-button';
-import { unlabel, echoLine, UserText, EditSentContext, ItemCard, ThreadQuestions, UpdateGroup, InlineCommentText, isUnread, quoteSegments, usePluginBrands, useSteadyError, EarlierLoader } from './app';
+import { unlabel, echoLine, UserText, EditSentContext, RefreshContext, AnsweringContext, type Answering, WorkBoardContext, useWorkBoardQuery, ItemCard, ThreadQuestions, UpdateGroup, InlineCommentText, isUnread, quoteSegments, usePluginBrands, useSteadyError, EarlierLoader } from './app';
 import { ActivityContext, ActivityLabelContext, RobotLoader } from './robot-loader';
 import { WorkLog, ThreadPlan } from './work-log';
 import { useAgentActivity } from './activity';
 import { deliveryError } from './delivery';
 import { buildReplyMessage } from './reply-message';
-import { uploadAttachment, Composer, localInput, SendButton } from './composer';
+import { uploadAttachment, Composer, localInput, SendButton, VOICE_BUSY } from './composer';
 import { EmptyState, useTransientText, type IconName } from './empty';
 import { clipSelection, selectionMarkdown, selectionPosition } from './selection';
 import { ComposerThread } from './rich-editor';
@@ -135,9 +136,8 @@ const AT_BOTTOM = 2;
 const live = (node: HTMLElement, el: HTMLElement | null, selector: string) => el?.isConnected ? el : node.querySelector<HTMLElement>(selector);
 const rowOf = (id: string) => `[aria-label=History] [data-history-ids~="${CSS.escape(id)}"]`;
 export const atEnd = (node: HTMLElement) => node.scrollHeight - node.scrollTop - node.clientHeight <= Math.max(AT_BOTTOM, node.clientHeight / 4);
-// Following new content stops before it carries away what the reader saw at the bottom: a big arrival (a long reply) halts
-// with its start under the header (covered: the header, the composer and a margin), and the chat stops following there.
-export const followTo = (top: number, height: number, client: number, before: number, covered: number) => Math.max(top, Math.min(height - client, before - covered));
+// A reader at the bottom follows new content to its end, a long reply too (its start scrolls away above, as the owner chose).
+export const followTo = (top: number, height: number, client: number) => Math.max(top, height - client);
 // Cards already shown, by id: coming back to a chat whose card did not change draws it in place instead of replaying the slide.
 // An id is forgotten once its card has slid away (or was hidden when it left), so a card that comes back later slides in again.
 const revealed = new Set<string>();
@@ -313,10 +313,13 @@ const QueueCard = memo(function QueueCard({ rows, pending = [], sourceName, sour
     })}{pending.map((text, index) => <li key={`pending:${index}`} data-queue-pending className="border-b border-border/35 px-2.5 py-0.5 opacity-60"><div className="flex items-center gap-1.5"><span aria-hidden className="size-7 shrink-0" /><div className={`min-w-0 flex-1 py-1.5 ${queuePreview}`} title={text}><Markdown content={text} /></div></div></li>)}</ul></SortableContext></DndContext></div>{more && <div className="pointer-events-none absolute inset-x-0 bottom-0 z-10 h-6 bg-gradient-to-b from-transparent to-surface-raised-solid" />}</div><div className="shrink-0"><button type="button" aria-label="Collapse queued messages" className="answers-hit -mb-3 flex min-h-[1.875rem] w-full cursor-pointer items-center justify-center rounded-none pb-3 text-muted-foreground hover:bg-state-hover hover:text-foreground" onClick={() => setCollapsed(true)}><Icon name="ChevronUp" aria-hidden className="size-3.5" /></button></div></>}
   </section>;
 });
+// The newest page's read: a warmed contact reads the same input, so the chat finds it fresh (bb keeps reads fresh for 2 s).
+const firstPage = (threadId: string, unread = 0) => ({ view: 'all' as const, threadId, order: 'activity' as const, limit: Math.min(50, Math.max(20, unread + 5)) });
+function WarmChat({ threadId, unread }: { threadId: string; unread: number }) { useQuery({ contract: rpcContract, method: 'list', input: firstPage(threadId, unread) }); return null; }
 function HistoryPage({ threadId, cursor, index, depth, receive, unread = 0 }: { threadId: string; cursor?: string; index: number; depth: number; receive: (threadId: string, index: number, data: ListResult) => void; unread?: number }) {
   // The newest page only needs the unread messages and a little context above them; Load earlier fetches the rest.
   // Frozen at mount so reading (which lowers the unread count) does not refetch it.
-  const [limit] = useState(() => index === 0 ? Math.min(50, Math.max(20, unread + 5)) : 50);
+  const [limit] = useState(() => index === 0 ? firstPage(threadId, unread).limit : 50);
   const [settled, setSettled] = useState(false), [olderData, setOlderData] = useState<ListResult | null>(null);
   const result = useQuery({ contract: rpcContract, method: 'list', input: { view: 'all', threadId, order: 'activity', limit, ...(cursor ? { cursor } : {}) }, enabled: index === 0 || !settled });
   // The first delivery skips cached data while a refetch runs, so the open position and New divider see current read state;
@@ -358,8 +361,10 @@ export function Avatar({ id, title, provider }: { id: string; title: string | nu
 type InboxProps = { contactsHidden?: boolean; onBulkRead?: (result: { batch: string | null; count: number }) => void; bbChat?: boolean; search?: boolean; onSearch?: (open: boolean) => void; onChat?: (open: boolean) => void; toolbarTargets?: { title: HTMLElement | null; search: HTMLElement | null; actions: HTMLElement | null } };
 export function Inbox(props: InboxProps) {
   const { selected, select } = useContactSelection(), contacts = useContacts(selected);
-  const [kept, setKept] = useState<string[]>([]);
-  const next = selected ? [...kept.filter(id => id !== selected), selected].slice(-5) : kept;
+  const [kept, setKept] = useState<string[]>([]), [warm, setWarm] = useState<{ threadId: string; unread: number } | null>(null), [voiceBusy, setVoiceBusy] = useState<string[]>([]);
+  useEffect(() => { const listen = (event: Event) => { const { threadId, active } = (event as CustomEvent<{ threadId: string; active: boolean }>).detail; setVoiceBusy(old => active ? (old.includes(threadId) ? old : [...old, threadId]) : old.filter(id => id !== threadId)); }; window.addEventListener(VOICE_BUSY, listen); return () => window.removeEventListener(VOICE_BUSY, listen); }, []);
+  useEffect(() => { const listen = (event: Event) => { const { threadId, unread } = (event as CustomEvent<{ threadId: string; unread: number }>).detail; setWarm(old => old?.threadId === threadId && old.unread === unread ? old : { threadId, unread }); }; window.addEventListener(WARM_CHAT, listen); return () => window.removeEventListener(WARM_CHAT, listen); }, []);
+  const recent = selected ? [...kept.filter(id => id !== selected), selected].slice(-5) : kept, next = [...recent, ...voiceBusy.filter(id => !recent.includes(id))];
   if (next.join('\n') !== kept.join('\n')) setKept(next);
   const grid = useRef<HTMLDivElement>(null), [contactsWidth, setContactsWidth] = useStoredState('bb-plugin-answers:page:contacts-width', CONTACTS_DEFAULT);
   const resize = (width: number) => setContactsWidth(Math.round(Math.max(CONTACTS_MIN, Math.min(CONTACTS_MAX, (grid.current?.clientWidth || Infinity) - 320, width))));
@@ -373,15 +378,19 @@ export function Inbox(props: InboxProps) {
       onDoubleClick={() => setContactsWidth(CONTACTS_DEFAULT)} />
     <div data-contacts-column className={`flex min-h-0 min-w-0 flex-col ${contactsHidden ? 'min-[640px]:hidden' : ''} min-[640px]:border-r min-[640px]:border-border-seam ${selected ? 'max-[639px]:hidden' : ''}`}><ContactsList model={contacts} selected={selected} onSelect={select} onBulkRead={onBulkRead} /></div>
     <div className={`relative min-h-0 min-w-0 ${selected ? '' : 'max-[639px]:hidden'}`}>
+      {warm && !next.includes(warm.threadId) && <WarmChat key={warm.threadId} {...warm} />}
       {!selected && <InboxChat {...props} contactsHidden threadId={undefined} />}
       {/* A fixed DOM order: React moves a keyed child that changes place, and a moved scroller reads scrollTop 0 until its offset is put back. */}
-      {[...next].sort().map(id => <Activity key={id} mode={id === selected ? 'visible' : 'hidden'}><div inert={id !== selected} className="h-full"><KeptChat {...props} threadId={id} contactsHidden /></div></Activity>)}
+      {[...next].sort().map(id => <Activity key={id} mode={id === selected || voiceBusy.includes(id) ? 'visible' : 'hidden'}><div inert={id !== selected} className={`h-full ${id === selected ? '' : 'hidden'}`}><KeptChat {...props} threadId={id} contactsHidden /></div></Activity>)}
     </div>
   </div>;
 }
 const KeptChat = memo(InboxChat);
 function InboxChat({ onBulkRead, bbChat = false, search: searchProp, onSearch, toolbarTargets, threadId }: InboxProps & { threadId?: string }) {
   const rpc = useRpc<AgentHubRpcContract>(), sdk = useSdk(), { refresh } = experimental_useRpcRefresh(), panel = experimental_useAppPanel();
+  const refreshNow = useRef(refresh); refreshNow.current = refresh;
+  const sharedRefresh = useCallback(() => refreshNow.current(), []);
+  const workBoard = useWorkBoardQuery();
   const [documentVisible, setDocumentVisible] = useState(() => document.visibilityState !== 'hidden');
   useEffect(() => { const update = () => setDocumentVisible(document.visibilityState !== 'hidden'); document.addEventListener('visibilitychange', update); return () => document.removeEventListener('visibilitychange', update); }, []);
   // This page is outside panel tabs; Activity pauses hidden chats and document visibility pauses polling.
@@ -426,6 +435,11 @@ function InboxChat({ onBulkRead, bbChat = false, search: searchProp, onSearch, t
   const activeWindow = historyWindow?.threadId === selected ? historyWindow : null;
   const windowRequest = useRef(0), jumpOffset = useRef<number | null>(null);
   const loadedPages = useMemo(() => unbroken(loaded.pages), [loaded.pages]), pages = useMemo(() => activeWindow ? [{...activeWindow.page, items: activeWindow.page.newerCursor ? activeWindow.page.items : [...loadedPages.flatMap(p => p.items), ...activeWindow.page.items]}] : loaded.threadId === selected ? loadedPages : NO_PAGES, [activeWindow, loaded.threadId, selected, loadedPages]);
+  // Questions answered here while bb delivers the reply; a failed one comes back with its error.
+  const [answered, setAnswered] = useState<ReadonlyMap<string, string>>(new Map()), [answerFailed, setAnswerFailed] = useState<ReadonlyMap<string, string>>(new Map());
+  const answering = useMemo<Answering>(() => ({ answered, failed: answerFailed,
+    answer: (id, text) => { setAnswered(old => new Map(old).set(id, text)); setAnswerFailed(old => { const next = new Map(old); next.delete(id); return next; }); },
+    fail: (id, error) => { setAnswered(old => { const next = new Map(old); next.delete(id); return next; }); setAnswerFailed(old => new Map(old).set(id, error)); } }), [answered, answerFailed]);
   const [pendingQueue, setPendingQueue] = useState<{ threadId: string; text: string; id: number; done: boolean }[]>([]);
   const [optimistic, setOptimistic] = useState<{ threadId: string; text: string; id: number; seenIds: string[]; steer?: boolean }[]>([]), [queue, setQueue] = useState<Awaited<ReturnType<typeof sdk.threads.queuedMessages.list>>>([]), [queueOf, setQueueOf] = useState<string | null>(null), [queueError, setQueueError] = useState(''), [queueVersion, setQueueVersion] = useState(0), [context, setContext] = useState<{ threadId: string; usage: ContextUsage } | null>(null), contexts = useRef(new Map<string, { usage: ContextUsage; at: number }>());
 
@@ -741,7 +755,7 @@ function InboxChat({ onBulkRead, bbChat = false, search: searchProp, onSearch, t
     // Older pages render above, so one more shown page (Load earlier, or the reach back over quiet updates) grew the top: keep the place.
     } else if (old.prepend || shownPages > old.shown) node.scrollTop = old.top + node.scrollHeight - old.height;
     // While a quote popup is open (anchored in the chat) nothing follows new messages: the owner is writing about this spot.
-    else if (old.bottom && !quoting.current) node.scrollTop = followTo(node.scrollTop, node.scrollHeight, node.clientHeight, old.height, covered(node));
+    else if (old.bottom && !quoting.current) node.scrollTop = followTo(node.scrollTop, node.scrollHeight, node.clientHeight);
     position.current = { height: node.scrollHeight, top: node.scrollTop, bottom: node.scrollHeight - node.scrollTop - node.clientHeight < AT_BOTTOM, fresh: false, prepend: false, shown: shownPages };
   }, [pages, depth]);
   useEffect(() => {
@@ -759,10 +773,12 @@ function InboxChat({ onBulkRead, bbChat = false, search: searchProp, onSearch, t
     for (const name of events) node.addEventListener(name, release, { passive: true });
     return () => { observer?.disconnect(); for (const name of events) node.removeEventListener(name, release); };
   }, [selected]);
+  // Temporary diagnostic, see jump-log.ts.
+  const jumpState = useRef<Record<string, unknown>>({}); jumpState.current = { pages: pages.length, depth, window: !!activeWindow, transcript };
+  useEffect(() => { const node = scroll.current; if (!node || !selected) return; return watchJumps(node, selected, () => ({ ...jumpState.current, ...position.current, pin: !!pin.current, hidden: !node.offsetParent })); }, [selected]);
   // As in bb's chat the conversation scrolls under the composer to the bottom of the window: the composer stack floats over
   // its end, and the column's bottom padding follows the stack's height, so a growing stack still pushes the chat up. The stack stops short of the scrollbar.
   const stack = useRef<HTMLDivElement>(null), [scrollbar, setScrollbar] = useState(0);
-  const covered = (node: HTMLElement) => (node.querySelector<HTMLElement>('[data-conversation-header]')?.offsetHeight ?? 0) + (stack.current?.offsetHeight ?? 0) + 24;
   // Scrolled up past the last message (its top below the composer stack): offer bb's "Scroll to latest" button.
   // Scroll events come every frame while the window or a sidebar resizes the chat, and any geometry read in one forces a
   // layout of the whole conversation at a size about to change. So the chat's scroll handler reads once a frame, the saved
@@ -808,9 +824,11 @@ function InboxChat({ onBulkRead, bbChat = false, search: searchProp, onSearch, t
     // A narrower or wider chat rewraps every card; the card at the top of the view (and its offset), noted on each scroll,
     // is put back where it was so the reader keeps their place (the browser's own scroll anchoring is off here).
     // Kept by its first id too: a card re-rendered under the same id (an answer split from its question) is found again.
-    let anchor: { el: HTMLElement; id: string; offset: number } | null = null;
-    const remember = () => { const view = node.getBoundingClientRect().top, el = Array.from(node.querySelectorAll<HTMLElement>('[aria-label=History] [data-history-ids]')).find(row => row.getBoundingClientRect().bottom > view + 1); anchor = el ? { el, id: el.dataset.historyIds!.split(' ')[0]!, offset: el.getBoundingClientRect().top - view } : null; };
-    const anchored = () => anchor && live(node, anchor.el, rowOf(anchor.id));
+    // el is the first visible block of that card (its row when it has none): an image above the reading line growing inside the
+    // card's first block moves the blocks under it, not the card's top. rowOffset serves the row found again by id.
+    let anchor: { el: HTMLElement; id: string; offset: number; rowOffset: number } | null = null;
+    const remember = () => { const view = node.getBoundingClientRect().top, row = Array.from(node.querySelectorAll<HTMLElement>('[aria-label=History] [data-history-ids]')).find(row => row.getBoundingClientRect().bottom > view + 1), el = row && (Array.from(row.firstElementChild?.children ?? []) as HTMLElement[]).find(block => block.getBoundingClientRect().bottom > view + 1) || row; anchor = row && el ? { el, id: row.dataset.historyIds!.split(' ')[0]!, offset: el.getBoundingClientRect().top - view, rowOffset: row.getBoundingClientRect().top - view } : null; };
+    const anchored = () => { const el = anchor && live(node, anchor.el, rowOf(anchor.id)); if (anchor && el && el !== anchor.el) anchor = { ...anchor, el, offset: anchor.rowOffset }; return el; };
     let anchorFrame = 0;
     const track = () => { if (!node.clientHeight || Date.now() - resizedAt.current < 500) return; if (node.clientHeight === height) gap = node.scrollHeight - node.scrollTop - node.clientHeight; content = node.scrollHeight; if (!anchorFrame) anchorFrame = requestAnimationFrame(() => { anchorFrame = 0; remember(); }); };
     // The conversation also grows at its end after a send (the bubble, the robot, the actions render a moment later):
@@ -845,7 +863,7 @@ function InboxChat({ onBulkRead, bbChat = false, search: searchProp, onSearch, t
       if (!pin.current) {
         const el = gap > AT_BOTTOM ? anchored() : null;
         if (el) node.scrollTop += el.getBoundingClientRect().top - node.getBoundingClientRect().top - anchor!.offset;
-        else if (gap <= AT_BOTTOM && !quoting.current) node.scrollTop = followTo(node.scrollTop, node.scrollHeight, next, content, covered(node));
+        else if (gap <= AT_BOTTOM && !quoting.current) node.scrollTop = followTo(node.scrollTop, node.scrollHeight, next);
       }
       height = next; content = node.scrollHeight; if (Date.now() - resizedAt.current >= 500) gap = node.scrollHeight - node.scrollTop - next;
     });
@@ -943,7 +961,7 @@ function InboxChat({ onBulkRead, bbChat = false, search: searchProp, onSearch, t
   const landedRows = useMemo(() => { const mine = pages.flatMap(page => page.items).filter(item => item.kind === 'mine' && item.questionSeq !== null), used = new Set<string>(), hidden = new Set<string>(); for (const row of [...queue, ...leaving.map(entry => entry.row)]) { const hit = mine.find(item => !used.has(item.id) && item.threadId === row.threadId && item.createdAt >= row.createdAt && sameSent(item.question, queueText(row))); if (hit) { used.add(hit.id); hidden.add(row.id); } } return hidden; }, [pages, queue, leaving]);
   const shownQueue = [...queue.filter(row => !sentNow.includes(row.id)), ...leaving.filter(entry => !queue.some(row => row.id === entry.row.id)).map(entry => entry.row)].filter(row => !landedRows.has(row.id));
   const held = leaving.filter(entry => entry.row.threadId === selected).map(leavingText);
-  const items = useMemo(() => { const seen = new Set<string>(); return shown.flatMap(page => page.items).filter(item => (item.kind !== 'for_me' || item.status !== 'open') && !(item.kind === 'mine' && item.questionSeq === null && held.includes(item.question.trim())) && !seen.has(item.id) && !!seen.add(item.id)).reverse(); }, [pages, loadedPages, depth, held.join('\n')]);
+  const items = useMemo(() => { const seen = new Set<string>(); return shown.flatMap(page => page.items).map(item => item.kind === 'for_me' && item.status === 'open' && answered.has(item.id) ? { ...item, status: 'replied' as const, answer: answered.get(item.id)!, answerSource: 'user' as const, updatedAt: Date.now() } : item).filter(item => (item.kind !== 'for_me' || item.status !== 'open') && !(item.kind === 'mine' && item.questionSeq === null && held.includes(item.question.trim())) && !seen.has(item.id) && !!seen.add(item.id)).reverse(); }, [pages, loadedPages, depth, held.join('\n'), answered]);
   // A steer joins the running turn's card once ingested; placing it there at once keeps the bubble from jumping up later.
   const steerHost = [...items].reverse().find(item => item.kind === 'mine' && item.threadId === selected && item.turnId && item.status === 'waiting' && item.dismissedAt === null);
   const joined = optimistic.filter(b => b.steer && b.threadId === selected && steerHost);
@@ -995,7 +1013,7 @@ function InboxChat({ onBulkRead, bbChat = false, search: searchProp, onSearch, t
     if (node && keptTop.current !== null) node.scrollTop = keptTop.current;
     return () => { if (node) keptTop.current = node.scrollTop; };
   }, []);
-  return <FullTranscriptContext.Provider value={openTranscript}><EditSentContext.Provider value={startSentEdit}><ComposerThread.Provider value={selected ?? null}><div ref={grid} className="relative grid h-full grid-cols-[minmax(0,1fr)]">
+  return <FullTranscriptContext.Provider value={openTranscript}><EditSentContext.Provider value={startSentEdit}><RefreshContext.Provider value={sharedRefresh}><AnsweringContext.Provider value={answering}><WorkBoardContext.Provider value={workBoard ?? null}><ComposerThread.Provider value={selected ?? null}><div ref={grid} className="relative grid h-full grid-cols-[minmax(0,1fr)]">
     {bbChat && selected ? <div className="flex min-h-0 min-w-0 flex-col">{mobileHeader}<ThreadChat key={selected} threadId={selected} variant="full" className="min-h-0 flex-1" /></div> :
     <div className={`relative flex min-h-0 min-w-0 flex-col ${!selected ? 'max-[639px]:hidden' : ''}`}><div ref={scroll} inert={transcript || undefined} aria-hidden={transcript || undefined} style={transcript ? {visibility:'hidden'} : undefined} className="relative min-h-0 flex-1 overflow-auto [overflow-anchor:none]" onMouseUp={capture} onKeyUp={event => { if (event.key !== 'Escape' && event.key !== 'Tab') capture(event); }} onKeyDown={event => { if (event.key === 'Tab' && selectionBar && !event.shiftKey) { event.preventDefault(); popup.current?.querySelector<HTMLElement>('button')?.focus(); } }} onScroll={event => { const node = event.currentTarget; if (!node.clientHeight || latestFrame.current || Date.now() - resizedAt.current < 500) return; latestFrame.current = requestAnimationFrame(() => { latestFrame.current = 0; checkLatest(); position.current = { ...position.current, height: node.scrollHeight, top: node.scrollTop, bottom: node.scrollHeight - node.scrollTop - node.clientHeight < AT_BOTTOM }; if (selected && !position.current.fresh) { scrollPending.current = { threadId: selected, top: node.scrollTop, depth, ...(atEnd(node) ? { bottom: true as const } : {}) }; if (!scrollTimer.current) scrollTimer.current = setTimeout(() => { const pending = scrollPending.current; if (pending && pending.threadId === selected) { const view = node.getBoundingClientRect().top, first = Array.from(node.querySelectorAll<HTMLElement>('[aria-label=History] [data-history-ids]')).find(el => el.getBoundingClientRect().bottom > view + 1); if (first) Object.assign(pending, { anchor: first.dataset.historyIds!.split(' ')[0], offset: first.getBoundingClientRect().top - view }); } saveScroll(); }, 200); } }); }}>
       {!selected && <EmptyState icon="MessageQuestion" title="Pick a conversation">Answers are grouped by thread. Open one to read it from the start and reply with quotes.</EmptyState>}
@@ -1017,7 +1035,7 @@ function InboxChat({ onBulkRead, bbChat = false, search: searchProp, onSearch, t
       </div>}
       {!draft && error && <p role="alert">{error}</p>}
     </div>{/* The reader opened at the newest: the unread rows above stay unread until seen, and this jumps to the first of them (set at once, so no row in between is passed over and counted as read). */}{selected && !transcript && !activeWindow && <div className="pointer-events-none absolute inset-x-0 z-20 flex justify-center" style={{ top: headerHeight + 8, right: scrollbar }}><button type="button" aria-label="Jump to unread" aria-hidden={!(unreadAbove && unreadCount > 0)} tabIndex={unreadAbove && unreadCount > 0 ? 0 : -1} className={`answers-hit pointer-events-auto flex h-8 cursor-pointer items-center gap-1.5 rounded-full border border-border bg-background px-3 text-xs font-medium transition-all duration-200 hover:bg-accent ${unreadAbove && unreadCount > 0 ? 'translate-y-0 opacity-100' : 'pointer-events-none invisible -translate-y-2 opacity-0'}`} onClick={() => { const node = scroll.current, divider = node?.querySelector<HTMLElement>('[aria-label=History] [data-new]'); if (!node || !divider) return; release(); node.scrollTop = divider.offsetTop - (node.querySelector<HTMLElement>('.sticky')?.offsetHeight ?? 0); }}><Icon name="ArrowUp" aria-hidden className="size-4" />{unreadCount} unread</button></div>}{selected && <div ref={stack} inert={transcript || undefined} aria-hidden={transcript || undefined} data-composer-stack className="absolute bottom-0 left-0 z-[1] bg-background pb-2 pl-4" style={{ visibility: transcript ? 'hidden' : undefined, right: scrollbar, paddingRight: Math.max(0, 16 - scrollbar) }}>{/* bb's own "Scroll to latest" button, over the composer, once the last message is out of sight below; centred on the whole column, scroll bar included. The stack itself keeps the history's 1rem on both sides. */}<div className="pointer-events-none absolute left-0 -top-11 flex justify-center" style={{ right: -scrollbar }}><button type="button" aria-label="Scroll to latest" aria-hidden={!farFromEnd} tabIndex={farFromEnd ? 0 : -1} className={`answers-hit pointer-events-auto z-20 flex size-8 cursor-pointer items-center justify-center rounded-full border border-border bg-background transition-all duration-200 hover:bg-accent ${farFromEnd ? 'translate-y-0 opacity-100' : 'pointer-events-none invisible translate-y-2 opacity-0'}`} onClick={() => { release(); if (activeWindow) { setHistoryWindow(null); position.current.bottom = true; } scroll.current?.scrollTo({ top: scroll.current.scrollHeight, behavior: 'smooth' }); }}><Icon name="ArrowDown" aria-hidden className={`size-4 ${working && farFromEnd ? 'animate-shine-icon' : ''}`} /></button></div><QuestionStack key={selected} threadId={selected}><Reveal key={`pending:${selected}`} id={`pending:${selected}`} show={!!openThread?.hasPendingInteraction}><div data-promptbox-shell className={stackShell}><PendingInteractions key={selected} threadId={selected} projectId={openThread?.projectId} pending={!!openThread?.hasPendingInteraction} status={openThread?.status} stacked /></div></Reveal><ThreadQuestions key={selected} threadId={selected} shell={stackShell} /></QuestionStack><OwedCard key={`owed:${selected}`} threadId={selected} newest={historyGroups.at(-1)} working={working} onJump={jumpTo} /><Reveal key={`queue:${selected}`}  id={`queue:${selected}`} show={pendingQueue.some(row => row.threadId === selected) || (queueOf === selected ? shownQueue.some(row => row.threadId === selected) : null)}>{queueCard}</Reveal>{queueError && <p role="alert" className="text-xs text-destructive">{queueError}</p>}<div className="relative z-20">{editing ? <Composer key={`edit:${editing.seq}`} editMode autoFocus label="Edit message" sendLabel="Submit edit" placeholder="Edit message" header={<div data-sent-message-edit-cap className="flex min-h-7 items-center gap-1.5 px-3 pt-1.5 text-xs text-subtle-foreground"><Icon name="Edit" aria-hidden className="size-3.5 shrink-0" /><span>Editing message</span><button type="button" aria-label="Stop editing sent message" className="answers-hit ml-auto inline-flex size-6 items-center justify-center rounded-md text-muted-foreground hover:bg-state-hover hover:text-foreground" onClick={() => setSentEdit(null)}><Icon name="X" aria-hidden className="size-3" /></button></div>} value={editing.text} onChange={text => setSentEdit(current => current && { ...current, text })} attachments={editing.files} onAttachments={update => setSentEdit(current => current && { ...current, files: update(current.files) })} projectId={current?.projectId} pending={editPending} onSend={() => void submitSentEdit()} onCancel={() => setSentEdit(null)} /> : <Composer key={selected} header={handoff ? <div className="flex min-h-7 items-center gap-1.5 px-3 pt-1.5 text-xs text-subtle-foreground"><Icon name="MessageSquarePlus" aria-hidden className="size-3.5 shrink-0" /><span>Handoff to new thread</span><Button type="button" size="sm" variant="ghost" className="ml-auto size-6 shrink-0" aria-label="Exit handoff" onClick={() => updateCompose(selected, { ...compose, execution: execution?.threadId === selected ? execution.value : undefined, permissionMode: undefined })}><Icon name="X" aria-hidden className="size-3" /></Button></div> : undefined} onHistory={recallPrompt} permissionPicker={composePermission && openThread?.providerId ? { providerId: composeExecution?.providerId ?? openThread.providerId, value: composePermission, onChange: permissionMode => updateCompose(selected, { ...compose, permissionMode }), routing, className: 'h-8 text-xs' } : undefined} modelPicker={composeExecution ? { value: composeExecution, onChange: execution => updateCompose(selected, { ...compose, execution }), allowProviderChange: true, routing: openThread?.environment?.id ? { kind: 'environment', environmentId: openThread.environment.id } : openThread?.host?.id ? { kind: 'host', hostId: openThread.host!.id } : undefined, className: 'min-w-0 max-w-48 h-8 text-xs' } : undefined} editableWhilePending label="Send message" sendLabel="Send message" placeholder="Message…" value={compose.text} onChange={text => { recall.current=null; updateCompose(selected, { ...drafts[selected], historyInput:undefined, text, files: drafts[selected]?.files ?? [] }); }} attachments={compose.files} onAttachments={update => { const current = drafts[selected] ?? { text: '', files: [] }; recall.current=null; updateCompose(selected, { ...current, historyInput:undefined, files: update(current.files) }); }} projectId={current?.projectId} pending={composePending} onPool={!composePending && (compose.text.trim() || compose.files.length) ? () => void poolCompose() : undefined} onSend={options => void sendCompose(options)} onStop={turnRunning ? () => { setComposeError(''); void sdk.threads.stop({ threadId: selected }).catch(e => setComposeError(errorText(e))); } : undefined} />}</div>{composeError && <p role="alert" className="px-1 pt-1 text-xs text-destructive">{composeError}</p>}<div className="mt-1 flex min-h-6 max-h-6 items-center justify-between gap-2 overflow-hidden pl-[15px]"><div className="flex min-w-0 flex-1 items-center gap-1 overflow-hidden">{openThread && <span className="inline-flex h-6 min-w-0 items-center gap-1.5 px-1 text-xs leading-tight text-muted-foreground"><Icon name="Folder" aria-hidden className="size-4 shrink-0" /><span className="truncate">{projects.find(p => p.id === openThread.projectId)?.name ?? 'No project'}</span></span>}{(openThread?.environment?.branchName || openThread?.environment?.name) && <span className="inline-flex h-6 min-w-0 items-center gap-1.5 px-1 text-xs leading-tight text-muted-foreground" title={openThread!.environment!.isWorktree ? 'Worktree' : 'Branch'}><Icon name="GitBranch" aria-hidden className="size-4 shrink-0" /><span className="truncate">{openThread!.environment!.branchName ?? openThread!.environment!.name}</span></span>}</div><div className="flex shrink-0 items-center gap-1">{/* The chat's cost (opens Tokenomos), Idle Compact's Compact, then the context ring. */}<ThreadCostLabel cost={cost} />{openThread && <CompactButton threadId={openThread.id} status={openThread.status} onError={setQueueError} />}{context?.threadId === selected && <ContextRing usage={context.usage} />}</div></div></div>}{transcript && selected && <FullTranscript threadId={selected} onBack={closeTranscript} />}</div>}
-  </div></ComposerThread.Provider></EditSentContext.Provider></FullTranscriptContext.Provider>;
+  </div></ComposerThread.Provider></WorkBoardContext.Provider></AnsweringContext.Provider></RefreshContext.Provider></EditSentContext.Provider></FullTranscriptContext.Provider>;
 }
 
 type Editor = { flush: () => Promise<void> };

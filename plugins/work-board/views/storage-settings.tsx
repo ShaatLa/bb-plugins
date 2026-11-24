@@ -4,15 +4,15 @@ import { useTasksQuery, useTasksRpc } from "../shell/data";
 import { errorMessage } from "../shared/errors";
 import { Button } from "@/components/ui/button";
 import type { StorageResult } from "../shared/storage";
+import { SettingsCard } from "./settings-card";
 
 const size = (bytes: number) => `${(bytes / (1024 * 1024)).toFixed(2)} MiB`;
 export function StorageSettings() {
   const rpc = useTasksRpc();
-  const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<StorageResult>();
-  const query = useTasksQuery(rpc => rpc.call("getStorageStatus", null), [], [], { enabled: open });
+  const query = useTasksQuery(rpc => rpc.call("getStorageStatus", null), []);
   const current = result?.after ?? query.data;
   async function maintain(optimize: boolean) {
     setBusy(true); setError(null); setResult(undefined);
@@ -20,10 +20,8 @@ export function StorageSettings() {
     catch (error) { setError(errorMessage(error)); }
     finally { setBusy(false); }
   }
-  return <details className="rounded-md border border-border text-sm" onToggle={event => setOpen(event.currentTarget.open)}>
-    <DisclosureSummary className="px-3 py-2.5 font-medium">Storage</DisclosureSummary>
-    <div className="space-y-3 border-t border-border p-3">
-      <p className="text-xs text-muted-foreground">Shared by all projects. Daily cleanup removes unreachable cache rows and unreferenced blobs older than 24 hours. Active uploads, imports, archived tasks and accessible history are preserved.</p>
+  return <SettingsCard title="Storage" description="Shared by all projects. Daily cleanup removes unreachable cache rows and unreferenced blobs older than 24 hours. Active uploads, imports, archived tasks and accessible history are preserved.">
+    <div className="space-y-3 text-sm">
       {current ? <>
         <dl className="grid grid-cols-[1fr_auto] gap-x-3 gap-y-1 text-xs">
           <dt>Blob contents / allocated blocks</dt><dd>{size(current.blobLogicalBytes)} / {size(current.blobPhysicalBytes)}</dd>
@@ -49,5 +47,5 @@ export function StorageSettings() {
       {result ? <p role="status" className="text-xs text-muted-foreground">Removed {result.removedFiles} files and {result.removedRows} cache rows; shared {result.deduplicatedFiles} duplicate files. {result.warnings ? `${result.warnings} files skipped; see plugin logs.` : "Cleanup complete."}</p> : null}
       {error || query.error ? <p role="alert" className="text-xs text-destructive">{error ?? query.error}</p> : null}
     </div>
-  </details>;
+  </SettingsCard>;
 }

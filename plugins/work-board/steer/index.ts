@@ -1,18 +1,21 @@
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import type { TasksStore } from "../db";
-import { reconcileTaskThreads } from "../lifecycle/thread-links";
+import { reconcileTaskThreads, reconcileTaskThreadsStrict, threadUnavailable } from "../lifecycle/thread-links";
 import { errorMessage } from "../shared/errors";
 import { isSideChatShapedThread } from "../shared/side-chat";
 
 interface DeliverCommentInput {
   taskId: string;
   commentId: string;
-  body: string;
+  /** A function is read when the thread's turn to receive comes, so the text reflects the state at dispatch. */
+  body: string | (() => string);
   authorName: string;
   threadId?: string;
   mode?: "steer-if-active" | "queue-if-active";
   /** Question answers carry their own next step, so they skip the reply hint. */
   replyHint?: boolean;
+  /** Checked right before the transport call; a notice that went stale is dropped and counts as not delivered. */
+  wanted?: () => boolean;
 }
 
 function steerPrompt(
@@ -51,7 +54,7 @@ export const withPluginHeader = (pluginId: string, text: string) => `[bb message
 async function appendToQueuedNotice(
   bb: BbPluginApi,
   threadId: string,
-  text: string,
+  text: () => string,
   wanted?: () => boolean,
 ): Promise<"appended" | "skipped" | "none"> {
   // A conflict means the row changed under us, so list once more before giving up.
@@ -75,7 +78,7 @@ async function appendToQueuedNotice(
         threadId,
         queuedMessageId: last.id,
         expectedUpdatedAt: last.updatedAt,
-        input: [{ ...part, text: part.text + QUEUED_NOTICE_SEPARATOR + text }],
+        input: [{ ...part, text: part.text + QUEUED_NOTICE_SEPARATOR + text() }],
       });
       return "appended";
     } catch {
@@ -101,7 +104,7 @@ function serialPerThread<T>(threadId: string, job: () => Promise<T>): Promise<T>
 function appendOrSend(
   bb: BbPluginApi,
   threadId: string,
-  text: string,
+  message: string | (() => string),
   mode: "steer-if-active" | "queue-if-active",
   wanted?: () => boolean,
 ): Promise<boolean> {
@@ -109,6 +112,8 @@ function appendOrSend(
     // The check runs inside the serialized job, right before each transport call, so a notice that went stale while it
     // waited for its turn or for the queue read is dropped.
     if (wanted && !wanted()) return false;
+    // Built right before each transport call, retries included, so it reflects the state after every await.
+    const text = () => (typeof message === "function" ? message() : message);
     // The outcome is the transport's own: once the update or send has started, its success is a delivery.
     const appended = await appendToQueuedNotice(bb, threadId, text, wanted);
     if (appended === "appended") return true;
@@ -116,7 +121,7 @@ function appendOrSend(
     await bb.sdk.threads.send({
       threadId,
       originPluginId: bb.pluginId,
-      input: [{ type: "text", text: withPluginHeader(bb.pluginId, text), mentions: [] }],
+      input: [{ type: "text", text: withPluginHeader(bb.pluginId, text()), mentions: [] }],
       mode,
     });
     return true;
@@ -165,27 +170,115 @@ export async function deliverCommentToLatestAgent(
       ...links.map((link) => link.threadId),
     ]),
   ];
-  const prompt = steerPrompt(task.key, input.authorName, input.body, input.replyHint);
-  for (const threadId of candidates) {
-    try {
-      const thread = await bb.sdk.threads.get({ threadId });
-      if (isSideChatShapedThread(thread)) continue;
-      if (thread.archivedAt != null || thread.deletedAt != null) {
-        // An archived asker's work moved up to its parent, so the message follows it there.
-        if (thread.parentThreadId && !candidates.includes(thread.parentThreadId)) candidates.push(thread.parentThreadId);
-        continue;
-      }
-      if (thread.status === "stopping") continue;
-      await appendOrSend(bb, threadId, prompt, input.mode ?? "steer-if-active");
-      return 1;
-    } catch (error) {
-      bb.log.warn(
-        `failed to deliver comment ${input.commentId} to thread ${threadId}: ${errorMessage(error)}`,
-      );
-      return 0;
-    }
+  const prompt = () => steerPrompt(task.key, input.authorName, typeof input.body === "function" ? input.body() : input.body, input.replyHint);
+  const at: { threadId?: string } = {};
+  try {
+    const threadId = await firstReachable(bb, candidates, at);
+    if (!threadId) return 0;
+    return (await appendOrSend(bb, threadId, prompt, input.mode ?? "steer-if-active", input.wanted)) ? 1 : 0;
+  } catch (error) {
+    bb.log.warn(
+      `failed to deliver comment ${input.commentId} to thread ${at.threadId}: ${errorMessage(error)}`,
+    );
+    return 0;
   }
-  return 0;
+}
+
+/** The first candidate that can take a message; `candidates` grows with the parents of archived ones. Throws when a read fails. */
+async function firstReachable(bb: BbPluginApi, candidates: string[], at: { threadId?: string } = {}, skipMissing = false): Promise<string | undefined> {
+  for (const threadId of candidates) {
+    at.threadId = threadId;
+    let thread: Awaited<ReturnType<BbPluginApi["sdk"]["threads"]["get"]>>;
+    try {
+      thread = await bb.sdk.threads.get({ threadId });
+    } catch (error) {
+      // The platform's authoritative "no such thread" rules a candidate out; any other failure is transient and still throws.
+      if (skipMissing && typeof error === "object" && error !== null && "code" in error && error.code === "thread_not_found") continue;
+      throw error;
+    }
+    if (isSideChatShapedThread(thread)) continue;
+    if (thread.archivedAt != null || thread.deletedAt != null) {
+      // An archived asker's work moved up to its parent, so the message follows it there.
+      if (thread.parentThreadId && !candidates.includes(thread.parentThreadId)) candidates.push(thread.parentThreadId);
+      continue;
+    }
+    if (thread.status === "stopping") continue;
+    return threadId;
+  }
+  return undefined;
+}
+
+/**
+ * The session a PR message goes to, `hold` when no single session can be told apart, undefined when the card has none. `linked` is
+ * the sorted linked thread ids the choice was made from, unset when the owner was chosen.
+ */
+export type PrRecipient = { threadId: string; linked?: string[] } | "hold" | undefined;
+
+/**
+ * The session a PR message goes to: the explicitly designated owner when reachable (an archived one hands over to its parent), else
+ * the card's only linked thread, else the one root of the card's session tree, else the one linked thread whose environment is on
+ * the PR after a complete lookup. Anything else holds: a reviewer that checked out the branch, or a lookup that could not finish,
+ * must not take the author's messages. `onPr` returns the linked threads on the PR, or null when the lookup is incomplete.
+ * Throws when a thread read or the reconcile fails, so the row backs off.
+ */
+export async function resolvePrRecipient(
+  bb: BbPluginApi,
+  store: TasksStore,
+  taskId: string,
+  pr: { ownerThreadId?: string; onPr: (threadIds: string[]) => Promise<Set<string> | null> },
+): Promise<PrRecipient> {
+  if (pr.ownerThreadId) {
+    const owner = await firstReachable(bb, [pr.ownerThreadId], {}, true);
+    if (owner) return { threadId: owner };
+  }
+  // Reconciling first detaches archived threads (and attaches the parent fallback), so the count below is of live links.
+  const reachable = (await reconcileTaskThreadsStrict(bb, store, taskId)).map((link) => link.threadId);
+  const linked = store.listTaskThreads(taskId).map((link) => link.threadId);
+  if (!linked.length) return undefined;
+  let chosen = linked.length === 1 ? linked[0] : await treeRoot(bb, linked);
+  if (!chosen) {
+    const on = await pr.onPr(linked);
+    if (on?.size === 1) chosen = [...on][0];
+  }
+  if (!chosen) return "hold";
+  // A stopping session is still the one the message belongs to, so the row waits for it instead of going elsewhere.
+  if (!reachable.includes(chosen)) throw new Error(`Thread ${chosen} is stopping`);
+  const threadId = await firstReachable(bb, [chosen], {}, true);
+  return threadId ? { threadId, linked: [...linked].sort() } : undefined;
+}
+
+/**
+ * The one linked thread with no other linked thread among its ancestors (unlinked threads in between do not count), or undefined
+ * when there are several or none. Throws when a read fails, and when a linked thread is gone: the reconcile did not finish.
+ */
+async function treeRoot(bb: BbPluginApi, linked: string[]): Promise<string | undefined> {
+  type Thread = Awaited<ReturnType<BbPluginApi["sdk"]["threads"]["get"]>>;
+  const reads = new Map<string, Promise<Thread | null>>();
+  const read = (threadId: string) => {
+    let thread = reads.get(threadId);
+    if (!thread) {
+      thread = bb.sdk.threads.get({ threadId }).catch((error: unknown) => {
+        if (typeof error === "object" && error !== null && "code" in error && error.code === "thread_not_found") return null;
+        throw error;
+      });
+      reads.set(threadId, thread);
+    }
+    return thread;
+  };
+  const roots: string[] = [];
+  for (const threadId of linked) {
+    const thread = await read(threadId);
+    if (!thread || threadUnavailable(thread)) throw new Error(`Thread ${threadId} is still linked after it became unavailable`);
+    const visited = new Set([threadId]);
+    let ancestorId: string | null | undefined = thread.parentThreadId, root = true;
+    while (ancestorId && !visited.has(ancestorId)) {
+      if (linked.includes(ancestorId)) { root = false; break; }
+      visited.add(ancestorId);
+      ancestorId = (await read(ancestorId))?.parentThreadId;
+    }
+    if (root) roots.push(threadId);
+  }
+  return roots.length === 1 ? roots[0] : undefined;
 }
 
 export type Receipt =

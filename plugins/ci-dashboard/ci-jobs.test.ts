@@ -355,14 +355,10 @@ test("the lookup is charged to the budget; without budget the job stays unchecke
   expect(calls).toHaveLength(2);
 });
 
-test("deployment landing lookup requires a default-branch push and uses its earliest time", () => {
+test("deployment lookup identifies a PR from its merge group", () => {
   const { store } = setup(), repository = "owner/repo";
   store.saveAttempt(repository, 1, 1, [job({ repository, runId: 1, event: "merge_group", headBranch: "gh-readonly-queue/main/pr-12-abc", headSha: "landing" })], true);
   expect(store.landedPullRequest(repository, "landing")).toBe(12);
   expect(store.landedPullRequest(repository, "unknown")).toBeNull();
-  expect(store.landingSha(repository, 12, "main")).toBeNull();
-  store.saveAttempt(repository, 2, 1, [job({ repository, runId: 2, event: "push", headBranch: "main", headSha: "landing", createdAt: at(2) })], true);
-  expect(store.landingSha(repository, 12, "main")).toBe("landing");
-  expect(store.pushAt(repository, "landing", "main")).toBe(at(2));
-  expect(store.pushAt(repository, "landing", "other")).toBeNull();
+
 });

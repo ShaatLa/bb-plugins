@@ -29,7 +29,8 @@ import {
   type ArchiveTask,
   type ProjectArchive,
 } from "./contract";
-import { planReviewSchema } from "../shared/contract";
+import { planReviewSchema, questionSchema } from "../shared/contract";
+import { assertSupersessionLinks } from "../shared/questions";
 
 // Imported history is never operational: server-local thread/queue/request IDs must not be resumed on another BB.
 export const historicalRun = (run: ScheduleRun): ScheduleRun => ({ ...run, threadId: null, queueId: null, requestId: null, historical: true });
@@ -72,7 +73,7 @@ export function captureProject(
     const taskIdSet = new Set(tasks.map(task => task.id));
     const manifest = archiveProjectSchema.parse({
       format: "bb-work-board",
-      version: 21,
+      version: 22,
       gitSync: createGitSyncStore(bb.storage.database()).config(projectId),
       project,
       folders,
@@ -638,6 +639,10 @@ export function restoreProject(
       ).run(...columns.map((key) => row[key]!));
       if (replacedLink) db.prepare<[SqlValue]>("UPDATE task_threads SET created_for_task = 0, link_origin = NULL WHERE id = ?").run(row.id!);
     }
+    // Validated against what the merge leaves behind: a kept local question may point at one the archive replaced.
+    for (const record of records)
+      assertSupersessionLinks(db.prepare<[string], { payload: string }>("SELECT payload FROM task_questions WHERE task_id = ?").all(record.task.id)
+        .map((row) => questionSchema.parse(JSON.parse(row.payload))));
     for (const record of records)
       if (record.activityHistory)
         db.prepare<[string]>("INSERT OR IGNORE INTO task_activity_history(task_id) VALUES (?)").run(record.task.id);

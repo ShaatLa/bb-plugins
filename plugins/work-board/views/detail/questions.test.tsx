@@ -585,3 +585,64 @@ it("orders open questions oldest first and moves a check under Earlier after ans
   expect(currentGroups.map(group => group.getAttribute("aria-label"))).toEqual(["Older open", "Old answer", "Newest check"]);
   expect(currentGroups[2]?.closest("details")?.open).toBe(false);
 });
+
+it("closes an open edit form when the check is superseded and shows it dimmed under its successor without controls", async () => {
+  const { task, rpc, structured } = setup();
+  const { question: old } = await structured.handlers.createQuestion({ kind: "check", askedByThread: null, taskId: task.id, prompt: "Does the old list render?", mode: "single", options: [] });
+  await structured.handlers.answerQuestion({ questionId: old.id, revision: 1, selectedOptionIds: [], answerText: "Problem found: rows overlap", authorName: "Owner" });
+  const slot = renderSlot(app.navPanels[0]!, { subPath: `task/${task.key}` }, { rpc });
+  const group = await slot.findByRole("group", { name: old.prompt });
+  fireEvent.click(within(group).getByRole("button", { name: "Edit question" }));
+  expect(slot.getByRole("textbox", { name: "Question" })).toBeTruthy();
+  await structured.handlers.createQuestion({ kind: "check", askedByThread: null, taskId: task.id, prompt: "Does the new list render?", mode: "single", options: [], supersedes: { questionId: old.id, revision: 2 } });
+  await slot.behavior.emitRealtime("tasks:changed", { taskId: task.id, projectId: task.projectId });
+  await waitFor(() => expect(slot.queryByRole("textbox", { name: "Question" })).toBeNull());
+  await slot.findByText("This check was replaced by a newer one, so the edit was closed.");
+  expect(slot.queryByRole("group", { name: old.prompt })).toBeNull();
+  expect(slot.queryByText(/Earlier/)).toBeNull();
+  const superseded = slot.getByLabelText(`Superseded check: ${old.prompt}`);
+  expect(superseded.closest("details")?.open).toBe(false);
+  expect(within(superseded).getByText(/Problem found: rows overlap/)).toBeTruthy();
+  expect(within(superseded).getByText(/Superseded by/).textContent).toContain("Does the new list render?");
+  expect(within(superseded).queryByRole("button")).toBeNull();
+  expect(within(superseded).queryByRole("textbox")).toBeNull();
+  expect(within(slot.getByRole("group", { name: "Does the new list render?" })).getByRole("button", { name: "Save answer" })).toBeTruthy();
+});
+
+it("reads a superseded check neutrally after withdraw, reopen or withdraw-then-edit, apart from one never answered, and keeps its history", async () => {
+  const { task, rpc, structured } = setup();
+  const ask = async (prompt: string, supersedes?: { questionId: string; revision: number }) =>
+    (await structured.handlers.createQuestion({ kind: "check", askedByThread: null, taskId: task.id, prompt, mode: "single", options: [], ...(supersedes ? { supersedes } : {}) })).question;
+  const answer = async (question: { id: string }, revision: number, text: string | null) =>
+    (await structured.handlers.answerQuestion({ questionId: question.id, revision, selectedOptionIds: [], answerText: text, authorName: "Owner" })).question;
+  // withdraw → supersede
+  const withdrawn = await ask("Does the chart load?");
+  await answer(withdrawn, 1, "Problem found: empty axis");
+  await answer(withdrawn, 2, null);
+  await ask("Does the chart load now?", { questionId: withdrawn.id, revision: 3 });
+  // reopen → supersede
+  const reopened = await ask("Does the tooltip show?");
+  const answered = await answer(reopened, 1, "Confirmed by hand");
+  await structured.handlers.updateQuestion({ questionId: reopened.id, revision: answered.revision, prompt: reopened.prompt, mode: "single", options: answered.options, reopen: true, authorName: "Agent" });
+  await ask("Does the tooltip show now?", { questionId: reopened.id, revision: 3 });
+  // withdraw → edit → supersede
+  const edited = await ask("Does the badge count?");
+  await answer(edited, 1, "Problem found: off by one");
+  const cleared = await answer(edited, 2, null);
+  await structured.handlers.updateQuestion({ questionId: edited.id, revision: cleared.revision, prompt: "Does the badge count correctly?", mode: "single", options: cleared.options, authorName: "Agent" });
+  await ask("Does the badge count now?", { questionId: edited.id, revision: 4 });
+  // never answered → supersede
+  const unanswered = await ask("Does the legend show?");
+  await ask("Does the legend show now?", { questionId: unanswered.id, revision: 1 });
+  const slot = renderSlot(app.navPanels[0]!, { subPath: `task/${task.key}` }, { rpc });
+  for (const [prompt, earlier] of [[withdrawn.prompt, "Problem found: empty axis"], [reopened.prompt, "Confirmed by hand"], ["Does the badge count correctly?", "Problem found: off by one"]] as const) {
+    const row = await slot.findByLabelText(`Superseded check: ${prompt}`);
+    expect(within(row).getByText("Previously answered; no current answer when superseded")).toBeTruthy();
+    expect(within(row).queryByText(/withdrawn/i)).toBeNull();
+    // The history view still shows the earlier answer.
+    expect(within(row).getByText(/History · /)).toBeTruthy();
+    expect(within(row).getByText(new RegExp(earlier))).toBeTruthy();
+  }
+  const never = slot.getByLabelText(`Superseded check: ${unanswered.prompt}`);
+  expect(within(never).getByText("No answer before it was superseded")).toBeTruthy();
+});

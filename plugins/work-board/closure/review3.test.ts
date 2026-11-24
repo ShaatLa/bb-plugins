@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { makeQueueEntry } from "@get-bb/plugin-sdk/testing";
 import { DEFAULT_TASK_STATUSES } from "../shared/statuses.js";
 import { snapshotLateLink } from "../delegate/attach";
@@ -94,16 +94,17 @@ describe("C3.4: the transport outcome is recorded as it happened", () => {
     const hold = gate();
     f.harness.sdk.stub("threads.queuedMessages.list", async () => [makeQueueEntry({ id: "queued_1", threadId: "thr_a", originPluginId: "work-board", state: "queued", content: [{ type: "text", text: "[bb message from plugin:work-board]\n\nEarlier", mentions: [] }] })]);
     f.harness.sdk.stub("threads.queuedMessages.update", async (args: unknown) => { updates.push(args); await hold.promise; return { ok: true }; });
-    const active = f.emit("thread.active", "thr_a");
-    await tick();
-    expect(updates).toHaveLength(1);
+    await f.emit("thread.active", "thr_a");
+    f.edit("thr_a");
+    const idle = f.emit("thread.idle", "thr_a");
+    await vi.waitFor(() => expect(updates).toHaveLength(1));
     // A policy edit makes the status open for a moment, under the same closure.
     f.store.tasks.updateProject(f.project.id, { workflowPolicy: { doneStatus: "done" } as never });
     hold.open();
-    await active;
+    await idle;
     expect(f.row(id, "thr_a")?.selfNotice).toBe("sent");
     f.store.tasks.updateProject(f.project.id, { workflowPolicy: { doneStatus: "shipped" } as never });
-    await f.emit("thread.active", "thr_a");
+    await f.turn("thr_a", () => f.edit("thr_a", "src/other.ts"));
     expect(updates).toHaveLength(1);
     expect(f.world.sent.filter((entry) => entry.threadId === "thr_a")).toEqual([]);
   });

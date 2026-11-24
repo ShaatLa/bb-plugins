@@ -5,7 +5,7 @@ import { observeStatusNotifications } from "../status-notifications";
 import { ordinaryTaskVisibilitySql } from "../scheduled/visibility";
 import { taskAdvisories } from "../advisories";
 import { idleThreshold } from "../shared/project-settings";
-import { getBadgeCriteria, getBoardPreferences, setBadgeCriteria, setBoardPreferences } from "../global-settings";
+import { getBadgeCriteria, getBoardPreferences, setBadgeCriteria, setBoardPreferences, setGlobalSettings } from "../global-settings";
 import { activityService } from "../activity/index.js";
 import { createDependencyStore } from "../dependencies/store";
 import { createPlanStore, PlanError } from "../plans/store";
@@ -19,7 +19,7 @@ import { projectConfigHandlers } from "../config";
 import { attentionUiHandlers } from "../attention/rpc";
 import { checksUiHandlers } from "../checks/rpc";
 import { createLockHandlers } from "../locks/service";
-import { statusLabel } from "../shared/statuses.js";
+import { DEFAULT_TASK_STATUSES, STALE_STATUSES, statusLabel, taskStatusesSchema } from "../shared/statuses.js";
 import { createClosureService, type ClosureService } from "../closure/service";
 import { attachManualLink, canTakeWorkerLink } from "../delegate/attach";
 import type { BbPluginApi, PluginRpcHandlers } from "@get-bb/plugin-sdk";
@@ -379,12 +379,16 @@ function assertNoOpenOwnerQuestions(
   if (!agentThreadId || !targetStatus || !project || !isClosedStatus(project, targetStatus) || isClosedStatus(project, task.status)) return;
   const open = bb.storage.database().prepare<[string], { payload: string }>(
     `SELECT q.payload FROM task_questions q WHERE q.task_id = ? AND ${UNANSWERED_QUESTION} ORDER BY q.id`,
-  ).all(task.id).map((row) => JSON.parse(row.payload) as { id: string; revision: number; kind?: string; prompt: string });
+  ).all(task.id).map((row) => JSON.parse(row.payload) as { id: string; revision: number; kind?: string; prompt: string; supersedes?: string });
   if (!open.length) return;
   const list = open.map((q) => `${q.id} rev ${q.revision} (${q.kind ?? "decision"}) "${q.prompt.length > 60 ? `${q.prompt.slice(0, 60)}…` : q.prompt}"`).join("; ");
+  // An open question that replaced a check is part of a supersede chain, which cannot be deleted.
+  const deletable = open.filter((q) => !q.supersedes);
+  const linked = open.filter((q) => q.supersedes);
   throw new Error(
     `${task.key} cannot move to ${statusLabel(targetStatus, project.statuses)}: ${open.length} owner question${open.length > 1 ? "s are" : " is"} still open: ${list}. ` +
-    `Wait for the answers, or withdraw a question that is no longer needed (${open.map((q) => `\`bb work-board question delete ${task.key} --question ${q.id} --revision ${q.revision}\``).join("; ")}), then move the card.`,
+    `Wait for the answers${deletable.length ? `, or withdraw a question that is no longer needed (${deletable.map((q) => `\`bb work-board question delete ${task.key} --question ${q.id} --revision ${q.revision}\``).join("; ")})` : ""}, then move the card.` +
+    (linked.length ? ` ${linked.map((q) => q.id).join(", ")} replace${linked.length > 1 ? "" : "s"} an earlier check and cannot be deleted: wait for the owner's answer.` : ""),
   );
 }
 
@@ -1126,6 +1130,9 @@ export function registerHandlers(
     getBoardPreferences() {
       return getBoardPreferences(bb);
     },
+    async "globalSettings.set"({ values }) {
+      return { values: await setGlobalSettings(bb, values) };
+    },
     async setBoardPreferences(input) {
       await setBoardPreferences(bb, input);
       publishProjectsChanged(bb, null);
@@ -1137,9 +1144,13 @@ export function registerHandlers(
       return { project };
     },
     updateProject(input) {
-      const { projectId, ...changes } = input;
+      const { projectId, baseStatuses, ...changes } = input;
       const before = store.tasks.getProject(projectId)?.planning ?? "off";
-      const project = store.tasks.updateProject(projectId, changes);
+      const canonical = (statuses: unknown) => JSON.stringify(taskStatusesSchema.parse(statuses));
+      const project = store.transaction(() => {
+        if (baseStatuses && canonical(store.tasks.getProject(projectId)?.statuses ?? DEFAULT_TASK_STATUSES) !== canonical(baseStatuses)) throw new Error(STALE_STATUSES);
+        return store.tasks.updateProject(projectId, changes);
+      });
       // The platform cannot tell the app from another caller, so a change is only made visible: a log entry.
       if ((project.planning ?? "off") !== before) bb.log.info(`planning for ${project.prefix}: ${before} → ${project.planning}`);
       publishProjectsChanged(bb, project.id);
@@ -1392,7 +1403,10 @@ export function registerHandlers(
       return { deleted };
     },
     listTasks(input) {
+      // One clock for the selection and the flags returned with it.
+      const nowMs = Date.now();
       const page = store.tasks.listTasksPage({
+        nowMs,
         ordinaryOnly: !input.includeScheduled,
         archive: input.archive,
         dateField: input.dateField,
@@ -1416,7 +1430,7 @@ export function registerHandlers(
         cursor: input.cursor,
         allowStaleCursor: input.allowStaleCursor,
       });
-      const flags = store.tasks.staleStatusFlags(page.tasks.map((task) => task.id));
+      const flags = store.tasks.staleStatusFlags(page.tasks.map((task) => task.id), undefined, nowMs);
       const tasks = apiTasks(store, page.tasks);
       return {
         tasks: input.omitBodies ? tasks.map((task) => ({ ...task, description: "", progressNote: null })) : tasks,
@@ -1638,7 +1652,7 @@ export function registerHandlers(
       for (const id of affected) bb.realtime.publish("threads:changed", { taskId: id });
       return { ok: true as const };
     },
-    async listTaskCardMeta({ taskIds }) {
+    async listTaskCardMeta({ taskIds, skipStaleStatusFlags }) {
       const ids = [...new Set(taskIds)];
       if (ids.length === 0) return { metadata: [] };
       const discoveryComplete = await discoverRunningTaskThreads(bb, store);
@@ -1652,7 +1666,7 @@ export function registerHandlers(
         entries.push(thread);
         threads.set(thread.taskId, entries);
       }
-      const flags = store.tasks.staleStatusFlags(ids);
+      const flags = skipStaleStatusFlags ? new Map<string, string[]>() : store.tasks.staleStatusFlags(ids);
       const activity = store.tasks.listTaskActivity(ids);
       const scopedActivity = await activityService(bb, store).metadata(ids, discoveryComplete, allLinks);
       const blockedBy = dependencies.blockers(ids);

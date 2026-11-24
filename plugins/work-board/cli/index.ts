@@ -1100,7 +1100,7 @@ export function registerTasksCli(
           },
         }),
         "git-config": cliCommand({ summary: "Show or replace project Git/PR configuration from JSON", options: { project: REQUIRED_PROJECT_OPTION, file: { type: "string", description: "JSON configuration file on the invoking machine" }, machine: MACHINE_OPTION, json: JSON_OPTION }, run(input, ctx) { return guard(async () => { const project = await requiredProject(domain, ctx, input.options.project); if (input.options.file) { const hostId = await resolveClientHostId(bb, domain, input.options.machine, ctx); const text = await readTextOption(bb, ctx, hostId, undefined, input.options.file); return JSON.stringify(await domain.setGitSyncConfig(tasksRpcContract.setGitSyncConfig.input.parse({ projectId: project.id, config: JSON.parse(text ?? "") }))); } return JSON.stringify(await domain.getGitSyncConfig({ projectId: project.id })); }); } }),
-        pr: groupCommand("pr", "Manage persistent task-to-PR links and wait for PR CI", [["link", "Link/confirm a PR"], ["list", "Show PR, CI and merge state"], ["unlink", "Exclude a PR from rediscovery"], ["wait --url URL", "Block until the PR head's required checks settle (exit 0 green, 1 red, 2 cancelled/superseded, 3 no verdict)"]]),
+        pr: groupCommand("pr", "Manage persistent task-to-PR links and wait for PR CI", [["link", "Link/confirm a PR"], ["list", "Show PR, CI and merge state"], ["unlink", "Exclude a PR from rediscovery"], ["events", "Show a card's PR lifecycle messages and their delivery"], ["wait --url URL", "Block until the PR head's required checks settle (exit 0 green, 1 red, 2 cancelled/superseded, 3 no verdict)"]]),
         "pr wait": cliCommand({
           summary: "Block until every required check of a PR head settles; exit 0 green, 1 red, 2 cancelled or superseded, 3 no verdict",
           options: {
@@ -1137,14 +1137,25 @@ export function registerTasksCli(
             };
           }); },
         }),
+        "pr events": cliCommand({
+          summary: "List a card's recent PR lifecycle messages (CI verdict, merge queue removal, merge, deployment) and their delivery state",
+          positionals: [KEY_POSITIONAL], options: { json: JSON_OPTION },
+          run(input) { return guard(async () => {
+            const task = await resolveTask(domain, input.positionals["key-or-id"]);
+            const { events } = await domain.listPrEvents({ taskId: task.id, limit: 50 });
+            return input.options.json ? JSON.stringify({ events }) : events.map((event) => `${event.createdAt} · ${event.pr} · ${event.kind} · ${event.role} · ${event.state}${event.threadId ? ` → ${event.threadId}` : ""}${event.error ? ` (${event.error})` : ""}\n  ${event.text}`).join("\n") || "No PR events.";
+          }); },
+        }),
         ...Object.fromEntries((["link", "list", "unlink"] as const).map(action => [`pr ${action}`, cliCommand({
           summary: action === "list" ? "List persistent PR links and their cached status" : action === "link" ? "Link or confirm a PR with an explicit role" : "Exclude a PR (survives discovery)",
-          positionals: [KEY_POSITIONAL], options: { json: JSON_OPTION, ...(action === "list" ? {} : { url: { type: "string" as const, required: true as const, description: "Full GitHub PR URL" } }), ...(action === "link" ? { role: { type: "enum" as const, values: ["delivers", "design", "related"] as const, default: "delivers" as const, description: "Relationship to task delivery" }, part: { type: "string" as const, description: "Delivery part k/m" } } : {}) },
-          run(input) { return guard(async () => {
+          positionals: [KEY_POSITIONAL], options: { json: JSON_OPTION, ...(action === "list" ? {} : { url: { type: "string" as const, required: true as const, description: "Full GitHub PR URL" } }), ...(action === "link" ? { role: { type: "enum" as const, values: ["delivers", "design", "related"] as const, default: "delivers" as const, description: "Relationship to task delivery" }, part: { type: "string" as const, description: "Delivery part k/m" }, owner: { type: "string" as const, description: "Session that opened the PR and gets its lifecycle messages: self or a thread id" } } : {}) },
+          run(input, ctx) { return guard(async () => {
             const task = await resolveTask(domain, input.positionals["key-or-id"]);
             if (action === "list") { const result = await domain.listPrLinks({ taskId: task.id }); return input.options.json ? JSON.stringify(result) : result.links.map(({ link, snapshot, stale }) => `${link.repository}#${link.number} · ${link.role}${link.part ? ` ${link.part}` : ""} · ${link.excluded ? "excluded" : link.confirmed ? "confirmed" : `suggested (${link.source})`} · ${snapshot?.state ?? "unknown"} · CI ${snapshot?.ci ?? "unknown"}${stale ? " · stale" : ""}`).join("\n") || "No PR links."; }
             if (action === "unlink") return JSON.stringify(await domain.unlinkPr(tasksRpcContract.unlinkPr.input.parse({ taskId: task.id, url: input.options.url })));
-            return JSON.stringify(await domain.linkPr(tasksRpcContract.linkPr.input.parse({ taskId: task.id, url: input.options.url, role: input.options.role, part: input.options.part })));
+            const owner = input.options.owner === "self" ? ctx.threadId ?? process.env.BB_THREAD_ID : input.options.owner;
+            if (input.options.owner === "self" && !owner) throw new CliError("--owner self needs a session; pass --owner thr_…");
+            return JSON.stringify(await domain.linkPr(tasksRpcContract.linkPr.input.parse({ taskId: task.id, url: input.options.url, role: input.options.role, part: input.options.part, ...(owner ? { ownerThreadId: owner } : {}) })));
           }); },
         })])),
         ...Object.fromEntries(["archive", "restore"].map(action => [action, cliCommand({
@@ -1269,7 +1280,17 @@ export function registerTasksCli(
           summary: "Ask the owner one decision or one check (short, one link; check steps in --step, evidence in a comment)",
           positionals: [KEY_POSITIONAL],
           options: {
-            kind: { type: "enum", values: ["decision", "check"] as const, description: "Question type (default decision); a check is refused while the card has plan debt" },
+            kind: { type: "enum", values: ["decision", "check"] as const, description: "Question type (default decision); a check is refused while the card has plan debt. When an existing check's state changed, do not add a parallel check: edit it while it is open, --reopen it when its prompt and steps are unchanged, or replace it with --supersedes" },
+            supersedes: {
+              type: "string",
+              description: "ID of the check on this card this new --kind check replaces because its state changed (a prompt link or step changed); requires --supersedes-revision. The old check closes and keeps its answer and remark",
+            },
+            "supersedes-revision": {
+              type: "integer",
+              min: 1,
+              max: Number.MAX_SAFE_INTEGER,
+              description: "The revision of the --supersedes check you read; a newer revision or answer refuses the add",
+            },
             prompt: {
               type: "string",
               required: true,
@@ -1326,6 +1347,8 @@ export function registerTasksCli(
                 throw new CliError(
                   "--recommendation-reason requires --recommend",
                 );
+              if ((input.options.supersedes === undefined) !== (input.options["supersedes-revision"] === undefined))
+                throw new CliError("--supersedes and --supersedes-revision go together: name the check and the revision you read (bb work-board question list KEY)");
               const result = await domain.createQuestion(
                 tasksRpcContract.createQuestion.input.parse({
                   taskId: task.id,
@@ -1344,9 +1367,11 @@ export function registerTasksCli(
                       : label,
                   ),
                   mode: input.options.multiple ? "multiple" : "single",
+                  ...(input.options.supersedes ? { supersedes: { questionId: input.options.supersedes, revision: input.options["supersedes-revision"] } } : {}),
                 }),
               );
               const warnings = [
+                ...(result.warnings ?? []),
                 ...(!task.progressNote && ["backlog", "todo"].includes(task.status)
                   ? [`Task is in ${task.status} with no Current state; set it with ` + `\`bb work-board update ${task.key} --progress ...\`` + " and move the status if the work stage changed, so the owner sees why it waits on them."] : []),
                 // More than one link is refused by the store; length stays a warning.
@@ -1371,11 +1396,9 @@ export function registerTasksCli(
                 input.positionals["key-or-id"],
               );
               const result = await domain.listQuestions({ taskId: task.id });
-              return JSON.stringify(
-                result,
-                null,
-                input.options.json ? undefined : 2,
-              );
+              if (input.options.json) return JSON.stringify(result);
+              const superseded = result.questions.filter((question) => question.supersededBy).map((question) => `Question ${question.id} is superseded by ${question.supersededBy}; act on that question.`);
+              return { exitCode: 0, stdout: JSON.stringify(result, null, 2), stderr: superseded.join("\n") };
             });
           },
         }),
@@ -1516,7 +1539,7 @@ export function registerTasksCli(
             reopen: {
               type: "boolean",
               description:
-                "Clear the existing answer and ask the same thing again; the reopening thread becomes the asker. It cannot add steps or links the answered revision lacked: a new state is a new question",
+                "Clear the existing answer and ask the same thing again; the reopening thread becomes the asker. An answered check must keep its ordered steps and prompt links exactly; any added, removed, reordered or changed step or link is a new state: replace the check with `question add --kind check --supersedes ID --supersedes-revision N`. An answered decision cannot gain steps or links; ask that as a fresh decision question with `question add --kind decision`",
             },
             machine: MACHINE_OPTION,
             json: JSON_OPTION,
@@ -2717,8 +2740,9 @@ export function registerTasksCli(
                   }),
                 ),
               );
-              const metadata = (await domain.listTaskCardMeta({ taskIds: result.tasks.map((task) => task.id) })).metadata;
-              const flags = new Map(metadata.map((row) => [row.taskId, row.staleStatusFlags]));
+              const metadata = (await domain.listTaskCardMeta({ taskIds: result.tasks.map((task) => task.id), skipStaleStatusFlags: true })).metadata;
+              // The flags the page was selected with, not a second read at another instant.
+              const flags = new Map(result.staleStatusFlags.map((row) => [row.taskId, row.flags]));
               const blockedBy = new Map(metadata.map(row => [row.taskId, row.blockedBy ?? []]));
               const advisories = new Map(metadata.map(row => [row.taskId, row.advisories ?? []]));
               const health = new Map(
@@ -2850,6 +2874,8 @@ export function registerTasksCli(
                 id: question.id, prompt: question.prompt, kind: question.kind, askedByThread: question.askedByThread,
                 answer: [...question.options.filter(option => question.selectedOptionIds.includes(option.id)).map(option => option.label), ...(question.answerText ? [question.answerText] : [])].join("; "),
                 answeredBy: question.answeredBy, updatedAt: question.updatedAt,
+                ...(question.supersedes ? { supersedes: question.supersedes } : {}),
+                ...(question.supersededBy ? { supersededBy: question.supersededBy, supersededAt: question.supersededAt } : {}),
               } : question) : questions;
               const latestCommentId = comments.at(-1)?.id ?? null;
               const cardMeta = (await domain.listTaskCardMeta({ taskIds: [task.id] })).metadata[0]!;
@@ -3004,7 +3030,7 @@ ${activity.diagnostics?.inactiveSessions.map((session) => `@thread:${session.thr
                     ? `\nPR lookup unavailable for: ${unavailableThreadIds.join(", ")}`
                     : ""
                 }`,
-                `Questions\n${brief ? shownQuestions.map(q => "answer" in q ? `✓ ${oneLine(q.prompt).slice(0, 160)} → ${oneLine(q.answer).slice(0, 160)} (${q.id})` : JSON.stringify(q)).join("\n") : JSON.stringify(shownQuestions, null, 2)}`,
+                `Questions\n${brief ? shownQuestions.map(q => q.supersededBy ? `superseded by ${q.supersededBy}: ${oneLine(q.prompt).slice(0, 160)}${"answer" in q && q.answer ? ` → ${oneLine(q.answer).slice(0, 160)}` : ""} (${q.id})` : "answer" in q ? `✓ ${oneLine(q.prompt).slice(0, 160)} → ${oneLine(q.answer).slice(0, 160)} (${q.id})` : JSON.stringify(q)).join("\n") : JSON.stringify(shownQuestions, null, 2)}`,
                 brief ? `Evidence: ${evidence.records.length} record(s); \`bb work-board evidence ${task.key}\` lists them` : `Evidence\n${evidenceText(evidence)}`,
                 `Comments\nLatest comment: ${latestCommentId ?? "(none)"}\n${commentsTable(shownComments)}${omittedComments ? `\n${omittedComments} of ${comments.length} comment(s) not shown; read them with \`bb work-board comment list ${task.key} --kind user --kind agent --kind system\`` : ""}`,
                 ...Object.entries(more).filter(([part]) => part !== "comments").map(([part, command]) => `${part} omitted; read with \`${command}\``),

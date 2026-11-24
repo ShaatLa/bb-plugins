@@ -68,14 +68,6 @@ export function createJobStore(database: ReturnType<BbPluginApi["storage"]["data
     },
     /** Rewrites one stored job (e.g. after a signature re-scan); the indexed columns never change. */
     /** Names of the jobs that succeeded at a head commit (merge queue groups: what that group ran and passed). */
-    /** True when a push run is stored for the commit: it is on a branch (the default branch), not a merge queue group commit. */
-    pushAt(repository: string, sha: string, branch: string | null): string | null {
-      return (database.prepare("SELECT MIN(created_at) AS at FROM ci_jobs WHERE repository = ? AND head_sha = ? AND json_extract(data, '$.event') = 'push' AND json_extract(data, '$.headBranch') = ?").get(repository, sha, branch) as { at: string | null }).at;
-    },
-    landingSha(repository: string, number: number, branch: string | null): string | null {
-      const rows = database.prepare("SELECT DISTINCT head_sha AS sha, json_extract(data, '$.headBranch') AS branch FROM ci_jobs WHERE repository = ? AND json_extract(data, '$.event') = 'merge_group' AND json_extract(data, '$.headBranch') LIKE ? ORDER BY created_at DESC").all(repository, `%/pr-${number}-%`) as { sha: string; branch: string }[];
-      return rows.find((row) => queuePullRequest(row.branch) === number && this.pushAt(repository, row.sha, branch) !== null)?.sha ?? null;
-    },
     landedPullRequest(repository: string, sha: string): number | null {
       const row = database.prepare("SELECT json_extract(data, '$.headBranch') AS branch FROM ci_jobs WHERE repository = ? AND head_sha = ? AND json_extract(data, '$.event') = 'merge_group' LIMIT 1").get(repository, sha) as { branch: string } | undefined;
       return queuePullRequest(row?.branch ?? null);

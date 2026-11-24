@@ -17,8 +17,11 @@ import {
   settledSpreadMs,
   type PrLink,
   type PrSnapshot,
+  STALE_GIT_CONFIG,
 } from "../shared/git-sync";
 import { createGitSyncStore } from "./store";
+import { errorMessage } from "../shared/errors";
+import { pairRemoval, prEventService, prEventSettings, queueDeparture, recordPrEvents } from "./events";
 import { planDebtService } from "../plan-debt/service";
 import { hasPlanDebtEvent } from "../plan-debt/store";
 import {
@@ -26,13 +29,16 @@ import {
   githubToken,
   type GithubClient,
   GithubError,
+  type QueueRemoval,
 } from "./github";
 
 const SYNC_DEADLINE_MS = 4 * 60_000;
 // No new PR starts after this, so the pass ends on its own before the hard deadline cuts a fetch.
 const SYNC_BUDGET_MS = SYNC_DEADLINE_MS - 60_000;
-// Open/draft PRs lead, but a due PR that has waited this long goes first, oldest first.
+// A due PR that has waited this long goes first within its class (scheduled) or the whole pass (forced), oldest first.
 const LEAD_MS = 15 * 60_000;
+// One budget per run for the post-merge sweep, shared by every project, so the next run's PR refresh is never held.
+const SWEEP_BUDGET_MS = 45_000;
 
 /** `failures`: required PR snapshot requests that failed for a non-permission reason; `tolerated`: optional lookups and permission refusals. */
 type SyncResult = { checked: number; errors: string[]; deferred: number; failures: number; tolerated: number; timedOut: boolean };
@@ -60,6 +66,7 @@ export function createGitSyncService(
 ) {
   const db = bb.storage.database();
   const data = createGitSyncStore(db);
+  const events = prEventService(bb, store.tasks);
   const controller = new AbortController();
   bb.onDispose(() => controller.abort());
   let tokenAt = 0;
@@ -106,7 +113,7 @@ export function createGitSyncService(
     taskId: string,
     url: string,
     source: PrLink["source"],
-    manual?: { role: PrLink["role"]; part: string | null },
+    manual?: { role: PrLink["role"]; part: string | null; ownerThreadId?: string },
   ) => {
     const task = requireTask(taskId);
     const address = parsePrUrl(url);
@@ -129,6 +136,8 @@ export function createGitSyncService(
         part: manual?.part ?? null,
         confirmed: Boolean(manual),
         excluded: false,
+        // Only an explicit designation sets the owner; a plain relink keeps it.
+        ...((manual?.ownerThreadId ?? old?.ownerThreadId) ? { ownerThreadId: manual?.ownerThreadId ?? old?.ownerThreadId } : {}),
         remoteId: old?.remoteId ?? null,
         createdAt: old?.createdAt ?? now,
         updatedAt: now,
@@ -312,6 +321,12 @@ export function createGitSyncService(
         if (!link.excluded && config.repositories.includes(link.repository)) unique.set(identity, link);
       }
       const attempts = data.attempts(projectId);
+      // Merges whose SHA has not arrived keep being read only while the SHA can still produce a message: the `merged` notice of a merge
+      // Work Board saw happen ("!"), or a configured deployment wait of a merge first seen inside its window.
+      const eventsOn = config.enabled && prEventSettings(db, projectId).events === "on";
+      const shaPending = new Map(eventsOn ? db.prepare<[string], { remoteId: string; marker: string; seenAt: string }>(
+        "SELECT remote_id AS remoteId, merge_sha AS marker, merge_seen_at AS seenAt FROM pr_event_state WHERE project_id=? AND merge_sha IN ('?', '!') AND merge_seen_at IS NOT NULL",
+      ).all(projectId).map((row) => [row.remoteId, row]) : []);
       const now = Date.now(), poll = config.pollMinutes * 60_000;
       // A PR that left eligibility (excluded, unlinked, repository removed) starts a fresh wait if it comes back.
       for (const key of forcedWaiting.keys())
@@ -326,7 +341,12 @@ export function createGitSyncService(
         const seen: Seen | null = attempt?.state && attempt.observedAt && !attempt.error
           ? { state: attempt.state, mergedAt: attempt.mergedAt, updatedAt: attempt.updatedAt ?? "", observedAt: attempt.observedAt, coverage: JSON.parse(attempt.coverage ?? "[]") }
           : null;
-        const ttl = seen ? observationTtl(seen, config, now) : null;
+        // shortcut: the SHA is awaited for one day past the cutoff at the poll interval; a longer GitHub delay leaves the wait unarmed.
+        const pendingSha = attempt?.remoteId ? shaPending.get(attempt.remoteId) : undefined;
+        const cutoff = seen?.mergedAt ? Date.parse(seen.mergedAt) + config.postMergeDays * 86_400_000 : NaN;
+        const outstanding = pendingSha?.marker === "!" || (pendingSha !== undefined && config.postMergeWorkflows.length > 0 && Date.parse(pendingSha.seenAt) <= cutoff);
+        const awaitingSha = seen?.state === "merged" && !attempt?.mergeSha && outstanding && now <= cutoff + 86_400_000;
+        const ttl = seen ? observationTtl(seen, config, now) ?? (awaitingSha ? poll : null) : null;
         // Only settled merges spread; old closed PRs keep their plain hourly due time.
         const advance = seen?.state === "merged" && ttl !== null && ttl > poll ? settledSpreadMs(prIdentity(link)) : 0;
         if (!force && seen && !observationDue(seen.observedAt, ttl === null ? null : ttl - advance, config, now)) continue;
@@ -344,9 +364,11 @@ export function createGitSyncService(
           due.push({ link, tier: overdue ? 0 : lead ? 1 : 2, order: overdue ? waitingSince : lastAttemptAt, seen });
           continue;
         }
-        // Waiting counts from when a PR became due; once it reaches LEAD_MS the PR goes first, oldest first.
+        // Open and draft PRs always go ahead of merged and closed ones; within each class, a PR due for LEAD_MS goes first, oldest first.
         const dueAt = ttl !== null && ttl > poll ? Date.parse(seen!.observedAt) + ttl - poll - advance : lastAttemptAt;
-        due.push({ link, tier: now - dueAt >= LEAD_MS ? 0 : lead ? 1 : 2, order: dueAt, seen });
+        // The class is the last known state, so a failed refresh of a merged PR does not move it into the open class.
+        const overdue = now - dueAt >= LEAD_MS, active = !attempt?.state || attempt.state === "open" || attempt.state === "draft";
+        due.push({ link, tier: active ? (overdue ? 0 : 1) : overdue ? 2 : lead ? 3 : 4, order: dueAt, seen });
       }
       due.sort((left, right) => left.tier - right.tier || left.order - right.order);
       for (let index = 0; index < due.length; index++) {
@@ -367,6 +389,31 @@ export function createGitSyncService(
             previous.snapshot,
           );
           if (!current()) break;
+          // The timeline is read only when a known queue entry is gone, so ordinary polls cost no extra request.
+          const departure = config.enabled && prEventSettings(db, projectId).events === "on" ? queueDeparture(db, projectId, snapshot) : null;
+          // Undefined: no departure to report, which includes a paired merge-generated removal; null: the reason is unknown.
+          let removal: QueueRemoval | null | undefined;
+          if (departure) {
+            try {
+              const paired = client.queueTimeline ? pairRemoval(await client.queueTimeline(snapshot.repository, snapshot.number), departure.enqueuedAt, snapshot.observedAt) : null;
+              const merge = paired?.reason?.toLowerCase() === "merged";
+              removal = merge ? undefined : paired && { id: paired.id, createdAt: paired.createdAt, reason: paired.reason };
+              if (removal && paired?.beforeCommit && client.failedChecks && /^failed[ _]checks$/i.test(removal.reason ?? "")) {
+                // The rollup only adds detail: without it the message still carries the reason and the time.
+                try {
+                  const failed = await client.failedChecks(snapshot.repository, paired.beforeCommit);
+                  if (failed) removal.failed = failed;
+                  else bb.log.warn(`Merge queue removal of ${prIdentity(snapshot)}: commit ${paired.beforeCommit} has no check rollup`);
+                } catch (error) {
+                  bb.log.warn(`Merge queue removal of ${prIdentity(snapshot)}: failed checks unreadable: ${errorMessage(error)}`);
+                }
+              }
+            } catch (error) {
+              bb.log.warn(`Merge queue removal lookup for ${prIdentity(snapshot)} failed: ${errorMessage(error)}`);
+              removal = null;
+            }
+            if (!current()) break;
+          }
           if (
             !snapshot.coverage.length &&
             snapshot.mergeSha &&
@@ -375,6 +422,7 @@ export function createGitSyncService(
             snapshot.coverage = previous.snapshot.coverage.filter((value) =>
               config.postMergeWorkflows.includes(value.workflow),
             );
+          let delivers = false;
           store.transaction(() => {
             data.saveSnapshot(projectId, link, snapshot);
             if (snapshot.repository !== link.repository) {
@@ -394,7 +442,10 @@ export function createGitSyncService(
               data.attempted(projectId);
               publishProjectsChanged(bb, projectId);
             }
+            delivers = recordPrEvents(db, store.tasks, { projectId, config, snapshot, ...(removal !== undefined ? { removal } : {}) });
           });
+          // Messages go out while the pass reads the next PRs; the drain chain runs one drain at a time.
+          if (delivers) void events.drain();
           if (snapshot.state === "open" || snapshot.state === "draft") {
             const latestProject = store.tasks.getProject(projectId);
             if (latestProject && current()) {
@@ -437,6 +488,7 @@ export function createGitSyncService(
         }
       }
       flush();
+      void events.drain();
       return finish();
     })();
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -468,6 +520,7 @@ export function createGitSyncService(
     | "listPrLinks"
     | "linkPr"
     | "unlinkPr"
+    | "listPrEvents"
     | "syncGit"
   > = {
     prSummaries({ taskIds }) {
@@ -486,40 +539,40 @@ export function createGitSyncService(
       };
       let suggestedRepository: string | null = null;
       const available = new Set<string>();
-      try {
-        const projects = await bb.sdk.projects.list({ includePersonal: true });
-        for (const entry of projects) {
-          const repository = fromRemote(entry.gitRemoteUrl);
-          if (repository) available.add(repository);
-          if (entry.id === project.linkedBbProjectId)
-            suggestedRepository = repository;
-        }
-      } catch {
-        /* Manual configuration stays available if BB projects cannot be read. */
-      }
-      if (project.linkedBbProjectId && !suggestedRepository) {
+      const linkedId = project.linkedBbProjectId;
+      // A linked project offers only its own repository, so other projects' repositories stay out of its settings.
+      if (linkedId) {
         try {
-          const linked = await bb.sdk.projects.get({
-            projectId: project.linkedBbProjectId,
-          });
+          const linked = await bb.sdk.projects.get({ projectId: linkedId });
           suggestedRepository = fromRemote(linked.gitRemoteUrl);
           if (suggestedRepository) available.add(suggestedRepository);
         } catch {
-          /* Suggestions are optional. */
+          /* Manual configuration stays available if the BB project cannot be read. */
+        }
+      } else {
+        try {
+          for (const entry of await bb.sdk.projects.list({ includePersonal: true })) {
+            const repository = fromRemote(entry.gitRemoteUrl);
+            if (repository) available.add(repository);
+          }
+        } catch {
+          /* Manual configuration stays available if BB projects cannot be read. */
         }
       }
       return {
         config: data.config(projectId),
         suggestedRepository,
+        linkedBbProject: Boolean(linkedId),
         availableRepositories: [...available].sort(),
       };
     },
-    setGitSyncConfig({ projectId, config }) {
+    setGitSyncConfig({ projectId, config, baseConfig }) {
       requireProject(projectId);
-      const saved = data.setConfig(
-        projectId,
-        gitSyncConfigSchema.parse(config),
-      );
+      const canonical = (value: unknown) => JSON.stringify(gitSyncConfigSchema.parse(value));
+      const saved = db.transaction(() => {
+        if (baseConfig && canonical(data.config(projectId)) !== canonical(baseConfig)) throw new Error(STALE_GIT_CONFIG);
+        return data.setConfig(projectId, gitSyncConfigSchema.parse(config));
+      })();
       discovery.clear();
       publishProjectsChanged(bb, projectId);
       publishProjectPrs(projectId);
@@ -545,10 +598,11 @@ export function createGitSyncService(
         }),
       };
     },
-    async linkPr({ taskId, url, role, part }) {
+    async linkPr({ taskId, url, role, part, ownerThreadId }) {
       const db = bb.storage.database(), trigger = `pr:${prIdentity(parsePrUrl(url))}`;
       const known = hasPlanDebtEvent(db, taskId, trigger);
-      const link = remember(taskId, url, "manual", { role, part });
+      const link = remember(taskId, url, "manual", { role, part, ownerThreadId });
+      if (ownerThreadId && events.wake(link)) void events.drain();
       if (known || !hasPlanDebtEvent(db, taskId, trigger)) return { link };
       await planDebtService(bb, store.tasks).drain();
       return { link, note: "Plan debt: this card works without an approved plan; a reminder for its executors was recorded." };
@@ -579,26 +633,67 @@ export function createGitSyncService(
       publishProjectPrs(task.projectId);
       return { excluded: true };
     },
+    listPrEvents({ taskId, limit }) {
+      requireTask(taskId);
+      return { events: events.list(taskId, limit) };
+    },
     async syncGit({ projectId }) {
       const { checked, errors, deferred } = await syncProject(projectId, true);
       return { checked, errors: deferred ? [...errors, `${deferred} PRs deferred to the next pass`] : errors };
     },
   };
+  const sweeping = new Map<string, Promise<void>>();
+  let prunedAt = 0;
+  /** One post-merge wait sweep per project at a time; the projects not already sweeping share one SWEEP_BUDGET_MS budget. */
+  const sweep = (projectIds: string[]) => {
+    const claimed = projectIds.filter((projectId) => !sweeping.has(projectId));
+    if (claimed.length) {
+      const budget = new AbortController();
+      const timer = setTimeout(() => budget.abort(), SWEEP_BUDGET_MS);
+      const running: Promise<void> = events.sweep(claimed, clientOverride ?? github.withSignal(budget.signal), budget.signal, Date.now() + SWEEP_BUDGET_MS)
+        .then(({ advanced, remaining }) => {
+          if (advanced || remaining) bb.log.info(`PR event sweep advanced ${advanced} deployment waits${remaining ? ` and stopped at its budget with ${remaining} left for the next run` : ""}`);
+        })
+        .catch((error: unknown) => bb.log.warn(`PR event sweep for ${claimed.join(", ")} failed: ${error instanceof Error ? error.message : String(error)}`))
+        .finally(() => {
+          clearTimeout(timer);
+          for (const projectId of claimed) if (sweeping.get(projectId) === running) sweeping.delete(projectId);
+        });
+      for (const projectId of claimed) sweeping.set(projectId, running);
+    }
+    return Promise.all(new Set(projectIds.map((projectId) => sweeping.get(projectId)))).then(() => {});
+  };
+  const enabledProjects = () => store.tasks.listProjects().map((project) => project.id).filter((projectId) => data.config(projectId).enabled);
   return {
     handlers,
     remember,
     syncProject,
+    sweep,
+    events,
+    /** Startup: deliver what a restart left behind and settle waits whose deadline passed while the plugin was down. */
+    async startEvents() {
+      await events.drain();
+      await sweep(enabledProjects());
+      await events.drain();
+    },
     /** Deferral is load management and stays ok; a hard timeout or failed GitHub requests fail the scheduled run. */
     async runDue() {
       const problems: string[] = [];
-      for (const project of store.tasks.listProjects()) {
-        if (!data.config(project.id).enabled || !data.due(project.id)) continue;
-        const outcome = await syncProject(project.id);
-        if (outcome.deferred) bb.log.info(`Git sync for project ${project.id} checked ${outcome.checked} PRs and deferred ${outcome.deferred} to the next pass`);
-        if (outcome.tolerated) bb.log.warn(`Git sync for project ${project.id} tolerated ${outcome.tolerated} optional lookup or permission failures`);
-        if (outcome.timedOut) problems.push(`project ${project.id}: ${outcome.errors[0]} (${outcome.checked} PRs checked)`);
-        else if (outcome.failures) problems.push(`project ${project.id}: ${outcome.failures} GitHub request failures (${outcome.checked} PRs checked)`);
+      // PRs are refreshed first, so a slow post-merge sweep never delays open work.
+      for (const projectId of enabledProjects()) {
+        // An earlier project's refresh may have taken long enough for this one to be turned off.
+        if (!data.config(projectId).enabled || !data.due(projectId)) continue;
+        const outcome = await syncProject(projectId);
+        if (outcome.deferred) bb.log.info(`Git sync for project ${projectId} checked ${outcome.checked} PRs and deferred ${outcome.deferred} to the next pass`);
+        if (outcome.tolerated) bb.log.warn(`Git sync for project ${projectId} tolerated ${outcome.tolerated} optional lookup or permission failures`);
+        if (outcome.timedOut) problems.push(`project ${projectId}: ${outcome.errors[0]} (${outcome.checked} PRs checked)`);
+        else if (outcome.failures) problems.push(`project ${projectId}: ${outcome.failures} GitHub request failures (${outcome.checked} PRs checked)`);
       }
+      // Waits keep their own due times, so forced syncs that push a project's due time back never hold them.
+      await sweep(enabledProjects());
+      // Pruning scans the links of every recorded PR, so it runs hourly, not on every pass.
+      if (Date.now() - prunedAt >= 3_600_000) { prunedAt = Date.now(); events.prune(); }
+      await events.drain();
       if (problems.length) throw new Error(`Git sync incomplete: ${problems.join("; ")}`);
     },
   };

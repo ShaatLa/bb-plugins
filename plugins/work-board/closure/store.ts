@@ -28,6 +28,13 @@ export interface ClosureThread {
   parentNotice: NoticeState;
   selfAttempts: number;
   parentAttempts: number;
+  /** Reserved by each turn start; a baseline is written, and a comparison taken, only for the generation that owns the row. */
+  turnGeneration: number;
+  /** The environment fingerprint at the turn start, or `UNKNOWN_BASELINE`; null when no comparison is pending. */
+  turnBaseline: string | null;
+  turnBaselineAt: string | null;
+  /** A turn after the close changed the session's files: the notice is owed. */
+  workSeen: boolean;
 }
 
 interface ClosureThreadRow {
@@ -46,6 +53,10 @@ interface ClosureThreadRow {
   parent_notice: NoticeState;
   self_attempts: number;
   parent_attempts: number;
+  turn_generation: number;
+  turn_baseline: string | null;
+  turn_baseline_at: string | null;
+  work_seen: number;
 }
 
 const SELECT_ROWS = `SELECT ct.*, c.task_id FROM closure_threads ct JOIN task_closures c ON c.id = ct.closure_id`;
@@ -70,8 +81,17 @@ function fromRow(row: ClosureThreadRow): ClosureThread {
     parentNotice: row.parent_notice,
     selfAttempts: row.self_attempts,
     parentAttempts: row.parent_attempts,
+    turnGeneration: row.turn_generation,
+    turnBaseline: row.turn_baseline,
+    turnBaselineAt: row.turn_baseline_at,
+    workSeen: row.work_seen === 1,
   };
 }
+
+/** A baseline that could not be read: its turn is never compared, so it can never count as a change. */
+export const UNKNOWN_BASELINE = "unknown";
+/** The turn's idle came: nothing is left to compare, and a baseline read still in flight cannot be stored. */
+const RETIRED_BASELINE = "retired";
 
 export const REASON = {
   notCreated: "not created by Work Board",
@@ -176,7 +196,7 @@ export function createClosureStore(db: Database) {
     if (reviewers.has(threadId)) db.prepare("UPDATE task_plan_reviews SET archive_seen_active = 1 WHERE reviewer_thread = ? AND archive_state IN ('pending', 'archiving')").run(threadId);
     if (!watching(threadId)) return [];
     const found = db.prepare<[string], ClosureThreadRow>(
-      `UPDATE closure_threads SET seen_active = 1,
+      `UPDATE closure_threads SET seen_active = 1, turn_generation = turn_generation + 1, turn_baseline = NULL, turn_baseline_at = NULL,
          reason = CASE WHEN action IN ('on_idle', 'candidate', 'evaluating') THEN '${REASON.newTurn}' ELSE reason END,
          action = CASE WHEN action IN ('on_idle', 'candidate', 'evaluating') THEN 'kept' ELSE action END
        WHERE thread_id = ? AND action NOT IN ('archiving', 'archived')
@@ -184,6 +204,55 @@ export function createClosureStore(db: Database) {
        RETURNING *, (SELECT task_id FROM task_closures WHERE id = closure_id) AS task_id`,
     ).all(threadId);
     return found.map(fromRow).filter((entry) => entry.action === "kept");
+  }
+
+  /** Stores a turn's baseline, only while the generation the turn reserved still owns the row. */
+  function setBaseline(entry: ClosureThread, baseline: string, at: string): boolean {
+    return db.prepare(
+      "UPDATE closure_threads SET turn_baseline = ?, turn_baseline_at = ? WHERE closure_id = ? AND thread_id = ? AND turn_generation = ? AND turn_baseline IS NULL",
+    ).run(baseline, at, entry.closureId, entry.threadId, entry.turnGeneration).changes > 0;
+  }
+
+  /**
+   * A live `thread.idle` takes the turn's comparisons: the kept rows of current closures that hold a baseline are
+   * returned, and every row of the thread is marked retired, so a baseline read still in flight, or a duplicate idle,
+   * finds nothing to compare. The generation stays: it is the token the comparison records its result with.
+   */
+  function takeTurn(threadId: string): ClosureThread[] {
+    if (!watching(threadId)) return [];
+    return db.transaction(() => {
+      const taken = db.prepare<[string, string], ClosureThreadRow>(
+        `${SELECT_ROWS} WHERE ct.thread_id = ? AND ct.action = 'kept' AND ct.turn_baseline IS NOT NULL AND ct.turn_baseline <> ? AND ${CURRENT_CLOSURE} ORDER BY ct.rowid`,
+      ).all(threadId, RETIRED_BASELINE).map(fromRow);
+      db.prepare("UPDATE closure_threads SET turn_baseline = ?, turn_baseline_at = NULL WHERE thread_id = ?").run(RETIRED_BASELINE, threadId);
+      return taken;
+    })();
+  }
+
+  /** A failed, deleted or archived thread: a new generation with no baseline voids every read of its turn still in flight. */
+  function abandonTurn(threadId: string): void {
+    if (!watching(threadId)) return;
+    db.prepare("UPDATE closure_threads SET turn_generation = turn_generation + 1, turn_baseline = NULL, turn_baseline_at = NULL WHERE thread_id = ?").run(threadId);
+  }
+
+  /**
+   * The durable fact that a turn after the close changed files; delivery is driven from it. Only a comparison whose
+   * generation still owns a kept row of a current closure records it: a newer turn, or a terminal event, voids it.
+   */
+  function recordWork(entries: readonly ClosureThread[]): void {
+    const mark = db.prepare(
+      `UPDATE closure_threads SET work_seen = 1 WHERE closure_id = ? AND thread_id = ? AND turn_generation = ? AND action = 'kept'
+         AND closure_id IN (SELECT c.id FROM task_closures c WHERE ${CURRENT_CLOSURE})`,
+    );
+    db.transaction(() => { for (const entry of entries) mark.run(entry.closureId, entry.threadId, entry.turnGeneration); })();
+  }
+
+  /** The kept rows of current closures whose notice is owed. */
+  function owedNotices(threadId: string): ClosureThread[] {
+    if (!watching(threadId)) return [];
+    return db.prepare<[string], ClosureThreadRow>(
+      `${SELECT_ROWS} WHERE ct.thread_id = ? AND ct.action = 'kept' AND ct.work_seen = 1 AND ${CURRENT_CLOSURE} ORDER BY ct.rowid`,
+    ).all(threadId).map(fromRow);
   }
 
   /** A live `thread.idle`: claims the turn-bound rows whose turn was not followed by a new one. */
@@ -329,13 +398,15 @@ export function createClosureStore(db: Database) {
        WHERE self_notice = 'sending' OR parent_notice = 'sending'`,
     ).run().changes;
     db.prepare("UPDATE task_plan_reviews SET archive_state = 'kept' WHERE archive_state IN ('pending', 'archiving')").run();
+    // An unfinished turn comparison may have missed its events: it is dropped, so a restart can miss a notice but never invent one.
+    db.prepare("UPDATE closure_threads SET turn_baseline = NULL, turn_baseline_at = NULL WHERE turn_baseline IS NOT NULL").run();
     reviewers.clear();
     watched = null;
     watching("");
     return { unknownNotices: unknown };
   }
 
-  return { open, reopen, currentId, isCurrent, closedBy, rows, row, addLate, claim, markActive, claimIdle, linkUnchanged, scheduleTarget, claimReviewerIdle, setReviewerState, latestReviewId, reviewPending, reviewerSeenActive, holdsLink, ownArchive, holders, clearArchived, otherLinks, reviewsOpenFor, claimNotice, finishNotice, reviewerIntent, recoverOnStartup };
+  return { open, reopen, currentId, isCurrent, closedBy, rows, row, addLate, claim, markActive, setBaseline, takeTurn, abandonTurn, recordWork, owedNotices, claimIdle, linkUnchanged, scheduleTarget, claimReviewerIdle, setReviewerState, latestReviewId, reviewPending, reviewerSeenActive, holdsLink, ownArchive, holders, clearArchived, otherLinks, reviewsOpenFor, claimNotice, finishNotice, reviewerIntent, recoverOnStartup };
 }
 
 export type ClosureStore = ReturnType<typeof createClosureStore>;

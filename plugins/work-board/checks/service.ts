@@ -642,6 +642,18 @@ function createService(bb: BbPluginApi) {
     return parsed;
   }
 
+  /** Validates every given field first, so one invalid value writes nothing; then one transaction, one reschedule, one publish. */
+  function setFields(trackerId: string, patch: Partial<Record<CheckField, unknown>>) {
+    tracker(trackerId);
+    const fields = (Object.keys(patch) as CheckField[]).filter((field) => CHECK_FIELDS.includes(field));
+    const parsed = fields.map((field) => [field, parseField(field, patch[field])] as const);
+    if (!parsed.length) return;
+    const before = readDraft(db, trackerId).branch;
+    db.transaction(() => { for (const [field, value] of parsed) writeField(db, trackerId, field, value); })();
+    touchState(trackerId, parsed.some(([field, value]) => field === "branch" && value !== before));
+    changed(trackerId);
+  }
+
   /** The owner's Retry: closes the unknown attempt and makes the next pass send the exact pending bytes to the current manager. */
   function retry(trackerId: string) {
     const { link } = tracker(trackerId);
@@ -751,6 +763,6 @@ function createService(bb: BbPluginApi) {
 
   return {
     register, runDue, scheduledTick, manualRun, status, stats,
-    setEnabled, setField, retry, reset, configValues, fieldKeys: CHECK_FIELDS, transfer,
+    setEnabled, setField, setFields, retry, reset, configValues, fieldKeys: CHECK_FIELDS, transfer,
   };
 }

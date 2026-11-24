@@ -830,6 +830,94 @@ const MIGRATIONS = [
    DELETE FROM attention_acks WHERE NOT EXISTS (SELECT 1 FROM attention_modes m WHERE m.tracker_id=attention_acks.tracker_id AND m.kind=attention_acks.kind AND m.effective_generation >= attention_acks.generation);
    INSERT OR IGNORE INTO checks_stale_rollback (tracker_id, consumed_generation)
    SELECT tracker_id, MAX(generation) FROM attention_acks WHERE kind='stale-status' AND direction='to_shadow' GROUP BY tracker_id;`,
+  // A closed card's notice goes out only when a turn changed the session's files (closure/service.ts): each turn start
+  // reserves a generation and stores the environment's Git fingerprint; its idle compares and records the work fact.
+  `ALTER TABLE closure_threads ADD COLUMN turn_generation INTEGER NOT NULL DEFAULT 0;
+   ALTER TABLE closure_threads ADD COLUMN turn_baseline TEXT;
+   ALTER TABLE closure_threads ADD COLUMN turn_baseline_at TEXT;
+   ALTER TABLE closure_threads ADD COLUMN work_seen INTEGER NOT NULL DEFAULT 0 CHECK (work_seen IN (0, 1));`,
+  // Linked-PR lifecycle events (git-sync/events.ts). State, once-keys and waits are keyed by the PR's immutable remote id, so a
+  // repository rename keeps them; a state row exists only after the first successful observation, which baselines without sending.
+  `CREATE TABLE IF NOT EXISTS pr_event_settings (
+     project_id TEXT PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
+     events TEXT NOT NULL DEFAULT 'on' CHECK (events IN ('on', 'off')),
+     manager TEXT NOT NULL DEFAULT 'off' CHECK (manager IN ('on', 'off'))
+   );
+   CREATE TABLE IF NOT EXISTS pr_event_state (
+     project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+     remote_id TEXT NOT NULL,
+     initialized_at TEXT NOT NULL,
+     verdict_key TEXT,
+     queue_entry TEXT,
+     queue_seen_at TEXT,
+     merge_sha TEXT,
+     merge_seen_at TEXT,
+     unlinked_at TEXT,
+     PRIMARY KEY (project_id, remote_id)
+   );
+   CREATE TABLE IF NOT EXISTS pr_events (
+     id TEXT PRIMARY KEY,
+     project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+     remote_id TEXT NOT NULL,
+     identity TEXT NOT NULL,
+     kind TEXT NOT NULL CHECK (kind IN ('ci', 'queue_removed', 'merged', 'deployed', 'deploy_wait_ended')),
+     once_key TEXT NOT NULL,
+     payload TEXT NOT NULL,
+     created_at TEXT NOT NULL,
+     UNIQUE (project_id, remote_id, kind, once_key)
+   );
+   CREATE TABLE IF NOT EXISTS pr_event_deliveries (
+     id TEXT PRIMARY KEY,
+     event_id TEXT NOT NULL REFERENCES pr_events(id) ON DELETE CASCADE,
+     task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+     role TEXT NOT NULL CHECK (role IN ('session', 'manager')),
+     state TEXT NOT NULL,
+     thread_id TEXT,
+     attempts INTEGER NOT NULL DEFAULT 0,
+     claimed_at TEXT,
+     claim_owner TEXT,
+     transport_started_at TEXT,
+     marker TEXT,
+     cursor TEXT,
+     searched_at TEXT,
+     lookup_failures INTEGER NOT NULL DEFAULT 0,
+     next_attempt_at TEXT,
+     error TEXT,
+     created_at TEXT NOT NULL,
+     updated_at TEXT NOT NULL,
+     UNIQUE (event_id, task_id, role)
+   );
+   CREATE INDEX IF NOT EXISTS idx_pr_event_deliveries_state ON pr_event_deliveries(state, created_at);
+   CREATE INDEX IF NOT EXISTS idx_pr_event_deliveries_task ON pr_event_deliveries(task_id, created_at);
+   CREATE TABLE IF NOT EXISTS pr_deploy_waits (
+     project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+     remote_id TEXT NOT NULL,
+     identity TEXT NOT NULL,
+     repository TEXT NOT NULL,
+     number INTEGER NOT NULL,
+     base_branch TEXT NOT NULL,
+     merge_sha TEXT NOT NULL,
+     merged_at TEXT NOT NULL,
+     deadline TEXT NOT NULL,
+     workflows TEXT NOT NULL,
+     days INTEGER NOT NULL,
+     state TEXT NOT NULL CHECK (state IN ('waiting', 'satisfied', 'deployed', 'expired', 'unverifiable')),
+     baseline_at TEXT,
+     walk TEXT,
+     kept TEXT NOT NULL DEFAULT '[]',
+     found TEXT,
+     final_passes INTEGER NOT NULL DEFAULT 0,
+     next_sweep_at TEXT,
+     settled_at TEXT,
+     PRIMARY KEY (project_id, remote_id)
+   );`,
+  // Orders deployment waits least recently swept first, so a capped sweep gives every wait a turn.
+  `ALTER TABLE pr_deploy_waits ADD COLUMN swept_at TEXT;`,
+  // A PR message held for an owner keeps its deadline through retries and recovery; an owner designation marks it woken.
+  `ALTER TABLE pr_event_deliveries ADD COLUMN held_until TEXT;
+   ALTER TABLE pr_event_deliveries ADD COLUMN woken_at TEXT;`,
+  // The known queue entry's enqueue time pairs its departure with its own add and removal on the timeline.
+  `ALTER TABLE pr_event_state ADD COLUMN queue_enqueued_at TEXT;`,
 ] as const;
 
 export function initializeTasksSchema(db: PluginDatabase, log: Log = () => {}): void {

@@ -231,7 +231,8 @@ describe("the runner after a return to shadow", () => {
     await f.service.setEnabled(f.tracker.id, false);
     // The schema before the upgrade, and its deletion, which kept the tracker's acknowledgements.
     f.db.exec("DROP TABLE checks_stale_rollback");
-    f.db.prepare("DELETE FROM schema_version WHERE version=(SELECT MAX(version) FROM schema_version)").run();
+    // Version 47 is the migration that creates checks_stale_rollback; later migrations stay applied.
+    f.db.prepare("DELETE FROM schema_version WHERE version=47").run();
     const project = f.db.prepare<[string], Record<string, unknown>>("SELECT * FROM projects WHERE id=?").get(f.tracker.id)!;
     f.db.prepare("DELETE FROM checks_runner_owner WHERE tracker_id=?").run(f.tracker.id);
     f.db.prepare("DELETE FROM projects WHERE id=?").run(f.tracker.id);
@@ -276,7 +277,8 @@ describe("the runner after a return to shadow", () => {
     // The tracker went off -> shadow -> live -> shadow -> off before the upgrade, so its mode row has reached that return.
     f.db.prepare("INSERT INTO attention_modes (tracker_id, kind, effective_mode, effective_generation) VALUES (?, 'stale-status', 'off', 4)").run(f.tracker.id);
     f.db.exec("DROP TABLE checks_stale_rollback");
-    f.db.prepare("DELETE FROM schema_version WHERE version=(SELECT MAX(version) FROM schema_version)").run();
+    // Version 47 is the migration that creates checks_stale_rollback; later migrations stay applied.
+    f.db.prepare("DELETE FROM schema_version WHERE version=47").run();
     initializeTasksSchema(f.db);
     expect(consumed(f)).toBe(3);
     await f.tick();

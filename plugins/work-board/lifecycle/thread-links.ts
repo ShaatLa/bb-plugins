@@ -5,7 +5,12 @@ import { errorMessage } from "../shared/errors";
 import { isClosedStatus } from "../shared/workflow-policy";
 
 type SdkThread = Awaited<ReturnType<BbPluginApi["sdk"]["threads"]["get"]>>;
-const pending = new WeakMap<TasksStore, Map<string, Promise<TaskThread[]>>>();
+/**
+ * `error` is set when a thread read failed or the links changed during the reads (`changed`): the links are the stored ones,
+ * unreconciled; after a change, without the sessions read as stopping.
+ */
+type Reconciled = { links: TaskThread[]; error?: unknown; changed?: true };
+const pending = new WeakMap<TasksStore, Map<string, Promise<Reconciled>>>();
 
 export function threadUnavailable(thread: Pick<SdkThread, "archivedAt" | "deletedAt" | "originKind" | "originPluginId" | "visibility">): boolean {
   return (
@@ -48,9 +53,9 @@ async function reconcile(
   store: TasksStore,
   taskId: string,
   known?: SdkThread,
-): Promise<TaskThread[]> {
+): Promise<Reconciled> {
   const links = store.listTaskThreads(taskId);
-  if (!links.length) return links;
+  if (!links.length) return { links };
   const inherited = new Set<string>();
   for (const comment of store.listComments(taskId)) {
     if (comment.kind !== "system" || !comment.threadId) continue;
@@ -63,6 +68,7 @@ async function reconcile(
       inherited.delete(comment.threadId);
   }
   const snapshots = new Map<string, SdkThread | null>();
+  let changedDuringReads = false;
   if (known) snapshots.set(known.id, known);
   const get = async (threadId: string): Promise<SdkThread | null> => {
     if (snapshots.has(threadId)) return snapshots.get(threadId)!;
@@ -127,9 +133,17 @@ async function reconcile(
     let historyChanged = false;
     let removed = false;
     bb.storage.database().transaction(() => {
+      // Every decision below (`hasWorker`, the parent fallback) used the links as read, so a change made during the reads voids them all.
+      const stored = store.listTaskThreads(taskId);
+      const started = new Map(links.map((link) => [link.id, link]));
+      if (
+        stored.length !== links.length ||
+        stored.some((link) => started.get(link.id)?.threadId !== link.threadId || started.get(link.id)?.updatedAt !== link.updatedAt)
+      ) {
+        changedDuringReads = true;
+        throw new Error(`The sessions linked to ${taskId} changed during reconciliation`);
+      }
       for (const link of links) {
-        const current = store.getTaskThread(link.id);
-        if (!current || current.updatedAt !== link.updatedAt) continue;
         const thread = snapshots.get(link.threadId);
         const replacedParent = inherited.has(link.threadId) && hasWorker;
         if (!thread || threadUnavailable(thread) || replacedParent) {
@@ -189,15 +203,25 @@ async function reconcile(
       });
       if (historyChanged) bb.realtime.publish("comments:changed", { taskId });
     }
-    return store
-      .listTaskThreads(taskId)
-      .filter((link) => snapshots.get(link.threadId)?.status !== "stopping");
+    return {
+      links: store
+        .listTaskThreads(taskId)
+        .filter((link) => snapshots.get(link.threadId)?.status !== "stopping"),
+    };
   } catch (error) {
+    if (changedDuringReads)
+      return {
+        links: store
+          .listTaskThreads(taskId)
+          .filter((link) => snapshots.get(link.threadId)?.status !== "stopping"),
+        error,
+        changed: true,
+      };
     // Keep associations on lookup failures; a network outage is not an archive event.
     bb.log.warn(
       `Could not reconcile task threads for ${taskId}: ${errorMessage(error)}`,
     );
-    return store.listTaskThreads(taskId);
+    return { links: store.listTaskThreads(taskId), error };
   }
 }
 
@@ -207,6 +231,28 @@ export async function reconcileTaskThreads(
   taskId: string,
   known?: SdkThread,
 ): Promise<TaskThread[]> {
+  const result = await reconcileShared(bb, store, taskId, known);
+  // Links changed during the reads: one run from the fresh links, whose own change result is good enough to list.
+  return (result.changed ? await reconcileShared(bb, store, taskId, known) : result).links;
+}
+
+/** As `reconcileTaskThreads`, but an incomplete run throws, also one it joined, instead of returning the stored links. */
+export async function reconcileTaskThreadsStrict(
+  bb: BbPluginApi,
+  store: TasksStore,
+  taskId: string,
+): Promise<TaskThread[]> {
+  const result = await reconcileShared(bb, store, taskId);
+  if ("error" in result) throw result.error;
+  return result.links;
+}
+
+async function reconcileShared(
+  bb: BbPluginApi,
+  store: TasksStore,
+  taskId: string,
+  known?: SdkThread,
+): Promise<Reconciled> {
   let tasks = pending.get(store);
   if (!tasks) pending.set(store, (tasks = new Map()));
   const current = tasks.get(taskId);
