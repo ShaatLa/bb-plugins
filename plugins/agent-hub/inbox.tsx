@@ -57,19 +57,18 @@ const quietUpdate = (entry: Entry) => !entry.part && entry.group.length === 1 &&
 // keep: an update already shown in full that way stays so while it is the last (a turn starting must not fold it back).
 // from: the first unread; it starts its own run of updates, so older read updates joining later never move the New divider's row.
 export function conversation(groups: Item[][], more: boolean, carried: Item[][] = [], showLast = true, keep: string | null = null, groupUpdates = true, from: string | null = null) {
-  // A message that joined the turn answering the owner (a child's completion, another thread's or a plugin's message) stands
-  // above the owner's message, so the question and its answer stay together.
-  const asked = new Map(groups.filter(group => group[0].kind === 'mine' && group[0].turnId).map(group => [group[0].turnId!, group[0].createdAt] as const));
-  // Only while no message of another turn came in between: displaced over others, a late unread update would sit far above
-  // the new messages, and the New divider with it.
-  const above = (group: Item[]) => {
-    const item = group[0], from = item.kind === 'update' && !item.answer && item.turnId ? asked.get(item.turnId) : undefined; if (from === undefined) return null;
-    const to = activityAt(item);
-    return groups.some(other => other[0].turnId !== item.turnId && [activityAt(other.at(-1)!), ...(other[0].kind === 'mine' ? [other[0].createdAt] : [])].some(time => time > from && time < to)) ? null : from;
+  // A message that joined the turn answering the owner (a child's completion, another thread's or a plugin's message) follows
+  // the owner's message and its answer, so the two stay together.
+  const asked = new Map(groups.filter(group => group[0].kind === 'mine' && group[0].turnId).map(group => [group[0].turnId!, [group[0].createdAt, activityAt(group.at(-1)!)]] as const));
+  // Only while no message of another turn came in between: then the owner's answer stands apart anyway, and each keeps its own time.
+  const joined = (group: Item[]) => {
+    const item = group[0], turn = item.kind === 'update' && !item.answer && item.turnId ? asked.get(item.turnId) : undefined; if (turn === undefined) return null;
+    const [from, to] = turn, own = activityAt(item); if (own >= to) return null;
+    return groups.some(other => other[0].turnId !== item.turnId && [activityAt(other.at(-1)!), ...(other[0].kind === 'mine' ? [other[0].createdAt] : [])].some(time => time > from && time < Math.max(to, own))) ? null : to;
   };
   // One the agent answered in that turn follows the owner's answer instead, without splitting the owner's message from it.
   const after = (group: Item[]) => { const item = group[0]; return item.kind === 'update' && !!item.answer && !!item.turnId && asked.has(item.turnId); };
-  const rank = (group: Item[]) => above(group) !== null ? -1 : after(group) ? 1 : 0;
+  const rank = (group: Item[]) => joined(group) !== null || after(group) ? 1 : 0;
   const floor = groups.length ? activityAt(groups[0][0]) : Infinity, marks = groups.filter(group => rank(group) === 0).flatMap(group => [group[0].createdAt, activityAt(group[0])]);
   const placed: [number, Entry][] = [], orphans: Item[][] = [];
   const ask = (group: Item[]) => { if (more && group[0].createdAt < floor) orphans.push(group); else placed.push([group[0].createdAt, { group, part: 'question' }]); };
@@ -77,7 +76,7 @@ export function conversation(groups: Item[][], more: boolean, carried: Item[][] 
   for (const group of groups) {
     const asked = group[0].createdAt, at = activityAt(group.at(-1)!);
     if (group[0].kind === 'mine' && group.at(-1)!.answer !== null && marks.some(mark => mark > asked && mark < at)) { ask(group); placed.push([at, { group, part: 'answer' }]); }
-    else placed.push([above(group) ?? at, { group }]);
+    else placed.push([joined(group) ?? at, { group }]);
   }
   // One message can answer an older question and a new one; it shows once, under the new question, echoing the older one.
   for (let i = placed.length - 1; i >= 0; i--) {
