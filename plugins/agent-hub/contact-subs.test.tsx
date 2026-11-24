@@ -110,6 +110,12 @@ it('dims sub-sessions like contacts, except one that asks the owner', async () =
   const row = await subRow(asking.slot, 'Child');
   expect(row).not.toContain('opacity-50'); expect(row).not.toContain('opacity-80');
 });
+it('marks a failed sub-session and keeps it at full strength', async () => {
+  const { slot } = setup(true, false, parent, [], { status: 'error' });
+  const subs = await slot.findByRole('list', { name: 'Sub-sessions of Parent' });
+  expect(within(subs).getByRole('img', { name: 'Failed' })).toBeTruthy();
+  expect(within(subs).getByText('Child').closest('button')!.className.split(' ')).not.toContain('opacity-50');
+});
 it('shows the question mark, not the working spinner, on a sub-session that asks while it works', async () => {
   const { slot } = setup(false, false, parent, [child], { status: 'active', runtimeStatus: 'active', indicator: 'runtime' });
   const subs = await slot.findByRole('list', { name: 'Sub-sessions of Parent' });

@@ -643,7 +643,7 @@ function InboxChat({ onBulkRead, bbChat = false, search: searchProp, onSearch, t
   useEffect(() => setWorking(working), [selected, working]);
   // What the agent does right now picks the robot's scene (thinking, typing, terminal, fixing, searching, reading, waiting).
   // Its turn over while sub-sessions still run, the agent is waiting on them, not resting.
-  const agent = useAgentActivity(selected, working, visible), waitingOnSubs = agent.activity === 'rest' && !!openThread && descendants(openThread.id).some(ownWorking), activity = waitingOnSubs ? 'wait' : agent.activity, activityLabel = waitingOnSubs ? 'Waiting for subagents' : agent.label;
+  const agent = useAgentActivity(selected, working, visible), waitingOnSubs = agent.activity === 'rest' && !agent.ended && !!openThread && descendants(openThread.id).some(ownWorking), activity = waitingOnSubs ? 'wait' : agent.activity, activityLabel = waitingOnSubs ? 'Waiting for subagents' : agent.label;
   // The model of the open chat, as bb's composer shows it: the thread keeps none, each turn request carries its execution.
   const [execution, setExecution] = useState<{ threadId: string; value: ExperimentalProviderModelPickerValue } | null>(null);
   const [permission, setPermission] = useState<{ threadId: string; value: ExperimentalPermissionModePickerProps['value'] } | null>(null);

@@ -56,11 +56,15 @@ export function beginContactDrag(threadId: string) {
 }
 export function ContactPageProvider({ children }: { children: ReactNode }) {
   const [page] = useState<ContactPage>(() => {
-    const url = new URL(window.location.href), linked = url.searchParams.get('thread'), dragged = pending?.threadId;
-    pending?.dispose();
-    if (linked) { url.searchParams.delete('thread'); window.history.replaceState(window.history.state, '', url); }
+    // Read only: bb can discard this first render while the page loads, and a retry must still find the link and the drag.
+    const linked = new URL(window.location.href).searchParams.get('thread'), dragged = pending?.threadId;
     return { threadId: dragged ?? linked ?? initialThread(), working: false, open: !!(dragged || linked), listeners: new Set() };
   });
+  useEffect(() => {
+    pending?.dispose();
+    const url = new URL(window.location.href);
+    if (url.searchParams.has('thread')) { url.searchParams.delete('thread'); window.history.replaceState(window.history.state, '', url); }
+  }, []);
   useEffect(() => { pages.add(page); activatePage(page); return () => { pages.delete(page); if (activePage === page) { activePage = undefined; const last = [...pages].at(-1); if (last) activatePage(last); } }; }, [page]);
   return createElement(ContactContext.Provider, { value: page }, children);
 }

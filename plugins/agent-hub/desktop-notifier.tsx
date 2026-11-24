@@ -4,6 +4,9 @@ import { desktopNotificationSchema, NOTIFICATIONS_CHANNEL, type AgentHubRpcContr
 import { isChatOpen, selectContact } from './open-chat';
 import { openAppRoute } from './lib/app-route';
 
+// A notification nobody references can be garbage-collected with its click handler, so a click then does nothing; bb's own pushes keep theirs the same way.
+const shown = new Map<string, Notification>();
+
 export function DesktopNotifier() {
   const rpc = useRpc<AgentHubRpcContract>(), holder = useRef(false), { threadId: bbThreadId } = useBbContext(), attention = useRef(0), lastInput = useRef(0);
   // A click on a push lands in bb's thread view; the owner works in Agent Hub, so a landing right after the window regained attention continues there.
@@ -26,13 +29,15 @@ export function DesktopNotifier() {
     if (!holder.current || !event.success || typeof Notification === 'undefined' || Notification.permission !== 'granted') return;
     const { id, title, body, threadId } = event.data;
     if (threadId && document.hasFocus() && isChatOpen(threadId)) return;
-    const notification = new Notification(title, { body, tag: `agent-hub-${threadId ?? id}` });
+    const tag = `agent-hub-${threadId ?? id}`, notification = new Notification(title, { body, tag });
+    shown.set(tag, notification);
+    notification.onclose = () => { if (shown.get(tag) === notification) shown.delete(tag); };
     notification.onclick = () => {
       window.focus();
       (window as Window & {bbDesktop?:{focusWindow:()=>void}}).bbDesktop?.focusWindow();
       const selected = threadId ? selectContact(threadId) : false;
       openAppRoute(`/plugins/agent-hub/agent-hub${threadId && !selected ? `?thread=${encodeURIComponent(threadId)}` : ''}`);
-      notification.close();
+      notification.close(); shown.delete(tag);
     };
   });
   useEffect(() => {

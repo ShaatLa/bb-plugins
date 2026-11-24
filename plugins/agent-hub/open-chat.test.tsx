@@ -42,3 +42,18 @@ it('reads a thread and message from Agent Hub links, bb message chips and same-o
   expect(threadLink('/threads/thr_example/files')).toBeNull();
   expect(threadLink('/plugins/agent-hub/agent-hub?thread=thr_example')).toBeNull();
 });
+it('opens the chat a ?thread= link names even when the page\'s first render is thrown away', async () => {
+  vi.resetModules();
+  const { ContactPageProvider, useSelectedContact } = await import('./open-chat');
+  const { Suspense } = await import('react');
+  window.history.replaceState(null, '', '/plugins/agent-hub/agent-hub?thread=thr_linked');
+  function Reader() { return <span>{useSelectedContact() ?? 'none'}</span>; }
+  // A part of the page that is still loading suspends the first render, which React throws away, as in bb's router.
+  let loaded = false, release = () => {};
+  const loading = new Promise<void>(resolve => { release = () => { loaded = true; resolve(); }; });
+  function Loading() { if (!loaded) throw loading; return null; }
+  const view = render(<Suspense fallback="…"><ContactPageProvider><Reader /><Loading /></ContactPageProvider></Suspense>);
+  await act(async () => { release(); await loading; });
+  expect(view.container.textContent).toBe('thr_linked');
+  expect(window.location.search).toBe('');
+});

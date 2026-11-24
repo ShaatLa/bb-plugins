@@ -3,8 +3,9 @@ import { useSdk } from '@get-bb/plugin-sdk/app';
 import type { Activity } from './robot-loader';
 
 type Item = { type?: string; command?: string; description?: string; tool?: string; server?: string; path?: string | null; url?: string; queries?: string[]; changes?: { path: string }[]; presentation?: { label: { pending: string }; title?: string } };
-type Row = { type: string; data?: { item?: Item; parentToolCallId?: string | null } | null };
-export type AgentState = { activity: Activity; label: string };
+type Row = { type: string; data?: { item?: Item; parentToolCallId?: string | null; status?: string } | null };
+// ended: the turn failed or was stopped, so the agent waits on nothing even while its sub-sessions run.
+export type AgentState = { activity: Activity; label: string; ended?: boolean };
 const name = (path?: string | null) => path?.split('/').pop() ?? '';
 
 const SEARCH = /\b(?:rg|grep|ag|find|fd|locate)\b|search|query|lookup/i, READ = /\b(?:cat|head|tail|less|more|sed -n|bat|jq|ls|tree|wc)\b|read|fetch|get|list|view|show/i;
@@ -83,7 +84,7 @@ export function labelOf(item: Item): string {
 export function stateOf(events: Row[]): AgentState {
   for (const event of events) {
     if (event.data?.parentToolCallId) continue;
-    if (event.type === 'turn/completed') return { activity: 'rest', label: 'Waiting for background work' };
+    if (event.type === 'turn/completed') return event.data?.status === 'failed' ? { activity: 'rest', label: 'Turn failed', ended: true } : event.data?.status === 'interrupted' ? { activity: 'rest', label: 'Stopped', ended: true } : { activity: 'rest', label: 'Waiting for background work' };
     if (event.type === 'turn/started' || event.type === 'item/completed') break;
     if (event.type === 'item/started' && event.data?.item) return { activity: sceneOf(event.data.item), label: labelOf(event.data.item) };
   }

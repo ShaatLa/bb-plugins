@@ -22,6 +22,9 @@ it('words the same item the robot acts out', () => {
   expect(stateOf([started({ type: 'fileRead', path: 'src/app.tsx' })])).toEqual({ activity: 'read', label: 'Reading app.tsx' });
   expect(stateOf([{ type: 'item/completed', data: {} }, started({ type: 'fileRead', path: 'a' })])).toEqual({ activity: 'think', label: 'Thinking' });
   expect(stateOf([{ type: 'turn/completed', data: {} }]).activity).toBe('rest');
+  // A failed or stopped turn is not waiting on its sub-sessions, so the chat must not say it is.
+  expect(stateOf([{ type: 'turn/completed', data: { status: 'failed' } }])).toEqual({ activity: 'rest', label: 'Turn failed', ended: true });
+  expect(stateOf([{ type: 'turn/completed', data: { status: 'interrupted' } }])).toEqual({ activity: 'rest', label: 'Stopped', ended: true });
 });
 
 it('says a shell command in a few words', async () => {
