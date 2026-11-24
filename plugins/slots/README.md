@@ -6,6 +6,8 @@ Manager commands (`prioritize`, `revoke`, `grant`, `capacity`) are not access-ch
 
 ## Sidebar (0.4.0)
 
+Version 0.5.7 makes the `local-model` pool check only free memory (CPU load and the streak no longer delay it) and keeps a finished `local-model` lease with its thread for 90 s, so back-to-back turns re-acquire it without a gate wait.
+
 Version 0.5.6 refuses estimates above `maxEstimateMinutes` (default 720, 12 h) with a refusal that names the unit fix, and caps how far a stored estimate extends a lease.
 
 Version 0.5.5 merges queued notifications into the last queued row, so a thread holds one queued plugin notice.
@@ -99,7 +101,12 @@ The native tools are enabled alongside the bundled `slots` skill.
 and thresholds. A holder can launch additional wrapper commands without another gate check; the lease was gated when granted. Two consecutive passing samples
 spaced 15s apart are required for automatic grants; every grant resets the
 streak. Manual grant bypasses queue order and streak, but checks a fresh sample
-and capacity. There is no force option.
+and capacity. There is no force option. The `local-model` pool runs on the GPU,
+so it checks only free memory in the latest reading (no CPU load, no streak) and
+is granted at request time when that passes. When the last use of a
+`local-model` lease is done, the lease stays with its thread for 90 s; an
+`acquire` from that thread takes it back without a gate check, otherwise it is
+released quietly as `unclaimed`. Heavy leases free at the last `done`.
 
 The wrapper runs the command in the foreground and calls done only after it exits.
 Signal the process group to cancel; signals to the wrapper PID alone are not

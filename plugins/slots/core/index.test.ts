@@ -122,7 +122,7 @@ describe("Slots deterministic engine", () => {
 
   it("archive/deletion frees owned leases and cancels queued requests", () => {
     for (const reason of ["archived", "deleted"] as const) {
-      const h = harness(); h.request("a"); h.open(); h.request("a", "normal", "local-model");
+      const h = harness(); h.request("a"); h.open(); h.request("a", "normal", "heavy", "h2");
       const ended = h.send({ type: "threadEnded", threadId: "a", reason });
       expect(h.state.requests).toEqual([]); expect(h.state.leases).toEqual([]);
       expect(ended.result).toMatchObject({ ok: true, data: { released: [expect.any(String)], canceled: [expect.any(String)] } });
@@ -235,13 +235,38 @@ describe("Slots deterministic engine", () => {
     }
   });
 
-  it("manual mode never auto-grants and local-model uses the same host gate", () => {
+  it("manual mode never auto-grants; local-model checks only free memory, not CPU or the streak", () => {
     const h = harness({ grantMode: "manual" }); h.request("a", "normal", "local-model"); h.open(); h.send({ type: "tick" });
     expect(h.state.leases).toEqual([]);
     h.send({ type: "grant", requestId: h.state.requests[0].id }); expect(h.state.leases[0].pool).toBe("local-model");
-    const auto = harness(); auto.request("a", "normal", "local-model"); auto.request("b"); auto.open();
-    expect(auto.state.leases).toHaveLength(1); expect(auto.state.hosts.h.gate.streak).toBe(0);
-    auto.open(); expect(auto.state.leases).toHaveLength(2);
+    const auto = harness({ capacities: { heavy: 4, "local-model": 2 } });
+    auto.request("a", "normal", "local-model"); auto.request("c"); expect(auto.state.leases).toEqual([]); // no reading yet
+    auto.sample(50, 99); // CPU busy, memory free
+    expect(auto.state.leases.map(l => l.pool)).toEqual(["local-model"]);
+    auto.sample(10, 1); auto.request("b", "normal", "local-model"); // memory short
+    expect(auto.state.leases.map(l => l.holderThreadId)).toEqual(["a"]);
+    auto.sample(50, 99); expect(auto.state.leases.map(l => l.holderThreadId)).toEqual(["a", "b"]);
+    const granted = auto.request("d", "normal", "local-model"); // pool full: stays queued
+    expect(granted.result).toMatchObject({ ok: true, data: { kind: "queued" } });
+  });
+
+  it("keeps a finished local-model lease for a 90 s grace, re-acquires it without a gate and then frees it quietly", () => {
+    const h = harness(); h.sample(50, 99);
+    const acquire = () => h.send({ type: "acquire", threadId: "a", hostId: "h", pool: "local-model", job: "turn", estMs: minute });
+    const first = acquire().result as { ok: true; data: { kind: string; useId: string; lease: { id: string } } };
+    expect(first.data.kind).toBe("leased"); const leaseId = first.data.lease.id;
+    h.send({ type: "done", threadId: "a", useId: first.data.useId });
+    expect(h.state.leases[0]).toMatchObject({ id: leaseId, graceUntil: h.now + 90_000 });
+    h.sample(5, 99); h.now += 60_000; // gate fails meanwhile; the same thread still gets its lease back
+    const second = acquire().result as { ok: true; data: { kind: string; useId: string; lease: { id: string } } };
+    expect(second.data).toMatchObject({ kind: "leased", lease: { id: leaseId } }); expect(h.state.leases[0].graceUntil).toBeNull();
+    h.send({ type: "done", threadId: "a", useId: second.data.useId });
+    h.now += 89_000; expect(h.send({ type: "tick" }).state.leases).toHaveLength(1);
+    h.now += 1_000; const end = h.send({ type: "tick" });
+    expect(h.state.leases).toEqual([]);
+    expect(end.effects.filter(e => e.type === "notify" && e.threadId === "a")).toEqual([]);
+    const heavy = h.send({ type: "acquire", threadId: "b", hostId: "h", pool: "heavy", job: "suite", estMs: minute }).result as { ok: true; data: { useId: string } };
+    h.open(); h.send({ type: "done", threadId: "b", useId: heavy.data.useId }); expect(h.state.leases).toEqual([]); // heavy frees at once
   });
 
   it("restore retains leases and ports but requires fresh samples", () => {

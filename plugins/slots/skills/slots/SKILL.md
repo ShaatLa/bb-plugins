@@ -17,7 +17,10 @@ sh -c "$(bb slots wrapper)" slots-run --est 20m --job "..." -- <command>
 above `maxEstimateMinutes` (default 12 h) are refused; the lease of a longer job
 stays alive through heartbeats, so give the realistic estimate.
 
-Use `--pool local-model` for LLM inference. A holder may reuse its lease for
+Use `--pool local-model` for LLM inference. That pool checks only free memory,
+not CPU load, and is granted on the next reading. After its last use is done the
+lease stays with the thread for 90 s, so the next turn's acquire gets it back at
+once; `bb slots release <id>` frees it earlier. A holder may reuse its lease for
 nested, sequential or concurrent runs without another gate check. Signal the
 process group to cancel. `bb slots request --wait` timeout exits 75 and keeps
 the request queued until canceled or the thread ends; rerun the same command

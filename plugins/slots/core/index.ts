@@ -3,7 +3,7 @@ import { updateWatch } from "./watch.js";
 import {
   DEFAULT_SETTINGS, OBSERVER_EVENTS, POOLS,
   type AuditEvent, type AuditType, type Context, type Effect, type EngineOutput, type NotificationMessage,
-  type ObserverEvent, type GateState, type HostSettings, type Input, type Lease, type LogParams,
+  type ObserverEvent, type GateState, type HostSettings, type PoolName, type Input, type Lease, type LogParams,
   type Priority, type Result, type Settings, type SlotsError, type State,
   type StatusSnapshot, type Transition,
 } from "../contract.js";
@@ -52,6 +52,13 @@ export function capacityFor(state: State, hostId: string, pool: (typeof POOLS)[n
 export function gateOpen(gate: GateState, settings: HostSettings): boolean {
   return gate.latest !== null && gate.latest.passed && gate.streak >= settings.gateSamples;
 }
+/** The local model runs on the GPU, so its pool checks only free (shared) memory in the latest reading. */
+export function poolGateOpen(gate: GateState, settings: HostSettings, pool: PoolName, manual = false): boolean {
+  if (pool === "local-model") return gate.latest !== null && gate.latest.memFreePct >= settings.memFreeMinPct;
+  return Boolean(gate.latest?.passed) && (manual || gateOpen(gate, settings));
+}
+/** A finished local-model lease stays with its thread this long, so the next turn re-acquires without a gate wait. */
+export const LOCAL_MODEL_GRACE_MS = 90_000;
 export function portCandidates(state: State, hostId: string, settings: Settings = DEFAULT_SETTINGS): number[] {
   const range = settingsFor(settings, hostId).portRange;
   const used = new Set(state.ports.filter(p => p.hostId === hostId).map(p => p.port));
@@ -138,7 +145,7 @@ export function apply(original: State, input: Input, ctx: Context): Transition {
     if (!request) return { ok: false, error: { code: "not-found", message: "Request not found" } };
     const { hostId, pool } = request;
     const gate = host(hostId).gate;
-    if (!gate.latest?.passed || (!manual && !gateOpen(gate, settingsFor(ctx.settings, hostId)))) {
+    if (!poolGateOpen(gate, settingsFor(ctx.settings, hostId), pool, manual)) {
       return { ok: false, error: { code: "gate-closed", message: "Host gate is closed", ...(gate.latest ? { readings: gate.latest } : {}) } };
     }
     const capacity = capacityFor(state, hostId, pool, ctx.settings);
@@ -219,7 +226,9 @@ export function apply(original: State, input: Input, ctx: Context): Transition {
         threadId: input.threadId, job: input.job, estMs: input.estMs, priority: input.priority ?? "normal", createdAt: ctx.now };
       state.requests.push(request);
       audit("request", { hostId: request.hostId, pool: request.pool, threadId: request.threadId, requestId: request.id });
-      data = { kind: "queued", request }; break;
+      if (request.pool === "local-model") schedule(request.hostId);
+      const granted = state.leases.find(l => l.requestId === request.id);
+      data = granted ? { kind: "leased", lease: granted } : { kind: "queued", request }; break;
     }
     case "acquire": {
       if (!text(input.job) || !Number.isSafeInteger(input.estMs) || input.estMs <= 0 ||
@@ -240,6 +249,11 @@ export function apply(original: State, input: Input, ctx: Context): Transition {
       const use = { id: `use-${state.nextId++}`, threadId: input.threadId, startedAt: ctx.now,
         expiresAt: ctx.now + settingsFor(ctx.settings, input.hostId).heartbeatIntervalMs };
       (target.uses ??= []).push(use); target.graceUntil = null;
+      if (!lease && target.pool === "local-model") {
+        schedule(target.hostId);
+        const granted = state.leases.find(l => l.requestId === target.id);
+        if (granted) { data = { kind: "leased", lease: granted, useId: use.id }; break; }
+      }
       if (lease) { refresh(lease); lease.expiresAt = Math.max(lease.expiresAt, use.expiresAt); data = { kind: "leased", lease, useId: use.id }; }
       else data = { kind: "queued", request: request!, useId: use.id };
       break;
@@ -259,6 +273,7 @@ export function apply(original: State, input: Input, ctx: Context): Transition {
         target.uses = target.uses!.filter(u => u.id !== use.id);
         if (target.autoRelease && !target.uses.length) {
           if (input.type === "detach") target.graceUntil = ctx.now + settingsFor(ctx.settings, target.hostId).heartbeatIntervalMs;
+          else if (lease && lease.pool === "local-model") lease.graceUntil = ctx.now + LOCAL_MODEL_GRACE_MS;
           else if (lease) free(lease, "release", "last use completed", input.threadId);
           else release(input.threadId, target.id, "last use completed");
         }
@@ -283,7 +298,7 @@ export function apply(original: State, input: Input, ctx: Context): Transition {
       else if (gate.lastCountedAt === null || input.at - gate.lastCountedAt >= settings.gateIntervalMs * 0.9) {
         gate.streak = Math.min(gate.streak + 1, settings.gateSamples); gate.lastCountedAt = input.at;
       }
-      if (passed) schedule(input.hostId);
+      schedule(input.hostId); // a local-model request needs only memory, so try even when the full gate failed
       data = { passed, open: gateOpen(gate, settings), gate }; break;
     }
     case "gate": {
@@ -372,7 +387,8 @@ export function apply(original: State, input: Input, ctx: Context): Transition {
         if (expired.length) target.uses = target.uses!.filter(u => ctx.now < u.expiresAt);
         if (target.autoRelease && !(target.uses?.length) && (expired.length > 0 || (target.graceUntil != null && ctx.now >= target.graceUntil))) {
           if (!expired.length) audit("unclaimed", { hostId: target.hostId, pool: target.pool, reason: target.id });
-          if ("holderThreadId" in target) free(target, "release", expired.length ? "use expired" : "unclaimed");
+          // An unclaimed local-model lease is the idle grace ending; its thread is not waiting, so no message.
+          if ("holderThreadId" in target) free(target, "release", expired.length ? "use expired" : "unclaimed", !expired.length && target.pool === "local-model" ? target.holderThreadId : null);
           else release(target.threadId, target.id, expired.length ? "use expired" : "unclaimed");
         }
       }
@@ -392,7 +408,7 @@ export function apply(original: State, input: Input, ctx: Context): Transition {
         request.queueWaitAlerted = true;
         const reasons = [];
         if (state.leases.filter(l => l.hostId === request.hostId && l.pool === request.pool).length >= settings.capacities[request.pool]) reasons.push("no free slot");
-        if (!gateOpen(host(request.hostId).gate, settings)) reasons.push("gate not open");
+        if (!poolGateOpen(host(request.hostId).gate, settings, request.pool)) reasons.push("gate not open");
         if (settings.grantMode === "manual") reasons.push("manual grant mode");
         const position = sorted(state).filter(r => r.hostId === request.hostId && r.pool === request.pool).findIndex(r => r.id === request.id) + 1;
         const message = `Request ${request.id} by ${request.threadId} on ${request.hostId}, ${request.pool}: ${request.job}; estimate ${minutes(request.estMs)}, waiting ${minutes(ctx.now - request.createdAt)}, position ${position}: ${reasons.join(" / ")}.`;
@@ -402,7 +418,7 @@ export function apply(original: State, input: Input, ctx: Context): Transition {
       for (const [hostId, { gate }] of Object.entries(state.hosts)) {
         const settings = settingsFor(ctx.settings, hostId);
         if (gate.latest?.passed !== false || gate.failingSince == null || gate.holdAlerted ||
-            ctx.now - gate.failingSince < settings.observerGateHoldMs || !state.requests.some(r => r.hostId === hostId)) continue;
+            ctx.now - gate.failingSince < settings.observerGateHoldMs || !state.requests.some(r => r.hostId === hostId && !poolGateOpen(gate, settings, r.pool))) continue;
         gate.holdAlerted = true;
         const { memFreePct, load1, at } = gate.latest;
         const message = `Gate on ${hostId} failing for ${minutes(ctx.now - gate.failingSince)}: memory free ${memFreePct.toFixed(0)}% (min ${settings.memFreeMinPct.toFixed(0)}%), load ${load1.toFixed(1)} (max ${settings.loadMax.toFixed(1)}), sampled ${new Date(at).toISOString().slice(11, 16)}Z.`;
