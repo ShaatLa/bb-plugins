@@ -25,7 +25,7 @@ test('registers CLI and native tool, queries fake router and excludes self',asyn
   plugin(bb);
   const ctx={signal:new AbortController().signal};
   try{
-    assert.deepEqual(cli.commands.map((c:any)=>c.name),['status','ask','splash-setup','splash-status','context','doctor','install-splash','unload']);
+    assert.deepEqual(cli.commands.map((c:any)=>c.name),['status','ask','splash-setup','splash-models','splash-delete','splash-status','context','doctor','install-splash','unload']);
     assert.equal((await cli.run(['splash-status','--json'],ctx)).exitCode,0);
     assert.equal((await cli.run(['splash-setup','org/Unknown'],ctx)).exitCode,1);
     assert.equal(tool.name,'local_models_ask');assert.deepEqual(configure({provider:{id:'local-models'}}).tools,[]);

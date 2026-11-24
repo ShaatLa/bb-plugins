@@ -69,7 +69,7 @@ export function createPlugin(bb: BbPluginApi, testing: Pick<Parameters<typeof sp
   bb.rpc.register(usageRpcContract, { 'usage.list': input => listUsage(bridgeDir(), input?.after, input?.limit) });
   bb.rpc.register(settingsRpcContract, {
     async splashStatus() { await processStatus(); return controls.status(); },
-    splashDownload({model}) { void controls.download(model).catch(error => bb.log.error(String(error))); return ok; },
+    async splashDownload({model}) { await controls.validate(model); void controls.download(model).catch(error => bb.log.error(String(error))); return ok; },
     async splashCancel({model}) { await controls.cancel(model); return ok; },
     async splashDelete({model}) { await controls.remove(model); return ok; },
     async splashRestart({model}) { await controls.restart(model); return ok; },
@@ -135,18 +135,25 @@ export function createPlugin(bb: BbPluginApi, testing: Pick<Parameters<typeof sp
   bb.cli.register(defineCli({name:'local-models',summary:'Inspect and query the local model router',commands:{
     status:cliCommand({summary:'Show router and model status',options:{json},async run({options},ctx){
       const result=await (await client()).status(signal(ctx.signal,10000));
-      return {exitCode:0,stdout:(options.json?JSON.stringify(result):result.models.map(m=>m.id+' · '+m.displayName+' · '+m.status+' · context '+m.contextSize+(m.reasoningLevels?' · reasoning '+(m.reasoningLevels.join(', ')||'not adjustable'):'')).join('\n'))+'\n'};
+      return {exitCode:0,stdout:(options.json?JSON.stringify(result):result.models.map(m=>m.id+' · '+m.displayName+' · '+m.status+' · context '+(m.contextSize??'Splash default')+(m.reasoningLevels?' · reasoning '+(m.reasoningLevels.join(', ')||'not adjustable'):'')).join('\n'))+'\n'};
     }}),
     ask:cliCommand({summary:'Send one prompt without tools',positionals:[{name:'prompt',description:'Prompt text',required:true}],options:{json,model:{type:'string',description:'Model id'},system:{type:'string',description:'System text'},'max-tokens':{type:'integer',min:1,max:8192,default:1024,description:'Output token limit'},effort:{type:'enum',values:REASONING_EFFORTS,description:'Reasoning level'},timeout:{type:'duration',defaultUnit:'m',default:1200000,min:1,max:2147483647,description:'Request timeout such as 90s or 20m; a bare number means minutes. Default 20m (shown in ms)'}},async run({options,positionals},ctx){
       const abort=signal(ctx.signal,options.timeout),result=await withSlot(slots,ctx.threadId,'bb local-models ask · '+(options.model??'default model'),abort,async()=>(await client()).ask({prompt:positionals.prompt,model:options.model,system:options.system,max_tokens:options['max-tokens'],effort:options.effort},abort),line=>bb.log.info(line));
       void journal('cli',ctx.threadId,result);
       return {exitCode:0,stdout:(options.json?JSON.stringify(result):result.content)+'\n'};
     }}),
-    'splash-setup':cliCommand({summary:'Download and verify a Splash draft',positionals:[{name:'model',description:'Llama.app model id',required:true}],async run({positionals},ctx){
-      const lines:string[]=[];
-      const dir=await controls.download(positionals.model,signal(ctx.signal)).catch(error=>{throw new PluginCliError(String(error),{code:'splash_setup_failed',hint:'Use a supported Llama.app model from the Splash settings table.'});});
-      lines.push('Draft ready: '+dir);
-      return {exitCode:0,stdout:lines.join('\n')+'\n'};
+    'splash-setup':cliCommand({summary:'Download and verify a Splash draft, or pull a model for Splash outside Llama.app',positionals:[{name:'model',description:'Llama.app model id, or an upstream GGUF such as unsloth/Inkling-2-Mini-GGUF:UD-Q4_K_M',required:true}],async run({positionals},ctx){
+      // A pull downloads many GB; no 20-minute cap, only the caller's cancellation.
+      const path=await controls.download(positionals.model,ctx.signal).catch(error=>{throw new PluginCliError(String(error),{code:'splash_setup_failed',hint:'Use a supported model from the Splash settings tables; `bb local-models splash-models` lists pulled ones.'});});
+      return {exitCode:0,stdout:'Ready: '+path+'\n'};
+    }}),
+    'splash-models':cliCommand({summary:'List models pulled for Splash outside Llama.app, with sizes and drafts',options:{json},async run({options}){
+      const {managed,modelsDir}=await controls.status(),gb=(bytes:number|null)=>bytes===null?'?':(bytes/1e9).toFixed(2)+' GB';
+      return {exitCode:0,stdout:(options.json?JSON.stringify({modelsDir,models:managed}):[modelsDir,...managed.map(m=>m.id+' · '+m.gguf.state+' '+gb(m.gguf.done)+(m.gguf.error?' ('+m.gguf.error+')':'')+' · draft '+(m.draft?.state??'none')+' · '+m.path)].join('\n'))+'\n'};
+    }}),
+    'splash-delete':cliCommand({summary:'Delete a pulled Splash model (and its draft when unused), or a Llama.app model\'s Splash draft',positionals:[{name:'model',description:'Model id from splash-models or the Splash settings table',required:true}],async run({positionals}){
+      await controls.remove(positionals.model).catch(error=>{throw new PluginCliError(String(error),{code:'splash_delete_failed',hint:'Stop Splash with `bb local-models unload splash/<id>` first if the model is running.'});});
+      return {exitCode:0,stdout:'Deleted '+positionals.model+'\n'};
     }}),
     'splash-status':cliCommand({summary:'Show the supervised Splash process',options:{json},async run({options}){
       const result=await processStatus();

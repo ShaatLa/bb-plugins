@@ -88,7 +88,7 @@ bb local-models splash-status [--json]
 ```
 Splash variants (`splash/<llama id>`, shown with “ · Splash”) appear when a supported
 Llama.app model and its draft are present. Supported families: Qwen3.6-35B-A3B,
-Qwen3.8-27B and Flint. The setup command explicitly downloads each family’s DFlash2
+Qwen3.8-27B, Flint and Inkling-2-Mini. The setup command explicitly downloads each family’s DFlash2
 draft into `~/models/incoai`, resumes partial files and verifies the weights’ size
 and SHA-256. Transfers are announced in the plugin log before downloading; CLI
 output is buffered by the SDK. Drafts are never downloaded automatically.
@@ -100,6 +100,25 @@ shim to retry (up to ten minutes for readiness). Switching models stops the
 previous Splash process; idle shutdown and plugin disposal stop it too. Logs are
 in `splash.log` in the plugin data directory. Splash runs in language-only mode.
 The status command reports the model, pid, port and time left before idle shutdown.
+
+### Models outside Llama.app
+
+```sh
+bb local-models splash-setup 'unsloth/Inkling-2-Mini-GGUF:UD-Q4_K_M'
+bb local-models splash-models [--json]
+bb local-models splash-delete '<model id>'
+```
+A supported family can also run on Splash without Llama.app. `splash-setup` with
+an upstream `owner/Repo-GGUF:VARIANT` id pulls that single-file GGUF into
+`~/models/splash/<owner>/<repo>/`, resuming a partial file and checking its size
+and LFS SHA-256 before the file appears, then downloads the family's draft.
+Such a model is listed as `splash/<id>`, and Splash picks its context window.
+`splash-models` and the settings section **Splash models outside Llama.app** list
+every pulled model, including interrupted downloads, with sizes, drafts and paths.
+`splash-delete` (or **Delete**) removes the GGUF and, when no other model of the
+family uses it, the draft; a running model is refused. The Splash CLI has no model
+management of its own; the plugin starts Splash only on local files
+(`--model-dir`, `--draft-model`).
 
 ## Usage journal
 

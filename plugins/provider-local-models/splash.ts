@@ -1,11 +1,11 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { closeSync, createReadStream, createWriteStream, openSync } from 'node:fs';
-import { mkdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdir, readdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { homedir } from 'node:os';
-import { isAbsolute, join } from 'node:path';
+import { dirname, isAbsolute, join } from 'node:path';
 import { Readable, Transform } from 'node:stream';
 import { llamaModels, ggufInfo, MODELS_INI, USER_INI } from './llama-config.ts';
 export { parseModelsIni } from './llama-config.ts';
@@ -13,7 +13,23 @@ import { pipeline } from 'node:stream/promises';
 import { setTimeout as delay } from 'node:timers/promises';
 
 export const DRAFTS_DIR = join(homedir(), 'models/incoai');
-const families = ['Qwen3.6-35B-A3B', 'Qwen3.8-27B', 'Flint'];
+const families = ['Qwen3.6-35B-A3B', 'Qwen3.8-27B', 'Flint', 'Inkling-2-Mini'];
+// GGUFs pulled for Splash outside Llama.app live in <models dir>/<owner>/<repo>/, next to the drafts directory.
+export const modelsDirFor = (draftsDir: string) => join(dirname(draftsDir), 'splash');
+export function parseUpstream(id: string) {
+  const match = /^([A-Za-z0-9][\w.-]*)\/([A-Za-z0-9][\w.-]*-GGUF):([A-Za-z0-9][\w.-]*)$/i.exec(id);
+  if (!match || id.includes('..')) return null;
+  return { owner: match[1], repo: match[2], variant: match[3], file: match[2].replace(/-GGUF$/i, '') + '-' + match[3] + '.gguf' };
+}
+// suffix '.gguf.part' finds interrupted pulls instead of complete ones.
+export async function managedModels(modelsDir: string, suffix = '.gguf') {
+  const found: { id: string; model: string }[] = [], list = (dir: string) => readdir(dir).catch(() => [] as string[]);
+  for (const owner of await list(modelsDir)) for (const repo of await list(join(modelsDir, owner))) for (const file of await list(join(modelsDir, owner, repo))) {
+    const prefix = repo.replace(/-GGUF$/i, '') + '-', id = owner + '/' + repo + ':' + file.slice(prefix.length, -suffix.length);
+    if (file.startsWith(prefix) && file.endsWith(suffix) && parseUpstream(id)?.file + suffix.slice(5) === file) found.push({ id, model: join(modelsDir, owner, repo, file) });
+  }
+  return found;
+}
 export function splashFamily(id: string) {
   const name = id.replace(/^splash\//, '').split('/').at(-1)!.split(':')[0].replace(/-GGUF$/i, '');
   return families.find(family => name.toLowerCase() === family.toLowerCase());
@@ -58,8 +74,10 @@ export async function draftMetadata(id: string, signal: AbortSignal, fetcher = f
   return { repo, base, revision: info.sha!, files: info.siblings, sha256: sha256.toLowerCase(), size: weights.lfs.size };
 }
 async function exists(file: string) { return stat(file).then(value => value.isFile(), () => false); }
-export async function splashModels(modelsIni = MODELS_INI, draftsDir = DRAFTS_DIR, userIni = USER_INI) {
-  const entries = await Promise.all((await llamaModels(modelsIni, userIni)).map(async model => {
+export async function splashModels(modelsIni = MODELS_INI, draftsDir = DRAFTS_DIR, userIni = USER_INI, modelsDir = modelsDirFor(draftsDir)) {
+  const llama = await llamaModels(modelsIni, userIni), ids = new Set(llama.map(model => model.id));
+  const managed = (await managedModels(modelsDir)).filter(model => !ids.has(model.id)).map(model => ({ ...model, context_length: undefined as number | undefined, contextSource: 'Splash default' }));
+  const entries = await Promise.all([...llama, ...managed].map(async model => {
     const family = splashFamily(model.id), draft = family ? join(draftsDir, family + '-DFlash2') : '';
     if (!family || !isAbsolute(model.model) || !await exists(model.model) || !await verifiedDraft(draft)) return [];
     return [{ ...model, id: 'splash/' + model.id, draft }];
@@ -67,11 +85,11 @@ export async function splashModels(modelsIni = MODELS_INI, draftsDir = DRAFTS_DI
   return entries.flat();
 }
 
-type SplashOptions = { binary: string; port: number; proxyPort: number; idleMinutes: number; llamaUrl: string; dataDir: string; modelsIni?: string; userIni?: string; draftsDir?: string; readyTimeoutMs?: number };
+type SplashOptions = { binary: string; port: number; proxyPort: number; idleMinutes: number; llamaUrl: string; dataDir: string; modelsIni?: string; userIni?: string; draftsDir?: string; modelsDir?: string; readyTimeoutMs?: number };
 export async function startSplash(options: SplashOptions) {
   const engine = `http://127.0.0.1:${options.port}`, lifetime = new AbortController();
   let current: { id: string; child: ChildProcess; closed: Promise<void>; ready: boolean; context?: number } | undefined;
-  const nativeLimits = new Map<string, number>();
+  const nativeLimits = new Map<string, number>(), list = () => splashModels(options.modelsIni, options.draftsDir, options.userIni, options.modelsDir);
   let starting: Promise<void> | undefined, disposal: Promise<void> | undefined, lastError = '', lastRequest = Date.now(), active = 0, disposed = false;
   async function stop() {
     const running = current;
@@ -95,7 +113,7 @@ export async function startSplash(options: SplashOptions) {
       }
     } catch { /* Llama.app may be offline. */ }
   }
-  async function ensure(model: Awaited<ReturnType<typeof splashModels>>[number], context?: number) {
+  async function ensure(model: Awaited<ReturnType<typeof list>>[number], context?: number) {
     await stop();
     lifetime.signal.throwIfAborted();
     // Refuse an occupied engine port rather than proxying an unsupervised process.
@@ -153,7 +171,7 @@ export async function startSplash(options: SplashOptions) {
     try {
       if (disposed) return void json(503, { error: { message: 'Splash is stopping.' } });
       if (request.method === 'GET' && request.url === '/v1/models') {
-        const models = await splashModels(options.modelsIni, options.draftsDir, options.userIni);
+        const models = await list();
         return void json(200, { object: 'list', data: models.map(model => ({ id: model.id, object: 'model', status: { value: current?.ready && current.id === model.id ? 'loaded' : 'unloaded' }, context_length: current?.ready && current.id === model.id ? current.context ?? model.context_length : model.context_length })) });
       }
       // Router-style unload, so `bb local-models unload` also stops Splash.
@@ -169,7 +187,7 @@ export async function startSplash(options: SplashOptions) {
       let body;
       try { body = JSON.parse(Buffer.concat(chunks).toString()); } catch { return void json(400, { error: { message: 'Invalid JSON.' } }); }
       if (!body || typeof body !== 'object' || typeof body.model !== 'string') return void json(400, { error: { message: 'A model is required.' } });
-      const model = (await splashModels(options.modelsIni, options.draftsDir, options.userIni)).find(model => model.id === body.model);
+      const model = (await list()).find(model => model.id === body.model);
       if (!model) return void json(404, { error: { message: 'Splash model not found or draft missing.' } });
       lastRequest = Date.now();
       if (starting || !current?.ready || current.id !== model.id || current.child.exitCode !== null || current.child.signalCode !== null) {
@@ -212,7 +230,7 @@ export async function startSplash(options: SplashOptions) {
     async restart(id: string) {
       if (disposed) throw Error('Splash is stopping.');
       if (starting || active) throw Error('Splash is busy; retry when the current request finishes.');
-      const model = (await splashModels(options.modelsIni, options.draftsDir, options.userIni)).find(model => model.id === id);
+      const model = (await list()).find(model => model.id === id);
       if (!model) throw Error('Splash model not available');
       if (starting || active || disposed) throw Error('Splash is busy or stopping.');
       starting = ensure(model).catch(error => { lastError = String(error); throw error; }).finally(() => { starting = undefined; });
@@ -232,48 +250,75 @@ export async function startSplash(options: SplashOptions) {
   };
 }
 
+async function verifyFile(file: string, expected: { sha256: string; size: number }, signal: AbortSignal) {
+  const hash = createHash('sha256');
+  for await (const chunk of createReadStream(file)) { signal.throwIfAborted(); hash.update(chunk); }
+  return (await stat(file)).size === expected.size && hash.digest('hex') === expected.sha256;
+}
+// Resumes `<file>.part`; with `expected`, verifies size and sha256 before the final rename.
+async function transfer(url: string, file: string, label: string, signal: AbortSignal, fetcher: typeof fetch, expected?: { sha256: string; size: number }, progress: (done: number, total: number) => void = () => {}) {
+  const partial = file + '.part', name = file.split('/').at(-1)!;
+  const offset = await stat(partial).then(value => value.size, () => 0);
+  if (expected && offset > expected.size) {
+    await rm(partial, { force: true });
+    throw Error(label + ' size mismatch; deleted ' + partial);
+  }
+  if (!(expected && offset === expected.size)) {
+    const response = await fetcher(url, { signal, headers: offset ? { Range: 'bytes=' + offset + '-' } : {} });
+    if (!response.ok || !response.body) throw Error(label + ' download failed: ' + name + ' HTTP ' + response.status);
+    if (response.status === 206 && (!offset || !response.headers.get('content-range')?.startsWith('bytes ' + offset + '-'))) { await response.body.cancel(); throw Error('Invalid resume range for ' + name); }
+    let done = response.status === 206 ? offset : 0;
+    const meter = new Transform({ transform(chunk, _encoding, callback) { done += chunk.length; if (expected) progress(done, expected.size); callback(null, chunk); } });
+    await pipeline(Readable.fromWeb(response.body as import('node:stream/web').ReadableStream), meter, createWriteStream(partial, { flags: response.status === 206 ? 'a' : 'w', mode: 0o600 }), { signal });
+  }
+  if (expected && !await verifyFile(partial, expected, signal)) {
+    await rm(partial, { force: true });
+    throw Error(label + ' size or sha256 mismatch; deleted ' + partial);
+  }
+  await rename(partial, file);
+}
+
 // The SDK buffers CLI output; log each file before its transfer and return the transcript too.
 export async function setupSplash(id: string, print: (line: string) => void, signal: AbortSignal, draftsDir = DRAFTS_DIR, fetcher = fetch, progress: (done: number, total: number) => void = () => {}) {
   const { repo, base, revision, files, sha256, size } = await draftMetadata(id, signal, fetcher);
   const dir = join(draftsDir, repo);
   await mkdir(dir, { recursive: true, mode: 0o700 });
-  async function verify(file: string) {
-    const hash = createHash('sha256');
-    for await (const chunk of createReadStream(file)) { signal.throwIfAborted(); hash.update(chunk); }
-    return (await stat(file)).size === size && hash.digest('hex') === sha256;
-  }
   for (const name of ['model.safetensors', 'config.json', 'README.md', 'LICENSE']) {
     if (!files.some(file => file.rfilename === name)) continue;
-    const file = join(dir, name), partial = file + '.part';
+    const file = join(dir, name), expected = name === 'model.safetensors' ? { sha256, size } : undefined;
     if (await exists(file)) {
-      if (name !== 'model.safetensors') continue;
-      if (await verify(file)) { progress(size, size); continue; }
+      if (!expected) continue;
+      if (await verifyFile(file, expected, signal)) { progress(size, size); continue; }
       await rm(file, { force: true });
       throw Error('Draft size or sha256 mismatch; deleted ' + file);
     }
     print('Downloading ' + base + '/resolve/' + revision + '/' + name + ' -> ' + file);
-    const offset = await stat(partial).then(value => value.size, () => 0);
-    if (name === 'model.safetensors' && offset > size) {
-      await rm(partial, { force: true });
-      throw Error('Draft size mismatch; deleted ' + partial);
-    }
-    if (!(name === 'model.safetensors' && offset === size)) {
-      const response = await fetcher(base + '/resolve/' + revision + '/' + name, { signal, headers: offset ? { Range: 'bytes=' + offset + '-' } : {} });
-      if (!response.ok || !response.body) throw Error('Draft download failed: ' + name + ' HTTP ' + response.status);
-      if (response.status === 206 && (!offset || !response.headers.get('content-range')?.startsWith('bytes ' + offset + '-'))) { await response.body.cancel(); throw Error('Invalid resume range for ' + name); }
-      let done = response.status === 206 ? offset : 0;
-      const meter = new Transform({ transform(chunk, _encoding, callback) { done += chunk.length; if (name === 'model.safetensors') progress(done, size); callback(null, chunk); } });
-      await pipeline(Readable.fromWeb(response.body as import('node:stream/web').ReadableStream), meter, createWriteStream(partial, { flags: response.status === 206 ? 'a' : 'w', mode: 0o600 }), { signal });
-    }
-    if (name === 'model.safetensors' && !await verify(partial)) {
-      await rm(partial, { force: true });
-      throw Error('Draft size or sha256 mismatch; deleted ' + partial);
-    }
-    await rename(partial, file);
+    await transfer(base + '/resolve/' + revision + '/' + name, file, 'Draft', signal, fetcher, expected, progress);
   }
   JSON.parse(await readFile(join(dir, 'config.json'), 'utf8'));
   // mtime is read after the final rename so it matches the file verifiedDraft will stat.
   await writeFile(join(dir, '.verified.json'), JSON.stringify({ sha256, size, revision, mtimeMs: (await stat(join(dir, 'model.safetensors'))).mtimeMs }), { mode: 0o600 });
   progress(size, size);
   return dir;
+}
+
+// Pulls one single-file GGUF from Hugging Face; the file appears only after its size and LFS sha256 match.
+export async function pullModel(id: string, print: (line: string) => void, signal: AbortSignal, modelsDir: string, fetcher = fetch, progress: (done: number, total: number) => void = () => {}) {
+  const source = parseUpstream(id);
+  if (!source) throw Error('Use an upstream GGUF id such as owner/Model-GGUF:Q4_K_M.');
+  const file = join(modelsDir, source.owner, source.repo, source.file);
+  const response = await fetcher('https://huggingface.co/api/models/' + source.owner + '/' + source.repo + '?blobs=true', { signal });
+  if (!response.ok) throw Error('Cannot read model metadata: HTTP ' + response.status);
+  const info = await response.json() as { sha?: string; siblings?: { rfilename: string; lfs?: { sha256?: string; oid?: string; size: number } }[] };
+  const entry = info.siblings?.find(item => item.rfilename === source.file), sha256 = entry?.lfs?.sha256 ?? entry?.lfs?.oid ?? '';
+  // shortcut: split GGUFs (-00001-of-0000N) are not pulled; add multi-file support when a supported quant needs it.
+  if (!entry) throw Error('No single-file ' + source.file + ' in ' + source.owner + '/' + source.repo + '.');
+  if (!entry.lfs || !/^[a-f0-9]{64}$/i.test(sha256) || !Number.isSafeInteger(entry.lfs.size) || entry.lfs.size <= 0 || !/^[a-f0-9]{40}$/i.test(info.sha ?? '')) throw Error('Model metadata lacks a revision or verified weights.');
+  const expected = { sha256: sha256.toLowerCase(), size: entry.lfs.size };
+  if (await exists(file)) { progress(expected.size, expected.size); return file; }
+  await mkdir(dirname(file), { recursive: true, mode: 0o700 });
+  const url = 'https://huggingface.co/' + source.owner + '/' + source.repo + '/resolve/' + info.sha + '/' + source.file;
+  print('Downloading ' + url + ' -> ' + file);
+  await transfer(url, file, 'Model', signal, fetcher, expected, progress);
+  return file;
 }
