@@ -141,7 +141,10 @@ export function scriptEnvironment(run: Pick<ScriptRun, "bbCli" | "runtimePath" |
     ...(run.bbCli ? { BB_CLI: run.bbCli } : {}),
     BB_PROJECT_ID: run.bbProjectId,
     BB_THREAD_ID: run.manager,
-    // Both names are always exported, whatever the snapshots setting says; the script reads them.
+    // Both paths are always exported, whatever the snapshots setting says; the script reads them. The BB_SWEEP_* names are the
+    // older scripts' names for the same paths and keep working.
+    BB_CHECKS_COMMITTED_STATE: committed,
+    BB_CHECKS_CANDIDATE_SNAPSHOT: candidate,
     BB_SWEEP_COMMITTED_STATE: committed,
     BB_SWEEP_CANDIDATE_SNAPSHOT: candidate,
   };

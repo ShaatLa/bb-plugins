@@ -1912,7 +1912,7 @@ it("never exports manager-attention state, and an import, --overwrite included, 
   const source = await seed();
   const db = source.bb.storage.database();
   const { requestMode } = await import("../attention/modes");
-  requestMode(db, { trackerId: source.project.id, mode: "shadow" });
+  requestMode(db, { trackerId: source.project.id, mode: "live" });
   db.prepare("INSERT INTO attention_manager(tracker_id, manager, changed_at, previous) VALUES (?, 'thr_example', ?, NULL)").run(source.project.id, new Date().toISOString());
   db.prepare("INSERT INTO attention_acks(tracker_id, kind, token, generation, direction, fence_id, ids_hash, result_json) VALUES (?, 'stale-status', 't1', 1, 'to_live', 'f1', 'h', '{}')").run(source.project.id);
   const out = join(await directory(), "snapshot");
@@ -1942,17 +1942,34 @@ it("C1.1: a restore cannot relink a bound tracker or add a second tracker to a b
     await writeFile(path, jsonText(manifest));
   };
   // An overwrite whose snapshot names another BB project must not relink a bound tracker.
-  requestMode(source.bb.storage.database(), { trackerId: source.project.id, mode: "shadow" });
+  requestMode(source.bb.storage.database(), { trackerId: source.project.id, mode: "live" });
   await relink("proj_elsewhere");
-  await expect(importProject(source.bb, source.store, out, true)).rejects.toThrow(/not off/);
+  await expect(importProject(source.bb, source.store, out, true)).rejects.toThrow(/notices are on/);
   expect(source.store.tasks.getProject(source.project.id)?.linkedBbProjectId).toBe("proj_original");
   // A new import that carries the link of a bound BB project is a second tracker on it.
   await relink("proj_original");
   const target = setup();
   const bound = target.store.tasks.createProject({ name: "Bound", prefix: "BND", color: "blue", linkedBbProjectId: "proj_original" });
-  requestMode(target.bb.storage.database(), { trackerId: bound.id, mode: "shadow" });
-  await expect(importProject(target.bb, target.store, out, false)).rejects.toThrow(/bound/);
+  requestMode(target.bb.storage.database(), { trackerId: bound.id, mode: "live" });
+  await expect(importProject(target.bb, target.store, out, false)).rejects.toThrow(/sends stale-status notices/);
   expect(target.store.tasks.getProject(source.project.id)).toBeUndefined();
+});
+
+it("relinks on import a project that has an old runner-ownership row with transfer lineage, and keeps the row", async () => {
+  const source = await seed();
+  const db = source.bb.storage.database();
+  const owner = () => db.prepare("SELECT bb_project_id, owner, tracker_id, received_id FROM checks_runner_owner ORDER BY bb_project_id").all();
+  db.prepare("INSERT INTO checks_runner_owner (bb_project_id, owner, tracker_id, sent_id, sent_confirmed, received_id, updated_at) VALUES ('proj_original', 'work-board', ?, NULL, 0, 'handoff-example', ?)").run(source.project.id, new Date().toISOString());
+  const before = owner();
+  const out = join(await directory(), "snapshot");
+  await exportProject(source.bb, source.store, source.project.id, out);
+  const path = join(out, "project.json");
+  const manifest = JSON.parse(await readFile(path, "utf8"));
+  manifest.project.linkedBbProjectId = "proj_elsewhere";
+  await writeFile(path, jsonText(manifest));
+  await importProject(source.bb, source.store, out, true);
+  expect(source.store.tasks.getProject(source.project.id)?.linkedBbProjectId).toBe("proj_elsewhere");
+  expect(owner()).toEqual(before);
 });
 
 describe("plan debt and imports", () => {

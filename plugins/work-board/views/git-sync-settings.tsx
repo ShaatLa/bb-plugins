@@ -1,25 +1,22 @@
-import { useEffect, useId, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState, type FocusEvent } from "react";
+import type { z } from "zod";
 import { useOrderClock, useTasksQuery, useTasksRpc } from "../shell/data";
 import { STALE_GIT_CONFIG, gitSyncConfigSchema, overlapEnabled, type GitSyncConfig } from "../shared/git-sync";
 import { errorMessage } from "../shared/errors";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Switch } from "@/components/ui/switch";
 import { Icon } from "@/components/ui/icon";
 import { TagInput } from "../components/tag-input";
 import { DisclosureSummary } from "../components/disclosure";
-import { SettingsCard, SwitchRow } from "./settings-card";
+import { NOT_SAVED, SettingsCard, SwitchRow, useSaveStatus } from "./settings-card";
 
 type OverlapRule = NonNullable<GitSyncConfig["overlapRules"]>[number];
-/** What the section's Save writes: the text fields and the edited lists. */
-type Draft = {
-  pollMinutes: number; lookbackDays: number; postMergeDays: number;
-  repositories: string[]; requiredChecks: string[]; prWaitIgnoredChecks: string[]; postMergeWorkflows: string[];
-  overlapRules: OverlapRule[];
-};
-/** The stored configuration the form was loaded from (with when that read started), and the edits made on it. */
-type Form = { saved: GitSyncConfig; draft: Draft; readAt: number };
+/**
+ * `base`: the stored configuration as this page last knew it (read, or written by this page, with when). `draft`: the
+ * owner's whole intended configuration, every control included.
+ */
+type Form = { base: GitSyncConfig; draft: GitSyncConfig; readAt: number };
 
 const stable = (value: object) => JSON.stringify(Object.entries(value).sort(([a], [b]) => (a < b ? -1 : 1)));
 const lines = (value: string) =>
@@ -27,13 +24,36 @@ const lines = (value: string) =>
     .split(/[\n,]+/)
     .map((value) => value.trim())
     .filter(Boolean);
-const draftOf = (config: GitSyncConfig): Draft => ({
-  pollMinutes: config.pollMinutes, lookbackDays: config.lookbackDays, postMergeDays: config.postMergeDays,
-  repositories: config.repositories, requiredChecks: config.requiredChecks, prWaitIgnoredChecks: config.prWaitIgnoredChecks,
-  postMergeWorkflows: config.postMergeWorkflows, overlapRules: config.overlapRules ?? [],
-});
-const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
+const FIELD_NAMES: Record<string, string> = {
+  pollMinutes: "Refresh interval", lookbackDays: "Discovery lookback", postMergeDays: "Observe after merge", repositories: "Repositories",
+  requiredChecks: "Required checks", prWaitIgnoredChecks: "Checks outside CI", postMergeWorkflows: "Post-merge workflows", overlapRules: "Highlight shared files",
+};
+const describe = (error: z.ZodError) => error.issues.map((issue) => `${FIELD_NAMES[String(issue.path[0])] ?? "Settings"}: ${issue.message}`).join("; ");
+// Compared the way the server stores it (trimmed, normalized), with the effective switch.
+const canonical = (value: GitSyncConfig) => {
+  const parsed = gitSyncConfigSchema.safeParse(value);
+  const normal = parsed.success ? parsed.data : value;
+  return stable({ ...normal, overlapEnabled: overlapEnabled(normal), overlapRules: normal.overlapRules ?? [] });
+};
+/**
+ * What the draft stores over `stored`. Rows without a pattern are not rules yet. The shared-file switch: a chosen or
+ * stored value is kept; an absent key stays absent while the switch matches what the rules imply (non-empty means on),
+ * and is otherwise written explicitly.
+ */
+const toStore = (stored: GitSyncConfig, draft: GitSyncConfig): GitSyncConfig => {
+  const rules = (draft.overlapRules ?? []).filter((rule) => rule.pattern.trim());
+  const { overlapEnabled: chosen, ...rest } = draft;
+  const shown = chosen ?? overlapEnabled(stored);
+  return { ...rest, overlapRules: rules, ...(chosen !== undefined || shown !== rules.length > 0 ? { overlapEnabled: shown } : {}) };
+};
 
+/**
+ * Every control edits one draft. A text field commits on Enter or when focus leaves the card (the card's own blur),
+ * any other control at once. A write sends the
+ * whole draft with `baseConfig` = the base; while it (or a Reload) is in flight the card's controls are disabled, so
+ * nothing is committed meanwhile, and on success the base and the draft are exactly what was sent. A change made
+ * elsewhere is caught by the server's `baseConfig` refusal, shown with Reload.
+ */
 export function GitSyncSettings({ projectId }: { projectId: string }) {
   const rpc = useTasksRpc();
   const stamp = useOrderClock();
@@ -45,97 +65,88 @@ export function GitSyncSettings({ projectId }: { projectId: string }) {
   const id = useId();
   const [repositoryDraft, setRepositoryDraft] = useState("");
   const [form, setForm] = useState<Form>();
-  const [busy, setBusy] = useState(false);
+  // A write, Reload or sync in flight; the ref guards a second commit in the same event (Enter, then the blur it causes).
+  const [locked, setLocked] = useState(false);
+  const lockRef = useRef(false);
+  const lock = (on: boolean) => { lockRef.current = on; setLocked(on); };
+  const [conflict, setConflict] = useState(false);
   const [syncing, setSyncing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [message, setMessage] = useState("");
-  // Reads and writes are ordered: after a write the form waits for a read that started after it and adopts it whole.
-  const [verifyAfter, setVerifyAfter] = useState(0);
-  const adoptNext = useRef(false);
-  // A write refused because the stored settings changed meanwhile, stamped; it clears once the form adopts a read
-  // started after it.
-  const [conflictAt, setConflictAt] = useState<number | null>(null);
-  const conflict = conflictAt !== null;
-  const adopt = (config: GitSyncConfig, readAt: number) => {
-    setForm({ saved: config, draft: draftOf(config), readAt });
-    setConflictAt((at) => (at !== null && readAt > at ? null : at));
-  };
-  const saved = form?.saved;
-  const draft = form?.draft ?? draftOf(gitSyncConfigSchema.parse({}));
-  const setDraft = (change: (draft: Draft) => Partial<Draft>) =>
-    setForm((current) => (current ? { ...current, draft: { ...current.draft, ...change(current.draft) } } : current));
-  const overlapOn = saved ? overlapEnabled(saved) : false;
-  // What Save writes. One rule for the switch: a stored value is kept, an absent key stays absent while the switch
-  // matches what the rules being saved imply (non-empty means on), and otherwise the choice is written explicitly.
-  const rulesToSave = draft.overlapRules.filter((rule) => rule.pattern.trim());
-  const formConfig = (stored: GitSyncConfig): GitSyncConfig => ({
-    ...stored,
-    pollMinutes: draft.pollMinutes, lookbackDays: draft.lookbackDays, postMergeDays: draft.postMergeDays,
-    repositories: draft.repositories, requiredChecks: draft.requiredChecks,
-    postMergeWorkflows: draft.postMergeWorkflows, prWaitIgnoredChecks: draft.prWaitIgnoredChecks,
-    ...(stored.overlapEnabled === undefined && overlapOn !== rulesToSave.length > 0 ? { overlapEnabled: overlapOn } : {}),
-    // Rows without a pattern are not rules yet.
-    overlapRules: rulesToSave,
-  });
-  // Compared the way Save stores it (trimmed, normalized), with the effective switch.
-  const canonical = (value: GitSyncConfig) => {
-    const parsed = gitSyncConfigSchema.safeParse(value);
-    const normal = parsed.success ? parsed.data : value;
-    return stable({ ...normal, overlapEnabled: overlapEnabled(normal), overlapRules: normal.overlapRules ?? [] });
-  };
-  const unsaved = saved !== undefined && canonical(formConfig(saved)) !== canonical(saved);
-  // A new rule row is a draft even while its pattern is blank, though Save would drop it.
-  const dirty = unsaved || draft.overlapRules.some((rule) => !rule.pattern.trim());
-  const verified = form !== undefined && form.readAt > verifyAfter;
-  // A clean form follows the latest successful read, also when it turns clean again; a dirty one keeps what it was
-  // loaded from until Save or Discard; the first read after a write replaces the form whatever it holds (it is locked).
+  const { status: saveStatus, track, forget } = useSaveStatus();
+  const base = form?.base;
+  const draft = form?.draft ?? gitSyncConfigSchema.parse({});
+  const setDraft = (edit: (draft: GitSyncConfig) => Partial<GitSyncConfig>) =>
+    setForm((current) => (current ? { ...current, draft: { ...current.draft, ...edit(current.draft) } } : current));
+  const overlapOn = draft.overlapEnabled ?? (base ? overlapEnabled(base) : false);
+  const intended = base ? toStore(base, draft) : undefined;
+  const validation = intended ? gitSyncConfigSchema.safeParse(intended) : undefined;
+  const invalid = validation && !validation.success ? describe(validation.error) : null;
+  const unsaved = base !== undefined && canonical(intended!) !== canonical(base);
+  // A new rule row is a draft even while its pattern is blank, though a save would drop it: nothing saves until it has one.
+  const blankRule = (draft.overlapRules ?? []).some((rule) => !rule.pattern.trim());
+  const dirty = unsaved || blankRule;
+  // A clean, idle form follows reads that started after its base.
   useEffect(() => {
-    if (!query.data || query.data.readAt <= verifyAfter || (form && dirty && !adoptNext.current)) return;
-    if (form?.readAt === query.data.readAt && !adoptNext.current) return;
-    adoptNext.current = false;
-    adopt(query.data.config, query.data.readAt);
-  }, [query.data, verifyAfter, dirty]);
-  // Immediate controls write one stored key built on the stored rows: only on a clean form that applied the latest read.
-  const immediate = !busy && verified && !dirty && !conflict && saved !== undefined && form?.readAt === query.data?.readAt;
+    if (!query.data || (form && (dirty || locked || query.data.readAt <= form.readAt))) return;
+    setForm({ base: query.data.config, draft: query.data.config, readAt: query.data.readAt });
+  }, [query.data, dirty, locked]);
+  // A draft back at the stored values has nothing left to retry.
+  useEffect(() => { if (!dirty) forget("form"); }, [dirty]);
+  /** Writes `edits` (by default the draft) when it is complete, valid and differs from the base. */
+  const save = async (edits: GitSyncConfig = draft) => {
+    if (lockRef.current || conflict || !base) return;
+    if ((edits.overlapRules ?? []).some((rule) => !rule.pattern.trim())) return;
+    const parsed = gitSyncConfigSchema.safeParse(toStore(base, edits));
+    if (!parsed.success || canonical(parsed.data) === canonical(base)) return;
+    const config = parsed.data;
+    lock(true);
+    setMessage("");
+    await track(async () => {
+      try {
+        await rpc.call("setGitSyncConfig", { projectId, config, baseConfig: base });
+      } catch (failure) {
+        if (!errorMessage(failure).includes(STALE_GIT_CONFIG)) throw failure;
+        setConflict(true);
+        return NOT_SAVED;
+      }
+      setForm({ base: config, draft: config, readAt: stamp() });
+      // A read started now shows the clean form what others changed meanwhile.
+      void query.refresh();
+    }, () => void latestSave.current(), "form");
+    lock(false);
+  };
+  const latestSave = useRef(save);
+  latestSave.current = save;
+  const commit = () => void save();
   const run = async (action: () => Promise<void>) => {
-    setBusy(true);
+    lock(true);
     setError(null);
     setMessage("");
     try {
       await action();
     } catch (error) {
-      if (errorMessage(error).includes(STALE_GIT_CONFIG)) setConflictAt(stamp());
-      else setError(errorMessage(error));
+      setError(errorMessage(error));
     } finally {
-      setBusy(false);
+      lock(false);
       setSyncing(false);
     }
   };
-  const verify = async () => {
-    setVerifyAfter(stamp());
-    adoptNext.current = true;
-    await query.refresh();
+  // Reload drops the draft and takes a fresh read whole; the card is locked until it lands.
+  const reload = () => {
+    forget("form");
+    return run(async () => {
+      const readAt = stamp();
+      const data = await rpc.call("getGitSyncConfig", { projectId });
+      setForm({ base: data.config, draft: data.config, readAt });
+      setConflict(false);
+      void query.refresh();
+    });
   };
-  const write = <K extends keyof GitSyncConfig>(key: K, value: (stored: GitSyncConfig) => GitSyncConfig[K]) => run(async () => {
-    if (!saved) return;
-    // A list is replaced whole, so it is written only over the list it was built on.
-    const expected = key === "repositories" || key === "overlapRules" ? { expected: saved[key] ?? null } : {};
-    await rpc.call("config.set", { projectId, key: `git.${key}`, value: value(saved), ...expected });
-    await verify();
-  });
-  const save = () => run(async () => {
-    if (!saved) return;
-    await rpc.call("setGitSyncConfig", { projectId, config: gitSyncConfigSchema.parse(formConfig(saved)), baseConfig: saved });
-    setMessage("Git/PR settings saved.");
-    await verify();
-  });
-  // Reload drops the draft and takes the next read whole.
-  const reload = () => run(verify);
   const discard = () => {
-    // After a conflict the form's snapshot is outdated: discarding means taking a fresh read.
+    forget("form");
     if (conflict) return void reload();
-    if (query.data && query.data.readAt > verifyAfter) adopt(query.data.config, query.data.readAt);
-    else if (form) adopt(form.saved, form.readAt);
+    setForm((current) => current && { ...current, draft: current.base });
   };
   const sync = () => {
     setSyncing(true);
@@ -144,39 +155,103 @@ export function GitSyncSettings({ projectId }: { projectId: string }) {
       setMessage(`Checked ${result.checked} PRs.${result.errors.length ? ` ${result.errors.join("; ")}` : ""}`);
     });
   };
+  /** A discrete edit of the draft: it saves at once. */
+  const change = (edit: (draft: GitSyncConfig) => Partial<GitSyncConfig>) => {
+    if (lockRef.current) return;
+    const next = { ...draft, ...edit(draft) };
+    setForm((current) => current && { ...current, draft: next });
+    void save(next);
+  };
+  const onEnter = (event: { key: string; nativeEvent: { isComposing: boolean } }) => {
+    if (event.key === "Enter" && !event.nativeEvent.isComposing) commit();
+  };
+  // The draft as edited so far, ahead of the render: the card's blur sees a tag name kept on that same blur.
+  const draftRef = useRef(draft);
+  draftRef.current = draft;
+  // Focus is "inside" by the React tree, so the match menus, rendered in a portal outside the section, count as inside:
+  // React focus events bubble from them to the section. A blur becomes a leave only if no focus came back by the next
+  // tick.
+  const focusInside = useRef(false);
+  const leaveCheck = useRef<ReturnType<typeof setTimeout>>(undefined);
+  // A pointer pressed inside the card (a portal menu included): a click that takes no focus, like a button in Safari or
+  // the heading, blurs to nowhere. That blur is held, and re-checked once the click settles: Discard has reverted and a
+  // switch has saved by then, and focus left on the page commits as leaving would.
+  const pointerInside = useRef(false);
+  const heldBlur = useRef(false);
+  const onPointerDown = () => {
+    pointerInside.current = true;
+    const clear = () => {
+      window.removeEventListener("pointerup", clear, true);
+      window.removeEventListener("pointercancel", clear, true);
+      setTimeout(() => {
+        pointerInside.current = false;
+        if (!heldBlur.current) return;
+        heldBlur.current = false;
+        if (!focusInside.current) void latestSave.current(draftRef.current);
+      });
+    };
+    window.addEventListener("pointerup", clear, true);
+    window.addEventListener("pointercancel", clear, true);
+  };
+  const onCardFocus = () => {
+    focusInside.current = true;
+    clearTimeout(leaveCheck.current);
+  };
+  // Text commits on Enter or when focus leaves the card. Moving inside it commits nothing, so no write disables the card
+  // under the next click: a switch or rule match saves the whole draft (the edited text included), Discard reverts it,
+  // Add rule adds its row, Reload rereads.
+  const onCardBlur = () => {
+    clearTimeout(leaveCheck.current);
+    leaveCheck.current = setTimeout(() => {
+      focusInside.current = false;
+      if (pointerInside.current) heldBlur.current = true;
+      else void latestSave.current(draftRef.current);
+    });
+  };
+  /** A tag list edit: saves at once, except a name kept on blur, which the card's own blur commits if focus leaves. */
+  const tags = (key: "requiredChecks" | "prWaitIgnoredChecks" | "postMergeWorkflows") => (values: string[], blur?: FocusEvent<HTMLInputElement>) => {
+    if (!blur) return change(() => ({ [key]: values }));
+    draftRef.current = { ...draftRef.current, [key]: values };
+    setDraft(() => ({ [key]: values }));
+  };
   const addRepository = (value: string) => {
-    setDraft((current) => ({ repositories: [...new Set([...current.repositories, ...lines(value)])] }));
+    change((current) => ({ repositories: [...new Set([...current.repositories, ...lines(value)])] }));
     setRepositoryDraft("");
   };
-  const setRules = (change: (rules: OverlapRule[]) => OverlapRule[]) => setDraft((current) => ({ overlapRules: change(current.overlapRules) }));
+  const setRules = (edit: (rules: OverlapRule[]) => OverlapRule[]) => setDraft((current) => ({ overlapRules: edit(current.overlapRules ?? []) }));
   const available = query.data?.availableRepositories ?? [];
   const linkedBbProject = query.data?.linkedBbProject ?? false;
   const otherRepositories = draft.repositories.filter(
     (repository) => !available.includes(repository),
   );
-  const overlapRules = draft.overlapRules;
+  const overlapRules = draft.overlapRules ?? [];
   return (
-    <SettingsCard title="Git and pull requests" description="Track pull requests and CI for this project. Task statuses stay unchanged."
+    <SettingsCard title="Git and pull requests" description="Track pull requests and CI for this project. Task statuses stay unchanged." save={saveStatus} onFocus={onCardFocus} onBlur={onCardBlur} onPointerDown={onPointerDown}
       status={<p className="text-xs text-muted-foreground" data-testid="git-summary">
-        {saved
-          ? `${saved.enabled ? "Sync on" : "Sync off"} · ${saved.repositories.length === 1 ? "1 repository" : `${saved.repositories.length} repositories`}${unsaved ? " · unsaved changes" : ""}`
+        {base
+          ? `${base.enabled ? "Sync on" : "Sync off"} · ${base.repositories.length === 1 ? "1 repository" : `${base.repositories.length} repositories`}${unsaved ? " · unsaved changes" : ""}`
           : query.error ? "Unavailable" : "Loading…"}
       </p>}>
       {conflict ? (
         <p role="alert" className="text-xs text-destructive" data-testid="git-conflict">
           Settings changed elsewhere, so nothing was written. Reload shows the stored settings and discards any unsaved edits.
-          <Button size="sm" variant="ghost" className="ml-1 h-7 px-2" disabled={busy} onClick={() => void reload()}>Reload</Button>
+          <Button size="sm" variant="ghost" className="ml-1 h-7 px-2" disabled={locked} onClick={() => void reload()}>Reload</Button>
         </p>
       ) : null}
-      {dirty ? <p className="text-xs text-amber-600 dark:text-amber-400" data-testid="git-dirty">Save or discard your changes first: the switches, repositories and rule matches below save at once and wait for a clean form.</p> : null}
+      {invalid ? (
+        <p role="alert" className="text-xs text-destructive" data-testid="git-invalid">Not saved: {invalid}. Correct the value or discard the change.</p>
+      ) : blankRule ? (
+        <p className="text-xs text-amber-600 dark:text-amber-400" data-testid="git-dirty">Enter the new rule's pattern or remove the rule; nothing saves until then.</p>
+      ) : null}
+      {/* Locked while a write or Reload is in flight: nothing can be committed over it. */}
       <fieldset
-        disabled={busy || !verified}
+        disabled={form === undefined || locked}
         className="min-w-0 space-y-3 text-xs"
       >
         <div className="divide-y divide-border-hairline rounded-md border border-border">
           <div className="px-3 py-3">
-            <SwitchRow label="Periodic synchronization" checked={saved?.enabled ?? false} disabled={!immediate}
-              onChange={(enabled) => void write("enabled", () => enabled)} hint="Refresh PR and CI status automatically." />
+            <SwitchRow label="Periodic synchronization" checked={draft.enabled} disabled={!base}
+              onChange={(enabled) => change(() => ({ enabled }))} hint="Refresh PR and CI status automatically." />
           </div>
           <div className="flex flex-wrap items-center justify-between gap-3 px-3 py-2.5">
             <label htmlFor={`${id}-interval`}>Refresh interval</label>
@@ -190,6 +265,7 @@ export function GitSyncSettings({ projectId }: { projectId: string }) {
                 className="h-7 w-16 px-2 text-xs text-foreground"
                 value={draft.pollMinutes}
                 onChange={(event) => setDraft(() => ({ pollMinutes: Number(event.target.value) }))}
+                onKeyDown={onEnter}
               />
               <span>minutes</span>
             </div>
@@ -211,9 +287,9 @@ export function GitSyncSettings({ projectId }: { projectId: string }) {
               className="max-h-60 space-y-2 overflow-y-auto px-3 pb-3"
             >
               {available.map((repository) => (
-                <SwitchRow key={repository} label={repository} checked={saved?.repositories.includes(repository) ?? false} disabled={!immediate}
+                <SwitchRow key={repository} label={repository} checked={draft.repositories.includes(repository)} disabled={!base}
                   hint="Track this repository's pull requests."
-                  onChange={(on) => void write("repositories", (stored) => (on ? [...new Set([...stored.repositories, repository])] : stored.repositories.filter((entry) => entry !== repository)))} />
+                  onChange={(on) => change((current) => ({ repositories: on ? [...new Set([...current.repositories, repository])] : current.repositories.filter((entry) => entry !== repository) }))} />
               ))}
             </div>
           ) : (
@@ -247,7 +323,7 @@ export function GitSyncSettings({ projectId }: { projectId: string }) {
                         variant="ghost"
                         className="size-6 shrink-0 text-muted-foreground"
                         aria-label={`Remove repository ${repository}`}
-                        onClick={() => setDraft((current) => ({ repositories: current.repositories.filter((entry) => entry !== repository) }))}
+                        onClick={() => change((current) => ({ repositories: current.repositories.filter((entry) => entry !== repository) }))}
                       >
                         <Icon name="Trash2" className="size-3.5" />
                       </Button>
@@ -280,13 +356,12 @@ export function GitSyncSettings({ projectId }: { projectId: string }) {
                   Add
                 </Button>
               </div>
-              <p className="text-muted-foreground">Added and removed here until you press Save.</p>
             </div>
           </details>
         </div>
         <div className="rounded-md border border-border px-3 py-3">
-          <SwitchRow label="Discover task links" checked={saved?.titleDiscovery ?? false} disabled={!immediate}
-            onChange={(titleDiscovery) => void write("titleDiscovery", () => titleDiscovery)} hint="Suggest links when a task key appears in a PR title." />
+          <SwitchRow label="Discover task links" checked={draft.titleDiscovery} disabled={!base}
+            onChange={(titleDiscovery) => change(() => ({ titleDiscovery }))} hint="Suggest links when a task key appears in a PR title." />
         </div>
         <details className="rounded-md border border-border">
           <DisclosureSummary className="px-3 py-2.5 font-medium">Advanced settings</DisclosureSummary>
@@ -323,6 +398,7 @@ export function GitSyncSettings({ projectId }: { projectId: string }) {
                       className="h-7 w-16 px-2 text-xs text-foreground"
                       value={draft[key]}
                       onChange={(event) => setDraft(() => ({ [key]: Number(event.target.value) }))}
+                onKeyDown={onEnter}
                     />
                     <span>days</span>
                   </div>
@@ -341,7 +417,7 @@ export function GitSyncSettings({ projectId }: { projectId: string }) {
                 label="Required GitHub checks"
                 describedBy={`${id}-checks-help`}
                 values={draft.requiredChecks}
-                onChange={(requiredChecks) => setDraft(() => ({ requiredChecks }))}
+                onChange={tags("requiredChecks")}
               />
             </div>
             <div className="space-y-1.5">
@@ -356,7 +432,7 @@ export function GitSyncSettings({ projectId }: { projectId: string }) {
                 label="Checks outside CI"
                 describedBy={`${id}-ignored-help`}
                 values={draft.prWaitIgnoredChecks}
-                onChange={(prWaitIgnoredChecks) => setDraft(() => ({ prWaitIgnoredChecks }))}
+                onChange={tags("prWaitIgnoredChecks")}
               />
             </div>
             <div className="space-y-1.5">
@@ -371,26 +447,18 @@ export function GitSyncSettings({ projectId }: { projectId: string }) {
                 label="Post-merge workflows"
                 describedBy={`${id}-workflows-help`}
                 values={draft.postMergeWorkflows}
-                onChange={(postMergeWorkflows) => setDraft(() => ({ postMergeWorkflows }))}
+                onChange={tags("postMergeWorkflows")}
               />
             </div>
             <div className="space-y-1.5">
-              <div className="flex items-center justify-between gap-3">
-                <label htmlFor={`${id}-overlap`} className="font-medium">
-                  Highlight shared files
-                </label>
-                <Switch
-                  id={`${id}-overlap`}
-                  aria-label="Highlight shared files between PRs"
-                  aria-describedby={`${id}-overlap-help`}
-                  checked={overlapOn}
-                  disabled={!immediate}
-                  onCheckedChange={(on) => void write("overlapEnabled", () => on)}
-                />
-              </div>
-              <p id={`${id}-overlap-help`} className="text-muted-foreground">
-                Mark files that open PRs of different tasks both touch when they match a rule. Other shared files are still listed. A pattern supports *, ** and ?; Changed matches the same path, Added matches new files even with different names. Turning it off keeps the rules.
-              </p>
+              <SwitchRow label="Highlight shared files" checked={overlapOn} disabled={!base}
+                onChange={(on) => change(() => ({ overlapEnabled: on }))}
+                hint="Mark files that open PRs of different tasks both touch when they match a rule. Turning it off keeps the rules.">
+                <details>
+                  <DisclosureSummary className="py-1 text-muted-foreground">Pattern syntax</DisclosureSummary>
+                  <p className="pl-5 text-muted-foreground">A pattern supports *, ** and ?. Changed matches the same path; Added matches new files even with different names. Other shared files are still listed without a highlight.</p>
+                </details>
+              </SwitchRow>
               {overlapOn ? (
                 <ul aria-label="Overlap rules" className="space-y-1.5">
                   {overlapRules.map((rule, index) => (
@@ -401,12 +469,13 @@ export function GitSyncSettings({ projectId }: { projectId: string }) {
                         className="h-7 min-w-0 flex-1 px-2 font-mono text-xs"
                         value={rule.pattern}
                         onChange={(event) => setRules((rules) => rules.map((entry, at) => (at === index ? { ...entry, pattern: event.target.value } : entry)))}
+                onKeyDown={onEnter}
                       />
-                      {/* A match is written at once on the stored rules, so only on a clean form; a new rule's waits for Save. */}
+                      {/* A match is written at once on the stored rules, so only on a clean form; a new rule's waits for its pattern to save. */}
                       <Select
                         value={rule.match}
-                        disabled={!immediate}
-                        onValueChange={(match) => void write("overlapRules", (stored) => (stored.overlapRules ?? []).map((entry, at) => (at === index ? { ...entry, match: match as OverlapRule["match"] } : entry)))}
+                        disabled={!base}
+                        onValueChange={(match) => change((current) => ({ overlapRules: (current.overlapRules ?? []).map((entry, at) => (at === index ? { ...entry, match: match as OverlapRule["match"] } : entry)) }))}
                       >
                         <SelectTrigger aria-label={`Rule ${index + 1} match`} className="h-7 w-28 text-xs"><SelectValue /></SelectTrigger>
                         <SelectContent>
@@ -419,7 +488,7 @@ export function GitSyncSettings({ projectId }: { projectId: string }) {
                         variant="ghost"
                         className="size-6 shrink-0 text-muted-foreground"
                         aria-label={`Remove rule ${index + 1}`}
-                        onClick={() => setRules((rules) => rules.filter((_, at) => at !== index))}
+                        onClick={() => change((current) => ({ overlapRules: (current.overlapRules ?? []).filter((_, at) => at !== index) }))}
                       >
                         <Icon name="Trash2" className="size-3.5" />
                       </Button>
@@ -445,15 +514,8 @@ export function GitSyncSettings({ projectId }: { projectId: string }) {
           </div>
         </details>
         <div className="flex flex-wrap items-center gap-2">
-          <Button
-            size="sm"
-            className="h-7 px-2.5"
-            disabled={!unsaved || !verified || conflict}
-            onClick={() => void save()}
-          >
-            Save
-          </Button>
-          {dirty ? <Button size="sm" variant="ghost" className="h-7 px-2.5" onClick={discard}>Discard</Button> : null}
+          {dirty
+            ? <Button size="sm" variant="ghost" className="h-7 px-2.5" onClick={discard}>Discard</Button> : null}
           <Button
             size="sm"
             variant="ghost"
@@ -465,15 +527,8 @@ export function GitSyncSettings({ projectId }: { projectId: string }) {
             <Icon name="RotateCcw" className={`size-3.5${syncing ? " animate-spin" : ""}`} />
             Sync now
           </Button>
-          {unsaved ? <span className="text-muted-foreground">Unsaved changes</span> : null}
         </div>
       </fieldset>
-      {saved && !verified ? (
-        <p className="text-xs text-muted-foreground" data-testid="git-verifying">
-          Checking the stored settings…
-          {query.error ? <Button size="sm" variant="ghost" className="ml-1 h-7 px-2" disabled={query.isFetching} onClick={() => void query.refresh()}>Reload</Button> : null}
-        </p>
-      ) : null}
       {error || query.error ? (
         <p role="alert" className="text-xs text-destructive">
           {error ?? query.error}

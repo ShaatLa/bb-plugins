@@ -6,7 +6,7 @@ import { managerProblemText, type ManagerLookup } from "../shared/attention";
 import { publishProjectsChanged, publishSettingsChanged } from "../api";
 import { isSideChatShapedThread } from "../shared/side-chat";
 import { bumpRev, CURRENT_KEY_SQL, onAttentionChanged, onTrackerDirty, scanTracker } from "./ledger";
-import { configuredManager, finishToShadow, getModeRow, kindState, requestMode, selfAckTransition, type AttentionMode, type KindState } from "./modes";
+import { completeTransition, configuredManager, getModeRow, kindState, normalizeLegacyModes, requestMode, type AttentionMode, type KindState } from "./modes";
 import { ATTENTION_KIND, PILOT_SIGNALS } from "./observe";
 
 type Database = ReturnType<BbPluginApi["storage"]["database"]>;
@@ -95,7 +95,7 @@ function createService(bb: BbPluginApi) {
     return { ...result, unreadable: written && unreadable, stale: !written, complete: written && result.complete, error: saved.errors?.last };
   }
 
-  // Recovery of one attempt runs one pass at a time: an overlapping drain and rollback would otherwise race on its cursor.
+  // Recovery of one attempt runs one pass at a time: an overlapping drain and switch-off would otherwise race on its cursor.
   const attemptLocks = new Map<string, Promise<unknown>>();
   function withAttemptLock<T>(attemptId: string, job: () => Promise<T>): Promise<T> {
     const run = (attemptLocks.get(attemptId) ?? Promise.resolve()).then(job);
@@ -169,17 +169,20 @@ function createService(bb: BbPluginApi) {
     publishSettingsChanged(bb, trackerId);
   }
 
-  /** Occurrences a drain may claim now: open, unbaselined, valid, past grace and with no blocking attempt or recent failure. */
-  function claimable(trackerId: string, at: number, upcoming = false): { id: string; task_key: string; signal: string; eligible_at: string }[] {
-    const rows = db.prepare<[string, string, string], { id: string; task_key: string; signal: string; eligible_at: string }>(
+  /**
+   * Occurrences a drain may claim now: open, unbaselined, valid, past grace and with no blocking attempt or recent failure. `except`
+   * names an undecided unknown attempt whose own items do not block, so its Send again can be judged.
+   */
+  function claimable(trackerId: string, at: number, upcoming = false, except: string | null = null): { id: string; task_key: string; signal: string; eligible_at: string }[] {
+    const rows = db.prepare<[string, string, string, string | null], { id: string; task_key: string; signal: string; eligible_at: string }>(
       `SELECT o.id, ${CURRENT_KEY_SQL} AS task_key, o.signal, o.eligible_at FROM manager_attention o
        WHERE o.tracker_id=? AND o.kind=? AND o.cleared_at IS NULL AND o.sweep_baselined_generation IS NULL AND o.eligible_at${upcoming ? ">" : "<="}?
        AND o.signal IN (${PILOT_SIGNALS.map((signal) => `'${signal}'`).join(", ")})
        AND NOT EXISTS (SELECT 1 FROM attention_unknown u WHERE u.tracker_id=o.tracker_id AND u.kind=o.kind AND u.task_id=o.task_id AND u.signal=o.signal)
-       AND NOT EXISTS (SELECT 1 FROM attention_attempt_items i JOIN attention_attempts a ON a.attempt_id=i.attempt_id WHERE i.occurrence_id=o.id
+       AND NOT EXISTS (SELECT 1 FROM attention_attempt_items i JOIN attention_attempts a ON a.attempt_id=i.attempt_id WHERE i.occurrence_id=o.id AND a.attempt_id IS NOT ?
          AND (a.outcome IN ('claimed', 'sending', 'appended', 'queued', 'inline') OR (a.outcome='unknown' AND COALESCE(a.disposition, '')<>'retry')))
        ORDER BY ${upcoming ? "o.eligible_at" : "o.created_rev"}`,
-    ).all(trackerId, ATTENTION_KIND, new Date(at).toISOString());
+    ).all(trackerId, ATTENTION_KIND, new Date(at).toISOString(), except);
     return rows.filter((row) => {
       const failures = db.prepare<[string], { n: number; last: string }>("SELECT COUNT(*) AS n, MAX(a.started_at) AS last FROM attention_attempt_items i JOIN attention_attempts a ON a.attempt_id=i.attempt_id WHERE i.occurrence_id=? AND a.outcome='failed'").get(row.id);
       if (!failures?.n) return true;
@@ -265,7 +268,7 @@ function createService(bb: BbPluginApi) {
   }
 
   /**
-   * Evidence that arrives late, even after an owner resolution or a rollback, is still the attempt's receipt. Each pass looks at
+   * Evidence that arrives late, even after an owner resolution or a switch-off, is still the attempt's receipt. Each pass looks at
    * the attempts searched longest ago first, so no unknown attempt starves behind newer ones.
    */
   async function recoverLate(trackerId: string, throttle = false): Promise<void> {
@@ -284,29 +287,26 @@ function createService(bb: BbPluginApi) {
     }
   }
 
-  /** A pending to_shadow: wait for in-flight sends, settle what is left, then publish the handback if nothing is unresolved. */
-  async function reconcileFence(trackerId: string): Promise<boolean> {
-    await Promise.allSettled([...inflight.values()]);
-    await recover(trackerId);
-    const ready = finishToShadow(db, trackerId);
-    if (ready) { selfAck(trackerId); notifyChanged(trackerId); }
-    return ready;
-  }
-
-  /** Completes a ready transition when Work Board runs the project's checks, and tells open views like an `attention.ack` does. */
-  function selfAck(trackerId: string): void {
-    const result = selfAckTransition(db, trackerId);
-    if (!result?.ok) return;
-    bb.log.info(`attention ${ATTENTION_KIND} for ${trackerId}: ${result.direction} acknowledged by Work Board`);
-    publishProjectsChanged(bb, trackerId);
+  /** A pending switch-off: wait for in-flight sends, settle what is left, then complete it once nothing is claimed or sending. */
+  async function settleSwitchOff(trackerId: string): Promise<boolean> {
+    // Only this tracker's claimed and sending attempts; unknown ones and other trackers' sends never hold it.
+    const own = attemptsWhere(trackerId, "outcome IN ('claimed', 'sending') ").map((attempt) => inflight.get(attempt.attempt_id)).filter((run) => run !== undefined);
+    await Promise.allSettled(own);
+    await recover(trackerId, false, false);
+    const done = completeTransition(db, trackerId);
+    if (done) {
+      bb.log.info(`attention ${ATTENTION_KIND} for ${trackerId}: switched off`);
+      publishProjectsChanged(bb, trackerId);
+      notifyChanged(trackerId);
+    }
+    return done;
   }
 
   async function drainTracker(trackerId: string): Promise<void> {
-    selfAck(trackerId);
     const row = getModeRow(db, trackerId);
     if (row.effective_mode !== "live") return;
     if (row.requested_mode !== null) {
-      if (row.transition_direction === "to_shadow" && row.transition_state === "preparing") await reconcileFence(trackerId);
+      if (row.transition_direction === "to_shadow") await settleSwitchOff(trackerId);
       return;
     }
     await recover(trackerId, true);
@@ -376,7 +376,7 @@ function createService(bb: BbPluginApi) {
     for (const trackerId of activeTrackerIds()) {
       try { db.transaction(() => scanTracker(db, trackerId))(); } catch (error) { warn(error); }
     }
-    // Late receipts for unknown attempts are looked for whatever the mode, so a rollback or a switch off never strands them;
+    // Late receipts for unknown attempts are looked for whatever the mode, so a switch-off never strands them;
     // this pass is the periodic one, so it is not throttled.
     for (const { tracker_id } of db.prepare<[], { tracker_id: string }>("SELECT DISTINCT tracker_id FROM attention_attempts WHERE outcome='unknown'").all())
       await recoverLate(tracker_id).catch(warn);
@@ -385,13 +385,13 @@ function createService(bb: BbPluginApi) {
     await drain();
   }
 
-  /** The owner's mode request; a to_shadow also settles in-flight sends before it can become ready. */
-  async function setMode(input: { trackerId: string; mode: AttentionMode; parityReviewed?: boolean }): Promise<KindState> {
+  /** The owner's On or Off; a switch-off that waits for a send returns `switchingOff` at once and completes later. */
+  async function setMode(input: { trackerId: string; mode: AttentionMode }): Promise<KindState> {
     const row = getModeRow(db, input.trackerId);
     const before = row.effective_mode;
     let guard: { manager: string | null; generation: number } | undefined;
-    if (input.mode === "live" && before === "shadow" && row.requested_mode === null) {
-      // Read the manager first; the request transaction then checks that neither the manager nor the shadow generation moved.
+    if (input.mode === "live" && before !== "live" && row.requested_mode === null) {
+      // Read the manager first; the request transaction then checks that neither the manager nor the generation moved.
       const manager = configuredManager(db, input.trackerId);
       const problem = managerProblemText(await lookupManager(manager));
       if (problem) throw new Error(problem);
@@ -399,24 +399,38 @@ function createService(bb: BbPluginApi) {
     }
     const state = requestMode(db, { ...input, guard });
     bb.log.info(`attention ${ATTENTION_KIND} for ${input.trackerId}: ${before} → ${input.mode}`);
-    if (state.transition?.direction === "to_shadow" && state.transition.state === "preparing") await reconcileFence(input.trackerId);
+    // A send still in flight finishes in the background; its completion publishes the Off state, so the settings never wait on it.
+    if (state.switchingOff) void settleSwitchOff(input.trackerId).catch(warn);
     scheduleDrain();
-    return kindState(db, input.trackerId);
+    return state;
+  }
+
+  /** Send again can reopen something: notices are on and at least one of the attempt's own occurrences is claimable without it. */
+  function canRetry(attempt: Pick<AttemptRow, "attempt_id" | "tracker_id">): boolean {
+    const row = getModeRow(db, attempt.tracker_id);
+    if (row.effective_mode !== "live" || row.requested_mode !== null) return false;
+    const items = new Set(db.prepare<[string], { occurrence_id: string }>("SELECT occurrence_id FROM attention_attempt_items WHERE attempt_id=?").all(attempt.attempt_id).map((item) => item.occurrence_id));
+    return claimable(attempt.tracker_id, Date.now(), false, attempt.attempt_id).some((occurrence) => items.has(occurrence.id));
   }
 
   /** The owner's decision on an unknown attempt: accept the loss, or let its occurrences be claimed again. */
   async function resolveAttempt(attemptId: string, disposition: "waived_loss" | "retry"): Promise<void> {
-    const attempt = db.prepare<[string], AttemptRow>("SELECT * FROM attention_attempts WHERE attempt_id=?").get(attemptId);
-    if (!attempt) throw new Error(`Attempt not found: ${attemptId}`);
-    if (attempt.outcome !== "unknown" || attempt.disposition) throw new Error("Only an unresolved unknown attempt can be resolved");
-    db.transaction(() => updateAttempt(attemptId, attempt.tracker_id, "disposition=?, disposition_at=?", disposition, nowIso()))();
+    db.transaction(() => {
+      const attempt = reload(attemptId);
+      if (!attempt) throw new Error(`Attempt not found: ${attemptId}`);
+      if (attempt.outcome !== "unknown" || attempt.disposition) throw new Error("Only an unresolved unknown attempt can be resolved");
+      // Rechecked in the write: a retry that could reopen nothing would hide the attempt and send nothing.
+      if (disposition === "retry" && !canRetry(attempt)) throw new Error("Nothing in this notice can be sent again: notices are off or its cards are no longer stale. Accept the loss instead.");
+      updateAttempt(attemptId, attempt.tracker_id, "disposition=?, disposition_at=?", disposition, nowIso());
+    })();
     log(`attention attempt ${attemptId}: ${disposition}`);
-    await reconcileFence(attempt.tracker_id);
     scheduleDrain();
   }
   const log = (message: string) => bb.log.info(message);
 
   function register() {
+    // Before the startup reconciliation and the first drain, so no legacy Shadow row is ever read as live.
+    normalizeLegacyModes(db);
     const stops = [onAttentionChanged(notifyChanged), onTrackerDirty(scheduleScan)];
     // The settings follow the configured manager: an event for any other thread changes nothing.
     for (const type of ["thread.archived", "thread.unarchived", "thread.deleted"] as const) {
@@ -437,5 +451,5 @@ function createService(bb: BbPluginApi) {
     void reconcileAll().catch(warn);
   }
 
-  return { register, drain, drainTracker, nextEligibleDelay, recoverLate, reconcileAll, reconcileFence, setMode, resolveAttempt, scheduleDrain, recover, lookupManager, invalidateLookups };
+  return { register, drain, drainTracker, nextEligibleDelay, recoverLate, reconcileAll, settleSwitchOff, setMode, resolveAttempt, canRetry, scheduleDrain, recover, lookupManager, invalidateLookups };
 }

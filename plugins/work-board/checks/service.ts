@@ -19,13 +19,12 @@ import { assertNoOtherOwner, isDraining, owners, runs, stateMismatch } from "./o
 import { reportContents, staleStatusKind } from "./reports";
 import { CheckoutRefreshError, execute, KILL_GRACE_MS, GIT_TIMEOUT_MS } from "./runner";
 import { checksStore, type AttemptRow, type NoticeRow, type State } from "./store";
-import { createTransfer } from "./transfer";
 
 type Database = ReturnType<BbPluginApi["storage"]["database"]>;
 
 const MAX_REFRESH_BACKOFF_MS = 3_600_000;
 const LATE_SEARCH_BATCH = 20;
-const PUSH_TITLE = "Sweep manager unreachable";
+const PUSH_TITLE = "Repository checks: manager unreachable";
 const repositoryUrl = z.string().min(1).max(2000).refine((url) => !url.startsWith("-"));
 const MANAGER_UNSET = "Manager is unset. Set the manager field to an available thread ID.";
 const NOTICE_WAITING = "Waiting for Agent Hub to confirm the notice";
@@ -63,11 +62,11 @@ function createService(bb: BbPluginApi) {
     if (!file) throw new Error("Repository checks need a file-backed database");
     return dirname(file);
   };
-  /** Explicit commands (UI, CLI, config, transfer) keep the wide channel; only the scheduled tick uses the settings-only one. */
+  /** Explicit commands (UI, CLI, config) keep the wide channel; only the scheduled tick uses the settings-only one. */
   const changed = (trackerId: string) => publishProjectsChanged(bb, trackerId);
   const tickChanged = (trackerId: string) => publishSettingsChanged(bb, trackerId);
 
-  /** The manager as a recipient, with Sweep's rules: a missing, archived, deleted, failed or unreachable thread cannot receive a report. */
+  /** The manager as a recipient of a report: a missing, archived, deleted, failed or unreachable thread cannot receive one. */
   async function usableManager(manager: string) {
     const thread = await bb.sdk.threads.get({ threadId: manager });
     if (!thread || thread.archivedAt || thread.deletedAt) throw new Error("Manager missing, archived or deleted. Set the manager field to an available thread ID.");
@@ -91,7 +90,16 @@ function createService(bb: BbPluginApi) {
     return row?.committed && row.committed_project === link ? row.committed : null;
   };
 
-  const transfer = createTransfer({ bb, db, store, signal: controller.signal, tracker, committedFor, changed });
+  /**
+   * Admission of the tracker: `validate` states the caller's own conditions and `apply` takes effect (enable, or reserve the run),
+   * both in one synchronous transaction, so overlapping admissions cannot both win.
+   */
+  const admit = (trackerId: string, validate: (link: string | null) => void, apply: (link: string) => void) => db.transaction(() => {
+    const { link } = tracker(trackerId);
+    validate(link);
+    if (!link) throw new Error("Link a bb project to this tracker first.");
+    apply(link);
+  })();
   /** A tick that finds nothing to do (busy, idle, another owner) returns quietly, as it always has. */
   class Skipped extends Error {}
 
@@ -397,7 +405,7 @@ function createService(bb: BbPluginApi) {
 
   // ---- running --------------------------------------------------------------------------------------------------
 
-  /** The generation of the latest return to shadow whose current stale-status lines the runner has not sent since, or null. */
+  /** The generation of the latest switch-off of stale-status notices whose current stale-status lines the runner has not sent since, or null. */
   const unconsumedRollback = (trackerId: string): number | null => db.prepare<[string, string, string], { generation: number | null }>(
     `SELECT MAX(generation) AS generation FROM attention_acks WHERE tracker_id=? AND kind=? AND direction='to_shadow'
      AND generation > COALESCE((SELECT consumed_generation FROM checks_stale_rollback WHERE tracker_id=?), 0)`,
@@ -434,8 +442,8 @@ function createService(bb: BbPluginApi) {
     if (!readDraft(db, trackerId).enabled && !isDraining(db, trackerId, link)) return;
     if (owners(db, link).some((id) => id !== trackerId)) return;
     try {
-      // The run is reserved in the same synchronous step that admits it, after any lookup of Sweep.
-      await transfer.claimForWorkBoard(trackerId, (current) => {
+      // The run is reserved in the same synchronous step that admits it.
+      admit(trackerId, (current) => {
         if (!current || runs.has(current) || (!readDraft(db, trackerId).enabled && !isDraining(db, trackerId, current)) || owners(db, current).some((id) => id !== trackerId)) throw new Skipped();
         // State recorded for another bb project is refused before the project is claimed.
         const mismatch = stateMismatch(db, trackerId, current);
@@ -520,14 +528,14 @@ function createService(bb: BbPluginApi) {
       const answerWithoutCandidate = config.snapshots && result.snapshot === null && [...report.items.values()].includes("ANSWER");
       const lastReport = state.lastReport?.manager === manager ? state.lastReport : undefined;
       const previous = lastReport?.changes;
-      // An unknown baseline (a report that crossed a transfer without its item hashes) with the same fingerprint has the same items, so they are not compared.
+      // An unknown baseline (a report saved without its item hashes, as imported state may be) with the same fingerprint has the same items, so they are not compared.
       const sameUnknown = !!lastReport && !previous && lastReport.fingerprint === report.fingerprint;
       const waitingChanged = code < 2 && !sameUnknown && report.changes.waiting !== (previous?.waiting ?? "");
       const knownItems = new Set(previous?.noteworthy);
       const newItem = !sameUnknown && report.changes.noteworthy.some((id) => !knownItems.has(id));
       const changedFailure = state.lastFailure?.manager !== manager || state.lastFailure?.fingerprint !== report.fingerprint;
       const changedDiagnostic = code === 1 && !report.items.size && lastReport?.fingerprint !== report.fingerprint;
-      // An unknown baseline (a report that crossed a transfer without its item hashes): a different fingerprint is news, and an empty Waiting list is never suppressed.
+      // An unknown baseline (a report saved without its item hashes, as imported state may be): a different fingerprint is news, and an empty Waiting list is never suppressed.
       const fingerprintChanged = !!lastReport && !previous && code < 2 && lastReport.fingerprint !== report.fingerprint;
       const notify = !!newWorktrees || (code >= 2 ? changedFailure : waitingChanged || newItem || candidateChanged || answerWithoutCandidate || changedDiagnostic || fingerprintChanged || resendStale);
       // Any run below 2 ends a failure streak, even when it sends nothing: the same failure after a quiet success notifies again.
@@ -575,7 +583,7 @@ function createService(bb: BbPluginApi) {
   /** A manual run refreshes the checkout and runs the script, and nothing else: it never stages, delivers, promotes or counts. */
   async function manualRun(trackerId: string) {
     let plan!: { link: string; config: ChecksConfig; manager: string };
-    await transfer.claimForWorkBoard(trackerId, (link) => {
+    admit(trackerId, (link) => {
       if (!link) throw new Error("Link a bb project to this tracker before running its checks.");
       assertNoOtherOwner(db, trackerId, link);
       const mismatch = stateMismatch(db, trackerId, link);
@@ -605,11 +613,8 @@ function createService(bb: BbPluginApi) {
     store.save(trackerId, { ...state, nextRun: Date.now() });
   }
 
-  /** Counts the disables of each tracker: an enable that waited for Sweep's status is void once a disable has happened since it began. */
-  const disables = new Map<string, number>();
   async function setEnabled(trackerId: string, enabled: boolean) {
     const { prefix } = tracker(trackerId);
-    const began = disables.get(trackerId) ?? 0;
     const apply = () => {
       const before = readDraft(db, trackerId);
       writeEnabled(db, trackerId, enabled);
@@ -618,10 +623,9 @@ function createService(bb: BbPluginApi) {
       if (enabled) touchState(trackerId);
       changed(trackerId);
     };
-    // Disabling is always allowed, even for a fenced tracker; enabling is an admission and needs the runner ownership.
-    if (!enabled) { disables.set(trackerId, began + 1); apply(); }
-    else await transfer.claimForWorkBoard(trackerId, (link) => {
-      if ((disables.get(trackerId) ?? 0) !== began) throw new Error("Repository checks were disabled while this enable waited for Sweep. Enable them again.");
+    // Disabling is always allowed; enabling is an admission.
+    if (!enabled) apply();
+    else admit(trackerId, (link) => {
       if (!link) throw new Error("Link a bb project to this tracker before enabling repository checks.");
       assertNoOtherOwner(db, trackerId, link);
       const mismatch = stateMismatch(db, trackerId, link);
@@ -676,8 +680,6 @@ function createService(bb: BbPluginApi) {
   /** The owner's reset of stored state (status, committed snapshot, staged report, attempts); refused while the runner owns it. */
   function reset(trackerId: string) {
     const { link } = tracker(trackerId);
-    const fence = transfer.fenceMessage(trackerId, link);
-    if (fence) throw new Error(fence);
     if (readDraft(db, trackerId).enabled || isDraining(db, trackerId, link)) throw new Error("Disable repository checks and let the pending report drain before resetting their state.");
     store.reset(trackerId);
     bb.log.info(`repository checks for ${trackerId}: state reset`);
@@ -712,7 +714,7 @@ function createService(bb: BbPluginApi) {
     const mismatch = link ? stateMismatch(db, trackerId, link) : null;
     const other = link ? owners(db, link).find((id) => id !== trackerId) : undefined;
     return {
-      trackerId, prefix, bbProjectId: link, ...transfer.ownerStatus(link), config: effectiveConfig(draft), enabledChangedAt: draft.enabledChangedAt, enabledPrevious: draft.enabledPrevious,
+      trackerId, prefix, bbProjectId: link, config: effectiveConfig(draft), enabledChangedAt: draft.enabledChangedAt, enabledPrevious: draft.enabledPrevious,
       manager: configuredManager(db, trackerId), draining, ownedByOtherTracker: other ?? null,
       lastRun: state.lastRun ?? null, nextRun: draft.enabled || draining ? state.nextRun ?? Date.now() : null, tickId: state.tickId ?? null,
       exitCode: state.exitCode ?? null, error: state.error ?? null,
@@ -743,7 +745,6 @@ function createService(bb: BbPluginApi) {
   }
 
   function register() {
-    transfer.registerRpc();
     bb.background.schedule("checks", "* * * * *", runDue);
     // Recover due ticks if the host cron dispatcher stalls; nextRun and the run lock prevent repeats.
     bb.background.service("checks-due", {
@@ -763,6 +764,6 @@ function createService(bb: BbPluginApi) {
 
   return {
     register, runDue, scheduledTick, manualRun, status, stats,
-    setEnabled, setField, setFields, retry, reset, configValues, fieldKeys: CHECK_FIELDS, transfer,
+    setEnabled, setField, setFields, retry, reset, configValues, fieldKeys: CHECK_FIELDS,
   };
 }

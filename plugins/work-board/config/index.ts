@@ -7,7 +7,7 @@ import { gitSyncService } from "../git-sync/service";
 import { createGitSyncStore } from "../git-sync/store";
 import { STALE_GIT_CONFIG, gitSyncConfigSchema, overlapEnabled } from "../shared/git-sync";
 import { ATTENTION_OWNER_ONLY } from "../shared/attention";
-import { getModeRow } from "../attention/modes";
+import { kindState } from "../attention/modes";
 import { CHECK_FIELDS, CHECKS_CONFIG_KEYS, CHECKS_ENABLED_OWNER_ONLY, CHECKS_PREFIX, type CheckField } from "../checks/config";
 import { checksService } from "../checks/service";
 import { PR_EVENT_KEYS, prEventSettings, setPrEventSetting } from "../git-sync/events";
@@ -24,7 +24,7 @@ const PROJECT_KEYS = {
 } as const;
 type ProjectKey = keyof typeof PROJECT_KEYS;
 const GIT_KEYS = Object.keys(gitSyncConfigSchema.shape) as (keyof z.infer<typeof gitSyncConfigSchema>)[];
-// Manager attention is the owner's to change in the project settings; the keys are readable here and refused by `config.set`.
+// Stale-status notices (`attentionMode`: off or live) and the manager are the owner's to change in the project settings; the keys are readable here and refused by `config.set`.
 const ATTENTION_KEYS = ["attentionMode", "manager"];
 export const PROJECT_CONFIG_KEYS = [...Object.keys(PROJECT_KEYS), ...ATTENTION_KEYS, ...Object.keys(PR_EVENT_KEYS), ...GIT_KEYS.map((key) => `git.${key}`), ...CHECKS_CONFIG_KEYS];
 
@@ -50,7 +50,7 @@ export function projectConfigHandlers(bb: BbPluginApi, store: TasksApiStore) {
       ...Object.fromEntries(GIT_KEYS.map((key) => [`git.${key}`, git[key] ?? null])),
       "git.overlapEnabled": overlapEnabled(git),
       ...checksService(bb).configValues(projectId),
-      attentionMode: getModeRow(bb.storage.database(), projectId).effective_mode,
+      attentionMode: kindState(bb.storage.database(), projectId).effective.mode,
       prEvents: prEventSettings(bb.storage.database(), projectId).events,
       prEventsManager: prEventSettings(bb.storage.database(), projectId).manager,
       manager: bb.storage.database().prepare<[string], { manager: string | null }>("SELECT manager FROM attention_manager WHERE tracker_id=?").get(projectId)?.manager ?? null,

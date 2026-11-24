@@ -20,7 +20,7 @@ const step = async (f: Fixture, text: string, code = 0, candidate: string | null
   await f.tick();
   return delivered(f) - before;
 };
-const summary = (threads: number, cards: number, actions: number) => `sweep: ${threads} threads, ${cards} cards checked, ${actions} actions`;
+const summary = (threads: number, cards: number, actions: number) => `checks: ${threads} threads, ${cards} cards checked, ${actions} actions`;
 const idle = (key: string, minutes: number) => `ACTION no-active-thread ${key}: no active session for ${minutes} min`;
 
 describe("change detection", () => {

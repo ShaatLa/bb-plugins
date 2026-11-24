@@ -18,9 +18,6 @@ export const checksStatusSchema = z.object({
   enabledPrevious: z.boolean().nullable(),
   manager: z.string().nullable(),
   draining: z.boolean(),
-  /** "Work Board (KEY)", "Sweep" or "-"; and the handoff id of a send to Sweep that is not confirmed yet. */
-  runnerOwner: z.string(),
-  unconfirmedSend: z.string().nullable(),
   ownedByOtherTracker: z.string().nullable(),
   lastRun: z.number().nullable(),
   nextRun: z.number().nullable(),

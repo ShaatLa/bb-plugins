@@ -1,29 +1,36 @@
-import { useEffect, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { useSdk } from "@get-bb/plugin-sdk/app";
 import { Button } from "@/components/ui/button";
 import { Command, CommandEmpty, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
 import { Icon } from "@/components/ui/icon";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { Switch } from "@/components/ui/switch";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { DisclosureSummary } from "../components/disclosure.js";
 import { formatRelativeTime } from "./activity/time.js";
 import { useThreadNames } from "../components/thread-names.js";
 import { useOrderClock, useTasksQuery, useTasksRpc } from "../shell/data.js";
-import { errorMessage } from "../shared/errors.js";
-import { SettingsCard, SwitchRow } from "./settings-card.js";
+import { SettingsCard, SwitchRow, useSaveStatus } from "./settings-card.js";
 
-// Outside live the repository checks send stale-status findings: Sweep's runner, or Work Board's when it owns the project's checks.
-const texts = (sender: string) => ({
-  label: { off: `Off: ${sender} sends`, shadow: `Shadow: compare only, ${sender} sends`, live: "Live: Work Board sends" },
-  sender: { off: `Off · ${sender} sends`, shadow: `Shadow · comparing, ${sender} sends`, live: "Live · Work Board sends" },
-  note: {
-    off: `${sender} sends stale-status notices.`,
-    shadow: `${sender} sends notices while Work Board records what it would send.`,
-    live: "Work Board sends stale-status notices to the manager.",
-  },
-});
-const SWEEP_TEXTS = texts("Sweep");
-const RUNNER_TEXTS = texts("Work Board's checks runner");
+const SUMMARY = "Work Board messages the manager thread about tasks that look stuck:";
+const CONDITIONS = [
+  ["In progress", "no working session"],
+  ["In review", "no open pull request, and none merged in the last 2 hours"],
+  ["In testing", "no open or merged pull request"],
+  ["In review or In testing", "Work Board cannot read the pull request from GitHub"],
+  ["Any of these or Bugfix", "a pull request closed without merging"],
+] as const;
+const DETAILS = [
+  "Tasks waiting on an unfinished blocker and ongoing epics are skipped.",
+  "A task is reported after it has been stuck for 10 minutes, then again only if it recovers and gets stuck again.",
+  "While on, repository check reports leave these tasks out; while off, they may still list them.",
+  "Turning notices off and on again starts over.",
+];
+const STATE_TEXT = {
+  off: "Off: no notices are sent.",
+  live: "On: notices go to the manager thread.",
+  switching: "Switching off: a notice is still being sent.",
+};
 
 type ManagerThread = Awaited<ReturnType<ReturnType<typeof useSdk>["threads"]["list"]>>[number];
 const threadTitle = (thread: ManagerThread) => thread.title || thread.titleFallback || "Untitled thread";
@@ -114,13 +121,14 @@ function ManagerPicker({ projectId, value, disabled, onChange }: {
 }
 
 const PR_SWITCHES = [
-  { key: "prEvents", label: "PR lifecycle messages", hint: "Message the card's working session about its pull request: CI results, merge-queue removal, the merge and the first successful post-merge run." },
+  { key: "prEvents", label: "PR lifecycle messages", hint: "Message the task's working session about its pull request: CI results, merge-queue removal, the merge and the first successful post-merge run." },
   { key: "prEventsManager", label: "Copy PR messages to the manager", hint: "Also send those messages to the manager thread." },
 ] as const;
+const PR_MANAGER_NEEDS_EVENTS = "Turn on PR lifecycle messages to copy them to the manager.";
 type PrKey = (typeof PR_SWITCHES)[number]["key"];
 
 /** Two per-project keys, read and written one at a time through `config.get`/`config.set`; stored as "on" or "off". */
-function PrMessages({ projectId }: { projectId: string }) {
+function PrMessages({ projectId, save }: { projectId: string; save: ReturnType<typeof useSaveStatus> }) {
   const rpc = useTasksRpc();
   const stamp = useOrderClock();
   const query = useTasksQuery((client) => { const readAt = stamp(); return client.call("config.get", { projectId }).then((data) => ({ ...data, readAt })); }, ["projects:changed"], [projectId]);
@@ -130,30 +138,35 @@ function PrMessages({ projectId }: { projectId: string }) {
     const ack = acknowledged[key];
     return ack && ack.at > (query.data?.readAt ?? 0) ? ack.value : query.data?.values[key];
   };
+  const latestValue = useRef(value);
+  latestValue.current = value;
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  // A Retry runs later: a copy whose lifecycle messages were turned off meanwhile is dropped, not written.
+  const retry = (key: PrKey, on: boolean) => {
+    if (key === "prEventsManager" && latestValue.current("prEvents") !== "on") save.forget(key);
+    else void write(key, on);
+  };
   const write = async (key: PrKey, on: boolean) => {
     setBusy(true);
-    setError(null);
-    try {
+    await save.track(async () => {
       const result = await rpc.call("config.set", { projectId, key, value: on ? "on" : "off" });
       const at = stamp();
       setAcknowledged((current) => ({ ...current, [key]: { value: result.value, at } }));
       await query.refresh();
-    } catch (failure) {
-      setError(errorMessage(failure));
-    } finally {
-      setBusy(false);
-    }
+    }, () => retry(key, on), key);
+    setBusy(false);
   };
+  // Copies exist only of messages that are sent, so the copy switch waits for the lifecycle switch.
+  const eventsOff = value("prEvents") !== "on";
   return (
     <div className="space-y-3">
       <h4 className="text-sm font-medium">Pull request messages</h4>
-      {PR_SWITCHES.map(({ key, label, hint }) => (
-        <SwitchRow key={key} label={label} hint={hint} disabled={busy || !query.data}
-          checked={value(key) === "on"} onChange={(on) => void write(key, on)} />
-      ))}
-      {error || (query.error && !query.data) ? <p role="alert" className="text-xs text-destructive">{error ?? query.error}</p> : null}
+      {PR_SWITCHES.map(({ key, label, hint }) => {
+        const needsEvents = key === "prEventsManager" && eventsOff;
+        return <SwitchRow key={key} label={label} hint={needsEvents ? PR_MANAGER_NEEDS_EVENTS : hint} disabled={busy || !query.data || needsEvents}
+          checked={value(key) === "on"} onChange={(on) => void write(key, on)} />;
+      })}
+      {query.error && !query.data ? <p role="alert" className="text-xs text-destructive">{query.error}</p> : null}
     </div>
   );
 }
@@ -165,37 +178,24 @@ export function AttentionSettings({ projectId }: { projectId: string }) {
   const query = useTasksQuery((client) => { const readAt = stamp(); return client.call("getAttentionSettings", { projectId }).then((data) => ({ ...data, readAt })); }, ["projects:changed", "settings:changed"], [projectId]);
   // The manager the last write stored; it wins over every read that started before that write, including a failed one.
   const [managerAck, setManagerAck] = useState<{ manager: string | null; at: number }>();
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [parityGeneration, setParityGeneration] = useState<number>();
+  const saving = useSaveStatus();
+  const { status: save, busy, track } = saving;
+  const switchHint = useId();
   // A replacement or removal of a set manager waits here for the owner's confirmation.
   const [confirming, setConfirming] = useState<{ id: string; title: string } | null>(null);
   const settings = query.data;
-  const generation = settings?.state.effective.generation;
-  const parity = generation !== undefined && parityGeneration === generation;
-  const run = async (action: () => Promise<unknown>) => {
-    setBusy(true);
-    setError(null);
-    try {
-      await action();
-      // The controls stay locked until the refreshed settings land, so a second pick sees the manager just set.
-      await query.refresh();
-    } catch (failure) {
-      setError(errorMessage(failure));
-    } finally {
-      setBusy(false);
-    }
-  };
-  const setMode = (mode: "off" | "shadow" | "live") => run(() => rpc.call("updateAttentionMode", { projectId, mode, ...(mode === "live" ? { parityReviewed: parity } : {}) }));
+  // The controls stay locked until the refreshed settings land, so a second pick sees the manager just set.
+  const run = (key: string, action: () => Promise<unknown>) => track(async () => { await action(); await query.refresh(); }, undefined, key);
+  const setMode = (mode: "off" | "live") => run("mode", () => rpc.call("updateAttentionMode", { projectId, mode }));
   const mode = settings?.state.effective.mode ?? "off";
-  const pending = settings?.state.transition ?? null;
-  const gateHours = settings ? Math.ceil(settings.gateRemainingMs / 3_600_000) : 0;
+  const switching = settings?.state.switchingOff ?? false;
+  const shown = switching ? "switching" : mode;
   const previousManager = settings?.managerPrevious;
   const previousNames = useThreadNames(previousManager ? [previousManager] : []);
   const current = (managerAck && managerAck.at > (settings?.readAt ?? 0) ? managerAck.manager : settings?.manager) ?? "";
   const currentNames = useThreadNames(current ? [current] : []);
   const unresolved = settings?.unresolvedAttempts.length ?? 0;
-  const saveManager = (id: string) => run(async () => {
+  const saveManager = (id: string) => run("manager", async () => {
     const result = await rpc.call("updateAttentionManager", { projectId, manager: id || null });
     setManagerAck({ manager: result.manager, at: stamp() });
   });
@@ -205,16 +205,20 @@ export function AttentionSettings({ projectId }: { projectId: string }) {
     if (current) setConfirming({ id, title });
     else void saveManager(id);
   };
-  const { label: MODE_LABEL, sender: SENDER, note: MODE_NOTE } = settings?.workBoardRunsChecks ? RUNNER_TEXTS : SWEEP_TEXTS;
+  const retryOffered = settings?.unresolvedAttempts.some((attempt) => attempt.canRetry) ?? false;
+  // One hint at a time: the link first, then the manager; a second project on the link is the server's refusal on turning on.
+  const onHint = mode !== "off" || switching || !settings ? null
+    : !settings.linkedBbProjectId ? "Link this project to a BB project to turn notices on."
+    : !current ? "Choose a manager thread to turn notices on." : null;
   return (
-    <SettingsCard title="Manager" description="The manager thread, stale-status delivery and pull request messages for this project.">
+    <SettingsCard title="Manager" description="The manager thread, stale-status delivery and pull request messages for this project." save={save}>
       {query.error && !settings ? <p className="text-xs text-destructive" data-testid="attention-load-error">{query.error}</p> : null}
       {settings ? (
         <>
           <div className="flex flex-col gap-3 rounded-lg border border-border px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
             <div className="min-w-0 space-y-1">
               <h4 className="text-sm font-medium">Manager thread</h4>
-              <p className="text-xs text-muted-foreground">Receives notices when Work Board is live.</p>
+              <p className="text-xs text-muted-foreground">Receives stale-status notices and repository check reports for this project, and copies of pull request messages when both PR switches below are on.</p>
               {settings.managerChangedAt ? <p className="text-xs text-muted-foreground">
                 Changed <time dateTime={settings.managerChangedAt}>{formatRelativeTime(settings.managerChangedAt, Date.now())}</time>
                 {previousManager ? <> from {previousNames.get(previousManager) ?? previousManager}</> : " from no manager"}.
@@ -241,49 +245,45 @@ export function AttentionSettings({ projectId }: { projectId: string }) {
               </DialogFooter>
             </DialogContent>
           </Dialog>
-          <PrMessages projectId={projectId} />
+          <PrMessages projectId={projectId} save={saving} />
+          {/* The switch sits on the summary row but outside the summary, so it never toggles the disclosure and is not
+              nested in the summary's button. */}
+          <div className="relative">
           <details className="rounded-md border border-border text-sm">
-            <DisclosureSummary className="px-3 py-2.5">
+            <DisclosureSummary className="py-2.5 pl-3 pr-14">
               <span className="min-w-0 space-y-0.5">
-                <span className="block"><span className="font-medium">Stale-status delivery</span> · <span data-testid="attention-sender">{SENDER[mode]}</span></span>
+                <span className="block"><span className="font-medium">Stale-status notices</span> · <span data-testid="attention-sender">{switching ? "Switching off" : mode === "live" ? "On" : "Off"}</span></span>
+                {onHint ? <span id={switchHint} className="block text-xs text-muted-foreground" data-testid="attention-hint">{onHint}</span> : null}
                 {settings.managerWarning ? <span className="block text-xs text-amber-600 dark:text-amber-400" data-testid="attention-manager-warning">{settings.managerWarning}</span> : null}
                 {unresolved ? <span className="block text-xs text-amber-600 dark:text-amber-400" data-testid="attention-unknown-count">{unresolved} {unresolved === 1 ? "notice" : "notices"} with an unknown outcome need your decision</span> : null}
               </span>
             </DisclosureSummary>
             <div className="space-y-3 border-t border-border p-3">
-              <div className="flex flex-wrap items-center justify-between gap-2">
-                <div className="space-y-1">
-                  <span className="rounded-md bg-muted px-1.5 py-0.5 text-xs" data-testid="attention-mode">{MODE_LABEL[mode]}</span>
-                  <p className="text-xs text-muted-foreground">{MODE_NOTE[mode]}</p>
-                </div>
-                {!pending && (mode === "off"
-                  ? <Button size="sm" className="h-8" variant="outline" disabled={busy || !settings.linkedBbProjectId} onClick={() => void setMode("shadow")}>Start shadow</Button>
-                  : <Button size="sm" className="h-8" variant="outline" disabled={busy} onClick={() => void setMode(mode === "shadow" ? "off" : "shadow")}>{mode === "shadow" ? "Switch off" : "Back to shadow"}</Button>)}
+              <p className="text-sm font-medium" data-testid="attention-mode">{STATE_TEXT[shown]}</p>
+              <div className="space-y-1.5 text-xs text-muted-foreground" data-testid="attention-explanation">
+                <p>{SUMMARY}</p>
+                <ul className="space-y-0.5">
+                  {CONDITIONS.map(([status, condition]) => (
+                    <li key={status}><span className="font-medium text-foreground">{status}</span> · {condition}</li>
+                  ))}
+                </ul>
+                <details>
+                  <summary className="cursor-pointer select-none">Details</summary>
+                  <ul className="mt-1 list-disc space-y-0.5 pl-4">
+                    {DETAILS.map((line) => <li key={line}>{line}</li>)}
+                  </ul>
+                </details>
               </div>
-              {pending ? (
-                <p className="rounded-md bg-muted/50 px-3 py-2 text-xs" data-testid="attention-pending">
-                  {pending.direction === "to_live" ? "Going live" : "Going back to shadow"} · {pending.state !== "ready" ? "Settling in-flight notices" : settings.checksFence ?? (settings.workBoardRunsChecks ? "Completing on the next attention pass" : "Waiting for Sweep to acknowledge")}
-                </p>
-              ) : mode === "shadow" ? (
-                <div className="flex flex-wrap items-center justify-between gap-2 rounded-md bg-muted/50 px-3 py-2">
-                  {gateHours > 0 ? <p className="text-xs text-muted-foreground" data-testid="attention-gate">Live delivery requires 48 hours in shadow. About {gateHours} {gateHours === 1 ? "hour" : "hours"} left.</p>
-                    : <SwitchRow label="I reviewed the differences between Work Board and Sweep" checked={parity} disabled={busy}
-                        onChange={(on) => setParityGeneration(on ? generation : undefined)}
-                        hint="Not saved: applies to this shadow period only and lets Go live request the switch." />}
-                  <Button size="sm" className="h-8" disabled={busy || !parity || gateHours > 0} onClick={() => void setMode("live")}>Go live</Button>
-                </div>
-              ) : null}
-              {!settings.linkedBbProjectId && mode === "off" ? <p className="text-xs text-muted-foreground">Link a BB project to start shadow.</p> : null}
               {unresolved ? (
                 <div className="space-y-2" data-testid="attention-unknown">
                   <h5 className="text-sm font-medium">Notices with an unknown outcome</h5>
-                  <p className="text-xs text-muted-foreground">Work Board cannot tell whether these reached the manager and never resends them by itself. Going back to shadow waits until you decide.</p>
+                  <p className="text-xs text-muted-foreground">Work Board could not confirm that these reached the manager thread and never resends them by itself. {retryOffered ? "Send again or accept that they may be lost." : "Accept that they may be lost."}</p>
                   {settings.unresolvedAttempts.map((attempt) => (
                     <div key={attempt.attemptId} className="flex flex-wrap items-center justify-between gap-2 text-xs">
-                      <span>{attempt.occurrenceIds.length} card{attempt.occurrenceIds.length === 1 ? "" : "s"} sent {formatRelativeTime(attempt.startedAt, Date.now())} to {attempt.recipientThreadId}</span>
+                      <span>{attempt.occurrenceIds.length} task{attempt.occurrenceIds.length === 1 ? "" : "s"} sent {formatRelativeTime(attempt.startedAt, Date.now())} to {attempt.recipientThreadId}</span>
                       <span className="flex gap-1">
-                        <Button size="sm" className="h-7 px-2.5" variant="outline" disabled={busy} onClick={() => void run(() => rpc.call("resolveAttentionAttempt", { attemptId: attempt.attemptId, disposition: "retry" }))}>Send again</Button>
-                        <Button size="sm" className="h-7 px-2.5" variant="outline" disabled={busy} onClick={() => void run(() => rpc.call("resolveAttentionAttempt", { attemptId: attempt.attemptId, disposition: "waived_loss" }))}>Accept the loss</Button>
+                        {attempt.canRetry ? <Button size="sm" className="h-7 px-2.5" variant="outline" disabled={busy} onClick={() => void run(attempt.attemptId, () => rpc.call("resolveAttentionAttempt", { attemptId: attempt.attemptId, disposition: "retry" }))}>Send again</Button> : null}
+                        <Button size="sm" className="h-7 px-2.5" variant="outline" disabled={busy} onClick={() => void run(attempt.attemptId, () => rpc.call("resolveAttentionAttempt", { attemptId: attempt.attemptId, disposition: "waived_loss" }))}>Accept the loss</Button>
                       </span>
                     </div>
                   ))}
@@ -291,9 +291,12 @@ export function AttentionSettings({ projectId }: { projectId: string }) {
               ) : null}
             </div>
           </details>
+          <Switch className="absolute right-3 top-3" aria-label="Stale-status notices" aria-describedby={onHint ? switchHint : undefined}
+            checked={mode === "live" && !switching} disabled={busy || switching || (mode === "off" && onHint !== null)}
+            onCheckedChange={(on) => void setMode(on ? "live" : "off")} />
+          </div>
         </>
       ) : null}
-      {error ? <p role="alert" className="text-xs text-destructive">{error}</p> : null}
     </SettingsCard>
   );
 }

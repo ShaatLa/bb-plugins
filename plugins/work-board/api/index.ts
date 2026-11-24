@@ -5,7 +5,7 @@ import { observeStatusNotifications } from "../status-notifications";
 import { ordinaryTaskVisibilitySql } from "../scheduled/visibility";
 import { taskAdvisories } from "../advisories";
 import { idleThreshold } from "../shared/project-settings";
-import { getBadgeCriteria, getBoardPreferences, setBadgeCriteria, setBoardPreferences, setGlobalSettings } from "../global-settings";
+import { getBadgeCriteria, getBoardPreferences, getGlobalSettings, setBadgeCriteria, setBoardPreferences, setGlobalSettings } from "../global-settings";
 import { activityService } from "../activity/index.js";
 import { createDependencyStore } from "../dependencies/store";
 import { createPlanStore, PlanError } from "../plans/store";
@@ -1130,8 +1130,11 @@ export function registerHandlers(
     getBoardPreferences() {
       return getBoardPreferences(bb);
     },
-    async "globalSettings.set"({ values }) {
-      return { values: await setGlobalSettings(bb, values) };
+    async "globalSettings.set"({ values, expected }) {
+      return { values: await setGlobalSettings(bb, values, expected) };
+    },
+    async "globalSettings.get"() {
+      return { values: await getGlobalSettings(bb) };
     },
     async setBoardPreferences(input) {
       await setBoardPreferences(bb, input);

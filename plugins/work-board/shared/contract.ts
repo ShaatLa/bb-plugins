@@ -897,8 +897,14 @@ export const tasksRpcContract = {
     output: z.object({ projectId: z.string(), key: z.string(), value: z.unknown() }).strict(),
   },
   // The native global fields Work Board owns, written only for the keys given; the settings page's General group.
+  // `expected`: the stored values the change was built on; a write over values changed meanwhile is refused.
   "globalSettings.set": {
-    input: z.object({ values: globalSettingsPatchSchema }).strict(),
+    input: z.object({ values: globalSettingsPatchSchema, expected: globalSettingsPatchSchema.optional() }).strict(),
+    output: z.object({ values: globalSettingsPatchSchema }).strict(),
+  },
+  // The stored native fields with their defaults, for a page that has to reread them after a refused write.
+  "globalSettings.get": {
+    input: z.object({}).strict(),
     output: z.object({ values: globalSettingsPatchSchema }).strict(),
   },
   ...storageMethods,

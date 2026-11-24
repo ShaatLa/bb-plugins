@@ -107,12 +107,12 @@ describe("checkout", () => {
 });
 
 describe("execution", () => {
-  const printEnv = executable('echo "BB_CLI=$BB_CLI"; echo "bb=$(bb)"; echo "gh=$(gh)"; echo "PROJECT=$BB_PROJECT_ID THREAD=$BB_THREAD_ID"; echo "ARGS=$*"; echo "COMMITTED=${BB_SWEEP_COMMITTED_STATE:+set}"; echo "CANDIDATE=${BB_SWEEP_CANDIDATE_SNAPSHOT:+set}"');
+  const printEnv = executable('echo "BB_CLI=$BB_CLI"; echo "bb=$(bb)"; echo "gh=$(gh)"; echo "PROJECT=$BB_PROJECT_ID THREAD=$BB_THREAD_ID"; echo "ARGS=$*"; echo "COMMITTED=${BB_CHECKS_COMMITTED_STATE:+set}"; echo "CANDIDATE=${BB_CHECKS_CANDIDATE_SNAPSHOT:+set}"; echo "SAME=$([ "$BB_CHECKS_COMMITTED_STATE" = "$BB_SWEEP_COMMITTED_STATE" ] && [ "$BB_CHECKS_CANDIDATE_SNAPSHOT" = "$BB_SWEEP_CANDIDATE_SNAPSHOT" ] && echo yes)"');
 
-  it("exports both snapshot variables with snapshots off, and no snapshot arguments", async () => {
+  it("exports both snapshot variables with snapshots off, under the neutral and the older names, and no snapshot arguments", async () => {
     const repo = createRepo(); repo.commit({ "checks/run.sh": printEnv });
     const output = (await run(tempDir(), repo, { args: ["--root", "{manager}", "{manager}"] })).output;
-    expect(output).toContain("COMMITTED=set"); expect(output).toContain("CANDIDATE=set");
+    expect(output).toContain("COMMITTED=set"); expect(output).toContain("CANDIDATE=set"); expect(output).toContain("SAME=yes");
     expect(output).toContain("ARGS=--root thr_example thr_example");
     expect(output).toContain("PROJECT=proj_example THREAD=thr_example");
   });
@@ -177,7 +177,7 @@ describe("execution", () => {
   it("reads the candidate only with snapshots on: complete JSON passes, invalid JSON is a failure, and an exit of 2 ignores it", async () => {
     const repo = createRepo();
     const script = (body: string) => repo.commit({ "checks/run.sh": executable(body) });
-    script('echo "ARGS=$*"; echo \'{"a":1}\' > "$BB_SWEEP_CANDIDATE_SNAPSHOT"');
+    script('echo "ARGS=$*"; echo \'{"a":1}\' > "$BB_CHECKS_CANDIDATE_SNAPSHOT"');
     const off = await run(tempDir(), repo);
     expect(off.snapshot).toBeNull(); expect(off.output).toBe("ARGS=\n");
     const on = await run(tempDir(), repo, { snapshots: true });

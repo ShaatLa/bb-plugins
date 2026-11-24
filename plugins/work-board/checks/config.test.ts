@@ -45,7 +45,7 @@ describe("settings", () => {
     await expect(f.service.setEnabled(f.tracker.id, true)).resolves.toEqual({ enabled: true });
   });
 
-  it("validates fields as Sweep does: timeout 0, 1, 300 and 301, branch, script and argv limits", async () => {
+  it("validates fields: timeout 0, 1, 300 and 301, branch, script and argv limits", async () => {
     const f = await make();
     for (const bad of [0, 301, 1.5]) await expect(setKey(f, "timeoutSeconds", bad)).rejects.toThrow(/Invalid value/);
     for (const good of [1, 300]) expect((await setKey(f, "timeoutSeconds", good)).value).toBe(good);
@@ -115,10 +115,8 @@ describe("ownership", () => {
     await expect(f.service.manualRun(second.id)).rejects.toThrow(/belong to tracker CHK/);
     expect((await f.harness.runCli(["checks", "run", "--project", "OTH", "--dry-run"])).exitCode).toBe(1);
     expect(f.runs()).toBe(0);
-    // Disabling changes nothing: the first stays the owner until its row is released, and then the second may take over.
-    f.service.setEnabled(f.tracker.id, false);
-    await expect(f.service.setEnabled(second.id, true)).rejects.toThrow(/belong to tracker CHK/);
-    await expect(f.service.transfer.release(f.tracker.id)).resolves.toMatchObject({ outcome: "released" });
+    // Once the first is disabled and drained, the second may take over.
+    await f.service.setEnabled(f.tracker.id, false);
     await expect(f.service.setEnabled(second.id, true)).resolves.toEqual({ enabled: true });
   });
 
@@ -142,8 +140,6 @@ describe("ownership", () => {
     expect(f.delivery()?.report_id).toBeNull();
     expect(f.runs()).toBe(1);
     expect(f.service.status(f.tracker.id)).toMatchObject({ draining: false, nextRun: null });
-    await expect(f.service.setEnabled(second.id, true)).rejects.toThrow(/belong to tracker CHK/);
-    await f.service.transfer.release(f.tracker.id);
     await expect(f.service.setEnabled(second.id, true)).resolves.toEqual({ enabled: true });
   });
 

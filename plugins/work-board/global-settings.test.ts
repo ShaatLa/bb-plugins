@@ -36,3 +36,17 @@ it("changes one badge key without touching the other five, and validates selects
     expect(await getBoardPreferences(bb)).toEqual({ defaultScreen: "all" });
   } finally { await harness.dispose(); }
 });
+
+it("serializes writes that carry the same expected value: one is written, the other is refused", async () => {
+  const { bb, harness } = setup();
+  try {
+    const write = (path: string) => harness.callRpc("globalSettings.set", { values: { checksRuntimePath: path }, expected: { checksRuntimePath: "" } });
+    const results = await Promise.allSettled([write("/usr/bin"), write("/opt/bin")]);
+    expect(results.map((result) => result.status)).toEqual(["fulfilled", "rejected"]);
+    expect(String((results[1] as PromiseRejectedResult).reason)).toMatch(/changed elsewhere/);
+    expect((await getChecksEnvironment(bb)).runtimePath).toBe("/usr/bin");
+    // A write over the stored value goes through.
+    await harness.callRpc("globalSettings.set", { values: { checksRuntimePath: "/opt/bin" }, expected: { checksRuntimePath: "/usr/bin" } });
+    expect((await getChecksEnvironment(bb)).runtimePath).toBe("/opt/bin");
+  } finally { await harness.dispose(); }
+});

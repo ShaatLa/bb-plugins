@@ -1,7 +1,7 @@
 import { GitSyncSettings } from "./git-sync-settings";
 import { formatRelativeTime } from "./activity/time.js";
 import { GeneralSettings } from "./general-settings";
-import { SelectRow, SettingsCard, SwitchRow } from "./settings-card";
+import { SelectRow, SettingsCard, SwitchRow, useSaveStatus } from "./settings-card";
 import { SETTINGS_MARKER, useHideNativeSettings } from "./native-settings";
 import { AttentionSettings } from "./attention-settings";
 import { ChecksSettings } from "./checks-settings";
@@ -417,26 +417,16 @@ type ProjectChanges = {
   planning?: z.infer<typeof planningSchema>;
 };
 
-/** Saves one project setting at a time and reports the failure beside the section's controls. */
+/** Saves one project setting at a time; the card's save status shows the write and offers Retry when it fails. */
 function useProjectUpdate(project: Project, onSaved: () => void) {
   const rpc = useTasksRpc();
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const run = async (action: () => Promise<unknown>) => {
-    setBusy(true);
-    setError(null);
-    try {
-      await action();
-      onSaved();
-    } catch (error) {
-      setError(errorMessage(error));
-    } finally {
-      setBusy(false);
-    }
-  };
-  const update = (changes: ProjectChanges) => run(() => rpc.call("updateProject", { projectId: project.id, ...changes }));
-  return { busy, error, update, run, rpc };
+  const { status, busy, track } = useSaveStatus();
+  // `key` names the setting, so a failure stays until that setting saves, whatever the others do.
+  const run = (key: string, action: () => Promise<unknown>) => track(async () => { await action(); onSaved(); }, undefined, key);
+  const update = (changes: ProjectChanges) => run(Object.keys(changes).join(), () => rpc.call("updateProject", { projectId: project.id, ...changes }));
+  return { busy, status, update, run, rpc };
 }
+type ProjectUpdate = ReturnType<typeof useProjectUpdate>;
 
 function StatusesBlock({ project }: { project: Project }) {
   const [editing, setEditing] = useState(false);
@@ -469,13 +459,13 @@ function StatusesBlock({ project }: { project: Project }) {
   );
 }
 
-function PlanningBlock({ project, onSaved }: SectionProps) {
-  const { busy, error, update, run, rpc } = useProjectUpdate(project, onSaved);
+function PlanningBlock({ project, updater }: { project: Project; updater: ProjectUpdate }) {
+  const { busy, update, run, rpc } = updater;
   const heading = useId();
   const statuses: TaskStatusDefinition[] = project.statuses ?? DEFAULT_TASK_STATUSES;
   const marked = statuses.filter((status) => status.requiresApprovedPlan === true && status.id !== "canceled");
   const unmarked = statuses.filter((status) => status.requiresApprovedPlan !== true);
-  const setFlag = (id: string, on: boolean) => void run(() => writeStatuses(rpc, project.id, statuses,
+  const setFlag = (id: string, on: boolean) => void run(`plan:${id}`, () => writeStatuses(rpc, project.id, statuses,
     (latest) => latest.map((status) => (status.id === id ? { ...status, requiresApprovedPlan: on } : status))));
   const planning = project.planning ?? "off";
   return (
@@ -483,7 +473,7 @@ function PlanningBlock({ project, onSaved }: SectionProps) {
       <h4 id={heading} className="text-sm font-medium">Planning</h4>
       <SelectRow label="Mode" value={planning} disabled={busy} onChange={(value) => void update({ planning: value })}
         options={[["off", "Off"], ["optional", "Optional"], ["required", "Required"]]}
-        hint="Off hides plans for this project (existing plans are kept). Optional turns on plans and their review. Required keeps a card out of the statuses below until its plan is approved; epics are exempt." />
+        hint="Off hides plans for this project (existing plans are kept). Optional turns on plans and their review. Required keeps a task out of the statuses below until its plan is approved; epics are exempt." />
       <p className="text-xs text-muted-foreground">Only you change the planning mode and the statuses that need an approved plan; agents cannot.</p>
       {project.planningChangedAt ? (
         <p className="text-xs text-muted-foreground" data-testid="planning-changed">
@@ -515,7 +505,7 @@ function PlanningBlock({ project, onSaved }: SectionProps) {
             ) : null}
           </div>
           <p className="text-xs text-muted-foreground" data-testid="plan-free-statuses">
-            Without an approved plan a card stays in: {unmarked.map((status) => status.name).join(", ")}
+            Without an approved plan a task stays in: {unmarked.map((status) => status.name).join(", ")}
           </p>
         </div>
       ) : null}
@@ -524,31 +514,29 @@ function PlanningBlock({ project, onSaved }: SectionProps) {
           onChange={(on) => void update({ archiveReviewerOnApproval: on ? "on" : "off" })}
           hint="A reviewer thread submitted with --dedicated-reviewer is archived after it approves a plan. A reused thread is never archived." />
       ) : null}
-      {error ? <p role="alert" className="text-xs text-destructive">{error}</p> : null}
     </section>
   );
 }
 
 function ArchivingSection({ project, onSaved }: SectionProps) {
-  const { busy, error, update } = useProjectUpdate(project, onSaved);
+  const { busy, status, update } = useProjectUpdate(project, onSaved);
   return (
-    <SettingsCard title="Archiving" description="When completed cards and the threads of closed cards are archived.">
+    <SettingsCard title="Archiving" description="When completed tasks and the threads of closed tasks are archived." save={status}>
       <SelectRow label="Archive completed tasks after" value={project.autoArchiveAfterDays ?? "off"} disabled={busy}
         onChange={(value) => void update({ autoArchiveAfterDays: value })}
         options={[["off", "Off"], ["3", "3 days"], ["7", "7 days"], ["14", "14 days"], ["30", "30 days"]]}
         hint="Checks hourly for this project. Task, comment, attachment or question activity restarts the interval. Unfinished children, unanswered questions and working agents prevent archival." />
-      <SwitchRow label="Archive threads of closed cards" checked={(project.archiveThreadsOnClose ?? "on") === "on"} disabled={busy}
+      <SwitchRow label="Archive threads of closed tasks" checked={(project.archiveThreadsOnClose ?? "on") === "on"} disabled={busy}
         onChange={(on) => void update({ archiveThreadsOnClose: on ? "on" : "off" })}
-        hint="When a card goes to Done or Canceled, the sessions Work Board created for it are archived once they are idle. Sessions made outside Work Board, or linked to another open card, are kept." />
-      {error ? <p role="alert" className="text-xs text-destructive">{error}</p> : null}
+        hint="When a task goes to Done or Canceled, the sessions Work Board created for it are archived once they are idle. Sessions made outside Work Board, or linked to another open task, are kept." />
     </SettingsCard>
   );
 }
 
 function ActivitySection({ project, onSaved }: SectionProps) {
-  const { busy, error, update } = useProjectUpdate(project, onSaved);
+  const { busy, status, update } = useProjectUpdate(project, onSaved);
   return (
-    <SettingsCard title="Activity and notifications" description="Idle-thread markers and your notifications for this project.">
+    <SettingsCard title="Activity and notifications" description="Idle-thread markers and your notifications for this project." save={status}>
       <SelectRow label="Flag idle threads after" value={project.staleIdleMinutes ?? "45"} disabled={busy}
         onChange={(value) => void update({ staleIdleMinutes: value })}
         options={[["off", "Off"], ["30", "30 minutes"], ["45", "45 minutes"], ["60", "60 minutes"], ["120", "2 hours"]]}
@@ -557,16 +545,16 @@ function ActivitySection({ project, onSaved }: SectionProps) {
         onChange={(value) => void update({ statusNotifications: value })}
         options={[["off", "Off"], ["all", "All status changes"], ["done", "Done only"]]}
         hint="Applies only to this project and uses the enabled channels in BB Push notifications. Status changes you make yourself in the board are not notified." />
-      {error ? <p role="alert" className="text-xs text-destructive">{error}</p> : null}
     </SettingsCard>
   );
 }
 
 function WorkflowSection({ project, onSaved }: SectionProps) {
+  const updater = useProjectUpdate(project, onSaved);
   return (
-    <SettingsCard title="Workflow" description="The statuses of this project's cards and whether they need an approved plan.">
+    <SettingsCard title="Workflow" description="The statuses of this project's tasks and whether they need an approved plan." save={updater.status}>
       <StatusesBlock project={project} />
-      <PlanningBlock project={project} onSaved={onSaved} />
+      <PlanningBlock project={project} updater={updater} />
     </SettingsCard>
   );
 }
@@ -619,6 +607,8 @@ function TasksSettingsContent() {
           onCreated={(created) => { setProjectId(created.id); projects.refresh(); }} /> : null}
         {project ? (
           <div data-testid="project-settings" className="space-y-4 rounded-xl border-l-2 border-primary/40 bg-muted/30 p-3">
+            {/* shortcut: a section remounts on a project switch, so a save that fails after the switch loses its draft and
+                Retry; local RPCs settle in milliseconds. Keep the section mounted if saves ever become slow. */}
             {PROJECT_SECTIONS.map(({ id, Section }) => (
               <Section key={`${id}:${project.id}`} project={project} onSaved={projects.refresh} />
             ))}

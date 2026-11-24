@@ -7,7 +7,6 @@ import { prSettled, projectPolicies, staleRows, staleStatusObservations as obser
 import { closeTaskOccurrences, markTrackerDirty, touchAttention } from "../attention/ledger";
 import { assertLinkChangeAllowed } from "../attention/modes";
 import { assertChecksDeleteAllowed } from "../checks/ownership";
-import { releaseOwner } from "../checks/transfer";
 import { archiveSettingSchema, autoArchiveAfterDaysSchema, planningSchema, staleIdleThresholdSchema, statusNotificationsSchema } from "../shared/project-settings";
 import { taskDateFiltersSchema } from "../shared/task-dates.js";
 import {
@@ -890,20 +889,17 @@ export function createTasksStore(db: PluginDatabase, log: (message: string) => v
         id,
       );
       syncProjectPlanDebt(db, id);
-      // The owner row of the old link goes with it; the assertions above already refused a row that must stay.
-      if (input.linkedBbProjectId !== undefined && (current.linkedBbProjectId ?? null) !== validateLinkedBbProjectId(input.linkedBbProjectId)) releaseOwner(db, id, current.linkedBbProjectId ?? null);
       return requireProject(id);
     })();
   }
 
   function deleteProject(id: string): boolean {
     assertChecksDeleteAllowed(db, id);
-    // Deleting would cascade through the mode, ledger and attempts while Sweep may still hold its fence.
+    // Deleting would cascade through the mode, ledger and attempts while notices may still be on their way.
     if (db.prepare("SELECT 1 FROM attention_modes WHERE tracker_id=? AND (bound_tracker_id IS NOT NULL OR requested_mode IS NOT NULL OR effective_mode<>'off')").get(id))
-      throw new Error("Switch manager attention off in the project settings before deleting this project");
+      throw new Error("Turn stale-status notices off in the project settings before deleting this project");
     return db.transaction(() => {
-      releaseOwner(db, id, db.prepare<[string], { link: string | null }>("SELECT linked_bb_project_id AS link FROM projects WHERE id = ?").get(id)?.link ?? null);
-      // Not cascaded: a restore of the same id starts its generations over, so stale rows would hide its first return to shadow.
+      // Not cascaded: a restore of the same id starts its generations over, so stale rows would hide its first switch-off.
       db.prepare<[string]>("DELETE FROM attention_acks WHERE tracker_id = ?").run(id);
       db.prepare<[string]>("DELETE FROM checks_stale_rollback WHERE tracker_id = ?").run(id);
       return db.prepare<[string]>("DELETE FROM projects WHERE id = ?").run(id).changes > 0;

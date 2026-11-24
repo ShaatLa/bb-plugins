@@ -2,7 +2,7 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { requestMode, selfAckTransition } from "../attention/modes";
+import { requestMode } from "../attention/modes";
 import { receiptPolling } from "../steer";
 import { scanTuning, scansRunning } from "./archived-worktrees";
 import { formatNotification } from "./notification";
@@ -39,7 +39,7 @@ const reported = (f: Fixture): string[] => f.state().reportedWorktrees ?? [];
 const pending = (f: Fixture): string[] => f.state().pendingWorktrees ?? [];
 const counts = (f: Fixture) => { const { reportedWorktrees, pendingWorktrees } = f.service.status(f.tracker.id); return { reportedWorktrees, pendingWorktrees }; };
 const worktreeLines = (text: string) => text.split("\n").filter((line) => line.startsWith("ACTION archived-worktree "));
-const summary = (threads: number, cards: number, actions: number) => `sweep: ${threads} threads, ${cards} cards checked, ${actions} actions`;
+const summary = (threads: number, cards: number, actions: number) => `checks: ${threads} threads, ${cards} cards checked, ${actions} actions`;
 
 /** A `git` in front of PATH that logs its environment and arguments; `a-slow` trees answer `status` only after 5 s. */
 function loggedGit(f: Fixture) {
@@ -353,17 +353,13 @@ describe("tick", () => {
     expect(reported(f)).toEqual([path]);
   });
 
-  it("keeps a return to shadow unconsumed while a timed-out scan is still outstanding, and resends the unchanged stale line once it settles", async () => {
+  it("keeps a switch-off unconsumed while a timed-out scan is still outstanding, and resends the unchanged stale line once it settles", async () => {
     const stale = "ACTION stale-status EXA-1: in progress with no active thread";
     const f = await make(stale, 1);
     const trackerId = f.tracker.id;
-    requestMode(f.db, { trackerId, mode: "shadow" });
     await f.tick();
-    f.db.prepare("UPDATE attention_modes SET shadow_started_at=? WHERE tracker_id=?").run(new Date(Date.now() - 49 * 3_600_000).toISOString(), trackerId);
-    requestMode(f.db, { trackerId, mode: "live", parityReviewed: true });
-    expect(selfAckTransition(f.db, trackerId)).toMatchObject({ ok: true });
-    requestMode(f.db, { trackerId, mode: "shadow" });
-    const back = selfAckTransition(f.db, trackerId) as { generation: number };
+    requestMode(f.db, { trackerId, mode: "live" });
+    const back = requestMode(f.db, { trackerId, mode: "off" }).effective;
     const consumed = () => (f.db.prepare("SELECT consumed_generation AS g FROM checks_stale_rollback WHERE tracker_id=?").get(trackerId) as { g: number } | undefined)?.g;
     const staleSent = () => f.sent().split("`stale status`").length - 1;
     expect(staleSent()).toBe(1);

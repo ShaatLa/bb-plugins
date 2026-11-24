@@ -4,6 +4,10 @@ import { Fragment } from "react";
 const URL_PATTERN = /https?:\/\/[^\s<>"'`]+/g;
 const TRAILING = /[.,;:!?)\]»”]+$/;
 
+export function withoutLinkTargets(text: string): string {
+  return text.replace(URL_PATTERN, match => TRAILING.exec(match)?.[0] ?? "");
+}
+
 /** Plain text with bare http(s) URLs rendered as links bb opens itself. */
 export function LinkedText({ text }: { text: string }) {
   const parts: React.ReactNode[] = [];

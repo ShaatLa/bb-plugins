@@ -526,7 +526,7 @@ it("lets the owner switch the two thread-archive settings, each in its own secti
     registerTasksApi(bb, store);
     const rpc = Object.fromEntries(Object.keys(tasksRpcContract).map(method => [method, (input: unknown) => harness.callRpc(method, input)]));
     const settings = renderSlot(app.settingsSections[0]!, {}, { rpc });
-    const archiveThreads = () => within(settings.getByRole("region", { name: "Archiving" })).getByRole("switch", { name: "Archive threads of closed cards" });
+    const archiveThreads = () => within(settings.getByRole("region", { name: "Archiving" })).getByRole("switch", { name: "Archive threads of closed tasks" });
     const archiveReviewer = () => within(settings.getByRole("region", { name: "Planning" })).getByRole("switch", { name: "Archive the plan reviewer after approval" });
     await settings.findByRole("combobox", { name: "Mode" });
     expect(archiveThreads().getAttribute("aria-checked")).toBe("true");
@@ -708,19 +708,19 @@ it("edits the plan-gated statuses as chips: add and remove save the flag, cancel
     // The first switch to required marked In progress and every later status; chips follow the project status order.
     expect(settings.getByRole("heading", { name: "Statuses that need an approved plan" })).toBeTruthy();
     expect(chips()).toEqual(["Remove In Progress", "Remove In Review", "Remove Done"]);
-    expect(free()).toBe("Without an approved plan a card stays in: Backlog, Todo, Planning, Canceled");
+    expect(free()).toBe("Without an approved plan a task stays in: Backlog, Todo, Planning, Canceled");
     expect(settings.getByTestId("plan-gated-statuses").querySelectorAll("[data-status-icon]")).toHaveLength(3);
     // Adding offers the unmarked statuses except canceled.
     fireEvent.click(settings.getByRole("combobox", { name: "Add status" }));
     expect((await settings.findAllByRole("option")).map(option => option.textContent)).toEqual(["Backlog", "Todo", "Planning"]);
     fireEvent.click(settings.getByRole("option", { name: "Todo" }));
     await waitFor(() => expect(flag("todo")).toBe(true));
-    await waitFor(() => expect(free()).toBe("Without an approved plan a card stays in: Backlog, Planning, Canceled"));
+    await waitFor(() => expect(free()).toBe("Without an approved plan a task stays in: Backlog, Planning, Canceled"));
     expect(chips()).toEqual(["Remove Todo", "Remove In Progress", "Remove In Review", "Remove Done"]);
     // Removing clears the flag and the status leaves the chips.
     fireEvent.click(settings.getByRole("button", { name: "Remove Done" }));
     await waitFor(() => expect(flag("done")).toBe(false));
-    await waitFor(() => expect(free()).toBe("Without an approved plan a card stays in: Backlog, Planning, Done, Canceled"));
+    await waitFor(() => expect(free()).toBe("Without an approved plan a task stays in: Backlog, Planning, Done, Canceled"));
     expect(chips()).toEqual(["Remove Todo", "Remove In Progress", "Remove In Review"]);
     expect(flag("canceled")).toBe(false);
   } finally { cleanup(); await harness.dispose(); }
@@ -737,7 +737,7 @@ it("shows a failed plan-gated status save like the other settings", async () => 
     rpc.updateProject = async () => { throw new Error("Statuses are locked"); };
     const settings = renderSlot(app.settingsSections[0]!, {}, { rpc });
     fireEvent.click(await settings.findByRole("button", { name: "Remove Done" }));
-    expect((await settings.findByRole("alert")).textContent).toBe("Statuses are locked");
+    expect((await settings.findByRole("alert")).textContent).toMatch(/^Failed: Statuses are locked/);
     expect(store.tasks.getProject(alpha.id)?.statuses?.find(status => status.id === "done")?.requiresApprovedPlan).toBe(true);
   } finally { cleanup(); await harness.dispose(); }
 });
@@ -771,7 +771,7 @@ it("refreshes only the checks and attention getters on a settings signal, whiche
   const { bb, harness } = createFakePluginHost({ pluginId: "work-board" });
   try {
     const store = createStore(bb);
-    registerTasksApi(bb, store); registerAttention(bb, store); registerChecks(bb);
+    registerTasksApi(bb, store); registerAttention(bb); registerChecks(bb);
     store.tasks.createProject({ name: "Alpha", prefix: "ALP", color: "blue", linkedBbProjectId: "proj_example" });
     const settings = renderSlot(app.settingsSections[0]!, {}, {
       rpc: Object.fromEntries(Object.keys(tasksRpcContract).map((method) => [method, (input: unknown) => harness.callRpc(method, input)])),

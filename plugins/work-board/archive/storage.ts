@@ -1,6 +1,5 @@
 import { markTrackerDirty } from "../attention/ledger";
 import { assertLinkChangeAllowed } from "../attention/modes";
-import { releaseOwner } from "../checks/transfer";
 import { createGitSyncStore } from "../git-sync/store";
 import { prIdentity, prLinkSchema } from "../shared/git-sync";
 import { planDebtService } from "../plan-debt/service";
@@ -622,8 +621,6 @@ export function restoreProject(
       }, ["id"], ["project_id", "schedule_id"]);
     }
     db.pragma("defer_foreign_keys = ON");
-    // An import that relinks the project gives up the owner row of the old link, as a relink does (the assertion above refused a row that must stay).
-    if (currentProject?.linkedBbProjectId && currentProject.linkedBbProjectId !== (manifest.project.linkedBbProjectId ?? null)) releaseOwner(db, projectId, currentProject.linkedBbProjectId);
     // The links this import confirms: a plan-debt trigger, unless the same link was confirmed here already.
     const confirmedNow = (payload: string | undefined) => { const link = payload ? prLinkSchema.parse(JSON.parse(payload)) : null; return Boolean(link?.confirmed && !link.excluded); };
     const newlyConfirmed = changes.filter(({ table, row }) => table === "task_pr_links" && confirmedNow(row.payload as string) && !confirmedNow(db.prepare<[SqlValue, SqlValue], { payload: string }>("SELECT payload FROM task_pr_links WHERE task_id=? AND identity=?").get(row.task_id!, row.identity!)?.payload))

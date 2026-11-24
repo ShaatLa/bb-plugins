@@ -1,9 +1,6 @@
-import { defineRpcContract } from "@get-bb/plugin-sdk";
 import { z } from "zod";
 
-/** The plugin id Sweep runs under; only it may acknowledge a transition. */
-export const SWEEP_PLUGIN_ID = "sweep";
-export const ATTENTION_OWNER_ONLY = "The manager-attention mode and manager are changed by the owner in the project settings; this is an owner-only convention, and no command or setting call proves the caller is the owner.";
+export const ATTENTION_OWNER_ONLY = "Stale-status notices and the manager thread are changed by the owner in the project settings; this is an owner-only convention, and no command or setting call proves the caller is the owner.";
 
 /** Why a manager session cannot receive notices; each cause has its own text and none is ever reported as another. */
 export const MANAGER_CAUSES = ["none", "deleted", "archived", "stopping", "side_chat", "not_found"] as const;
@@ -23,48 +20,29 @@ const MANAGER_PROBLEM: Record<ManagerCause | "unavailable", string> = {
   unavailable: "Could not verify the manager session",
 };
 /**
- * The line shown in the settings, and the refusal text of a live request: one wording for both. While live is effective the
- * line says live is not delivering; otherwise it says what to do before going live.
+ * The line shown in the settings, and the refusal text of a request to turn notices on: one wording for both. While notices are on
+ * the line says they are not being sent; otherwise it says what to do before turning them on.
  */
-export function managerProblemText(lookup: ManagerLookup, mode: "off" | "shadow" | "live" = "shadow"): string | null {
+export function managerProblemText(lookup: ManagerLookup, mode: "off" | "live" = "off"): string | null {
   if (lookup.status === "usable") return null;
   const cause = lookup.status === "unusable" ? lookup.cause : "unavailable";
-  const suffix = mode === "live" ? "; live is not delivering" : cause === "unavailable" ? "" : cause === "none" ? "; choose one before going live" : "; choose another before going live";
+  const suffix = mode === "live" ? "; notices are not being sent" : cause === "unavailable" ? "" : cause === "none" ? "; choose one before turning notices on" : "; choose another before turning notices on";
   return `${MANAGER_PROBLEM[cause]}${suffix}`;
 }
 
-const modeSchema = z.enum(["off", "shadow", "live"]);
-const bbProjectId = z.string().regex(/^proj_[A-Za-z0-9_-]+$/);
 const trackerProjectId = z.string().regex(/^[0-7][0-9A-HJKMNP-TV-Z]{25}$/);
 
-const handbackEntrySchema = z.object({ occurrenceId: z.string(), taskId: z.string(), taskKey: z.string(), signal: z.string(), firstSeenAt: z.string(), eligibleAt: z.string() }).strict();
 export const attentionKindStateSchema = z.object({
-  effective: z.object({ mode: modeSchema, generation: z.number().int() }).strict(),
-  requested: z.object({ mode: z.enum(["shadow", "live"]), generation: z.number().int() }).strict().nullable(),
-  transition: z.object({
-    token: z.string(),
-    direction: z.enum(["to_live", "to_shadow"]),
-    generation: z.number().int(),
-    state: z.enum(["preparing", "ready"]),
-    readyAt: z.string().nullable(),
-    readyRev: z.number().int().nullable(),
-    handback: z.array(handbackEntrySchema).nullable(),
-  }).strict().nullable(),
+  effective: z.object({ mode: z.enum(["off", "live"]), generation: z.number().int() }).strict(),
+  /** Turned off while a notice is still being sent: no new notice starts, and the switch completes once it settles. */
+  switchingOff: z.boolean(),
 }).strict();
 
-/** Every refusal carries `ok: false` and a code; a few add the state the caller needs to recover. */
-const refusalSchema = z.object({ ok: z.literal(false), code: z.string() }).passthrough();
-
-const occurrenceSchema = z.object({
-  occurrenceId: z.string(), taskId: z.string(), taskKey: z.string(), signal: z.string(), firstSeenAt: z.string(), eligibleAt: z.string(),
-  clearedAt: z.string().nullable(), retiredReason: z.string().nullable(), sweepBaselinedGeneration: z.number().int().nullable(), createdRev: z.number().int(), rev: z.number().int(),
-}).strict();
 const attemptSchema = z.object({
-  attemptId: z.string(), batchId: z.string(), occurrenceIds: z.array(z.string()), recipientThreadId: z.string(), recipientSource: z.enum(["manager", "sweep_fallback", "parent"]), startedAt: z.string(),
-  outcome: z.enum(["claimed", "sending", "appended", "queued", "inline", "failed", "unknown"]), queuedMessageId: z.string().nullable(), inlineEventRef: z.string().nullable(), acceptedAt: z.string().nullable(),
-  disposition: z.enum(["waived_loss", "retry"]).nullable(), dispositionAt: z.string().nullable(), error: z.string().nullable(), rev: z.number().int(),
+  attemptId: z.string(), occurrenceIds: z.array(z.string()), recipientThreadId: z.string(), startedAt: z.string(), error: z.string().nullable(),
+  /** Send again is offered: notices are on and at least one of the attempt's cards can still be sent. */
+  canRetry: z.boolean(),
 }).strict();
-const observationSchema = z.object({ at: z.string(), taskId: z.string(), signal: z.string(), validity: z.enum(["valid", "unknown"]), rev: z.number().int() }).strict();
 
 const settingsSchema = z.object({
   trackerId: trackerProjectId,
@@ -72,13 +50,6 @@ const settingsSchema = z.object({
   state: attentionKindStateSchema,
   changedAt: z.string().nullable(),
   previousMode: z.string().nullable(),
-  shadowStartedAt: z.string().nullable(),
-  /** Milliseconds of shadow observation still missing before live may be requested; 0 when the gate is open. */
-  gateRemainingMs: z.number().int().min(0),
-  /** Work Board runs this project's repository checks: its runner, not Sweep, sends outside live and Work Board acknowledges transitions. */
-  workBoardRunsChecks: z.boolean(),
-  /** Why a transfer of the repository checks holds the project right now (no transition can start or complete); null when nothing does. */
-  checksFence: z.string().nullable(),
   manager: z.string().nullable(),
   managerChangedAt: z.string().nullable(),
   managerPrevious: z.string().nullable(),
@@ -92,38 +63,6 @@ const settingsSchema = z.object({
   unresolvedAttempts: z.array(attemptSchema),
 }).strict();
 
-export const attentionRpcContract = defineRpcContract({
-  "attention.modes": {
-    experimental_description: "Read the manager-attention mode, requested transition and handback for a BB project (Sweep contract).",
-    input: z.object({ projectId: bbProjectId }).strict(),
-    output: z.union([z.object({ projectId: z.string(), trackerId: z.string(), kinds: z.record(z.string(), attentionKindStateSchema) }).strict(), refusalSchema]),
-  },
-  "attention.ack": {
-    experimental_description: "Acknowledge a ready mode transition; accepted from the Sweep plugin only (Sweep contract).",
-    input: z.object({
-      projectId: bbProjectId, trackerId: z.string(), kind: z.string(), token: z.string(), generation: z.number().int().min(0),
-      direction: z.enum(["to_live", "to_shadow"]), fenceId: z.string().min(1), acceptedOccurrenceIds: z.array(z.string()).optional(),
-    }).strict(),
-    output: z.union([
-      z.object({
-        ok: z.literal(true), generation: z.number().int(), direction: z.enum(["to_live", "to_shadow"]), mode: modeSchema,
-        unmatched: z.array(z.object({ occurrenceId: z.string(), reason: z.string() }).strict()), baselined: z.array(z.string()), readyRev: z.number().int().nullable(), endRev: z.number().int(),
-      }).strict(),
-      refusalSchema,
-    ]),
-  },
-  "attention.ledger": {
-    experimental_description: "Read occurrences, delivery attempts and unknown observations changed after a revision (Sweep contract).",
-    input: z.object({ projectId: bbProjectId, kind: z.string(), sinceRev: z.number().int().min(0).optional(), limit: z.number().int().min(1).max(1000).optional() }).strict(),
-    output: z.union([z.object({ occurrences: z.array(occurrenceSchema), attempts: z.array(attemptSchema), observations: z.array(observationSchema), nextRev: z.number().int() }).strict(), refusalSchema]),
-  },
-  "attention.resolveKeys": {
-    experimental_description: "Resolve card keys, aliases included, to task ids of the BB project's tracker (Sweep contract).",
-    input: z.object({ projectId: bbProjectId, keys: z.array(z.string().min(1).max(40)).max(500) }).strict(),
-    output: z.union([z.object({ resolved: z.record(z.string(), z.string()), unknown: z.array(z.string()) }).strict(), refusalSchema]),
-  },
-});
-
 /** The owner's settings calls; they join the app's tasks contract, since the settings UI cannot carry a plugin caller. */
 export const attentionUiMethods = {
   getAttentionSettings: {
@@ -131,7 +70,8 @@ export const attentionUiMethods = {
     output: settingsSchema,
   },
   updateAttentionMode: {
-    input: z.object({ projectId: trackerProjectId, mode: modeSchema, parityReviewed: z.boolean().optional() }).strict(),
+    // `shadow` is accepted only to be refused with a clear message: older callers may still send it.
+    input: z.object({ projectId: trackerProjectId, mode: z.enum(["off", "live", "shadow"]) }).strict(),
     output: attentionKindStateSchema,
   },
   updateAttentionManager: {

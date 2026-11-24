@@ -1,38 +1,38 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { deliverWithReceipt, historyLimits, receiptPolling } from "../steer";
 import { attentionMarker } from "./service";
-import { BB_PROJECT, goLive, MANAGER, setup } from "./fixtures";
+import { goLive, MANAGER, setup } from "./fixtures";
 
 const fixtures: ReturnType<typeof setup>[] = [];
 const live = async () => { const f = setup(); fixtures.push(f); await goLive(f); return f; };
 const sent = (f: ReturnType<typeof setup>) => f.threads.rows.map((row) => f.threads.text(row)).join("\n");
-const modes = async (f: ReturnType<typeof setup>) => (await f.sweep("attention.modes", { projectId: BB_PROJECT })).kinds["stale-status"];
+const settings = (f: ReturnType<typeof setup>) => f.call("getAttentionSettings", { projectId: f.tracker.id });
 beforeEach(() => { receiptPolling.tries = 1; receiptPolling.delayMs = 0; });
 afterEach(async () => { await Promise.all(fixtures.splice(0).map((f) => f.dispose())); });
 
 describe("recipient", () => {
-  it("sends only to the Work Board manager: Sweep's setting is never read, an archived manager gets no parent fallback, and no manager means no claim", async () => {
+  it("sends only to the Work Board manager: no other plugin is asked, an archived manager gets no parent fallback, and no manager means no claim", async () => {
     const f = await live();
     f.card("One");
     f.makeEligible();
     await f.service.drain();
     expect(f.attempts().at(-1)).toMatchObject({ recipient_thread_id: MANAGER, recipient_source: "manager" });
-    // Sweep has a manager and the manager's parent exists, yet neither is consulted.
+    // The manager's parent exists, yet it is not consulted.
     f.threads.threads.set(MANAGER, { archived: true, parent: "thr_parent" });
     f.card("Two");
     f.makeEligible();
     const count = f.attempts().length;
     await f.service.drain();
     expect(f.attempts()).toHaveLength(count);
-    expect(f.threads.sweepCalls).toBe(0);
-    // Nothing is sent to the parent or Sweep's manager either after the setting is cleared.
+    expect(f.threads.pluginCalls).toBe(0);
+    // Nothing is sent to the parent either after the setting is cleared.
     f.db.prepare("UPDATE attention_manager SET manager=NULL").run();
     f.card("Three");
     f.makeEligible();
     await f.service.drain();
     expect(f.attempts()).toHaveLength(count);
     expect(f.threads.sends).toBe(1);
-    expect(f.threads.sweepCalls).toBe(0);
+    expect(f.threads.pluginCalls).toBe(0);
   });
 
   it("records the manager setting with its time and previous value and shows it through config get", async () => {
@@ -54,23 +54,19 @@ describe("claims", () => {
     expect(f.threads.sends).toBe(1);
   });
 
-  it("reconciles a batch claimed before a rollback fence before the handback is ready", async () => {
+  it("lets a batch claimed before a switch-off settle before notices are off", async () => {
     const f = await live();
-    const task = f.card("Racing");
+    f.card("Racing");
     f.makeEligible();
     let release!: () => void;
     f.threads.sendGate = new Promise<void>((resolve) => { release = resolve; });
     const drain = f.service.drain();
     while (f.attempts()[0]?.outcome !== "sending") await new Promise((resolve) => setTimeout(resolve, 5));
-    const rollback = f.setMode("shadow");
-    while (!(await modes(f)).transition) await new Promise((resolve) => setTimeout(resolve, 5));
-    expect((await modes(f)).transition).toMatchObject({ state: "preparing", handback: null });
+    expect((await f.setMode("off")).switchingOff).toBe(true);
     release();
-    await Promise.all([drain, rollback]);
-    const transition = (await modes(f)).transition;
-    expect(transition.state).toBe("ready");
+    await drain;
+    await vi.waitFor(async () => expect((await settings(f)).state).toEqual({ effective: { mode: "off", generation: 2 }, switchingOff: false }));
     expect(f.attempts()[0].outcome).toBe("queued");
-    expect(transition.handback.map((entry: { taskId: string }) => entry.taskId)).not.toContain(task.id);
   });
 
   it("claims nothing in a safety drain while an attempt is unknown", async () => {
@@ -111,7 +107,7 @@ describe("claims", () => {
 });
 
 describe("disposition", () => {
-  it("shows a tolerated loss as waived_loss, never accepted, and hands it back at rollback", async () => {
+  it("shows a tolerated loss as waived_loss, never accepted, and retires its occurrence when notices turn off", async () => {
     const f = await live();
     const task = f.card("Lost");
     f.makeEligible();
@@ -122,10 +118,9 @@ describe("disposition", () => {
     await f.service.drain();
     expect(f.threads.sends).toBe(1);
     expect(f.attempts()[0]).toMatchObject({ outcome: "unknown", disposition: "waived_loss" });
-    await f.setMode("shadow");
-    expect((await modes(f)).transition.handback.map((entry: { taskId: string }) => entry.taskId)).toEqual([task.id]);
-    const ledger = await f.sweep("attention.ledger", { projectId: BB_PROJECT, kind: "stale-status" });
-    expect(ledger.attempts[0]).toMatchObject({ outcome: "unknown", disposition: "waived_loss", dispositionAt: expect.any(String) });
+    await f.setMode("off");
+    expect(f.occurrences(true).find((o) => o.task_id === task.id)).toMatchObject({ retired_reason: "mode off" });
+    expect(f.attempts()[0]).toMatchObject({ outcome: "unknown", disposition: "waived_loss", disposition_at: expect.any(String) });
   });
 
   it("records a delayed inline event during a drain and claims nothing for it", async () => {
@@ -142,6 +137,35 @@ describe("disposition", () => {
     expect(f.threads.sends).toBe(1);
   });
 
+  it("offers Send again only while notices are on and the notice still has a card to send, and refuses it otherwise", async () => {
+    const f = await live();
+    const cleared = f.card("Cleared");
+    const kept = f.card("Kept");
+    f.makeEligible();
+    f.threads.sendMode = "throw";
+    await f.service.drain();
+    const attempt = f.attempts()[0].attempt_id;
+    const listed = async () => (await settings(f)).unresolvedAttempts.find((a: { attemptId: string }) => a.attemptId === attempt);
+    expect((await listed()).canRetry).toBe(true);
+    // One card is no longer stale: the other can still be sent.
+    f.store.tasks.updateTask(cleared.id, { status: "todo" });
+    expect((await listed()).canRetry).toBe(true);
+    f.store.tasks.updateTask(kept.id, { status: "todo" });
+    expect((await listed()).canRetry).toBe(false);
+    await expect(f.call("resolveAttentionAttempt", { attemptId: attempt, disposition: "retry" })).rejects.toThrow(/Nothing in this notice can be sent again/);
+    expect(f.attempts()[0].disposition).toBeNull();
+    // Stale again, but its occurrences were retired by a switch off and on: still nothing to send again.
+    f.store.tasks.updateTask(kept.id, { status: "in_progress" });
+    await f.setMode("off");
+    expect((await listed()).canRetry).toBe(false);
+    await f.setMode("live");
+    expect((await listed()).canRetry).toBe(false);
+    await expect(f.call("resolveAttentionAttempt", { attemptId: attempt, disposition: "retry" })).rejects.toThrow(/Nothing in this notice/);
+    // Accepting the loss still works.
+    await f.call("resolveAttentionAttempt", { attemptId: attempt, disposition: "waived_loss" });
+    expect(f.attempts()[0]).toMatchObject({ outcome: "unknown", disposition: "waived_loss" });
+  });
+
   it("records evidence that arrives after an owner resolution, so a retried occurrence shows two accepted attempts", async () => {
     const f = await live();
     f.card("Twice");
@@ -155,11 +179,11 @@ describe("disposition", () => {
     expect(f.attempts().map((a) => a.outcome)).toEqual(["unknown", "queued"]);
     f.threads.dispatch(`delayed ${attentionMarker(first.batch_id)}`);
     await f.service.recover(f.tracker.id);
-    const ledger = await f.sweep("attention.ledger", { projectId: BB_PROJECT, kind: "stale-status" });
-    const accepted = ledger.attempts.filter((a: { outcome: string }) => ["appended", "queued", "inline"].includes(a.outcome));
+    const accepted = f.attempts().filter((a) => ["appended", "queued", "inline"].includes(a.outcome));
     expect(accepted).toHaveLength(2);
-    expect(accepted.find((a: { attemptId: string }) => a.attemptId === first.attempt_id)).toMatchObject({ outcome: "inline", disposition: "retry" });
-    expect(accepted[0].occurrenceIds).toEqual(accepted[1].occurrenceIds);
+    expect(accepted.find((a) => a.attempt_id === first.attempt_id)).toMatchObject({ outcome: "inline", disposition: "retry" });
+    const items = (attemptId: string) => f.db.prepare("SELECT occurrence_id FROM attention_attempt_items WHERE attempt_id=?").all(attemptId);
+    expect(items(accepted[0].attempt_id)).toEqual(items(accepted[1].attempt_id));
   });
 
   it("appends a second batch to the queued notice of the first, giving two attempts with one queuedMessageId", async () => {

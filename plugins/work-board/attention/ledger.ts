@@ -81,7 +81,7 @@ function observe(db: Database, trackerId: string, kind: string, taskId: string, 
     .run(trackerId, kind, nowIso(), taskId, signal, validity, bumpRev(db, trackerId));
 }
 
-/** Every recompute that sees an invalid source is journalled, so Sweep can tell how long reads were invalid. */
+/** Every recompute that sees an invalid source is journalled, so the ledger shows how long reads were invalid. */
 function recordUnknown(db: Database, trackerId: string, kind: string, taskId: string, signal: AttentionSignal): boolean {
   db.prepare<[string, string, string, string]>("INSERT OR IGNORE INTO attention_unknown(tracker_id, kind, task_id, signal) VALUES (?, ?, ?, ?)").run(trackerId, kind, taskId, signal);
   observe(db, trackerId, kind, taskId, signal, "unknown");

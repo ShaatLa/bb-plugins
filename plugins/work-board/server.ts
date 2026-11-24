@@ -44,7 +44,7 @@ export default async function plugin(bb: BbPluginApi) {
     publishProjectsChanged(bb, null);
   });
   registerTasksApi(bb, store);
-  registerAttention(bb, store);
+  registerAttention(bb);
   registerChecks(bb);
   registerAttachments(bb, store.tasks);
   registerTasksCli(bb, store, statusPayload());

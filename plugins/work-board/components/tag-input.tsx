@@ -1,24 +1,25 @@
-import { useState } from "react";
+import { useState, type FocusEvent } from "react";
 import { Icon } from "@/components/ui/icon";
 
 const entries = (text: string) => text.split(/[\n,]+/).map((entry) => entry.trim()).filter(Boolean);
 
 /**
  * A list of names edited as separate removable chips, like tags on a task. Enter or a comma adds the typed name,
- * a pasted list is split into names, and leaving the field keeps an unfinished name instead of dropping it.
+ * a pasted list is split into names, and leaving the field keeps an unfinished name instead of dropping it; that change
+ * carries the blur event, so the caller can tell where focus went.
  */
 export function TagInput({ id, values, onChange, label, describedBy, placeholder }: {
   id?: string;
   values: readonly string[];
-  onChange: (values: string[]) => void;
+  onChange: (values: string[], blur?: FocusEvent<HTMLInputElement>) => void;
   label: string;
   describedBy?: string;
   placeholder?: string;
 }) {
   const [draft, setDraft] = useState("");
-  const add = (text: string) => {
+  const add = (text: string, blur?: FocusEvent<HTMLInputElement>) => {
     const added = entries(text);
-    if (added.length) onChange([...new Set([...values, ...added])]);
+    if (added.length) onChange([...new Set([...values, ...added])], blur);
     setDraft("");
   };
   return (
@@ -49,7 +50,7 @@ export function TagInput({ id, values, onChange, label, describedBy, placeholder
         className="h-6 min-w-24 flex-1 bg-transparent px-1 text-xs outline-none placeholder:text-muted-foreground"
         value={draft}
         onChange={(event) => setDraft(event.target.value)}
-        onBlur={() => add(draft)}
+        onBlur={(event) => add(draft, event)}
         onPaste={(event) => {
           const text = event.clipboardData.getData("text");
           if (!/[\n,]/.test(text)) return;
@@ -57,6 +58,8 @@ export function TagInput({ id, values, onChange, label, describedBy, placeholder
           add(draft + text);
         }}
         onKeyDown={(event) => {
+          // An input method uses Enter (and may use a comma) to confirm its text: that is not the end of a name.
+          if (event.nativeEvent.isComposing) return;
           if (event.key === "Enter" || event.key === ",") {
             event.preventDefault();
             add(draft);

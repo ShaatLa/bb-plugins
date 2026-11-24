@@ -1283,7 +1283,7 @@ export function registerTasksCli(
             kind: { type: "enum", values: ["decision", "check"] as const, description: "Question type (default decision); a check is refused while the card has plan debt. When an existing check's state changed, do not add a parallel check: edit it while it is open, --reopen it when its prompt and steps are unchanged, or replace it with --supersedes" },
             supersedes: {
               type: "string",
-              description: "ID of the check on this card this new --kind check replaces because its state changed (a prompt link or step changed); requires --supersedes-revision. The old check closes and keeps its answer and remark",
+              description: "ID of the check on this card this new --kind check replaces because its state changed (a prompt link or step changed); requires --supersedes-revision. The old check closes and keeps its answer and remark. Start the new prompt with what changed since the previous check.",
             },
             "supersedes-revision": {
               type: "integer",

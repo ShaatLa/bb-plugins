@@ -1,63 +1,51 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createDependencyStore } from "../dependencies/store";
-import { accept, BB_PROJECT, goLive, setup } from "./fixtures";
+import { accept, goLive, setup } from "./fixtures";
 import { GRACE_MS, scanTracker } from "./ledger";
 import { POST_MERGE_REVIEW_GRACE_MS } from "./observe";
 
 const fixtures: ReturnType<typeof setup>[] = [];
-const make = async () => { const f = setup(); fixtures.push(f); await f.setMode("shadow"); return f; };
+const make = async () => { const f = setup(); fixtures.push(f); await goLive(f); return f; };
 afterEach(async () => { vi.useRealTimers(); await Promise.all(fixtures.splice(0).map((f) => f.dispose())); });
 
-const ledger = (f: ReturnType<typeof setup>, sinceRev?: number) => f.sweep("attention.ledger", { projectId: BB_PROJECT, kind: "stale-status", ...(sinceRev === undefined ? {} : { sinceRev }) });
+const items = (f: ReturnType<typeof setup>, attemptId: string) => f.db.prepare<[string], { occurrence_id: string }>("SELECT occurrence_id FROM attention_attempt_items WHERE attempt_id=?").all(attemptId).map((row) => row.occurrence_id);
 describe("ledger", () => {
-  it("lists two acceptances of one occurrence as two attempts and two batches appended to one message as two attempts with one queuedMessageId", async () => {
+  it("keeps two acceptances of one occurrence as two attempts and two batches appended to one message as two attempts with one queuedMessageId", async () => {
     const f = await make();
-    const task = f.card("Twice");
+    f.card("Twice");
     const id = f.occurrences()[0].id;
     accept(f, id, "queued", "qm_1");
     accept(f, id, "inline", "qm_1");
     const other = f.card("Other");
     const otherId = f.occurrences().find((o) => o.task_id === other.id).id;
     accept(f, otherId, "appended", "qm_1");
-    const result = await ledger(f);
-    expect(result.attempts.filter((a: { occurrenceIds: string[] }) => a.occurrenceIds.includes(id))).toHaveLength(2);
-    const appended = result.attempts.filter((a: { queuedMessageId: string }) => a.queuedMessageId === "qm_1");
+    const attempts = f.attempts();
+    expect(attempts.filter((a) => items(f, a.attempt_id).includes(id))).toHaveLength(2);
+    const appended = attempts.filter((a) => a.queued_message_id === "qm_1");
     expect(appended.length).toBe(3);
-    expect(appended.map((a: { batchId: string }) => a.batchId)).toHaveLength(new Set(appended.map((a: { batchId: string }) => a.batchId)).size);
-    expect(task.id).toBeTruthy();
+    expect(new Set(appended.map((a) => a.batch_id)).size).toBe(3);
   });
 
-  it("finds a later change to an old occurrence through sinceRev and pages by revision", async () => {
+  it("moves an old occurrence to a later revision when it clears, keeping its creation revision", async () => {
     const f = await make();
     const task = f.card("Old");
-    const first = await ledger(f);
-    expect(first.occurrences).toHaveLength(1);
-    expect(first.nextRev).toBeGreaterThanOrEqual(first.occurrences[0].rev);
-    expect((await ledger(f, first.nextRev)).occurrences).toEqual([]);
+    const [first] = f.occurrences();
     f.store.tasks.updateTask(task.id, { status: "todo" });
-    const later = await ledger(f, first.nextRev);
-    expect(later.occurrences).toHaveLength(1);
-    expect(later.occurrences[0]).toMatchObject({ occurrenceId: first.occurrences[0].occurrenceId, clearedAt: expect.any(String), createdRev: first.occurrences[0].createdRev });
-    expect(later.occurrences[0].rev).toBeGreaterThan(first.occurrences[0].rev);
-    f.card("A"); f.card("B");
-    const page = await f.sweep("attention.ledger", { projectId: BB_PROJECT, kind: "stale-status", limit: 1 });
-    expect(page.occurrences).toHaveLength(1);
-    const rest = await f.sweep("attention.ledger", { projectId: BB_PROJECT, kind: "stale-status", sinceRev: page.nextRev, limit: 10 });
-    expect(rest.occurrences.length + 1).toBe((await ledger(f)).occurrences.length);
+    const later = f.occurrences(true).find((o) => o.id === first.id);
+    expect(later).toMatchObject({ cleared_at: expect.any(String), created_rev: first.created_rev });
+    expect(later.rev).toBeGreaterThan(first.rev);
   });
 
-  it("journals every recompute that sees an unknown signal and the valid reading that ends it, and resolves keys with aliases", async () => {
+  it("journals every recompute that sees an unknown signal and the valid reading that ends it", async () => {
     const f = await make();
     const task = f.card("Review", "in_review");
     f.linkPr(task.id, 1, "failed");
     f.linkPr(task.id, 1, "failed");
     f.linkPr(task.id, 1, "open");
-    const result = await ledger(f);
-    expect(result.observations.map((o: { signal: string; validity: string }) => [o.signal, o.validity])).toEqual([
+    const observations = f.db.prepare("SELECT signal, validity FROM attention_observations WHERE tracker_id=? ORDER BY rev").all(f.tracker.id) as { signal: string; validity: string }[];
+    expect(observations.map((o) => [o.signal, o.validity])).toEqual([
       ["no_open_pr", "unknown"], ["closed_unmerged_pr", "unknown"], ["no_open_pr", "unknown"], ["closed_unmerged_pr", "unknown"], ["no_open_pr", "valid"], ["closed_unmerged_pr", "valid"],
     ]);
-    expect(f.store.tasks.getTaskByKey(task.key)?.id).toBe(task.id);
-    expect(await f.sweep("attention.resolveKeys", { projectId: BB_PROJECT, keys: [task.key, "ATT-999", "BAD"] })).toEqual({ resolved: { [task.key]: task.id }, unknown: ["ATT-999", "BAD"] });
   });
 });
 
@@ -83,7 +71,7 @@ describe("scope", () => {
     expect(f.occurrences(true)[0]).toMatchObject({ retired_reason: "blocked" });
   });
 
-  it("journals the Done-only no_merge_or_outcome in shadow but never sends it", async () => {
+  it("journals the Done-only no_merge_or_outcome but never sends it", async () => {
     const f = await make();
     const done = f.card("Done without outcome", "done");
     expect(f.occurrences()).toEqual([expect.objectContaining({ task_id: done.id, signal: "no_merge_or_outcome" })]);

@@ -1,7 +1,7 @@
 import { isQuestionOpen } from "../../shared/questions";
 import { DisclosureSummary } from "../../components/disclosure";
 import { ActorLabel } from "../../components/thread-chip";
-import { useEffect, useMemo, useState, useRef } from "react";
+import { useEffect, useId, useMemo, useState, useRef } from "react";
 import { experimental_ImageLightbox as ImageLightbox } from "@get-bb/plugin-sdk/app";
 import { Icon } from "@/components/ui/icon";
 import { Button } from "@/components/ui/button";
@@ -15,7 +15,8 @@ import { clearAnswerDraft, readAnswerDraft, readAnswerFiles, sweepAnswerDrafts, 
 
 import { uploadAttachment, Lightbox } from "./attachments";
 import { AttachmentTracks } from "../activity/task-activity";
-import { formatFileSize } from "../activity/time";
+import { checkChanges } from "./check-changes";
+import { formatRelativeTime, formatFileSize, useNowTick } from "../activity/time";
 import { MAX_ATTACHMENT_SIZE_BYTES } from "../../shared/attachments";
 import type { Attachment } from "../../shared/contract";
 
@@ -164,20 +165,57 @@ function QuestionHistory({ question }: { question: TaskQuestion }) {
   ) : null;
 }
 
-/** A check replaced by a newer one: read-only, with its answer, attachments and history kept as the record of the earlier state. */
-function SupersededQuestion({ question, successor }: { question: TaskQuestion; successor: TaskQuestion | undefined }) {
-  const answerOf = (state: Pick<TaskQuestion, "options" | "selectedOptionIds" | "answerText">) => [
-    ...state.options.filter((option) => state.selectedOptionIds.includes(option.id)).map((option) => option.label),
+function answerOf(state: TaskQuestion["history"][number]) {
+  return [
+    ...state.options.filter(option => state.selectedOptionIds.includes(option.id)).map(option => option.label),
     ...(state.answerText ? [state.answerText] : []),
   ].join("; ");
+}
+
+function Replacement({ previous, question, targetId, now }: { previous: TaskQuestion; question: TaskQuestion; targetId: string; now: number }) {
+  const revisions = [...previous.history, previous];
+  let latest = revisions.length - 1;
+  while (latest >= 0 && !revisions[latest]!.selectedOptionIds.length && !revisions[latest]!.answerText) latest--;
+  const answer = revisions[latest];
+  let first = latest;
+  while (first > 0 && answer) {
+    const prior = revisions[first - 1]!;
+    if (prior.answerText !== answer.answerText || prior.selectedOptionIds.length !== answer.selectedOptionIds.length ||
+        !prior.selectedOptionIds.every(id => answer.selectedOptionIds.includes(id))) break;
+    first--;
+  }
+  const origin = revisions[first];
+  const changes = checkChanges(previous, question);
+  return <div className="space-y-1 rounded-md bg-muted p-2 text-xs break-words">
+    <p className="font-medium"><a href={`#${targetId}`} className="text-primary underline" onClick={event => {
+        const target = event.currentTarget.ownerDocument.getElementById(targetId);
+        if (!target) return;
+        event.preventDefault();
+        for (let details = target.closest("details"); details; details = details.parentElement?.closest("details") ?? null) details.open = true;
+        target.focus();
+        target.scrollIntoView?.({ block: "nearest" });
+      }}>Replaces an earlier check</a></p>
+    <p className="whitespace-pre-wrap">{answer && origin ? <>
+      {answer === previous ? "Answer" : "No current answer · last answer"}
+      {origin.answeredBy && <> · <ActorLabel name={origin.answeredBy} /></>} · <time dateTime={origin.updatedAt} title={new Date(origin.updatedAt).toLocaleString()}>{formatRelativeTime(origin.updatedAt, now)}</time>: {answerOf(answer)}
+    </> : "Not answered"}</p>
+    {changes.length > 0 && <p>Changed from the replaced check: {changes.map((change, index) =>
+      <span key={index}>{index > 0 && <br />}{change}</span>)}</p>}
+  </div>;
+}
+
+function SupersededQuestion({ question, successor, targetId, replacement }: {
+  question: TaskQuestion; successor: TaskQuestion | undefined; targetId: string; replacement: React.ReactNode;
+}) {
   const answer = answerOf(question);
   // A withdrawal, a reopen and an edit all leave the earlier answer only in history; the history view shows which.
   const previous = !answer && question.history.some((entry) => entry.answeredBy);
   return (
-    <div aria-label={`Superseded check: ${question.prompt}`} className="space-y-1 rounded-md border border-dashed border-border p-3 text-sm opacity-70">
+    <div id={targetId} tabIndex={-1} aria-label={`Superseded check: ${question.prompt}`} className="space-y-1 rounded-md border border-dashed border-border p-3 text-sm opacity-70">
+      {replacement}
       <p className="break-words"><LinkedText text={question.prompt} /> <span className="text-xs text-muted-foreground">Check</span></p>
-      <p className="text-xs text-muted-foreground break-words">
-        Superseded by {successor ? <LinkedText text={successor.prompt} /> : question.supersededBy}
+      <p className="text-xs text-muted-foreground">
+        Replaced by a later check{successor && <>: <span className="inline-block max-w-[40ch] truncate align-bottom" title={successor.prompt}><LinkedText text={successor.prompt} /></span></>}
         {question.supersededAt ? ` · ${new Date(question.supersededAt).toLocaleString()}` : ""}
       </p>
       <p className="whitespace-pre-wrap break-words text-xs">
@@ -444,10 +482,23 @@ export function QuestionsSection({
     for (let at = question.supersedes ? byId.get(question.supersedes) : undefined; at && chain.length < all.length; at = at.supersedes ? byId.get(at.supersedes) : undefined) chain.push(at);
     return chain;
   };
-  const renderQuestion = (question: TaskQuestion) => question.supersededBy ? (
-    <SupersededQuestion key={question.id} question={question} successor={byId.get(question.supersededBy)} />
-  ) : (
-    <div key={question.id} className="space-y-2">
+  const sectionId = useId();
+  const now = useNowTick();
+  const targetId = (id: string) => `${sectionId}-check-${id}`;
+  const replacement = (question: TaskQuestion) => {
+    const previous = question.supersedes && byId.get(question.supersedes);
+    return previous && previous.kind === "check" && previous.taskId === question.taskId
+      ? <Replacement previous={previous} question={question} targetId={targetId(previous.id)} now={now} /> : null;
+  };
+  const renderSuperseded = (question: TaskQuestion) => (
+    <SupersededQuestion key={question.id} question={question} successor={byId.get(question.supersededBy!)}
+      targetId={targetId(question.id)} replacement={replacement(question)} />
+  );
+  const renderQuestion = (question: TaskQuestion) => {
+    const chain = predecessors(question);
+    return <div key={question.id} className="space-y-2">
+      {question.supersededBy ? renderSuperseded(question) : <>
+        {replacement(question)}
         <QuestionAnswer
           key={`${question.id}:${question.revision}`}
           question={question}
@@ -485,18 +536,19 @@ export function QuestionsSection({
               );
           }}
         />
-      {predecessors(question).length ? (
+      </>}
+      {chain.length ? (
         <details className="pl-3">
           <DisclosureSummary className="text-xs text-muted-foreground">
-            Superseded checks · {predecessors(question).length}
+            Superseded checks · {chain.length}
           </DisclosureSummary>
           <div className="mt-2 space-y-2">
-            {predecessors(question).map((previous) => <SupersededQuestion key={previous.id} question={previous} successor={byId.get(previous.supersededBy!)} />)}
+            {chain.map(renderSuperseded)}
           </div>
         </details>
       ) : null}
-    </div>
-  );
+    </div>;
+  };
   // Open questions read in the order they were asked, like the Earlier list below.
   const open = all.filter(isQuestionOpen)
     .sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id));

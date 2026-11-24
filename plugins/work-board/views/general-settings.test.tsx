@@ -5,7 +5,6 @@ import { afterEach, expect, it } from "vitest";
 import { loadPluginApp, renderSlot } from "@get-bb/plugin-sdk/testing/app";
 import { createFakePluginHost } from "@get-bb/plugin-sdk/testing";
 import { createStore, registerTasksApi } from "../api";
-import { getChecksEnvironment } from "../global-settings";
 import { tasksRpcContract } from "../shared/contract";
 import { GLOBAL_SETTING_LABELS } from "../shared/global-settings";
 import { SETTINGS_MARKER, useHideNativeSettings } from "./native-settings";
@@ -31,7 +30,7 @@ const press = (element: HTMLElement, key: "Enter" | " ") => {
 };
 afterEach(() => { cleanup(); document.body.innerHTML = ""; });
 
-it("shows the four General cards with no project, and saves selects, switches and the runner paths through globalSettings.set", async () => {
+it("shows the three General cards with no project, and saves selects and switches through globalSettings.set with a save status", async () => {
   const { bb, harness } = createFakePluginHost({ pluginId: "work-board" });
   try {
     registerTasksApi(bb, createStore(bb));
@@ -44,15 +43,17 @@ it("shows the four General cards with no project, and saves selects, switches an
     expect(settings.getAllByRole("heading", { level: 2 }).map((node) => node.textContent)).toEqual(["General", "Project"]);
     const general = settings.getByRole("region", { name: "General" });
     expect(within(general).getAllByRole("region").map((node) => within(node).getAllByRole("heading", { level: 3 })[0]!.textContent))
-      .toEqual(["Start and links", "Navigation badges", "Repository-check runner", "Storage"]);
-    for (const name of ["Start and links", "Navigation badges", "Repository-check runner", "Storage"]) expect(within(general).getByRole("region", { name })).toBeTruthy();
-    // Six switches without the repeated prefix, each labelled and described, read from the native values.
-    const badges = within(within(general).getByRole("region", { name: "Navigation badges" })).getAllByRole("switch");
+      .toEqual(["Start and links", "Navigation badges", "Storage"]);
+    for (const name of ["Start and links", "Navigation badges", "Storage"]) expect(within(general).getByRole("region", { name })).toBeTruthy();
+    // Six labelled switches without the repeated prefix, read from the native values; what they count is said once.
+    const badgeCard = within(general).getByRole("region", { name: "Navigation badges" });
+    const badges = within(badgeCard).getAllByRole("switch");
     expect(badges.map((node) => node.getAttribute("aria-label"))).toEqual([
       "Open tasks", "Tasks waiting on you", "Tasks in review", "Tasks with unanswered questions", "Tasks with a failed thread", "Tasks with an idle thread and no update",
     ]);
     expect(badges.map((node) => node.getAttribute("aria-checked"))).toEqual(["true", "true", "false", "false", "false", "false"]);
-    for (const node of badges) expect(document.getElementById(node.getAttribute("aria-describedby")!)).not.toBeNull();
+    for (const node of badges) expect(node.hasAttribute("aria-describedby")).toBe(false);
+    expect(badgeCard.textContent!.match(/counted in the Work Board navigation badge/g)).toHaveLength(1);
     // The focused switch toggles from the keyboard: Space, then Enter, one write each.
     const review = settings.getByRole("switch", { name: "Tasks in review" });
     const writes = () => settings.rpcCalls.filter((call) => call.method === "globalSettings.set").map((call) => call.input);
@@ -60,6 +61,7 @@ it("shows the four General cards with no project, and saves selects, switches an
     press(review, " ");
     await waitFor(() => expect(review.getAttribute("aria-checked")).toBe("true"));
     expect(writes()).toEqual([{ values: { badgeInReview: true } }]);
+    await waitFor(() => expect(within(badgeCard).getByTestId("save-status").textContent).toBe("Saved"));
     await waitFor(() => expect(review.hasAttribute("disabled")).toBe(false));
     review.focus();
     press(review, "Enter");
@@ -69,19 +71,9 @@ it("shows the four General cards with no project, and saves selects, switches an
     fireEvent.click(await settings.findByRole("option", { name: "All tasks" }));
     await waitFor(() => expect(settings.getByRole("combobox", { name: "Start screen" }).textContent).toContain("All tasks"));
     expect(settings.rpcCalls).toContainEqual({ method: "globalSettings.set", input: { values: { startScreen: "all" } } });
-    // The runner paths share one Save; a relative path rejects both and keeps the drafts.
-    const runner = within(within(general).getByRole("region", { name: "Repository-check runner" }));
-    expect(runner.getByText(/apply to all projects/)).toBeTruthy();
-    fireEvent.change(runner.getByLabelText("BB CLI absolute path"), { target: { value: "bin/bb" } });
-    fireEvent.change(runner.getByLabelText("Script PATH"), { target: { value: "/usr/bin" } });
-    fireEvent.click(runner.getByRole("button", { name: "Save" }));
-    expect((await runner.findByRole("alert")).textContent).toMatch(/absolute path/);
-    expect(await getChecksEnvironment(bb)).toEqual({ bbCli: "", runtimePath: "" });
-    expect((runner.getByLabelText("Script PATH") as HTMLInputElement).value).toBe("/usr/bin");
-    fireEvent.change(runner.getByLabelText("BB CLI absolute path"), { target: { value: "/opt/bin/bb" } });
-    fireEvent.click(runner.getByRole("button", { name: "Save" }));
-    await waitFor(async () => expect(await getChecksEnvironment(bb)).toEqual({ bbCli: "/opt/bin/bb", runtimePath: "/usr/bin" }));
-    expect(settings.rpcCalls.filter((call) => call.method === "globalSettings.set").at(-1)).toEqual({ method: "globalSettings.set", input: { values: { checksBbCli: "/opt/bin/bb", checksRuntimePath: "/usr/bin" } } });
+    await waitFor(() => expect(within(general.querySelector("section")!).getByTestId("save-status").textContent).toBe("Saved"));
+    // The runner paths moved into Repository checks, so Storage ends General.
+    expect(within(general).queryByLabelText("BB CLI absolute path")).toBeNull();
   } finally { cleanup(); await harness.dispose(); }
 });
 
@@ -92,9 +84,6 @@ it("keeps the General write controls disabled until the native values have loade
     // No values: the host is still loading them.
     const settings = renderSlot(app.settingsSections[0]!, {}, { rpc: Object.fromEntries(Object.keys(tasksRpcContract).map((method) => [method, (input: unknown) => harness.callRpc(method, input)])) });
     const general = within(await settings.findByRole("region", { name: "General" }));
-    expect(general.getByRole("region", { name: "Repository-check runner" })).toBeTruthy();
-    expect(general.getByLabelText("BB CLI absolute path").hasAttribute("disabled")).toBe(true);
-    expect(general.getByLabelText("Script PATH").hasAttribute("disabled")).toBe(true);
     expect(general.getByRole("switch", { name: "Open tasks" }).hasAttribute("disabled")).toBe(true);
     expect(general.getByRole("combobox", { name: "Start screen" }).hasAttribute("disabled")).toBe(true);
     expect(settings.rpcCalls.some((call) => call.method === "globalSettings.set")).toBe(false);

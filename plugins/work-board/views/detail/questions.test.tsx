@@ -9,7 +9,7 @@ import {
 } from "@get-bb/plugin-sdk/testing";
 import { loadPluginApp, renderSlot } from "@get-bb/plugin-sdk/testing/app";
 import { createStore, registerTasksApi } from "../../api";
-import { tasksRpcContract } from "../../shared/contract";
+import { tasksRpcContract, type TaskQuestion } from "../../shared/contract";
 import { createStructuredStore } from "../../structured/store";
 import { taskTab } from "../../test-fixtures.js";
 
@@ -603,7 +603,7 @@ it("closes an open edit form when the check is superseded and shows it dimmed un
   const superseded = slot.getByLabelText(`Superseded check: ${old.prompt}`);
   expect(superseded.closest("details")?.open).toBe(false);
   expect(within(superseded).getByText(/Problem found: rows overlap/)).toBeTruthy();
-  expect(within(superseded).getByText(/Superseded by/).textContent).toContain("Does the new list render?");
+  expect(within(superseded).getByText(/Replaced by a later check/).textContent).toContain("Does the new list render?");
   expect(within(superseded).queryByRole("button")).toBeNull();
   expect(within(superseded).queryByRole("textbox")).toBeNull();
   expect(within(slot.getByRole("group", { name: "Does the new list render?" })).getByRole("button", { name: "Save answer" })).toBeTruthy();
@@ -635,14 +635,100 @@ it("reads a superseded check neutrally after withdraw, reopen or withdraw-then-e
   const unanswered = await ask("Does the legend show?");
   await ask("Does the legend show now?", { questionId: unanswered.id, revision: 1 });
   const slot = renderSlot(app.navPanels[0]!, { subPath: `task/${task.key}` }, { rpc });
-  for (const [prompt, earlier] of [[withdrawn.prompt, "Problem found: empty axis"], [reopened.prompt, "Confirmed by hand"], ["Does the badge count correctly?", "Problem found: off by one"]] as const) {
+  for (const [id, prompt, earlier] of [[withdrawn.id, withdrawn.prompt, "Problem found: empty axis"], [reopened.id, reopened.prompt, "Confirmed by hand"], [edited.id, "Does the badge count correctly?", "Problem found: off by one"]] as const) {
     const row = await slot.findByLabelText(`Superseded check: ${prompt}`);
     expect(within(row).getByText("Previously answered; no current answer when superseded")).toBeTruthy();
     expect(within(row).queryByText(/withdrawn/i)).toBeNull();
+    const link = slot.getAllByRole("link", { name: "Replaces an earlier check" }).find((candidate) => candidate.getAttribute("href") === `#${row.id}`)!;
+    expect(id).toBeTruthy();
+    expect(link.parentElement!.nextElementSibling!.textContent).toMatch(/No current answer · last answer · Owner · /);
+    expect(link.parentElement!.nextElementSibling!.textContent).toContain(earlier);
     // The history view still shows the earlier answer.
     expect(within(row).getByText(/History · /)).toBeTruthy();
     expect(within(row).getByText(new RegExp(earlier))).toBeTruthy();
   }
   const never = slot.getByLabelText(`Superseded check: ${unanswered.prompt}`);
+  expect(slot.getByText("Not answered")).toBeTruthy();
   expect(within(never).getByText("No answer before it was superseded")).toBeTruthy();
+});
+
+async function exampleChain() {
+  const { task, rpc, structured } = setup();
+  await structured.handlers.createQuestion({
+    taskId: task.id, kind: "check", mode: "single", options: ["Confirmed", "Reviewed"],
+    prompt: "Check the preview", askedByThread: null,
+  });
+  const question = structured.listQuestions(task.id)[0]!;
+  const first = { ...question, id: "example-001", supersededBy: "example-002" };
+  const second = { ...question, id: "example-002", supersedes: first.id };
+  const render = (...questions: TaskQuestion[]) => renderSlot(app.navPanels[0]!, { subPath: `task/${task.key}` }, {
+    rpc: { ...rpc, listQuestions: async () => ({ questions }) },
+  });
+  return { first, second, render };
+}
+
+it.each([
+  ["single", 1, null, "Confirmed"],
+  ["single", 0, "Looks good", "Looks good"],
+  ["multiple", 2, "Looks good", "Confirmed; Reviewed; Looks good"],
+] as const)("shows the %s predecessor answer (%i selections) before the open prompt", async (mode, count, answerText, expected) => {
+  const { first, second, render } = await exampleChain();
+  const original = { ...first, mode, selectedOptionIds: first.options.slice(0, count).map(option => option.id),
+    answerText, answeredBy: "Reviewer", updatedAt: "2026-01-02T12:00:00Z" };
+  const slot = render({ ...original, answeredBy: "Attachment author", updatedAt: "2026-01-03T12:00:00Z",
+    revision: 4, history: [{ ...original, revision: 1, answeredBy: "Earlier reviewer" }, { ...first, revision: 2 }, { ...original, revision: 3 }] }, second);
+  const link = await slot.findByRole("link", { name: "Replaces an earlier check" });
+  expect(link.parentElement!.textContent).toBe("Replaces an earlier check");
+  const line = link.parentElement!.nextElementSibling!;
+  expect(line.textContent).toMatch(/^Answer · Reviewer · /);
+  expect(line.textContent).toMatch(new RegExp(`: ${expected}$`));
+  expect(line.querySelector("time")?.dateTime).toBe(original.updatedAt);
+  const group = slot.getByRole("group", { name: second.prompt });
+  expect(link.compareDocumentPosition(group) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  expect(slot.getByText("Superseded checks · 1").closest("details")!.open).toBe(false);
+  expect(slot.queryByText(/Changed from the replaced check/)).toBeNull();
+});
+
+it("follows each direct predecessor from Earlier through a chain with identical prompts", async () => {
+  const { first, second, render } = await exampleChain();
+  const third = { ...second, id: "example-003", supersedes: second.id, answerText: "Done", answeredBy: "Owner" };
+  const slot = render(first, { ...second, supersededBy: third.id }, third);
+  fireEvent.click(await slot.findByText("Earlier (1)"));
+  const link = slot.getAllByRole("link", { name: "Replaces an earlier check" }).find((candidate) => !candidate.closest("details[open] [tabindex]") && !candidate.closest("[tabindex='-1']"))!;
+  const group = slot.getByRole("group", { name: third.prompt });
+  expect(link.compareDocumentPosition(group) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  const disclosure = slot.getByText("Superseded checks · 2").closest("details")!;
+  expect(disclosure.open).toBe(false);
+  fireEvent.click(link);
+  expect(disclosure.open).toBe(true);
+  // Identical prompts: the rows are told apart by their place in the chain (the direct predecessor first).
+  const [middle, firstRow] = [...disclosure.querySelectorAll<HTMLElement>("[tabindex='-1']")];
+  expect(link.getAttribute("href")).toBe(`#${middle!.id}`);
+  expect(document.activeElement).toBe(middle);
+  expect(within(middle!).getByText(/Replaced by a later check:/)).toBeTruthy();
+  const older = within(middle!).getByRole("link", { name: "Replaces an earlier check" });
+  expect(older.getAttribute("href")).toBe(`#${firstRow!.id}`);
+  fireEvent.click(older);
+  expect(document.activeElement).toBe(firstRow);
+  expect(within(firstRow!).getByText(/Replaced by a later check:/)).toBeTruthy();
+});
+
+it.each([
+  ["Old prompt", "New prompt", ["Open"], ["Inspect"], ["the prompt", "− Open", "+ Inspect"]],
+  ["Visit https://example.org/old.", "Visit https://example.org/new.", ["Open"], ["Open"], ["a link in the prompt"]],
+  ["Check", "Check", ["Open", "See https://example.org/a"], ["Open", "See https://example.org/b"], ["a link in step 2"]],
+  ["Check", "Check", ["Open", "Inspect"], ["Inspect", "Open"], ["− Open", "+ Open"]],
+  ["Check", "Check", [], ["a", "b", "c", "d", "e", "f", "g"], ["+ a", "+ b", "+ c", "+ d", "+ e", "and 2 more"]],
+] as [string, string, string[], string[], string[]][])("compares the displayed revision of %s with its predecessor (%j, %j)", async (before, after, oldSteps, steps, expected) => {
+  const { task, rpc, structured } = setup();
+  const check = { taskId: task.id, kind: "check", mode: "single", askedByThread: null } as const;
+  const { createQuestion, updateQuestion } = structured.handlers;
+  const { question: first } = await createQuestion({ ...check, options: [], prompt: before, steps: oldSteps });
+  const { question: second } = await createQuestion({ ...check, options: [], prompt: after, steps: oldSteps,
+    supersedes: { questionId: first.id, revision: first.revision } });
+  await updateQuestion({ questionId: second.id, revision: second.revision, prompt: after, steps,
+    mode: second.mode, options: second.options, authorName: "Reviewer" });
+  const slot = renderSlot(app.navPanels[0]!, { subPath: `task/${task.key}` }, { rpc });
+  const line = await slot.findByText("Changed from the replaced check:");
+  expect([...line.querySelectorAll("span")].map(span => span.textContent)).toEqual(expected);
 });

@@ -788,7 +788,7 @@ const MIGRATIONS = [
   `ALTER TABLE plan_debt_notices ADD COLUMN cursor TEXT;`,
   // 0.70.0: the recipients of an event are fixed when it is first expanded; `candidates` holds the executor threads whose state is still unread.
   `ALTER TABLE plan_debt_events ADD COLUMN candidates TEXT;`,
-  // 0.71.0: the runner-ownership row of a bb project (checks/transfer.ts): who runs the repository checks, and the handoff ids that tie a transfer with Sweep together.
+  // 0.71.0: the runner-ownership row of a bb project and the handoff ids of a transfer with Sweep. No longer read or written since Sweep was retired; rows stay as history.
   `CREATE TABLE IF NOT EXISTS checks_runner_owner (
      bb_project_id TEXT PRIMARY KEY,
      owner TEXT NOT NULL CHECK (owner IN ('sweep', 'work-board')),

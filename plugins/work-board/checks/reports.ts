@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 
-export const summaryLine = /^sweep: (\d+) threads, (\d+) cards checked, (\d+) actions$/;
+/** The script's summary line; `sweep:` is the older scripts' prefix and keeps working. */
+export const summaryLine = /^(?:checks|sweep): (\d+) threads, (\d+) cards checked, (\d+) actions$/;
 export const archivedWorktreeKind = "ACTION archived-worktree";
 export const staleStatusKind = "ACTION stale-status";
 const hash = (text: string) => createHash("sha256").update(text).digest("hex");
@@ -43,7 +44,7 @@ export function reportContents(exitCode: number, output: string, options: { drop
     if (kind === "ANSWER" || kind.startsWith("ACTION")) noteworthy.push(id);
     if (kind === "WAIT") waiting.push(id);
   }
-  const filtered = kept.map((line) => line.replace(summaryLine, (_, threads, cards, actions) => `sweep: ${threads} threads, ${cards} cards checked, ${Math.max(0, Number(actions) - dropped)} actions`)).join("\n").trimEnd();
+  const filtered = kept.map((line) => line.replace(summaryLine, (match: string, threads, cards, actions) => `${match.slice(0, match.indexOf(":"))}: ${threads} threads, ${cards} cards checked, ${Math.max(0, Number(actions) - dropped)} actions`)).join("\n").trimEnd();
   const body = !dropped ? output : filtered && `${filtered}\n`;
   return {
     items, body, dropped, diagnostics: diagnostics.length,

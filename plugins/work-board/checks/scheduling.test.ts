@@ -125,16 +125,17 @@ describe("scheduling", () => {
     expect(ticks(f).map((t) => t.script_failed)).toEqual([1, 1]);
   });
 
-  it("cancels the running script on shutdown", async () => {
+  it("cancels the running script on shutdown", { timeout: 30_000 }, async () => {
     const f = await make();
     f.script(`echo $$ > "${f.io}/pid"; sleep 30`);
     const running = f.tick().catch((error) => error);
-    await new Promise((resolve) => setTimeout(resolve, 900));
+    // Under load the checkout refresh can take seconds: wait until the script has started instead of a fixed delay.
+    const { readFileSync } = await import("node:fs");
+    await vi.waitFor(() => expect(readFileSync(`${f.io}/pid`, "utf8").trim()).not.toBe(""), { timeout: 20_000, interval: 50 });
     await f.dispose();
     expect(String(await running)).toMatch(/abort|shutdown|Error/i);
-    const pid = Number(await import("node:fs").then(({ readFileSync }) => readFileSync(`${f.io}/pid`, "utf8")));
-    await new Promise((resolve) => setTimeout(resolve, 300));
-    expect(() => process.kill(pid, 0)).toThrow();
+    const pid = Number(readFileSync(`${f.io}/pid`, "utf8"));
+    await vi.waitFor(() => expect(() => process.kill(pid, 0)).toThrow(), { timeout: 5_000, interval: 50 });
   });
 });
 
@@ -204,7 +205,7 @@ describe("stats and status", () => {
     expect(f.state().error).toMatch(/State belongs to/);
     expect(count("settings:changed")).toBe(1);
     expect(count("projects:changed")).toBe(0);
-    // Explicit changes keep the wide channel: config set, the UI's enabled switch, reset (transfer and retry: their own tests).
+    // Explicit changes keep the wide channel: config set, the UI's enabled switch, reset (retry: its own tests).
     const explicit = async (action: () => Promise<unknown>) => {
       f.harness.realtimeSignals.length = 0;
       await action();

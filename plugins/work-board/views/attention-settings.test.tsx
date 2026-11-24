@@ -5,7 +5,6 @@ import { loadPluginApp, renderSlot } from "@get-bb/plugin-sdk/testing/app";
 import { createFakePluginHost, makeThreadResponse } from "@get-bb/plugin-sdk/testing";
 import { createStore, registerTasksApi } from "../api";
 import { registerAttention } from "../attention/rpc";
-import { transfers } from "../checks/transfer";
 import { prEventSettings, setPrEventSetting } from "../git-sync/events";
 import { tasksRpcContract } from "../shared/contract";
 
@@ -16,6 +15,9 @@ window.PointerEvent ??= window.MouseEvent as typeof PointerEvent;
 Element.prototype.setPointerCapture ??= () => {};
 
 const app = await loadPluginApp(() => import("../app"));
+const CONDITION_LINES = ["In progress · no working session", "In review · no open pull request, and none merged in the last 2 hours", "In testing · no open or merged pull request", "In review or In testing · Work Board cannot read the pull request from GitHub", "Any of these or Bugfix · a pull request closed without merging"];
+const OFF_TEXT = "Off: no notices are sent.";
+const ON_TEXT = "On: notices go to the manager thread.";
 afterEach(() => { cleanup(); window.localStorage.clear(); });
 
 // The delivery controls sit in a disclosure whose summary shows the sender and any warning.
@@ -23,6 +25,7 @@ const openDelivery = (section: HTMLElement) => {
   const details = section.querySelector("details")!;
   if (!details.open) fireEvent.click(details.querySelector("summary")!);
 };
+const noticesSwitch = (section: HTMLElement) => within(section).getByRole("switch", { name: "Stale-status notices" });
 
 function threadSummary(overrides: Parameters<typeof makeThreadResponse>[0]) {
   return {
@@ -35,12 +38,12 @@ function threadSummary(overrides: Parameters<typeof makeThreadResponse>[0]) {
   };
 }
 
-it("shows the mode with its gate, starts shadow, saves the manager on pick and lets the owner resolve an unknown notice", async () => {
+it("shows notices off with the hint to choose a manager, saves the manager on pick and lets the owner accept the loss of an unknown notice", async () => {
   const { bb, harness } = createFakePluginHost({ pluginId: "work-board" });
   try {
     const store = createStore(bb);
     registerTasksApi(bb, store);
-    registerAttention(bb, store);
+    registerAttention(bb);
     const project = store.tasks.createProject({ name: "Alpha", prefix: "ALP", color: "blue", linkedBbProjectId: "proj_example" });
     const manager = threadSummary({ id: "thr_example", title: "Release coordinator" });
     const slotOptions: NonNullable<Parameters<typeof renderSlot>[2]> = {
@@ -59,30 +62,38 @@ it("shows the mode with its gate, starts shadow, saves the manager on pick and l
     };
     const settings = renderSlot(app.settingsSections[0]!, {}, slotOptions);
     const section = await settings.findByRole("region", { name: "Manager" });
-    await waitFor(() => expect(within(section).getByTestId("attention-sender").textContent).toBe("Off · Sweep sends"));
+    await waitFor(() => expect(within(section).getByTestId("attention-sender").textContent).toBe("Off"));
     // The write RPC cannot tell the owner from an agent, so the copy must not promise that agents are kept out.
     expect(section.textContent).toMatch(/owner-only convention/);
     expect(section.textContent).not.toMatch(/agents cannot/i);
+    expect(section.textContent).toContain("Receives stale-status notices and repository check reports for this project, and copies of pull request messages when both PR switches below are on.");
     expect(section.querySelector("details")!.open).toBe(false);
+    // The header switch and the reason it cannot be turned on are visible while the disclosure is closed.
+    expect(noticesSwitch(section).getAttribute("aria-checked")).toBe("false");
+    expect(noticesSwitch(section)).toHaveProperty("disabled", true);
+    const hint = within(section).getByTestId("attention-hint");
+    expect(hint.textContent).toBe("Choose a manager thread to turn notices on.");
+    expect(hint.closest("summary")).not.toBeNull();
+    expect(document.getElementById(noticesSwitch(section).getAttribute("aria-describedby")!)).toBe(hint);
+    expect(noticesSwitch(section).closest("summary")).toBeNull();
     openDelivery(section);
-    expect(within(section).getByTestId("attention-mode").textContent).toBe("Off: Sweep sends");
-    fireEvent.click(within(section).getByRole("button", { name: "Start shadow" }));
-    await waitFor(() => expect(within(section).getByTestId("attention-mode").textContent, within(section).queryByRole("alert")?.textContent).toBe("Shadow: compare only, Sweep sends"));
-    // The closed summary names the mode too, so comparison is visible without opening the actions.
-    expect(within(section).getByTestId("attention-sender").textContent).toBe("Shadow · comparing, Sweep sends");
+    expect(within(section).getByTestId("attention-mode").textContent).toBe(OFF_TEXT);
+    // The control and its state come first; the explanation is a short list below, with edge rules folded into Details.
+    const explanation = within(section).getByTestId("attention-explanation");
+    expect(within(section).getByTestId("attention-mode").compareDocumentPosition(explanation) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect([...explanation.querySelectorAll(":scope > ul > li")].map((item) => item.textContent)).toEqual(CONDITION_LINES);
+    expect(explanation.querySelector("details")!.open).toBe(false);
+    expect(explanation.querySelector("details")!.textContent).toContain("ongoing epics are skipped");
     // The mode has no "Changed … from …" line, and a missing manager is a warning that names the cause.
-    expect(within(section).queryByTestId("attention-changed")).toBeNull();
-    expect(section.textContent).not.toMatch(/Changed[^.]*from (off|shadow|live)/);
+    expect(section.textContent).not.toMatch(/Changed[^.]*from (off|live)/);
     const warning = await within(section).findByTestId("attention-manager-warning");
-    expect(warning.textContent).toBe("No manager chosen; choose one before going live");
+    expect(warning.textContent).toBe("No manager chosen; choose one before turning notices on");
     // The warning sits in the disclosure summary, so it stays visible while the disclosure is closed.
     expect(warning.closest("summary")).not.toBeNull();
     fireEvent.click(section.querySelector("summary")!);
     expect(section.querySelector("details")!.open).toBe(false);
     expect(within(section).getByTestId("attention-manager-warning").closest("summary")).not.toBeNull();
     openDelivery(section);
-    expect(within(section).getByTestId("attention-gate").textContent).toMatch(/48 hours/);
-    expect(within(section).getByRole("button", { name: "Go live" })).toHaveProperty("disabled", true);
     const picker = within(section).getByRole("button", { name: /^Manager thread:/ });
     expect(picker.textContent).toContain("No manager");
     fireEvent.click(picker);
@@ -102,11 +113,16 @@ it("shows the mode with its gate, starts shadow, saves the manager on pick and l
     await waitFor(() => expect(section.textContent).toContain("from no manager"));
     db.prepare("INSERT INTO attention_attempts(attempt_id, tracker_id, kind, generation, batch_id, recipient_thread_id, recipient_source, started_at, outcome, rev) VALUES ('a1', ?, 'stale-status', 1, 'b1', 'thr_example', 'manager', ?, 'unknown', 1)").run(project.id, new Date().toISOString());
     db.prepare("INSERT INTO attention_attempt_items(attempt_id, occurrence_id) VALUES ('a1', 'o1')").run();
-    fireEvent.click(within(section).getByRole("button", { name: "Switch off" }));
-    await waitFor(() => expect(within(section).getByTestId("attention-mode").textContent).toBe("Off: Sweep sends"));
-    // The unknown notice appears after the next read; resolving it records the owner's decision.
-    fireEvent.click(within(section).getByRole("button", { name: "Start shadow" }));
-    await within(section).findByTestId("attention-unknown");
+    // With a manager chosen, the switch can be turned on.
+    await waitFor(() => expect(noticesSwitch(section)).toHaveProperty("disabled", false));
+    expect(within(section).queryByTestId("attention-hint")).toBeNull();
+    expect(noticesSwitch(section).hasAttribute("aria-describedby")).toBe(false);
+    // The unknown notice appears after the next read; while notices are off only Accept the loss is offered.
+    await settings.behavior.emitRealtime("settings:changed", { projectId: project.id });
+    const unknown = await within(section).findByTestId("attention-unknown");
+    expect(unknown.textContent).toContain("Notices with an unknown outcome");
+    expect(unknown.textContent).toContain("Work Board could not confirm that these reached the manager thread and never resends them by itself. Accept that they may be lost.");
+    expect(within(unknown).queryByRole("button", { name: "Send again" })).toBeNull();
     // An unresolved delivery is announced in the summary too.
     expect(within(section).getByTestId("attention-unknown-count").closest("summary")).not.toBeNull();
     fireEvent.click(within(section).getByRole("button", { name: "Accept the loss" }));
@@ -143,7 +159,7 @@ it("follows archive, unarchive and delete events of the manager in the open view
   try {
     const store = createStore(bb);
     registerTasksApi(bb, store);
-    registerAttention(bb, store);
+    registerAttention(bb);
     const project = store.tasks.createProject({ name: "Alpha", prefix: "ALP", color: "blue", linkedBbProjectId: "proj_example" });
     bb.storage.database().prepare("INSERT INTO attention_manager(tracker_id, manager, changed_at, previous) VALUES (?, 'thr_example', ?, NULL)").run(project.id, new Date().toISOString());
     const settings = renderSlot(app.settingsSections[0]!, {}, {
@@ -164,7 +180,7 @@ it("follows archive, unarchive and delete events of the manager in the open view
     thread.archivedAt = 1;
     await event("thread.archived");
     await deliver();
-    await waitFor(() => expect(warning()).toBe("The manager session is archived; choose another before going live"));
+    await waitFor(() => expect(warning()).toBe("The manager session is archived; choose another before turning notices on"));
     thread.archivedAt = null;
     await event("thread.unarchived");
     await deliver();
@@ -172,32 +188,80 @@ it("follows archive, unarchive and delete events of the manager in the open view
     thread.failing = true;
     await event("thread.deleted");
     await deliver();
-    await waitFor(() => expect(warning()).toBe("The manager session was deleted; choose another before going live"));
+    await waitFor(() => expect(warning()).toBe("The manager session was deleted; choose another before turning notices on"));
   } finally { cleanup(); await harness.dispose(); }
 });
 
-it("names Work Board's checks runner as the sender when it owns the checks, and shows why a transfer holds a ready transition", async () => {
+it("shows On and Switching off with their copy, offers Send again only when the notice can still be sent, and never mentions the removed modes", async () => {
   const { bb, harness } = createFakePluginHost({ pluginId: "work-board" });
-  // Set before registration, so no attention pass can acknowledge the transition while the view is read.
-  transfers.set("proj_example", "import-from-sweep");
   try {
     const store = createStore(bb);
     registerTasksApi(bb, store);
     const db = bb.storage.database();
     const project = store.tasks.createProject({ name: "Alpha", prefix: "ALP", color: "blue", linkedBbProjectId: "proj_example" });
-    db.prepare("INSERT INTO checks_runner_owner (bb_project_id, owner, tracker_id, sent_id, sent_confirmed, received_id, updated_at) VALUES ('proj_example', 'work-board', ?, NULL, 0, NULL, ?)").run(project.id, new Date().toISOString());
-    db.prepare("INSERT INTO attention_modes (tracker_id, kind, bound_tracker_id, bound_bb_project_id, effective_mode, effective_generation, requested_mode, requested_generation, transition_token, transition_direction, transition_state, ready_at) VALUES (?, 'stale-status', ?, 'proj_example', 'shadow', 1, 'live', 2, 'tok_example', 'to_live', 'ready', ?)")
-      .run(project.id, project.id, new Date().toISOString());
-    registerAttention(bb, store);
+    db.prepare("INSERT INTO attention_manager(tracker_id, manager, changed_at, previous) VALUES (?, 'thr_example', ?, NULL)").run(project.id, new Date().toISOString());
+    db.prepare("INSERT INTO attention_modes (tracker_id, kind, bound_tracker_id, bound_bb_project_id, effective_mode, effective_generation) VALUES (?, 'stale-status', ?, 'proj_example', 'live', 1)").run(project.id, project.id);
+    registerAttention(bb);
     const settings = renderSlot(app.settingsSections[0]!, {}, {
       rpc: Object.fromEntries(Object.keys(tasksRpcContract).map((method) => [method, (input: unknown) => harness.callRpc(method, input)])),
       sdk: { threads: { list: async () => [] } },
     });
     const section = await settings.findByRole("region", { name: "Manager" });
-    await waitFor(() => expect(within(section).getByTestId("attention-sender").textContent).toBe("Shadow · comparing, Work Board's checks runner sends"));
+    await waitFor(() => expect(within(section).getByTestId("attention-sender").textContent).toBe("On"));
     openDelivery(section);
-    expect(within(section).getByTestId("attention-pending").textContent).toBe("Going live · A transfer (import-from-sweep) is running for this bb project. Wait for it to finish.");
-  } finally { transfers.clear(); cleanup(); await harness.dispose(); }
+    expect(within(section).getByTestId("attention-mode").textContent).toBe(ON_TEXT);
+    expect(noticesSwitch(section).getAttribute("aria-checked")).toBe("true");
+    expect(noticesSwitch(section)).toHaveProperty("disabled", false);
+    // An unknown notice whose card is still stale and past its grace can be sent again.
+    db.prepare("INSERT INTO manager_attention(id, tracker_id, task_id, task_key, kind, signal, first_seen_at, eligible_at, created_rev, rev) VALUES ('o1', ?, 'task_example', 'ALP-1', 'stale-status', 'no_active_thread', '2000-01-01T00:00:00.000Z', '2000-01-01T00:00:00.000Z', 1, 1)").run(project.id);
+    db.prepare("INSERT INTO attention_attempts(attempt_id, tracker_id, kind, generation, batch_id, recipient_thread_id, recipient_source, started_at, outcome, rev) VALUES ('a1', ?, 'stale-status', 1, 'b1', 'thr_example', 'manager', ?, 'unknown', 2)").run(project.id, new Date().toISOString());
+    db.prepare("INSERT INTO attention_attempt_items(attempt_id, occurrence_id) VALUES ('a1', 'o1')").run();
+    await settings.behavior.emitRealtime("settings:changed", { projectId: project.id });
+    const unknown = await within(section).findByTestId("attention-unknown");
+    expect(unknown.textContent).toContain("Work Board could not confirm that these reached the manager thread and never resends them by itself. Send again or accept that they may be lost.");
+    expect(within(unknown).getByRole("button", { name: "Send again" })).toBeTruthy();
+    expect(within(unknown).getByRole("button", { name: "Accept the loss" })).toBeTruthy();
+    // Switching off while a notice is being sent.
+    db.prepare("UPDATE attention_modes SET requested_mode='shadow', requested_generation=2, transition_token='tok_example', transition_direction='to_shadow', transition_state='preparing' WHERE tracker_id=?").run(project.id);
+    await settings.behavior.emitRealtime("settings:changed", { projectId: project.id });
+    await waitFor(() => expect(within(section).getByTestId("attention-sender").textContent).toBe("Switching off"));
+    expect(within(section).getByTestId("attention-mode").textContent).toBe("Switching off: a notice is still being sent.");
+    expect(noticesSwitch(section).getAttribute("aria-checked")).toBe("false");
+    expect(noticesSwitch(section)).toHaveProperty("disabled", true);
+    expect(within(section).queryByRole("button", { name: "Send again" })).toBeNull();
+    expect(section.textContent).not.toMatch(/sweep|shadow|go live|parity/i);
+  } finally { cleanup(); await harness.dispose(); }
+});
+
+it("turns notices on and off from the header switch without opening the disclosure", async () => {
+  const { bb, harness } = createFakePluginHost({ pluginId: "work-board" });
+  try {
+    const store = createStore(bb);
+    registerTasksApi(bb, store);
+    registerAttention(bb);
+    const project = store.tasks.createProject({ name: "Alpha", prefix: "ALP", color: "blue", linkedBbProjectId: "proj_example" });
+    bb.storage.database().prepare("INSERT INTO attention_manager(tracker_id, manager, changed_at, previous) VALUES (?, 'thr_example', ?, NULL)").run(project.id, new Date().toISOString());
+    harness.sdk.stub("threads.get", async ({ threadId }: { threadId: string }) => makeThreadResponse({ id: threadId, projectId: "proj_example", status: "idle" } as never));
+    const settings = renderSlot(app.settingsSections[0]!, {}, {
+      rpc: Object.fromEntries(Object.keys(tasksRpcContract).map((method) => [method, (input: unknown) => harness.callRpc(method, input)])),
+      sdk: { threads: { list: async () => [] } },
+    });
+    const section = await settings.findByRole("region", { name: "Manager" });
+    await waitFor(() => expect(noticesSwitch(section)).toHaveProperty("disabled", false));
+    const details = section.querySelector("details")!;
+    expect(within(section).queryByTestId("attention-hint")).toBeNull();
+    fireEvent.click(noticesSwitch(section));
+    await waitFor(() => expect(within(section).getByTestId("attention-sender").textContent).toBe("On"));
+    expect(noticesSwitch(section).getAttribute("aria-checked")).toBe("true");
+    expect(details.open).toBe(false);
+    expect(within(section).getByTestId("save-status").textContent).toBe("Saved");
+    fireEvent.click(noticesSwitch(section));
+    await waitFor(() => expect(within(section).getByTestId("attention-sender").textContent).toBe("Off"));
+    expect(details.open).toBe(false);
+    expect(settings.rpcCalls.filter((call) => call.method === "updateAttentionMode").map((call) => call.input)).toEqual([
+      { projectId: project.id, mode: "live" }, { projectId: project.id, mode: "off" },
+    ]);
+  } finally { cleanup(); await harness.dispose(); }
 });
 
 it("confirms replacing or clearing a set manager, writes once on accept, and keeps the stored manager on cancel or rejection", async () => {
@@ -205,7 +269,7 @@ it("confirms replacing or clearing a set manager, writes once on accept, and kee
   try {
     const store = createStore(bb);
     registerTasksApi(bb, store);
-    registerAttention(bb, store);
+    registerAttention(bb);
     const project = store.tasks.createProject({ name: "Alpha", prefix: "ALP", color: "blue", linkedBbProjectId: "proj_example" });
     const db = bb.storage.database();
     db.prepare("INSERT INTO attention_manager(tracker_id, manager, changed_at, previous) VALUES (?, 'thr_example', ?, NULL)").run(project.id, new Date().toISOString());
@@ -245,7 +309,7 @@ it("confirms replacing or clearing a set manager, writes once on accept, and kee
     reject = true;
     await choose("Second coordinator");
     fireEvent.click(await menu.findByRole("button", { name: "Replace manager" }));
-    expect((await within(section).findByRole("alert")).textContent).toBe("Manager change refused");
+    expect((await within(section).findByRole("alert")).textContent).toMatch(/^Failed: Manager change refused/);
     expect(picker().textContent).toContain("Release coordinator");
     expect(db.prepare("SELECT manager FROM attention_manager WHERE tracker_id=?").get(project.id)).toEqual({ manager: "thr_example" });
     // Accepting writes exactly once.
@@ -270,11 +334,11 @@ it("switches the two PR message settings one key at a time, survives a reload an
   try {
     const store = createStore(bb);
     registerTasksApi(bb, store);
-    registerAttention(bb, store);
+    registerAttention(bb);
     const alpha = store.tasks.createProject({ name: "Alpha", prefix: "ALP", color: "blue", linkedBbProjectId: "proj_example" });
     const beta = store.tasks.createProject({ name: "Beta", prefix: "BET", color: "red" });
     const db = bb.storage.database();
-    setPrEventSetting(db, beta.id, "prEvents", "off");
+    setPrEventSetting(db, beta.id, "prEvents", "on");
     let gate: Promise<void> | null = null;
     let reject = false;
     const rpc: Record<string, (input: unknown) => unknown> = Object.fromEntries(Object.keys(tasksRpcContract).map((method) => [method, (input: unknown) => harness.callRpc(method, input)]));
@@ -292,31 +356,35 @@ it("switches the two PR message settings one key at a time, survives a reload an
     expect(lifecycle().getAttribute("aria-checked")).toBe("true");
     expect(copy().getAttribute("aria-checked")).toBe("false");
     expect(document.getElementById(lifecycle().getAttribute("aria-describedby")!)?.textContent).toMatch(/pull request/);
-    fireEvent.click(lifecycle());
-    await waitFor(() => expect(prEventSettings(db, alpha.id).events).toBe("off"));
-    await waitFor(() => expect(lifecycle().getAttribute("aria-checked")).toBe("false"));
     fireEvent.click(copy());
     await waitFor(() => expect(prEventSettings(db, alpha.id).manager).toBe("on"));
     await waitFor(() => expect(copy().getAttribute("aria-checked")).toBe("true"));
+    fireEvent.click(lifecycle());
+    await waitFor(() => expect(prEventSettings(db, alpha.id).events).toBe("off"));
+    await waitFor(() => expect(lifecycle().getAttribute("aria-checked")).toBe("false"));
     expect(settings.rpcCalls.filter((call) => call.method === "config.set").map((call) => call.input)).toEqual([
-      { projectId: alpha.id, key: "prEvents", value: "off" },
       { projectId: alpha.id, key: "prEventsManager", value: "on" },
+      { projectId: alpha.id, key: "prEvents", value: "off" },
     ]);
-    fireEvent.click(copy());
-    await waitFor(() => expect(prEventSettings(db, alpha.id).manager).toBe("off"));
-    // A rejection keeps the stored value and says why.
+    // Copies need the messages themselves: the copy switch waits for the lifecycle switch and says so.
+    expect(copy()).toHaveProperty("disabled", true);
+    expect(document.getElementById(copy().getAttribute("aria-describedby")!)?.textContent).toBe("Turn on PR lifecycle messages to copy them to the manager.");
+    // A rejection keeps the stored value, says why and offers Retry.
     reject = true;
     fireEvent.click(lifecycle());
-    expect((await settings.findByRole("alert")).textContent).toBe("Setting refused");
+    expect((await settings.findByRole("alert")).textContent).toMatch(/^Failed: Setting refused/);
     expect(lifecycle().getAttribute("aria-checked")).toBe("false");
     expect(prEventSettings(db, alpha.id).events).toBe("off");
     reject = false;
+    fireEvent.click(within(settings.getByRole("region", { name: "Manager" })).getByRole("button", { name: "Retry" }));
+    await waitFor(() => expect(prEventSettings(db, alpha.id).events).toBe("on"));
+    await waitFor(() => expect(copy()).toHaveProperty("disabled", false));
     // A reload reads the stored values back.
     cleanup();
     settings = renderSlot(app.settingsSections[0]!, {}, options);
     await waitFor(() => expect(lifecycle().hasAttribute("disabled")).toBe(false));
-    expect(lifecycle().getAttribute("aria-checked")).toBe("false");
-    expect(copy().getAttribute("aria-checked")).toBe("false");
+    expect(lifecycle().getAttribute("aria-checked")).toBe("true");
+    expect(copy().getAttribute("aria-checked")).toBe("true");
     // A write still pending when the project changes lands on its own project and never shows on the next one.
     let open!: () => void;
     gate = new Promise((resolve) => { open = resolve; });
@@ -326,52 +394,10 @@ it("switches the two PR message settings one key at a time, survives a reload an
     await waitFor(() => expect(settings.rpcCalls).toContainEqual({ method: "config.get", input: { projectId: beta.id } }));
     await waitFor(() => expect(lifecycle().hasAttribute("disabled")).toBe(false));
     open();
-    await waitFor(() => expect(prEventSettings(db, alpha.id).events).toBe("on"));
+    await waitFor(() => expect(prEventSettings(db, alpha.id).events).toBe("off"));
     await new Promise((resolve) => setTimeout(resolve, 50));
-    expect(lifecycle().getAttribute("aria-checked")).toBe("false");
-    expect(prEventSettings(db, beta.id).events).toBe("off");
-  } finally { cleanup(); await harness.dispose(); }
-});
-
-it("makes the parity acknowledgement a local switch: no call when toggled, hidden until the gate expires, cleared by a new generation", async () => {
-  const { bb, harness } = createFakePluginHost({ pluginId: "work-board" });
-  try {
-    const store = createStore(bb);
-    registerTasksApi(bb, store);
-    registerAttention(bb, store);
-    const project = store.tasks.createProject({ name: "Alpha", prefix: "ALP", color: "blue", linkedBbProjectId: "proj_example" });
-    const settings = renderSlot(app.settingsSections[0]!, {}, {
-      rpc: Object.fromEntries(Object.keys(tasksRpcContract).map((method) => [method, (input: unknown) => harness.callRpc(method, input)])),
-      sdk: { threads: { list: async () => [] } },
-    });
-    const section = await settings.findByRole("region", { name: "Manager" });
-    await within(section).findByTestId("attention-sender");
-    openDelivery(section);
-    fireEvent.click(within(section).getByRole("button", { name: "Start shadow" }));
-    await within(section).findByTestId("attention-gate");
-    const name = "I reviewed the differences between Work Board and Sweep";
-    expect(within(section).queryByRole("switch", { name })).toBeNull();
-    // The gate expires: the shadow period began 49 hours ago.
-    const db = bb.storage.database();
-    db.prepare("UPDATE attention_modes SET shadow_started_at=? WHERE tracker_id=?").run(new Date(Date.now() - 49 * 3_600_000).toISOString(), project.id);
-    await settings.behavior.emitRealtime("settings:changed", { projectId: project.id });
-    const parity = await within(section).findByRole("switch", { name });
-    const goLive = () => within(section).getByRole("button", { name: "Go live" });
-    expect(parity.getAttribute("aria-checked")).toBe("false");
-    expect(goLive()).toHaveProperty("disabled", true);
-    const calls = settings.rpcCalls.length;
-    // Keyboard-operable: the switch is a focusable button.
-    parity.focus();
-    fireEvent.click(parity);
-    await waitFor(() => expect(within(section).getByRole("switch", { name }).getAttribute("aria-checked")).toBe("true"));
-    expect(goLive()).toHaveProperty("disabled", false);
-    await new Promise((resolve) => setTimeout(resolve, 50));
-    expect(settings.rpcCalls.slice(calls)).toEqual([]);
-    // A new generation clears the acknowledgement.
-    db.prepare("UPDATE attention_modes SET effective_generation=effective_generation+1 WHERE tracker_id=?").run(project.id);
-    await settings.behavior.emitRealtime("settings:changed", { projectId: project.id });
-    await waitFor(() => expect(within(section).getByRole("switch", { name }).getAttribute("aria-checked")).toBe("false"));
-    expect(goLive()).toHaveProperty("disabled", true);
+    expect(lifecycle().getAttribute("aria-checked")).toBe("true");
+    expect(prEventSettings(db, beta.id).events).toBe("on");
   } finally { cleanup(); await harness.dispose(); }
 });
 
@@ -380,7 +406,7 @@ it("keeps the picker locked until the refreshed manager lands, so a second pick 
   try {
     const store = createStore(bb);
     registerTasksApi(bb, store);
-    registerAttention(bb, store);
+    registerAttention(bb);
     store.tasks.createProject({ name: "Alpha", prefix: "ALP", color: "blue", linkedBbProjectId: "proj_example" });
     const threads = [threadSummary({ id: "thr_example", title: "Release coordinator" }), threadSummary({ id: "thr_example_2", title: "Second coordinator" })];
     const rpc: Record<string, (input: unknown) => unknown> = Object.fromEntries(Object.keys(tasksRpcContract).map((method) => [method, (input: unknown) => harness.callRpc(method, input)]));
@@ -419,7 +445,7 @@ it("never lets a PR settings read that started before a write reverse the switch
   try {
     const store = createStore(bb);
     registerTasksApi(bb, store);
-    registerAttention(bb, store);
+    registerAttention(bb);
     const project = store.tasks.createProject({ name: "Alpha", prefix: "ALP", color: "blue", linkedBbProjectId: "proj_example" });
     const rpc: Record<string, (input: unknown) => unknown> = Object.fromEntries(Object.keys(tasksRpcContract).map((method) => [method, (input: unknown) => harness.callRpc(method, input)]));
     let hold: Promise<void> | null = null;
@@ -447,7 +473,7 @@ it("keeps an acknowledged manager and PR value when the read after the write fai
   try {
     const store = createStore(bb);
     registerTasksApi(bb, store);
-    registerAttention(bb, store);
+    registerAttention(bb);
     const project = store.tasks.createProject({ name: "Alpha", prefix: "ALP", color: "blue", linkedBbProjectId: "proj_example" });
     const threads = [threadSummary({ id: "thr_example", title: "Release coordinator" }), threadSummary({ id: "thr_example_2", title: "Second coordinator" })];
     const rpc: Record<string, (input: unknown) => unknown> = Object.fromEntries(Object.keys(tasksRpcContract).map((method) => [method, (input: unknown) => harness.callRpc(method, input)]));
@@ -478,5 +504,37 @@ it("keeps an acknowledged manager and PR value when the read after the write fai
     await waitFor(() => expect(prEventSettings(bb.storage.database(), project.id).events).toBe("off"));
     await waitFor(() => expect(lifecycle().hasAttribute("disabled")).toBe(false));
     expect(lifecycle().getAttribute("aria-checked")).toBe("false");
+  } finally { cleanup(); await harness.dispose(); }
+});
+
+it("drops a failed copy of PR messages on Retry once PR lifecycle messages were turned off, instead of writing it", async () => {
+  const { bb, harness } = createFakePluginHost({ pluginId: "work-board" });
+  try {
+    const store = createStore(bb);
+    registerTasksApi(bb, store);
+    registerAttention(bb);
+    const project = store.tasks.createProject({ name: "Alpha", prefix: "ALP", color: "blue", linkedBbProjectId: "proj_example" });
+    const rpc: Record<string, (input: unknown) => unknown> = Object.fromEntries(Object.keys(tasksRpcContract).map((method) => [method, (input: unknown) => harness.callRpc(method, input)]));
+    rpc["config.set"] = async (input) => {
+      if ((input as { key: string }).key === "prEventsManager") throw new Error("Setting refused");
+      return harness.callRpc("config.set", input);
+    };
+    const settings = renderSlot(app.settingsSections[0]!, {}, { rpc, sdk: { threads: { list: async () => [] } } });
+    const section = await settings.findByRole("region", { name: "Manager" });
+    const lifecycle = () => within(section).getByRole("switch", { name: "PR lifecycle messages" });
+    const copy = () => within(section).getByRole("switch", { name: "Copy PR messages to the manager" });
+    await waitFor(() => expect(copy().hasAttribute("disabled")).toBe(false));
+    fireEvent.click(copy());
+    const status = () => within(section).getByTestId("save-status");
+    await waitFor(() => expect(status().textContent).toMatch(/^Failed: Setting refused/));
+    fireEvent.click(lifecycle());
+    await waitFor(() => expect(prEventSettings(bb.storage.database(), project.id).events).toBe("off"));
+    await waitFor(() => expect(copy()).toHaveProperty("disabled", true));
+    const managerWrites = () => settings.rpcCalls.filter((call) => call.method === "config.set" && (call.input as { key: string }).key === "prEventsManager");
+    expect(managerWrites()).toHaveLength(1);
+    fireEvent.click(within(status()).getByRole("button", { name: "Retry" }));
+    await waitFor(() => expect(status().textContent).toBe("Saved"));
+    expect(managerWrites()).toHaveLength(1);
+    expect(prEventSettings(bb.storage.database(), project.id).manager).toBe("off");
   } finally { cleanup(); await harness.dispose(); }
 });

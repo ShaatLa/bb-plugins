@@ -1,19 +1,19 @@
 import { makeThreadResponse } from "@get-bb/plugin-sdk/testing";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { receiptPolling } from "../steer";
-import { BB_PROJECT, goLive, MANAGER, setup } from "./fixtures";
+import { goLive, MANAGER, setup } from "./fixtures";
+import { requestMode } from "./modes";
 
 type Fixture = ReturnType<typeof setup>;
 const fixtures: Fixture[] = [];
-const make = async (mode: "shadow" | "live" = "live") => {
+const make = async (mode: "off" | "live" = "live") => {
   const f = setup();
   fixtures.push(f);
   if (mode === "live") await goLive(f);
-  else await f.setMode("shadow");
   return f;
 };
 const settings = (f: Fixture) => f.call("getAttentionSettings", { projectId: f.tracker.id });
-const modes = async (f: Fixture) => (await f.sweep("attention.modes", { projectId: BB_PROJECT })).kinds["stale-status"];
+const modes = async (f: Fixture) => (await settings(f)).state;
 const setManager = (f: Fixture, manager: string | null) => f.call("updateAttentionManager", { projectId: f.tracker.id, manager });
 const event = (f: Fixture, type: "thread.archived" | "thread.unarchived" | "thread.deleted", id = MANAGER) =>
   f.harness.emitThreadEvent(type, { thread: makeThreadResponse({ id }) as never });
@@ -26,63 +26,58 @@ const eligibleCard = (f: Fixture, title = "Stale") => { const task = f.card(titl
 beforeEach(() => { receiptPolling.tries = 1; receiptPolling.delayMs = 0; });
 afterEach(async () => { await Promise.all(fixtures.splice(0).map((f) => f.dispose())); });
 
-describe("going live", () => {
+describe("turning notices on", () => {
   it("is refused with no manager, an archived manager and a deleted manager, and allowed once a usable one is set", async () => {
-    const f = await make("shadow");
-    f.ageShadow(49);
+    const f = await make("off");
     await f.call("updateAttentionManager", { projectId: f.tracker.id, manager: null });
-    await expect(f.setMode("live", true)).rejects.toThrow("No manager chosen; choose one before going live");
+    await expect(f.setMode("live")).rejects.toThrow("No manager chosen; choose one before turning notices on");
     await setManager(f, MANAGER);
     f.threads.threads.set(MANAGER, { archived: true });
-    await expect(f.setMode("live", true)).rejects.toThrow("The manager session is archived; choose another before going live");
+    await expect(f.setMode("live")).rejects.toThrow("The manager session is archived; choose another before turning notices on");
     f.threads.threads.set(MANAGER, { archived: true, deleted: true });
-    await expect(f.setMode("live", true)).rejects.toThrow("The manager session was deleted; choose another before going live");
-    expect((await modes(f)).transition).toBeNull();
+    await expect(f.setMode("live")).rejects.toThrow("The manager session was deleted; choose another before turning notices on");
+    expect((await modes(f)).effective.mode).toBe("off");
     f.threads.threads.set("thr_next", {});
     await setManager(f, "thr_next");
-    expect((await f.setMode("live", true)).transition).toMatchObject({ direction: "to_live" });
+    expect((await f.setMode("live")).effective.mode).toBe("live");
   });
 
   it("is refused while the manager cannot be verified, and allowed after a read verifies it", async () => {
-    const f = await make("shadow");
-    f.ageShadow(49);
+    const f = await make("off");
     f.threads.getError = new Error("backend unavailable");
-    await expect(f.setMode("live", true)).rejects.toThrow("Could not verify the manager session");
+    await expect(f.setMode("live")).rejects.toThrow("Could not verify the manager session");
     f.threads.getError = undefined;
-    expect((await f.setMode("live", true)).transition).toMatchObject({ direction: "to_live" });
+    expect((await f.setMode("live")).effective.mode).toBe("live");
   });
 
-  it("writes no transition when the owner clears manager A while its lookup is pending and A then reads usable", async () => {
-    const f = await make("shadow");
-    f.ageShadow(49);
+  it("turns nothing on when the owner clears manager A while its lookup is pending and A then reads usable", async () => {
+    const f = await make("off");
     const held = gate();
     f.threads.getGateOnce = held.promise;
-    const request = f.setMode("live", true);
+    const request = f.setMode("live");
     const refused = expect(request).rejects.toThrow(/manager changed/);
     while (f.threads.getGateOnce) await tick();
     await setManager(f, null);
     held.release();
     await refused;
-    const row = f.db.prepare<[string], { transition_token: string | null; requested_mode: string | null; effective_mode: string }>("SELECT transition_token, requested_mode, effective_mode FROM attention_modes WHERE tracker_id=?").get(f.tracker.id)!;
-    expect(row).toEqual({ transition_token: null, requested_mode: null, effective_mode: "shadow" });
+    expect(await modes(f)).toEqual({ effective: { mode: "off", generation: 0 }, switchingOff: false });
   });
 });
 
 describe("stale reads", () => {
-  it("writes no token when a deletion event arrives while the lookup is out and the read then returns an older usable snapshot", async () => {
-    const f = await make("shadow");
-    f.ageShadow(49);
+  it("turns nothing on when a deletion event arrives while the lookup is out and the read then returns an older usable snapshot", async () => {
+    const f = await make("off");
     const held = gate();
     f.threads.getGateOnce = held.promise;
-    const request = f.setMode("live", true);
-    const refused = expect(request).rejects.toThrow("The manager session was deleted; choose another before going live");
+    const request = f.setMode("live");
+    const refused = expect(request).rejects.toThrow("The manager session was deleted; choose another before turning notices on");
     while (f.threads.getGateOnce) await tick();
     f.threads.threads.set(MANAGER, { deleted: true });
     await event(f, "thread.deleted");
     held.release();
     await refused;
-    expect((await modes(f)).transition).toBeNull();
-    expect(f.db.prepare("SELECT transition_token FROM attention_modes WHERE tracker_id=?").get(f.tracker.id)).toEqual({ transition_token: null });
+    expect((await modes(f)).effective.mode).toBe("off");
+    expect(await modes(f)).toEqual({ effective: { mode: "off", generation: 0 }, switchingOff: false });
   });
 
   it("claims nothing when an archive event arrives while the drain's lookup is out and the read then returns an older usable snapshot", async () => {
@@ -151,7 +146,7 @@ describe("stale reads", () => {
   });
 
   it("records a deletion seen by a successful read like an event's, once, with its time", async () => {
-    const f = await make("shadow");
+    const f = await make("off");
     f.threads.threads.set(MANAGER, { deleted: true });
     const first = (await settings(f)).managerLookup;
     expect(first).toMatchObject({ status: "unusable", cause: "deleted", detectedAt: expect.any(String) });
@@ -162,7 +157,7 @@ describe("stale reads", () => {
   });
 
   it("keeps the time a deletion was established across settings reads", async () => {
-    const f = await make("shadow");
+    const f = await make("off");
     await event(f, "thread.deleted");
     const first = (await settings(f)).managerLookup;
     await new Promise((resolve) => setTimeout(resolve, 10));
@@ -184,8 +179,8 @@ describe("lookup", () => {
     await f.service.drain();
     expect(f.attempts()).toHaveLength(0);
     expect((await settings(f)).managerLookup).toEqual({ status: "unavailable" });
-    expect((await settings(f)).managerWarning).toBe("Could not verify the manager session; live is not delivering");
-    expect(await modes(f)).toMatchObject({ effective: { mode: "live", generation }, transition: null });
+    expect((await settings(f)).managerWarning).toBe("Could not verify the manager session; notices are not being sent");
+    expect(await modes(f)).toMatchObject({ effective: { mode: "live", generation }, switchingOff: false });
     f.threads.getError = undefined;
     await f.service.drain();
     expect(f.attempts()).toHaveLength(1);
@@ -198,12 +193,12 @@ describe("lookup", () => {
     f.threads.sendMode = "throw";
     await f.service.drain();
     expect(f.attempts().map((attempt) => attempt.outcome)).toEqual(["unknown"]);
-    expect(await modes(f)).toMatchObject({ effective: { mode: "live" }, transition: null });
+    expect(await modes(f)).toMatchObject({ effective: { mode: "live" }, switchingOff: false });
     expect((await settings(f)).managerLookup).toEqual({ status: "usable" });
   });
 
   it("reports deleted after a deletion event even when a later read throws, and unavailable for a transient failure alone", async () => {
-    const f = await make("shadow");
+    const f = await make("off");
     f.threads.getError = new Error("backend unavailable");
     expect((await settings(f)).managerLookup).toEqual({ status: "unavailable" });
     await event(f, "thread.deleted");
@@ -211,7 +206,7 @@ describe("lookup", () => {
   });
 
   it("reports deleted when the deletion event arrives while a read that then throws is outstanding", async () => {
-    const f = await make("shadow");
+    const f = await make("off");
     const held = gate();
     f.threads.getGateOnce = held.promise;
     f.threads.getError = new Error("backend unavailable");
@@ -223,7 +218,7 @@ describe("lookup", () => {
   });
 
   it("names a not-found answer as such, never as archived", async () => {
-    const f = await make("shadow");
+    const f = await make("off");
     f.threads.getError = notFound();
     expect((await settings(f)).managerLookup).toMatchObject({ status: "unusable", cause: "not_found" });
   });
@@ -239,20 +234,20 @@ describe("lookup", () => {
   });
 
   it("words stopping, side-chat and unverified managers separately", async () => {
-    const f = await make("shadow");
+    const f = await make("off");
     f.threads.threads.set(MANAGER, { status: "stopping" });
-    expect((await settings(f)).managerWarning).toBe("The manager session is stopping; choose another before going live");
+    expect((await settings(f)).managerWarning).toBe("The manager session is stopping; choose another before turning notices on");
     f.threads.threads.set(MANAGER, { sideChat: true });
-    expect((await settings(f)).managerWarning).toBe("The manager is a side chat; choose another before going live");
+    expect((await settings(f)).managerWarning).toBe("The manager is a side chat; choose another before turning notices on");
     f.threads.threads.set(MANAGER, { archived: true });
-    expect((await settings(f)).managerWarning).toBe("The manager session is archived; choose another before going live");
+    expect((await settings(f)).managerWarning).toBe("The manager session is archived; choose another before turning notices on");
     f.threads.threads.delete(MANAGER);
     f.threads.getError = new Error("backend unavailable");
     expect((await settings(f)).managerWarning).toBe("Could not verify the manager session");
     f.threads.getError = undefined;
     expect((await settings(f)).managerWarning).toBeNull();
     await setManager(f, null);
-    expect((await settings(f)).managerWarning).toBe("No manager chosen; choose one before going live");
+    expect((await settings(f)).managerWarning).toBe("No manager chosen; choose one before turning notices on");
   });
 });
 
@@ -265,8 +260,8 @@ describe("live with an unusable manager", () => {
     expect(f.attempts()).toHaveLength(0);
     expect(f.threads.sends).toBe(0);
     expect(f.occurrences()).toHaveLength(1);
-    expect((await settings(f)).managerWarning).toBe("The manager session is archived; live is not delivering");
-    expect(await modes(f)).toMatchObject({ effective: { mode: "live" }, transition: null });
+    expect((await settings(f)).managerWarning).toBe("The manager session is archived; notices are not being sent");
+    expect(await modes(f)).toMatchObject({ effective: { mode: "live" }, switchingOff: false });
     f.threads.threads.set("thr_next", {});
     await setManager(f, "thr_next");
     await f.service.drain();
@@ -354,17 +349,17 @@ describe("in-flight attempts", () => {
 
 describe("settings refresh", () => {
   it("publishes when an unlinked manager is deleted, and the warning follows even if a later read fails", async () => {
-    const f = await make("shadow");
+    const f = await make("off");
     expect((await settings(f)).managerWarning).toBeNull();
     const before = signals(f);
     await event(f, "thread.deleted");
     f.threads.getError = new Error("backend unavailable");
     expect(signals(f)).toBeGreaterThan(before);
-    expect((await settings(f)).managerWarning).toBe("The manager session was deleted; choose another before going live");
+    expect((await settings(f)).managerWarning).toBe("The manager session was deleted; choose another before turning notices on");
   });
 
   it("ignores an event for A after the switch to B", async () => {
-    const f = await make("shadow");
+    const f = await make("off");
     f.threads.threads.set("thr_b", {});
     await setManager(f, "thr_b");
     const before = signals(f);
@@ -375,7 +370,7 @@ describe("settings refresh", () => {
   });
 
   it("clears the warning when the selected manager is unarchived", async () => {
-    const f = await make("shadow");
+    const f = await make("off");
     f.threads.threads.set(MANAGER, { archived: true });
     await event(f, "thread.archived");
     expect((await settings(f)).managerWarning).toContain("archived");
@@ -387,7 +382,7 @@ describe("settings refresh", () => {
   });
 
   it("publishes on every reconciliation pass, so a view that diverged from another view's load is corrected", async () => {
-    const f = await make("shadow");
+    const f = await make("off");
     await f.service.reconcileAll();
     const first = signals(f);
     await f.service.reconcileAll();
@@ -405,7 +400,7 @@ describe("settings refresh", () => {
   });
 
   it("publishes nothing for a pass whose manager was replaced while its read was outstanding", async () => {
-    const f = await make("shadow");
+    const f = await make("off");
     const held = gate();
     f.threads.getGateOnce = held.promise;
     const pass = f.service.reconcileAll();
@@ -419,18 +414,11 @@ describe("settings refresh", () => {
   });
 });
 
-describe("transitions", () => {
-  it("honours the ack of a pending to_live and its replay when the manager disappears after the request, then keeps claims paused", async () => {
-    const f = await make("shadow");
-    f.ageShadow(49);
-    const transition = (await f.setMode("live", true)).transition;
+describe("switching", () => {
+  it("turns notices on and keeps claims paused when the manager disappears after the request", async () => {
+    const f = await make("off");
+    expect((await f.setMode("live")).effective.mode).toBe("live");
     f.threads.threads.set(MANAGER, { archived: true });
-    const ack = { projectId: BB_PROJECT, trackerId: f.tracker.id, kind: "stale-status", token: transition.token, generation: transition.generation, direction: "to_live", fenceId: "fence", acceptedOccurrenceIds: [] };
-    const first = await f.sweep("attention.ack", ack);
-    expect(first).toMatchObject({ ok: true, mode: "live" });
-    // A lost response: Sweep replays the same ack and gets the stored result.
-    expect(await f.sweep("attention.ack", ack)).toEqual(first);
-    expect(await modes(f)).toMatchObject({ effective: { mode: "live", generation: transition.generation }, transition: null });
     eligibleCard(f);
     await f.service.drain();
     expect(f.attempts()).toHaveLength(0);
@@ -439,24 +427,22 @@ describe("transitions", () => {
     expect(f.attempts()).toHaveLength(1);
   });
 
-  it("builds the settings response from one snapshot when a to_live ack lands during the manager lookup", async () => {
-    const f = await make("shadow");
-    f.ageShadow(49);
-    const transition = (await f.setMode("live", true)).transition!;
+  it("builds the settings response from one snapshot when notices turn on during the manager lookup", async () => {
+    const f = await make("off");
     f.threads.threads.set(MANAGER, { archived: true });
     const held = gate();
     f.threads.getGateOnce = held.promise;
     const load = settings(f);
     while (f.threads.getGateOnce) await tick();
-    await f.sweep("attention.ack", { projectId: BB_PROJECT, trackerId: f.tracker.id, kind: "stale-status", token: transition.token, generation: transition.generation, direction: "to_live", fenceId: "fence", acceptedOccurrenceIds: [] });
+    requestMode(f.db, { trackerId: f.tracker.id, mode: "live" });
     held.release();
     const result = await load;
     expect(result.state.effective.mode).toBe("live");
-    expect(result.managerWarning).toBe("The manager session is archived; live is not delivering");
+    expect(result.managerWarning).toBe("The manager session is archived; notices are not being sent");
   });
 
   it("reads the manager again once when it changed during the lookup", async () => {
-    const f = await make("shadow");
+    const f = await make("off");
     f.threads.threads.set("thr_b", { archived: true });
     const held = gate();
     f.threads.getGateOnce = held.promise;
@@ -470,7 +456,7 @@ describe("transitions", () => {
   });
 
   it("reports no manager when the setting is empty after the retry, not an unverified one", async () => {
-    const f = await make("shadow");
+    const f = await make("off");
     f.threads.threads.set("thr_b", {});
     const first = gate();
     f.threads.getGateOnce = first.promise;
@@ -486,34 +472,30 @@ describe("transitions", () => {
     const result = await load;
     expect(result.manager).toBeNull();
     expect(result.managerLookup).toMatchObject({ status: "unusable", cause: "none" });
-    expect(result.managerWarning).toBe("No manager chosen; choose one before going live");
+    expect(result.managerWarning).toBe("No manager chosen; choose one before turning notices on");
   });
 
-  it("runs an owner rollback unchanged while the manager is unusable", async () => {
+  it("turns notices off unchanged while the manager is unusable", async () => {
     const f = await make();
-    const task = eligibleCard(f);
+    eligibleCard(f);
     f.threads.threads.set(MANAGER, { archived: true });
-    const state = await f.setMode("shadow");
-    expect(state.transition).toMatchObject({ direction: "to_shadow", state: "ready" });
-    expect(state.transition!.handback!.map((entry: { taskId: string }) => entry.taskId)).toEqual([task.id]);
-    const ack = await f.sweep("attention.ack", { projectId: BB_PROJECT, trackerId: f.tracker.id, kind: "stale-status", token: state.transition!.token, generation: state.transition!.generation, direction: "to_shadow", fenceId: "fence-back" });
-    expect(ack).toMatchObject({ ok: true, mode: "shadow" });
+    expect(await f.setMode("off")).toEqual({ effective: { mode: "off", generation: 2 }, switchingOff: false });
+    expect(f.occurrences()).toHaveLength(0);
   });
 });
 
 describe("old attempts", () => {
-  it("reads attempts recorded with the removed sources through the ledger", async () => {
+  it("lists unknown attempts recorded with the removed recipient sources in the settings", async () => {
     const f = await make();
     const insert = db_insert(f);
-    insert("a-sweep", "sweep_fallback", "thr_sweep");
+    insert("a-fallback", "sweep_fallback", "thr_fallback");
     insert("a-parent", "parent", "thr_parent");
-    const ledger = await f.sweep("attention.ledger", { projectId: BB_PROJECT, kind: "stale-status" });
-    expect(ledger.attempts.map((attempt: { attemptId: string; recipientSource: string }) => [attempt.attemptId, attempt.recipientSource])).toEqual([["a-sweep", "sweep_fallback"], ["a-parent", "parent"]]);
+    expect((await settings(f)).unresolvedAttempts.map((attempt: { attemptId: string; recipientThreadId: string }) => [attempt.attemptId, attempt.recipientThreadId])).toEqual([["a-fallback", "thr_fallback"], ["a-parent", "thr_parent"]]);
   });
 });
 
 function db_insert(f: Fixture) {
   let rev = 100;
-  return (id: string, source: string, thread: string) => f.db.prepare("INSERT INTO attention_attempts(attempt_id, tracker_id, kind, generation, batch_id, recipient_thread_id, recipient_source, started_at, transport_started_at, outcome, accepted_at, rev) VALUES (?, ?, 'stale-status', 1, ?, ?, ?, ?, ?, 'queued', ?, ?)")
+  return (id: string, source: string, thread: string) => f.db.prepare("INSERT INTO attention_attempts(attempt_id, tracker_id, kind, generation, batch_id, recipient_thread_id, recipient_source, started_at, transport_started_at, outcome, accepted_at, rev) VALUES (?, ?, 'stale-status', 1, ?, ?, ?, ?, ?, 'unknown', ?, ?)")
     .run(id, f.tracker.id, `batch-${id}`, thread, source, new Date().toISOString(), new Date().toISOString(), new Date().toISOString(), rev++);
 }

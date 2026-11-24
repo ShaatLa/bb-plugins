@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createTasksStore } from "../db/store";
 import { registerTasksCli } from "../cli";
 import { createGitSyncStore } from "../git-sync/store";
@@ -6,16 +6,16 @@ import { prIdentity, prSnapshotSchema } from "../shared/git-sync";
 import { historyLimits, receiptPolling } from "../steer";
 import { attentionMarker } from "./service";
 import { accept, BB_PROJECT, goLive, MANAGER, setup } from "./fixtures";
+import { requestMode } from "./modes";
 
 const fixtures: ReturnType<typeof setup>[] = [];
-const make = async (mode: "off" | "shadow" | "live" = "shadow") => {
+const make = async (mode: "off" | "live" = "live") => {
   const f = setup();
   fixtures.push(f);
   if (mode === "live") await goLive(f);
-  else if (mode === "shadow") await f.setMode("shadow");
   return f;
 };
-const modes = async (f: ReturnType<typeof setup>) => (await f.sweep("attention.modes", { projectId: BB_PROJECT })).kinds["stale-status"];
+const modes = async (f: ReturnType<typeof setup>) => (await f.call("getAttentionSettings", { projectId: f.tracker.id })).state;
 const unknownAttempt = (f: ReturnType<typeof setup>, id: string, started = new Date().toISOString(), extra = "unknown") =>
   f.db.prepare("INSERT INTO attention_attempts(attempt_id, tracker_id, kind, generation, batch_id, recipient_thread_id, recipient_source, started_at, transport_started_at, outcome, rev) VALUES (?, ?, 'stale-status', 1, ?, ?, 'manager', ?, ?, ?, 1)")
     .run(id, f.tracker.id, `batch-${id}`, MANAGER, started, started, extra);
@@ -23,38 +23,25 @@ beforeEach(() => { receiptPolling.tries = 1; receiptPolling.delayMs = 0; });
 afterEach(async () => { await Promise.all(fixtures.splice(0).map((f) => f.dispose())); });
 
 describe("C1.2 one tracker per BB project", () => {
-  it("refuses to start shadow while another tracker is linked to the same BB project", async () => {
+  it("refuses to turn notices on while another tracker is linked to the same BB project", async () => {
     const f = await make("off");
     f.store.tasks.createProject({ name: "Twin", prefix: "TWN", color: "red", linkedBbProjectId: BB_PROJECT });
-    await expect(f.setMode("shadow")).rejects.toThrow(/same BB project/);
+    await expect(f.setMode("live")).rejects.toThrow(/same BB project/);
     expect((await f.call("getAttentionSettings", { projectId: f.tracker.id })).state.effective.mode).toBe("off");
   });
 });
 
 describe("C1.3 deleting a tracker", () => {
-  it("is refused, forced deletion included, until the mode is off with nothing pending", async () => {
+  it("is refused, forced deletion included, until notices are off with nothing pending", async () => {
     const f = await make("live");
-    expect(() => f.store.tasks.deleteProject(f.tracker.id)).toThrow(/Switch manager attention off/);
-    await expect(f.call("deleteProject", { projectId: f.tracker.id, force: true })).rejects.toThrow(/Switch manager attention off/);
-    await f.setMode("shadow");
-    expect(() => f.store.tasks.deleteProject(f.tracker.id)).toThrow(/Switch manager attention off/);
-    const transition = (await modes(f)).transition;
-    await f.sweep("attention.ack", { projectId: BB_PROJECT, trackerId: f.tracker.id, kind: "stale-status", token: transition.token, generation: transition.generation, direction: "to_shadow", fenceId: "f" });
-    await f.setMode("off");
+    expect(() => f.store.tasks.deleteProject(f.tracker.id)).toThrow(/Turn stale-status notices off/);
+    await expect(f.call("deleteProject", { projectId: f.tracker.id, force: true })).rejects.toThrow(/Turn stale-status notices off/);
+    unknownAttempt(f, "inflight", undefined, "sending");
+    expect(requestMode(f.db, { trackerId: f.tracker.id, mode: "off" }).switchingOff).toBe(true);
+    expect(() => f.store.tasks.deleteProject(f.tracker.id)).toThrow(/Turn stale-status notices off/);
+    f.db.prepare("UPDATE attention_attempts SET outcome='failed'").run();
+    await f.service.settleSwitchOff(f.tracker.id);
     expect(f.store.tasks.deleteProject(f.tracker.id)).toBe(true);
-  });
-});
-
-describe("C1.4 handback", () => {
-  it("leaves a Done card's shadow-only no_merge_or_outcome out of a rollback", async () => {
-    const f = await make("live");
-    const done = f.card("Done without outcome", "done");
-    const open = f.card("Open");
-    expect(f.occurrences().map((o) => o.signal).sort()).toEqual(["no_active_thread", "no_merge_or_outcome"]);
-    await f.setMode("shadow");
-    const handback = (await modes(f)).transition.handback;
-    expect(handback.map((entry: { taskId: string }) => entry.taskId)).toEqual([open.id]);
-    expect(handback.map((entry: { taskId: string }) => entry.taskId)).not.toContain(done.id);
   });
 });
 
@@ -82,7 +69,7 @@ describe("C1.5 a failed refresh is not a known answer", () => {
     openPr.fail();
     f.store.tasks.updateTask(open.id, { status: "in_review" });
     expect(f.occurrences().filter((o) => o.task_id === open.id).map((o) => o.signal)).toEqual(["pr_state_unavailable"]);
-    // C2.3: the board's flags, which Sweep also reads, use the same known-PR rule as the ledger.
+    // C2.3: the board's flags use the same known-PR rule as the ledger.
     expect(f.store.tasks.staleStatusFlags([open.id]).get(open.id)).toEqual(["pr_state_unavailable"]);
     expect(f.store.tasks.staleStatusFlags([closed.id]).get(closed.id)).toEqual(["pr_state_unavailable"]);
     // Once the refresh succeeds again the open PR is a known answer.
@@ -96,7 +83,7 @@ describe("C1.6 moving a family", () => {
   it("recomputes every moved card in the move transaction", async () => {
     const f = await make();
     const other = f.store.tasks.createProject({ name: "Other", prefix: "OTH", color: "red", linkedBbProjectId: "proj_other" });
-    await f.call("updateAttentionMode", { projectId: other.id, mode: "shadow" });
+    requestMode(f.db, { trackerId: other.id, mode: "live" });
     const epic = f.card("Epic", "todo", { type: "epic" });
     const member = f.card("Member", "in_progress", { epicId: epic.id });
     // The started member moved its epic to In progress, so both cards are tracked.
@@ -139,7 +126,7 @@ describe("C1.8 late receipts", () => {
     expect(f.attempts().filter((a) => a.outcome !== "unknown").map((a) => a.attempt_id).sort()).toEqual(["a01", "a22"]);
   });
 
-  it("still records a receipt that arrives after a waiver and a rollback", async () => {
+  it("still records a receipt that arrives after a waiver and a switch-off", async () => {
     const f = await make("live");
     f.card("Lost");
     f.makeEligible();
@@ -147,9 +134,7 @@ describe("C1.8 late receipts", () => {
     await f.service.drain();
     const attempt = f.attempts()[0];
     await f.call("resolveAttentionAttempt", { attemptId: attempt.attempt_id, disposition: "waived_loss" });
-    await f.setMode("shadow");
-    const transition = (await modes(f)).transition;
-    await f.sweep("attention.ack", { projectId: BB_PROJECT, trackerId: f.tracker.id, kind: "stale-status", token: transition.token, generation: transition.generation, direction: "to_shadow", fenceId: "f" });
+    await f.setMode("off");
     f.threads.addRow(MANAGER, `late ${attentionMarker(attempt.batch_id)}`);
     await f.service.reconcileAll();
     expect(f.attempts()[0]).toMatchObject({ outcome: "queued", disposition: "waived_loss" });
@@ -201,19 +186,19 @@ describe("C3.1 an unreadable history", () => {
     unknownAttempt(f, "mute", new Date(Date.now() - 3_600_000).toISOString(), "sending");
     f.db.prepare("INSERT INTO attention_attempt_items(attempt_id, occurrence_id) VALUES ('mute', ?)").run(f.occurrences()[0].id);
     f.threads.eventsFail = true;
-    const rollback = await f.setMode("shadow");
-    expect(rollback.transition).toMatchObject({ state: "preparing" });
-    expect(cursorOf(f, "mute").errors.count).toBe(1);
+    expect((await f.setMode("off")).switchingOff).toBe(true);
+    // The switch-off's own pass runs in the background.
+    await vi.waitFor(() => expect(cursorOf(f, "mute")?.errors?.count).toBe(1));
     backdate(f, "mute", 31);
     for (let pass = 0; pass < 3; pass++) await f.service.recover(f.tracker.id);
     // Four failed passes are not enough, however long they span.
     expect(f.attempts()[0].outcome).toBe("sending");
     await f.service.recover(f.tracker.id);
     expect(f.attempts()[0]).toMatchObject({ outcome: "unknown", error: expect.stringContaining("History unreadable") });
-    expect((await modes(f)).transition.state).toBe("preparing");
-    // The owner can now resolve it, and the rollback goes on.
+    // An unknown outcome does not hold the switch-off; the owner can still resolve it.
+    await f.service.settleSwitchOff(f.tracker.id);
+    expect((await modes(f)).effective.mode).toBe("off");
     await f.call("resolveAttentionAttempt", { attemptId: "mute", disposition: "waived_loss" });
-    expect((await modes(f)).transition.state).toBe("ready");
     // Later evidence still becomes the attempt's receipt.
     f.threads.eventsFail = false;
     f.threads.dispatch(`late ${attentionMarker("batch-mute")}`);
@@ -284,7 +269,7 @@ describe("C4.2 a fixed decision window", () => {
     unknownAttempt(f, "absent", new Date(Date.now() - 3_600_000).toISOString(), "sending");
     f.db.prepare("INSERT INTO attention_attempt_items(attempt_id, occurrence_id) VALUES ('absent', ?)").run(f.occurrences()[0].id);
     for (let index = 0; index < 2100; index++) f.threads.dispatch(`backlog ${index}`);
-    await f.setMode("shadow");
+    await f.setMode("off");
     let passes = 0;
     while (f.attempts()[0].outcome === "sending" && passes < 8) {
       for (let index = 0; index < 2100; index++) f.threads.dispatch(`fresh ${passes}-${index}`);
@@ -293,9 +278,9 @@ describe("C4.2 a fixed decision window", () => {
     }
     expect(f.attempts()[0]).toMatchObject({ outcome: "unknown", error: expect.stringContaining("No evidence") });
     expect(passes).toBeLessThanOrEqual(4);
-    expect((await modes(f)).transition.state).toBe("preparing");
+    await f.service.settleSwitchOff(f.tracker.id);
+    expect((await modes(f)).effective.mode).toBe("off");
     await f.call("resolveAttentionAttempt", { attemptId: "absent", disposition: "waived_loss" });
-    expect((await modes(f)).transition.state).toBe("ready");
   });
 
   it("still records a receipt from a request that arrives after the decision", async () => {
@@ -327,7 +312,7 @@ describe("C5 the acceptance window and the candidate set", () => {
     for (let index = 0; index < 100; index++) f.threads.dispatch(`before ${index}`);
     const request = f.threads.requestOnly(`notice ${attentionMarker("batch-traffic")}`);
     for (let index = 0; index < 2100; index++) f.threads.dispatch(`after ${index}`);
-    await f.setMode("shadow");
+    await f.setMode("off");
     let passes = 1;
     while (f.attempts()[0].outcome === "sending" && passes < 14) {
       for (let index = 0; index < 500; index++) f.threads.dispatch(`more ${passes}-${index}`);
@@ -336,8 +321,9 @@ describe("C5 the acceptance window and the candidate set", () => {
     }
     expect(f.attempts()[0].outcome).toBe("unknown");
     expect(passes).toBeLessThanOrEqual(8);
+    await f.service.settleSwitchOff(f.tracker.id);
+    expect((await modes(f)).effective.mode).toBe("off");
     await f.call("resolveAttentionAttempt", { attemptId: "traffic", disposition: "waived_loss" });
-    expect((await modes(f)).transition.state).toBe("ready");
     // The acceptance arrives after the decision: late evidence, found without delaying anything.
     f.threads.acceptRequest(request);
     for (let pass = 0; pass < 40 && f.attempts()[0].outcome === "unknown"; pass++) await f.service.recoverLate(f.tracker.id);
@@ -614,7 +600,7 @@ describe("C7 ranges and the delivery path", () => {
     expect(f.attempts()[0]).toMatchObject({ outcome: "inline" });
   });
 
-  it("C7.4: a stalled queue read in the delivery path ends at its timeout, through drain and rollback", async () => {
+  it("C7.4: a stalled queue read in the delivery path ends at its timeout, through drain and switch-off", async () => {
     historyLimits.readTimeoutMs = 30;
     const f = await make("live");
     f.card("Stalled before any write");
@@ -623,7 +609,7 @@ describe("C7 ranges and the delivery path", () => {
     const started = Date.now();
     await f.service.drain();
     expect(Date.now() - started).toBeLessThan(3000);
-    // Nothing was written, so the attempt is a definite failure to retry, and a rollback is not held by it.
+    // Nothing was written, so the attempt is a definite failure to retry, and a switch-off is not held by it.
     expect(f.attempts().map((a) => a.outcome)).toEqual(["failed"]);
     expect(f.threads.sends).toBe(0);
     expect(f.threads.updates).toBe(0);
@@ -639,10 +625,8 @@ describe("C7 ranges and the delivery path", () => {
     await g.service.drain();
     expect(g.attempts().map((a) => a.outcome)).toEqual(["unknown"]);
     expect(g.threads.sends).toBe(0);
-    const rollback = await g.setMode("shadow");
-    expect(rollback.transition).toMatchObject({ state: "preparing" });
+    expect(await g.setMode("off")).toEqual({ effective: { mode: "off", generation: 2 }, switchingOff: false });
     await g.call("resolveAttentionAttempt", { attemptId: g.attempts()[0].attempt_id, disposition: "waived_loss" });
-    expect((await modes(g)).transition.state).toBe("ready");
   });
 });
 
@@ -664,14 +648,14 @@ describe("C1.10 monotonic receipts", () => {
 });
 
 describe("C1.11 mode changes through another handle", () => {
-  it("lets a handle that cached all-off see a clear and a restore written right after shadow starts", async () => {
+  it("lets a handle that cached all-off see a clear and a restore written right after notices turn on", async () => {
     const f = await make("off");
     const handle = new Proxy(f.db, { get: (target, key) => { const value = Reflect.get(target, key); return typeof value === "function" ? value.bind(target) : value; } });
     const other = createTasksStore(handle);
     const task = other.createTask({ projectId: f.tracker.id, title: "Flapping", status: "in_progress" });
     // The cached handle has now answered "all off".
     other.updateTask(task.id, { title: "Still off" });
-    await f.setMode("shadow");
+    await goLive(f);
     const original = f.occurrences()[0];
     other.updateTask(task.id, { status: "todo" });
     other.updateTask(task.id, { status: "in_progress" });
@@ -681,43 +665,15 @@ describe("C1.11 mode changes through another handle", () => {
 });
 
 describe("C1.13 task keys", () => {
-  it("follows a prefix rename in the ledger and the delivered notice", async () => {
+  it("follows a prefix rename in the delivered notice", async () => {
     const f = await make("live");
     const task = f.card("Renamed");
     f.store.tasks.updateProject(f.tracker.id, { prefix: "REN" });
     const key = f.store.tasks.getTask(task.id)!.key;
     expect(key.startsWith("REN-")).toBe(true);
-    const ledger = await f.sweep("attention.ledger", { projectId: BB_PROJECT, kind: "stale-status" });
-    expect(ledger.occurrences.map((o: { taskKey: string }) => o.taskKey)).toEqual([key]);
     f.makeEligible();
     await f.service.drain();
     expect(f.threads.rows.map((row) => f.threads.text(row)).join("\n")).toContain(`[${key}]`);
-  });
-
-  it("follows a prefix rename in the handback", async () => {
-    const f = await make("live");
-    const task = f.card("Renamed before rollback");
-    f.store.tasks.updateProject(f.tracker.id, { prefix: "REN" });
-    await f.setMode("shadow");
-    const handback = (await modes(f)).transition.handback;
-    expect(handback.map((entry: { taskKey: string }) => entry.taskKey)).toEqual([f.store.tasks.getTask(task.id)!.key]);
-  });
-});
-
-describe("C2.1 a published handback", () => {
-  it("keeps the keys it was published with when a prefix changes before the ack, while live reads follow the rename", async () => {
-    const f = await make("live");
-    const task = f.card("Renamed after ready");
-    await f.setMode("shadow");
-    const before = await modes(f);
-    const published = before.transition.handback.map((entry: { taskKey: string }) => entry.taskKey);
-    f.store.tasks.updateProject(f.tracker.id, { prefix: "REN" });
-    const after = await modes(f);
-    expect(after.transition).toEqual(before.transition);
-    expect(after.transition.handback.map((entry: { taskKey: string }) => entry.taskKey)).toEqual(published);
-    const ledger = await f.sweep("attention.ledger", { projectId: BB_PROJECT, kind: "stale-status" });
-    expect(ledger.occurrences[0].taskKey).toBe(f.store.tasks.getTask(task.id)!.key);
-    expect(ledger.occurrences[0].taskKey).not.toBe(published[0]);
   });
 });
 

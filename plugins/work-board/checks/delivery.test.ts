@@ -345,7 +345,7 @@ describe("manager", () => {
     expect(f.runs()).toBe(1);
     const staged = pendingId(f);
     expect(staged).toBeTruthy();
-    expect(f.pushes).toEqual([{ title: "Sweep manager unreachable", body: expect.stringMatching(/^proj_example: Error: Manager missing, archived or deleted/) }]);
+    expect(f.pushes).toEqual([{ title: "Repository checks: manager unreachable", body: expect.stringMatching(/^proj_example: Error: Manager missing, archived or deleted/) }]);
     expect(f.threads.sends).toBe(0); // the live parent is not a fallback
     expect(f.attempts()).toHaveLength(0);
     await f.tick();

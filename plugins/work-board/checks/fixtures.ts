@@ -83,7 +83,7 @@ export async function setup(options: { settings?: Record<string, string> } = {})
     const reply = { id: item.id, created: !found };
     return hub.after ? hub.after(reply, signal) : reply;
   };
-  const control = { hub, pushFail: false, remote: repo.url as string | null, projectFail: false, onProject: undefined as (() => void) | undefined, /** The installed Sweep, when a test installs one: its RPC handler. */ sweep: undefined as undefined | ((method: string, input: unknown) => Promise<unknown>) };
+  const control = { hub, pushFail: false, remote: repo.url as string | null, projectFail: false, onProject: undefined as (() => void) | undefined };
   /** The archived-worktree scan's view of the host. Off (no primary host) until a test calls `worktrees.enable()`. */
   const scan = {
     calls: 0, listCalls: 0, primaryHostId: null as string | null, storage: "" as string, sources: [] as { hostId: string; path: string }[],
@@ -108,16 +108,11 @@ export async function setup(options: { settings?: Record<string, string> } = {})
       }),
     },
     plugins: {
-      list: async () => ({ plugins: [...(control.sweep ? [{ id: "sweep", enabled: true }] : []), { id: "agent-hub", enabled: hub.enabled }] }),
+      list: async () => ({ plugins: [{ id: "agent-hub", enabled: hub.enabled }] }),
       callRpc: async ({ pluginId, method, input, outputSchema, signal }: { pluginId: string; method: string; input: { title: string; body: string }; outputSchema?: { parse(value: unknown): unknown }; signal?: AbortSignal }) => {
         if (pluginId === "agent-hub") {
           if (!hub.enabled || method !== "notice") throw new Error(`Plugin agent-hub cannot serve ${method}`);
           const value = await noticeCall(input as unknown as Record<string, unknown>, signal);
-          return outputSchema ? outputSchema.parse(value) : value;
-        }
-        if (pluginId === "sweep") {
-          if (!control.sweep) throw new Error("Plugin sweep is not installed");
-          const value = await control.sweep(method, input);
           return outputSchema ? outputSchema.parse(value) : value;
         }
         if (pluginId !== "push-notifications" || method !== "notifications.send") throw new Error(`unexpected ${pluginId}.${method}`);
@@ -143,7 +138,7 @@ export async function setup(options: { settings?: Record<string, string> } = {})
   const io = tempDir("checks-io-");
   writeFileSync(join(io, "code.txt"), "0"); writeFileSync(join(io, "out.txt"), "");
   /** Commits the standard fixture script: it logs each run, prints out.txt, copies cand.txt as the candidate and exits with code.txt. */
-  const standard = () => script(`echo run >> "${io}/runs.log"\ncat "${io}/out.txt"\nif [ -f "${io}/cand.txt" ]; then cp "${io}/cand.txt" "$BB_SWEEP_CANDIDATE_SNAPSHOT"; fi\nexit $(cat "${io}/code.txt")`);
+  const standard = () => script(`echo run >> "${io}/runs.log"\ncat "${io}/out.txt"\nif [ -f "${io}/cand.txt" ]; then cp "${io}/cand.txt" "$BB_CHECKS_CANDIDATE_SNAPSHOT"; fi\nexit $(cat "${io}/code.txt")`);
   const output = (text: string, code = 0, candidate: string | null = null) => {
     writeFileSync(join(io, "out.txt"), text ? `${text}\n` : ""); writeFileSync(join(io, "code.txt"), String(code));
     if (candidate === null) rmSync(join(io, "cand.txt"), { force: true }); else writeFileSync(join(io, "cand.txt"), candidate);

@@ -42,3 +42,14 @@ it("removes an entry with its button, and the last one with Backspace in an empt
   fireEvent.keyDown(input(), { key: "Backspace" });
   expect(shown()).toBe("build");
 });
+
+it("ignores Enter and a comma while an input method is composing, then adds on the next Enter", () => {
+  render(<Field />);
+  fireEvent.change(input(), { target: { value: "ビルド" } });
+  fireEvent.keyDown(input(), { key: "Enter", isComposing: true });
+  fireEvent.keyDown(input(), { key: ",", isComposing: true });
+  expect(shown()).toBe("");
+  expect(input()).toHaveProperty("value", "ビルド");
+  fireEvent.keyDown(input(), { key: "Enter" });
+  expect(shown()).toBe("ビルド");
+});

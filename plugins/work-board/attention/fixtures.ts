@@ -1,11 +1,10 @@
 import { randomUUID } from "node:crypto";
 import { createFakePluginHost, makeThreadResponse } from "@get-bb/plugin-sdk/testing";
 import { createStore, registerTasksApi } from "../api";
-import { touchAttention } from "./ledger";
+import { invalidateAttentionCache, touchAttention } from "./ledger";
 import { registerAttention } from "./rpc";
 import { attentionService } from "./service";
 
-export const SWEEP = { kind: "plugin", pluginId: "sweep" } as const;
 export const BB_PROJECT = "proj_example";
 export const MANAGER = "thr_manager";
 
@@ -59,9 +58,8 @@ export function createFakeThreads() {
     threads: new Map<string, { archived?: boolean; deleted?: boolean; parent?: string; status?: string; sideChat?: boolean }>(),
     /** The next queue read waits for this and then sees an empty queue: a search that was slow and stale. */
     listGateOnce: undefined as Promise<void> | undefined,
-    /** Sweep's own manager setting, so a test can prove Work Board never asks for it. */
-    sweepManager: "thr_sweep" as string | null,
-    sweepCalls: 0,
+    /** Every call to another plugin, so a test can prove Work Board makes none. */
+    pluginCalls: 0,
     /** Every thread read throws this, as in a transient outage; `{ code: "thread_not_found" }` is the platform's authoritative answer. */
     getError: undefined as (Error & { code?: string }) | undefined,
     /** The next thread read waits for this before answering. */
@@ -139,7 +137,7 @@ export function createFakeThreads() {
     },
     plugins: {
       callRpc: async ({ pluginId, method }: { pluginId: string; method: string }) => {
-        if (pluginId === "sweep" && method === "config.get") { state.sweepCalls++; return { manager: state.sweepManager }; }
+        state.pluginCalls++;
         throw new Error(`unexpected ${pluginId}.${method}`);
       },
     },
@@ -172,12 +170,13 @@ export function createFakeThreads() {
   return Object.assign(state, { sdk, text, dispatch, dispatchRow, addRow, requestOnly, acceptRequest });
 }
 
-export function setup(threads = createFakeThreads()) {
+/** `start: false` leaves the attention service unregistered, so a test can store rows an older version left before startup. */
+export function setup(threads = createFakeThreads(), { start = true } = {}) {
   const host = createFakePluginHost({ pluginId: "work-board", sdk: threads.sdk as never });
   const { bb, harness } = host;
   const store = createStore(bb);
   registerTasksApi(bb, store);
-  registerAttention(bb, store);
+  if (start) registerAttention(bb);
   const db = bb.storage.database();
   const tracker = store.tasks.createProject({ name: "Attention", prefix: "ATT", color: "blue", linkedBbProjectId: BB_PROJECT });
   store.tasks.updateProject(tracker.id, { statuses: [{ id: "backlog", name: "Backlog" }, { id: "todo", name: "Todo" }, { id: "in_progress", name: "In Progress" }, { id: "in_review", name: "In Review" }, { id: "in_testing", name: "In Testing" }, { id: "done", name: "Done" }, { id: "canceled", name: "Canceled" }] });
@@ -185,10 +184,7 @@ export function setup(threads = createFakeThreads()) {
   db.prepare("INSERT INTO attention_manager(tracker_id, manager, changed_at, previous) VALUES (?, ?, ?, NULL)").run(tracker.id, MANAGER, new Date().toISOString());
   const call = (method: string, input?: unknown, caller?: { kind: "plugin"; pluginId: string }) =>
     harness.callRpc(method, input, caller ? { experimental_caller: caller } : undefined) as Promise<any>;
-  const sweep = (method: string, input?: unknown) => call(method, input, SWEEP);
-  const setMode = (mode: "off" | "shadow" | "live", parityReviewed?: boolean) => call("updateAttentionMode", { projectId: tracker.id, mode, parityReviewed });
-  /** Pretend the shadow observation started `hours` ago. */
-  const ageShadow = (hours: number) => db.prepare("UPDATE attention_modes SET shadow_started_at=? WHERE tracker_id=?").run(new Date(Date.now() - hours * 3_600_000).toISOString(), tracker.id);
+  const setMode = (mode: "off" | "live") => call("updateAttentionMode", { projectId: tracker.id, mode });
   const card = (title: string, status: "in_progress" | "in_review" | "in_testing" | "done" | "todo" = "in_progress", extra: Record<string, unknown> = {}) =>
     store.tasks.createTask({ projectId: tracker.id, title, status, ...extra });
   const occurrences = (all = false) => db.prepare<[string], any>(`SELECT * FROM manager_attention WHERE tracker_id=? ${all ? "" : "AND cleared_at IS NULL"} ORDER BY created_rev`).all(tracker.id);
@@ -202,17 +198,20 @@ export function setup(threads = createFakeThreads()) {
     if (state !== "missing") db.prepare("INSERT INTO git_pr_snapshots(project_id, identity, payload, error) VALUES (?, ?, ?, ?)").run(tracker.id, identity, state === "failed" ? null : JSON.stringify({ state }), state === "failed" ? "refresh failed" : null);
     touchAttention(db, [taskId]);
   };
-  return { ...host, bb, store, db, tracker, threads, service, call, sweep, setMode, ageShadow, card, occurrences, attempts, makeEligible, linkPr, dispose: () => harness.dispose() };
+  return { ...host, bb, store, db, tracker, threads, service, call, setMode, card, occurrences, attempts, makeEligible, linkPr, start: () => registerAttention(bb), dispose: () => harness.dispose() };
 }
 
-/** Switch to shadow, age the observation past the gate, then promote and let Sweep acknowledge, so live is effective. */
-export async function goLive(f: ReturnType<typeof setup>, accepted: string[] = []) {
-  await f.setMode("shadow");
-  f.ageShadow(49);
-  const state = await f.setMode("live", true);
-  const transition = state.transition;
-  const ack = await f.sweep("attention.ack", { projectId: BB_PROJECT, trackerId: f.tracker.id, kind: "stale-status", token: transition.token, generation: transition.generation, direction: "to_live", fenceId: "fence-live", acceptedOccurrenceIds: accepted });
-  return { transition, ack };
+/** Turn notices on: effective at once. */
+export async function goLive(f: ReturnType<typeof setup>) {
+  return f.setMode("live");
+}
+
+/** Store a mode row as an older version left it, with every column given; for the startup normalization. */
+export function legacyRow(f: ReturnType<typeof setup>, columns: Record<string, string | number | null>) {
+  f.db.prepare("INSERT OR IGNORE INTO attention_modes(tracker_id, kind) VALUES (?, 'stale-status')").run(f.tracker.id);
+  const keys = Object.keys(columns);
+  f.db.prepare(`UPDATE attention_modes SET ${keys.map((key) => `${key}=?`).join(", ")} WHERE tracker_id=?`).run(...keys.map((key) => columns[key]), f.tracker.id);
+  invalidateAttentionCache();
 }
 
 /** Record an accepted attempt for an occurrence, as a delivered batch would. */

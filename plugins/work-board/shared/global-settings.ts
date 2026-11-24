@@ -43,3 +43,5 @@ export const globalSettingsPatchSchema = z.object({
   ...(Object.fromEntries(BADGE_CRITERIA.map((criterion) => [BADGE_FIELDS[criterion], z.boolean()])) as Record<BadgeField, z.ZodBoolean>),
 }).partial().strict();
 export type GlobalSettingsPatch = z.infer<typeof globalSettingsPatchSchema>;
+/** The refusal of a write whose `expected` values no longer match the stored ones. */
+export const STALE_GLOBAL_SETTING = "Settings changed elsewhere; reload them before writing";

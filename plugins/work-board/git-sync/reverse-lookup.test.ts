@@ -11,7 +11,7 @@ afterEach(async () => { await Promise.all(fixtures.splice(0).map((f) => f.dispos
 async function twoProjects() {
   const f = setup();
   fixtures.push(f);
-  await f.setMode("shadow");
+  await f.setMode("live");
   const other = f.store.tasks.createProject({ name: "Other", prefix: "OTH", color: "red" });
   f.db.exec(`CREATE TEMP TABLE modes_copy AS SELECT * FROM attention_modes WHERE tracker_id='${f.tracker.id}';
     UPDATE modes_copy SET tracker_id='${other.id}'; INSERT INTO attention_modes SELECT * FROM modes_copy; DROP TABLE modes_copy;`);
