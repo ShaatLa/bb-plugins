@@ -734,6 +734,21 @@ it("offers unique GitHub repositories from BB projects without changing sync con
   expect(result.config).toMatchObject({ enabled: false, repositories: [] });
 });
 
+it("offers only the linked BB project's repository to a linked project", async () => {
+  const f = setup();
+  const linked = f.store.tasks.createProject({ name: "Linked", prefix: "LNK", color: "green", linkedBbProjectId: "proj_example" });
+  f.harness.sdk.stub("projects.list", async () => [{ id: "proj_other", gitRemoteUrl: "git@github.com:example/other.git" }]);
+  let remote: string | null = "git@github.com:example/service.git";
+  f.harness.sdk.stub("projects.get", async () => ({ id: "proj_example", gitRemoteUrl: remote }));
+  expect(await f.service.handlers.getGitSyncConfig({ projectId: linked.id })).toMatchObject({
+    availableRepositories: ["example/service"], suggestedRepository: "example/service", linkedBbProject: true,
+  });
+  remote = null;
+  expect(await f.service.handlers.getGitSyncConfig({ projectId: linked.id })).toMatchObject({
+    availableRepositories: [], suggestedRepository: null, linkedBbProject: true,
+  });
+});
+
 it("refreshes only PR subscribers after polling and leaves unrelated task indexes alone", async () => {
   const f = setup();
   await f.service.handlers.setGitSyncConfig({ projectId: f.project.id, config: gitSyncConfigSchema.parse({ repositories: ["example/service"], titleDiscovery: false }) });

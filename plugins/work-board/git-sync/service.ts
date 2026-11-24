@@ -539,31 +539,30 @@ export function createGitSyncService(
       };
       let suggestedRepository: string | null = null;
       const available = new Set<string>();
-      try {
-        const projects = await bb.sdk.projects.list({ includePersonal: true });
-        for (const entry of projects) {
-          const repository = fromRemote(entry.gitRemoteUrl);
-          if (repository) available.add(repository);
-          if (entry.id === project.linkedBbProjectId)
-            suggestedRepository = repository;
-        }
-      } catch {
-        /* Manual configuration stays available if BB projects cannot be read. */
-      }
-      if (project.linkedBbProjectId && !suggestedRepository) {
+      const linkedId = project.linkedBbProjectId;
+      // A linked project offers only its own repository, so other projects' repositories stay out of its settings.
+      if (linkedId) {
         try {
-          const linked = await bb.sdk.projects.get({
-            projectId: project.linkedBbProjectId,
-          });
+          const linked = await bb.sdk.projects.get({ projectId: linkedId });
           suggestedRepository = fromRemote(linked.gitRemoteUrl);
           if (suggestedRepository) available.add(suggestedRepository);
         } catch {
-          /* Suggestions are optional. */
+          /* Manual configuration stays available if the BB project cannot be read. */
+        }
+      } else {
+        try {
+          for (const entry of await bb.sdk.projects.list({ includePersonal: true })) {
+            const repository = fromRemote(entry.gitRemoteUrl);
+            if (repository) available.add(repository);
+          }
+        } catch {
+          /* Manual configuration stays available if BB projects cannot be read. */
         }
       }
       return {
         config: data.config(projectId),
         suggestedRepository,
+        linkedBbProject: Boolean(linkedId),
         availableRepositories: [...available].sort(),
       };
     },

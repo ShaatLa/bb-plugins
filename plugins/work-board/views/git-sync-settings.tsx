@@ -150,6 +150,7 @@ export function GitSyncSettings({ projectId }: { projectId: string }) {
   };
   const setRules = (change: (rules: OverlapRule[]) => OverlapRule[]) => setDraft((current) => ({ overlapRules: change(current.overlapRules) }));
   const available = query.data?.availableRepositories ?? [];
+  const linkedBbProject = query.data?.linkedBbProject ?? false;
   const otherRepositories = draft.repositories.filter(
     (repository) => !available.includes(repository),
   );
@@ -198,7 +199,9 @@ export function GitSyncSettings({ projectId }: { projectId: string }) {
           <div className="space-y-1 px-3 pt-3 pb-2">
             <h4 className="text-sm font-medium">Repositories</h4>
             <p className="text-muted-foreground">
-              Repositories from your BB projects; each switch saves at once.
+              {linkedBbProject
+                ? "The linked BB project's repository; the switch saves at once."
+                : "Repositories from your BB projects; each switch saves at once."}
             </p>
           </div>
           {available.length ? (
@@ -215,7 +218,9 @@ export function GitSyncSettings({ projectId }: { projectId: string }) {
             </div>
           ) : (
             <p className="px-3 pb-3 text-muted-foreground">
-              No GitHub repositories found in BB projects.
+              {linkedBbProject
+                ? "Could not find a GitHub repository for the linked BB project. Add it under Other repositories."
+                : "No GitHub repositories found in BB projects."}
             </p>
           )}
           <details className="border-t border-border-hairline">

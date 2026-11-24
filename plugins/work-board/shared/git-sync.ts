@@ -260,6 +260,8 @@ export const gitSyncMethods = {
         config: gitSyncConfigSchema,
         suggestedRepository: repositorySchema.nullable(),
         availableRepositories: z.array(repositorySchema).default([]),
+        // True when the list holds only the linked BB project's repository.
+        linkedBbProject: z.boolean().default(false),
       })
       .strict(),
   },
