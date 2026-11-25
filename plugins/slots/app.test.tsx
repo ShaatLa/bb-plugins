@@ -34,10 +34,12 @@ afterEach(() => { cleanup(); vi.useRealTimers(); vi.restoreAllMocks(); });
 
 test("renders summary, capacity cells, lease progress, queue and SDK thread navigation without host IDs", async () => {
   const slot = render();
-  const machine = await slot.findByRole("region", { name: "Machine" });
+  const machine = await slot.findByRole("region", { name: "This Mac" });
   expect(machine.textContent).toContain("Checking… (1 of 2 checks)");
-  expect(slot.getByRole("region", { name: "Memory free" }).textContent).toContain("43%needs at least 20%");
-  expect(slot.getByRole("region", { name: "Load (1 min)" }).textContent).toContain("8.2limit 18");
+  expect(machine.textContent).toContain("Memory free 43% · needs 20%");
+  expect(machine.textContent).toContain("Load 8.2 · limit 18");
+  expect(machine.textContent).toContain("Checked 5s ago");
+  expect(slot.getAllByRole("region")).toHaveLength(5); // 3 tiles + 2 pool cards
   expect(slot.getByRole("region", { name: "Heavy slots" }).textContent).toContain("1 of 4 in use2 waiting");
   expect(slot.getByText("Free")).toBeTruthy();
   const pool = slot.getByRole("region", { name: "Heavy jobs" });
@@ -323,7 +325,7 @@ test("refresh uses the BB ArrowReloadHorizontal icon and stays busy until succes
 test("keeps summary values compact and shows clamped-setting warnings", async () => {
   const slot = render(() => ({ ok: true, data: { ...fixture,
     settingsWarnings: ["Saved load limit 24 exceeds 18 CPU cores; using 18."] } }));
-  expect(await slot.findByText("limit 18")).toBeTruthy();
+  expect(await slot.findByText("Load 8.2 · limit 18")).toBeTruthy();
   expect(slot.getByRole("region", { name: "Heavy slots" }).textContent).toContain("1 of 4 in use");
   expect(slot.getByRole("alert").textContent).toBe("Saved load limit 24 exceeds 18 CPU cores; using 18.");
   expect(slot.container.textContent).not.toContain("(auto)");
@@ -445,4 +447,68 @@ test("Reset to default after typing drops the draft and resets instead of commit
   expect(write).toHaveBeenCalledTimes(1);
   expect(write).toHaveBeenLastCalledWith({ unset: ["watchCores"] });
   expect(input.value).toBe("3");
+});
+
+test("marks a lease past its estimate in amber with the overrun", async () => {
+  const lease = { ...fixture.pools[0].leases[0], grantedAt: at - 9_240_000, estMs: 3_600_000, expiresAt: at + 4_440_000 };
+  const slot = render(() => ({ ok: true, data: { ...fixture, pools: [{ ...fixture.pools[0], leases: [lease, { ...lease, id: "lease-2" , grantedAt: at - 60_000 }] }] } }));
+  const [late, onTime] = await slot.findAllByRole("progressbar");
+  expect(late.getAttribute("aria-valuetext")).toBe("2h 34m of 1h, over estimate");
+  expect(late.firstElementChild!.className).toContain("bg-amber-500");
+  expect(slot.getByText("1h 34m over estimate ·").className).toContain("text-amber");
+  expect(late.parentElement!.textContent).toContain("2h 34m of 1h · 1h 34m over estimate · expires in 1h 14m");
+  expect(onTime.getAttribute("aria-valuetext")).toBe("1m of 1h");
+  expect(onTime.firstElementChild!.className).not.toContain("bg-amber-500");
+});
+
+const remoteHost = (connected: boolean) => ({ ...DEFAULT_SETTINGS, capacities: { heavy: 2, "local-model": 0 }, gated: false, connected });
+const machines = (connected: boolean, remoteLeases = 0): StatusView => ({ ...fixture, localHostName: "Work machine",
+  hostSettings: { laptop: DEFAULT_SETTINGS, remote: remoteHost(connected) },
+  leaseHosts: { laptop: { pools: ["heavy", "local-model"], name: "Work machine" }, remote: { pools: ["heavy"], name: "Build box" } },
+  pools: [{ ...fixture.pools[1], device: "GPU-1" }, { hostId: "remote", pool: "heavy", capacity: 2, leases: Array.from({ length: remoteLeases }, (_, i) => ({ ...fixture.pools[0].leases[0], id: `r${i}`, hostId: "remote" })), queue: [] }, ...fixture.pools] });
+
+test("groups pool cards by machine: this Mac, devices, then other hosts", async () => {
+  const slot = render(() => ({ ok: true, data: machines(false) }));
+  await slot.findByText("This Mac");
+  const sections = slot.container.querySelectorAll("section");
+  expect(Array.from(sections, section => [section.querySelector("h2")!.textContent, Array.from(section.querySelectorAll("h3"), h => h.textContent)])).toEqual([
+    ["This Mac", ["Heavy jobs", "Local model"]],
+    ["GPU-1 · local model device", ["Local model"]],
+    ["Build box · offline", ["Heavy jobs"]],
+  ]);
+  expect(slot.getByRole("region", { name: "Heavy jobs · Build box" })).toBeTruthy();
+  expect(slot.queryByText(/free heavy slot/)).toBeNull();
+});
+
+test.each([
+  [true, 0, [], "Build box has 2 free heavy slots. Only runs started with slots-run --spill use them."],
+  [true, 1, [], "Build box has 1 free heavy slot. Only runs started with slots-run --spill use them."],
+  [true, 2, [], null],
+  [false, 0, [], null],
+  [true, 0, undefined, null],
+])("spill hint for a connected=%s host with %s leases", async (connected, leases, _, hint) => {
+  const view = machines(connected, leases);
+  const data = _ === undefined ? { ...view, pools: view.pools.map(pool => ({ ...pool, queue: [] })) } : view;
+  const slot = render(() => ({ ok: true, data }));
+  const pool = await slot.findByRole("region", { name: "Heavy jobs" });
+  if (hint) expect(within(pool).getByText(hint)).toBeTruthy();
+  else expect(slot.queryByText(/free heavy slot/)).toBeNull();
+  expect(within(slot.getByRole("region", { name: "Heavy jobs · Build box" })).queryByText(/free heavy slot/)).toBeNull();
+});
+
+const local = ["This Mac", ["Heavy jobs", "Local model"]], device = ["GPU-1 · local model device", ["Local model"]];
+test.each([
+  ["match", "Build box", "GPU-1 box", [local, ["Build box · offline", ["Heavy jobs"]], ["GPU-1 box", ["Heavy jobs", "Local model · GPU-1"]]]],
+  ["no match", "Build box", "GPU-10", [local, device, ["Build box · offline", ["Heavy jobs"]], ["GPU-10", ["Heavy jobs"]]]],
+  ["two matching hosts", "GPU-1 Max", "gpu-1", [local, device, ["GPU-1 Max · offline", ["Heavy jobs"]], ["gpu-1", ["Heavy jobs"]]]],
+])("a device joins the one other host whose name starts with it: %s", async (_, remoteName, otherName, expected) => {
+  const view = machines(false);
+  const data: StatusView = { ...view, hostSettings: { ...view.hostSettings, other: remoteHost(true) },
+    leaseHosts: { ...view.leaseHosts, remote: { pools: ["heavy"], name: remoteName }, other: { pools: ["heavy"], name: otherName } },
+    pools: [...view.pools, { hostId: "other", pool: "heavy", capacity: 2, leases: [], queue: [] }] };
+  const slot = render(() => ({ ok: true, data }));
+  await slot.findByText("This Mac");
+  expect(Array.from(slot.container.querySelectorAll("section"), section => [section.querySelector("h2")!.textContent, Array.from(section.querySelectorAll("h3"), h => h.textContent)])).toEqual(expected);
+  expect(slot.getByRole("region", { name: "Local model · GPU-1" })).toBeTruthy();
+  expect(slot.getByRole("region", { name: "Local model · this Mac" })).toBeTruthy();
 });

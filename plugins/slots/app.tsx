@@ -26,22 +26,23 @@ const poolName = (pool: string) => pool === "heavy" ? "Heavy jobs" : "Local mode
 const poolTitle = (pool: PoolSnapshot, split: boolean, view?: StatusView) => (pool.pool === "heavy" ? poolName(pool.pool) : pool.device ? `Local model · ${pool.device}` : split ? "Local model · this Mac" : "Local model") +
   (view && pool.hostId !== view.localHostId ? ` · ${view.leaseHosts?.[pool.hostId]?.name ?? pool.hostId}` : "");
 
-function Tile({ label, value, children }: { label: string; value: ReactNode; children: ReactNode }) {
-  return <Card role="region" aria-label={label} className="min-w-0 space-y-2 p-4">
-    <h2 className={empty}>{label}</h2><div className="text-2xl font-semibold tabular-nums">{value}</div>
-    <div className="text-xs text-muted-foreground">{children}</div>
+function Tile({ label, heading = label, value, className, children }: { label: string; heading?: string; value: ReactNode; className?: string; children: ReactNode }) {
+  return <Card role="region" aria-label={label} className={cn("min-w-0 space-y-2 p-4", className)}>
+    <h2 className={cn(empty, "truncate")}>{heading}</h2><div className="text-lg font-semibold tabular-nums sm:text-2xl">{value}</div>
+    <div className="space-y-2 text-xs text-muted-foreground">{children}</div>
   </Card>;
 }
 
-function Meter({ label, value, threshold, max, lowerIsBetter = false }: { label: string; value: number; threshold: number; max: number; lowerIsBetter?: boolean }) {
+function Meter({ label, text, value, threshold, max, lowerIsBetter = false }: { label: string; text: string; value: number; threshold: number; max: number; lowerIsBetter?: boolean }) {
   const bad = lowerIsBetter ? value >= threshold : value < threshold;
   const near = lowerIsBetter ? value >= threshold * 0.85 : value <= threshold * 1.15;
   const state = bad ? "Outside limit" : near ? "Near limit" : "Within limit";
-  return <div className="mt-2 space-y-1">
+  return <div className="space-y-1">
+    <div className="flex flex-wrap justify-between gap-x-2"><span className="tabular-nums">{text}</span><span className={cn(bad ? "text-destructive" : near ? warning : "text-muted-foreground")}>{state}</span></div>
     <div role="meter" aria-label={label} aria-valuemin={0} aria-valuemax={max} aria-valuenow={value} aria-valuetext={`${value}, ${state.toLowerCase()}`} className="relative h-1.5 rounded-full bg-muted">
       <div className={cn("h-full rounded-full", bad ? "bg-destructive" : near ? "bg-amber-500" : "bg-emerald-600")} style={{ width: `${Math.min(100, Math.max(0, value / max * 100))}%` }} />
       <span aria-hidden className="absolute -top-1 h-3.5 w-px bg-foreground" style={{ left: `${threshold / max * 100}%` }} />
-    </div><p className={cn(bad ? "text-destructive" : near ? warning : "text-muted-foreground")}>{state}</p>
+    </div>
   </div>;
 }
 
@@ -90,40 +91,61 @@ function StatusContent({ view, now }: { view: StatusView; now: number }) {
   const heavy = view.pools.find(pool => pool.hostId === view.localHostId && pool.pool === "heavy");
   const locals = view.pools.filter(pool => pool.hostId === view.localHostId && pool.pool === "local-model");
   const local = locals.length ? { leases: locals.flatMap(pool => pool.leases), capacity: locals.reduce((sum, pool) => sum + pool.capacity, 0) } : undefined;
+  const hostName = (hostId: string) => view.leaseHosts?.[hostId]?.name ?? hostId;
+  const hostOrder = Object.keys(view.leaseHosts ?? {});
+  // This Mac, then local-model devices (snapshot keeps registration order), then other hosts in leaseHosts order.
+  // shortcut: bb has no device-to-host link, so a device joins the one other host whose name starts with it (GPU-1 → GPU-1 box, not GPU-10); use a host id if local-models ever registers one.
+  const deviceHost = ({ device }: PoolSnapshot) => {
+    const hosts = device ? Object.keys(view.hostSettings).filter(hostId => {
+      const name = hostId === view.localHostId ? undefined : view.leaseHosts?.[hostId]?.name;
+      return !!name?.toLowerCase().startsWith(device.toLowerCase()) && !/[a-z0-9]/i.test(name.charAt(device.length));
+    }) : [];
+    return hosts.length === 1 ? hosts[0] : undefined;
+  };
+  const hostRank = (hostId: string) => hostId === view.localHostId ? 0 : 2 + (hostOrder.indexOf(hostId) + 1 || hostOrder.length + 1);
+  // A matched device card follows its host's heavy card.
+  const rank = (pool: PoolSnapshot) => deviceHost(pool) ? hostRank(deviceHost(pool)!) + 0.5 : pool.device ? 1 : hostRank(pool.hostId);
+  const sectionName = (pool: PoolSnapshot): string => deviceHost(pool) ? sectionName({ ...pool, device: undefined, hostId: deviceHost(pool)! }) : pool.device ? `${pool.device} · local model device` : pool.hostId === view.localHostId ? "This Mac" : `${hostName(pool.hostId)}${view.hostSettings[pool.hostId]?.connected === false ? " · offline" : ""}`;
+  const sections = new Map<string, PoolSnapshot[]>();
+  for (const pool of [...view.pools].sort((a, b) => rank(a) - rank(b))) sections.set(sectionName(pool), [...sections.get(sectionName(pool)) ?? [], pool]);
+  const spare = Object.entries(view.hostSettings).filter(([hostId, host]) => hostId !== view.localHostId && host.connected !== false)
+    .map(([hostId]) => ({ hostId, pool: view.pools.find(pool => pool.hostId === hostId && pool.pool === "heavy") }))
+    .map(({ hostId, pool }) => ({ hostId, free: pool ? pool.capacity - pool.leases.length : 0 })).filter(host => host.free > 0);
   const events = view.audit.filter(event => event.type !== "gate").sort((a, b) => b.at - a.at || b.seq - a.seq).slice(0, 15);
   return <>
     {view.settingsWarnings?.map(message => <p key={message} role="alert" className="text-sm text-amber-700 dark:text-amber-400">{message}</p>)}
-    <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-5">
-      <Tile label="Machine" value={<span className="block text-lg">{machineState(view)}</span>}>{latest ? `Checked ${duration(now - latest.at)} ago` : "Waiting for the first machine reading."}</Tile>
-      <Tile label="Memory free" value={latest ? `${Math.round(latest.memFreePct)}%` : "—"}>
-        {settings && <>needs at least {settings.memFreeMinPct}%</>}
-        {latest && settings && <Meter label="Memory free" value={latest.memFreePct} threshold={settings.memFreeMinPct} max={100} />}
+    <div className="grid grid-cols-2 gap-3 xl:grid-cols-[2fr_1fr_1fr]">
+      <Tile label="This Mac" heading={`This Mac${view.localHostName && view.localHostName !== view.localHostId ? ` · ${view.localHostName}` : ""}`} className="col-span-2 xl:col-span-1" value={<span className="block text-lg">{machineState(view)}</span>}>
+        {latest && settings && <>
+          <Meter label="Memory free" text={`Memory free ${Math.round(latest.memFreePct)}% · needs ${settings.memFreeMinPct}%`} value={latest.memFreePct} threshold={settings.memFreeMinPct} max={100} />
+          <Meter label="Load (1 min)" text={`Load ${latest.load1.toFixed(1)} · limit ${settings.loadMax}`} value={latest.load1} threshold={settings.loadMax} max={Math.max(settings.loadMax * 1.25, latest.load1)} lowerIsBetter />
+        </>}
+        <p>{latest ? `Checked ${duration(now - latest.at)} ago` : "Waiting for the first machine reading."}</p>
       </Tile>
-      <Tile label="Load (1 min)" value={latest ? latest.load1.toFixed(1) : "—"}>
-        {settings && <>limit {settings.loadMax}</>}
-        {latest && settings && <Meter label="Load (1 min)" value={latest.load1} threshold={settings.loadMax} max={Math.max(settings.loadMax * 1.25, latest.load1)} lowerIsBetter />}
-      </Tile>
-      <Tile label="Heavy slots" value={heavy ? heavy.capacity === 0 && !heavy.leases.length ? "No slots configured" : `${heavy.leases.length} of ${heavy.capacity} in use` : "—"}>{heavy?.queue.length ?? 0} waiting</Tile>
+      <Tile label="Heavy slots" value={heavy ? heavy.capacity === 0 && !heavy.leases.length ? "No slots configured" : <span className="whitespace-nowrap">{heavy.leases.length} of {heavy.capacity} in use</span> : "—"}>{heavy?.queue.length ?? 0} waiting</Tile>
       <Tile label="Local model" value={local ? local.leases.length ? "In use" : local.capacity === 0 ? "No slots configured" : "Free" : "—"}>{local?.leases.length ? local.leases.map(lease => view.titles[lease.holderThreadId] || "thread").join(", ") : "No active jobs"}</Tile>
     </div>
-    <div className="grid gap-3 lg:grid-cols-2">{view.pools.map(pool => <Card role="region" aria-label={poolTitle(pool, locals.length > 1, view)} key={`${pool.hostId}/${pool.pool}/${pool.device ?? ""}`} className="min-w-0 space-y-4 p-4 sm:p-5">
-      <div className="flex flex-wrap items-baseline justify-between gap-2"><h2 className="text-sm font-medium">{poolTitle(pool, locals.length > 1, view)}</h2><span className={empty}>{pool.leases.length} of {pool.capacity} in use</span></div>
+    {[...sections].map(([name, pools]) => <section key={name} className="space-y-2">
+      <h2 className="pt-2 text-sm font-medium text-muted-foreground">{name}</h2>
+      <div className="grid gap-3 lg:grid-cols-2">{pools.map(pool => <Card role="region" aria-label={poolTitle(pool, locals.length > 1, view)} key={`${pool.hostId}/${pool.pool}/${pool.device ?? ""}`} className="min-w-0 space-y-4 p-4 sm:p-5">
+      <div className="flex flex-wrap items-baseline justify-between gap-2"><h3 className="text-sm font-medium">{deviceHost(pool) ? `Local model · ${pool.device}` : poolName(pool.pool)}</h3><span className={empty}>{pool.leases.length} of {pool.capacity} in use</span></div>
       <div role="img" aria-label={`${pool.leases.length} of ${plural(pool.capacity, "slot")} in use`} className="flex flex-wrap gap-1.5">{Array.from({ length: Math.max(pool.capacity, pool.leases.length) }, (_, index) => <span data-held={index < pool.leases.length} key={index} className={cn("h-2.5 w-6 rounded-sm border", index < pool.leases.length ? "border-emerald-600 bg-emerald-600" : "border-border bg-muted")} />)}</div>
       {pool.leases.length === 0 ? <p className={empty}>{pool.capacity === 0 ? "No slots configured" : pool.capacity === 1 ? "Slot free" : `All ${plural(pool.capacity, "slot")} free`}</p> : <ul className="divide-y divide-border">{pool.leases.map(lease => {
-        const elapsed = Math.max(0, now - lease.grantedAt);
+        const elapsed = Math.max(0, now - lease.grantedAt), over = elapsed > lease.estMs;
         const ports = view.ports.filter(port => port.hostId === lease.hostId && port.threadId === lease.holderThreadId);
         return <li key={lease.id} className="space-y-2 py-3 first:pt-0 last:pb-0 text-sm">
           <div className="font-medium"><ThreadLink id={lease.holderThreadId} titles={view.titles} /></div>
           <p className="break-words">{lease.job}</p>
-          <div role="progressbar" aria-label={`${lease.job} elapsed`} aria-valuemin={0} aria-valuemax={lease.estMs} aria-valuenow={Math.min(elapsed, lease.estMs)} aria-valuetext={`${duration(elapsed)} of ${duration(lease.estMs)}`} className="h-1.5 overflow-hidden rounded-full bg-muted"><div className="h-full bg-foreground/60" style={{ width: `${Math.min(100, elapsed / lease.estMs * 100)}%` }} /></div>
-          <p className="text-xs text-muted-foreground tabular-nums">{duration(elapsed)} of {duration(lease.estMs)} · <span className={cn(lease.warnedAt !== null && warning)}>{lease.expiresAt > now ? `expires in ${duration(lease.expiresAt - now)}` : `expired ${duration(now - lease.expiresAt)} ago`}{lease.warnedAt !== null && " · expiry warning sent"}</span></p>
+          <div role="progressbar" aria-label={`${lease.job} elapsed`} aria-valuemin={0} aria-valuemax={lease.estMs} aria-valuenow={Math.min(elapsed, lease.estMs)} aria-valuetext={`${duration(elapsed)} of ${duration(lease.estMs)}${over ? ", over estimate" : ""}`} className="h-1.5 overflow-hidden rounded-full bg-muted"><div className={cn("h-full", over ? "bg-amber-500" : "bg-foreground/60")} style={{ width: `${Math.min(100, elapsed / lease.estMs * 100)}%` }} /></div>
+          <p className="text-xs text-muted-foreground tabular-nums">{duration(elapsed)} of {duration(lease.estMs)} · {over && <span className={warning}>{duration(elapsed - lease.estMs)} over estimate · </span>}<span className={cn(lease.warnedAt !== null && warning)}>{lease.expiresAt > now ? `expires in ${duration(lease.expiresAt - now)}` : `expired ${duration(now - lease.expiresAt)} ago`}{lease.warnedAt !== null && " · expiry warning sent"}</span></p>
           {lease.holderThreadId !== lease.ownerThreadId && <p className="text-xs text-muted-foreground">Transferred to <ThreadLink id={lease.holderThreadId} titles={view.titles} /> from <ThreadLink id={lease.ownerThreadId} titles={view.titles} /></p>}
           {ports.map(port => <span key={port.port} className={cn(badge, "inline-block text-muted-foreground")}>Port {port.port}</span>)}
         </li>;
       })}</ul>}
       <div className="space-y-3 border-t border-border pt-3">
-        {pool.queue.length === 0 ? <p className={empty}>Nothing waiting</p> : <><h3 className="text-sm font-medium">Waiting · {pool.queue.length}</h3>
+        {pool.queue.length === 0 ? <p className={empty}>Nothing waiting</p> : <><h4 className="text-sm font-medium">Waiting · {pool.queue.length}</h4>
           <p className="text-xs text-muted-foreground">{view.hostSettings[pool.hostId]?.grantMode === "manual" ? "Manual grant mode — waiting for the manager" : !pool.device && view.hostSettings[pool.hostId]?.gated !== false && !gateOpen(view, pool.hostId) ? "Next — waiting for the machine check" : "Next — waiting for a free slot"}</p>
+          {pool.pool === "heavy" && pool.hostId === view.localHostId && spare.map(host => <p key={host.hostId} className="text-xs text-muted-foreground">{hostName(host.hostId)} has {plural(host.free, "free heavy slot")}. Only runs started with slots-run --spill use them.</p>)}
           <ol aria-label={`${poolTitle(pool, locals.length > 1, view)} queue`} className="divide-y divide-border">{pool.queue.map((request, index) => <li key={request.id} className="space-y-2 py-3 first:pt-0 last:pb-0 text-sm">
             <div className="flex flex-wrap items-baseline gap-2"><span className="text-xs text-muted-foreground">#{index + 1}</span><ThreadLink id={request.threadId} titles={view.titles} />{locals.length > 1 && pool.pool === "local-model" && !request.device && <span className={cn(badge, "text-muted-foreground")}>any device</span>}{request.priority !== "normal" && <span className={cn(badge, request.priority === "urgent" ? "border-destructive/30 text-destructive" : "border-amber-500/30 " + warning)}>{request.priority}</span>}</div>
             <p className="break-words">{request.job}</p><p className="text-xs text-muted-foreground tabular-nums">Estimate {duration(request.estMs)} · waiting {duration(now - request.createdAt)}</p>
@@ -131,6 +153,7 @@ function StatusContent({ view, now }: { view: StatusView; now: number }) {
         </>}
       </div>
     </Card>)}</div>
+    </section>)}
     {view.pools.length === 0 && <p className={empty}>No pools available.</p>}
     <Card className="p-4 sm:p-5"><details>
       <Summary className="text-sm font-medium">Recent activity · {events.length}</Summary>
@@ -153,7 +176,7 @@ function SlotsPage() {
         </Button></div>
       </header>
       {error && <div role="alert" className="text-sm text-destructive">Unable to refresh status.{view && " Showing the last successful status."}<span className="block text-xs">Retrying automatically every 30 seconds while visible.</span></div>}
-      {!view && !error && <LoadingSkeleton label="Loading Slots status…"><div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">{[0, 1, 2, 3, 4].map(key => <Card key={key} className="space-y-3 p-4"><Skeleton className="h-4 w-24" /><Skeleton className="h-8 w-24" /><Skeleton className="h-3 w-3/4" /></Card>)}</div></LoadingSkeleton>}
+      {!view && !error && <LoadingSkeleton label="Loading Slots status…"><div className="grid grid-cols-2 gap-3 xl:grid-cols-[2fr_1fr_1fr]">{[0, 1, 2].map(key => <Card key={key} className={cn("space-y-3 p-4", key === 0 && "col-span-2 xl:col-span-1")}><Skeleton className="h-4 w-24" /><Skeleton className="h-8 w-24" /><Skeleton className="h-3 w-3/4" /></Card>)}</div></LoadingSkeleton>}
       {view && <StatusContent view={view} now={now} />}
     </div>
   </div>;
