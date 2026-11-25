@@ -24,6 +24,8 @@ the dropdown. Every project offers the same settings:
 - **Builder repository:** optional HTTPS or SSH Git remote, shown in Script mode.
   Leave it blank to use the project's Git remote. Use the BB server's existing
   Git authentication.
+- **Builder branch:** optional Git branch name in the selected repository.
+  Leave it blank to use that remote's default branch.
 - **Launch script:** repository-relative path, shown in Script mode.
 - **Launch instructions:** steps agents must follow, shown in Instruction mode.
   Nonempty instructions are required to mint admissions in this mode.
@@ -40,7 +42,7 @@ there is no custom stylesheet.
 The selected workflow and mint procedure are contributed to agents when their
 provider sessions are next constructed. Existing sessions are not hot-rewritten.
 Refusals also show how to use the selected workflow. In Script mode, start
-executes the configured builder from a fresh remote default-branch checkout.
+executes the configured builder from a fresh checkout of the selected branch.
 The caller is responsible for following Instruction mode's text.
 
 ## Settings RPC
@@ -58,7 +60,7 @@ bb plugin rpc call spawn-gate settings.write --input-file settings.json --json
 
 `settings.read` takes null and returns `{projects:[{id,name,values}]}`.
 `settings.write` takes `{projectId,values}`, where values is a partial object
-with `enabled`, `method` (`script|instruction`), `instruction`, `script`, `remote`, and
+with `enabled`, `method` (`script|instruction`), `instruction`, `script`, `remote`, `branch`, and
 `ttlMinutes`. It returns the saved project's complete values. Writes are
 serialized to preserve simultaneous project updates.
 
@@ -75,6 +77,7 @@ bb agent-spawn-gate config get --project proj_example
 bb agent-spawn-gate config get enabled --project proj_example
 bb agent-spawn-gate config set ttlMinutes 15 --project proj_example
 bb agent-spawn-gate config set remote git@git.example.test:owner/builders.git --project proj_example
+bb agent-spawn-gate config set branch tools/builders --project proj_example
 ```
 
 RPC `config.get` takes `{projectId,key?}`. RPC `config.set` takes
@@ -83,6 +86,7 @@ RPC `config.get` takes `{projectId,key?}`. RPC `config.set` takes
 The CLI accepts `true` or `false` for `enabled`, and an integer from 1 to 60
 for `ttlMinutes`. If omitted, `--project` defaults to the CLI context.
 Set `remote` to an empty string (`''` in the shell) to restore the project's Git remote.
+Set `branch` to an empty string to restore the remote's default branch.
 
 ## Start command and RPC
 
@@ -99,10 +103,10 @@ bb agent-spawn-gate start --project proj_example --parent-thread thr_example --d
 ```
 
 A misplaced `--dry-run` among builder options is rejected. A later real start
-fetches and runs the builder again. The plugin owns a clean
-checkout under its data directory, fetches the Git remote's current default
-branch on every invocation, runs the configured JSON builder there, validates
-its output, mints the exact brief and starts the child via bb SDK. No stale
+fetches and runs the builder again. The plugin owns a clean checkout under its
+data directory. It fetches the selected Git branch, runs the configured JSON
+builder there, validates its output, mints the exact brief and starts the child
+via bb SDK. No stale
 checkout fallback; no automatic spawn retry. This command currently requires
 Script mode. Instruction mode keeps the mint workflow below.
 

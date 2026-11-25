@@ -3,6 +3,7 @@ import { access, constants, mkdir, realpath, stat } from "node:fs/promises";
 import { delimiter, dirname, isAbsolute, join, relative } from "node:path";
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import { z } from "zod";
+import { invalidBranch, isBuilderBranch } from "./branch";
 import type { RecordMetric } from "./metrics";
 import { assessPace, defaultPaceThreshold, paceReport, providerPolicy } from "./pace";
 import { invalidRemote, isBuilderRemote } from "./remote";
@@ -32,7 +33,7 @@ export const buildSchema = z.object({
   }).strict(),
 }).strict();
 export const startInput = z.object({ projectId, parentThreadId, args: z.array(z.string().max(100_000)).max(256), dryRun: z.boolean().optional() }).strict();
-const resultFields = { projectId, parentThreadId, sourceCommit: z.string().regex(/^[a-f0-9]{40,64}$/), providerPace: paceReport.optional() };
+const resultFields = { projectId, parentThreadId, sourceBranch: z.string().min(1), sourceCommit: z.string().regex(/^[a-f0-9]{40,64}$/), providerPace: paceReport.optional() };
 export const startOutput = z.discriminatedUnion("dryRun", [
   z.object({ dryRun: z.literal(true), ...resultFields, build: buildSchema }).strict(),
   z.object({ dryRun: z.literal(false), ...resultFields, threadId: text }).strict(),
@@ -107,7 +108,7 @@ function builderCard(args: string[]) {
   return null;
 }
 
-export function createStart(bb: BbPluginApi, mint: (request: { projectId: string; parentThreadId: string; brief: string }) => Promise<{ prompt: string; token: string }>, policy: (id: string) => { method: string; script: string; remote: string }, revoke: (token: string) => void, record: RecordMetric, paceThreshold = async () => defaultPaceThreshold) {
+export function createStart(bb: BbPluginApi, mint: (request: { projectId: string; parentThreadId: string; brief: string }) => Promise<{ prompt: string; token: string }>, policy: (id: string) => { method: string; script: string; remote: string; branch: string }, revoke: (token: string) => void, record: RecordMetric, paceThreshold = async () => defaultPaceThreshold) {
   const controller = new AbortController();
   bb.onDispose(() => controller.abort());
   const queues = new Map<string, Promise<unknown>>();
@@ -128,6 +129,7 @@ export function createStart(bb: BbPluginApi, mint: (request: { projectId: string
       reason = "checkout_error";
       const project = await bb.sdk.projects.get({ projectId: request.projectId });
       if (!isBuilderRemote(rules.remote)) throw new Error(invalidRemote);
+      if (!isBuilderBranch(rules.branch)) throw new Error(invalidBranch);
       const remote = rules.remote || project.gitRemoteUrl;
       if (!remote || remote.startsWith("-")) throw new Error("Set Spawn Gate remote or configure a Git remote for the selected project before running start");
       const root = join(dirname(bb.storage.database().name), "checkouts", request.projectId);
@@ -140,10 +142,14 @@ export function createStart(bb: BbPluginApi, mint: (request: { projectId: string
         await git(["remote", "add", "origin", remote]);
       }
       await git(["remote", "set-url", "origin", remote]);
-      const head = await git(["ls-remote", "--symref", "origin", "HEAD"]);
-      const branch = /^ref: (refs\/heads\/[^\s]+)\s+HEAD$/m.exec(head)?.[1];
-      if (!branch) throw new Error("Set the Git remote HEAD to its default branch, then rerun start");
-      await git(["fetch", "--depth=1", "origin", branch]);
+      let sourceBranch = rules.branch;
+      if (!sourceBranch) {
+        const head = await git(["ls-remote", "--symref", "origin", "HEAD"]);
+        const match = /^ref: refs\/heads\/([^\s]+)\s+HEAD$/m.exec(head);
+        if (!match) throw new Error("Set Spawn Gate branch or set the Git remote HEAD to its default branch, then rerun start");
+        sourceBranch = match[1];
+      }
+      await git(["fetch", "--depth=1", "origin", `refs/heads/${sourceBranch}`]);
       sourceCommit = (await git(["rev-parse", "FETCH_HEAD"])).trim();
       await git(["checkout", "--force", "--detach", sourceCommit]);
       await git(["clean", "-ffdx"]);
@@ -151,7 +157,7 @@ export function createStart(bb: BbPluginApi, mint: (request: { projectId: string
       if (isAbsolute(rules.script) || lexical === ".." || lexical.startsWith("../") || isAbsolute(lexical)) throw new Error("Set a repository-relative launch script inside the checkout");
       const script = await realpath(candidate).catch(error => {
         if (error.code !== "ENOENT") throw error;
-        throw new Error("Set script to a file on the remote default branch, or publish the configured script there");
+        throw new Error("Set script to a file on the selected builder branch, or publish the configured script there");
       });
       const inside = relative(await realpath(root), script);
       if (isAbsolute(rules.script) || inside === ".." || inside.startsWith("../") || isAbsolute(inside)) throw new Error("Set a repository-relative launch script inside the checkout");
@@ -201,7 +207,7 @@ export function createStart(bb: BbPluginApi, mint: (request: { projectId: string
         build.brief = briefInput.parse(`${build.brief}\n\n## Provider pace\n${summary}${override}`);
       }
       signal.throwIfAborted();
-      const common = { projectId: request.projectId, parentThreadId: request.parentThreadId, sourceCommit,
+      const common = { projectId: request.projectId, parentThreadId: request.parentThreadId, sourceBranch, sourceCommit,
         ...(providerPace ? { providerPace } : {}) };
       if (request.dryRun) return { dryRun: true as const, ...common, build };
       signal.throwIfAborted();

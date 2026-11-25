@@ -37,7 +37,7 @@ async function fixture() {
   // This fixture uses the real process/git runner with a plugin-owned temporary database location.
   const scoped = Object.create(bb);
   Object.defineProperty(scoped, "storage", { value: { database: () => ({ name: join(root, "data.db") }) } });
-  const policy = { method: "script", script: "builder.py", remote: "" };
+  const policy = { method: "script", script: "builder.py", remote: "", branch: "" };
   const revoke = vi.fn();
   const metrics = await createMetrics(bb, bb.storage.database());
   const start = createStart(scoped, mint, () => policy, revoke, metrics.record);
@@ -51,7 +51,7 @@ it("dry-runs fresh remote main without minting, then starts the exact brief with
   expect(f.mint).not.toHaveBeenCalled(); expect(f.spawn).not.toHaveBeenCalled();
   const second = await f.write("second");
   const result = await f.start(f.request);
-  expect(result).toMatchObject({ dryRun: false, threadId: "thr_child", sourceCommit: second });
+  expect(result).toMatchObject({ dryRun: false, threadId: "thr_child", sourceBranch: "main", sourceCommit: second });
   expect(f.mint).toHaveBeenCalledWith({ projectId: "proj_example", parentThreadId: "thr_parent", brief: "second" });
   expect(f.spawn.mock.calls[0][0]).not.toHaveProperty("startedOnBehalfOf");
   expect(f.spawn).toHaveBeenCalledWith(expect.objectContaining({ prompt: "second\nagent-admission v1 token=example", providerId: "codex", parentNotifications: "stuck", environment: { type: "project-default" }, projectId: "proj_example", parentThreadId: "thr_parent" }));
@@ -81,6 +81,25 @@ it("refuses a misplaced dry-run flag or repeated target selectors before launch"
   expect(f.spawn).not.toHaveBeenCalled();
 });
 
+it("fetches an orphan builder branch and refuses a tag with the same name as a missing branch", async () => {
+  const f = await fixture();
+  const branch = "tools/builders";
+  f.git("switch", "--orphan", branch);
+  const sourceCommit = await f.write("from builder branch");
+  f.git("switch", "main");
+  f.git("tag", branch);
+
+  f.policy.branch = branch;
+  const request = { ...f.request, dryRun: true };
+  expect(await f.start(request)).toMatchObject({ sourceBranch: branch, sourceCommit, build: { brief: "from builder branch" } });
+  f.git("branch", "-D", branch);
+  await expect(f.start(f.request)).rejects.toThrow(`couldn't find remote ref refs/heads/${branch}`);
+  f.policy.branch = "";
+  expect(await f.start(request)).toMatchObject({ sourceBranch: "main", sourceCommit: f.first, build: { brief: "first" } });
+  expect(f.mint).not.toHaveBeenCalled();
+  expect(f.spawn).not.toHaveBeenCalled();
+});
+
 it("fetches an override's own default branch and restores the project remote when cleared", async () => {
   const f = await fixture();
   const override = join(f.root, "builder-repo");
@@ -104,7 +123,7 @@ print(json.dumps({"version": 1, "brief": "from override", "spawn": {"parentThrea
   const request = { ...f.request, dryRun: true };
   expect(await f.start(request)).toMatchObject({ sourceCommit: f.first, build: { brief: "first" } });
   f.policy.remote = remote;
-  expect(await f.start(request)).toMatchObject({ sourceCommit: overrideCommit, build: { brief: "from override" } });
+  expect(await f.start(request)).toMatchObject({ sourceBranch: "builders", sourceCommit: overrideCommit, build: { brief: "from override" } });
   await rm(override, { recursive: true });
   await expect(f.start(f.request)).rejects.toThrow("git exited");
   f.policy.remote = "";

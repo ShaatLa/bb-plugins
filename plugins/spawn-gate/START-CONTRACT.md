@@ -11,7 +11,7 @@ RPC:
 The same start implementation serves CLI and RPC. The plugin validates the parent belongs to projectId before running the builder. This first start implementation requires the project's Script mode; existing Instruction mode and mint remain supported through their current contract.
 
 Builder execution:
-- On every start, fetch the configured builder `remote` or, when blank, the project's Git remote. Resolve its default branch and fetch at depth 1. Run the repository-relative `script` in a clean plugin-owned checkout at that commit. Fetch, authentication and checkout failures abort. `sourceCommit` identifies the fetched builder commit.
+- On every start, fetch `branch` from the configured builder `remote` at depth 1. A blank `remote` uses the project's Git remote. A blank `branch` uses the selected remote's default branch. Run the repository-relative `script` in a clean plugin-owned checkout at that commit. Fetch, authentication and checkout failures abort. `sourceBranch` and `sourceCommit` identify the fetched builder branch and commit.
 - The configured script is repository-relative, must stay within that checkout, and runs with cwd at the checkout root. .py scripts use python3; other scripts must be executable with an appropriate shebang.
 - stdin: one JSON object {version:1,projectId,parentThreadId}. The plugin resolves the server-installed bb CLI, adds its directory to builder PATH, sets BB_CLI to its absolute path, and resolves/logs the actual python3 executable for .py builders. It also sets BB_PROJECT_ID and BB_THREAD_ID to these resolved IDs for builder bb read commands. No caller cwd is required.
 - stdout: exactly one JSON object, UTF-8. The combined stdout/stderr limit is 1 MiB. All logs go to stderr. Exit nonzero, invalid JSON, unsupported version, unknown fields or invalid spawn values abort before mint/spawn.
@@ -93,7 +93,7 @@ Paths describe the selected execution host, not the builder checkout. The builde
 Plugin sequence: validate builder JSON -> mint exact brief for resolved project/parent -> spawn via bb SDK with returned prompt and whitelisted spawn fields. The plugin owns tokens, attribution, project binding and spawn invocation. It does not retry spawn automatically, to avoid duplicate children.
 
 start result (CLI always prints this same JSON):
-- Normal: {dryRun:false,threadId:string,projectId:string,parentThreadId:string,sourceCommit:string}.
-- --dry-run: {dryRun:true,projectId:string,parentThreadId:string,sourceCommit:string,build:<validated builder stdout>}. Refreshes checkout and runs the builder without minting or creating a thread. A later launch fetches and runs the builder again.
+- Normal: {dryRun:false,threadId:string,projectId:string,parentThreadId:string,sourceBranch:string,sourceCommit:string}.
+- --dry-run: {dryRun:true,projectId:string,parentThreadId:string,sourceBranch:string,sourceCommit:string,build:<validated builder stdout>}. Refreshes checkout and runs the builder without minting or creating a thread. A later launch fetches and runs the builder again.
 Existing mint input/output remains unchanged: {projectId,parentThreadId,brief} -> {token,expiresAt,prompt}.
 Enforcement is not changed by installation or start. Enable each project explicitly after its builder integration is ready.

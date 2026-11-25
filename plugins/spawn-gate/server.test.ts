@@ -177,6 +177,23 @@ it("validates the builder remote and keeps it scoped to the selected project", a
   expect(await set("")).toEqual({ remote: "" });
 });
 
+it("validates and saves the builder branch per project", async () => {
+  const h = await setup();
+  const rpc = (method: string, input: unknown) => h.harness.behavior.callRpc(method, input);
+  const key = "branch";
+  expect(await rpc("config.get", { projectId: PROJECT, key })).toEqual({ branch: "" });
+  const value = "tools/builders";
+  const saved = await h.harness.behavior.runCli(["config", "set", key, value, "--project", PROJECT]);
+  expect(saved).toMatchObject({ exitCode: 0, stdout: JSON.stringify({ branch: value }) });
+  for (const invalid of ["HEAD", "refs/heads/main", "--upload-pack=other", "main:other", "tools/../main", "tools/*", "tools/a.lock", "tools//main", "@{-1}", "white space"]) {
+    await expect(rpc("config.set", { projectId: PROJECT, key, value: invalid })).rejects.toThrow();
+  }
+  await h.reload();
+  expect(await rpc("config.get", { projectId: PROJECT, key })).toEqual({ branch: value });
+  expect(await rpc("config.get", { projectId: "proj_other", key })).toEqual({ branch: "" });
+  expect(await rpc("config.set", { projectId: PROJECT, key, value: "" })).toEqual({ branch: "" });
+});
+
 it("retains aggregated admission refusals across reloads and filters by UTC date and project", async () => {
   vi.useFakeTimers();
   vi.setSystemTime(new Date("2025-01-01T23:59:00Z"));
