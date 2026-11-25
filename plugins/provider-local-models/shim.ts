@@ -204,7 +204,10 @@ async function streamCompletion(body,signal,onChunk,deadline){
       let response;
       const base=serverOf(body.model);
       try{response=await fetch(base+'/chat/completions',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body),signal:controller.signal});}
-      catch(error){const code=reasonOf(error);throw Error(reason||(/ECONNREFUSED|ENOTFOUND|EHOSTUNREACH/.test(code)?'cannot reach the model server at '+base:'the model server dropped the connection')+' ('+code+')');}
+      catch(error){const code=reasonOf(error);
+        // A request queued behind another turn gets no headers within undici's 300 s; ask again within the first-byte budget.
+        if(!reason&&code==='UND_ERR_HEADERS_TIMEOUT'&&Date.now()<deadline)continue;
+        throw Error(reason||(/ECONNREFUSED|ENOTFOUND|EHOSTUNREACH/.test(code)?'cannot reach the model server at '+base:'the model server dropped the connection')+' ('+code+')');}
       // The router answers 503 while a model is still loading; wait for it within the first-byte budget.
       if(response.status===503&&Date.now()+RETRY_MS<deadline){await response.body?.cancel().catch(()=>{});await sleep(RETRY_MS,signal);if(signal.aborted)throw Error('Cancelled.');continue;}
       if(!response.ok){

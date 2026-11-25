@@ -14,6 +14,8 @@ export function router(baseUrl: string, defaultModel: string, dataDir: string, s
       return await read(response);
     } catch (error) {
       if (error instanceof PluginCliError) throw error;
+      // A request queued behind other work gets no headers within undici's 300 s; ask again until the caller's timeout.
+      if (body !== undefined && !signal.aborted && (error as any)?.cause?.code === 'UND_ERR_HEADERS_TIMEOUT') return request(url, signal, body, read);
       throw new PluginCliError(signal.aborted ? 'Local model request timed out or was cancelled.' : `Cannot reach the model server at ${new URL(url).origin}.`,{code:signal.aborted?'timeout':'server_unreachable',hint:'Check the server URL and that llama serve is running; allow time for cold loads.'});
     }
   }

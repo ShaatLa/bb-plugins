@@ -170,3 +170,15 @@ test('routes a model another machine also serves through the device Slots grants
   lists.m2=['M2/org/Other-GGUF:Q4'];const three=router('http://here/v1,http://m1/v1,http://m2/v1','org/Qwen-GGUF:Q4','',true);
   assert.equal((await three.route(undefined,signal)).device,'M1');
 });
+
+test('asks again when a queued request gets no headers in time', async (t) => {
+  let calls=0;
+  t.mock.method(globalThis,'fetch',async (input:any)=>{
+    if(String(input).endsWith('/models'))return Response.json({data:[{id:'org/Q-GGUF:Q4'}]});
+    if(++calls===1)throw Object.assign(new TypeError('fetch failed'),{cause:{code:'UND_ERR_HEADERS_TIMEOUT'}});
+    return new Response('data: {"choices":[{"delta":{"content":"ok"},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n');
+  });
+  const {router}=await import('./router.ts');
+  assert.equal((await router('http://q/v1','org/Q-GGUF:Q4','',false).ask({prompt:'hi'},AbortSignal.timeout(2000))).content,'ok');
+  assert.equal(calls,2);
+});
