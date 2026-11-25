@@ -18,6 +18,8 @@ export function validateSettings(settings: Settings): string | null {
   const validHost = (s: HostSettings): boolean => Boolean(s && s.capacities && s.portRange) &&
     POOLS.every(p => Number.isSafeInteger(s.capacities[p]) && s.capacities[p] >= 0) &&
     (s.withModel === undefined || (Number.isSafeInteger(s.withModel) && s.withModel >= 0)) &&
+    (s.heavyAway === undefined || (Number.isSafeInteger(s.heavyAway) && s.heavyAway >= 0)) &&
+    (s.loadMaxAway === undefined || (Number.isFinite(s.loadMaxAway) && s.loadMaxAway > 0)) &&
     Number.isFinite(s.memFreeMinPct) && s.memFreeMinPct >= 0 && s.memFreeMinPct <= 100 &&
     Number.isFinite(s.loadMax) && s.loadMax > 0 &&
     Number.isSafeInteger(s.gateSamples) && s.gateSamples > 0 &&
@@ -46,7 +48,7 @@ const URGENT = new Set<AuditType>(["warn", "revoke", "expire", "release", "unlea
 const sorted = (state: State) => state.requests.map((request, index) => ({ request, index }))
   .sort((a, b) => rank[a.request.priority] - rank[b.request.priority] ||
     a.request.createdAt - b.request.createdAt || a.index - b.index).map(x => x.request);
-const emptyGate = (): GateState => ({ latest: null, streak: 0, lastCountedAt: null, failingSince: null, holdAlerted: false });
+const emptyGate = (): GateState => ({ latest: null, streak: 0, awayStreak: 0, lastCountedAt: null, failingSince: null, holdAlerted: false });
 const modelHost = (hostId: string, device: string | undefined, settings: Settings): string | undefined =>
   device === undefined ? hostId : settings.deviceHosts && Object.hasOwn(settings.deviceHosts, device) ? settings.deviceHosts[device] : undefined;
 const modelCandidates = (state: State, request: { hostId: string; device?: string }) =>
@@ -71,10 +73,13 @@ const modelMode = (state: State, hostId: string, settings: Settings, now: number
   if (!queued && !lease) return undefined;
   return { high, withModel, reason: queued ? "model-queued" as const : running ? "model-running" as const : "hold-expired" as const, device: queued ?? lease?.device ?? THIS_MAC, admitting: !queued };
 };
-export function capacityFor(state: State, hostId: string, pool: (typeof POOLS)[number], settings: Settings, device?: string, now = 0): number {
+/** Heavy order: a local-model mode first, then the away value when `away`, then the base value. */
+export function capacityFor(state: State, hostId: string, pool: (typeof POOLS)[number], settings: Settings, device?: string, now = 0, away = false): number {
   if (pool === "heavy") {
     const mode = modelMode(state, hostId, settings, now);
-    return mode && state.leases.some(l => l.pool === "local-model" && modelHost(l.hostId, l.device, settings) === hostId && now - l.grantedAt < (settings.modelHoldMinutes ?? 60) * 60000) ? mode.withModel : settingsFor(settings, hostId).capacities.heavy;
+    const base = settingsFor(settings, hostId).capacities.heavy;
+    if (mode) return state.leases.some(l => l.pool === "local-model" && modelHost(l.hostId, l.device, settings) === hostId && now - l.grantedAt < (settings.modelHoldMinutes ?? 60) * 60000) ? mode.withModel : base;
+    return away ? Math.max(base, settingsFor(settings, hostId).heavyAway ?? base) : base;
   }
   return device === undefined ? settingsFor(settings, hostId).capacities[pool] : state.hosts[hostId]?.devices?.find(d => d.name === device)?.capacity ?? 0;
 }
@@ -92,14 +97,23 @@ const serves = (l: Lease, hostId: string, pool: PoolName, device?: string) =>
 export function deviceList(state: State, hostId: string): DeviceInfo[] {
   return structuredClone(state.hosts[hostId]?.devices ?? []);
 }
-export function gateOpen(gate: GateState, settings: HostSettings): boolean {
-  return gate.latest !== null && gate.latest.passed && gate.streak >= settings.gateSamples;
+/** The stored reading against the limit in force now: the away load limit only with a fresh away flag, so a return restores the normal limit at once. */
+function passes(gate: GateState, settings: HostSettings, away: boolean): boolean {
+  const r = gate.latest;
+  return r !== null && r.memFreePct >= settings.memFreeMinPct && r.load1 < (away ? settings.loadMaxAway ?? settings.loadMax : settings.loadMax);
 }
+export function gateOpen(gate: GateState, settings: HostSettings, away = false): boolean {
+  return passes(gate, settings, away) && (away ? gate.awayStreak : gate.streak) >= settings.gateSamples;
+}
+/** A sample this old (monotonic) no longer grants a slot above the base heavy capacity. */
+export const AWAY_SAMPLE_MS = 5_000;
+/** Another machine's probe reading counts this long; with none newer the machine works as before presence probing (no check, no extra). */
+export const REMOTE_READING_MS = 60_000;
 /** The local model runs on the GPU, so its pool checks only free (shared) memory in the latest reading. */
-export function poolGateOpen(gate: GateState, settings: HostSettings, pool: PoolName, manual = false): boolean {
-  if (settings.gated === false) return true;
+export function poolGateOpen(gate: GateState, settings: HostSettings, pool: PoolName, manual = false, now = 0, away = false): boolean {
+  if (settings.gated === false) return !gate.latest || now - gate.latest.at > REMOTE_READING_MS || passes(gate, settings, away);
   if (pool === "local-model") return gate.latest !== null && gate.latest.memFreePct >= settings.memFreeMinPct;
-  return Boolean(gate.latest?.passed) && (manual || gateOpen(gate, settings));
+  return passes(gate, settings, away) && (manual || gateOpen(gate, settings, away));
 }
 /** A finished local-model lease stays with its thread this long, so the next turn re-acquires without a gate wait. */
 export const LOCAL_MODEL_GRACE_MS = 90_000;
@@ -185,7 +199,7 @@ export function apply(original: State, input: Input, ctx: Context): Transition {
     const names = registered(hostId);
     return device === THIS_MAC || names.includes(device) ? null : `Device ${device} is not registered (registered: ${names.join(", ") || "none"}). Pass --device ${THIS_MAC} for this Mac, or omit --device to take the first free device; local-models registers the devices it reaches.`;
   };
-  const reset = (id: string) => { host(id).gate.streak = 0; host(id).gate.lastCountedAt = null; };
+  const reset = (id: string) => { host(id).gate.streak = 0; host(id).gate.awayStreak = 0; host(id).gate.lastCountedAt = null; };
   const cleanupPorts = () => {
     state.ports = state.ports.filter(p => {
       if (state.leases.some(l => l.hostId === p.hostId && l.holderThreadId === p.threadId)) return true;
@@ -203,6 +217,9 @@ export function apply(original: State, input: Input, ctx: Context): Transition {
     for (const id of new Set([l.holderThreadId, l.ownerThreadId])) if (id !== initiator && !(l.pool === "local-model" && id !== l.ownerThreadId)) notify(id, type, message);
     observer(l.hostId, type, message, l.holderThreadId, l.ownerThreadId);
   };
+  /** Machines that already got their one slot above the base value in this pass. */
+  const extra = new Set<string>();
+  const freshAway = (hostId: string) => ctx.away !== undefined && Object.hasOwn(ctx.away.samples, hostId) && ctx.away.clock() - ctx.away.samples[hostId] <= AWAY_SAMPLE_MS;
   const grant = (requestId: string, manual: boolean): Result<Lease> => {
     const request = state.requests.find(r => r.id === requestId);
     if (!request) return { ok: false, error: { code: "not-found", message: "Request not found" } };
@@ -216,7 +233,7 @@ export function apply(original: State, input: Input, ctx: Context): Transition {
       if (pool === "local-model" && machine && state.leases.filter(l => l.pool === "heavy" && l.hostId === machine).length > (settingsFor(ctx.settings, machine).withModel ?? settingsFor(ctx.settings, machine).capacities.heavy)) { failure = { code: "capacity", message: "Waiting for heavy jobs to finish" }; continue; }
       const gate = host(hostId).gate;
       // This Mac's readings say nothing about another device, so a registered device has no machine check.
-      if (device === undefined && !poolGateOpen(gate, settingsFor(ctx.settings, hostId), pool, manual)) {
+      if (device === undefined && !poolGateOpen(gate, settingsFor(ctx.settings, hostId), pool, manual, ctx.now, freshAway(hostId))) {
         failure = { code: "gate-closed", message: "Host gate is closed", ...(gate.latest ? { readings: gate.latest } : {}) }; continue;
       }
       const capacity = capacityFor(state, hostId, pool, ctx.settings, device, ctx.now);
@@ -224,6 +241,11 @@ export function apply(original: State, input: Input, ctx: Context): Transition {
       index = 0;
       while (leases.some(l => l.slotIndex === index)) index++;
       if (leases.length < capacity && index < capacity) { failure = null; break; }
+      // Owner away: only the tick's pass grants above the base value, one slot per machine, re-checking the sample age now.
+      if (input.type === "tick" && pool === "heavy" && !extra.has(hostId) && freshAway(hostId)) {
+        const away = capacityFor(state, hostId, pool, ctx.settings, device, ctx.now, true);
+        if (leases.length < away) { extra.add(hostId); failure = null; break; }
+      }
       failure = { code: "capacity", message: "Pool is at capacity" };
     }
     if (failure) return { ok: false, error: failure };
@@ -375,15 +397,20 @@ export function apply(original: State, input: Input, ctx: Context): Transition {
           input.at > ctx.now || (gate.latest && input.at < gate.latest.at)) return fail("invalid-input", "Invalid or out-of-order gate readings");
       const settings = settingsFor(ctx.settings, input.hostId);
       const readings = { memFreePct: input.memFreePct, load1: input.load1, at: input.at };
-      const passed = input.memFreePct >= settings.memFreeMinPct && input.load1 < settings.loadMax;
+      // The away load limit applies only with this tick's away reading for the machine.
+      const passed = input.memFreePct >= settings.memFreeMinPct && input.load1 < (ctx.away && Object.hasOwn(ctx.away.samples, input.hostId) ? settings.loadMaxAway ?? settings.loadMax : settings.loadMax);
       gate.latest = { ...readings, passed };
       audit("gate", { hostId: input.hostId, readings });
       if (passed) { gate.failingSince = null; gate.holdAlerted = false; }
       else gate.failingSince ??= input.at;
+      // `streak` counts only samples under the normal limit; `awayStreak` those under the limit in force (the away one with this tick's away reading), so an away pass never counts toward the normal gate.
+      if (!(input.memFreePct >= settings.memFreeMinPct && input.load1 < settings.loadMax)) gate.streak = 0;
       if (!passed) reset(input.hostId);
       // Sampler ticks land a few ms early; a strict interval would skip every other reading.
       else if (gate.lastCountedAt === null || input.at - gate.lastCountedAt >= settings.gateIntervalMs * 0.9) {
-        gate.streak = Math.min(gate.streak + 1, settings.gateSamples); gate.lastCountedAt = input.at;
+        gate.awayStreak = Math.min(gate.awayStreak + 1, settings.gateSamples);
+        if (input.memFreePct >= settings.memFreeMinPct && input.load1 < settings.loadMax) gate.streak = Math.min(gate.streak + 1, settings.gateSamples);
+        gate.lastCountedAt = input.at;
       }
       schedule(); // a local-model request needs only memory, so try even when the full gate failed
       data = { passed, open: gateOpen(gate, settings), gate }; break;
@@ -527,7 +554,7 @@ export function apply(original: State, input: Input, ctx: Context): Transition {
         const devices = candidates(request);
         if (group(request) !== undefined && !registered(request.hostId).includes(request.device!)) reasons.push("device not registered");
         else if (devices.every(c => state.leases.filter(l => same(l, c.hostId, request.pool, c.device)).length >= capacityFor(state, c.hostId, request.pool, ctx.settings, c.device))) reasons.push("no free slot");
-        if (devices.some(c => c.hostId === request.hostId && c.device === undefined) && !poolGateOpen(host(request.hostId).gate, settings, request.pool)) reasons.push("gate not open");
+        if (devices.some(c => c.hostId === request.hostId && c.device === undefined) && !poolGateOpen(host(request.hostId).gate, settings, request.pool, false, ctx.now)) reasons.push("gate not open");
         if (settings.grantMode === "manual") reasons.push("manual grant mode");
         const position = sorted(state).filter(r => same(r, request.hostId, request.pool, group(request))).findIndex(r => r.id === request.id) + 1;
         const message = `Request ${request.id} by ${request.threadId} on ${request.hostId}, ${request.pool}: ${request.job}; estimate ${minutes(request.estMs)}, waiting ${minutes(ctx.now - request.createdAt)}, position ${position}: ${reasons.join(" / ")}.`;
@@ -537,7 +564,7 @@ export function apply(original: State, input: Input, ctx: Context): Transition {
       for (const [hostId, { gate }] of Object.entries(state.hosts)) {
         const settings = settingsFor(ctx.settings, hostId);
         if (gate.latest?.passed !== false || gate.failingSince == null || gate.holdAlerted ||
-            ctx.now - gate.failingSince < settings.observerGateHoldMs || !state.requests.some(r => r.hostId === hostId && group(r) === undefined && !poolGateOpen(gate, settings, r.pool))) continue;
+            ctx.now - gate.failingSince < settings.observerGateHoldMs || !state.requests.some(r => r.hostId === hostId && group(r) === undefined && !poolGateOpen(gate, settings, r.pool, false, ctx.now))) continue;
         gate.holdAlerted = true;
         const { memFreePct, load1, at } = gate.latest;
         const message = `Gate on ${hostId} failing for ${minutes(ctx.now - gate.failingSince)}: memory free ${memFreePct.toFixed(0)}% (min ${settings.memFreeMinPct.toFixed(0)}%), load ${load1.toFixed(1)} (max ${settings.loadMax.toFixed(1)}), sampled ${new Date(at).toISOString().slice(11, 16)}Z.`;

@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import { setTimeout as sleep } from "node:timers/promises";
 import type { Invoke } from "./server.js";
 import type { Result, SettingsFormView, SettingView, ObserverView, RpcMethods, RequestOutcome, UseOutcome, StatusView, GateOutcome, HostSettings, Lease, AuditEvent, ReleaseOutcome, SlotRequest } from "./contract.js";
+import { presenceText } from "./contract.js";
 import { plural } from "./lib/plural.js";
 import { parseSince } from "./runtime.js";
 
@@ -31,6 +32,7 @@ function humanOutput(method: string, data: unknown): string {
       return [...(view.settingsWarnings ?? []).map(message => `Warning: ${message}`), ...view.pools.flatMap(p => [
         `${p.pool}${p.hostId !== view.localHostId ? ` · ${view.leaseHosts?.[p.hostId]?.name ?? p.hostId}` : ""}${p.pool === "local-model" ? ` · ${p.device ?? "this Mac"}` : ""} · ${p.leases.length}/${plural(p.capacity, "slot")} held · ${p.queue.length} queued`,
         ...(p.mode ? [`  ${p.mode.reason === "model-queued" ? "No new heavy jobs: local model queued" : p.mode.reason === "model-running" ? `Local model running · with model ${p.mode.withModel} · high ${p.mode.high}` : `Model hold over · heavy back to ${p.mode.high}`}`] : []),
+        ...(p.presence ? [`  ${presenceText(p.presence)}`] : []),
         ...p.leases.map(l => `  ${leaseLine(l)} · ${line(view.titles[l.holderThreadId] ?? l.holderThreadId)}`),
         ...p.queue.map(r => `  queued ${r.id}${p.pool === "local-model" && r.device === undefined ? " (any device)" : ""} · ${r.priority} · ${line(view.titles[r.threadId] ?? r.threadId)} · ${line(r.job)}`),
       ])].join("\n");

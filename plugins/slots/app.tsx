@@ -7,6 +7,7 @@ import { LoadingSkeleton, Skeleton } from "./components/ui/skeleton";
 import { plural } from "./lib/plural";
 import { cn } from "./lib/utils";
 import type { AuditEvent, PoolSnapshot, StatusView } from "./contract";
+import { presenceText } from "./contract";
 import { SlotsSettings } from "./settings";
 import { useStatus } from "./use-status";
 
@@ -48,6 +49,8 @@ function Meter({ label, text, value, threshold, max, lowerIsBetter = false }: { 
 
 function gateOpen(view: StatusView, hostId: string) {
   const gate = view.gates[hostId], settings = view.hostSettings[hostId];
+  // Another machine's check is its latest probe reading; with none, or one older than a minute, no check applies (as poolGateOpen).
+  if (settings?.gated === false) return !gate?.latest || view.at - gate.latest.at > 60_000 || gate.latest.passed;
   return !!(gate?.latest?.passed && settings && gate.streak >= settings.gateSamples);
 }
 
@@ -123,6 +126,7 @@ function StatusContent({ view, now }: { view: StatusView; now: number }) {
       <div className="grid gap-3 lg:grid-cols-2">{pools.map(pool => <Card role="region" aria-label={poolTitle(pool, locals.length > 1, view)} key={`${pool.hostId}/${pool.pool}/${pool.device ?? ""}`} className="min-w-0 space-y-4 p-4 sm:p-5">
       <div className="flex flex-wrap items-baseline justify-between gap-2"><h3 className="text-sm font-medium">{deviceHost(pool) ? `Local model · ${pool.device}` : poolName(pool.pool)}</h3><span className={empty}>{pool.leases.length} of {pool.capacity} in use</span></div>
       {pool.pool === "local-model" && pool.queue.length > 0 && (() => { const machine = pool.device ? view.deviceHosts?.[pool.device] : pool.hostId; const heavyPool = view.pools.find(p => p.pool === "heavy" && p.hostId === machine); return heavyPool?.mode?.reason === "model-queued" ? <p className="text-xs text-muted-foreground">Waiting for heavy jobs here to drop to {heavyPool.mode.withModel}</p> : null; })()}
+      {pool.presence && <p className="text-xs text-muted-foreground">{presenceText(pool.presence)}</p>}
       {pool.mode && <p className="text-xs text-muted-foreground">{pool.mode.reason === "model-queued" ? "No new heavy jobs: local model queued" : pool.mode.reason === "model-running" ? `With local model · ${pool.leases.length} of ${pool.capacity} (high ${pool.mode.high})` : `Model hold over (${view.modelHoldMinutes ?? 60} min): heavy back to ${pool.mode.high}`}</p>}
       <div role="img" aria-label={`${pool.leases.length} of ${plural(pool.capacity, "slot")} in use`} className="flex flex-wrap gap-1.5">{Array.from({ length: Math.max(pool.capacity, pool.leases.length) }, (_, index) => <span data-held={index < pool.leases.length} key={index} className={cn("h-2.5 w-6 rounded-sm border", index < pool.leases.length ? "border-emerald-600 bg-emerald-600" : "border-border bg-muted")} />)}</div>
       {pool.leases.length === 0 && pool.mode?.admitting !== false ? <p className={empty}>{pool.capacity === 0 ? "No slots configured" : pool.capacity === 1 ? "Slot free" : `All ${plural(pool.capacity, "slot")} free`}</p> : <ul className="divide-y divide-border">{pool.leases.map(lease => {
@@ -139,7 +143,7 @@ function StatusContent({ view, now }: { view: StatusView; now: number }) {
       })}</ul>}
       <div className="space-y-3 border-t border-border pt-3">
         {pool.queue.length === 0 ? <p className={empty}>Nothing waiting</p> : <><h4 className="text-sm font-medium">Waiting · {pool.queue.length}</h4>
-          <p className="text-xs text-muted-foreground">{pool.mode?.reason === "model-queued" ? `Next — local model queued on ${hostName(pool.hostId)}` : view.hostSettings[pool.hostId]?.grantMode === "manual" ? "Manual grant mode — waiting for the manager" : !pool.device && view.hostSettings[pool.hostId]?.gated !== false && !gateOpen(view, pool.hostId) ? "Next — waiting for the machine check" : "Next — waiting for a free slot"}</p>
+          <p className="text-xs text-muted-foreground">{pool.mode?.reason === "model-queued" ? `Next — local model queued on ${hostName(pool.hostId)}` : view.hostSettings[pool.hostId]?.grantMode === "manual" ? "Manual grant mode — waiting for the manager" : !pool.device && !gateOpen(view, pool.hostId) ? "Next — waiting for the machine check" : "Next — waiting for a free slot"}</p>
           {pool.pool === "heavy" && pool.hostId === view.localHostId && spare.map(host => <p key={host.hostId} className="text-xs text-muted-foreground">{hostName(host.hostId)} has {plural(host.free, "free heavy slot")}. Only runs started with slots-run --spill use them.</p>)}
           <ol aria-label={`${poolTitle(pool, locals.length > 1, view)} queue`} className="divide-y divide-border">{pool.queue.map((request, index) => <li key={request.id} className="space-y-2 py-3 first:pt-0 last:pb-0 text-sm">
             <div className="flex flex-wrap items-baseline gap-2"><span className="text-xs text-muted-foreground">#{index + 1}</span><ThreadLink id={request.threadId} titles={view.titles} />{locals.length > 1 && pool.pool === "local-model" && !request.device && <span className={cn(badge, "text-muted-foreground")}>any device</span>}{request.priority !== "normal" && <span className={cn(badge, request.priority === "urgent" ? "border-destructive/30 text-destructive" : "border-amber-500/30 " + warning)}>{request.priority}</span>}</div>

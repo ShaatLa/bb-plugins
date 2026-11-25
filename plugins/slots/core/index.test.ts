@@ -2,16 +2,16 @@ import { formatNotification } from "../server.js";
 import type { Effect } from "../contract.js";
 const rendered = (effect: Effect | undefined) => effect?.type === "notify" ? formatNotification(effect) : "";
 import { describe, expect, it } from "vitest";
-import { DEFAULT_SETTINGS, type Input, type Settings, type Transition } from "../contract.js";
-import { apply, initialState, logSince, portCandidates, statusSnapshot, validateSettings } from "./index.js";
+import { DEFAULT_SETTINGS, type Context, type Input, type Settings, type Transition } from "../contract.js";
+import { apply, capacityFor, initialState, logSince, portCandidates, statusSnapshot, validateSettings } from "./index.js";
 
 const minute = 60_000;
 function harness(overrides: Partial<Settings> = {}) {
   let state = initialState();
   let now = 0;
   const settings = { ...structuredClone(DEFAULT_SETTINGS), ...overrides };
-  const send = (input: Input): Transition => {
-    const result = apply(state, input, { now, settings });
+  const send = (input: Input, away?: Context["away"]): Transition => {
+    const result = apply(state, input, { now, settings, ...(away ? { away } : {}) });
     state = result.state;
     return result;
   };
@@ -335,6 +335,7 @@ describe("Slots deterministic engine", () => {
   it("spills opted-in heavy work to another machine only when its own host is full; nothing else leaves its host", () => {
     const remote = (connected = true) => ({ ...structuredClone(DEFAULT_SETTINGS), hosts: undefined, capacities: { heavy: 1, "local-model": 0 }, gated: false, connected });
     const h = harness({ capacities: { heavy: 1, "local-model": 1 }, hosts: { r: remote() } as unknown as Settings["hosts"] });
+    h.sample(50, 1, "r"); // another machine's check is its probe reading
     const acquire = (threadId: string, extra: Record<string, unknown> = {}) => h.send({ type: "acquire", threadId, hostId: "h", pool: "heavy", job: "suite", estMs: minute, ...extra } as Input).result as { ok: boolean; data: { kind: string; useId: string; lease?: { id: string; hostId: string; homeHostId?: string } } };
     h.open();
     expect(acquire("a", { spill: true }).data).toMatchObject({ kind: "leased", lease: { hostId: "h" } }); // own host first
@@ -352,6 +353,7 @@ describe("Slots deterministic engine", () => {
     expect(pools.map(p => [p.hostId, p.pool, p.leases.length, p.queue.length])).toEqual([["h", "heavy", 1, 2], ["h", "local-model", 0, 0], ["r", "heavy", 1, 0]]);
     // A thread on the other machine leases its capacity at once, with no machine check there.
     const own = harness({ hosts: { r: remote() } as unknown as Settings["hosts"] });
+    own.sample(50, 1, "r");
     expect(own.send({ type: "request", threadId: "child", hostId: "r", pool: "heavy", job: "suite", estMs: minute }).result).toMatchObject({ ok: true, data: { kind: "leased", lease: { hostId: "r" } } });
     // A disconnected machine is skipped.
     const off = harness({ capacities: { heavy: 0, "local-model": 1 }, hosts: { r: remote(false) } as unknown as Settings["hosts"] });
@@ -362,6 +364,7 @@ describe("Slots deterministic engine", () => {
   it("honors placement and tool constraints when joining uses", () => {
     const remote = { ...structuredClone(DEFAULT_SETTINGS), hosts: undefined, capacities: { heavy: 1, "local-model": 0 }, gated: false, connected: true, tools: ["go"] };
     const h = harness({ capacities: { heavy: 1, "local-model": 1 }, hosts: { r: remote } as unknown as Settings["hosts"] });
+    h.sample(50, 1, "r");
     const ask = (threadId: string, place: "auto" | "local", needs: string[] = []) => h.send({ type: "acquire", threadId, hostId: "h", pool: "heavy", job: "suite", estMs: minute, place, needs } as Input).result;
     h.open(); expect(ask("a", "auto")).toMatchObject({ ok: true, data: { kind: "leased", lease: { hostId: "h" } } });
     expect(ask("b", "auto", ["go"])).toMatchObject({ ok: true, data: { kind: "leased", lease: { hostId: "r" } } });
@@ -674,6 +677,7 @@ describe("model coordination", () => {
     const base = structuredClone(DEFAULT_SETTINGS);
     const h = harness({ primaryHostId: "h", capacities: { heavy: 2, "local-model": 1 }, withModel: 0, deviceHosts: { GPU: "remote" }, modelHoldMinutes: 60,
       hosts: { remote: { ...base, gated: false, connected: true, capacities: { heavy: 3, "local-model": 0 }, withModel: 1 } } });
+    h.sample(50, 1, "remote");
     h.send({ type: "devices", hostId: "h", devices: [{ name: "GPU", capacity: 1 }] });
     const heavy = (threadId: string, hostId = "remote") => h.send({ type: "acquire", hostId, threadId, pool: "heavy", job: "job", estMs: minute, place: "local" });
     heavy("a"); heavy("b");
@@ -685,7 +689,7 @@ describe("model coordination", () => {
     expect(statusSnapshot(h.state, { now: h.now, settings: h.settings }, "remote").pools[0]).toMatchObject({ capacity: 1, mode: { reason: "model-running", admitting: true } });
     h.send({ type: "heartbeat", threadId: "model" });
     h.now = 59 * minute; h.send({ type: "heartbeat", threadId: "model" });
-    h.now = 61 * minute; h.send({ type: "tick" });
+    h.now = 61 * minute; h.sample(50, 1, "remote"); h.send({ type: "tick" });
     expect(statusSnapshot(h.state, { now: h.now, settings: h.settings }, "remote").pools[0]).toMatchObject({ capacity: 3, mode: { reason: "hold-expired" } });
     expect(h.state.leases.some(l => l.holderThreadId === "c")).toBe(true);
   });
@@ -695,6 +699,7 @@ describe("model admission across machines", () => {
   it("blocks each free candidate until an unpinned model starts, then releases the other machine", () => {
     const base = structuredClone(DEFAULT_SETTINGS);
     const h = harness({ primaryHostId: "h", withModel: 0, deviceHosts: { GPU: "remote" }, hosts: { remote: { ...base, capacities: { heavy: 2, "local-model": 0 }, withModel: 0, gated: false, connected: true } } });
+    h.sample(50, 1, "remote");
     h.send({ type: "devices", hostId: "h", devices: [{ name: "GPU", capacity: 1 }] });
     h.request("remote-heavy", "normal", "heavy", "remote");
     h.send({ type: "request", hostId: "h", threadId: "ask", pool: "local-model", job: "ask", estMs: minute });
@@ -713,6 +718,7 @@ describe("model admission across machines", () => {
   it("does not let a follower on a busy device prolong a model hold", () => {
     const base = structuredClone(DEFAULT_SETTINGS);
     const h = harness({ deviceHosts: { GPU: "remote" }, modelHoldMinutes: 1, hosts: { remote: { ...base, gated: false, capacities: { heavy: 3, "local-model": 0 }, withModel: 0 } } });
+    h.sample(50, 1, "remote");
     h.send({ type: "devices", hostId: "h", devices: [{ name: "GPU", capacity: 1 }] });
     for (const threadId of ["one", "two"]) h.send({ type: "request", hostId: "h", threadId, pool: "local-model", device: "GPU", job: "ask", estMs: minute });
     h.now = minute; h.send({ type: "tick" });
@@ -728,9 +734,108 @@ it("placed heavy work skips a machine with a queued model even with spare capaci
     remote: { ...base, gated: false, connected: true, capacities: { heavy: 4, "local-model": 0 }, withModel: 0 },
     other: { ...base, gated: false, connected: true, capacities: { heavy: 2, "local-model": 0 } },
   } });
+  h.sample(50, 1, "remote"); h.sample(50, 1, "other");
   h.send({ type: "devices", hostId: "h", devices: [{ name: "GPU", capacity: 1 }] });
   h.request("running", "normal", "heavy", "remote");
   h.send({ type: "request", hostId: "h", threadId: "ask", pool: "local-model", device: "GPU", job: "ask", estMs: minute });
   h.send({ type: "acquire", hostId: "h", threadId: "placed", pool: "heavy", place: "auto", job: "suite", estMs: minute });
   expect(h.state.leases.find(l => l.holderThreadId === "placed")?.hostId).toBe("other");
+});
+
+describe("owner away", () => {
+  const heavy = (h: ReturnType<typeof harness>, threadId: string) => h.request(threadId);
+  const held = (h: ReturnType<typeof harness>) => h.state.leases.filter(l => l.pool === "heavy").map(l => l.holderThreadId);
+  it("grants above the base value only in a tick with a fresh away sample, one per tick, and keeps leases on return", () => {
+    const h = harness({ capacities: { heavy: 1, "local-model": 1 }, heavyAway: 3 });
+    let clock = 100_000;
+    const away = (at: number) => ({ samples: { h: at }, clock: () => clock });
+    for (const id of ["a", "b", "c", "d"]) heavy(h, id);
+    h.open();
+    expect(held(h)).toEqual(["a"]);
+    h.open(); h.request("e", "normal", "heavy"); h.send({ type: "request", threadId: "f", hostId: "h", pool: "heavy", job: "f", estMs: minute }, away(100_000));
+    expect(held(h)).toEqual(["a"]); // a request transition never grants above the base value
+    h.send({ type: "tick" }, away(100_000)); // tick, sample 0 s old: one extra, not two
+    expect(held(h)).toEqual(["a", "b"]);
+    h.open(); clock = 106_000; h.send({ type: "tick" }, away(100_000)); // the scheduling pass ran 6 s after the probe
+    expect(held(h)).toEqual(["a", "b"]);
+    h.open(); clock = 200_000; h.send({ type: "tick" }, away(197_000));
+    expect(held(h)).toEqual(["a", "b", "c"]);
+    h.open(); clock = 300_000; h.send({ type: "tick" }, away(300_000));
+    expect(held(h)).toEqual(["a", "b", "c"]); // away capacity 3 is full
+    // Owner back: no away flag; running leases continue, nothing above base is granted.
+    h.open(); h.send({ type: "tick" }); h.send({ type: "release", threadId: "a" });
+    expect(held(h)).toEqual(["b", "c"]);
+    h.open(); h.send({ type: "tick" }); expect(held(h)).toEqual(["b", "c"]);
+  });
+  it("unset away capacity and a local-model mode keep the base or with-model value", () => {
+    const now = { samples: { h: 0 }, clock: () => 0 };
+    const unset = harness({ capacities: { heavy: 1, "local-model": 1 } });
+    heavy(unset, "a"); heavy(unset, "b"); unset.open(); unset.open(); unset.send({ type: "tick" }, now);
+    expect(held(unset)).toEqual(["a"]);
+    const model = harness({ capacities: { heavy: 1, "local-model": 1 }, withModel: 1, heavyAway: 3 });
+    model.request("m", "normal", "local-model"); heavy(model, "a"); heavy(model, "b");
+    model.open(); model.open(); model.send({ type: "tick" }, now);
+    expect(held(model)).toEqual(["a"]);
+    expect(capacityFor(model.state, "h", "heavy", model.settings, undefined, 0, true)).toBe(1);
+  });
+  it("uses the away load limit only with an away reading for that machine", () => {
+    const h = harness({ loadMax: 4, loadMaxAway: 8 });
+    expect(h.sample(50, 5).result).toMatchObject({ ok: true, data: { passed: false } });
+    expect(h.send({ type: "gateSample", hostId: "h", memFreePct: 50, load1: 5, at: 0 }, { samples: { h: 0 }, clock: () => 0 }).result).toMatchObject({ ok: true, data: { passed: true } });
+  });
+  it("restores the normal load limit when the owner returns: a request or release never grants on a stored away pass", () => {
+    const h = harness({ loadMax: 4, loadMaxAway: 8, capacities: { heavy: 1, "local-model": 0 } });
+    const away = () => ({ samples: { h: h.now }, clock: () => h.now });
+    const sampleAway = () => h.send({ type: "gateSample", hostId: "h", memFreePct: 50, load1: 5, at: h.now }, away());
+    heavy(h, "x"); h.open(); heavy(h, "y"); expect(held(h)).toEqual(["x"]);
+    sampleAway(); h.now += 15_000; sampleAway(); // two away readings between the limits
+    h.send({ type: "release", threadId: "x" }); // owner back: no away flag
+    expect(held(h)).toEqual([]);
+    h.send({ type: "tick" }); expect(held(h)).toEqual([]);
+    h.send({ type: "tick" }, away()); expect(held(h)).toEqual(["y"]); // still away: the away limit applies
+  });
+  it("away samples between the two limits never count toward the normal gate streak", () => {
+    const h = harness({ loadMax: 4, loadMaxAway: 8, gateSamples: 3, capacities: { heavy: 1, "local-model": 0 } });
+    const away = () => ({ samples: { h: h.now }, clock: () => h.now });
+    const sampleAway = () => { h.send({ type: "gateSample", hostId: "h", memFreePct: 50, load1: 5, at: h.now }, away()); h.now += 15_000; };
+    for (let i = 0; i < 3; i++) sampleAway(); // between the limits, owner away, nothing queued
+    expect(h.state.hosts.h.gate).toMatchObject({ streak: 0, awayStreak: 3 });
+    heavy(h, "y"); // owner back: the stored away samples do not open the normal gate
+    expect(held(h)).toEqual([]);
+    h.sample(50, 1); expect(held(h)).toEqual([]);
+    h.now += 15_000; h.sample(50, 1); expect(held(h)).toEqual([]);
+    h.now += 15_000; h.sample(50, 1); expect(held(h)).toEqual(["y"]); // gateSamples normal-limit samples
+  });
+  it("the away gate opens after gateSamples away-limit samples", () => {
+    const h = harness({ loadMax: 4, loadMaxAway: 8, gateSamples: 3, capacities: { heavy: 1, "local-model": 0 } });
+    const away = () => ({ samples: { h: h.now }, clock: () => h.now });
+    heavy(h, "y");
+    for (let i = 0; i < 3; i++) { expect(held(h)).toEqual([]); h.send({ type: "gateSample", hostId: "h", memFreePct: 50, load1: 5, at: h.now }, away()); h.send({ type: "tick" }, away()); h.now += 15_000; }
+    expect(held(h)).toEqual(["y"]);
+  });
+  it("restores another machine's normal load limit at once when it reads present or its probe fails", () => {
+    const remote = { ...structuredClone(DEFAULT_SETTINGS), hosts: undefined, capacities: { heavy: 2, "local-model": 0 }, loadMax: 4, loadMaxAway: 8, gated: false, connected: true };
+    const h = harness({ hosts: { r: remote } as unknown as Settings["hosts"] });
+    const away = () => ({ samples: { r: h.now }, clock: () => h.now });
+    h.send({ type: "gateSample", hostId: "r", memFreePct: 50, load1: 5, at: h.now }, away());
+    h.request("a", "normal", "heavy", "r"); expect(held(h)).toEqual([]); // reading is away, this transition has no flag
+    h.send({ type: "tick" }); expect(held(h)).toEqual([]); // probe failed or present: no flag
+    h.send({ type: "tick" }, away()); expect(held(h)).toEqual(["a"]);
+    h.request("b", "normal", "heavy", "r"); h.send({ type: "release", threadId: "a" });
+    expect(held(h)).toEqual([]); // 5 is above the normal limit 4
+  });
+  it("gates another machine on its fresh probe reading: memory, load, away load limit; without one it works as before", () => {
+    const remote = { ...structuredClone(DEFAULT_SETTINGS), hosts: undefined, capacities: { heavy: 2, "local-model": 0 }, loadMax: 4, loadMaxAway: 8, gated: false, connected: true };
+    const h = harness({ hosts: { r: remote } as unknown as Settings["hosts"] });
+    const ask = (threadId: string) => h.request(threadId, "normal", "heavy", "r");
+    h.sample(10, 1, "r"); ask("a"); expect(h.state.leases).toEqual([]); // memory below the minimum
+    h.sample(50, 5, "r"); expect(h.state.leases).toEqual([]); // load at the limit
+    h.send({ type: "gateSample", hostId: "r", memFreePct: 50, load1: 5, at: h.now }, { samples: { r: 0 }, clock: () => 0 });
+    expect(held(h)).toEqual(["a"]); // away load limit
+    h.sample(10, 1, "r"); ask("b"); expect(held(h)).toEqual(["a"]); // fresh reading, memory low
+    h.now += 61_000; ask("c");
+    expect(held(h)).toEqual(["a", "b"]); // the reading is over a minute old: no check, as before probing
+    const fresh = harness({ hosts: { r: remote } as unknown as Settings["hosts"] });
+    fresh.request("x", "normal", "heavy", "r"); expect(held(fresh)).toEqual(["x"]); // never probed: works as before
+  });
 });

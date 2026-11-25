@@ -1,4 +1,4 @@
-import { afterEach, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { createFakePluginHost, makeHostResponse, makeThreadResponse, experimental_scanPublicSdkOnly } from "@get-bb/plugin-sdk/testing";
 import { mkdtemp, rm, readFile, writeFile, mkdir } from "node:fs/promises";
 import { join } from "node:path";
@@ -8,6 +8,7 @@ import { register, formatNotification } from "./server.js";
 import { DiskStore, parseMemoryPressure, parseMeminfo, parseSince, probePort } from "./runtime.js";
 import { DEFAULT_SETTINGS, SLOTS_CHANGED, type StatusView, type Result, type RequestOutcome } from "./contract.js";
 import { stateSchema } from "./schemas.js";
+import type { RawPresence } from "./presence.js";
 import { registerCli, renderResult } from "./cli.js";
 import type { Invoke } from "./server.js";
 
@@ -29,7 +30,9 @@ async function setup(dir?: string, machine = { cores: 18, totalMemory: 64 * 1024
     }, send },
   } });
   const metrics = vi.fn(async () => ({ memFreePct: 75, load1: 1 }));
-  const runtime = { cores: () => machine.cores, totalMemory: () => machine.totalMemory, store: new DiskStore(path), now: () => now, metrics };
+  let mono = 0;
+  const presence = vi.fn(async (_hostId: string): Promise<RawPresence> => ({ idleSeconds: 0, displayAsleep: false, media: [], memFreePct: 75, load1: 1, cores: 8 }));
+  const runtime = { cores: () => machine.cores, totalMemory: () => machine.totalMemory, store: new DiskStore(path), now: () => now, metrics, presence, monotonic: () => mono };
   const { invoke } = await register(host.bb, runtime);
   cleanups.push(() => host.harness.lifecycle.dispose());
   async function configure(values: Record<string, number | string>) {
@@ -44,7 +47,13 @@ async function setup(dir?: string, machine = { cores: 18, totalMemory: 64 * 1024
     await request(threadId); await invoke("gate", { threadId, hostId: "local" }); now += 15000; await invoke("gate", { threadId, hostId: "local" });
     return (await view()).pools[0].leases.find(l => l.ownerThreadId === threadId)!;
   }
-  return { ...host, invoke, view, request, grant, threads, send, metrics, path, runtime, configure, advance: (ms: number) => { now += ms; } };
+  /** One sampler pass: probes, samples, tick; resolves once `done` holds. */
+  async function samplerPass(done: () => Promise<boolean>) {
+    const service = host.harness.behavior.runService("sampler");
+    try { await vi.waitFor(async () => expect(await done()).toBe(true)); }
+    finally { service.controller.abort(); await service.done; }
+  }
+  return { ...host, invoke, view, request, grant, threads, send, metrics, presence, samplerPass, path, runtime, configure, advance: (ms: number) => { now += ms; }, advanceMono: (ms: number) => { mono += ms; } };
 }
 it("parses macOS/Linux memory and duration/ISO log bounds", () => {
   expect(parseMemoryPressure("System-wide memory free percentage: 24%\n")).toBe(24);
@@ -742,17 +751,18 @@ it("lets threads on a configured machine lease its heavy capacity, reports lease
   expect((await h.invoke("config", { operation: "set", key: "remoteHosts", value: "host_example=x" })).ok).toBe(false);
   await h.configure({ remoteHosts: "host_example=1", heavyCapacity: 1 });
   expect((await h.view()).leaseHosts).toEqual({ local: { pools: ["heavy", "local-model"], name: "Work laptop", tools: [] }, host_example: { pools: ["heavy"], name: null, tools: [] } });
-  // A remote thread leases its own machine at once (no machine check there); naming another host is refused.
+  await h.samplerPass(async () => (await h.view()).gates.host_example?.latest?.passed === true); // its probe reading opens its check
+  // A remote thread leases its own machine at once on a fresh reading; naming another host is refused.
   expect(await heavy("remote-child")).toMatchObject({ ok: true, data: { kind: "leased", lease: { hostId: "host_example" } } });
   expect(await heavy("b", { hostId: "host_example" })).toMatchObject({ ok: false, error: { message: expect.stringContaining("omit hostId") } });
   // local-model from a remote thread uses the server host, where the devices are.
-  expect(await h.invoke("request", { threadId: "remote-child", pool: "local-model", job: "ask", estMs: 60000 }, true)).toMatchObject({ ok: true, data: { request: { hostId: "local" } } });
+  expect(await h.invoke("request", { threadId: "remote-child", pool: "local-model", job: "ask", estMs: 60000 }, true)).toMatchObject({ ok: true, data: { lease: { hostId: "local" } } }); // granted: the sampler pass read this Mac's memory
   await expect(h.harness.behavior.callRpc("request", { threadId: "a", hostId: "local", pool: "heavy", job: "x", estMs: 60000, spill: true })).rejects.toThrow();
   // capacity --host edits only that machine's entry.
   expect((await h.harness.behavior.runCli(["capacity", "--pool", "heavy", "--host", "host_example", "3"])).exitCode).toBe(0);
   expect((await h.invoke("config", { operation: "get", key: "remoteHosts" }))).toMatchObject({ ok: true, data: { value: "host_example=3" } });
   const status = await h.harness.behavior.runCli(["status"]);
-  expect(status.stdout).toContain("heavy · host_example · 1/3 slots held");
+  expect(status.stdout).toContain("heavy · Work laptop · 1/3 slots held"); // the fake names every host "Work laptop"
 });
 
 it("reads and writes one project placement field and persists queued constraints", async () => {
@@ -786,4 +796,116 @@ it("keeps concurrent placement updates for different projects", async () => {
   await Promise.all(["proj_example", "proj_other"].map(projectId => h.harness.behavior.callRpc("config.set", { projectId, key: "placement", value: "local" })));
   for (const projectId of ["proj_example", "proj_other"]) expect(await h.harness.behavior.callRpc("config.get", { projectId, key: "placement" })).toEqual({ placement: "local" });
   expect(await h.bb.storage.kv.get("placement-v1")).toEqual({ proj_example: "local", proj_other: "local" });
+});
+
+it("probes presence on the sampler tick and grants one extra heavy slot only while away", async () => {
+  const h = await setup();
+  await h.configure({ heavyCapacity: 1, heavyCapacityAway: 2, gateSamples: 1 });
+  const lease = await h.grant("a"); await h.request("b");
+  const away = { idleSeconds: 700, displayAsleep: false, media: [], memFreePct: 75, load1: 1, cores: 8 };
+  // Media playing: present, no extra.
+  h.presence.mockResolvedValue({ ...away, media: ["audio"] }); h.advance(15000);
+  await h.samplerPass(async () => (await h.view()).pools[0].presence?.reason === "media playing (audio)");
+  expect((await h.view()).pools[0]).toMatchObject({ leases: [{ id: lease.id }], presence: { away: false, extra: 0, media: ["audio"] } });
+  expect((await h.harness.behavior.runCli(["status"])).stdout).toContain("Present: media playing (audio)");
+  // The probe answers after 6 s: the sample is too old for an extra at grant time.
+  h.presence.mockImplementation(async () => { h.advanceMono(6000); return away; }); h.advance(15000);
+  await h.samplerPass(async () => (await h.view()).pools[0].presence?.away === true);
+  expect((await h.view()).pools[0].leases).toHaveLength(1);
+  // A fresh away reading: the tick's pass grants b above the base value.
+  h.presence.mockResolvedValue(away); h.advance(15000);
+  await h.samplerPass(async () => (await h.view()).pools[0].leases.length === 2);
+  expect((await h.view()).pools[0]).toMatchObject({ capacity: 1, presence: { away: true, idleMinutes: 11, extra: 1 } });
+  expect((await h.harness.behavior.runCli(["status"])).stdout).toContain("Away 11 min: +1 heavy");
+  // Owner back: running leases continue.
+  h.presence.mockResolvedValue({ ...away, idleSeconds: 5 }); h.advance(15000);
+  await h.samplerPass(async () => (await h.view()).pools[0].presence?.away === false);
+  expect((await h.view()).pools[0].leases).toHaveLength(2);
+});
+it("renews an active holder's expired lease before an away probe's tick can free it", async () => {
+  const h = await setup(); await h.configure({ heavyCapacity: 1, heavyCapacityAway: 2, gateSamples: 1 });
+  const lease = await h.grant("a");
+  h.harness.sdk.stub("threads.get", async () => makeThreadResponse({ id: "a", environmentId: "env", status: "active" }));
+  h.presence.mockResolvedValue({ idleSeconds: 700, displayAsleep: false, media: [], memFreePct: 75, load1: 1, cores: 8 });
+  h.advance(31 * 60000); // a delayed sampler: the lease is past its 30 minute expiry
+  await h.samplerPass(async () => (await h.view()).pools[0].presence?.away === true);
+  expect((await h.view()).pools[0].leases).toMatchObject([{ id: lease.id }]);
+});
+it("schedules an away machine on its own fresh probe while another machine's probe hangs", async () => {
+  const h = await setup();
+  await h.configure({ heavyCapacity: 1, heavyCapacityAway: 2, gateSamples: 1, remoteHosts: "host_example=2" });
+  await h.grant("a"); await h.request("b");
+  h.presence.mockImplementation(async hostId => hostId === "local" ? { idleSeconds: 700, displayAsleep: false, media: [], memFreePct: 75, load1: 1, cores: 8 } : new Promise<never>(() => {}));
+  h.advance(15000);
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  const service = h.harness.behavior.runService("sampler");
+  try {
+    // The remote probe has not timed out yet; this Mac's extra slot is already granted.
+    await vi.waitFor(async () => expect((await h.view()).pools[0].leases).toHaveLength(2));
+    h.advanceMono(6000); await vi.advanceTimersByTimeAsync(5001);
+  } finally { service.controller.abort(); vi.useRealTimers(); await service.done; }
+  expect((await h.view()).pools[0]).toMatchObject({ capacity: 1, leases: [{}, {}] });
+});
+describe("a remote away probe without metrics", () => {
+  const away = (metrics: Partial<RawPresence> = {}): RawPresence => ({ idleSeconds: 700, displayAsleep: false, media: [], memFreePct: 75, load1: 1, cores: 8, ...metrics });
+  async function remote() {
+    const h = await setup();
+    for (const id of ["remote-a", "remote-b"]) h.threads.set(id, makeThreadResponse({ id, title: id, environmentId: "env-r" }));
+    h.harness.sdk.stub("environments.get", async ({ environmentId }: { environmentId: string }) => ({ hostId: environmentId === "env-r" ? "host_example" : "local" }));
+    await h.configure({ remoteHosts: "host_example=1", remoteHostsAway: "host_example=3", gateSamples: 1 });
+    const heavy = (threadId: string) => h.invoke("acquire", { threadId, pool: "heavy", job: "suite", estMs: 60000 }, true);
+    const pass = () => h.samplerPass(async () => (await h.view()).gates.local?.latest != null && (await h.view()).pools.find(p => p.hostId === "host_example")?.presence?.away === true);
+    return { h, heavy, pass, leases: async () => (await h.view()).pools.find(p => p.hostId === "host_example")!.leases.length };
+  }
+  const noMetrics = (h: Awaited<ReturnType<typeof setup>>) => h.presence.mockImplementation(async hostId => hostId === "local" ? away({ idleSeconds: 0 }) : away({ memFreePct: null, load1: null }));
+  it("grants no extra slot with no earlier reading, and base-capacity work still places there", async () => {
+    const { h, heavy, pass, leases } = await remote();
+    noMetrics(h);
+    expect(await heavy("remote-a")).toMatchObject({ ok: true, data: { kind: "leased", lease: { hostId: "host_example" } } });
+    expect(await heavy("remote-b")).toMatchObject({ ok: true, data: { kind: "queued" } });
+    await pass();
+    expect(await leases()).toBe(1);
+  });
+  it("grants no extra slot on a reading older than a minute", async () => {
+    const { h, heavy, pass, leases } = await remote();
+    h.presence.mockImplementation(async () => away({ idleSeconds: 0 }));
+    await h.samplerPass(async () => (await h.view()).gates.host_example?.latest?.passed === true);
+    h.advance(61000);
+    noMetrics(h);
+    expect(await heavy("remote-a")).toMatchObject({ ok: true, data: { kind: "leased" } });
+    expect(await heavy("remote-b")).toMatchObject({ ok: true, data: { kind: "queued" } });
+    await pass();
+    expect(await leases()).toBe(1);
+  });
+});
+it("a failed or timed-out probe reads present and, after a minute without a reading, leaves another machine working as before", async () => {
+  const h = await setup();
+  h.threads.set("remote-child", makeThreadResponse({ id: "remote-child", title: "Remote", environmentId: "env-r" }));
+  h.harness.sdk.stub("environments.get", async ({ environmentId }: { environmentId: string }) => ({ hostId: environmentId === "env-r" ? "host_example" : "local" }));
+  await h.configure({ remoteHosts: "host_example=2", remoteLoadMax: "host_example=4" });
+  h.presence.mockImplementation(async hostId => hostId === "local" ? Promise.reject(new Error("probe failed")) : { idleSeconds: 0, displayAsleep: false, media: [], memFreePct: 75, load1: 3, cores: 8 });
+  await h.samplerPass(async () => (await h.view()).gates.host_example?.latest?.passed === true);
+  expect((await h.view()).pools[0].presence).toMatchObject({ away: false, reason: "presence unknown (probe failed)" });
+  expect((await h.view()).hostSettings.host_example).toMatchObject({ loadMax: 4 });
+  // The remote probe hangs; the 5 s timeout reads present and adds no reading.
+  h.presence.mockImplementation(async hostId => hostId === "local" ? { idleSeconds: 0, displayAsleep: false, media: [], memFreePct: 75, load1: 1, cores: 8 } : new Promise<never>(() => {}));
+  h.advance(61000);
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  const service = h.harness.behavior.runService("sampler");
+  try { await vi.advanceTimersByTimeAsync(5001); await vi.advanceTimersByTimeAsync(0); }
+  finally { service.controller.abort(); vi.useRealTimers(); await service.done; }
+  expect((await h.view()).pools.find(p => p.hostId === "host_example")?.presence).toMatchObject({ away: false, reason: "presence unknown (probe failed)" });
+  expect(await h.invoke("acquire", { threadId: "remote-child", pool: "heavy", job: "suite", estMs: 60000 }, true)).toMatchObject({ ok: true, data: { kind: "leased", lease: { hostId: "host_example" } } });
+});
+it("round-trips the away settings one field at a time", async () => {
+  const h = await setup();
+  expect(await h.invoke("config", { operation: "get", key: "heavyCapacityAway" })).toMatchObject({ ok: true, data: { value: 4, default: 4, set: false } });
+  expect(await h.invoke("config", { operation: "set", key: "heavyCapacityAway", value: "6" })).toMatchObject({ ok: true, data: { value: 6, set: true } });
+  expect(await h.invoke("config", { operation: "set", key: "loadMaxAway", value: 19 })).toMatchObject({ ok: false });
+  expect(await h.invoke("config", { operation: "set", key: "awayMinutes", value: 15 })).toMatchObject({ ok: true, data: { value: 15 } });
+  expect(await h.invoke("config", { operation: "set", key: "remoteLoadMax", value: "host_example=0" })).toMatchObject({ ok: false });
+  await h.configure({ remoteHosts: "host_example=2", remoteHostsAway: "host_example=3", remoteLoadMax: "host_example=6", remoteLoadMaxAway: "host_example=9" });
+  expect((await h.view()).hostSettings.host_example).toMatchObject({ capacities: { heavy: 2 }, heavyAway: 3, loadMax: 6, loadMaxAway: 9 });
+  expect((await h.view()).hostSettings.local).toMatchObject({ heavyAway: 6 });
+  expect(await h.invoke("config", { operation: "unset", key: "heavyCapacityAway" })).toMatchObject({ ok: true, data: { value: 4, set: false } });
 });

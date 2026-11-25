@@ -5,9 +5,10 @@ import { dirname } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { z } from "zod";
 import { DEFAULT_SETTINGS, LOCAL_MODEL_MAX, POOLS, SLOTS_CHANGED, type Effect, type Settings, type State, type Input, type Result, type RpcMethods, type HostSettings, SETTING_KEYS, type SettingKey, type SettingValues, type SettingsFormView, type SettingView } from "./contract.js";
-import { apply, deviceList, initialState, portCandidates, statusSnapshot, validateSettings, settingsFor } from "./core/index.js";
+import { apply, capacityFor, deviceList, initialState, portCandidates, statusSnapshot, validateSettings, settingsFor, REMOTE_READING_MS } from "./core/index.js";
+import { decidePresence, presenceHostContract, type Presence, type RawPresence } from "./presence.js";
 import { DiskStore, metrics, probePort } from "./runtime.js";
-import { inputs, parseObserverEvents, parseRemoteHosts, parseDeviceHosts, deviceHostsSchema, observerEventsSchema, remoteHostsSchema, machineToolsSchema, parseMachineTools, rpcContract, stateSchema } from "./schemas.js";
+import { inputs, parseObserverEvents, parseRemoteHosts, remoteLoadSchema, parseDeviceHosts, deviceHostsSchema, observerEventsSchema, remoteHostsSchema, machineToolsSchema, parseMachineTools, rpcContract, stateSchema } from "./schemas.js";
 import { createWatcher } from "./watcher.js";
 import { registerCli } from "./cli.js";
 
@@ -24,12 +25,16 @@ export interface Runtime {
   store?: DiskStore;
   watchCollector?: Parameters<typeof createWatcher>[0]["collector"];
   realpath?: Parameters<typeof createWatcher>[0]["realpath"];
+  /** Monotonic clock for presence sample ages. */
+  monotonic: () => number;
+  /** One machine's presence probe; defaults to this plugin's host entry on that machine. */
+  presence?: (hostId: string) => Promise<RawPresence>;
 }
 export type Invoke = (method: keyof RpcMethods, params: unknown, defaultHost?: boolean) => Promise<Result<unknown>>;
 
 export default function plugin(bb: BbPluginApi) { return register(bb); }
 export async function register(bb: BbPluginApi, overrides: Partial<Runtime> = {}) {
-  const runtime = { now: Date.now, metrics, probePort,
+  const runtime: Runtime = { now: Date.now, metrics, probePort, monotonic: () => performance.now(),
     cores: () => os.availableParallelism?.() ?? os.cpus().length,
     totalMemory: os.totalmem, ...overrides };
   const cores = Math.max(1, runtime.cores());
@@ -65,8 +70,14 @@ export async function register(bb: BbPluginApi, overrides: Partial<Runtime> = {}
     observerGateHoldMinutes: { type: "number", label: "Machine busy threshold", description: `Minutes before alerting the manager about a failing machine check.`, default: 15, experimental_schema: z.number().int().min(1).max(10080) },
     portFrom: { type: "number", label: "Ports from", description: `First port available for development servers.`, default: 41000, experimental_schema: z.number().int().min(1).max(65535) },
     portTo: { type: "number", label: "Ports to", description: `Last port available; must be at least the first port.`, default: 41099, experimental_schema: z.number().int().min(1).max(65535) },
-    remoteHosts: { type: "string", label: "Other machines", description: `bb host id=heavy capacity, comma-separated (e.g. host_example=4). Threads there may lease; \`slots-run --spill\` may run heavy work there. No machine check there; empty means this Mac only.`, default: "", experimental_schema: remoteHostsSchema },
+    remoteHosts: { type: "string", label: "Other machines", description: `bb host id=heavy capacity, comma-separated (e.g. host_example=4). Threads there may lease; \`slots-run --spill\` may run heavy work there. Its machine check is its latest presence probe (memory, load), closed when older than a minute; empty means this Mac only.`, default: "", experimental_schema: remoteHostsSchema },
     machineTools: { type: "string", label: "Installed tools", default: "", experimental_schema: machineToolsSchema },
+    heavyCapacityAway: { type: "number", label: "Heavy jobs while away", description: `This Mac's heavy capacity after awayMinutes without input (or with the display asleep) and no media playing. Unset follows heavy jobs.`, default: -1, experimental_schema: z.number().int().min(0).max(cores) },
+    loadMaxAway: { type: "number", label: "Load limit while away", description: `This Mac's load limit while away. Unset follows the load limit.`, default: -1, experimental_schema: z.number().positive().max(cores) },
+    remoteHostsAway: { type: "string", label: "Other machines while away", description: `host_id=heavy capacity while the owner is away from that machine.`, default: "", experimental_schema: remoteHostsSchema },
+    remoteLoadMax: { type: "string", label: "Other machines' load limit", description: `host_id=load limit; unset uses that machine's core count.`, default: "", experimental_schema: remoteLoadSchema },
+    remoteLoadMaxAway: { type: "string", label: "Other machines' load limit while away", description: `host_id=load limit while away; unset follows that machine's load limit.`, default: "", experimental_schema: remoteLoadSchema },
+    awayMinutes: { type: "number", label: "Away after minutes", description: `Minutes without keyboard or mouse input before a machine counts as away.`, default: 10, experimental_schema: z.number().int().min(1).max(1440) },
     grantMode: { type: "select", label: "Grant mode", description: `Automatic grants follow queue order and passing checks; manual grants wait for the manager.`, options: ["auto", "manual"], experimental_optionLabels: { auto: "Automatic", manual: "Manual (manager grants)" }, default: "auto" },
   } satisfies Record<string, PluginSettingDescriptor>;
   const nativeSettings = bb.settings.define({ machineTools: descriptors.machineTools });
@@ -83,10 +94,11 @@ export async function register(bb: BbPluginApi, overrides: Partial<Runtime> = {}
     heavyCapacity: number; heavyCapacityWithModel: number; remoteHostsWithModel: string; deviceHosts: string; modelHoldMinutes: number; localModelCapacity: number; memFreeMinPct: number; loadMax: number; gateSamples: number;
     gateIntervalSeconds: number; leaseTtlMinutes: number; maxEstimateMinutes: number; heartbeatIntervalMinutes: number; observerThreadId: string;
     observerEvents: string; observerQueueWaitMinutes: number; observerGateHoldMinutes: number; portFrom: number; portTo: number; grantMode: string; remoteHosts: string; machineTools: string;
+    heavyCapacityAway: number; loadMaxAway: number; remoteHostsAway: string; remoteLoadMax: string; remoteLoadMaxAway: string; awayMinutes: number;
   }; }
   function validateField(key: SettingKey, value: unknown, stored = false) {
     const descriptor = descriptors[key];
-    if ("experimental_schema" in descriptor) descriptor.experimental_schema.parse(stored && typeof value === "number" ? key === "localModelCapacity" ? Math.min(value, LOCAL_MODEL_MAX) : key === "heavyCapacity" || key === "loadMax" || key === "watchCores" ? Math.min(value, cores) : value : value);
+    if ("experimental_schema" in descriptor) descriptor.experimental_schema.parse(stored && typeof value === "number" ? key === "localModelCapacity" ? Math.min(value, LOCAL_MODEL_MAX) : key === "heavyCapacity" || key === "loadMax" || key === "watchCores" || key === "heavyCapacityAway" || key === "loadMaxAway" ? Math.min(value, cores) : value : value);
     else if (typeof value !== "string" || !descriptor.options.includes(value)) throw new Error("Invalid grant mode");
     return value as number | string;
   }
@@ -108,11 +120,11 @@ export async function register(bb: BbPluginApi, overrides: Partial<Runtime> = {}
   }
   function settingView(key: SettingKey): SettingView {
     const view = formView();
-    return { key, value: view.values[key], default: key === "heavyCapacityWithModel" ? view.values.heavyCapacity : defaults[key], ...(view.maxima[key] !== undefined ? { max: view.maxima[key] } : {}), set: key in explicit };
+    return { key, value: view.values[key], default: key === "heavyCapacityWithModel" || key === "heavyCapacityAway" ? view.values.heavyCapacity : key === "loadMaxAway" ? view.values.loadMax : defaults[key], ...(view.maxima[key] !== undefined ? { max: view.maxima[key] } : {}), set: key in explicit };
   }
   function formView(): SettingsFormView {
-    return { values: { ...readValues(), heavyCapacity: settings.capacities.heavy, heavyCapacityWithModel: settings.withModel ?? settings.capacities.heavy, loadMax: settings.loadMax, watchCores: settings.watchCores }, defaults: { ...defaults, heavyCapacityWithModel: settings.capacities.heavy },
-      maxima: { watchCores: cores, watchWindowSeconds: 900, idleLeaseMinutes: 240, heavyCapacity: cores, heavyCapacityWithModel: cores, modelHoldMinutes: 10080, loadMax: cores, localModelCapacity: LOCAL_MODEL_MAX, memFreeMinPct: 100, gateSamples: 100, gateIntervalSeconds: 3600, leaseTtlMinutes: 10080, maxEstimateMinutes: 10080, heartbeatIntervalMinutes: 10079, observerQueueWaitMinutes: 10080, observerGateHoldMinutes: 10080, portFrom: 65535, portTo: 65535 }, setKeys: Object.keys(explicit) as SettingKey[], cores, heavyDefault, hosts: knownHosts };
+    return { values: { ...readValues(), heavyCapacity: settings.capacities.heavy, heavyCapacityWithModel: settings.withModel ?? settings.capacities.heavy, heavyCapacityAway: settings.heavyAway ?? settings.capacities.heavy, loadMax: settings.loadMax, loadMaxAway: settings.loadMaxAway ?? settings.loadMax, watchCores: settings.watchCores }, defaults: { ...defaults, heavyCapacityWithModel: settings.capacities.heavy, heavyCapacityAway: settings.capacities.heavy, loadMaxAway: settings.loadMax },
+      maxima: { watchCores: cores, heavyCapacityAway: cores, loadMaxAway: cores, awayMinutes: 1440, watchWindowSeconds: 900, idleLeaseMinutes: 240, heavyCapacity: cores, heavyCapacityWithModel: cores, modelHoldMinutes: 10080, loadMax: cores, localModelCapacity: LOCAL_MODEL_MAX, memFreeMinPct: 100, gateSamples: 100, gateIntervalSeconds: 3600, leaseTtlMinutes: 10080, maxEstimateMinutes: 10080, heartbeatIntervalMinutes: 10079, observerQueueWaitMinutes: 10080, observerGateHoldMinutes: 10080, portFrom: 65535, portTo: 65535 }, setKeys: Object.keys(explicit) as SettingKey[], cores, heavyDefault, hosts: knownHosts };
   }
   const getSettings = async (): Promise<Settings> => {
     const current = readValues();
@@ -134,13 +146,19 @@ export async function register(bb: BbPluginApi, overrides: Partial<Runtime> = {}
       heartbeatIntervalMs: values.heartbeatIntervalMinutes * 60000, observerThreadId: values.observerThreadId.trim() || null,
       observerEvents: parseObserverEvents(values.observerEvents), observerQueueWaitMs: values.observerQueueWaitMinutes * 60000,
       observerGateHoldMs: values.observerGateHoldMinutes * 60000,
-      withModel: values.heavyCapacityWithModel < 0 ? Math.min(values.heavyCapacity, cores) : Math.min(values.heavyCapacityWithModel, cores), deviceHosts: parseDeviceHosts(values.deviceHosts), modelHoldMinutes: values.modelHoldMinutes,
+      withModel: values.heavyCapacityWithModel < 0 ? Math.min(values.heavyCapacity, cores) : Math.min(values.heavyCapacityWithModel, cores),
+      ...(values.heavyCapacityAway < 0 ? {} : { heavyAway: Math.min(values.heavyCapacityAway, cores) }), ...(values.loadMaxAway < 0 ? {} : { loadMaxAway: Math.min(values.loadMaxAway, cores) }), deviceHosts: parseDeviceHosts(values.deviceHosts), modelHoldMinutes: values.modelHoldMinutes,
       primaryHostId: localHostId || undefined, machineTools: parseMachineTools(values.machineTools),
       portRange: { from: values.portFrom, to: values.portTo }, grantMode: values.grantMode as Settings["grantMode"], hosts: {},
     };
-    // Other machines reuse these settings with their own heavy capacity and no machine check.
-    const { hosts: _, ...base } = settings;
-    for (const [hostId, heavy] of parseRemoteHosts(values.remoteHosts)) if (hostId !== localHostId) settings.hosts[hostId] = { ...base, capacities: { heavy, "local-model": 0 }, withModel: new Map(parseRemoteHosts(values.remoteHostsWithModel)).get(hostId) ?? heavy, gated: false, connected: hostInfo.get(hostId)?.connected ?? false, tools: parseMachineTools(values.machineTools)[hostId] ?? [] };
+    // Other machines reuse these settings with their own heavy capacity; their check is their latest probe reading.
+    const { hosts: _, heavyAway: _away, loadMaxAway: _loadAway, ...base } = settings;
+    const away = new Map(parseRemoteHosts(values.remoteHostsAway)), load = new Map(parseRemoteHosts(values.remoteLoadMax)), loadAway = new Map(parseRemoteHosts(values.remoteLoadMaxAway));
+    for (const [hostId, heavy] of parseRemoteHosts(values.remoteHosts)) if (hostId !== localHostId) {
+      const loadMax = load.get(hostId) ?? presence.get(hostId)?.cores ?? base.loadMax;
+      settings.hosts[hostId] = { ...base, capacities: { heavy, "local-model": 0 }, withModel: new Map(parseRemoteHosts(values.remoteHostsWithModel)).get(hostId) ?? heavy, gated: false, connected: hostInfo.get(hostId)?.connected ?? false, tools: parseMachineTools(values.machineTools)[hostId] ?? [],
+        loadMax, ...(away.has(hostId) ? { heavyAway: away.get(hostId) } : {}), ...(loadAway.has(hostId) ? { loadMaxAway: loadAway.get(hostId) } : {}) };
+    }
     const error = validateSettings(settings);
     if (error) throw new Error(error);
     return settings;
@@ -161,6 +179,8 @@ export async function register(bb: BbPluginApi, overrides: Partial<Runtime> = {}
     projectWrites = write.catch(() => {});
     return write;
   };
+  /** Latest presence per machine; `at` is the monotonic start of its probe request. */
+  const presence = new Map<string, Presence & { at: number; cores?: number }>();
   let settings = await getSettings();
   let state: State = initialState();
   let dataDir = "";
@@ -173,9 +193,9 @@ export async function register(bb: BbPluginApi, overrides: Partial<Runtime> = {}
     queue = next.catch(() => {}); return next;
   }
   class DeadlineError extends Error {}
-  async function deadline<T>(promise: Promise<T>): Promise<T> {
+  async function deadline<T>(promise: Promise<T>, ms = 10000): Promise<T> {
     let timer: ReturnType<typeof setTimeout> | undefined;
-    try { return await Promise.race([promise, new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new DeadlineError("SDK call timed out")), 10000); })]); }
+    try { return await Promise.race([promise, new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new DeadlineError("SDK call timed out")), ms); })]); }
     finally { clearTimeout(timer); }
   }
   async function sendNotification(effect: Extract<Effect, { type: "notify" }>) {
@@ -186,9 +206,9 @@ export async function register(bb: BbPluginApi, overrides: Partial<Runtime> = {}
         input: [{ type: "text", text: `[bb message from plugin:${bb.pluginId}]\n\n${text}`, mentions: [] }] }));
     } catch (error) { bb.log.warn(`Slots notify ${effect.threadId} failed: ${String(error)}`); }
   }
-  async function transition(input: Input, manualSample = false, verified = new Set<string>(), pending: Extract<Effect, { type: "notify" }>[] = []) {
+  async function transition(input: Input, manualSample = false, verified = new Set<string>(), pending: Extract<Effect, { type: "notify" }>[] = [], away?: Record<string, number>) {
     if (input.type === "threadEnded") titles.delete(input.threadId);
-    const change = apply(state, input, { now: runtime.now(), settings: manualSample ? { ...settings, grantMode: "manual" } : settings });
+    const change = apply(state, input, { now: runtime.now(), settings: manualSample ? { ...settings, grantMode: "manual" } : settings, ...(away ? { away: { samples: away, clock: runtime.monotonic } } : {}) });
     if (!change.result.ok) return change.result;
     const serialized = JSON.stringify(change.state);
     const changed = serialized !== store.lastSaved;
@@ -237,14 +257,27 @@ export async function register(bb: BbPluginApi, overrides: Partial<Runtime> = {}
     for (const id of ids) await checkThread(id);
     initialized = true;
   }
-  async function sample(manual = false) {
+  async function sample(manual = false, away?: Record<string, number>) {
     let readings;
     try { readings = await runtime.metrics(); }
     catch (error) {
       bb.log.warn(`Slots metrics failed: ${String(error)}`);
       readings = { memFreePct: 0, load1: settings.loadMax };
     }
-    return transition({ type: "gateSample", hostId: localHostId, ...readings, at: runtime.now() }, manual);
+    return transition({ type: "gateSample", hostId: localHostId, ...readings, at: runtime.now() }, manual, undefined, undefined, away);
+  }
+  let presenceClient: ReturnType<typeof bb.hosts.experimental_client<typeof presenceHostContract>> | undefined;
+  const probe = runtime.presence ?? (hostId => (presenceClient ??= bb.hosts.experimental_client({ contract: presenceHostContract })).call("presence", {}, { hostId, timeoutMs: 5000 }));
+  /** Probes every machine in parallel (5 s each); one promise per machine with its raw readings, null when its probe failed. */
+  function probePresence() {
+    const hostIds = [localHostId, ...Object.keys(settings.hosts)];
+    const awayMinutes = readValues().awayMinutes;
+    return hostIds.map(async hostId => {
+      const at = runtime.monotonic();
+      const raw = await deadline(probe(hostId), 5000).catch(error => { bb.log.warn(`Slots presence ${hostId} failed: ${String(error)}`); return null; });
+      presence.set(hostId, { ...decidePresence(raw, awayMinutes), at, ...(raw ? { cores: raw.cores } : {}) });
+      return { hostId, raw, at };
+    });
   }
   const invalid = (message: string): Result<never> => ({ ok: false, error: { code: "invalid-input", message } });
   async function localThread(threadId: string) {
@@ -324,6 +357,12 @@ export async function register(bb: BbPluginApi, overrides: Partial<Runtime> = {}
         const snapshot = statusSnapshot(state, { now: runtime.now(), settings }, p.hostId ?? [...new Set([localHostId, ...Object.keys(settings.hosts), ...Object.keys(state.hosts)])]);
         snapshot.pools = snapshot.pools.filter(pool => pool.hostId === localHostId || Object.hasOwn(settings.hosts, pool.hostId) || pool.leases.length || pool.queue.length);
         const hostSettings: Record<string, HostSettings> = { [localHostId]: settings, ...settings.hosts };
+        for (const pool of snapshot.pools) {
+          const reading = presence.get(pool.hostId);
+          if (pool.pool !== "heavy" || !reading || runtime.monotonic() - reading.at > REMOTE_READING_MS) continue;
+          const extra = reading.away && !pool.mode ? Math.max(0, capacityFor(state, pool.hostId, "heavy", settings, undefined, runtime.now(), true) - pool.capacity) : 0;
+          pool.presence = { away: reading.away, idleMinutes: reading.idleMinutes, ...(reading.media.length ? { media: reading.media } : {}), extra, reason: reading.reason };
+        }
         return { ok: true, data: { ...snapshot, hostSettings, localHostId, deviceHosts: settings.deviceHosts, modelHoldMinutes: settings.modelHoldMinutes, settingsWarnings, watcher: watcher.diagnostics() } };
       }
       // Device registration belongs to local-models; it is an RPC only, not an agent tool or CLI command.
@@ -462,30 +501,61 @@ export async function register(bb: BbPluginApi, overrides: Partial<Runtime> = {}
   bb.background.service("sampler", { async start(signal) {
     let lastSample = -Infinity;
     let lastTick = -Infinity;
+    // Active holders are renewed before any tick that may expire their lease (a delayed sampler included).
+    const renewActive = async () => {
+      const now = runtime.now();
+      for (const id of new Set(state.leases.filter(l => {
+        const host = settingsFor(settings, l.hostId);
+        return now - l.lastHeartbeatAt >= Math.min(60000, (host.leaseTtlMs - host.heartbeatIntervalMs) / 2);
+      }).map(l => l.holderThreadId))) {
+        try {
+          const thread = await lookup(id);
+          if (thread?.status === "active") await transition({ type: "heartbeat", threadId: id });
+        } catch (error) { bb.log.warn(`Slots sampler lookup ${id} failed: ${String(error)}`); }
+      }
+    };
     while (!signal.aborted) {
+      // Outside the queue: an unreachable machine must not hold every call for the 5 s probe timeout.
+      const probes = initialized && runtime.now() - lastTick >= 15000 ? probePresence() : undefined;
+      /** Machines already scheduled on their own fresh probe; the common pass leaves them out. */
+      const early = new Set<string>();
+      // An away machine is scheduled as soon as its own probe answers, so a slow peer's 5 s timeout never ages its sample.
+      const probed = probes && await Promise.all(probes.map(async probe => {
+        const result = await probe;
+        if (presence.get(result.hostId)?.away) await serial(async () => {
+          await initialize(); settings = await getSettings();
+          const raw = result.raw;
+          // Another machine is gated only by its own reading: without both metrics it gets no early pass and no extra slot (the common pass treats it as present).
+          if (result.hostId !== localHostId && !(Object.hasOwn(settings.hosts, result.hostId) && raw?.memFreePct != null && raw.load1 != null)) return;
+          await renewActive();
+          const away = { [result.hostId]: result.at };
+          if (result.hostId === localHostId) { await sample(false, away); lastSample = runtime.now(); }
+          else await transition({ type: "gateSample", hostId: result.hostId, memFreePct: raw!.memFreePct!, load1: raw!.load1!, at: runtime.now() }, false, undefined, undefined, away);
+          await transition({ type: "tick" }, false, undefined, undefined, away);
+          early.add(result.hostId);
+        }).catch(error => bb.log.warn(`Slots away pass ${result.hostId} failed: ${String(error)}`));
+        return result;
+      }));
       await serial(async () => {
         await initialize(); settings = await getSettings();
         const now = runtime.now();
         if (now - lastTick >= 15000) {
-          for (const id of new Set(state.leases.filter(l => {
-            const host = settingsFor(settings, l.hostId);
-            return now - l.lastHeartbeatAt >= Math.min(60000, (host.leaseTtlMs - host.heartbeatIntervalMs) / 2);
-          }).map(l => l.holderThreadId))) {
-            try {
-              const thread = await lookup(id);
-              if (thread?.status === "active") await transition({ type: "heartbeat", threadId: id });
-            } catch (error) { bb.log.warn(`Slots sampler lookup ${id} failed: ${String(error)}`); }
-          }
+          await renewActive();
           for (const hostId of parseRemoteHosts(readValues().remoteHosts).map(([h]) => h)) {
             const info = await deadline(bb.sdk.hosts.get({ hostId })).then(h => ({ connected: h.status === "connected", name: h.name }), () => ({ connected: false, name: hostInfo.get(hostId)?.name ?? null }));
             hostInfo.set(hostId, info);
           }
           await refreshHosts();
           settings = await getSettings();
+          // Other machines' check is their probe reading; without a fresh reading no check applies.
+          for (const { hostId, raw } of probed ?? []) if (!early.has(hostId) && hostId !== localHostId && Object.hasOwn(settings.hosts, hostId) && raw?.memFreePct != null && raw.load1 != null)
+            await transition({ type: "gateSample", hostId, memFreePct: raw.memFreePct, load1: raw.load1, at: now });
+        }
+        if (now - lastSample >= (state.requests.length ? settings.gateIntervalMs : 60000)) { await sample(false); lastSample = now; }
+        if (now - lastTick >= 15000) {
           await transition({ type: "tick" }); lastTick = now;
           await store.prune(now);
         }
-        if (now - lastSample >= (state.requests.length ? settings.gateIntervalMs : 60000)) { await sample(); lastSample = now; }
       });
       const untilSample = lastSample + (state.requests.length ? settings.gateIntervalMs : 60000);
       await sleep(Math.max(1, Math.min(lastTick + 15000, untilSample) - runtime.now()), undefined, { signal }).catch(error => { if (!signal.aborted) throw error; });

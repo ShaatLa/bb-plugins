@@ -11,7 +11,7 @@ const at = Date.parse("2026-11-07T12:00:00Z");
 const fixture: StatusView = {
   at, localHostId: "laptop", hostSettings: { laptop: DEFAULT_SETTINGS },
   titles: { owner: "Manager", holder: "QA checks", urgent: "Browser tests", normal: "Build agent" },
-  gates: { laptop: { latest: { at: at - 5000, memFreePct: 42.5, load1: 8.2, passed: true }, streak: 1, lastCountedAt: at - 5000 } },
+  gates: { laptop: { latest: { at: at - 5000, memFreePct: 42.5, load1: 8.2, passed: true }, streak: 1, awayStreak: 1, lastCountedAt: at - 5000 } },
   pools: [
     { hostId: "laptop", pool: "heavy", capacity: 4,
       leases: [{ id: "lease-1", requestId: "request-1", hostId: "laptop", pool: "heavy", slotIndex: 0,
@@ -518,6 +518,17 @@ const machines = (connected: boolean, remoteLeases = 0): StatusView => ({ ...fix
   leaseHosts: { laptop: { pools: ["heavy", "local-model"], name: "Work machine" }, remote: { pools: ["heavy"], name: "Build box" } },
   pools: [{ ...fixture.pools[1], device: "GPU-1" }, { hostId: "remote", pool: "heavy", capacity: 2, leases: Array.from({ length: remoteLeases }, (_, i) => ({ ...fixture.pools[0].leases[0], id: `r${i}`, hostId: "remote" })), queue: [] }, ...fixture.pools] });
 
+test("a remote machine with no fresh reading shows no machine-check reason for queued work", async () => {
+  const queued = { id: "request-r", hostId: "remote", pool: "heavy", threadId: "normal", job: "Build package", estMs: 60_000, priority: "normal", createdAt: at - 90_000 } as const;
+  const view = machines(true);
+  const data = { ...view, pools: view.pools.map(p => p.hostId === "remote" ? { ...p, queue: [queued] } : p),
+    gates: { ...view.gates, remote: { streak: 0, awayStreak: 0, latest: { memFreePct: 1, load1: 99, passed: false, at: view.at - 61_000 }, lastCountedAt: view.at - 61_000 } } } as StatusView;
+  const stale = render(() => ({ ok: true, data }));
+  const region = await stale.findByRole("region", { name: "Heavy jobs · Build box" });
+  expect(region.textContent).toContain("Next — waiting for a free slot");
+  expect(region.textContent).not.toContain("machine check");
+});
+
 test("groups pool cards by machine: this Mac, devices, then other hosts", async () => {
   const slot = render(() => ({ ok: true, data: machines(false) }));
   await slot.findByText("This Mac");
@@ -573,4 +584,15 @@ test("a mapped model device joins its configured machine and shows a barrier", a
   expect(within(section).getByText("Local model · GPU-1")).toBeTruthy();
   expect(within(section).getByText("No new heavy jobs: local model queued")).toBeTruthy();
   expect(slot.queryByText(/free heavy slot/)).toBeNull();
+});
+
+test("each machine's heavy section shows whether the owner is away and why", async () => {
+  const view = machines(true);
+  const data: StatusView = { ...view, pools: view.pools.map(p => p.pool !== "heavy" ? p : p.hostId === "remote"
+    ? { ...p, presence: { away: true, idleMinutes: 23, extra: 2, reason: "no input 23 min" } }
+    : { ...p, presence: { away: false, idleMinutes: 0, media: ["audio"], extra: 0, reason: "media playing (audio)" } }) };
+  const slot = render(() => ({ ok: true, data }));
+  const remote = (await slot.findByText("Build box")).closest("section")!;
+  expect(within(remote).getByText("Away 23 min: +2 heavy")).toBeTruthy();
+  expect(within(slot.getByText("This Mac").closest("section")!).getByText("Present: media playing (audio)")).toBeTruthy();
 });

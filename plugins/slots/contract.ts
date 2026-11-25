@@ -11,6 +11,10 @@ export interface HostSettings {
   watchPolicy: "off" | "warn"; watchCores: number; watchWindowSeconds: number; idleLeaseMinutes: number;
   capacities: Record<PoolName, number>;
   withModel?: number;
+  /** Heavy capacity while the owner is away from this machine; absent = no extra. */
+  heavyAway?: number;
+  /** Load limit while the owner is away; absent = loadMax. */
+  loadMaxAway?: number;
   memFreeMinPct: number;
   loadMax: number;
   gateSamples: number;
@@ -25,7 +29,7 @@ export interface HostSettings {
   observerGateHoldMs: number;
   portRange: { from: number; to: number };
   grantMode: "auto" | "manual";
-  /** false on another bb machine from `remoteHosts`: Slots samples only the server Mac, so capacity is its only limit. */
+  /** false on another bb machine from `remoteHosts`: its check is the latest probe reading (no streak), closed once older than a minute. */
   gated?: boolean;
   /** false while that machine is disconnected; a spilled job skips it. */
   connected?: boolean;
@@ -73,7 +77,7 @@ export interface Lease {
 export interface GateReadings { memFreePct: number; load1: number; at: number }
 export interface GateState {
   latest: (GateReadings & { passed: boolean }) | null;
-  streak: number; lastCountedAt: number | null;
+  streak: number; awayStreak: number; lastCountedAt: number | null;
   failingSince?: number | null; holdAlerted?: boolean;
 }
 export interface PortLease { hostId: string; threadId: string; port: number; createdAt: number }
@@ -107,7 +111,13 @@ export interface PoolSnapshot {
   /** Set on local-model entries of a registered (or just unregistered) device; absent for this Mac, whose queue also holds unpinned requests. */
   device?: string;
   mode?: { withModel: number; high: number; reason: "model-queued" | "model-running" | "hold-expired"; device?: string; admitting: boolean };
+  /** Heavy only, set by the server from the machine's latest presence probe. */
+  presence?: PresenceView;
 }
+/** `extra` is the heavy capacity added while away (0 when present or under a local-model mode). */
+export interface PresenceView { away: boolean; idleMinutes: number | null; media?: string[]; extra: number; reason: string }
+/** Panel and CLI line, e.g. `Away 23 min: +2 heavy` or `Present: media playing (audio)`. */
+export const presenceText = (p: PresenceView) => p.away ? `Away ${p.idleMinutes ?? 0} min: +${p.extra} heavy${p.reason === "display asleep" ? " (display asleep)" : ""}` : `Present: ${p.reason}`;
 export interface StatusSnapshot {
   at: number; pools: PoolSnapshot[];
   gates: Record<string, GateState>; ports: PortLease[]; audit: AuditEvent[];
@@ -165,7 +175,7 @@ export interface LogParams { since?: number; hostId?: string; limit?: number }
 /** Server implements these methods with boundary validation; these types have no SDK dependency. */
 export interface ObserverParams { threadId?: string; self?: boolean; toThreadId?: string; clear?: boolean; events?: string }
 export interface ObserverView { threadId: string | null; title: string | null; events: ObserverEvent[] }
-export const SETTING_KEYS = ["heavyCapacity", "heavyCapacityWithModel", "remoteHostsWithModel", "deviceHosts", "modelHoldMinutes", "localModelCapacity", "memFreeMinPct", "loadMax", "gateSamples", "gateIntervalSeconds", "leaseTtlMinutes", "maxEstimateMinutes", "heartbeatIntervalMinutes", "observerThreadId", "observerEvents", "observerQueueWaitMinutes", "observerGateHoldMinutes", "portFrom", "portTo", "grantMode", "watchPolicy", "watchCores", "watchWindowSeconds", "idleLeaseMinutes", "remoteHosts", "machineTools"] as const;
+export const SETTING_KEYS = ["heavyCapacity", "heavyCapacityWithModel", "remoteHostsWithModel", "deviceHosts", "modelHoldMinutes", "localModelCapacity", "memFreeMinPct", "loadMax", "gateSamples", "gateIntervalSeconds", "leaseTtlMinutes", "maxEstimateMinutes", "heartbeatIntervalMinutes", "observerThreadId", "observerEvents", "observerQueueWaitMinutes", "observerGateHoldMinutes", "portFrom", "portTo", "grantMode", "watchPolicy", "watchCores", "watchWindowSeconds", "idleLeaseMinutes", "remoteHosts", "machineTools", "heavyCapacityAway", "loadMaxAway", "remoteHostsAway", "remoteLoadMax", "remoteLoadMaxAway", "awayMinutes"] as const;
 export type SettingKey = (typeof SETTING_KEYS)[number];
 export type SettingValues = Record<SettingKey, number | string>;
 export interface SettingsFormView { values: SettingValues; defaults: SettingValues; maxima: Partial<Record<SettingKey, number>>; setKeys: SettingKey[]; cores: number; heavyDefault: number; hosts?: { id: string; name: string | null; connected: boolean }[] }
@@ -219,5 +229,9 @@ export type Effect = ({ type: "notify"; threadId: string; reason: AuditType; que
   { type: "audit"; event: AuditEvent };
 export type EngineOutput = UseOutcome | { kind: "queued"; position: number } | RequestOutcome | ReleaseOutcome | HeartbeatOutcome | GateOutcome |
   Lease | PortLease | SlotRequest | { capacity: number } | { devices: DeviceInfo[] } | null;
-export interface Context { now: number; settings: Settings }
+/**
+ * `away`: machines whose presence probe in this sampler tick read away, with the probe's start on `clock`
+ * (monotonic). Only a `tick` grants above the base heavy capacity, one slot per machine, on a sample at most 5 s old.
+ */
+export interface Context { now: number; settings: Settings; away?: { samples: Record<string, number>; clock: () => number } }
 export interface Transition { state: State; effects: Effect[]; result: Result<EngineOutput> }

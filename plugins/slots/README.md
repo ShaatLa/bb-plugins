@@ -325,4 +325,12 @@ Configure `deviceHosts` as `device=host_id` entries to link registered model dev
 
 A queued model blocks new heavy grants on candidate machines while their device slot is free and existing heavy work drains. Once the model starts, heavy work is capped at the with-model capacity. After `modelHoldMinutes` (default 60) from grant, heavy capacity returns to its ordinary value even if the model is still running. Existing leases are never revoked.
 
+### Owner away: extra heavy capacity
+
+Every sampler tick (15 s) Slots probes each machine through its host entry: input idle time (`HIDIdleTime`), whether the display is asleep, and media assertions (`pmset -g assertions`). A machine is away after `awayMinutes` (default 10) without keyboard or mouse input, or with its display asleep, and with no media playing: any `coreaudiod` audio context, a "Playing audio" assertion, or any display-sleep assertion except a headless render's "Capturing". A failed or unparsable probe counts as present.
+
+While away, heavy capacity rises to `heavyCapacityAway` on this Mac and `remoteHostsAway` (`host_id=capacity`) on other machines, and the load limit to `loadMaxAway` / `remoteLoadMaxAway`. Only the tick's scheduling pass grants above the ordinary capacity: one slot per machine per tick, on a probe at most 5 s old. A local-model mode wins over away. When the owner returns no new extra slots are granted; running leases continue. Unset values add nothing.
+
+Other machines are checked on their probe readings (memory free, load below `remoteLoadMax`, default their core count); without a reading from the last minute (no host entry there, offline, or a failed probe) the machine works as before presence probing: no check and no extra slots, so placement never stops. The panel and `bb slots status` show each machine's mode, e.g. `Away 23 min: +2 heavy` or `Present: media playing (audio)`.
+
 Remote runs return the command’s exit code; exit 69 indicates bb cannot determine the outcome.

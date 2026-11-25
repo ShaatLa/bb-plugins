@@ -1,6 +1,6 @@
 {
   "name": "bb-plugin-slots",
-  "version": "0.9.1",
+  "version": "0.10.0",
   "type": "module",
   "license": "MIT",
   "engines": {
@@ -14,6 +14,7 @@
       "icon": "Layers"
     },
     "server": "./server.ts",
+    "host": "./host.ts",
     "app": "./app.tsx"
   },
   "scripts": {
