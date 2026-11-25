@@ -705,6 +705,8 @@ it.each([
   expect(line.querySelector("time")?.dateTime).toBe(original.updatedAt);
   const group = slot.getByRole("group", { name: second.prompt });
   expect(link.compareDocumentPosition(group) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  // The earlier answer sits inside the new question's card, not in a box of its own above it.
+  expect(group.parentElement!.contains(link)).toBe(true);
   expect(slot.getByText("Superseded checks · 1").closest("details")!.open).toBe(false);
   expect(slot.queryByText(/Changed from the replaced check/)).toBeNull();
 });

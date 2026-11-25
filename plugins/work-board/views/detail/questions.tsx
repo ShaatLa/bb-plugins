@@ -1,7 +1,7 @@
 import { isQuestionOpen } from "../../shared/questions";
 import { DisclosureSummary } from "../../components/disclosure";
 import { ActorLabel } from "../../components/thread-chip";
-import { useEffect, useId, useMemo, useState, useRef } from "react";
+import { useEffect, useId, useMemo, useState, useRef, type ReactNode } from "react";
 import { experimental_ImageLightbox as ImageLightbox } from "@get-bb/plugin-sdk/app";
 import { Icon } from "@/components/ui/icon";
 import { Button } from "@/components/ui/button";
@@ -186,7 +186,7 @@ function Replacement({ previous, question, targetId, now }: { previous: TaskQues
   }
   const origin = revisions[first];
   const changes = checkChanges(previous, question);
-  return <div className="space-y-1 rounded-md bg-muted p-2 text-xs break-words">
+  return <div className="space-y-1 rounded-md bg-muted/50 p-2 text-xs break-words">
     <p className="font-medium"><a href={`#${targetId}`} className="text-primary underline" onClick={event => {
         const target = event.currentTarget.ownerDocument.getElementById(targetId);
         if (!target) return;
@@ -234,8 +234,11 @@ function QuestionAnswer({
   onSave,
   onEdit,
   onError,
+  replacement,
 }: {
   question: TaskQuestion;
+  /** The replaced check's answer, shown inside this card above the prompt. */
+  replacement?: ReactNode;
   onSave: (ids: string[], answerText: string | null, files: File[]) => Promise<void>;
   onEdit: () => void;
   onError: (message: string) => void;
@@ -279,12 +282,14 @@ function QuestionAnswer({
       JSON.stringify([...question.selectedOptionIds].sort()) &&
     answerText === question.answerText;
   return (
+    <div className="space-y-2 rounded-md border border-border p-3">
+    {replacement}
     <fieldset
       aria-label={question.prompt}
-      className="space-y-2 rounded-md border border-border p-3"
+      className="m-0 min-w-0 space-y-2 border-0 p-0"
       disabled={saving}
     >
-      <legend className="max-w-full px-1 text-sm font-medium break-words">
+      <legend className="max-w-full p-0 text-sm font-medium break-words">
         <LinkedText text={question.prompt} /> <span className="text-xs text-muted-foreground">{question.kind === "check" ? "Check" : "Decision"}</span>
       </legend>
       {question.steps.length ? (
@@ -425,6 +430,7 @@ function QuestionAnswer({
       </Button>
       <QuestionHistory question={question} />
     </fieldset>
+    </div>
   );
 }
 
@@ -498,13 +504,14 @@ export function QuestionsSection({
     const chain = predecessors(question);
     return <div key={question.id} className="space-y-2">
       {question.supersededBy ? renderSuperseded(question) : <>
-        {replacement(question)}
         {question.withdrawnAt ? <div className="space-y-1 rounded-md border border-border p-3">
+          {replacement(question)}
           <p className="font-medium">{question.prompt}</p>
           <p className="text-xs text-muted-foreground">Withdrawn by <ActorLabel name={question.withdrawnBy!} /> · <time dateTime={question.withdrawnAt} title={new Date(question.withdrawnAt).toLocaleString()}>{formatRelativeTime(question.withdrawnAt, now)}</time>: {question.withdrawReason}</p>
         </div> : <QuestionAnswer
           key={`${question.id}:${question.revision}`}
           question={question}
+          replacement={replacement(question)}
           onError={onError}
           onEdit={() => {
             onAddingChange(false);
