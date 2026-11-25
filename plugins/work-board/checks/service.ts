@@ -420,13 +420,16 @@ function createService(bb: BbPluginApi) {
     let project: ScanProject | null = null;
     try {
       project = (await bb.sdk.projects.get({ projectId: link }).catch((cause) => { throw new CheckoutRefreshError("Could not read the bb project repository settings", { cause }); })) ?? null;
-      const remote = repositoryUrl.safeParse(project?.gitRemoteUrl);
+      const remote = repositoryUrl.safeParse(config.remote ?? project?.gitRemoteUrl);
       if (!remote.success) throw new CheckoutRefreshError("Set a valid Git remote URL in the bb project settings");
       const { bbCli, runtimePath } = await getChecksEnvironment(bb);
       const result = await execute(dataDir(), trackerId, {
         remote: remote.data, branch: config.branch, script: config.script, args: config.args, timeoutSeconds: config.timeoutSeconds, snapshots: config.snapshots,
         bbProjectId: link, manager, committed, bbCli, runtimePath, gitTimeoutMs: checksTuning.gitTimeoutMs, killGraceMs: checksTuning.killGraceMs,
-      }, controller.signal);
+      }, controller.signal).catch((error) => {
+        if (config.remote && error instanceof CheckoutRefreshError) throw new CheckoutRefreshError("Could not refresh the checkout from checks.remote", { cause: error });
+        throw error;
+      });
       return { result, refreshFailed: false, project };
     } catch (error) {
       if (controller.signal.aborted) throw error;
@@ -605,11 +608,11 @@ function createService(bb: BbPluginApi) {
   // ---- owner and settings operations ----------------------------------------------------------------------------
 
   const running = (trackerId: string) => [...runs.values()].includes(trackerId);
-  /** A settings edit makes the next pass due; a branch change forgets the refresh backoff. Skipped while a tick holds the state. */
-  function touchState(trackerId: string, branchChanged = false) {
+  /** A settings edit makes the next pass due; a branch or remote change forgets the refresh backoff. Skipped while a tick holds the state. */
+  function touchState(trackerId: string, sourceChanged = false) {
     if (running(trackerId)) return;
     const state = store.state(trackerId);
-    if (branchChanged) { state.refreshFailures = 0; state.refreshRetryAt = undefined; }
+    if (sourceChanged) { state.refreshFailures = 0; state.refreshRetryAt = undefined; }
     store.save(trackerId, { ...state, nextRun: Date.now() });
   }
 
@@ -641,7 +644,7 @@ function createService(bb: BbPluginApi) {
     const parsed = parseField(field, value);
     const before = readDraft(db, trackerId)[field];
     writeField(db, trackerId, field, parsed);
-    touchState(trackerId, field === "branch" && before !== parsed);
+    touchState(trackerId, (field === "branch" || field === "remote") && before !== parsed);
     changed(trackerId);
     return parsed;
   }
@@ -652,9 +655,9 @@ function createService(bb: BbPluginApi) {
     const fields = (Object.keys(patch) as CheckField[]).filter((field) => CHECK_FIELDS.includes(field));
     const parsed = fields.map((field) => [field, parseField(field, patch[field])] as const);
     if (!parsed.length) return;
-    const before = readDraft(db, trackerId).branch;
+    const before = readDraft(db, trackerId);
     db.transaction(() => { for (const [field, value] of parsed) writeField(db, trackerId, field, value); })();
-    touchState(trackerId, parsed.some(([field, value]) => field === "branch" && value !== before));
+    touchState(trackerId, parsed.some(([field, value]) => (field === "branch" || field === "remote") && value !== before[field]));
     changed(trackerId);
   }
 

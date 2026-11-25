@@ -41,6 +41,10 @@ it("applies the changed fields with one Apply shown only while they differ, lets
     expect(branch.previousElementSibling?.textContent).toBe("Branch");
     expect(branch.nextElementSibling).toBe(document.getElementById(branch.getAttribute("aria-describedby")!));
     expect(branch.nextElementSibling?.textContent).toBe("For example main");
+    const repository = within(section).getByLabelText("Repository");
+    const remote = "git@example.com:owner/process.git";
+    expect(section.textContent).toContain("the bb project's Git remote, unless Repository is set");
+    fireEvent.change(repository, { target: { value: remote } });
     fireEvent.change(branch, { target: { value: "main" } });
     fireEvent.change(within(section).getByLabelText("Script"), { target: { value: "checks/run.py" } });
     fireEvent.change(within(section).getByLabelText("Arguments"), { target: { value: '["--root","{manager}"]' } });
@@ -48,13 +52,17 @@ it("applies the changed fields with one Apply shown only while they differ, lets
     expect(within(section).getByRole("switch", { name: "Run repository checks" }).hasAttribute("disabled")).toBe(false);
     expect(settings.rpcCalls.some((call) => call.method === "checks.configPatch")).toBe(false);
     fireEvent.click(within(section).getByRole("button", { name: "Apply" }));
-    await waitFor(() => expect(checksService(bb).status(project.id).config).toMatchObject({ branch: "main", script: "checks/run.py", args: ["--root", "{manager}"] }));
+    await waitFor(() => expect(checksService(bb).status(project.id).config).toMatchObject({ remote, branch: "main", script: "checks/run.py", args: ["--root", "{manager}"] }));
     // One call with only the changed fields.
     expect(settings.rpcCalls.filter((call) => call.method === "checks.configPatch")).toEqual([
-      { method: "checks.configPatch", input: { projectId: project.id, patch: { branch: "main", script: "checks/run.py", args: ["--root", "{manager}"] } } },
+      { method: "checks.configPatch", input: { projectId: project.id, patch: { remote, branch: "main", script: "checks/run.py", args: ["--root", "{manager}"] } } },
     ]);
     expect(settings.rpcCalls.some((call) => call.method === "updateChecksSetting")).toBe(false);
     await waitFor(() => expect(within(section).queryByRole("button", { name: "Apply" })).toBeNull());
+    fireEvent.change(repository, { target: { value: "" } });
+    fireEvent.click(within(section).getByRole("button", { name: "Apply" }));
+    await waitFor(() => expect(checksService(bb).status(project.id).config.remote).toBeNull());
+    expect(settings.rpcCalls.filter((call) => call.method === "checks.configPatch").at(-1)?.input).toEqual({ projectId: project.id, patch: { remote: null } });
     await waitFor(() => expect(within(section).getByRole("switch", { name: "Run repository checks" }).hasAttribute("disabled")).toBe(false));
     fireEvent.click(within(section).getByRole("switch", { name: "Run repository checks" }));
     await waitFor(() => expect(checksService(bb).status(project.id).config.enabled).toBe(true));

@@ -70,6 +70,17 @@ describe("tasks storage", () => {
     } finally { await harness.dispose(); }
   });
 
+  it("preserves existing checks settings with a null repository on upgrade", async () => {
+    const { db, store, harness } = setup();
+    try {
+      const project = createProject(store, "EXA");
+      db.exec("ALTER TABLE checks_config DROP COLUMN remote; DELETE FROM schema_version WHERE version=57;");
+      db.prepare("INSERT INTO checks_config(tracker_id, branch) VALUES (?, 'main')").run(project.id);
+      createTasksStore(db);
+      expect(db.prepare("SELECT branch, remote FROM checks_config WHERE tracker_id=?").get(project.id)).toEqual({ branch: "main", remote: null });
+    } finally { await harness.dispose(); }
+  });
+
   it("initializes its versioned schema idempotently", async () => {
     const { db, harness } = setup();
     try {
@@ -80,7 +91,7 @@ describe("tasks storage", () => {
             "SELECT COUNT(*) AS count FROM schema_version",
           )
           .get()?.count,
-      ).toBe(56);
+      ).toBe(57);
       expect(db.prepare<[], { name: string }>("PRAGMA index_info(idx_task_pr_links_identity)").all().map((column) => column.name)).toEqual(["identity", "task_id"]);
       const columns = db.prepare<[], { name: string }>("PRAGMA table_info(tasks)").all().map(column => column.name);
       expect(columns).toEqual(expect.arrayContaining(["progress_note", "progress_updated_at", "progress_updated_by"]));

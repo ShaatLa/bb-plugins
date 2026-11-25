@@ -2,7 +2,7 @@ import { writeFileSync } from "node:fs";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { receiptPolling } from "../steer";
 import { checksTuning } from "./service";
-import { cleanTempDirs, MANAGER, setup, type Fixture } from "./fixtures";
+import { cleanTempDirs, createRepo, executable, MANAGER, setup, type Fixture } from "./fixtures";
 
 const fixtures: Fixture[] = [];
 const make = async (fields: Record<string, unknown> = {}) => {
@@ -36,6 +36,53 @@ describe("scheduling", () => {
     expect(f.runs()).toBe(1);
   });
 
+  it("runs the configured repository with or without a project remote, and falls back after clearing", async () => {
+    const f = await make();
+    const repo = createRepo();
+    repo.commit({ "checks/run.sh": executable("echo override") });
+    const remote = "https://example.com/owner/process.git";
+    const index = Number(process.env.GIT_CONFIG_COUNT ?? 0);
+    vi.stubEnv("GIT_CONFIG_COUNT", String(index + 1));
+    vi.stubEnv('GIT_CONFIG_KEY_' + index, 'url.' + repo.url + '.insteadOf');
+    vi.stubEnv('GIT_CONFIG_VALUE_' + index, remote);
+    try {
+      f.service.setField(f.tracker.id, "remote", remote);
+      const run = () => f.service.manualRun(f.tracker.id);
+      await expect(run()).resolves.toMatchObject({ exitCode: 0, output: "override\n" });
+      f.control.projectFail = true;
+      const failed = await run();
+      expect(failed.exitCode).toBe(2);
+      expect(failed.output).toContain("Could not read the bb project repository settings");
+      f.control.projectFail = false;
+      f.control.remote = null;
+      await expect(run()).resolves.toMatchObject({ exitCode: 0, output: "override\n" });
+      f.control.remote = f.repo.url;
+      f.service.setField(f.tracker.id, "remote", null);
+      f.output("project", 0);
+      await expect(run()).resolves.toMatchObject({ exitCode: 0, output: "project\n" });
+    } finally { vi.unstubAllEnvs(); }
+  });
+
+  it.each(["single", "patch"])("reschedules every %s save and resets backoff only for a changed source", async (mode) => {
+    const f = await make();
+    const url = "https://example.com/owner/process.git";
+    const scp = "git@example.com:owner/process.git";
+    for (const [key, value, reset] of [
+      ["remote", url, true], ["remote", scp, true], ["remote", scp, false], ["script", "checks/other.sh", false],
+      ["remote", null, true], ["branch", "main", false], ["branch", "next", true],
+    ] as const) {
+      f.db.prepare("UPDATE checks_state SET value = json_set(value, '$.nextRun', 1, '$.refreshFailures', 3, '$.refreshRetryAt', 42)").run();
+      const before = Date.now();
+      if (mode === "single") f.service.setField(f.tracker.id, key, value);
+      else f.service.setFields(f.tracker.id, { branch: "main", [key]: value });
+      const state = f.state();
+      expect(state.nextRun).toBeGreaterThanOrEqual(before);
+      expect(state.nextRun).toBeLessThanOrEqual(Date.now());
+      expect(state.refreshFailures).toBe(reset ? 0 : 3);
+      expect(state.refreshRetryAt).toBe(reset ? undefined : 42);
+    }
+  });
+
   it("serializes ticks and manual runs per project", async () => {
     const f = await make();
     const go = `${f.io}/go`;
@@ -45,6 +92,11 @@ describe("scheduling", () => {
     await f.tick(); // coalesced into the active run
     await expect(f.service.manualRun(f.tracker.id)).rejects.toThrow(/already running/);
     expect(f.runs()).toBe(1);
+    const state = f.state();
+    f.service.setField(f.tracker.id, "remote", "https://example.com/owner/process.git");
+    expect(f.state()).toEqual(state);
+    f.service.setFields(f.tracker.id, { remote: null });
+    expect(f.state()).toEqual(state);
     writeFileSync(go, "");
     await first;
     expect(ticks(f)).toHaveLength(1);

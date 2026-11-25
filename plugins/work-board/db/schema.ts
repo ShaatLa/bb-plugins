@@ -950,6 +950,7 @@ export const MIGRATIONS = [
      PRIMARY KEY(project_id, verdict)
    );
    CREATE INDEX receipt_verdicts_card ON check_receipt_verdicts(task_id, comment_id);`,
+  `ALTER TABLE checks_config ADD COLUMN remote TEXT;`,
 ] as const;
 
 export function initializeTasksSchema(db: PluginDatabase, log: Log = () => {}): void {

@@ -11,7 +11,7 @@ export const checksStatusSchema = z.object({
   prefix: z.string(),
   bbProjectId: z.string().nullable(),
   config: z.object({
-    enabled: z.boolean(), branch: z.string().nullable(), script: z.string().nullable(), args: z.array(z.string()),
+    enabled: z.boolean(), remote: z.string().nullable(), branch: z.string().nullable(), script: z.string().nullable(), args: z.array(z.string()),
     intervalMinutes: z.number().int(), timeoutSeconds: z.number().int(), snapshots: z.boolean(),
   }),
   enabledChangedAt: z.string().nullable(),
@@ -55,14 +55,14 @@ export type ChecksStatus = z.infer<typeof checksStatusSchema>;
 export const checksUiMethods = {
   getChecksStatus: { input: z.object({ projectId: trackerProjectId }).strict(), output: checksStatusSchema },
   updateChecksSetting: {
-    input: z.object({ projectId: trackerProjectId, key: z.enum(["branch", "script", "args", "intervalMinutes", "timeoutSeconds", "snapshots"]), value: z.unknown() }).strict(),
+    input: z.object({ projectId: trackerProjectId, key: z.enum(["remote", "branch", "script", "args", "intervalMinutes", "timeoutSeconds", "snapshots"]), value: z.unknown() }).strict(),
     output: z.object({ ok: z.literal(true) }),
   },
   // The settings section's one Save: only the changed fields, validated together and written in one transaction; never `enabled`.
   "checks.configPatch": {
     input: z.object({
       projectId: trackerProjectId,
-      patch: z.object({ branch: z.unknown(), script: z.unknown(), args: z.unknown(), intervalMinutes: z.unknown(), timeoutSeconds: z.unknown(), snapshots: z.unknown() }).partial().strict(),
+      patch: z.object({ remote: z.unknown(), branch: z.unknown(), script: z.unknown(), args: z.unknown(), intervalMinutes: z.unknown(), timeoutSeconds: z.unknown(), snapshots: z.unknown() }).partial().strict(),
     }).strict(),
     output: z.object({ ok: z.literal(true) }),
   },

@@ -3,8 +3,40 @@ import type { BbPluginApi } from "@get-bb/plugin-sdk";
 
 type Database = ReturnType<BbPluginApi["storage"]["database"]>;
 
+const remoteError = "checks.remote must be an https, ssh or user@host:path URL without credentials, query or fragment";
+
+// Git decodes SSH authority components before using them. A decoded delimiter
+// must not move part of the username into the host, port or path.
+function validSshComponent(raw: string): boolean {
+  const decoded = decodeURIComponent(raw);
+  return decoded.length > 0 && !decoded.startsWith("-") && !/[@:/\\\s\p{Cc}]/u.test(decoded);
+}
+
+function validRemote(value: unknown): value is string {
+  if (typeof value !== "string" || !value.length || value.length > 2000 || /[\s\p{Cc}\\?#]/u.test(value)) return false;
+  const authority = /^(https|ssh):\/\/([^/]+)\//.exec(value);
+  try {
+    if (!authority) {
+      const scp = /^([^/@:]+)@([^/@:]+):(?!-).+$/.exec(value);
+      return !!scp && validSshComponent(scp[1]) && validSshComponent(scp[2]);
+    }
+    const url = new URL(value);
+    if (!url.hostname || url.pathname.length <= 1 || url.password) return false;
+    const rawAuthority = authority[2];
+    if (url.protocol === "https:") return !rawAuthority.includes("@");
+    // URL normalizes repeated @ signs in userinfo. Split the raw authority
+    // first, retaining the optional port and bracketed IPv6 syntax.
+    const ssh = /^(?:([^@:]+)@)?(\[[\da-fA-F:.]+\]|[^@:\[\]]+)(?::\d+)?$/.exec(rawAuthority);
+    return !!ssh && (ssh[1] === undefined || validSshComponent(ssh[1])) &&
+      (ssh[2].startsWith("[") || validSshComponent(ssh[2]));
+  } catch {
+    return false;
+  }
+}
+
 // Field validators of the repository-check runner. Each is checked on its own when one field is set.
 export const FIELD_SCHEMAS = {
+  remote: z.custom<string>(validRemote, remoteError).nullable(),
   branch: z.string().min(1).max(200).regex(/^[A-Za-z0-9_][A-Za-z0-9_./-]*$/),
   script: z.string().min(1).max(1000).refine((s) => !s.startsWith("/") && !s.split("/").includes(".."), "script must be repository-relative, with no .. segment"),
   args: z.array(z.string().max(10000)).max(100),
@@ -22,6 +54,7 @@ export const CHECKS_ENABLED_OWNER_ONLY = "checks.enabled is changed by the owner
 
 /** The settings a runner needs to execute: branch and script are required, the rest have defaults. */
 export const completeSchema = z.object({
+  remote: FIELD_SCHEMAS.remote.optional(),
   branch: FIELD_SCHEMAS.branch,
   script: FIELD_SCHEMAS.script,
   args: FIELD_SCHEMAS.args.default([]),
@@ -36,6 +69,7 @@ export interface ChecksDraft {
   enabled: boolean;
   enabledChangedAt: string | null;
   enabledPrevious: boolean | null;
+  remote: string | null;
   branch: string | null;
   script: string | null;
   args: string[] | null;
@@ -44,10 +78,10 @@ export interface ChecksDraft {
   snapshots: boolean | null;
 }
 
-const COLUMNS: Record<CheckField, string> = { branch: "branch", script: "script", args: "args", intervalMinutes: "interval_minutes", timeoutSeconds: "timeout_seconds", snapshots: "snapshots" };
+const COLUMNS: Record<CheckField, string> = { remote: "remote", branch: "branch", script: "script", args: "args", intervalMinutes: "interval_minutes", timeoutSeconds: "timeout_seconds", snapshots: "snapshots" };
 
 interface ConfigRow {
-  enabled: number; enabled_changed_at: string | null; enabled_previous: number | null; branch: string | null; script: string | null;
+  enabled: number; enabled_changed_at: string | null; enabled_previous: number | null; remote: string | null; branch: string | null; script: string | null;
   args: string | null; interval_minutes: number | null; timeout_seconds: number | null; snapshots: number | null;
 }
 
@@ -57,6 +91,7 @@ export function readDraft(db: Database, trackerId: string): ChecksDraft {
     enabled: row?.enabled === 1,
     enabledChangedAt: row?.enabled_changed_at ?? null,
     enabledPrevious: row?.enabled_previous == null ? null : row.enabled_previous === 1,
+    remote: row?.remote ?? null,
     branch: row?.branch ?? null,
     script: row?.script ?? null,
     args: row?.args == null ? null : (JSON.parse(row.args) as string[]),
@@ -69,6 +104,7 @@ export function readDraft(db: Database, trackerId: string): ChecksDraft {
 /** The values as they apply, defaults filled in; branch and script stay null until set. */
 export const effectiveConfig = (draft: ChecksDraft) => ({
   enabled: draft.enabled,
+  remote: draft.remote,
   branch: draft.branch,
   script: draft.script,
   args: draft.args ?? [],
@@ -80,6 +116,7 @@ export const effectiveConfig = (draft: ChecksDraft) => ({
 /** Full validation: run when enabling and again before every execution. */
 export function completeConfig(draft: ChecksDraft): { ok: true; config: ChecksConfig } | { ok: false; error: string } {
   const parsed = completeSchema.safeParse({
+    remote: draft.remote,
     branch: draft.branch ?? undefined, script: draft.script ?? undefined, args: draft.args ?? undefined,
     intervalMinutes: draft.intervalMinutes ?? undefined, timeoutSeconds: draft.timeoutSeconds ?? undefined, snapshots: draft.snapshots ?? undefined,
   });
@@ -111,6 +148,7 @@ export const LITERAL_TEXT_FIELDS: readonly CheckField[] = ["branch", "script"];
 /** Validates one supplied value strictly: a typed caller's number is not a branch. */
 export function parseField(field: CheckField, value: unknown): unknown {
   const parsed = FIELD_SCHEMAS[field].safeParse(value);
+  if (!parsed.success && field === "remote") throw new Error(remoteError);
   if (!parsed.success) throw new Error(`Invalid value for checks.${field}: ${parsed.error.issues.map((issue) => issue.message).join("; ")}`);
   return parsed.data;
 }

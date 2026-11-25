@@ -7,8 +7,9 @@ import { useTasksQuery, useTasksRpc } from "../shell/data.js";
 import { RunnerPaths } from "./general-settings.js";
 import { SettingsCard, SwitchRow, useSaveStatus } from "./settings-card.js";
 
-type Key = "branch" | "script" | "args" | "intervalMinutes" | "timeoutSeconds";
+type Key = "remote" | "branch" | "script" | "args" | "intervalMinutes" | "timeoutSeconds";
 const FIELDS: { key: Key; label: string; hint: string }[] = [
+  { key: "remote", label: "Repository", hint: "Optional. Defaults to the bb project's Git remote" },
   { key: "branch", label: "Branch", hint: "For example main" },
   { key: "script", label: "Script", hint: "Repository-relative, for example checks/run.py" },
   { key: "args", label: "Arguments", hint: 'JSON array; {manager} becomes the manager thread, for example ["--root","{manager}"]' },
@@ -36,6 +37,7 @@ export function ChecksSettings({ projectId }: { projectId: string }) {
   // changed fields, which the server validates together and writes all or nothing. Retry applies the latest edits.
   const apply = () => run("apply", async () => {
     const patch = Object.fromEntries(changed.map((key) => {
+      if (key === "remote") return [key, shown(key) || null];
       const raw = shown(key).trim();
       return [key, key === "args" ? JSON.parse(raw) : key === "intervalMinutes" || key === "timeoutSeconds" ? Number(raw) : raw];
     }));
@@ -98,7 +100,7 @@ export function ChecksSettings({ projectId }: { projectId: string }) {
               </p>
             ) : null}
           </div>
-          <p className="text-xs text-muted-foreground">The script path and Git URL come from the repository and the BB project settings.</p>
+          <p className="text-xs text-muted-foreground">Checks fetch from the bb project's Git remote, unless Repository is set. The script path is relative to that checkout.</p>
         </>
       ) : null}
       <details className="rounded-md border border-border text-sm">

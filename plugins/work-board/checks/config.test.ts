@@ -10,6 +10,9 @@ afterEach(async () => { await Promise.all(fixtures.splice(0).map((f) => f.dispos
 const setKey = (f: Fixture, key: string, value: unknown, projectId = f.tracker.id) => f.harness.callRpc("config.set", { projectId, key: `checks.${key}`, value }) as Promise<{ value: unknown }>;
 const getKey = async (f: Fixture, key: string) => ((await f.harness.callRpc("config.get", { projectId: f.tracker.id, key: `checks.${key}` })) as { values: Record<string, unknown> }).values[`checks.${key}`];
 
+const httpsRemote = "https://example.com/owner/process.git";
+const sshRemote = "git@example.com:owner/process.git";
+
 describe("settings", () => {
   it("is off by default, with documented defaults", async () => {
     const f = await make();
@@ -30,6 +33,69 @@ describe("settings", () => {
     expect(f.service.status(f.tracker.id)).toMatchObject({ config: { enabled: true }, enabledPrevious: false, enabledChangedAt: expect.any(String) });
     await f.harness.callRpc("updateChecksEnabled", { projectId: f.tracker.id, enabled: false });
     expect(f.service.status(f.tracker.id)).toMatchObject({ config: { enabled: false }, enabledPrevious: true });
+  });
+
+  it("stores supported repository forms and refuses invalid overrides without disclosing them", async () => {
+    const f = await make();
+    for (const remote of [httpsRemote, "ssh://git@example.com/owner/process.git", "ssh://git@[::1]:22/owner/process.git", sshRemote]) {
+      expect((await setKey(f, "remote", remote)).value).toBe(remote);
+    }
+    for (const remote of [
+      "", "./checks", "/tmp/example", "file:///repo", "git://host/x", "-x", "HTTPS://host/x", "https:/host/x",
+      "https:host/x", "https:///host/x", "ssh://-oProxyCommand=x@host/repo", "ssh://user@-host/repo",
+      "ssh://%2Dx@host/repo", "ssh://user@%2Dhost/repo", "-user@host:path", "user@-host:path", "us/er@host:path",
+      "%2duser@host:path", "user@%2Dhost:path", "ssh://first@second@host/repo", "ssh://user:pass@host/repo",
+      "ssh://user@host:22:33/repo", "ssh://@host/repo",
+      ...["%40", "%3A", "%2F"].flatMap((delimiter) => [
+        `ssh://one${delimiter}two@host/repo`, `ssh://git@one${delimiter}two/repo`,
+        `one${delimiter}two@host:path`, `git@one${delimiter}two:path`,
+      ]),
+      "@host:path", "user@:path", "user@host:", "user@host:-path", "https://host/", "https://host",
+      "https://host/a b", "https://host/a\u0001b", "https://host/a\\b", "https://token@host/x",
+      "ssh://user:password@host/x", "https://host/x?", "https://host/x#fragment", httpsRemote + "a".repeat(2000), 42,
+    ]) {
+      await expect(setKey(f, "remote", remote)).rejects.toMatchObject({ message: "checks.remote must be an https, ssh or user@host:path URL without credentials, query or fragment" });
+    }
+    expect(await getKey(f, "remote")).toBe(sshRemote);
+  });
+
+  it("lists and clears the repository through the CLI for a tracker with existing settings", async () => {
+    const f = await make();
+    const project = f.store.tasks.createProject({ name: "Example", prefix: "EXA", color: "blue" });
+    f.service.setField(project.id, "branch", "main");
+    const cli = async (...args: string[]) => {
+      const reply = await f.harness.runCli([...args, "--project", "EXA", "--json"]);
+      expect(reply.exitCode).toBe(0);
+      return JSON.parse(reply.stdout!);
+    };
+    async function expectRemote(remote: string | null) {
+      expect((await cli("config", "get")).values["checks.remote"]).toBe(remote);
+      expect((await cli("checks", "status")).config.remote).toBe(remote);
+    }
+    await expectRemote(null);
+    await cli("config", "set", "checks.remote", httpsRemote);
+    await expectRemote(httpsRemote);
+    await cli("config", "set", "checks.remote", "null");
+    await expectRemote(null);
+  });
+
+  it("round trips the repository through both settings RPCs and preserves it on partial Apply", async () => {
+    const f = await make();
+    const projectId = f.tracker.id;
+    const status = async () => (await f.harness.callRpc("getChecksStatus", { projectId }) as { config: { remote: string | null } }).config.remote;
+    for (const value of [httpsRemote, null, sshRemote]) {
+      await f.harness.callRpc("updateChecksSetting", { projectId, key: "remote", value });
+      expect(await status()).toBe(value);
+    }
+    await expect(f.harness.callRpc("checks.configPatch", { projectId, patch: { branch: "next", remote: 42 } })).rejects.toMatchObject({
+      message: "checks.remote must be an https, ssh or user@host:path URL without credentials, query or fragment",
+    });
+    expect(await status()).toBe(sshRemote);
+    expect(await getKey(f, "branch")).toBeNull();
+    for (const [patch, expected] of [[{ remote: httpsRemote, branch: "main" }, httpsRemote], [{ args: [] }, httpsRemote], [{ remote: null }, null]] as const) {
+      await f.harness.callRpc("checks.configPatch", { projectId, patch });
+      expect(await status()).toBe(expected);
+    }
   });
 
   it("allows omitted fields while off, rejects a supplied invalid value at once, and refuses enabling an incomplete configuration", async () => {
@@ -76,7 +142,7 @@ describe("settings", () => {
     const f = await make();
     await f.enable();
     await Promise.all([setKey(f, "intervalMinutes", 20), setKey(f, "timeoutSeconds", 60), setKey(f, "snapshots", true), setKey(f, "args", ["a"])]);
-    expect(f.service.status(f.tracker.id).config).toEqual({ enabled: true, branch: "main", script: "checks/run.sh", args: ["a"], intervalMinutes: 20, timeoutSeconds: 60, snapshots: true });
+    expect(f.service.status(f.tracker.id).config).toEqual({ enabled: true, remote: null, branch: "main", script: "checks/run.sh", args: ["a"], intervalMinutes: 20, timeoutSeconds: 60, snapshots: true });
     // The owner turns it off; an edit that raced with it changes only its own field.
     await f.harness.callRpc("updateChecksEnabled", { projectId: f.tracker.id, enabled: false });
     await setKey(f, "branch", "dev");
