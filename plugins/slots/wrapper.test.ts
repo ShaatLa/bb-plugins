@@ -137,7 +137,7 @@ case "$1 $2" in
   "slots acquire") echo "use use-1 lease lease-2 renew 30 host host_example" ;;
   "file write") for a; do p=$a; done; cat > "$p" ;;
   "terminal run") shift 2; while [ "$1" != -- ]; do [ "$1" = --id ] && id=$2; shift; done; shift
-    HOME="$FAKE_HOME" "$@"; rc=$?; [ "$rc" -eq 0 ] || echo "Terminal $id exited with code $rc."; exit "$rc" ;;
+    HOME="$FAKE_HOME" "$@"; rc=$?; echo "Terminal $id exited with code $rc."; exit "$rc" ;;
 esac
 `); await chmod(bb, 0o755);
   const run = (command: string) => spawnSync("sh", [join(import.meta.dirname, "slots-run.sh"), "--spill", "--est", "1m", "--job", "t", "--", "sh", "-c", command], {
@@ -191,4 +191,34 @@ it("queues locally outside a git worktree and never starts a remote copy", async
   const calls = await readFile(log, "utf8");
   expect(calls).toContain("--place local");
   expect(calls).not.toMatch(/file write|terminal run/);
+});
+
+it.each([
+  ['glued failure', 'printf "spinTerminal $id exited with code 1.\\n"; exit 1', '', 1, 'spin'],
+  ['glued success', 'printf "spinTerminal $id exited with code 0.\\n"; exit 0', '', 0, 'spin'],
+  ['success without status line', 'printf "done-no-newline"; exit 0', 'show) exit 1 ;;', 0, 'done-no-newline'],
+  ['glued timeout', 'printf "spinTerminal $id is still running\\n"; exit 124', '', 124, 'spin'],
+  ['known exit', 'exit 1', 'show) echo \'{"status":"exited","exitCode":3}\' ;; output) echo "scrollTerminal $3 exited with code 3." ;;', 3, 'scroll'],
+  ['closed exit', 'exit 1', 'show) echo \'{"status":"closed","exitCode":3}\' ;; output) echo scroll ;;', 3, 'scroll'],
+  ['missing scrollback', 'exit 1', 'show) echo \'{"status":"exited","exitCode":3}\' ;; output) exit 1 ;;', 3, 'no longer available'],
+  ['running', 'exit 1', 'show) echo \'{"status":"running"}\' ;; wait) printf "spinTerminal $3 exited with code 3.\\n"; exit 3 ;;', 3, 'spin'],
+  ['running then success', 'exit 1', 'show) echo \'{"status":"running"}\' ;; wait) printf "waited-ok"; exit 0 ;;', 0, 'waited-ok'],
+  ['running, wait without status, then known exit', 'exit 1', 'show) if [ -e "$LOG.w" ]; then echo \'{"status":"exited","exitCode":4}\'; else echo \'{"status":"running"}\'; fi ;; wait) touch "$LOG.w"; printf "partial"; exit 1 ;; output) echo scroll ;;', 4, 'scroll'],
+  ['wait keeps failing', 'exit 1', 'show) echo \'{"status":"running"}\' ;; wait) exit 1 ;;', 69, 'lost its machine'],
+  ['not found', 'exit 1', 'show) echo \'{"error":"not found"}\' ;;', 69, 'lost its machine'],
+  ['no code', 'exit 1', 'show) echo \'{"status":"closed"}\' ;;', 69, 'lost its machine'],
+  ['show fails', 'exit 1', 'show) exit 1 ;;', 69, 'lost its machine'],
+])('handles remote terminal %s', async (_label, action, extra, expected, output) => {
+  const bb = `case "$1 $2" in
+    "slots acquire") echo "use use-1 lease lease-2 renew 30 host host_example" ;;
+    "file write") cat >/dev/null ;;
+    "terminal run") shift 2; while [ "$1" != -- ]; do [ "$1" = --id ] && id=$2; shift; done; ${action} ;;
+    "terminal "*) case $2 in ${extra} esac ;;
+  esac`;
+  const { result, log } = await run(bb, 'echo replay', '', ['--anywhere']);
+  expect(result.status).toBe(expected);
+  expect(result.stdout + result.stderr).toContain(output);
+  expect(result.stdout).not.toContain('Terminal term_');
+  expect(log.match(/terminal run /g)).toHaveLength(1);
+  expect(log).not.toContain('--place local');
 });

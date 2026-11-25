@@ -324,3 +324,5 @@ Status views return the newest 15 non-gate audit events, ordered by time and seq
 Configure `deviceHosts` as `device=host_id` entries to link registered model devices to machines. Unmapped devices do not affect heavy capacity. Set `heavyCapacityWithModel` for this Mac and `remoteHostsWithModel` (`host_id=capacity`) for other machines; unset entries follow their ordinary heavy capacity. `bb slots capacity --host <host> --with-model 2` changes one machine's with-model capacity.
 
 A queued model blocks new heavy grants on candidate machines while their device slot is free and existing heavy work drains. Once the model starts, heavy work is capped at the with-model capacity. After `modelHoldMinutes` (default 60) from grant, heavy capacity returns to its ordinary value even if the model is still running. Existing leases are never revoked.
+
+Remote runs return the command’s exit code; exit 69 indicates bb cannot determine the outcome.

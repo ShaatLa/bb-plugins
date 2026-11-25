@@ -85,12 +85,45 @@ remote_run() {
   bb terminal run --machine "$host" --id "$term" --timeout 12h --max-output-bytes 1048576 -- sh -c "$RUNNER" sh "$key" "$rel" "$hash" "$upload" "$nonce" "$@" >"$dir/out" 2>&1
   code=$?
   if [ -n "$interrupted" ]; then bb terminal close "$term" >/dev/null 2>&1; grep -v "^Terminal $term " "$dir/out"; return 130; fi
-  if [ "$code" -eq 0 ]; then cat "$dir/out"; return 0; fi
-  if [ "$code" -ne 124 ] && [ "$code" -ne 130 ] && [ "$(tail -n 2 "$dir/out" | head -n 1)" = "slots-run setup-failed $nonce" ] && [ "$(tail -n 1 "$dir/out")" = "Terminal $term exited with code $code." ]; then retry=1; fi
-  if grep -qx "Terminal $term exited with code $code\." "$dir/out"; then grep -vx "Terminal $term exited with code $code\." "$dir/out"; return "$code"; fi
-  grep -v "^Terminal $term " "$dir/out"
+  # bb prints no status line for exit 0: the captured output is the result, no terminal lookup.
+  if [ "$code" -eq 0 ]; then sed "\$s/Terminal $term exited with code 0\.\$//; \${/^\$/d;}" "$dir/out"; return 0; fi
+  # bb appends its status even when the command did not end its last line.
+  while :; do
+    last=$(tail -n 1 "$dir/out")
+    case $last in
+      *"Terminal $term exited with code $code.")
+        if [ "$code" -ne 124 ] && [ "$code" -ne 130 ] && [ "$(tail -n 2 "$dir/out" | head -n 1)" = "slots-run setup-failed $nonce" ]; then retry=1; fi
+        sed "\$s/Terminal $term exited with code $code\.\$//; \${/^$/d;}" "$dir/out"
+        return "$code" ;;
+      *"Terminal $term is still running"*)
+        if [ "$code" -eq 124 ]; then
+          sed "\$s/Terminal $term is still running.*\$//; \${/^$/d;}" "$dir/out"
+          bb terminal close "$term" >/dev/null 2>&1
+          echo "slots-run: the run on $host timed out after 12h and was stopped" >&2; return 124
+        fi ;;
+    esac
+    state=$(bb terminal show "$term" --json 2>/dev/null | node -e 'let s="";process.stdin.on("data",x=>s+=x).on("end",()=>{try{let t=JSON.parse(s);if(Number.isInteger(t.exitCode)&&t.exitCode>=0&&t.exitCode<=255)console.log("exit "+t.exitCode);else if(t.status==="running")console.log("running")}catch{}})')
+    case $state in
+      "exit "*)
+        code=${state#exit }
+        if bb terminal output "$term" >"$dir/out" 2>/dev/null; then
+          sed -E "\$s/Terminal $term (exited with code [0-9]*[.]|is still running.*)\$//; \${/^$/d;}" "$dir/out" >"$dir/scroll"
+          if [ "$code" -ne 124 ] && [ "$code" -ne 130 ] && [ "$(tail -n 1 "$dir/scroll")" = "slots-run setup-failed $nonce" ]; then retry=1; fi
+          cat "$dir/scroll"
+        else
+          echo "slots-run: output of the run on ${name:-$host} is no longer available" >&2
+        fi
+        return "$code" ;;
+      running)
+        # Re-attach at most twice; a wait that keeps failing leaves the outcome unknown.
+        waits=$((${waits:-0} + 1)); [ "$waits" -le 2 ] || break
+        bb terminal wait "$term" --timeout 12h >"$dir/out" 2>&1; code=$?
+        if [ "$code" -eq 0 ]; then sed "\$s/Terminal $term exited with code 0\.\$//; \${/^\$/d;}" "$dir/out"; return 0; fi ;;
+      *) break ;;
+    esac
+  done
+  cat "$dir/out"
   bb terminal close "$term" >/dev/null 2>&1
-  if [ "$code" -eq 124 ] && grep -q "^Terminal $term is still running" "$dir/out"; then echo "slots-run: the run on $host timed out after 12h and was stopped" >&2; return 124; fi
   echo "slots-run: the run on $host failed to start or lost its machine (bb exit $code)" >&2
   return 69
 }
