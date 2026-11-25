@@ -52,7 +52,6 @@ export function createClosureService(bb: BbPluginApi, tasks: TasksStore) {
     const open = closures.otherLinks(threadId, exceptTaskId).find((link) => link.open);
     if (open) return `linked to ${open.key}`;
     if (closures.reviewsOpenFor(threadId)) return "reviewer of an open plan";
-    if (closures.scheduleTarget(threadId)) return "scheduled executor";
     return null;
   }
 
@@ -224,7 +223,6 @@ export function createClosureService(bb: BbPluginApi, tasks: TasksStore) {
         if (closures.reviewPending(threadId)) return "reviewer of another pending review";
         if (closures.reviewerSeenActive(review.id)) return "new turn after approval";
         if (closures.reviewsOpenFor(threadId)) return "reviewer of an open plan";
-        if (closures.scheduleTarget(threadId)) return "scheduled executor";
         const own = closures.otherLinks(threadId, "").filter((link) => link.open);
         // One review-only link to the reviewed card is the reviewer's own; any other open link is card work.
         const work = own.filter((link) => !(link.task_id === review.taskId && link.link_origin === "discovery" && link.created_for_task === 0));

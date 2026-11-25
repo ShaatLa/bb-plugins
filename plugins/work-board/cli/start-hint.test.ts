@@ -2,7 +2,6 @@ import { createFakePluginHost, makeThreadResponse } from "@get-bb/plugin-sdk/tes
 import { afterEach, describe, expect, it } from "vitest";
 import { createStore, registerTasksApi } from "../api";
 import { registerTasksCli } from "../cli";
-import { createScheduledStore } from "../scheduled/store";
 import { createPlanStore } from "../plans/store";
 import { DEFAULT_TASK_STATUSES } from "../shared/statuses";
 import { TASK_LINK_INSTRUCTIONS } from "../shared/task-link";
@@ -93,12 +92,13 @@ describe("show: Next step", () => {
     expect(await f.hint(plain.key)).toBeNull();
   });
 
-  it("suggests nothing for a scheduled template", async () => {
+  it("shows the ordinary start hint for a live former template", async () => {
     const f = setup();
-    const schedule = createScheduledStore(f.host.bb, f.store).create({ projectId: f.project.id, title: "Rule", rule: { kind: "daily", time: "09:00", timezone: "UTC" }, target: { kind: "thread", threadId: "thr_example" } });
-    const template = f.store.tasks.getTask(schedule.templateTaskId)!;
-    expect(template).toMatchObject({ scheduledRole: "template" });
-    expect(["backlog", "todo"]).toContain(template.status);
+    const template = f.card("Former template");
+    const db = f.host.bb.storage.database();
+    db.prepare("INSERT INTO task_scheduled_sources(task_id, schedule_id, schedule_title, role) VALUES (?, 'example', 'Review', 'template')").run(template.id);
+    expect(await f.hint(template.key)).toContain("Taking this task?");
+    db.prepare("UPDATE tasks SET archived_at=? WHERE id=?").run(new Date().toISOString(), template.id);
     expect(await f.hint(template.key)).toBeNull();
   });
 

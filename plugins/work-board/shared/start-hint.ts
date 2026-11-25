@@ -14,11 +14,11 @@ type HintProject = {
  */
 export function startHint(
   project: HintProject,
-  task: { key: string; type: string; status: string; scheduledRole?: string },
+  task: { key: string; type: string; status: string; archivedAt?: string | null },
   plan: { state: string } | null,
   epic: { key: string; status: string } | null,
 ): string | null {
-  if (task.type === "epic" || task.scheduledRole === "template" || (task.status !== "backlog" && task.status !== "todo")) return null;
+  if (task.type === "epic" || task.archivedAt || (task.status !== "backlog" && task.status !== "todo")) return null;
   let target: string | null;
   if (planningRequired(project) && plan?.state !== "approved") {
     target = planningStatusOf(project);

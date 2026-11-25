@@ -2,7 +2,6 @@ import { createHash } from "node:crypto";
 import { UNANSWERED_QUESTION } from "../db/waiting-on-owner";
 import { getWorkflowPolicy, isClosedStatus } from "../shared/workflow-policy";
 import { observeStatusNotifications } from "../status-notifications";
-import { ordinaryTaskVisibilitySql } from "../scheduled/visibility";
 import { taskAdvisories } from "../advisories";
 import { idleThreshold } from "../shared/project-settings";
 import { getBadgeCriteria, getBoardPreferences, getGlobalSettings, setBadgeCriteria, setBoardPreferences, setGlobalSettings } from "../global-settings";
@@ -21,7 +20,7 @@ import { checksUiHandlers } from "../checks/rpc";
 import { createLockHandlers } from "../locks/service";
 import { DEFAULT_TASK_STATUSES, STALE_STATUSES, statusLabel, taskStatusesSchema } from "../shared/statuses.js";
 import { createClosureService, type ClosureService } from "../closure/service";
-import { attachManualLink, canTakeWorkerLink } from "../delegate/attach";
+import { attachManualLink } from "../delegate/attach";
 import type { BbPluginApi, PluginRpcHandlers } from "@get-bb/plugin-sdk";
 import {
   createTasksStore,
@@ -144,7 +143,7 @@ export function createStore(bb: BbPluginApi): TasksApiStore {
           .prepare<
             [string],
             CountRow
-          >(`SELECT COUNT(*) AS count FROM tasks t WHERE project_id = ? AND ${ordinaryTaskVisibilitySql()}`)
+          >(`SELECT COUNT(*) AS count FROM tasks t WHERE project_id = ?`)
           .get(projectId)?.count ?? 0
       );
     },
@@ -168,7 +167,7 @@ export function createStore(bb: BbPluginApi): TasksApiStore {
             `
               SELECT COUNT(*) AS count
               FROM tasks
-              WHERE archived_at IS NULL AND status NOT IN ('done', 'canceled') AND ${ordinaryTaskVisibilitySql('tasks')}
+              WHERE archived_at IS NULL AND status NOT IN ('done', 'canceled')
             `,
           )
           .get()?.count ?? 0
@@ -186,7 +185,7 @@ export function createStore(bb: BbPluginApi): TasksApiStore {
               END) AS active_agent_count
             FROM projects p
             LEFT JOIN tasks t
-              ON t.project_id = p.id AND t.archived_at IS NULL AND ${ordinaryTaskVisibilitySql()}
+              ON t.project_id = p.id AND t.archived_at IS NULL
               AND t.parent_task_id IS NULL
             LEFT JOIN task_threads tt ON tt.task_id = t.id
             GROUP BY p.id
@@ -225,8 +224,6 @@ export function publishTasksChanged(
 ): void {
   const payload: TasksChangedEvent = { taskId, projectId };
   bb.realtime.publish("tasks:changed", payload);
-  if (bb.storage.database().prepare("SELECT 1 FROM task_scheduled_sources WHERE task_id=?").get(taskId))
-    bb.realtime.publish("schedules:changed", { projectId });
   // A predecessor's status/key changes must refresh its neighbours without board-wide polling.
   const neighbours = bb.storage.database().prepare<[string, string, string], { taskId: string; projectId: string }>(`
     SELECT DISTINCT t.id AS taskId, t.project_id AS projectId FROM task_dependencies d JOIN tasks t
@@ -1293,7 +1290,7 @@ export function registerHandlers(
           if (!before) throw new Error(`Task not found: ${input.taskId}`);
           // The caller's own session is attached first, so the closure snapshot below includes it.
           assertNoOpenOwnerQuestions(bb, store, before, input.status, input.agentThreadId);
-          const attached = attachment && !before.archivedAt && canTakeWorkerLink(bb, current.id)
+          const attached = attachment && !before.archivedAt
             ? attachManualLink(store.tasks, current.id, attachment) : undefined;
           const updated = store.tasks.updateTask(current.id, {
             closerThreadId: input.agentThreadId ?? null,
@@ -1408,7 +1405,6 @@ export function registerHandlers(
       const nowMs = Date.now();
       const page = store.tasks.listTasksPage({
         nowMs,
-        ordinaryOnly: !input.includeScheduled,
         archive: input.archive,
         dateField: input.dateField,
         dateFrom: input.dateFrom,

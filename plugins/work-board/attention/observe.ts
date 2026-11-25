@@ -1,5 +1,4 @@
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
-import { ordinaryTaskVisibilitySql } from "../scheduled/visibility";
 import { getWorkflowPolicy, type WorkflowPolicy } from "../shared/workflow-policy";
 
 type Database = ReturnType<BbPluginApi["storage"]["database"]>;
@@ -19,7 +18,6 @@ export interface StaleRow {
   status: string;
   type: string;
   archived: number;
-  visible: number;
   ongoing: number;
   active: number;
   held: number;
@@ -59,7 +57,6 @@ export function staleRows(db: Database, taskIds?: readonly string[], projectId?:
   return db.prepare<(string | null)[], StaleRow>(`
       SELECT t.id, t.project_id, p.prefix || '-' || t.number AS key, t.status, t.type,
         CASE WHEN t.archived_at IS NULL THEN 0 ELSE 1 END AS archived,
-        CASE WHEN ${ordinaryTaskVisibilitySql("t")} THEN 1 ELSE 0 END AS visible,
         CASE WHEN t.type='epic' AND EXISTS(SELECT 1 FROM task_labels tl JOIN labels l ON l.id=tl.label_id WHERE tl.task_id=t.id AND l.name='ongoing') THEN 1 ELSE 0 END AS ongoing,
         EXISTS(SELECT 1 FROM task_threads x WHERE x.task_id=t.id AND x.live_status IN ('starting','working')) AS active,
         EXISTS(SELECT 1 FROM task_dependencies d JOIN tasks b ON b.id=d.blocking_task_id WHERE d.task_id=t.id AND b.status <> 'done') AS held,
@@ -118,9 +115,9 @@ export function staleStatusObservations(db: Database, taskIds?: readonly string[
       taskId: row.id,
       trackerId: row.project_id,
       key: row.key,
-      inScope: Boolean(row.visible) && !row.archived && PILOT_STATUSES.includes(row.status) && !row.held && !row.ongoing,
-      scopeReason: !row.visible ? "not_ordinary" : row.archived ? "archived" : row.ongoing ? "ongoing" : row.held ? "blocked" : "status_changed",
-      doneScope: Boolean(row.visible) && !row.archived && row.status === policy.doneStatus && !row.ongoing,
+      inScope: !row.archived && PILOT_STATUSES.includes(row.status) && !row.held && !row.ongoing,
+      scopeReason: row.archived ? "archived" : row.ongoing ? "ongoing" : row.held ? "blocked" : "status_changed",
+      doneScope: !row.archived && row.status === policy.doneStatus && !row.ongoing,
       signals: {
         no_active_thread: valid(row.status === policy.inProgressStatus && !row.active && !row.held),
         no_open_pr: prUnresolved && unknownPr ? { present: false, validity: "unknown" } : valid(prUnresolved),

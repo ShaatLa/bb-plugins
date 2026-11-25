@@ -49,22 +49,16 @@ describe("provenance: what Work Board may archive", () => {
     expect(f.origin(task.id, "thr_parent")).toEqual({ created_for_task: 0, link_origin: "parent" });
   });
 
-  it("decides a scheduled run by its stored execution target: a fresh spawn is a candidate, a reused executor is kept", async () => {
+  it("uses the preserved worker origin when closing former results", async () => {
     const f = await setup();
-    const { createScheduledStore } = await import("../scheduled/store");
-    const scheduled = createScheduledStore(f.bb, f.store);
-    const schedule = scheduled.create({ projectId: f.project.id, title: "Daily", rule: { kind: "daily", time: "09:00", timezone: "UTC" }, target: { kind: "thread", threadId: "thr_worker" } });
-    const start = (n: number, execution: Record<string, unknown>, threadId: string) => {
-      const reserved = scheduled.reserve(schedule.id, `slot:${n}`, `2026-11-01T0${n}:00:00.000Z`);
-      const created = scheduled.createRunTask(reserved.run.id);
-      scheduled.updateRun(reserved.run.id, { execution, threadId });
-      scheduled.markStarted(reserved.run.id, { threadId, requestId: `r${n}`, title: "Run", presetName: "Scheduled", liveStatus: "working" });
-      return created;
-    };
-    const spawned = start(1, { providerId: "claude-code", environmentKind: "project-default" }, "thr_fresh");
-    const reused = start(2, { targetThreadId: "thr_worker", providerId: "claude-code" }, "thr_worker");
-    expect(f.origin(spawned.id, "thr_fresh")).toEqual({ created_for_task: 1, link_origin: "scheduled_spawn" });
-    expect(f.origin(reused.id, "thr_worker")).toEqual({ created_for_task: 0, link_origin: "scheduled_existing" });
+    const task = f.card();
+    f.link(task, "thr_spawned", { spawned: true, origin: "scheduled_spawn" });
+    f.link(task, "thr_reused", { spawned: false, origin: "scheduled_existing" });
+    const { out } = await f.close(task);
+    expect(out).toEqual(expect.arrayContaining([
+      expect.objectContaining({ threadId: "thr_spawned", action: "archived" }),
+      expect.objectContaining({ threadId: "thr_reused", action: "kept" }),
+    ]));
   });
 });
 
@@ -138,30 +132,8 @@ describe("snapshot", () => {
     expect(f.row(id, "thr_late")?.action).toBe("on_idle");
   });
 
-  it("settles a late scheduled link by its target and upgrades a discovery row to a spawn candidate", async () => {
+  it("upgrades a discovery row to a spawn candidate", async () => {
     const f = await setup();
-    const { createScheduledStore } = await import("../scheduled/store");
-    const scheduled = createScheduledStore(f.bb, f.store);
-    const schedule = scheduled.create({ projectId: f.project.id, title: "Daily", rule: { kind: "daily", time: "09:00", timezone: "UTC" }, target: { kind: "thread", threadId: "thr_worker" } });
-    const run = (n: number, execution: Record<string, unknown>) => {
-      const reserved = scheduled.reserve(schedule.id, `slot:${n}`, `2026-11-01T0${n}:00:00.000Z`);
-      const created = scheduled.createRunTask(reserved.run.id);
-      scheduled.updateRun(reserved.run.id, { execution });
-      return { created, id: reserved.run.id };
-    };
-    // Close the card first (cancel), then the run starts late.
-    const fresh = run(1, { providerId: "claude-code", environmentKind: "project-default" });
-    const reused = run(2, { targetThreadId: "thr_reused", providerId: "claude-code" });
-    for (const entry of [fresh, reused]) { f.store.tasks.updateTask(entry.created.id, { status: "canceled" }); }
-    const freshClosure = f.store.tasks.closures.currentId(fresh.created.id)!;
-    const reusedClosure = f.store.tasks.closures.currentId(reused.created.id)!;
-    scheduled.markStarted(fresh.id, { threadId: "thr_fresh", requestId: "r1", title: "Run", presetName: "Scheduled", liveStatus: "working" });
-    scheduled.markStarted(reused.id, { threadId: "thr_reused", requestId: "r2", title: "Run", presetName: "Scheduled", liveStatus: "working" });
-    await f.store.closures.lateLink(freshClosure, "thr_fresh");
-    await f.store.closures.lateLink(reusedClosure, "thr_reused");
-    expect(f.row(freshClosure, "thr_fresh")?.action).toBe("on_idle");
-    expect(f.row(reusedClosure, "thr_reused")).toMatchObject({ action: "kept", reason: "not created by Work Board" });
-
     // Title discovery wrote a kept row; the authoritative spawn link upgrades it.
     const task = f.card();
     f.link(task, "thr_found", { spawned: false, origin: "discovery", presetName: "Auto attached", liveStatus: "working" });

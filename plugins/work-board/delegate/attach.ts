@@ -1,16 +1,9 @@
-import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import type { TaskThread, TaskThreadLiveStatus, TasksStore } from "../db";
 import { isClosedStatus } from "../shared/workflow-policy";
 import { recordThreadLink } from "../lifecycle/thread-links";
 
 /** The preset label of a link a person or a session made by hand. */
 export const MANUAL_PRESET_NAME = "Attached";
-
-/** Whether a card may take a worker link: templates and pending scheduled occurrences are started by Scheduled only. */
-export function canTakeWorkerLink(bb: BbPluginApi, taskId: string): boolean {
-  const source = bb.storage.database().prepare<[string], { role: string; started_at: string | null }>("SELECT role, started_at FROM task_scheduled_sources WHERE task_id=?").get(taskId);
-  return !source || (source.role !== "template" && source.started_at !== null);
-}
 
 /**
  * A manual link for a session that is not on the card yet, written inside the caller's transaction. It re-checks the

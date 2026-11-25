@@ -7,7 +7,6 @@ const INVALIDATION_CHANNELS = [
   "prs:changed",
   "locks:changed",
   "badge:changed",
-  "schedules:changed",
 ] as const;
 
 export type InvalidationChannel = (typeof INVALIDATION_CHANNELS)[number];

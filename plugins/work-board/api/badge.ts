@@ -1,5 +1,4 @@
 import { UNANSWERED_QUESTION, WAITING_ON_OWNER } from "../db/waiting-on-owner";
-import { ordinaryTaskVisibilitySql } from "../scheduled/visibility";
 import { idleThreshold } from "../shared/project-settings";
 import { getWorkflowPolicy } from "../shared/workflow-policy";
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
@@ -7,7 +6,7 @@ import type { BadgeCriterion } from "../shared/badge";
 import { evaluateThreadHealth, staleIdleMinutes } from "../shared/thread-health";
 import type { TasksApiStore } from ".";
 
-const LIVE = `t.archived_at IS NULL AND ${ordinaryTaskVisibilitySql()}`;
+const LIVE = `t.archived_at IS NULL`;
 const ACTIVE = `${LIVE} AND t.status NOT IN ('done', 'canceled')`;
 const UNANSWERED = `EXISTS (SELECT 1 FROM task_questions q WHERE q.task_id = t.id AND ${UNANSWERED_QUESTION})`;
 

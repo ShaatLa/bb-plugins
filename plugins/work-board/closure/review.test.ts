@@ -1,6 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { attachManualLink } from "../delegate/attach";
-import { createScheduledStore } from "../scheduled/store";
 import { closureFixture, gate, type ClosureFixture } from "./fixture";
 
 const fixtures: ClosureFixture[] = [];
@@ -199,31 +198,19 @@ describe("code review findings", () => {
     expect(f.store.tasks.listTaskThreads(task.id)).toEqual([]);
   });
 
-  it("C1.10: the target of an enabled schedule is never retired", async () => {
-    const f = await setup();
-    const scheduled = createScheduledStore(f.bb, f.store);
-    scheduled.create({ projectId: f.project.id, title: "Daily", rule: { kind: "daily", time: "09:00", timezone: "UTC" }, target: { kind: "thread", threadId: "thr_a" } });
-    f.bb.storage.database().prepare("UPDATE task_schedules SET enabled = 1").run();
-    const task = f.card();
-    f.link(task, "thr_a");
-    const { out } = await f.close(task);
-    expect(out).toEqual([{ threadId: "thr_a", action: "kept", reason: "scheduled executor" }]);
-    expect(f.world.archived).toEqual([]);
-  });
-
-  it("C1.10: and neither is a plan reviewer that is a schedule's target", async () => {
+  it("retires a dedicated reviewer even when an inert schedule names it", async () => {
     const f = await setup();
     f.bb.storage.database().prepare("UPDATE projects SET planning = 'optional'").run();
-    f.card("Planned work");
-    const scheduled = createScheduledStore(f.bb, f.store);
-    scheduled.create({ projectId: f.project.id, title: "Daily", rule: { kind: "daily", time: "09:00", timezone: "UTC" }, target: { kind: "thread", threadId: "thr_reviewer" } });
-    f.bb.storage.database().prepare("UPDATE task_schedules SET enabled = 1").run();
+    const task = f.card("Planned work");
+    f.bb.storage.database().prepare("INSERT INTO task_schedules VALUES (?, ?, ?, ?, ?, 1, NULL, ?, ?)").run(
+      "00000000-0000-4000-8000-000000000001", f.project.id, task.id, "{}", JSON.stringify({ kind: "thread", threadId: "thr_reviewer" }), task.createdAt, task.updatedAt,
+    );
     const run = async (args: string[], threadId: string) => expect(await f.harness.runCli(args, { threadId })).toMatchObject({ exitCode: 0 });
     await run(["plan", "set", "EXA-1", "--body", PLAN, "--base-version", "0", "--summary", "Initial"], "thr_author");
     f.world.threads.set("thr_reviewer", { parentThreadId: "thr_author" });
     await run(["plan", "submit", "EXA-1", "--reviewer", "thr_reviewer", "--dedicated-reviewer"], "thr_author");
     await run(["plan", "approve", "EXA-1", "--version", "1"], "thr_reviewer");
     await f.emit("thread.idle", "thr_reviewer");
-    expect(f.world.archived).toEqual([]);
+    expect(f.world.archived).toContain("thr_reviewer");
   });
 });

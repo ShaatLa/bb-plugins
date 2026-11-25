@@ -50,7 +50,6 @@ import {
   type NewTaskDraft,
 } from "./new-task-draft.js";
 import { PRIORITY_LABELS } from "../list/lib.js";
-import { ScheduleDialog, type Draft as ScheduleDraft } from "../scheduled/schedule-dialog.js";
 
 const CHIP_TRIGGER =
   "h-7 w-auto gap-1.5 rounded-md px-2 text-xs text-muted-foreground";
@@ -128,10 +127,10 @@ function TaskFieldPicker<Value extends string>({
   );
 }
 
-type Step = "choose" | "form" | "schedule";
+type Step = "choose" | "form";
 
 const KIND_CHOICES: ReadonlyArray<{
-  kind: TaskType | "scheduled";
+  kind: TaskType;
   label: string;
   icon: string;
   description: string;
@@ -147,12 +146,6 @@ const KIND_CHOICES: ReadonlyArray<{
     label: "Epic",
     icon: "Zap",
     description: "A larger initiative that groups tasks.",
-  },
-  {
-    kind: "scheduled",
-    label: "Scheduled task",
-    icon: "Clock",
-    description: "Runs automatically, once or on a repeating schedule.",
   },
 ];
 
@@ -202,8 +195,6 @@ export function NewTaskDialog({
   const [createdTask, setCreatedTask] = useState<Task | null>(null);
   // The kind is chosen before editing; Back returns here without touching draft or files.
   const [step, setStep] = useState<Step>("choose");
-  // In-memory only: the whole draft (task form, files, schedule form) lives and dies with one open dialog.
-  const [scheduleDraft, setScheduleDraft] = useState<ScheduleDraft | null>(null);
   const titleRef = useRef<HTMLInputElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -228,7 +219,6 @@ export function NewTaskDialog({
   useEffect(() => {
     // Purges any draft an older version left in localStorage, on open and on close.
     clearNewTaskDraft();
-    setScheduleDraft(null);
     if (!open) {
       // Release the draft and staged files on close; uploaded attachments are untouched.
       setDraft(blankDraft(projectId, defaultStatus));
@@ -328,11 +318,7 @@ export function NewTaskDialog({
     }
   };
 
-  const chooseKind = (kind: TaskType | "scheduled") => {
-    if (kind === "scheduled") {
-      setStep("schedule");
-      return;
-    }
+  const chooseKind = (kind: TaskType) => {
     // epicId stays in the draft so Task -> Epic -> Task does not lose the parent; submit ignores it for epics.
     if (kind !== draft.type) updateDraft(() => ({ type: kind }));
     setStep("form");
@@ -454,8 +440,7 @@ export function NewTaskDialog({
   const choosing = step === "choose";
 
   return (
-    <>
-    <Dialog open={open && step !== "schedule"} onOpenChange={requestClose}>
+    <Dialog open={open} onOpenChange={requestClose}>
       <DialogContent
         className="flex max-h-[85dvh] min-h-0 max-w-xl flex-col gap-0 p-0"
         onKeyDown={(event) => {
@@ -491,7 +476,7 @@ export function NewTaskDialog({
         </DialogTitle>
         <DialogDescription className="sr-only">
           {choosing
-            ? "Choose whether to create a task, an epic, or a scheduled task."
+            ? "Choose whether to create a task or an epic."
             : "Create a task with a title, description, attributes, and attachments."}
         </DialogDescription>
         {choosing ? (
@@ -841,20 +826,5 @@ export function NewTaskDialog({
         </DialogFooter>
       </DialogContent>
     </Dialog>
-    {open && step === "schedule" ? (
-      <ScheduleDialog
-        scheduleId={null}
-        defaultProjectId={effectiveProjectId}
-        initialDraft={scheduleDraft}
-        onDraftChange={setScheduleDraft}
-        onBack={() => setStep("choose")}
-        onClose={() => onOpenChange(false)}
-        onSaved={() => {
-          onOpenChange(false);
-          navigation.go({ kind: "scheduled", tab: "all" });
-        }}
-      />
-    ) : null}
-    </>
   );
 }

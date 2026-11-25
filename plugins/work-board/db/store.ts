@@ -2,7 +2,6 @@ import { WAITING_ON_OWNER, NEWEST_UNANSWERED, UNANSWERED_QUESTION } from "./wait
 import { ensurePlanningStatus, getWorkflowPolicy, inWorkZone, isClosedStatus, planningStatusOf, settlePlanFlags, usableStartTarget, withPlanningStatus, workflowPolicySchema } from "../shared/workflow-policy.js";
 import { syncPlanDebt, syncProjectPlanDebt } from "../plan-debt/store";
 import { createClosureStore } from "../closure/store";
-import { ordinaryTaskVisibilitySql } from "../scheduled/visibility";
 import { prSettled, projectPolicies, staleRows, staleStatusObservations as observeStaleStatus } from "../attention/observe";
 import { closeTaskOccurrences, markTrackerDirty, touchAttention } from "../attention/ledger";
 import { assertLinkChangeAllowed } from "../attention/modes";
@@ -109,8 +108,6 @@ interface ProjectRow {
 }
 
 interface TaskRow {
-  ordinary_visible?: number;
-  scheduled_role?: Task["scheduledRole"];
   archived_at: string | null;
   id: string;
   project_id: string;
@@ -235,8 +232,6 @@ const taskCursorSchema = z
 type TaskCursor = z.infer<typeof taskCursorSchema>;
 
 export class TaskEpicError extends Error {}
-/** A scheduled card has nowhere to start because the project's planning flags mark every viable status. */
-export class PlanningPlacementError extends Error {}
 
 export class TasksPageCursorError extends Error {
   constructor(
@@ -431,8 +426,6 @@ function projectFromRow(row: ProjectRow): Project {
 
 function taskFromRow(row: TaskRow): Task {
   return {
-    ...(row.ordinary_visible === 0 ? { ordinaryVisible: false } : {}),
-    ...(row.scheduled_role ? { scheduledRole: row.scheduled_role } : {}),
     id: row.id,
     archivedAt: row.archived_at,
     projectId: row.project_id,
@@ -626,7 +619,7 @@ export function createTasksStore(db: PluginDatabase, log: (message: string) => v
     "SELECT * FROM projects WHERE id = ?",
   );
   const taskSelect = `
-    SELECT t.*, p.prefix AS project_prefix, CASE WHEN ${ordinaryTaskVisibilitySql()} THEN 1 ELSE 0 END AS ordinary_visible, (SELECT ss.role FROM task_scheduled_sources ss WHERE ss.task_id=t.id) AS scheduled_role
+    SELECT t.*, p.prefix AS project_prefix
     FROM tasks t
     JOIN projects p ON p.id = t.project_id
   `;
@@ -1226,7 +1219,6 @@ export function createTasksStore(db: PluginDatabase, log: (message: string) => v
     const clauses: string[] = [];
     if (filters.waitingOnOwner) clauses.push(WAITING_ON_OWNER);
     if (filters.planDebt) clauses.push("EXISTS (SELECT 1 FROM plan_debt_episodes e WHERE e.task_id = t.id AND e.ended_at IS NULL)");
-    if (filters.ordinaryOnly) clauses.push(ordinaryTaskVisibilitySql());
     if (filters.archive === "active") clauses.push("t.archived_at IS NULL");
     if (filters.archive === "archived") clauses.push("t.archived_at IS NOT NULL");
     const parameters: Record<string, SqlParameter> = {};
@@ -1420,8 +1412,6 @@ export function createTasksStore(db: PluginDatabase, log: (message: string) => v
             WITH filtered_tasks AS (
               SELECT
                 t.*,
-                CASE WHEN ${ordinaryTaskVisibilitySql()} THEN 1 ELSE 0 END AS ordinary_visible,
-                (SELECT ss.role FROM task_scheduled_sources ss WHERE ss.task_id=t.id) AS scheduled_role,
                 ${waitingOrder ? `CASE WHEN ${NEWEST_UNANSWERED} IS NOT NULL THEN '1' || ${NEWEST_UNANSWERED} ELSE '0' || t.updated_at END` : `COALESCE(${dateColumn}, '')`} AS cursor_date,
                 p.prefix AS project_prefix,
                 CASE t.priority
@@ -1524,20 +1514,6 @@ export function createTasksStore(db: PluginDatabase, log: (message: string) => v
     const plan = db.prepare<[string], { version: number; state: PlanState }>("SELECT version, state FROM task_plans WHERE task_id = ?").get(task.id);
     return plan ? planGateRefusal(task.key, plan, target) : noPlanGateRefusal(task.key, target);
   }
-  /** Where a scheduled card (a run card or a template) starts: Backlog, or the first unmarked status when planning requires plans. */
-  function scheduledStatus(projectId: string): string {
-    const project = requireProject(projectId);
-    if (project.planning !== "required") return "backlog";
-    // Backlog when it exists and is not marked; else the first unmarked status that is not terminal (never Done or canceled:
-    // a run card placed there would be recorded as completed the moment its worker starts).
-    const statuses = project.statuses ?? DEFAULT_TASK_STATUSES;
-    // Both the built-in done and the configured done status are terminal, whatever the policy says.
-    const terminal = new Set(["canceled", "done", getWorkflowPolicy(project).doneStatus ?? "done"]);
-    const viable = statuses.filter((status) => !terminal.has(status.id) && !inWorkZone(project, status.id));
-    const found = viable.find((status) => status.id === "backlog") ?? viable[0];
-    if (!found) throw new PlanningPlacementError(`Every status that is not Done or canceled is marked "only with an approved plan" in ${project.prefix}, so a scheduled card has nowhere to start; unmark one status in the project's planning flags`);
-    return found.id;
-  }
   function planGate(task: Task, status: string): string | null {
     const project = requireProject(task.projectId);
     return gateRefusal(task, status, project, project);
@@ -1553,8 +1529,6 @@ export function createTasksStore(db: PluginDatabase, log: (message: string) => v
   const updateTaskTransaction = db.transaction(
     (id: string, input: UpdateTaskInput): Task => {
       const current = requireTask(id);
-      if (current.scheduledRole === "template" && (input.status !== undefined || input.type !== undefined || input.parentTaskId !== undefined || input.epicId !== undefined))
-        throw new Error("Use Scheduled settings to manage a schedule; its template is not a work instance");
       const status = input.status ?? current.status;
       const type = input.type ?? current.type;
       validateTaskStatus(current.projectId, status);
@@ -1640,13 +1614,13 @@ export function createTasksStore(db: PluginDatabase, log: (message: string) => v
     return closureScope(() => updateTaskTransaction(id, input), true);
   }
 
+  const scheduleTemplate = db.prepare("SELECT 1 FROM task_schedules WHERE template_task_id=?");
+
   const moveTaskToProjectTransaction = db.transaction(
     (id: string, projectId: string): MoveTaskToProjectResult => {
       const root = requireTask(id);
       const target = requireProject(projectId);
       if (root.projectId === target.id) return { task: root, moved: [] };
-      if (root.scheduledRole)
-        throw new Error("Scheduled tasks keep their source project; create a schedule in the target project instead");
       const source = requireProject(root.projectId);
       const members =
         root.type === "epic" ? listTasks({ epicId: root.id }) : [];
@@ -1655,6 +1629,8 @@ export function createTasksStore(db: PluginDatabase, log: (message: string) => v
         ...members,
         ...[root, ...members].flatMap((task) => listSubtasks(task.id)),
       ];
+      if (moving.some(task => scheduleTemplate.get(task.id)))
+        throw new Error("This card was a schedule template and keeps its schedule history in its project. Archive it instead, or create a new card in the target project.");
       for (const task of moving) validateTaskStatus(target.id, task.status);
       // The whole family stays in the source when any non-epic card would enter the destination's gated work zone.
       for (const task of moving) {
@@ -1868,8 +1844,6 @@ export function createTasksStore(db: PluginDatabase, log: (message: string) => v
 
   const setTaskArchived = db.transaction((id: string, archived: boolean): Task[] => {
     const root = requireTask(id);
-    if (root.scheduledRole === "template")
-      throw new Error("Pause or delete the schedule in Scheduled settings instead of archiving its template");
     if (archived && root.archivedAt || !archived && !root.archivedAt) return [];
     const parentId = root.parentTaskId ?? root.epicId;
     if (!archived && parentId && requireTask(parentId).archivedAt)
@@ -1888,7 +1862,6 @@ export function createTasksStore(db: PluginDatabase, log: (message: string) => v
     requireProject(projectId);
     const changed: Task[] = [];
     for (const task of listTasks({ projectId, archive: "active", parentTaskId: null })) {
-      if (task.scheduledRole === "template") continue;
       // The root is part of its own family, so a root that is not done or canceled can never archive; skip before building the family.
       if (!["done", "canceled"].includes(task.status)) continue;
       const family = archiveFamily(task.id);
@@ -1911,10 +1884,8 @@ export function createTasksStore(db: PluginDatabase, log: (message: string) => v
   });
 
   function deleteTask(id: string): boolean {
-    if (db.prepare("SELECT 1 FROM task_schedules WHERE template_task_id=?").get(id))
-      throw new Error("Delete the schedule in Scheduled settings instead of deleting its template");
-    if (db.prepare("SELECT 1 FROM task_scheduled_sources ss JOIN task_schedule_runs r ON r.id=ss.run_id WHERE ss.task_id=? AND ss.role<>'template' AND ss.started_at IS NULL AND r.state IN ('starting','queued','delivery_unknown','cancel_pending')").get(id))
-      throw new Error("Cancel the pending scheduled run before deleting its task");
+    if (scheduleTemplate.get(id))
+      throw new Error("This card was a schedule template and keeps its schedule history. Archive it instead; a card that is not finished needs Done or Canceled first.");
     return (
       db.prepare<[string]>("DELETE FROM tasks WHERE id = ?").run(id).changes > 0
     );
@@ -2684,7 +2655,6 @@ export function createTasksStore(db: PluginDatabase, log: (message: string) => v
     onClosure: (listener: (closureId: string) => void) => { closureListener = listener; },
     onEpicMoved: (listener: (move: { epicId: string; commentId: string; projectId: string }) => void) => { epicMoveListener = listener; },
     planGate,
-    scheduledStatus,
     moveTaskToProject: moveTaskToProjectHooked,
     updatePosition: updatePositionHooked,
     deleteTask: deleteTaskHooked,

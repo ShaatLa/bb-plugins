@@ -307,13 +307,6 @@ export function createClosureStore(db: Database) {
     ).get(entry.linkId, entry.taskId, entry.threadId, entry.linkCreated ? 1 : 0, entry.linkOrigin) !== undefined;
   }
 
-  /** A thread an enabled schedule dispatches to between its occurrences. */
-  function scheduleTarget(threadId: string): boolean {
-    return db.prepare<[string], { one: number }>(
-      "SELECT 1 AS one FROM task_schedules WHERE enabled = 1 AND json_extract(target, '$.kind') = 'thread' AND json_extract(target, '$.threadId') = ? LIMIT 1",
-    ).get(threadId) !== undefined;
-  }
-
   /** The other cards a thread is linked to, with their status and policy, for the "other open work" check. */
   function otherLinks(threadId: string, exceptTaskId: string) {
     return db.prepare<[string, string], { id: string; task_id: string; key: string; status: string; policy: string | null; created_for_task: number; link_origin: string | null }>(
@@ -406,7 +399,7 @@ export function createClosureStore(db: Database) {
     return { unknownNotices: unknown };
   }
 
-  return { open, reopen, currentId, isCurrent, closedBy, rows, row, addLate, claim, markActive, setBaseline, takeTurn, abandonTurn, recordWork, owedNotices, claimIdle, linkUnchanged, scheduleTarget, claimReviewerIdle, setReviewerState, latestReviewId, reviewPending, reviewerSeenActive, holdsLink, ownArchive, holders, clearArchived, otherLinks, reviewsOpenFor, claimNotice, finishNotice, reviewerIntent, recoverOnStartup };
+  return { open, reopen, currentId, isCurrent, closedBy, rows, row, addLate, claim, markActive, setBaseline, takeTurn, abandonTurn, recordWork, owedNotices, claimIdle, linkUnchanged, claimReviewerIdle, setReviewerState, latestReviewId, reviewPending, reviewerSeenActive, holdsLink, ownArchive, holders, clearArchived, otherLinks, reviewsOpenFor, claimNotice, finishNotice, reviewerIntent, recoverOnStartup };
 }
 
 export type ClosureStore = ReturnType<typeof createClosureStore>;

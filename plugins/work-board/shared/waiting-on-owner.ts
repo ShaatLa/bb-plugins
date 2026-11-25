@@ -2,7 +2,7 @@ import { isQuestionOpen } from "./questions";
 import type { Task, TaskQuestion } from "./contract";
 
 export function waitingOnOwner(task: Task, unanswered: number): boolean {
-  return !task.archivedAt && task.ordinaryVisible !== false && !["done", "canceled"].includes(task.status) && unanswered > 0;
+  return !task.archivedAt && !["done", "canceled"].includes(task.status) && unanswered > 0;
 }
 export function newestOpenQuestion(questions: readonly TaskQuestion[]) {
   return questions.filter(isQuestionOpen).sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0];

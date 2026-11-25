@@ -174,10 +174,10 @@ export async function patchTasks(
     }
     const updated = updates.get(task.id) ?? null;
     updates.delete(task.id);
-    if (updated !== null && updated.ordinaryVisible !== false && belongs(updated)) next.push(updated);
+    if (updated !== null && belongs(updated)) next.push(updated);
   }
   for (const task of updates.values()) {
-    if (task !== null && task.ordinaryVisible !== false && belongs(task)) next.push(task);
+    if (task !== null && belongs(task)) next.push(task);
   }
   return next;
 }
@@ -420,7 +420,6 @@ export function useTasksQuery<T>(
   useRealtime("prs:changed", (payload) => { forgetReads(); scheduler.push("prs:changed", payload); });
   useRealtime("locks:changed", (payload) => { forgetReads(); scheduler.push("locks:changed", payload); });
   useRealtime("badge:changed", (payload) => { forgetReads(); scheduler.push("badge:changed", payload); });
-  useRealtime("schedules:changed", (payload) => { forgetReads(); scheduler.push("schedules:changed", payload); });
   const sameScope = dataDepsKeyRef.current === dataScopeKey;
   return { ...state, data: sameScope ? state.data : undefined, isLoading: enabled && (!sameScope || state.isLoading), isFetching: enabled && state.isFetching, refresh, patch };
 }

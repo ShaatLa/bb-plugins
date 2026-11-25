@@ -234,7 +234,6 @@ describe("project view preference", () => {
     await slot.findByRole("button", { name: "Switch project" });
     slot.lifecycle.rerender(<tasksRegistration.component subPath="manage" />);
     fireEvent.click(await slot.findByRole("button", { name: "Back" }));
-    // Like the Scheduled clock, it restores the view that was showing.
     expect(slot.navigateCalls.at(-1)).toEqual({
       method: "toPluginPanel",
       path: "work-board",
@@ -412,21 +411,11 @@ describe("kanban side panel", () => {
     expect(panelCalls(slot)).toEqual([]);
   });
 
-  it("the toolbar Scheduled clock toggles back to the view it was opened from", async () => {
-    const slot = openMain(`${PROJECT_ID}?view=list`, nativePanel("tab-navigation"));
-    const header = (await slot.findAllByRole("button", { name: "Scheduled" }))[0]!;
-    fireEvent.click(header);
-    expect(slot.navigateCalls.at(-1)).toMatchObject({ options: { subPath: "scheduled" } });
-    rerenderMain(slot, "scheduled");
-    const pressed = await waitFor(() => {
-      const button = slot.getAllByRole("button", { name: "Scheduled" }).find((b) => b.getAttribute("aria-pressed") === "true");
-      expect(button).toBeTruthy();
-      return button!;
-    });
-    fireEvent.click(pressed);
-    expect(slot.navigateCalls.at(-1)).toMatchObject({ options: { subPath: `${PROJECT_ID}?view=list` } });
+  it.each(["scheduled", "scheduled?tab=history"])("opens All for the retired %s link", path => {
+    expect(parseTasksRoute(path)).toEqual({ kind: "all" });
+    const slot = openMain(path, nativePanel("tab-navigation"));
+    expect(slot.queryByRole("button", { name: "Scheduled" })).toBeNull();
   });
-
 
   it("keeps the right-board creation dialog in its pane", async () => {
     const slot = renderSlot({ component: kanbanTab.component }, { subPath: PROJECT_ID }, { rpc: seededRpc() });
@@ -435,15 +424,11 @@ describe("kanban side panel", () => {
     expect(dialog.closest("[data-dialog-scope]")).toBeTruthy();
   });
 
-  it("the right-board Scheduled action opens Scheduled in the main surface without touching tabs", async () => {
+  it("omits the Scheduled action on the right board", async () => {
     const slot = renderSlot({ component: kanbanTab.component }, { subPath: PROJECT_ID }, { rpc: seededRpc(), ...panelOptions(nativePanel("tab-kanban")) });
     const region = await slot.findByRole("region", { name: "Project kanban" });
-    const scheduled = within(region).getByRole("button", { name: "Scheduled" });
-    expect(scheduled.getAttribute("aria-pressed")).toBe("false");
-    fireEvent.click(scheduled);
-    expect(slot.navigateCalls).toEqual([{ method: "toPluginPanel", path: "work-board", options: { subPath: "scheduled" } }]);
-    expect(slot.inspection.experimental_panelCalls).toEqual([]);
-    expect(within(region).getAllByText("In Review")).toHaveLength(1);
+    expect(await within(region).findByText("In Review")).toBeTruthy();
+    expect(within(region).queryByRole("button", { name: "Scheduled" })).toBeNull();
   });
 
   it("renders a live board and follows the project while the main page shows a task", async () => {

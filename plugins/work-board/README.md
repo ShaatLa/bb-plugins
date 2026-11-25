@@ -10,7 +10,7 @@ Daily cleanup removes orphan activity claims/queue markers and PR snapshots with
 
 **Optimize storage** also shares identical immutable blobs using filesystem hard links, preserving every attachment ID/path/URL and exact contents, then rebuilds SQLite and truncates its WAL when readers permit. The operation can take time on large boards. Unsupported hard links leave originals intact and report skips. Fresh databases use incremental vacuum; older databases enable it after the first explicit optimization. Later daily cleanups return up to 256 free pages per sweep. Retained WAL allocation is limited to 4 MiB when SQLite can reset it after checkpoints; active readers or a transaction may temporarily require more. Live data still consumes space as the board grows; this is not a retention policy that deletes accessible history.
 
-CLI: `bb work-board storage status --json`, `storage clean --json`, `storage optimize --json`. Actions return before/after usage, removed file/cache-row counts, shared duplicate count and warnings. Statistics count allocated blocks by unique inode; filesystem compression/clones can make these differ from device-wide free space. Current export format is v18. Maintenance only touches this plugin's database and managed blob directories, not external project exports, repository files, old installation releases, BB logs or backups.
+CLI: `bb work-board storage status --json`, `storage clean --json`, `storage optimize --json`. Actions return before/after usage, removed file/cache-row counts, shared duplicate count and warnings. Statistics count allocated blocks by unique inode; filesystem compression/clones can make these differ from device-wide free space. Current export format is v25. Maintenance only touches this plugin's database and managed blob directories, not external project exports, repository files, old installation releases, BB logs or backups.
 
 
 ## Task plan (0.56.0)
@@ -70,7 +70,7 @@ A plan needs an approval before work starts. The author names the approver when 
 - **A review is bound to one version.** Saving a new version, even during a review, returns the plan to `draft`; `plan submit` accepts only `draft`, so a plan with changes requested needs a new version first.
 - **Reviewer commands (CLI, from the reviewer thread only).** `plan note KEY --version N --body TEXT [--quote TEXT [--section HEADING]] [--kind comment|remove|general]` (the quote must occur exactly once in the section or the plan; the anchor is the UI's own), `plan feedback`, `plan dismiss N1 …`, `plan resolve N1 …`, `plan reopen N1 …` and `plan approve [--note TEXT]`, each with `--version N`, the version the reviewer read. The call is refused unless the caller is the assigned reviewer, the plan is `in_review` and `N` is the submitted version. `plan approve` is refused while any reviewer-thread note is a draft or unresolved (convergence). `plan reviews KEY [--json]` lists the review attempts. The owner can approve or request changes on any plan in the UI; drafts are scoped per author, so a reviewer's drafts never block the owner.
 - **Results go to the waiting author:** the thread that submitted the current attempt gets the actionable message; the author of the decided version gets an informational copy (an archived thread is replaced by its parent). The CLI and the owner UI report each recipient and name any thread that was not reached.
-- **Planning is a per-project setting,** `off` (default) | `optional` | `required`, changed only by the owner in the Planning section of the project settings. Off hides the Plan UI, refuses plan commands and lifts every gate (the data is kept). Optional is plans, review and an advisory (`Plan vN is draft (not approved): …`, shown by `show`, in seed prompts and when attaching a thread). Required also refuses moving a non-epic card into the work zone, or creating it there, until its plan is approved. The work zone is the statuses the owner marked "only with an approved plan" in the status editor (chips in the Planning section, never canceled; the first switch to required prefills In progress and every later status, and nothing refills the flags afterwards; agents and `--statuses-file` never change a flag, and imports keep an existing project's flags). `project show` and `config get planning` list the marked statuses; delegation, scheduled runs and git sync skip the move instead of failing, and executors get one notice when an approved plan of a card in progress changes. Projects that already had a plan start as `optional`.
+- **Planning is a per-project setting,** `off` (default) | `optional` | `required`, changed only by the owner in the Planning section of the project settings. Off hides the Plan UI, refuses plan commands and lifts every gate (the data is kept). Optional is plans, review and an advisory (`Plan vN is draft (not approved): …`, shown by `show`, in seed prompts and when attaching a thread). Required also refuses moving a non-epic card into the work zone, or creating it there, until its plan is approved. The work zone is the statuses the owner marked "only with an approved plan" in the status editor (chips in the Planning section, never canceled; the first switch to required prefills In progress and every later status, and nothing refills the flags afterwards; agents and `--statuses-file` never change a flag, and imports keep an existing project's flags). `project show` and `config get planning` list the marked statuses; delegation and git sync skip the move instead of failing, and executors get one notice when an approved plan of a card in progress changes. Projects that already had a plan start as `optional`.
 - **Data.** Export format **v20** carries the reviewer, note authors, the review history, the planning setting (with when it last changed and what it was before) and the status flags; imports of v1–v19 read a missing reviewer as the owner, never change an existing project's planning, and infer `optional` for a fresh project with plans.
 - Authors and actors that are threads show as clickable thread chips throughout the UI.
 
@@ -78,7 +78,7 @@ A plan needs an approval before work starts. The author names the approver when 
 
 - **A review pauses while the owner has an open decision.** An open decision is an unanswered question of kind `decision` (a missing kind reads as one; `check` questions never pause). The pause is derived from the live questions, never stored: `plan show`, `plan reviews`, `show` (`plan.review.paused` in `--json`) and the Plan tab say "Waiting for the owner's decision". While it lasts, `plan submit` (and returning a plan to review in the app) is refused, and a reviewer's `plan approve` and `plan feedback` are refused; notes, dismissals and the owner's own decisions are not blocked.
 - **One wake per transition.** When the open-decision count goes 0 → 1 or more, the current reviewer thread is told the review is paused; when it goes back to 0 it is told to read the decisions and judge whether the plan still holds, and the author gets an informational copy. A resume is sent only while the same review attempt is still current. An owner review has no thread to wake. A failed wake is a separate line in the `question` command output; the question is saved either way.
-- **Planning status.** Turning planning on settles a `Planning` status between Todo and In progress (an existing one with the id `planning`, or the name Planning, is used instead; nothing is inserted when either is taken by a status that cannot serve, the list is full or In progress is missing). It is `workflowPolicy.planningStatus`, valid only while it is listed, not closed, not another workflow role and not marked "only with an approved plan". The first plan version moves a Backlog or Todo card there in the same write (`plan set` prints `EXA-1 moved to Planning`); delegation and scheduled starts treat it like Todo, and it counts as active work for `no_active_thread`. The manager-attention pilot set is unchanged. Turning planning off leaves the status in place.
+- **Planning status.** Turning planning on settles a `Planning` status between Todo and In progress (an existing one with the id `planning`, or the name Planning, is used instead; nothing is inserted when either is taken by a status that cannot serve, the list is full or In progress is missing). It is `workflowPolicy.planningStatus`, valid only while it is listed, not closed, not another workflow role and not marked "only with an approved plan". The first plan version moves a Backlog or Todo card there in the same write (`plan set` prints `EXA-1 moved to Planning`); delegation treats it like Todo, and it counts as active work for `no_active_thread`. The manager-attention pilot set is unchanged. Turning planning off leaves the status in place.
 
 ### Plan debt (0.70.0)
 
@@ -129,7 +129,7 @@ With the optional Tokenomos plugin installed, the task rail shows what agents sp
 
 `threadTasks({threadId})` is discoverable (`bb plugin rpc list work-board`) and returns the tasks currently linked to a thread, newest link first: `key`, `title`, `status {id, name, icon?, color?, iconName, cssColor}`, `projectName`, `archived`, `linkName`, `linkedAt` and `url` (the in-app path that opens the task). Call it through `bb.sdk.plugins.callRpc({ pluginId: "work-board", method: "threadTasks", ... })`. `status.iconName` is a shared app icon (`work-board/status-<glyph>`, registered with `app.experimental_icons`, drawn in currentColor), so another plugin renders `<Icon name={status.iconName} />` inside `style={{ color: status.cssColor }}` and gets the same glyph and theme color as Work Board (0.37.0). The contract only grows with fields.
 
-Every message Work Board sends into a thread (comment and answer notices, reports to a parent, plan feedback, delegation briefs and scheduled runs) starts with bb's origin line `[bb message from plugin:work-board]`, so the receiving agent reads it as the plugin's message, not the owner's words. Text appended to a still-queued notice adds no second header (0.57.2).
+Every message Work Board sends into a thread (comment and answer notices, reports to a parent, plan feedback and delegation briefs) starts with bb's origin line `[bb message from plugin:work-board]`, so the receiving agent reads it as the plugin's message, not the owner's words. Text appended to a still-queued notice adds no second header (0.57.2).
 
 `threadBoard({threadId})` returns the board of the Work Board project linked to the thread's bb project, so another plugin can show it beside a chat: `project {id, name, url}` (null when no project is linked) and `columns` in workflow order, each with `status` (same shape as above), `total` active top-level tasks and up to 30 `cards {key, title, type, priority, mine, url}`. `mine` marks tasks linked to the thread, and those cards are always included even past the cap (0.52.0).
 
@@ -137,17 +137,20 @@ The kanban board glyph is the shared app icon `work-board/kanban`, so a tab that
 
 To show the full Work Board board inside another plugin's UI, render an empty `<div data-work-board-host="board" data-thread-id="thr_…">` and let React leave it empty. Work Board's app overlay finds the node and renders the thread's board there: the board of the project linked to the thread's bb project, with the thread's own cards outlined, and filters, drag and drop, and task opening. It keeps Work Board's own RPC, realtime and navigation, so nothing is bundled into the host plugin. Once rendered, Work Board sets `data-work-board-ready="true"` on the node. Give the node a height (for example `h-full min-h-0`). The native thread side panel tab outlines the thread's own cards the same way (0.53.0). A plain left click on a web link inside the hosted board dispatches a bubbling, cancelable `work-board:open-url` event with `detail: { url }` from inside the node; when the host calls `preventDefault()`, Work Board leaves the link to it, so the host can open it in its own surface (0.55.1).
 
-## Scheduled tasks CLI
+## Recurring cards
 
-`bb work-board schedule ...` manages recurring and one-time scheduled tasks through the same validated RPC
-handlers as the Scheduled page: `list`, `show`, `create`, `edit`, `reschedule`, `enable`/`pause`/`resume`,
-`delete --yes`, `preview`, `run-now`, `retry`, `cancel-queued`, `resolve`, `dismiss`, `runs`, `needs-attention`
-and `results`. Use `--daily|--weekly|--at` with `--time`, `--timezone` and `--days`, and `--thread` or `--preset`
-(`--rule`/`--target` accept the raw JSON). Schedules are addressable by UUID or by the key of their template or
-result task; the template key printed by `schedule show` works with ordinary task commands. Descriptions can be
-read with `--description-file` from the invoking machine. `--json` returns the contract objects with stable
-state enums and bounded pages (`--limit`, `--cursor`, `--all`). Scheduled templates and not-yet-started results
-stay out of the normal `list` unless `--include-scheduled` is passed. See `skills/work-board/SKILL.md` for the full guide.
+Recurring card creation has moved to BB Automations. Former templates appear as ordinary cards. Open one by its original key and archive it when finished. An unfinished card needs Done or Canceled first. Its schedule history refers to it, so it cannot be deleted.
+
+Schedule history stays in the local database and older backups. Work Board no longer runs schedules or exports their history. Importing an older archive restores its cards and leaves local history intact.
+
+To create a weekly card, use the BB project ID for the automation, the tracker prefix for the card and a model accepted by the provider.
+
+```sh
+bb automation create --project proj_example --name 'Weekly review card' \
+  --cron '0 9 * * 1' --timezone UTC \
+  --provider codex --model '<model-id>' \
+  --prompt 'Create one card by running: bb work-board create --project EXA --title "Weekly review"'
+```
 
 ## Project settings
 
@@ -184,7 +187,7 @@ In **Settings → Work Board → General → Start and links → Start screen** 
 
 Click the project name (or **All tasks**) in the header to switch to another project or to All tasks.
 
-The **Board / List** toggle in the project (or task) header switches the main area between the full-width board and the task list, and is remembered per project (0.54.0). A project opens as a board until you pick the list (0.55.0). The right-side **Kanban** tab is independent: open it from the panel's tab strip to keep a board beside the list or a task. The board header includes a **Scheduled** button that opens the schedule in the main area. The board tracks the selected project, preserves card dragging, and updates in sync with the task list.
+The **Board / List** toggle in the project (or task) header switches the main area between the full-width board and the task list, and is remembered per project (0.54.0). A project opens as a board until you pick the list (0.55.0). The right-side **Kanban** tab is independent: open it from the panel's tab strip to keep a board beside the list or a task. The board tracks the selected project, preserves card dragging, and updates in sync with the task list.
 
 The **Work Board** tab in the thread's right panel defaults to the Work Board project linked to the thread's BB project. Board cards and new tasks open in the same tab; **Back to project board** returns you to the board. The task key and back button are located in the card header above the title. A copy button sits next to the key and copies only the key. The dedicated task bar at the top of the side panel is streamlined and doesn't take up extra space. Opening a specific task from a message persists across navigation. The header arrow opens the board or task in the main Work Board section. If the projects aren't linked, the panel displays **Manage projects** instead of automatically switching to the last viewed project.
 
@@ -195,7 +198,7 @@ The **Search tasks** field in both the list and board accepts input immediately 
 
 ## Migrating from Agent Board / Tasks Plus to Work Board (0.11.0)
 
-This is a plugin ID change, not the installation of a second, independent board. The new ID and collection folder are `work-board`, and the command is **`bb work-board …`**. There are no legacy CLI aliases. First, update your command consumers: automations, agent roles, and strict export validation. The `project.json.format` marker is now `bb-work-board`; exports then used version **v13** (now v17). Imports also accept `bb-agent-board` and `bb-tasks-plus` (v1–v13).
+This is a plugin ID change, not the installation of a second, independent board. The new ID and collection folder are `work-board`, and the command is **`bb work-board …`**. There are no legacy CLI aliases. First, update your command consumers: automations, agent roles, and strict export validation. The `project.json.format` marker is now `bb-work-board`; exports then used version **v13** (now v25). Imports also accept `bb-agent-board` and `bb-tasks-plus` (v1–v13).
 
 Save your settings (`bb plugin config agent-board --json`) and back up the database using the SQLite backup API along with a copy of the `blobs` folder. Stop the old plugin before migration; the destination directory must not exist:
 
@@ -390,7 +393,7 @@ bb work-board import --from .bb/tasks/<project-id> --overwrite
   attachments/<attachment-id>
 ```
 
-`project.json` contains the bb-work-board format marker, version 18, project metadata, folders, labels, task IDs and templates. Task files preserve Markdown, comments/evidence, questions, worker links, aliases, dependencies and attachment hashes. Attachments use immutable IDs. Export contains no storage paths. Imports support v1–v16; see the v17 field changes below.
+`project.json` contains the bb-work-board format marker, version 25, project metadata, folders, labels, task IDs and templates. Task files preserve Markdown, comments/evidence, questions, worker links, aliases, dependencies and attachment hashes. Attachments use immutable IDs. Export contains no storage paths. Imports support v1–v25.
 
 The export is first assembled in a temporary directory, then replaces the existing copy. On write or replacement failure, the original copy is preserved. Unrelated files are not allowed in the export directory; repository sources must be kept outside it.
 
@@ -578,13 +581,13 @@ newest first.
 
 When a card moves to Done or Canceled (or the project's done status), the sessions
 Work Board itself created for it are archived: a thread spawned by Delegate with a
-preset, or by a scheduled run that started a fresh thread. Everything else is only
+preset, including threads originally spawned for former scheduled cards. Everything else is only
 kept: sessions linked by title, "Existing thread", a manual `attach`, a parent
-fallback, a scheduled run in an existing thread, and links from before 0.60.0 or
+fallback, reused threads on former scheduled cards, and links from before 0.60.0 or
 from an import. An idle session is archived at once; one that is still working
 (including the session that closed the card) is archived on the first idle of the
 turn that was running, and a new turn cancels that. Before every archive Work
-Board re-checks the card, the link, other open cards, an open plan review, an enabled schedule's target, pinned
+Board re-checks the card, the link, other open cards, an open plan review, pinned
 state, queued input and live children, and any doubt or SDK error keeps the thread.
 A restart cancels pending archives. The result is listed in the card's activity log
 and in the output of `bb work-board update KEY --status …` (and the board drag
@@ -772,7 +775,7 @@ Periodic scans share repository discovery, revalidate current checks independent
 
 **Post-merge workflows** are optional, read-only push-run observation on the PR base branch. Configure exact workflow names or stable workflow ID strings. A cancelled run remains pending; a later run covers it only if it is the same workflow/base branch/repository and the compare API confirms its commit contains the merge commit. The card then shows **Superseded … covered by run X on commit C**, with the covering run's pending/passed/failed/skipped result. Diverged/behind commits do not cover it. Ambiguous names across workflow IDs yield unknown. This records workflow coverage, not a task-completion or deployment guarantee.
 
-Export v8 adds required top-level `project.json.gitSync` and `tasks/<id>.json.pullRequests` arrays (including exclusions), preserves v7 archival fields, and contains no CI snapshots, credentials, HTTP caches, cursors or last-poll timestamps. Files/directories are unchanged. Imports accept v1–v14; legacy imports without these fields preserve existing local sync settings/links. Conflicting imported links/config require `--overwrite`; missing links are not deletions. Imported snapshots are never trusted—remote state is fetched again. Coordinate downstream strict export checkers before upgrading to the v13 exporter.
+Export v8 adds required top-level `project.json.gitSync` and `tasks/<id>.json.pullRequests` arrays (including exclusions), preserves v7 archival fields, and contains no CI snapshots, credentials, HTTP caches, cursors or last-poll timestamps. Files/directories are unchanged. Imports accept v1–v25; legacy imports without these fields preserve existing local sync settings/links. Conflicting imported links/config require `--overwrite`; missing links are not deletions. Imported snapshots are never trusted—remote state is fetched again. Coordinate downstream strict export checkers before upgrading to the v13 exporter.
 
 ## Dispatch and Thread Hierarchy
 
@@ -796,7 +799,7 @@ In Work Board settings (Settings → Plugins → Work Board or the gear icon on 
 
 ### Upgrade and rollback (0.16.0)
 
-Export v9 preserves optional workflow status icons and colors. Imports accept v1–v9, including v8 archives that already contain this metadata. Update strict archive consumers before upgrading. Before rolling back, keep a v9 backup: older releases may reject v9 archives or status metadata; do not remove icons or colors from live data to make a rollback work.
+Export v9 preserves optional workflow status icons and colors. Imports accept v1–v25, including v8 archives that already contain this metadata. Update strict archive consumers before upgrading. Before rolling back, keep a v9 backup: older releases may reject v9 archives or status metadata; do not remove icons or colors from live data to make a rollback work.
 
 Each project can configure workflow rules with `bb work-board project update PREFIX --workflow-policy-file policy.json` (also accepts `--machine`). RPC clients can set `updateProject({projectId, workflowPolicy})`. The JSON object accepts `bugfixStatus`, `doneStatus`, `inProgressStatus`, `reviewStatus`, `testingStatus`, `planningStatus`, `earlyStatuses`, and `ownerDecisionLabel`; omitted fields use defaults. `earlyStatuses` are the statuses an open delivering PR moves to `reviewStatus`. While a task has an open question, Work Board adds the label named by `ownerDecisionLabel` (default `owner decision`; projects created before 0.47.0 keep `решение владельца`), creating it if missing. Set a status or label to `null` to disable rules that depend on it, or use an empty array for `earlyStatuses`. The default bugfix-to-done transition is rejected because review or testing failed; other exits remain available. Policy travels with project exports.
 
@@ -806,7 +809,7 @@ Export v14 includes optional per-project workflow policy, outcome evidence and d
 
 ### Related tasks (0.29.0)
 
-The Dependencies section has one Add button (pick Blocked by, Blocks or Related, then a task) and lists every link on its own line. Related is for tasks that share context without blocking each other. The link is symmetric, stays within one project and never affects Blocked badges or advisories. CLI: `dependency add KEY --relates-to KEY` and `dependency remove KEY --relates-to KEY`; `dependency list` and `show --json` include `related`. Export v15 carries related links; imports accept v1–v14.
+The Dependencies section has one Add button (pick Blocked by, Blocks or Related, then a task) and lists every link on its own line. Related is for tasks that share context without blocking each other. The link is symmetric, stays within one project and never affects Blocked badges or advisories. CLI: `dependency add KEY --relates-to KEY` and `dependency remove KEY --relates-to KEY`; `dependency list` and `show --json` include `related`. Export v15 carries related links; imports accept v1–v25.
 Question creation, answer changes, revisions and deletion reconcile the configured owner decision label with open questions. Manual task label edits, label renames/deletion, policy changes and archive imports do not reconcile existing questions; the next question change does. A null ownerDecisionLabel disables this reconciliation.
 `bb work-board list --stale-status` filters diagnostic flags before pagination. List and show JSON expose `staleStatusFlags`; list RPC returns flags separately from task records. These diagnostics use the last recorded thread statuses and PR snapshots, not a live remote check. An unavailable PR snapshot is reported as `pr_state_unavailable`, except that a PR last seen merged stays merged when a later refresh fails (0.55.2); recorded active thread status may be out of date. A task in the review or testing status with no open PR gets `no_open_pr`; in the testing status a merged PR also counts, since testing after the merge is expected (0.55.3). In the review status a PR merged less than 2 hours ago counts too (0.75.0), while the lead collects post-merge evidence; the latest merge time that parses and is not in the future is used, and a merged PR without one gets no grace. After the grace the flag appears, and the attention pilot's 10-minute hold starts then. One request uses one clock: `list --stale-status` selects and shows the flags of the same instant, and a cursor from before an expiry is refused as stale. Nonexcluded closed PRs produce `closed_unmerged_pr`. A done task clears `no_merge_or_outcome` with structured merge evidence or `bb work-board comment KEY --kind outcome --body '…'`. Existing done tasks with a non-system comment are grandfathered until they change status. Diagnostics never move tasks.
 ## Card activity (0.18.0)
@@ -836,7 +839,7 @@ Agent tasks in `in_progress` with complete activity diagnostics and no live atta
 
 Label and preset management is available from the top panel: **gear icon → Manage labels and presets → Labels**. The **Plugin settings** item in the same menu opens Work Board settings.
 
-The card header includes a **Copy task link** button next to the key, which copies a Markdown link for pasting into the agent chat; the card does not have a separate duplicate Share button. The original Share option remains available in Scheduled.
+The card header includes a **Copy task link** button next to the key, which copies a Markdown link for pasting into the agent chat; the card does not have a separate duplicate Share button.
 
 ### Reports to the parent thread (0.40.0)
 

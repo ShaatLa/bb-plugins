@@ -31,7 +31,6 @@ afterEach(() => {
 
 const PROJECT_ID = "01HZZZZZZZZZZZZZZZZZZZZZP1";
 const PRESET_ID = "01HZZZZZZZZZZZZZZZZZZZZZR1";
-const S1 = "11111111-1111-4111-8111-111111111111";
 const NOW = "2026-11-07T10:00:00.000Z";
 const project = {
   id: PROJECT_ID,
@@ -61,7 +60,6 @@ const preset = {
 
 function harness() {
   const createTask: Array<Record<string, unknown>> = [];
-  const createSchedule: Array<Record<string, unknown>> = [];
   const rpc = {
     listProjects: () => ({ projects: [project] }),
     listFolders: () => ({ folders: [] }),
@@ -76,7 +74,6 @@ function harness() {
     }),
     listLabels: () => ({ labels: [] }),
     getBoardPreferences: () => ({}),
-    previewSchedule: () => ({ dates: ["2026-11-08T08:00:00.000Z"] }),
     createTask: (raw: unknown) => {
       const input = rpcInput(raw);
       createTask.push(input);
@@ -91,52 +88,33 @@ function harness() {
         }),
       };
     },
-    createSchedule: (raw: unknown) => {
-      const input = rpcInput(raw);
-      createSchedule.push(input);
-      return {
-        schedule: {
-          id: S1,
-          projectId: PROJECT_ID,
-          templateTaskId: "01HZZZZZZZZZZZZZZZZZZZZZT9",
-          title: String(input.title),
-          rule: input.rule,
-          target: input.target,
-          enabled: true,
-          nextDueAt: "2026-11-08T08:00:00.000Z",
-          createdAt: NOW,
-          updatedAt: NOW,
-          overlapRunIds: [],
-        },
-      };
-    },
   };
   const slot = renderSlot(app.navPanels[0]!, { subPath: PROJECT_ID }, { rpc });
-  return { slot, createTask, createSchedule };
+  return { slot, createTask };
 }
 type Slot = ReturnType<typeof harness>["slot"];
 
 async function openChooser(slot: Slot) {
   fireEvent.click((await slot.findAllByRole("button", { name: /New task/ }))[0]!);
-  await slot.findByRole("button", { name: "Scheduled task" });
+  await slot.findByRole("button", { name: "Epic" });
 }
-const choose = async (slot: Slot, name: "Task" | "Epic" | "Scheduled task") =>
+const choose = async (slot: Slot, name: "Task" | "Epic") =>
   fireEvent.click(await slot.findByRole("button", { name }));
 const titleInput = async (slot: Slot) =>
   (await slot.findByLabelText("Task title")) as HTMLInputElement;
 
 describe("New task creation kind chooser", () => {
-  it("offers Task, Epic and Scheduled task first, and Cancel creates nothing", async () => {
-    const { slot, createTask, createSchedule } = harness();
+  it("offers Task and Epic, and Cancel creates nothing", async () => {
+    const { slot, createTask } = harness();
     await openChooser(slot);
     expect(slot.getByRole("button", { name: "Task" })).toBeTruthy();
     expect(slot.getByRole("button", { name: "Epic" })).toBeTruthy();
+    expect(slot.queryByRole("button", { name: "Scheduled task" })).toBeNull();
     expect(slot.queryByLabelText("Task title")).toBeNull();
 
     fireEvent.click(slot.getByRole("button", { name: "Cancel" }));
     await waitFor(() => expect(slot.queryByRole("button", { name: "Epic" })).toBeNull());
     expect(createTask).toEqual([]);
-    expect(createSchedule).toEqual([]);
   });
 
   it("opens a fixed Epic form without a type dropdown and creates an epic", async () => {
@@ -165,7 +143,8 @@ describe("New task creation kind chooser", () => {
     await slot.findByText("shot.png");
 
     fireEvent.click(slot.getByRole("button", { name: "Back" }));
-    await slot.findByRole("button", { name: "Scheduled task" });
+    await slot.findByRole("button", { name: "Epic" });
+    expect(slot.queryByRole("button", { name: "Scheduled task" })).toBeNull();
     expect(slot.queryByLabelText("Task title")).toBeNull();
     expect(createTask).toEqual([]);
 
@@ -211,67 +190,5 @@ describe("New task creation kind chooser", () => {
     fireEvent.click(slot.getByRole("button", { name: "Create epic" }));
     await waitFor(() => expect(createTask).toHaveLength(1));
     expect(createTask[0]).toMatchObject({ type: "epic", epicId: null });
-  });
-
-  it("opens the existing Schedule dialog, creates only a schedule and does not send the ordinary draft", async () => {
-    const { slot, createTask, createSchedule } = harness();
-    await openChooser(slot);
-    await choose(slot, "Task");
-    fireEvent.change(await titleInput(slot), { target: { value: "Ordinary draft" } });
-    fireEvent.click(slot.getByRole("button", { name: "Back" }));
-    await choose(slot, "Scheduled task");
-
-    const scheduleTitle = (await slot.findByLabelText("Schedule title")) as HTMLInputElement;
-    expect(slot.queryByRole("button", { name: "Project" })).toBeNull();
-    expect(scheduleTitle.value).toBe(""); // the ordinary draft is not sent to the schedule form
-    fireEvent.change(scheduleTitle, { target: { value: "Morning digest" } });
-    await slot.findByText(/Next runs/);
-    fireEvent.click(slot.getByRole("button", { name: "Preset" }));
-    fireEvent.click(await slot.findByRole("option", { name: /Nightly agent/ }));
-    const create = slot.getByRole("button", { name: "Create schedule" });
-    await waitFor(() => expect((create as HTMLButtonElement).disabled).toBe(false));
-    expect(createSchedule).toEqual([]);
-
-    fireEvent.click(create);
-    await waitFor(() => expect(createSchedule).toHaveLength(1));
-    expect(createSchedule[0]).toMatchObject({
-      projectId: PROJECT_ID,
-      title: "Morning digest",
-      target: { kind: "preset", presetId: PRESET_ID },
-      rule: { kind: "daily", time: "09:00" },
-      enabled: true,
-    });
-    expect(createTask).toEqual([]);
-    await waitFor(() =>
-      expect(slot.navigateCalls).toContainEqual({
-        method: "toPluginPanel",
-        path: "work-board",
-        options: { subPath: "scheduled" },
-      }),
-    );
-    expect(window.localStorage.getItem(NEW_TASK_DRAFT_STORAGE_KEY)).toBeNull();
-  });
-
-  it("keeps the schedule form across Back, and Cancel closes everything fresh without creating anything", async () => {
-    const { slot, createTask, createSchedule } = harness();
-    await openChooser(slot);
-    await choose(slot, "Scheduled task");
-    fireEvent.change(await slot.findByLabelText("Schedule title"), { target: { value: "Weekly report" } });
-    fireEvent.click(slot.getByRole("button", { name: "Weekly" }));
-
-    fireEvent.click(slot.getByRole("button", { name: "Back" }));
-    await slot.findByRole("button", { name: "Epic" });
-    expect(slot.queryByLabelText("Schedule title")).toBeNull();
-    await choose(slot, "Scheduled task");
-    expect(((await slot.findByLabelText("Schedule title")) as HTMLInputElement).value).toBe("Weekly report");
-    expect(slot.getByRole("button", { name: "Weekly" }).getAttribute("aria-pressed")).toBe("true");
-
-    fireEvent.click(slot.getByRole("button", { name: "Cancel" }));
-    await waitFor(() => expect(slot.queryByLabelText("Schedule title")).toBeNull());
-    await openChooser(slot);
-    await choose(slot, "Scheduled task");
-    expect(((await slot.findByLabelText("Schedule title")) as HTMLInputElement).value).toBe("");
-    expect(createTask).toEqual([]);
-    expect(createSchedule).toEqual([]);
   });
 });

@@ -28,7 +28,7 @@ function settlePlanningStatuses(db: PluginDatabase, log: Log): void {
   }
 }
 
-const MIGRATIONS = [
+export const MIGRATIONS = [
   `
     CREATE TABLE IF NOT EXISTS folders (
       id TEXT PRIMARY KEY,
@@ -919,6 +919,7 @@ const MIGRATIONS = [
   // The known queue entry's enqueue time pairs its departure with its own add and removal on the timeline.
   `ALTER TABLE pr_event_state ADD COLUMN queue_enqueued_at TEXT;`,
   `ALTER TABLE projects ADD COLUMN check_readiness TEXT NOT NULL DEFAULT 'off' CHECK (check_readiness IN ('off', 'on'));`,
+  `DROP TRIGGER IF EXISTS task_scheduled_status;`,
 ] as const;
 
 export function initializeTasksSchema(db: PluginDatabase, log: Log = () => {}): void {

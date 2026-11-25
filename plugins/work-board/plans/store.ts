@@ -259,7 +259,7 @@ export function createPlanStore(db: Database, tasks: TasksStore) {
     // The first version of a plan moves a Backlog or Todo card into the planning status, in this same write. A card that is
     // further along, closed or archived stays; so does one whose target is not valid now or is gated.
     let movedTo: { status: string; label: string } | null = null;
-    const project = !current && !task.archivedAt && task.scheduledRole !== "template" ? tasks.getProject(task.projectId) : undefined;
+    const project = !current && !task.archivedAt ? tasks.getProject(task.projectId) : undefined;
     const planning = project && planningOn(project) ? planningStatusOf(project) : null;
     // A closed card never moves, even when the owner mapped Done to Backlog or Todo; a card already there is not "moved".
     if (planning && project && (task.status === "backlog" || task.status === "todo") && task.status !== planning && !isClosedStatus(project, task.status) && !tasks.planGate(task, planning)) {

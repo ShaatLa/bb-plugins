@@ -3,7 +3,6 @@ import { createPlanNoteStore } from "../plans/notes";
 import { createFakePluginHost, type FakePluginHarness } from "@get-bb/plugin-sdk/testing";
 import { afterEach, describe, expect, it } from "vitest";
 import { createStore } from "../api";
-import { createScheduledStore } from "../scheduled/store";
 import { createGitSyncStore } from "../git-sync/store";
 import { prLinkSchema } from "../shared/git-sync";
 import { createStructuredStore } from "../structured/store";
@@ -151,8 +150,7 @@ describe("captureProject batching", () => {
       counts.push(h.counter.statements);
     }
     expect(counts[1]).toBe(counts[0]);
-    // Per-task reads cost 96 / 906 statements for these fixtures; batching plus dependency rows and the three schedule tables measures 18.
-    expect(counts[0]).toBeLessThanOrEqual(23);
+    expect(counts[0]).toBeLessThanOrEqual(20);
   });
 
   it("keeps the statement count constant for populated questions, evidence, attachments and threads", async () => {
@@ -165,30 +163,9 @@ describe("captureProject batching", () => {
       counts.push(h.counter.statements);
     }
     expect(counts[1]).toBe(counts[0]);
-    expect(counts[0]).toBeLessThanOrEqual(23);
+    expect(counts[0]).toBeLessThanOrEqual(20);
   });
 
-  it("keeps the statement count constant as schedules, sources and runs grow", async () => {
-    const counts: number[] = [];
-    for (const n of [2, 25]) {
-      const h = host();
-      const project = await populate(h, 3, { rich: false });
-      const scheduled = createScheduledStore(h.bb, h.store);
-      for (let i = 0; i < n; i++) {
-        const schedule = scheduled.create({ projectId: project.id, title: `Schedule ${i}`, rule: { kind: "daily", time: "09:00", timezone: "UTC" }, target: { kind: "thread", threadId: "thr_cap" } });
-        const { run } = scheduled.reserve(schedule.id, `slot:${i}`, "2026-11-01T09:00:00.000Z");
-        scheduled.createRunTask(run.id);
-      }
-      h.counter.statements = 0;
-      const capture = captureProject(h.bb, h.store, project.id);
-      expect(capture.manifest.schedules).toHaveLength(n);
-      expect(capture.manifest.scheduleSources).toHaveLength(2 * n);
-      expect(capture.manifest.scheduleRuns).toHaveLength(n);
-      counts.push(h.counter.statements);
-    }
-    expect(counts[1]).toBe(counts[0]);
-    expect(counts[0]).toBeLessThanOrEqual(23);
-  });
 
   it("round-trips captured records through restoreProject", async () => {
     const source = host();

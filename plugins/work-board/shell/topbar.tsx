@@ -7,7 +7,6 @@ import { loadTaskDataset, taskDatasetSnapshot } from "./task-dataset";
 import { signalTaskIds } from "./signal-scheduler.js";
 import type { ResolvedTasksRoute, TaskViewMode, TasksRoute } from "./routes.js";
 import { projectForRoute } from "./kanban-view.js";
-import { ScheduledButton } from "./scheduled-button.js";
 import { Button } from "@/components/ui/button";
 import { Icon } from "@/components/ui/icon";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
@@ -191,12 +190,9 @@ export function TasksTopbar({
   onNewTask,
 }: TasksTopbarProps) {
   const project = useMemo(() => projectForRoute(route, projects), [route, projects]);
-  // The clock toggles: pressed again on Scheduled, it returns to the view it was opened from.
-  const beforeScheduled = useRef<TasksRoute>({ kind: "all" });
   // Manage has no sidebar entry, so its header carries the way back.
   const beforeManage = useRef<TasksRoute>({ kind: "all" });
   useEffect(() => {
-    if (route.kind !== "scheduled") beforeScheduled.current = route;
     if (route.kind !== "manage") beforeManage.current = route;
   }, [route]);
 
@@ -213,15 +209,6 @@ export function TasksTopbar({
         );
       case "archive":
         return <span className="font-semibold">Archive</span>;
-      case "scheduled":
-        return (
-          <span className="flex items-center gap-2">
-            <span className="whitespace-nowrap font-semibold">Scheduled</span>
-            <span className="hidden text-xs font-normal text-muted-foreground @md:inline">
-              recurring and one-time agent work
-            </span>
-          </span>
-        );
       case "manage":
         return (
           <span className="flex items-center gap-2">
@@ -339,10 +326,6 @@ export function TasksTopbar({
         />
       ) : null}
       {project ? <ViewToggle view={view} onChange={onViewChange} /> : null}
-      <ScheduledButton
-        active={route.kind === "scheduled"}
-        onClick={() => onNavigate(route.kind === "scheduled" ? beforeScheduled.current : { kind: "scheduled", tab: "all" })}
-      />
       <RefreshTasksButton />
       <DropdownMenu>
         <TooltipProvider delayDuration={300}>
@@ -371,7 +354,7 @@ export function TasksTopbar({
           </DropdownMenuItem>
         </DropdownMenuContent>
       </DropdownMenu>
-      {route.kind !== "task" && route.kind !== "manage" && route.kind !== "archive" && route.kind !== "scheduled" ? (
+      {route.kind !== "task" && route.kind !== "manage" && route.kind !== "archive" ? (
         <Button
           size="sm"
           className="h-7 gap-1.5 max-md:pointer-coarse:h-9"

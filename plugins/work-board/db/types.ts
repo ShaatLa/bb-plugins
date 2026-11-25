@@ -56,8 +56,6 @@ export interface Project {
 }
 
 export interface Task {
-  ordinaryVisible?: boolean;
-  scheduledRole?: "template" | "recurring_run" | "one_time_run";
   archivedAt?: string | null;
   id: string;
   projectId: string;
@@ -218,7 +216,6 @@ export interface MoveTaskToProjectResult {
 }
 
 export interface ListTasksFilters extends TaskDateFilters {
-  ordinaryOnly?: boolean;
   allowStaleCursor?: boolean;
   archive?: "active" | "archived" | "all";
   projectId?: string;

@@ -18,6 +18,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import { createStore } from "../api";
 import plugin from "../server";
+import { legacyBoard } from "../db/legacy-schedule-fixture";
 import { registerTasksCli } from "./index";
 import { prStatusPlugin } from "../test-fixtures.js";
 
@@ -83,6 +84,21 @@ function stdout(result: {
 }
 
 describe("bb work-board CLI", () => {
+  it("accepts --include-scheduled as a no-op when listing former results", async () => {
+    const { bb, harness } = createFakePluginHost({ pluginId: "work-board" });
+    try {
+      const fixture = legacyBoard(bb.storage.database());
+      await plugin(bb);
+      const args = ["list", "--project", "EXA", "--search", "One-time result", "--include-archived"];
+      const paging = ["--limit", "500", "--json"];
+      const result = stdout(await harness.runCli([...args, "--include-scheduled", ...paging]));
+      expect(result).toBe(stdout(await harness.runCli([...args, ...paging])));
+      expect(JSON.parse(result).tasks).toMatchObject([{ id: fixture.once }]);
+    } finally {
+      await harness.dispose();
+    }
+  });
+
   it("updates project archiving and idle thresholds independently", async () => {
     const { bb, harness } = createFakePluginHost({ pluginId: "work-board" });
     try {

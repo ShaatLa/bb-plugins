@@ -1,6 +1,6 @@
 {
   "name": "bb-plugin-work-board",
-  "version": "0.82.0",
+  "version": "0.83.0",
   "description": "Project tracking for people and AI agents in BB: kanban, epics, questions, archives, GitHub PR/CI and portable project exports.",
   "private": true,
   "license": "MIT",
@@ -67,7 +67,6 @@
     "better-sqlite3": "^12.0.0",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
-    "cron-parser": "^5.5.0",
     "hono": "^4.11.9",
     "jsdom": "^29.0.1",
     "react": "^19.0.0",

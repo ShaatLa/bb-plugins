@@ -73,59 +73,20 @@ New records merge by ID; conflicting existing values require explicit `--overwri
 Pull and import repository changes before exporting BB changes. Neither command commits or pushes Git changes, runs agents, nor restores full BB chats, external PR contents, global presets or account settings.
 Paths target the invoking thread's machine, otherwise the server; `--machine <id-or-name>` selects another enrolled host. Add `--json` for a bounded machine-readable result.
 
-## Scheduled tasks
+## Recurring cards
 
-A schedule is a **template task** plus a recurrence and an execution target. Every firing creates a
-separate **result task** cloned from the template (title, description, priority, labels, attachments,
-dependencies; not past comments). Template and not-yet-started results are hidden from ordinary
-`list`/board/counts; direct lookup by key always works, `bb work-board list --include-scheduled` shows
-them, and `schedule results` lists them by durable source (also after history cleanup or schedule deletion).
-Use the ordinary task commands (`show`, `comment`, `attachment`, `question`, `dependency`, `evidence`)
-on the template key printed by `schedule show` and on result keys. Do not touch the database.
+Recurring card creation has moved to BB Automations. Former templates appear as ordinary cards. Open one by its original key and archive it when finished. An unfinished card needs Done or Canceled first. Its schedule history refers to it, so it cannot be deleted.
 
-Every `<schedule>` argument accepts the schedule UUID, or the key/ULID of its template or any result task;
-run arguments are run UUIDs from `schedule runs`. `--project` takes a tracker prefix such as `OPS`.
+Schedule history stays in the local database and older backups. Work Board no longer runs schedules or exports their history. Importing an older archive restores its cards and leaves local history intact.
+
+To create a weekly card, use the BB project ID for the automation, the tracker prefix for the card and a model accepted by the provider.
 
 ```sh
-bb work-board schedule create --project OPS --title "Morning check" --weekly --days mon,wed,fri \
-  --time 09:00 --timezone Europe/Kyiv --thread thr_abc --dependency OPS-12 --description-file brief.md
-bb work-board schedule create --project OPS --title "Nightly sweep" --daily --time 02:00 --tz UTC --preset Nightly
-bb work-board schedule create --project OPS --title "Release day" --at 2026-12-01 --time 10:00 --timezone Europe/Kyiv --thread current
-bb work-board schedule preview --weekly --days mon --time 09:00 --tz UTC --count 5
+bb automation create --project proj_example --name 'Weekly review card' \
+  --cron '0 9 * * 1' --timezone UTC \
+  --provider codex --model '<model-id>' \
+  --prompt 'Create one card by running: bb work-board create --project EXA --title "Weekly review"'
 ```
-
-- **Recurrence** (exactly one on create): `--daily --time HH:MM`, `--weekly --days mon,wed --time HH:MM`
-  (names or 0-6, Sunday=0), `--at YYYY-MM-DD --time HH:MM` (also `--at YYYY-MM-DDTHH:MM`, or a full ISO instant
-  with offset), always with `--timezone <IANA>`. Daylight-saving gaps are refused, a folded hour picks the
-  earlier instant. `--rule <json>` takes the full contract object instead (advanced).
-- **Target** (exactly one): `--thread thr_ID` (or `current`) queues in that thread while it is busy and waits
-  without timeout; an archived/deleted/unavailable thread is recorded as a failure, never replaced.
-  `--preset NAME` starts a NEW session and reads the preset's CURRENT settings at every attempt; a missing
-  preset/environment is an error, never a silent substitute. `--target <json>` is the raw form. An imported
-  schedule has target `unassigned` and stays paused: choose one with `schedule edit <schedule> --thread|--preset`
-  before `resume`/`enable` (the CLI refuses earlier).
-- **Description**: `--description <md>` or `--description-file path` (`--body-file` alias); the file is read on the
-  invoking machine through the SDK (`--machine` selects another enrolled host), never from a server path.
-  `--dependency OPS-12,OPS-13` (keys or ULIDs) are warnings only, as for ordinary tasks; `--priority`; `--paused`.
-
-Manage (`--json` on everything; mutations return the contract object):
-
-| Goal | Command |
-|---|---|
-| browse / search | `schedule list [--project P] [--search q] [--needs-attention] [--limit 1-100] [--cursor c \| --all]` |
-| inspect | `schedule show <schedule>` (template key, target explanation, next run in its timezone, overlap links, recent runs) |
-| change | `schedule edit <schedule> [--title ..] [--description-file ..] [--priority ..] [--dependency .. \| --clear-dependencies] [recurrence flags] [target flags]`; time/timezone/days alone modify the current recurrence; affects future runs only |
-| recurrence only | `schedule reschedule <schedule> --time 10:30` (use `retry` to redo a missed run) |
-| stop / start | `schedule pause`, `schedule resume` (= `enable`): pause stops future firings only; running work and an accepted queue are untouched; resume picks the next future slot, no replay |
-| remove | `schedule delete <schedule> --yes`: real deletion; pending queued runs are canceled first and a failed cancel is reported; past results and incidents stay |
-| run | `schedule run-now <schedule> [--idempotency-key K]` (overlap is advisory only) |
-| incidents | `schedule needs-attention`, `schedule runs [--schedule S]`, `schedule retry <run> [--idempotency-key K]`, `schedule cancel-queued <run>`, `schedule resolve <run> --note ..`, `schedule dismiss <run> [--note ..]` |
-| results | `schedule results [--schedule S] [--search q]` |
-
-`run-now`/`retry` print the idempotency key (generated when omitted); pass your own key and repeat it after a
-timeout: the same key never sends twice. A `delivery_unknown` run may already have executed; check the
-thread before `retry`. Paging: every list returns `nextCursor`; `--all` follows it (at most 50 pages).
-Run history is trimmed after 30 days (resolved incidents after 7); tasks, comments and attachments never are.
 
 ## Work a task
 
@@ -335,7 +296,7 @@ Settings → Work Board → General exposes the shared `defaultScreen`: `last-pr
 
 ## Kanban in the side panel
 
-On the Tasks page the project (and task) header's `Board | List` toggle switches the main area between the full-width board (the default) and the list. The native `Kanban` tab beside Browser and Terminal is independent and opens from the panel's tab strip. The tab follows the current project, including when viewing one of its tasks; all-tasks screens use the last selected or first available project. The board header has a `Scheduled` button that opens Scheduled in the main area. Board edits and task changes refresh both views through realtime.
+On the Tasks page the project (and task) header's `Board | List` toggle switches the main area between the full-width board (the default) and the list. The native `Kanban` tab beside Browser and Terminal is independent and opens from the panel's tab strip. The tab follows the current project, including when viewing one of its tasks; all-tasks screens use the last selected or first available project. Board edits and task changes refresh both views through realtime.
 
 ## Default existing thread
 
@@ -564,8 +525,6 @@ Cleanup preserves accessible/archived tasks, comments/evidence, attachments, que
 
 `bb work-board list --json` and `show KEY --json` include `advisories`: `merged-predecessor` (an unresolved predecessor with fresh confirmed delivery merge evidence) and `no-live-session` (Agent task in_progress, complete activity data, zero live attached sessions, and no unfinished blocked-by predecessor; a card held behind one is waiting by rule and gets neither this advisory nor the `no_active_thread` stale flag). Inspect the supplied PR, merge SHA, checkedAt/validUntil, retained last attachment and task activity. Expired or incomplete evidence is unknown. Check criteria or remaining work before marking a predecessor Done; consider reassignment/queueing for a sessionless task. Advice never changes status/dependencies or notifies anyone; only Done satisfies dependencies.
 
-Scheduled snapshots use archive v13; imports still accept v1–v12. Imported schedules are paused and unassigned, and retained runs are non-operational history. Choose a target explicitly before enabling. Unknown delivery is never retried automatically: dispatch-to-accept handoffs have a two-minute settling window; investigate the session before resolving an uncertain outcome. Resolved errors expire after seven days, successful history after 30; results and task content are preserved independently.
-
 ## Status push notifications
 
 Settings → select a project → Activity and notifications → Notify me of status changes applies only to that project: Off (default), All status changes, or Done only. Uses the enabled BB Push notifications channels. Only agent and plugin automation status updates notify; owner UI/CLI changes are suppressed. All paths use the same store observer; no-op saves and rolled-back changes do not notify. Rapid changes to the same card are coalesced before delivery. Delivery failures are logged, never roll back work, and are not retried automatically.
@@ -580,7 +539,7 @@ Abandoned requires recorded work AND a confirmed lost assignment (archived/delet
 
 ## Sharing task context
 
-The UI Share button copies a Markdown task link for pasting into any agent chat. Copying never dispatches, assigns, or changes task status. A scheduled task shares its template key; agents can inspect/change it with `schedule show KEY` and `schedule edit KEY`, and use ordinary task commands for attachments/questions/comments. Selected scheduled targets display the thread title; an unavailable thread is not silently replaced.
+The **Copy task link** button next to the card key copies a Markdown task link for pasting into any agent chat. Copying never dispatches, assigns, or changes task status.
 Export v14 (0.28.0) adds optional per-project workflow policy, outcome evidence and deploy PR citations; imports retain v1–v13 compatibility. Older releases cannot read v14 exports.
 
 Use `list --stale-status` to filter diagnostic warnings before pagination; `list --json` and `show --json` expose `staleStatusFlags`. Diagnostics use recorded state, not a fresh remote check. Record non-PR results explicitly with `comment KEY --kind outcome --body "Result"`. Existing done cards with ordinary non-system comments are grandfathered until a status change. Configure rules using `project update PREFIX --workflow-policy-file policy.json`; omitted fields reset to defaults, null disables the corresponding rule.

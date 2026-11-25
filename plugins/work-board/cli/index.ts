@@ -76,7 +76,6 @@ import { evidenceFlags, evidenceIndex, evidenceText } from "../structured/eviden
 import { taskMarkdownLink } from "../shared/task-link";
 import { ACTIVITY_LABELS } from "../shared/task-activity.js";
 import { threadHealthJson } from "../shared/thread-health";
-import { scheduledCliCommands } from "../scheduled/cli";
 import { checksCliCommands } from "../checks/cli";
 import { LITERAL_TEXT_FIELDS } from "../checks/config";
 import { planCommands } from "./plan";
@@ -980,14 +979,6 @@ export function registerTasksCli(
       description:
         "Tasks are addressed by key (ABC-12) or ULID. --project takes a tracker project prefix or id, never a bb project id (proj_...).",
       commands: {
-        ...scheduledCliCommands(bb, {
-          group: groupCommand,
-          projects: () => listProjects(domain),
-          project: (ctx, address, required) => selectedProject(domain, ctx, address, required),
-          task: (address) => resolveTask(domain, address),
-          preset: async (address) => resolvePreset(await listPresets(domain), address),
-          readText: async (ctx, machine, path) => (await readTextOption(bb, ctx, await resolveClientHostId(bb, domain, machine, ctx), undefined, path)) ?? "",
-        }),
         ...checksCliCommands(bb, { group: groupCommand, guard, project: (ctx, address) => requiredProject(domain, ctx, address) }),
         storage: groupCommand("storage", "Inspect and maintain plugin-owned storage", [["status", "Show disk usage and unreachable files"], ["clean", "Remove orphan files older than 24h and unreachable cache rows"], ["optimize", "Also share identical blobs and compact SQLite (may take time)"]]),
         ...Object.fromEntries((["status", "clean", "optimize"] as const).map(action => [`storage ${action}`, cliCommand({
@@ -2609,6 +2600,7 @@ export function registerTasksCli(
             on: { type: "string", description: "One UTC calendar date; cannot combine with --from/--to" },
             latest: { type: "integer", min: 1, max: TASKS_PAGE_MAX_LIMIT, description: "Return the latest N matching tasks (newest first, up to 500 per page)" },
             archived: { type: "boolean", description: "List only archived tasks" },
+            "include-scheduled": { type: "boolean", description: "No effect: Scheduled tasks were retired; former scheduled cards are ordinary and always listed." },
             "include-archived": { type: "boolean", description: "Include archived and unarchived tasks" },
             executor: {
               type: "string",
@@ -2668,10 +2660,6 @@ export function registerTasksCli(
             },
             "waiting-on-owner": { type: "boolean", description: "Keep only tasks waiting on you" },
             "plan-debt": { type: "boolean", description: "Keep only tasks in work without an approved plan" },
-            "include-scheduled": {
-              type: "boolean",
-              description: "Also list scheduled templates and pre-start runs (hidden by default; see bb work-board schedule)",
-            },
             search: {
               type: "string",
               placeholder: "query",
@@ -2766,7 +2754,6 @@ export function registerTasksCli(
                     staleStatus: input.options["stale-status"],
                     waitingOnOwner: input.options["waiting-on-owner"],
                     planDebt: input.options["plan-debt"],
-                    ...(input.options["include-scheduled"] ? { includeScheduled: true } : {}),
                     search: input.options.search,
                     sort: input.options.latest !== undefined ? "newest" : input.options.sort,
                     limit,

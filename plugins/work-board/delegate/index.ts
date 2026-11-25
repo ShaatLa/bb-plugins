@@ -365,17 +365,9 @@ export function handlers(
   bb: BbPluginApi,
   store: TasksApiStore,
 ): PluginRpcHandlers<typeof delegationRpcContract> {
-  const dispatchableTask = (taskId: string) => {
-    const task = requireTask(store.tasks, taskId);
-    const source = bb.storage.database().prepare<[string], { role: string; started_at: string | null }>("SELECT role, started_at FROM task_scheduled_sources WHERE task_id=?").get(taskId);
-    // Generic dispatch must not bypass scheduled reservation/acceptance or start a template itself.
-    if (source && (source.role === "template" || source.started_at === null))
-      throw new Error("Use Scheduled run-now or its queued-run controls; templates and pending occurrences cannot be dispatched directly");
-    return task;
-  };
   return {
     async delegateToThread(input) {
-      const task = dispatchableTask(input.taskId);
+      const task = requireTask(store.tasks, input.taskId);
       if (task.archivedAt) throw new Error("Restore the task before dispatching or changing worker links");
       const project = requireProject(store.tasks, task.projectId);
       const thread = await bb.sdk.threads.get({ threadId: input.threadId });
@@ -453,7 +445,7 @@ export function handlers(
       return { threadId: thread.id };
     },
     async delegate(input) {
-      const task = dispatchableTask(input.taskId);
+      const task = requireTask(store.tasks, input.taskId);
       if (task.archivedAt) throw new Error("Restore the task before dispatching or changing worker links");
       const project = requireProject(store.tasks, task.projectId);
       const linkedBbProjectId = requireLinkedBbProject(project);
@@ -576,7 +568,7 @@ export function handlers(
     },
 
     async taskThreadsAttach(input) {
-      const task = dispatchableTask(input.taskId);
+      const task = requireTask(store.tasks, input.taskId);
       if (task.archivedAt) throw new Error("Restore the task before dispatching or changing worker links");
       const thread = await bb.sdk.threads.get({ threadId: input.threadId });
       if (

@@ -23,8 +23,7 @@ export function observeStatusNotifications(bb: BbPluginApi, tasks: TasksStore) {
           pending.delete(before.id);
           // Read after the synchronous transaction: rolled-back and transient changes do not notify.
           const task = tasks.getTask(before.id);
-          if (!task || task.status === before.status || task.archivedAt || task.scheduledRole === "template") continue;
-          if (task.ordinaryVisible === false && task.status !== "done") continue;
+          if (!task || task.status === before.status || task.archivedAt) continue;
           const project = tasks.getProject(task.projectId);
           if (!project || !project.statusNotifications || project.statusNotifications === "off") continue;
           if (project.statusNotifications === "done" && task.status !== (getWorkflowPolicy(project).doneStatus ?? "done")) continue;

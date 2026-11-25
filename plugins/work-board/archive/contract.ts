@@ -52,6 +52,7 @@ export const archiveProjectSchema = z
       z.literal(22),
       z.literal(23),
       z.literal(24),
+      z.literal(25),
     ]),
     project: projectSchema,
     gitSync: gitSyncConfigSchema.optional(),
@@ -60,9 +61,9 @@ export const archiveProjectSchema = z
     taskIds: z.array(idSchema),
     templates: z.array(templateSchema).default([]),
     // v13: portable schedule definitions, task provenance and retained run history (never live queue state).
-    schedules: z.array(scheduleSchema).default([]),
-    scheduleSources: z.array(scheduleSourceSchema).default([]),
-    scheduleRuns: z.array(scheduleRunSchema).default([]),
+    schedules: z.array(scheduleSchema).optional(),
+    scheduleSources: z.array(scheduleSourceSchema).optional(),
+    scheduleRuns: z.array(scheduleRunSchema).optional(),
   })
   .strict();
 
@@ -87,7 +88,10 @@ export const archivePlanNoteSchema = planNoteSchema.omit({ taskId: true });
 
 export const archiveTaskSchema = z
   .object({
-    task: taskSchema,
+    task: taskSchema.extend({
+      ordinaryVisible: z.boolean().optional(),
+      scheduledRole: z.enum(["template", "recurring_run", "one_time_run"]).optional(),
+    }).transform(({ ordinaryVisible, scheduledRole, ...task }) => task),
     activityHistory: z.boolean().optional(),
     dependencies: z.array(idSchema).optional(),
     /** v15: related tasks stored on the pair's smaller task ID. */
@@ -161,7 +165,8 @@ function unique(ids: readonly string[], label: string) {
 
 // Schedules must own their template task; sources and runs are provenance and may outlive their schedule.
 function validateScheduled({ manifest, records }: ProjectArchive): void {
-  const { schedules, scheduleSources: sources, scheduleRuns: runs } = manifest;
+  const { schedules = [], scheduleSources: sources = [], scheduleRuns: runs = [] } = manifest;
+  if (manifest.version === 25 && (manifest.schedules || manifest.scheduleSources || manifest.scheduleRuns)) throw new Error("Schedule history is unsupported in archive v25");
   if (manifest.version < 13) {
     if (schedules.length || sources.length || runs.length) throw new Error("Scheduled tasks require archive v13");
     return;

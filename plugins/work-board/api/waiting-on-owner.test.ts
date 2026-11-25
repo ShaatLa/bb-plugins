@@ -33,8 +33,7 @@ it("filters waiting tasks before pagination, orders questions first and respects
   const archived = f.task("Archived", { status: "done", });
   f.store.tasks.setTaskArchived(archived.id, true);
   f.bb.storage.database().prepare("UPDATE tasks SET status='todo' WHERE id=?").run(archived.id);
-  const template = f.task("Hidden template", { });
-  f.bb.storage.database().prepare("INSERT INTO task_scheduled_sources(task_id, schedule_id, schedule_title, role) VALUES (?, '00000000-0000-0000-0000-000000000000', 'Hidden', 'template')").run(template.id);
+  f.bb.storage.database().prepare("INSERT INTO task_scheduled_sources(task_id, schedule_id, schedule_title, role) VALUES (?, '00000000-0000-0000-0000-000000000000', 'Former template', 'template')").run(newer.id);
   for (const task of [older, newer, done, canceled, archived]) await f.question(task.id);
   f.bb.storage.database().prepare("UPDATE task_questions SET payload=json_set(payload, '$.createdAt', ?) WHERE task_id=?").run("2026-01-01T00:00:00Z", older.id);
   f.bb.storage.database().prepare("UPDATE task_questions SET payload=json_set(payload, '$.createdAt', ?) WHERE task_id=?").run("2026-02-01T00:00:00Z", newer.id);

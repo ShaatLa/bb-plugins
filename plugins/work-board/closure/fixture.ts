@@ -1,3 +1,4 @@
+import type { LinkOrigin } from "../db/types";
 import { createFakePluginHost, makeThreadResponse } from "@get-bb/plugin-sdk/testing";
 import { createStore, registerTasksApi } from "../api";
 import { registerTasksCli } from "../cli";
@@ -106,7 +107,7 @@ export async function closureFixture(options: { projectSettings?: Record<string,
 
   const card = (title = "Card", status: "backlog" | "todo" | "in_progress" = "in_progress") => store.tasks.createTask({ projectId: project.id, title, status });
   /** A link as Work Board's own spawn writes it (or any other writer, with `spawned: false`). */
-  const link = (task: { id: string }, threadId: string, extra: { spawned?: boolean; liveStatus?: "idle" | "working" | "starting"; origin?: "delegate_spawn" | "delegate_existing" | "discovery" | "manual" | "parent" | null; presetName?: string } = {}) => {
+  const link = (task: { id: string }, threadId: string, extra: { spawned?: boolean; liveStatus?: "idle" | "working" | "starting"; origin?: LinkOrigin | null; presetName?: string } = {}) => {
     const spawned = extra.spawned ?? true;
     return store.tasks.upsertTaskThread({
       taskId: task.id,

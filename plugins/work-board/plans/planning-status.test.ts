@@ -181,7 +181,7 @@ describe("entering Planning with the first plan version", () => {
     expect(f.status(task.id)).toBe("todo");
   });
 
-  it("moves nothing when the save fails, or for a card in progress, closed, archived or a template", () => {
+  it("moves nothing when the save fails, or for a card in progress, closed, or archived", () => {
     const f = setup();
     const failing = f.card("backlog", "Failing");
     expect(() => f.save(failing.id, 3)).toThrow(/must be 0/);
@@ -196,9 +196,9 @@ describe("entering Planning with the first plan version", () => {
     expect(() => f.save(archived.id)).toThrow(/archived/);
     expect(f.status(archived.id)).toBe("backlog");
     const template = f.card("backlog", "Template");
-    f.db.prepare("INSERT INTO task_scheduled_sources(task_id, schedule_id, schedule_title, role) VALUES (?, '00000000-0000-0000-0000-000000000000', 'Hidden', 'template')").run(template.id);
-    expect(f.save(template.id).movedTo).toBeNull();
-    expect(f.status(template.id)).toBe("backlog");
+    f.db.prepare("INSERT INTO task_scheduled_sources(task_id, schedule_id, schedule_title, role) VALUES (?, '00000000-0000-0000-0000-000000000000', 'Former template', 'template')").run(template.id);
+    expect(f.save(template.id).movedTo).toMatchObject({ status: "planning" });
+    expect(f.status(template.id)).toBe("planning");
   });
 
   it("never reopens a closed card whose Done is mapped to Todo or Backlog, through the saveTaskPlan RPC", async () => {

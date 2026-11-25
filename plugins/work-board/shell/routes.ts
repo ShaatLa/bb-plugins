@@ -6,15 +6,12 @@ export const PANEL_PATH = "work-board";
 
 export type TaskViewMode = "list" | "board";
 
-export const SCHEDULED_TABS = ["all", "attention", "results", "history"] as const;
-export type ScheduledTab = (typeof SCHEDULED_TABS)[number];
 
 export type TasksRoute =
   | { kind: "all" }
   | { kind: "active" }
   | { kind: "archive" }
   | { kind: "manage" }
-  | { kind: "scheduled"; tab: ScheduledTab }
   | { kind: "project"; projectId: string; view: TaskViewMode | null }
   | { kind: "task"; taskKey: string }
   | { kind: "plan"; taskKey: string };
@@ -38,14 +35,10 @@ export function parseTasksRoute(rawSubPath: string): TasksRoute {
   const query = queryIndex === -1 ? "" : subPath.slice(queryIndex + 1);
   const segments = path.split("/").filter((segment) => segment.length > 0);
   const head = segments[0];
-  if (head === undefined || head === "all") return { kind: "all" };
+  if (head === undefined || head === "all" || head === "scheduled") return { kind: "all" };
   if (head === "archive") return { kind: "archive" };
   if (head === "active") return { kind: "active" };
   if (head === "manage") return { kind: "manage" };
-  if (head === "scheduled") {
-    const tab = new URLSearchParams(query).get("tab");
-    return { kind: "scheduled", tab: SCHEDULED_TABS.find((candidate) => candidate === tab) ?? "all" };
-  }
   if (head === "task") {
     const taskKey = segments[1];
     if (taskKey !== undefined) return segments[2] === "plan" ? { kind: "plan", taskKey } : { kind: "task", taskKey };
@@ -69,8 +62,6 @@ export function tasksRouteToSubPath(route: TasksRoute): string {
       return "active";
     case "manage":
       return "manage";
-    case "scheduled":
-      return route.tab === "all" ? "scheduled" : `scheduled?tab=${route.tab}`;
     case "task":
       return `task/${route.taskKey}`;
     case "plan":

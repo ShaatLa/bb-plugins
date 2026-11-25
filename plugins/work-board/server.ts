@@ -1,4 +1,3 @@
-import { registerScheduled } from "./scheduled";
 import { registerPublicApi } from "./public-api";
 import { migrateSettings } from "./settings";
 import { registerGlobalSettings } from "./global-settings";
@@ -49,7 +48,6 @@ export default async function plugin(bb: BbPluginApi) {
   registerAttachments(bb, store.tasks);
   registerTasksCli(bb, store, statusPayload());
   registerDelegation(bb, store);
-  registerScheduled(bb, store);
   registerPublicApi(bb, store.tasks);
   registerMentions(bb, store);
   planDebtService(bb, store.tasks).register();

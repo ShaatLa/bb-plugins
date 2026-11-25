@@ -26,7 +26,8 @@ import {
 } from "../attachments";
 import { exportProject, importProject, readProjectArchive } from ".";
 import { jsonText } from "./contract";
-import { createScheduledStore } from "../scheduled/store";
+import { legacyBoard, scheduleHistory } from "../db/legacy-schedule-fixture";
+import { restoreProject } from "./storage";
 import { DEFAULT_TASK_STATUSES, type TaskStatusDefinition } from "../shared/statuses";
 import { createStructuredStore } from "../structured/store";
 import { createPlanStore } from "../plans/store";
@@ -45,7 +46,7 @@ afterEach(async () => {
   );
 });
 
-function setup() {
+function setup(seedPrevious?: typeof legacyBoard) {
   const faults = { write: false, promote: false };
   const io = { active: 0, peak: 0, blobs: 0, blobPeak: 0 };
   async function track(path: string) {
@@ -150,11 +151,12 @@ function setup() {
     },
   });
   harnesses.push(harness);
+  const fixture = seedPrevious?.(bb.storage.database());
   const store = createStore(bb);
   registerAttachments(bb, store.tasks);
   registerTasksApi(bb, store);
   registerTasksCli(bb, store, { name: "Work Board", version: "test" });
-  return { bb, harness, store, faults, io };
+  return { bb, harness, store, faults, io, fixture };
 }
 
 async function directory() {
@@ -453,7 +455,7 @@ describe("project archives", () => {
     expect(createStructuredStore(target.bb, target.store).listQuestions(source.task.id)).toContainEqual(withdrawn.question);
     const path = join(out, "project.json");
     const manifest = JSON.parse(await readFile(path, "utf8"));
-    expect(manifest.version).toBe(24);
+    expect(manifest.version).toBe(25);
     delete manifest.project.checkReadiness;
     await writeFile(path, jsonText({ ...manifest, version: 22 }));
     await expect(importProject(target.bb, target.store, out, true)).rejects.toThrow("Withdrawn questions require archive v23");
@@ -487,7 +489,7 @@ describe("project archives", () => {
     // The links need v22; a v21 snapshot without them still imports.
     const manifestPath = join(out, "project.json");
     const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
-    expect(manifest.version).toBe(24);
+    expect(manifest.version).toBe(25);
     delete manifest.project.checkReadiness;
     manifest.version = 21;
     await writeFile(manifestPath, jsonText(manifest));
@@ -905,7 +907,7 @@ it("exports v17 typed questions and imports v16 owner tasks as plain tasks", asy
   await exportProject(source.bb, source.store, source.project.id, out);
   const manifestPath = join(out, "project.json");
   const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
-  expect(manifest.version).toBe(24);
+  expect(manifest.version).toBe(25);
   const path = join(out, "tasks", `${source.task.id}.json`);
   const record = JSON.parse(await readFile(path, "utf8"));
   expect(record.task).not.toHaveProperty("executionTarget");
@@ -943,7 +945,7 @@ it("exports plans (v18+) with every version, refuses a differing local plan with
   await exportProject(source.bb, source.store, source.project.id, out);
   const manifestPath = join(out, "project.json");
   const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
-  expect(manifest.version).toBe(24);
+  expect(manifest.version).toBe(25);
   const recordPath = join(out, "tasks", `${source.task.id}.json`);
   const record = JSON.parse(await readFile(recordPath, "utf8"));
   expect(record.plan).toMatchObject({ format: "markdown", version: 2, state: "in_review", body: "# Plan\n\n## Steps\n- one\n- two\n", reviewer: { kind: "thread", threadId: "thr_reviewer" }, reviewVersion: 2 });
@@ -1065,7 +1067,7 @@ it("round-trips configurable project statuses, their order and custom task stage
   const out = join(await directory(), "statuses-v6");
   await exportProject(source.bb, source.store, source.project.id, out);
   const manifest = JSON.parse(await readFile(join(out, "project.json"), "utf8"));
-  expect(manifest.version).toBe(24);
+  expect(manifest.version).toBe(25);
   expect(manifest.project.statuses).toEqual(statuses);
   expect(manifest.project).toMatchObject({ autoArchiveAfterDays: "14", staleIdleMinutes: "120" });
   const target = setup();
@@ -1122,114 +1124,71 @@ it.each(["tasks-plus", "agent-board"])("imports %s archives and upgrades attachm
   expect((await readAttachmentContent(target.store.tasks, source.attachment.id)).content).toEqual(Buffer.from([0, 255, 42, 7]));
 });
 
-// Fixture: paused/active schedules with queued, completed, one-time and expired-history results.
-async function seedScheduled() {
-  const source = await seed();
-  const scheduled = createScheduledStore(source.bb, source.store);
-  const now = new Date("2026-11-01T08:00:00Z");
-  const rule = { kind: "daily" as const, time: "09:00", timezone: "UTC" };
-  const recurring = scheduled.create({ projectId: source.project.id, title: "Daily check", rule, target: { kind: "thread", threadId: "thr_server_local" } }, now);
-  const done = scheduled.reserve(recurring.id, "slot:done", "2026-11-01T09:00:00.000Z", now).run;
-  const doneTask = scheduled.createRunTask(done.id);
-  scheduled.markStarted(done.id, { threadId: "thr_server_local", requestId: "req_done", title: "Worker", presetName: "Existing thread" }, now);
-  source.store.tasks.updateTask(doneTask.id, { status: "done" });
-  scheduled.updateRun(done.id, { state: "completed", finishedAt: now.toISOString(), queueId: "q_done" }, now);
-  const queued = scheduled.reserve(recurring.id, "slot:queued", "2026-11-02T09:00:00.000Z", now).run;
-  const queuedTask = scheduled.createRunTask(queued.id);
-  scheduled.updateRun(queued.id, { state: "queued", threadId: "thr_server_local", queueId: "q_live", requestId: "req_live" }, now);
-  const once = scheduled.create({ projectId: source.project.id, title: "Once", rule: { kind: "once", at: "2026-12-01T09:00:00+00:00", timezone: "UTC" }, target: { kind: "preset", presetId: "01ARZ3NDEKTSV4RRFFQ69G5FAV" } }, now);
-  const onceRun = scheduled.reserve(once.id, "once", "2026-12-01T09:00:00.000Z", now).run;
-  const onceTask = scheduled.createRunTask(onceRun.id);
-  scheduled.markStarted(onceRun.id, { threadId: "thr_once", requestId: "req_once", title: "Once", presetName: "Preset" }, now);
-  scheduled.updateRun(onceRun.id, { state: "failed", reason: "Agent failed" }, now);
-  // Expired history and a deleted schedule must still leave the result task and its provenance.
-  const gone = scheduled.create({ projectId: source.project.id, title: "Deleted schedule", rule, target: { kind: "thread", threadId: "thr_gone" } }, now);
-  const old = scheduled.reserve(gone.id, "slot:gone", "2026-10-01T09:00:00.000Z", now).run;
-  const goneTask = scheduled.createRunTask(old.id);
-  scheduled.markStarted(old.id, { threadId: "thr_gone", requestId: "req_gone", title: "Gone", presetName: "Existing thread" }, now);
-  scheduled.updateRun(old.id, { state: "completed", finishedAt: "2026-10-01T09:05:00.000Z" }, now);
-  const expired = scheduled.reserve(gone.id, "slot:expired", "2026-10-02T09:00:00.000Z", now).run;
-  const expiredTask = scheduled.createRunTask(expired.id);
-  scheduled.markStarted(expired.id, { threadId: "thr_gone", requestId: "req_expired", title: "Gone", presetName: "Existing thread" }, now);
-  scheduled.updateRun(expired.id, { state: "completed", finishedAt: "2026-10-02T09:05:00.000Z" }, now);
-  scheduled.cleanup(new Date("2026-11-02T00:00:00Z"));
-  expect(() => scheduled.run(expired.id)).toThrow();
-  // Unresolved incidents are never age-deleted, so this run outlives its deleted schedule.
-  const goneRun = scheduled.reserve(gone.id, "slot:incident", "2026-11-01T09:00:00.000Z", now).run;
-  scheduled.updateRun(goneRun.id, { state: "failed", reason: "Target unavailable" }, now);
-  scheduled.remove(gone.id);
-  return { ...source, scheduled, recurring, once, gone, done, queued, onceRun, goneRun, expired, doneTask, queuedTask, onceTask, goneTask, expiredTask };
+// Reconstruct a legacy snapshot with the schedule metadata omitted by v25.
+async function legacySnapshot(version: 23 | 24) {
+  const source = setup(legacyBoard);
+  const f = source.fixture!;
+  const out = join(await directory(), "legacy");
+  await exportProject(source.bb, source.store, f.projectId, out);
+  const path = join(out, "project.json");
+  const manifest = JSON.parse(await readFile(path, "utf8"));
+  if (version === 23) delete manifest.project.checkReadiness;
+  await writeFile(path, jsonText({ ...manifest, version, schedules: f.schedules, scheduleSources: f.scheduleSources, scheduleRuns: f.scheduleRuns }));
+  const recordPath = join(out, "tasks", f.template + ".json");
+  const record = JSON.parse(await readFile(recordPath, "utf8"));
+  Object.assign(record.task, { ordinaryVisible: false, scheduledRole: "template" });
+  await writeFile(recordPath, jsonText(record));
+  return { source, f, out };
 }
 
-describe("archive v13 scheduled tasks", () => {
-  it("round-trips definitions, provenance and run history as paused, unassigned, historical records", async () => {
-    const f = await seedScheduled();
-    const out = join(await directory(), "scheduled-v13");
-    await exportProject(f.bb, f.store, f.project.id, out);
-    const manifest = JSON.parse(await readFile(join(out, "project.json"), "utf8"));
-    expect(manifest.version).toBe(24);
-    expect(manifest.schedules).toHaveLength(2);
-    expect(JSON.stringify(manifest)).not.toMatch(/thr_server_local|thr_gone|q_live|req_live|01ARZ3NDEKTSV4RRFFQ69G5FAV/);
-    const target = setup();
-    await importProject(target.bb, target.store, out, false);
-    const scheduled = createScheduledStore(target.bb, target.store);
-    const imported = scheduled.get(f.recurring.id);
-    expect(imported).toMatchObject({ enabled: false, nextDueAt: null, target: { kind: "unassigned" }, rule: f.recurring.rule, title: "Daily check" });
-    expect(scheduled.get(f.once.id)).toMatchObject({ enabled: false, nextDueAt: null, target: { kind: "unassigned" }, rule: f.once.rule });
-    // Queued work is retained as history only: no live IDs, never returned to the runtime.
-    expect(scheduled.pending()).toEqual([]);
-    expect(scheduled.run(f.queued.id)).toMatchObject({ state: "queued", historical: true, threadId: null, queueId: null, requestId: null, occurrenceKey: "slot:queued", taskId: f.queuedTask.id });
-    expect(scheduled.run(f.done.id)).toMatchObject({ state: "completed", historical: true, threadId: null, queueId: null });
-    expect(scheduled.run(f.onceRun.id)).toMatchObject({ state: "failed", reason: "Agent failed", historical: true });
-    expect(scheduled.source(f.doneTask.id)).toEqual(f.scheduled.source(f.doneTask.id));
-    expect(scheduled.source(f.queuedTask.id)).toMatchObject({ role: "recurring_run", startedAt: null, runId: f.queued.id, occurrenceKey: "slot:queued" });
-    expect(scheduled.source(f.onceTask.id)).toMatchObject({ role: "one_time_run", runId: f.onceRun.id });
-    // Results of a deleted schedule and of expired history keep their independent provenance.
-    expect(scheduled.run(f.goneRun.id)).toMatchObject({ scheduleId: f.gone.id, state: "failed", reason: "Target unavailable" });
-    expect(() => scheduled.get(f.gone.id)).toThrow();
-    expect(() => scheduled.run(f.expired.id)).toThrow();
-    for (const task of [f.goneTask, f.expiredTask]) expect(scheduled.source(task.id)).toEqual(f.scheduled.source(task.id));
-    expect(scheduled.source(f.expiredTask.id)).toMatchObject({ scheduleId: f.gone.id, scheduleTitle: "Deleted schedule", runId: f.expired.id, occurrenceKey: "slot:expired", role: "recurring_run" });
-    // Old occurrence keys still prevent a duplicate send after resume.
-    expect(scheduled.reserve(f.recurring.id, "slot:queued", "2026-11-02T09:00:00.000Z")).toMatchObject({ created: false, run: { id: f.queued.id } });
-    expect(() => scheduled.reserve(f.gone.id, "slot:expired", "2026-10-02T09:00:00.000Z")).toThrow("already ran");
-    // Hidden templates and pre-start instances stay out of the ordinary list; direct and result lookups keep them.
-    const ordinary = target.store.tasks.listTasks({ projectId: f.project.id, ordinaryOnly: true }).map(task => task.id);
-    expect(ordinary).not.toContain(f.recurring.templateTaskId);
-    expect(ordinary).not.toContain(f.queuedTask.id);
-    expect(ordinary).toContain(f.onceTask.id);
-    expect(target.store.tasks.getTask(f.recurring.templateTaskId)).toBeDefined();
-    expect(scheduled.results({ projectId: f.project.id, limit: 100 }).results.map(result => result.task.id).sort())
-      .toEqual([f.doneTask.id, f.queuedTask.id, f.onceTask.id, f.goneTask.id, f.expiredTask.id].sort());
-    const again = join(await directory(), "again");
-    await exportProject(target.bb, target.store, f.project.id, again);
-    expect(await readFile(join(again, "project.json"), "utf8")).toBe(await readFile(join(out, "project.json"), "utf8"));
-    // Re-importing on its own server keeps live queue IDs; a second import changes nothing.
-    await importProject(f.bb, f.store, out, true);
-    expect(f.scheduled.run(f.queued.id)).toMatchObject({ queueId: "q_live", historical: false });
-    expect(f.scheduled.get(f.recurring.id)).toMatchObject({ enabled: false, target: { kind: "unassigned" } });
+describe("retired schedule archives", () => {
+  it.each([23, 24] as const)("reads v%i without restoring or resetting history", async version => {
+    const { source, f, out } = await legacySnapshot(version);
+    for (const overwrite of [false, true]) {
+      for (const target of [setup(), source]) {
+        const db = target.bb.storage.database();
+        const before = scheduleHistory(db);
+        const archive = await readProjectArchive(target.bb, undefined, out);
+        // Exercise the restore transaction as a dry run, including its conflict checks.
+        const original = target.store.tasks.getTask(f.template);
+        expect(() => target.store.transaction(() => {
+          restoreProject(target.bb, target.store, archive, new Map(), overwrite);
+          expect(scheduleHistory(db)).toEqual(before);
+          throw new Error("Rollback preview");
+        })).toThrow("Rollback preview");
+        expect(target.store.tasks.getTask(f.template)).toEqual(original);
+        await importProject(target.bb, target.store, out, overwrite);
+        expect(target.store.tasks.getTaskByKey("EXA-1")).toEqual(source.store.tasks.getTask(f.template));
+        for (const id of [f.once, f.expired]) {
+          expect(target.store.tasks.getTask(id)).toEqual(source.store.tasks.getTask(id));
+        }
+        expect(target.store.tasks.listTasks({ projectId: f.projectId })).toHaveLength(6);
+        expect(scheduleHistory(db)).toEqual(before);
+      }
+    }
   });
 
-  it("imports v1-v12 archives without schedules and refuses scheduled data below v13", async () => {
-    const f = await seedScheduled();
-    const out = join(await directory(), "old");
-    await exportProject(f.bb, f.store, f.project.id, out);
-    const path = join(out, "project.json");
-    const manifest = JSON.parse(await readFile(path, "utf8"));
-    delete manifest.project.checkReadiness;
-    manifest.version = 12;
-    await writeFile(path, jsonText(manifest));
-    await expect(importProject(setup().bb, setup().store, out, false)).rejects.toThrow(/require archive v13/);
-    delete manifest.schedules;
-    delete manifest.scheduleSources;
-    delete manifest.scheduleRuns;
-    await writeFile(path, jsonText(manifest));
-    const target = setup();
-    await importProject(target.bb, target.store, out, false);
-    const scheduled = createScheduledStore(target.bb, target.store);
-    expect(scheduled.list({}).schedules).toEqual([]);
-    expect(scheduled.runs({}).runs).toEqual([]);
-    expect(target.store.tasks.getTask(f.queuedTask.id)).toBeDefined();
+  it("restores both v25 snapshots in either order after direct and family moves", async () => {
+    const source = setup(legacyBoard);
+    const f = source.fixture!;
+    const targetProject = source.store.tasks.createProject({ prefix: "DST", name: "Destination", color: "blue" });
+    source.store.tasks.moveTaskToProject(f.pending, targetProject.id);
+    source.store.tasks.moveTaskToProject(f.parent, targetProject.id);
+    const paths = [];
+    for (const id of [f.projectId, targetProject.id]) {
+      const path = join(await directory(), "snapshot");
+      await exportProject(source.bb, source.store, id, path);
+      const manifest = JSON.parse(await readFile(join(path, "project.json"), "utf8"));
+      expect(manifest.version).toBe(25);
+      for (const key of ["schedules", "scheduleSources", "scheduleRuns"]) expect(manifest).not.toHaveProperty(key);
+      paths.push(path);
+    }
+    for (const order of [paths, [...paths].reverse()]) {
+      const target = setup();
+      for (const path of order) await importProject(target.bb, target.store, path, false);
+      for (const id of [f.template, f.pending, f.completed, f.parent, f.once, f.expired]) expect(target.store.tasks.getTask(id)).toEqual(source.store.tasks.getTask(id));
+      expect(scheduleHistory(target.bb.storage.database())).toEqual([[], [], []]);
+    }
   });
 
   it.each([
@@ -1241,58 +1200,19 @@ describe("archive v13 scheduled tasks", () => {
     ["a source that disagrees with its retained run", (m: any) => { m.scheduleSources.find((s: any) => s.runId).occurrenceKey = "slot:other"; }],
     ["duplicate occurrence keys", (m: any) => { m.scheduleRuns[1].occurrenceKey = m.scheduleRuns[0].occurrenceKey; m.scheduleRuns[1].scheduleId = m.scheduleRuns[0].scheduleId; }],
   ])("rejects %s before changing existing project data", async (_name, tamper) => {
-    const f = await seedScheduled();
-    const out = join(await directory(), "invalid");
-    await exportProject(f.bb, f.store, f.project.id, out);
+    const { f, out } = await legacySnapshot(24);
     const target = setup();
     await importProject(target.bb, target.store, out, false);
-    target.store.tasks.updateTask(f.task.id, { title: "Local edit" });
-    const before = target.store.tasks.listTasks({ projectId: f.project.id });
+    target.store.tasks.updateTask(f.parent, { title: "Local edit" });
+    const before = target.store.tasks.listTasks({ projectId: f.projectId });
     const path = join(out, "project.json");
     const manifest = JSON.parse(await readFile(path, "utf8"));
     tamper(manifest);
     await writeFile(path, jsonText(manifest));
     await expect(importProject(target.bb, target.store, out, true)).rejects.toThrow();
-    expect(target.store.tasks.listTasks({ projectId: f.project.id })).toEqual(before);
+    expect(target.store.tasks.listTasks({ projectId: f.projectId })).toEqual(before);
   });
 
-  it("rejects orphan provenance pointing at another project's local run without writes", async () => {
-    const f = await seedScheduled();
-    const target = await seedScheduled();
-    target.bb.storage.database().prepare("DELETE FROM task_key_aliases").run();
-    target.bb.storage.database().prepare("UPDATE projects SET prefix = ? WHERE id = ?").run("OTHER", target.project.id);
-    const out = join(await directory(), "foreign-run");
-    await exportProject(f.bb, f.store, f.project.id, out);
-    const path = join(out, "project.json");
-    const manifest = JSON.parse(await readFile(path, "utf8"));
-    manifest.scheduleSources.find((s: any) => s.taskId === f.expiredTask.id).runId = target.queued.id;
-    await writeFile(path, jsonText(manifest));
-    const before = target.scheduled.run(target.queued.id);
-    await expect(importProject(target.bb, target.store, out, false)).rejects.toThrow(/referenced scheduled run/);
-    expect(target.store.tasks.getProject(f.project.id)).toBeUndefined();
-    expect(target.scheduled.run(target.queued.id)).toEqual(before);
-  });
-
-  it("does not update a different run when a source is corrupted", async () => {
-    const f = await seedScheduled();
-    const db = f.bb.storage.database();
-    db.prepare("UPDATE task_scheduled_sources SET run_id=? WHERE task_id=?").run(f.queued.id, f.doneTask.id);
-    const before = f.scheduled.run(f.queued.id);
-    f.store.tasks.updateTask(f.doneTask.id, { status: "todo" });
-    expect(f.scheduled.run(f.queued.id)).toEqual(before);
-  });
-
-  it("refuses to replace a live local run or an occurrence owned by another run", async () => {
-    const f = await seedScheduled();
-    const out = join(await directory(), "conflict");
-    await exportProject(f.bb, f.store, f.project.id, out);
-    const path = join(out, "project.json");
-    const manifest = JSON.parse(await readFile(path, "utf8"));
-    manifest.scheduleRuns.find((run: any) => run.id === f.queued.id).reason = "Edited elsewhere";
-    await writeFile(path, jsonText(manifest));
-    await expect(importProject(f.bb, f.store, out, true)).rejects.toThrow(/active scheduled run/);
-    expect(f.scheduled.run(f.queued.id)).toMatchObject({ queueId: "q_live", reason: null });
-  });
 });
 
 it("round-trips v16 current state and imports v15 without it", async () => {
@@ -1302,7 +1222,7 @@ it("round-trips v16 current state and imports v15 without it", async () => {
   await exportProject(source.bb, source.store, source.project.id, out);
   const manifestPath = join(out, "project.json");
   const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
-  expect(manifest.version).toBe(24);
+  expect(manifest.version).toBe(25);
   const target = setup();
   await importProject(target.bb, target.store, out, false);
   expect(target.store.tasks.getTask(source.task.id)).toEqual(source.store.tasks.getTask(source.task.id));
@@ -1885,7 +1805,7 @@ describe("archive v21: thread-archive settings and links", () => {
     source.store.tasks.updateProject(source.project.id, { archiveThreadsOnClose: "off", archiveReviewerOnApproval: "off" });
     const out = await exportOf(source, "v21-settings");
     const manifest = JSON.parse(await readFile(join(out, "project.json"), "utf8"));
-    expect(manifest.version).toBe(24);
+    expect(manifest.version).toBe(25);
     expect(manifest.project).toMatchObject({ archiveThreadsOnClose: "off", archiveReviewerOnApproval: "off" });
     const target = setup();
     await importProject(target.bb, target.store, out, false);

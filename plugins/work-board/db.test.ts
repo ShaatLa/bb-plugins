@@ -1,3 +1,4 @@
+import { legacyBoard, scheduleHistory } from "./db/legacy-schedule-fixture";
 import { getWorkflowPolicy } from "./shared/workflow-policy";
 import { createHash } from "node:crypto";
 import { createFakePluginHost } from "@get-bb/plugin-sdk/testing";
@@ -78,7 +79,7 @@ describe("tasks storage", () => {
             "SELECT COUNT(*) AS count FROM schema_version",
           )
           .get()?.count,
-      ).toBe(53);
+      ).toBe(54);
       expect(db.prepare<[], { name: string }>("PRAGMA index_info(idx_task_pr_links_identity)").all().map((column) => column.name)).toEqual(["identity", "task_id"]);
       const columns = db.prepare<[], { name: string }>("PRAGMA table_info(tasks)").all().map(column => column.name);
       expect(columns).toEqual(expect.arrayContaining(["progress_note", "progress_updated_at", "progress_updated_by"]));
@@ -122,17 +123,47 @@ describe("tasks storage", () => {
     }
   });
 
-  it("upgrades the scheduled status trigger on an existing database", async () => {
-    const { db, harness } = setup();
+  it("retires the status trigger while preserving former templates, results and history", async () => {
+    const { bb, harness } = createFakePluginHost({ pluginId: "work-board" });
+    const db = bb.storage.database();
     try {
-      const sql = db.prepare<[], { sql: string }>("SELECT sql FROM sqlite_master WHERE type='trigger' AND name='task_scheduled_status'").get()!.sql;
-      db.exec("DROP TRIGGER task_scheduled_status; DELETE FROM schema_version WHERE version=22;");
-      db.exec(sql.replace("project_id=NEW.project_id AND json_extract(payload,'$.taskId')=NEW.id AND ", ""));
+      const f = legacyBoard(db);
+      const trigger = () => db.prepare("SELECT name FROM sqlite_master WHERE name='task_scheduled_status'").get();
+      const related = () => ["tasks", "task_threads", "comments"].map(table => db.prepare(`SELECT * FROM ${table} ORDER BY rowid`).all());
+      const before = related();
+      const history = scheduleHistory(db);
+      expect(trigger()).toBeTruthy();
+      expect(db.pragma("foreign_keys", { simple: true })).toBe(1);
       createTasksStore(db);
-      expect(db.prepare<[], { sql: string }>("SELECT sql FROM sqlite_master WHERE name='task_scheduled_status'").get()!.sql).toContain("project_id=NEW.project_id AND json_extract(payload,'$.taskId')=NEW.id");
-    } finally {
-      await harness.dispose();
-    }
+      const store = createTasksStore(db);
+      expect(trigger()).toBeUndefined();
+      expect(related()).toEqual(before);
+      expect(scheduleHistory(db)).toEqual(history);
+      expect(db.pragma("foreign_key_check")).toEqual([]);
+      expect(store.listTasks({ projectId: f.projectId }).map(t => t.id).sort()).toEqual([f.template, f.pending, f.completed, f.parent, f.once, f.expired].sort());
+      expect(store.getTaskByKey("EXA-1")).toMatchObject({ id: f.template, status: "backlog", archivedAt: null, description: "Original body" });
+      expect(() => store.deleteTask(f.template)).toThrow("This card was a schedule template and keeps its schedule history. Archive it instead; a card that is not finished needs Done or Canceled first.");
+      const target = createProject(store, "DST");
+      const moveError = "This card was a schedule template and keeps its schedule history in its project. Archive it instead, or create a new card in the target project.";
+      expect(() => store.moveTaskToProject(f.template, target.id)).toThrow(moveError);
+      store.updateTask(f.template, { parentTaskId: f.parent });
+      expect(() => store.moveTaskToProject(f.parent, target.id)).toThrow(moveError);
+      expect(store.getTask(f.parent)?.projectId).toBe(f.projectId);
+      store.updateTask(f.template, { parentTaskId: null, status: "done" });
+      store.setTaskArchived(f.template, true);
+      expect(store.getTask(f.template)?.archivedAt).toBeTruthy();
+
+      expect(store.moveTaskToProject(f.pending, target.id).task.projectId).toBe(target.id);
+      store.moveTaskToProject(f.parent, target.id);
+      expect(store.getTask(f.completed)?.projectId).toBe(target.id);
+      store.updateTask(f.completed, { title: "Reviewed", status: "todo" });
+      store.updateTask(f.completed, { status: "done" });
+      store.setTaskArchived(f.completed, true);
+      expect(store.getTask(f.completed)?.archivedAt).toBeTruthy();
+      expect(scheduleHistory(db)).toEqual(history);
+      expect(store.deleteTask(f.pending)).toBe(true);
+      expect(store.getTask(f.pending)).toBeUndefined();
+    } finally { await harness.dispose(); }
   });
 
   it("keeps the former owner-decision label for projects that existed before its default changed", async () => {

@@ -1,5 +1,8 @@
-import { createFakePluginHost } from "@get-bb/plugin-sdk/testing";
-import { describe, expect, it } from "vitest";
+import { legacyBoard } from "./db/legacy-schedule-fixture";
+import { navigationBadgeCounts } from "./api/badge";
+import { attachNamedTaskThread } from "./lifecycle/discovery";
+import { createFakePluginHost, makeThreadResponse } from "@get-bb/plugin-sdk/testing";
+import { describe, expect, it, vi } from "vitest";
 import plugin, { WORK_BOARD_PLUGIN_VERSION } from "./server";
 import pkg from "./package.json" with { type: "json" };
 import { createStore } from "./api";
@@ -38,6 +41,23 @@ describe("Tasks plugin scaffold", () => {
     }
   });
 
+  it("counts, discovers and sends status notices for upgraded result cards", async () => {
+    const send = vi.fn(async (_input: unknown) => ({ ok: true, channels: ["desktop"] }));
+    const { bb, harness } = createFakePluginHost({ pluginId: "work-board", sdk: { plugins: { callRpc: send } } });
+    try {
+      const f = legacyBoard(bb.storage.database());
+      const store = createStore(bb);
+      expect(navigationBadgeCounts(bb, store, ["open"], Date.now()).count).toBe(3);
+      const thread = makeThreadResponse({ id: "thr_discovered", title: "Review EXA-2", projectId: "proj_example", status: "active" });
+      attachNamedTaskThread(bb, store, thread);
+      expect(store.tasks.listTaskThreads(f.pending).map(link => link.threadId)).toContain(thread.id);
+      store.tasks.updateTask(f.pending, { status: "in_progress" });
+      await vi.waitFor(() => expect(send).toHaveBeenCalledWith(expect.objectContaining({
+        method: "notifications.send", input: expect.objectContaining({ title: "EXA-2 · In Progress" }),
+      })));
+    } finally { await harness.dispose(); }
+  });
+
   it("reports the version of the package manifest", () => {
     expect(WORK_BOARD_PLUGIN_VERSION).toBe(pkg.version);
     expect(WORK_BOARD_PLUGIN_VERSION).toMatch(/^\d+\.\d+\.\d+/);
@@ -48,6 +68,10 @@ describe("Tasks plugin scaffold", () => {
 
     await plugin(bb);
 
+    const { schedules, cli, rpcMethods } = harness.registrations;
+    expect(schedules.map(job => job.name).sort()).toEqual(["attention-reconcile", "auto-archive-tasks", "checks", "git-pr-sync", "plan-debt", "storage-maintenance"]);
+    expect(cli!.commands.filter(cmd => /^schedule(?: |$)/.test(cmd.name))).toEqual([]);
+    expect(rpcMethods.filter(method => /schedule/i.test(method))).toEqual([]);
     expect(harness.logEntries).toEqual([
       {
         level: "info",
