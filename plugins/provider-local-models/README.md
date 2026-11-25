@@ -51,6 +51,11 @@ bb plugin config local-models set defaultModel 'ggml-org/gpt-oss-20b-GGUF:MXFP4'
   approval requests in agent-sent turns, so accept-edits shell calls fail. Run
   at most one local-models thread per GPU; threads take no Slots use themselves,
   so the parent holds a `local-model` lease and transfers it to the child.
+- With a second machine in `baseUrl` (model ids `<machine>/owner/Model-GGUF:QUANT`),
+  the plugin registers each answering machine with Machine Slots every minute, so
+  each has its own `local-model` slot. A model with a machine prefix leases that
+  machine, a model only on this Mac leases `local`, and a model both serve runs on
+  whichever machine Slots grants first.
 - The plugin registers the agent tool `local_models_ask` for one-shot prompts
   to local models. It is available to threads using other providers; local-models
   threads do not get it to avoid recursive GPU requests. It queues behind other

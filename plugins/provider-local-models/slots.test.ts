@@ -24,3 +24,12 @@ test('runs without a slot when Slots is missing, and finishes the use when the w
   await assert.rejects(withSlot(call, 'thr', 'job', AbortSignal.timeout(2000), async () => { throw Error('model failed'); }, () => {}), /model failed/);
   assert.deepEqual(done, ['done']);
 });
+
+test('pins a device when asked and hands the granted device to the work', async () => {
+  const inputs: Record<string, unknown>[] = [];
+  const call = async (method: string, input: Record<string, unknown>) => { if (method === 'acquire') inputs.push(input); return { ok: true, data: { kind: 'leased', useId: 'use-3', device: inputs.length > 1 ? 'M1' : undefined } }; };
+  assert.equal(await withSlot(call, 'thr', 'job', AbortSignal.timeout(2000), async device => device, () => {}, 1, 60000, 'local'), '');
+  assert.equal(await withSlot(call, 'thr', 'job', AbortSignal.timeout(2000), async device => device, () => {}), 'M1');
+  assert.equal(await withSlot(call, undefined, 'job', AbortSignal.timeout(2000), async device => device, () => {}), undefined);
+  assert.deepEqual(inputs.map(input => input.device), ['local', undefined]);
+});

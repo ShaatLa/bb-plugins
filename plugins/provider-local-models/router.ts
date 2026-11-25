@@ -1,7 +1,7 @@
 import { PluginCliError } from '@get-bb/plugin-sdk';
 import { setTimeout as wait } from 'node:timers/promises';
 import { deriveCaps, readCaps, reasoningParams } from './reasoning.ts';
-import { displayName, serverUrls, preferSplash } from './models.ts';
+import { displayName, machineOf, serverUrls, preferSplash } from './models.ts';
 // shortcut: server-side fetch to settings.baseUrl assumes the router is reachable from the BB server machine; multi-machine needs a host call like antigravity's hosts.experimental_client.
 export function router(baseUrl: string, defaultModel: string, dataDir: string, splash = false, retryMs = 2000) {
   const bases = serverUrls(baseUrl), origin = (base: string) => base.replace(/\/v1$/,'');
@@ -57,13 +57,30 @@ export function router(baseUrl: string, defaultModel: string, dataDir: string, s
   // Servers without router status (e.g. Splash) keep their single model resident, so it reports as loaded.
   // The --ctx-size the router loads with is the real limit; context_length is the trained one.
   const contextSize=(m:any)=>{const a=m.status?.args,i=Array.isArray(a)?a.indexOf('--ctx-size'):-1,arg=i>=0?Number(a[i+1]):0;return arg>0?arg:m.context_length??m.meta?.n_ctx??null;};
+  const select=(listed:any[], model?:string)=>{const visible=preferSplash(listed,splash);return model ? listed.find((m:any)=>m.id===model) : visible.find((m:any)=>m.id===defaultModel||m.id==='splash/'+defaultModel)??visible.find((m:any)=>m.status?.value==='loaded')??visible[0];};
+  const baseOf=(id:string)=>machineOf(id)||id.startsWith('splash/')?id.slice(id.indexOf('/')+1):id;
   return {
     async status(signal: AbortSignal) {
       const caps=readCaps(dataDir);
       return {reachable:true,models:preferSplash(await models(signal), splash).slice(0,100).map((m:any)=>({id:m.id.slice(0,500),displayName:displayName(m.id).slice(0,500),status:m.status?.value??'loaded',contextSize:contextSize(m),...(caps[m.id]?{reasoningLevels:[...(caps[m.id].none?['none']:[]),...caps[m.id].levels]}:{})}))};
     },
+    // Machines that serve models now, in server order: the devices to register with Machine Slots.
+    async devices(signal: AbortSignal) { return [...new Set((await models(signal)).map((m:any)=>machineOf(m.id)).filter(Boolean))] as string[]; },
+    // Where a request may run: a model with a machine prefix pins that machine; one that another machine also serves
+    // leaves the choice to Slots (device undefined), and `variants` maps each device ('' for this Mac) to its id.
+    async route(model: string|undefined, signal: AbortSignal) {
+      const listed=await models(signal), id=select(listed,model)?.id;
+      if(!id)return {id:model, device:'local', variants:{} as Record<string,string>};
+      const pinned=machineOf(id); if(pinned)return {id, device:pinned, variants:{[pinned]:id}};
+      const base=baseOf(id), variants:Record<string,string>={'':id};
+      for(const m of listed){const machine=machineOf(m.id); if(machine&&baseOf(m.id)===base)variants[machine]??=m.id;}
+      // Unpinned only when every answering machine and this Mac serve it, since Slots may grant any of them;
+      // otherwise pin the first machine that serves it (the owner prefers the other machine), else this Mac.
+      const machines=[...new Set(listed.map((m:any)=>machineOf(m.id)).filter(Boolean))] as string[];
+      return {id, device:machines.length&&machines.every(name=>variants[name])?undefined:machines.find(name=>variants[name])??'local', variants};
+    },
     async ask(input: {prompt:string;model?:string;system?:string;max_tokens?:number;effort?:string}, signal: AbortSignal) {
-      const listed=await models(signal), visible=preferSplash(listed,splash), selected= input.model ? listed.find((m:any)=>m.id===input.model) : visible.find((m:any)=>m.id===defaultModel||m.id==='splash/'+defaultModel)??visible.find((m:any)=>m.status?.value==='loaded')??visible[0];
+      const listed=await models(signal), selected=select(listed,input.model);
       if (!selected) throw new PluginCliError('Local model not found.',{code:'model_not_found',hint:'Run bb local-models status to see model ids.'});
       let caps;
       if(selected.status?.value==='loaded')try {caps=deriveCaps(await request(origin(selected.base)+'/props?model='+encodeURIComponent(selected.id),signal));}catch {if(signal.aborted)throw new PluginCliError('Request cancelled or timed out.',{code:'timeout',hint:'Try a longer timeout.'});}

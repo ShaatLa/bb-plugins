@@ -9,8 +9,11 @@ switching costs seconds for small MoE models and minutes for large dense ones.
 Rules for dispatching a local-models thread:
 - Run at most one local-models thread per GPU at a time. Threads do not take a
   Slots use on their own, so hold a `local-model` lease for the child:
-  `bb slots request --pool local-model --job "draft notes" --est 30m --wait`,
-  then spawn, then `bb slots transfer --to thr_example`.
+  `bb slots request --pool local-model --device <machine> --job "draft notes" --est 30m --wait`,
+  then spawn, then `bb slots transfer --to thr_example`. `<machine>` is the id's
+  machine prefix (`M1` for `M1/owner/Model-GGUF:Q4_K_M`), or `local` for a model
+  on this Mac (`splash/...` or a plain id). Without `--device` Slots grants the
+  first free machine, which may not be the one the thread's model runs on.
 - Spawn with `--permission-mode full`:
   `bb thread spawn --provider local-models --model <id> --permission-mode full --parent-self …`.
   BB denies approval requests in agent-sent turns, so in accept-edits every
@@ -22,6 +25,9 @@ cannot be disabled. Unknown capabilities send no reasoning parameters.
 
 `bb local-models ask "prompt" --model <id> --effort medium --max-tokens 1024
 --timeout 20m [--system "text"] [--json]` is a one-shot request without tools.
+When the same model is served by this Mac and another machine (`splash/org/Model` and
+`M1/org/Model`), `ask` and `local_models_ask` without a machine prefix take whichever
+machine Slots grants first and run that machine's copy.
 `local_models_ask` offers the same task to agents (20-minute timeout), except
 local-models threads, to avoid recursive GPU requests. Both hold a Machine Slots
 `local-model` use for the request (queueing behind other local-model work) when

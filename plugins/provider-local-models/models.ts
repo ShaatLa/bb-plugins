@@ -15,6 +15,9 @@ export function displayName(id: string) {
   return name.replace(/-GGUF$/i, "") + (quant ? ` (${quant})` : "") + where;
 }
 
+// A machine prefix (M1/owner/Model-GGUF:QUANT) names the device that serves the model; splash/ and plain ids run on this Mac.
+export const machineOf = (id: string) => { const parts = id.split("/"); return parts.length > 2 && parts[0] !== "splash" ? parts[0] : undefined; };
+
 export function preferSplash<T extends { id: string }>(entries: T[], enabled = true) {
   const variants = new Set(entries.filter(entry => entry.id.startsWith('splash/')).map(entry => entry.id.slice(7)));
   return enabled ? entries.filter(entry => !variants.has(entry.id)) : entries;
