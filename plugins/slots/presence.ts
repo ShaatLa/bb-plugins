@@ -34,11 +34,21 @@ const HEADLESS = new Set(["chrome-headless-shell", "Google Chrome for Testing"])
  * Media holders in `pmset -g assertions`: any coreaudiod context (audio from any app, display on or off),
  * a "Playing audio" assertion, and any display-sleep assertion except a headless render. Null when unparsable
  * or truncated: real output always ends the process list with a `Kernel Assertions:` section, so without it
- * the list may be incomplete and must not read as "no media".
+ * the list may be incomplete and must not read as "no media". When no process holds an assertion, the output has no
+ * `Listed by owning process:` section at all: `Assertion status system-wide:` is followed directly by
+ * `Kernel Assertions:`. That output means no holders (`[]`) only when every status row parses as `<name> <count>`
+ * and every count is 0; an active or unparsable row, or no rows, is null.
  */
 export function parseAssertions(text: string): string[] | null {
   const start = text.indexOf("Listed by owning process:");
-  const end = start < 0 ? -1 : text.indexOf("Kernel Assertions:", start);
+  if (start < 0) {
+    const status = text.indexOf("Assertion status system-wide:");
+    const kernel = status < 0 ? -1 : text.indexOf("Kernel Assertions:", status);
+    if (kernel < 0) return null;
+    const rows = text.slice(status, kernel).split("\n").slice(1).filter(row => row.trim());
+    return rows.length && rows.every(row => /^\s*\w+\s+0\s*$/.test(row)) ? [] : null;
+  }
+  const end = text.indexOf("Kernel Assertions:", start);
   if (end < 0) return null;
   const media = new Set<string>();
   for (const line of text.slice(start, end).split("\n").slice(1)) {

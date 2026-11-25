@@ -51,6 +51,19 @@ describe("presence probes", () => {
     expect(parseAssertions("pmset: error")).toBeNull();
     expect(parseAssertions(pmset("   pid 100(Example) something unexpected"))).toBeNull();
   });
+  it("reads a complete output without a process section as no holders", () => {
+    const idle = `2026-01-01 12:00:00 +0000
+Assertion status system-wide:
+   PreventUserIdleDisplaySleep    0
+   PreventUserIdleSystemSleep     0
+Kernel Assertions: 0x0
+`;
+    expect(parseAssertions(idle)).toEqual([]);
+    expect(parseAssertions(idle.replace("PreventUserIdleDisplaySleep    0", "PreventUserIdleDisplaySleep    1"))).toBeNull(); // active status row, no process section
+    expect(parseAssertions(idle.replace("PreventUserIdleDisplaySleep    0", "PreventUserIdleDisplaySleep    ?"))).toBeNull(); // unparsable status row
+    expect(parseAssertions(idle.split("Kernel Assertions:")[0])).toBeNull(); // cut before Kernel Assertions
+    expect(parseAssertions("2026-01-01 12:00:00 +0000\n   PreventUserIdleSystemSleep     0\n")).toBeNull(); // neither header
+  });
   it("treats truncated assertions as a failed probe, not as no media", () => {
     const head = pmset().split("Kernel Assertions:")[0];
     expect(parseAssertions(head)).toBeNull(); // cut right after the header
