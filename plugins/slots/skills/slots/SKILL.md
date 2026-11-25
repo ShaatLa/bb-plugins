@@ -57,6 +57,8 @@ every request of your thread. Do not pass `--thread` inside a thread: any ID oth
 than your own is refused.
 Use `bb slots port` for dev servers. Transfer to a QA child with
 `bb slots transfer --to <thread> [--lease <id>]`; child release returns the lease.
+A `local-model` transfer sends the child no message, and its return sends you
+none: release the lease yourself after the child reports.
 
 Manager commands: `prioritize <req> --priority high|urgent|normal`,
 `revoke <lease> --reason "..."`, `grant <req>` (no force),

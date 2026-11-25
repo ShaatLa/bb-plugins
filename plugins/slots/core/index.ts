@@ -140,7 +140,9 @@ export function apply(original: State, input: Input, ctx: Context): Transition {
     l.expiresAt = ctx.now + Math.max(settingsFor(ctx.settings, l.hostId).leaseTtlMs, Math.min(l.estMs, settingsFor(ctx.settings, l.hostId).maxEstimateMs) + 900_000);
     l.warnedAt = null;
   };
-  const heartbeat = (id: string) => state.leases.filter(l => l.holderThreadId === id).forEach(refresh);
+  // The owner keeps a local-model lease alive while its child holds it: the child is never asked to.
+  const keeps = (l: Lease, id: string) => l.holderThreadId === id || (l.pool === "local-model" && l.ownerThreadId === id);
+  const heartbeat = (id: string) => state.leases.filter(l => keeps(l, id)).forEach(refresh);
   const registered = (hostId: string) => (state.hosts[hostId]?.devices ?? []).map(d => d.name);
   /** Where a request may be granted, in preference order: local-model devices, or its own host then, with spill, other connected machines. */
   const candidates = (r: { hostId: string; pool: PoolName; device?: string; spill?: boolean }): { hostId: string; device?: string }[] =>
@@ -167,7 +169,8 @@ export function apply(original: State, input: Input, ctx: Context): Transition {
     audit(type, { ...fields(l), reason });
     const message: NotificationMessage = { title: type === "release" ? "Slot released" : type === "expire" ? "Lease expired" : "Lease revoked", lines: [{ value: l.job }, { label: "Lease", value: `\`${l.id}\` · ${slotName(l)} slot ${l.slotIndex}` }, ...(reason === `${type}d` ? [] : [{ label: "Reason", value: type === "revoke" ? reason : `\`${reason}\`` }])] };
     const initiator = by; // the thread that released (CLI release, or its own last `done`) already knows
-    for (const id of new Set([l.holderThreadId, l.ownerThreadId])) if (id !== initiator) notify(id, type, message);
+    // A local-model child holding its parent's lease is not woken for its end; the owner still hears unless it ended the lease itself.
+    for (const id of new Set([l.holderThreadId, l.ownerThreadId])) if (id !== initiator && !(l.pool === "local-model" && id !== l.ownerThreadId)) notify(id, type, message);
     observer(l.hostId, type, message, l.holderThreadId, l.ownerThreadId);
   };
   const grant = (requestId: string, manual: boolean): Result<Lease> => {
@@ -221,7 +224,8 @@ export function apply(original: State, input: Input, ctx: Context): Transition {
         l.uses = []; l.holderThreadId = l.ownerThreadId; refresh(l);
         audit("transfer", { ...fields(l), reason: "returned-to-owner" });
         const message: NotificationMessage = { title: "Slot returned to you", lines: [{ value: l.job }, { label: "Lease", value: `\`${l.id}\` · ${slotName(l)} slot ${l.slotIndex}` }] };
-        notify(l.ownerThreadId, "transfer", message);
+        // A local-model thread has nothing to do with the notice, and reading it costs a full model turn; the owner hears from its child's report.
+        if (l.pool !== "local-model") notify(l.ownerThreadId, "transfer", message);
         observer(l.hostId, "transfer", message, l.ownerThreadId);
         result.returned.push(l.id);
       }
@@ -349,7 +353,7 @@ export function apply(original: State, input: Input, ctx: Context): Transition {
       const gate = host(input.hostId).gate;
       data = { passed: gate.latest?.passed ?? false, open: gateOpen(gate, settingsFor(ctx.settings, input.hostId)), gate }; break;
     }
-    case "heartbeat": heartbeat(input.threadId); data = { leases: state.leases.filter(l => l.holderThreadId === input.threadId) }; break;
+    case "heartbeat": heartbeat(input.threadId); data = { leases: state.leases.filter(l => keeps(l, input.threadId)) }; break;
     case "release": {
       if (input.leaseId !== undefined) {
         // A request id also names the lease it was granted as.
@@ -380,7 +384,8 @@ export function apply(original: State, input: Input, ctx: Context): Transition {
       lease.holderThreadId = input.toThreadId; refresh(lease);
       audit("transfer", { ...fields(lease), reason: `from ${input.threadId}` });
       const message: NotificationMessage = { title: "Slot transferred to you", lines: [{ value: lease.job }, { label: "Lease", value: `\`${lease.id}\` · ${slotName(lease)} slot ${lease.slotIndex}` }], hint: `Run heavy commands through \`slots-run\` (\`bb slots wrapper\`); release with \`bb slots release ${lease.id}\`.` };
-      notify(lease.holderThreadId, "transfer", message);
+      // A transferred local-model lease only marks the child as the GPU user; the child has nothing to do with the notice, and reading it costs a full model turn.
+      if (lease.pool !== "local-model") notify(lease.holderThreadId, "transfer", message);
       observer(lease.hostId, "transfer", message, lease.holderThreadId);
       data = lease; break;
     }
@@ -458,8 +463,10 @@ export function apply(original: State, input: Input, ctx: Context): Transition {
         else if (lease.warnedAt === null && ctx.now >= lease.expiresAt - settingsFor(ctx.settings, lease.hostId).heartbeatIntervalMs) {
           lease.warnedAt = ctx.now; audit("warn", fields(lease));
           const message: NotificationMessage = { title: "Expiry warning", lines: [{ value: lease.job }, { label: "Lease", value: `\`${lease.id}\` · ${slotName(lease)}` }, { label: "Expires", value: `in ${minutes(lease.expiresAt - ctx.now)}` }], hint: `Run \`bb slots heartbeat\` to keep it, or \`bb slots release ${lease.id}\`.` };
-          notify(lease.holderThreadId, "warn", message);
-          observer(lease.hostId, "warn", message, lease.holderThreadId);
+          // The owner of a transferred local-model lease keeps it alive; its child is not woken for the warning.
+          const warned = lease.pool === "local-model" ? lease.ownerThreadId : lease.holderThreadId;
+          notify(warned, "warn", message);
+          observer(lease.hostId, "warn", message, warned);
         }
       }
       schedule();

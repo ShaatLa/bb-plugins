@@ -178,7 +178,12 @@ when the thread has exactly one lease or request; with several it is refused and
 lists their IDs. `--all` (`all: true`) releases all its leases and cancels all its
 queued requests. A request ID cancels only that
 request. Transfer verifies the target is the owner's child on the local host;
-child release/archive/deletion returns the lease to the owner. Owner end frees
+child release/archive/deletion returns the lease to the owner. A `local-model`
+transfer and its return send no message to either thread, and a child holding
+a parent's `local-model` lease is never messaged when it is released, expires
+or is revoked (waking a local model costs a full turn); the owner gets the
+expiry warning and the end notice instead. The observer and audit still record
+all of them. After the child reports, the parent releases the lease. Owner end frees
 it. Revoke and expiry always free it. Port allocation requires a held lease,
 probes IPv4 and IPv6 loopback, and releases when the last held lease is gone.
 Binding after a successful probe can still race another application.

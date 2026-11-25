@@ -129,6 +129,32 @@ describe("Slots deterministic engine", () => {
     }
   });
 
+  it("sends no thread notice for a local-model transfer or its return; the observer and audit still see it", () => {
+    const h = harness({ observerThreadId: "obs", observerEvents: ["transfer"] }); h.sample(50, 1);
+    h.send({ type: "request", threadId: "owner", hostId: "h", pool: "local-model", job: "ask", estMs: minute });
+    const given = h.send({ type: "transfer", threadId: "owner", toThreadId: "child", isChild: true });
+    expect(given.result.ok).toBe(true);
+    expect(given.effects.filter(e => e.type === "notify").map(e => e.type === "notify" && e.threadId)).toEqual(["obs"]);
+    expect(given.effects).toContainEqual(expect.objectContaining({ type: "audit", event: expect.objectContaining({ type: "transfer" }) }));
+    const back = h.send({ type: "release", threadId: "child" });
+    expect(back.effects.filter(e => e.type === "notify").map(e => e.type === "notify" && e.threadId)).toEqual(["obs"]);
+    expect(h.state.leases[0].holderThreadId).toBe("owner");
+    // The parent's release, an expiry warning and a revoke never wake the child; the owner hears the warning and the revoke.
+    const notified = (t: Transition) => t.effects.flatMap(e => e.type === "notify" && e.threadId !== "obs" ? [`${e.reason}:${e.threadId}`] : []);
+    h.send({ type: "transfer", threadId: "owner", toThreadId: "child", isChild: true });
+    expect(notified(h.send({ type: "release", threadId: "owner" }))).toEqual([]);
+    h.send({ type: "request", threadId: "owner", hostId: "h", pool: "local-model", job: "ask", estMs: minute }); h.send({ type: "transfer", threadId: "owner", toThreadId: "child", isChild: true });
+    h.now = h.state.leases[0].expiresAt - 60_000;
+    expect(notified(h.send({ type: "tick" }))).toEqual(["warn:owner"]);
+    const before = h.state.leases[0].expiresAt; h.now += 1_000;
+    expect((h.send({ type: "heartbeat", threadId: "owner" }).result as { data: { leases: unknown[] } }).data.leases).toHaveLength(1); // the owner keeps it alive
+    expect(h.state.leases[0].expiresAt).toBeGreaterThan(before);
+    expect(notified(h.send({ type: "revoke", leaseId: h.state.leases[0].id, reason: "manager" }))).toEqual(["revoke:owner"]);
+    // A heavy transfer still tells the child.
+    h.request("p"); h.open(); h.open();
+    expect(notified(h.send({ type: "transfer", threadId: "p", toThreadId: "c", isChild: true }))).toEqual(["transfer:c"]);
+  });
+
   it("transfers only owned leases to children; child release/end returns and owner end frees", () => {
     for (const end of [false, true]) {
       const h = harness(); h.request("owner"); h.open(); const id = h.state.leases[0].id;
