@@ -5,7 +5,7 @@ import { createGitSyncStore } from "../git-sync/store";
 import { prIdentity, prLinkSchema } from "../shared/git-sync";
 import { planDebtService } from "../plan-debt/service";
 import { recordPlanDebtEvent, syncProjectPlanDebt } from "../plan-debt/store";
-import { DEFAULT_TASK_STATUSES } from "../shared/statuses.js";
+import { DEFAULT_TASK_STATUSES, statusLabel } from "../shared/statuses.js";
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import type { TasksApiStore } from "../api";
 import { readAttachmentContent } from "../attachments";
@@ -562,10 +562,14 @@ export function restoreProject(
       .map(({ row }) => ({ taskId: row.task_id as string, identity: row.identity as string }));
     // A PR-link insert must see its task: the history trigger derives the project from it.
     const orderedChanges = [...changes.filter(change => change.table !== "task_pr_links"), ...changes.filter(change => change.table === "task_pr_links")];
+    const statusChanges: Array<{ taskId: string; status: string }> = [];
     for (const { table, row, keys } of orderedChanges) {
       if (table === "tasks" && typeof row.id === "string" && typeof row.status === "string") {
         const current = db.prepare<[string], { status: string }>("SELECT status FROM tasks WHERE id=?").get(row.id);
-        if (current && current.status !== row.status) endPauses(db, row.id, "status_change", "import");
+        if (current && current.status !== row.status) {
+          endPauses(db, row.id, "status_change", "import");
+          statusChanges.push({ taskId: row.id, status: row.status });
+        }
       }
       // An overwrite that gives a link id to another thread must not keep the local authority to archive it.
       const previousThread = table === "task_threads" ? db.prepare<[SqlValue], { thread_id: string }>("SELECT thread_id FROM task_threads WHERE id = ?").get(row.id!)?.thread_id : undefined;
@@ -631,6 +635,10 @@ export function restoreProject(
           "INSERT INTO task_labels (task_id, label_id) VALUES (?, ?)",
         ).run(task.id, labelId);
     }
+    // After the archive's own comments are restored: one history entry for each card whose status the import changed.
+    const importedStatuses = store.tasks.getProject(projectId)?.statuses;
+    for (const { taskId, status } of statusChanges)
+      store.tasks.createComment({ taskId, kind: "system", authorName: "Work Board", body: `Status changed to ${statusLabel(status, importedStatuses)} by Work Board (archive import)` });
     // Tasks, policy and plans are all written: settle plan-debt episodes now, so a scan never sees a stale one, then record the new confirmations against them.
     syncProjectPlanDebt(db, projectId);
     for (const { taskId, identity } of newlyConfirmed) if (recordPlanDebtEvent(db, taskId, `pr:${identity}`)) confirmedLinks = true;

@@ -288,6 +288,19 @@ describe("project archives", () => {
     expect(db.prepare("SELECT end_reason,thread_id FROM pause_log WHERE task_id=? AND event='end'").get(source.task.id)).toEqual({ end_reason: "status_change", thread_id: "import" });
     expect(db.prepare("SELECT count(*) AS n FROM task_pauses WHERE task_id=?").get(source.task.id)).toEqual({ n: 0 });
   });
+  it("writes a history entry for a status the import changed, and none when it changed nothing", async () => {
+    const source = await seed();
+    const out = join(await directory(), "snapshot");
+    await exportProject(source.bb, source.store, source.project.id, out);
+    const entries = () => source.store.tasks.listComments(source.task.id).filter((comment) => comment.body.startsWith("Status changed to") && comment.body.endsWith("(archive import)")).map((comment) => [comment.authorName, comment.body]);
+    const imported = source.store.tasks.getTask(source.task.id)!.status;
+    await importProject(source.bb, source.store, out, true);
+    expect(entries()).toEqual([]);
+    source.store.tasks.updateTask(source.task.id, { status: imported === "done" ? "todo" : "done" });
+    await importProject(source.bb, source.store, out, true);
+    expect(source.store.tasks.getTask(source.task.id)!.status).toBe(imported);
+    expect(entries()).toEqual([["Work Board", expect.stringMatching(/^Status changed to .+ by Work Board \(archive import\)$/)]]);
+  });
   it("round-trips questions, stable choice IDs, answers, evidence and templates, preserving conflicts", async () => {
     const source = await seed();
     const structured = createStructuredStore(source.bb, source.store);

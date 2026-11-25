@@ -68,6 +68,7 @@ import type {
   UpdateLabelInput,
   UpdatePresetInput,
   UpdateProjectInput,
+  StatusLog,
   UpdateTaskInput,
   UpdateTaskPositionInput,
   UpsertTaskThreadInput,
@@ -1045,12 +1046,8 @@ export function createTasksStore(db: PluginDatabase, log: (message: string) => v
     try {
       // A savepoint: a refusal inside leaves the epic and the child's write untouched.
       db.transaction(() => {
-        updateTaskTransaction(epic.id, { status: target });
-        const comment = createComment({
-          taskId: epic.id, kind: "system", authorName: "Work Board",
-          body: `Status changed to ${statusLabel(target, project.statuses)} automatically: ${task.key} started (${statusLabel(task.status, project.statuses)})`,
-        });
-        pendingEpicMoves.push({ epicId: epic.id, commentId: comment.id, projectId: project.id });
+        updateTaskTransaction(epic.id, { status: target, statusLog: { by: "Work Board", cause: `${task.key} started` } });
+        pendingEpicMoves.push({ epicId: epic.id, commentId: lastStatusComment!.id, projectId: project.id });
       })();
     } catch { return; }
     touchAttention(db, [epic.id]);
@@ -1569,6 +1566,15 @@ export function createTasksStore(db: PluginDatabase, log: (message: string) => v
     if (status !== task.status && policy.bugfixStatus && policy.doneStatus && task.status === policy.bugfixStatus && status === policy.doneStatus)
       throw new Error("Cannot move directly from bugfix to done: failed review or testing must be resolved first");
   }
+  const statusLogSchema = z.object({ by: z.string().trim().min(1), cause: z.string().trim().min(1).optional() }).strict();
+  /** The comment the last status entry wrote; the epic roll-up reads it right after its own write. */
+  let lastStatusComment: Comment | null = null;
+  /** Every status change writes its history entry here, in the write's own transaction: no caller can skip it. */
+  function writeStatusEntry(task: Task, status: string, log: StatusLog | undefined): void {
+    const { by, cause } = statusLogSchema.parse(log ?? { by: "Work Board" });
+    const label = statusLabel(status, requireProject(task.projectId).statuses);
+    lastStatusComment = createComment({ taskId: task.id, kind: "system", authorName: by, body: `Status changed to ${label} by ${by}${cause ? ` (${cause})` : ""}` });
+  }
   const updateTaskTransaction = db.transaction(
     (id: string, input: UpdateTaskInput): Task => {
       const current = requireTask(id);
@@ -1649,6 +1655,7 @@ export function createTasksStore(db: PluginDatabase, log: (message: string) => v
           .run(input.progressNote, input.progressNote === null ? null : nowIso(), input.progressNote === null ? null : input.authorName ?? "You", id);
       }
       const updated = requireTask(id);
+      if (status !== current.status) writeStatusEntry(current, status, input.statusLog);
       syncPlanDebt(db, id);
       advanceEpicFor(updated, current);
       return updated;
@@ -1891,6 +1898,7 @@ export function createTasksStore(db: PluginDatabase, log: (message: string) => v
       `,
       ).run(input.status, position, nowIso(), id);
       const moved = requireTask(id);
+      if (input.status !== task.status) writeStatusEntry(task, input.status, input.statusLog);
       syncPlanDebt(db, id);
       advanceEpicFor(moved, task);
       return moved;

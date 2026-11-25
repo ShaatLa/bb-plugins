@@ -424,7 +424,7 @@ export function handlers(
         const target = effectiveInProgressStatus(currentProject);
         if (startsFromStatus(currentProject, current.status) && target) {
           if (store.tasks.planGate(current, target)) skippedMove = true;
-          else store.tasks.updateTask(task.id, { status: target });
+          else store.tasks.updateTask(task.id, { status: target, statusLog: { by: "Work Board", cause: "dispatched to an existing thread" } });
         }
         createSystemComment(store.tasks, {
           taskId: task.id,
@@ -525,13 +525,7 @@ export function handlers(
         const inProgress = effectiveInProgressStatus(freshProject);
         if (startsFromStatus(freshProject, current.status) && inProgress && store.tasks.planGate(current, inProgress)) skippedMove = true;
         else if (startsFromStatus(freshProject, current.status) && inProgress) {
-          store.tasks.updateTask(task.id, { status: inProgress });
-          createSystemComment(store.tasks, {
-            taskId: task.id,
-            presetName: preset.name,
-            threadId: thread.id,
-            body: `Status changed to ${statusLabel(inProgress, freshProject.statuses)} · dispatched to ${preset.name}`,
-          });
+          store.tasks.updateTask(task.id, { status: inProgress, statusLog: { by: "Work Board", cause: `dispatched to ${preset.name}` } });
         }
 
         createSystemComment(store.tasks, {

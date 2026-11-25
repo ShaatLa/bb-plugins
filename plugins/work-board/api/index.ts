@@ -1357,6 +1357,7 @@ export function registerHandlers(
             progressNote: input.progressNote,
             authorName: input.authorName,
             status: input.status,
+            statusLog: { by: input.authorName },
             priority: input.priority,
             dueDate: input.dueDate,
             parentTaskId: input.parentTaskId,
@@ -1383,11 +1384,6 @@ export function registerHandlers(
                 : `Removed from epic by ${input.authorName}`,
             );
           }
-          if (updated.status !== before.status) {
-            bodies.push(
-              `Status changed to ${statusLabel(updated.status, store.tasks.getProject(updated.projectId)?.statuses)} by ${input.authorName}`,
-            );
-          }
           if (updated.priority !== before.priority) {
             bodies.push(
               `Priority changed to ${displayName(updated.priority)} by ${input.authorName}`,
@@ -1406,7 +1402,7 @@ export function registerHandlers(
           writeSystemComments(store, current.id, input.authorName, bodies);
           return {
             task: apiTask(store, updated),
-            systemCommentsWritten: bodies.length,
+            systemCommentsWritten: bodies.length + (updated.status !== before.status ? 1 : 0),
             attached,
           };
         });
@@ -1504,16 +1500,12 @@ export function registerHandlers(
         const moved = store.tasks.updatePosition(current.id, {
           closerThreadId: input.agentThreadId ?? null,
           status: input.status,
+          statusLog: { by: input.authorName },
           notifyStatus: Boolean(input.agentThreadId),
           beforeTaskId: input.beforeTaskId,
           afterTaskId: input.afterTaskId,
         });
         const statusChanged = moved.status !== current.status;
-        if (statusChanged) {
-          writeSystemComments(store, current.id, input.authorName, [
-            `Status changed to ${statusLabel(moved.status, store.tasks.getProject(moved.projectId)?.statuses)} by ${input.authorName}`,
-          ]);
-        }
         return { task: apiTask(store, moved), statusChanged };
       });
       publishTasksChanged(bb, result.task.id, result.task.projectId);

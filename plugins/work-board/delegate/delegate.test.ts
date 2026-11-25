@@ -104,9 +104,7 @@ describe("task delegation", () => {
         expect.objectContaining({
           kind: "system",
           authorName: "Work Board",
-          presetName: "Test worker",
-          threadId: "thr_delegated",
-          body: "Status changed to In Progress · dispatched to Test worker",
+          body: "Status changed to In Progress by Work Board (dispatched to Test worker)",
         }),
         expect.objectContaining({
           kind: "system",

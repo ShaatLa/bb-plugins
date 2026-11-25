@@ -24,7 +24,7 @@ function setup() {
   const plans = createPlanStore(host.bb.storage.database(), store.tasks);
   const save = (input: Record<string, unknown>) =>
     plans.save({ taskId: task.id, summary: "Edit", author: agent, ...input } as Parameters<typeof plans.save>[0]);
-  const systemComments = () => store.tasks.listComments(task.id).filter((comment) => comment.kind === "system").map((comment) => comment.body);
+  const systemComments = () => store.tasks.listComments(task.id).filter((comment) => comment.kind === "system" && !comment.body.startsWith("Status changed to")).map((comment) => comment.body);
   return { host, store, plans, project, task, save, systemComments };
 }
 
@@ -230,6 +230,6 @@ describe("task plan RPC", () => {
     expect(await harness.callRpc("diffTaskPlan", { taskId: task.id })).toMatchObject({ from: 0, to: 1, added: 8 });
     const log = await harness.callRpc("listTaskPlanVersions", { taskId: task.id });
     expect((log as { versions: unknown[] }).versions).toHaveLength(1);
-    expect(store.tasks.listComments(task.id).filter((comment) => comment.kind === "system")).toHaveLength(3);
+    expect(store.tasks.listComments(task.id).filter((comment) => comment.kind === "system")).toHaveLength(4);
   });
 });

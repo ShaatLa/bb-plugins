@@ -263,7 +263,7 @@ export function createPlanStore(db: Database, tasks: TasksStore) {
     const planning = project && planningOn(project) ? planningStatusOf(project) : null;
     // A closed card never moves, even when the owner mapped Done to Backlog or Todo; a card already there is not "moved".
     if (planning && project && (task.status === "backlog" || task.status === "todo") && task.status !== planning && !isClosedStatus(project, task.status) && !tasks.planGate(task, planning)) {
-      tasks.updateTask(task.id, { status: planning });
+      tasks.updateTask(task.id, { status: planning, statusLog: { by: "Work Board", cause: "plan v1 written" } });
       movedTo = { status: planning, label: statusLabel(planning, project!.statuses) };
     }
     return { plan: headOf(planRow(input.taskId)!), version: versionOf(versionRow(input.taskId, version)!), movedTo };

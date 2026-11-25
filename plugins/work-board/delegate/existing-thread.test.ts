@@ -33,7 +33,10 @@ describe("dispatch to an existing thread", () => {
       expect(sent).toContain("Report-back contract");
       expect(store.tasks.getTask(task.id)?.status).toBe("in_progress");
       expect(store.tasks.listTaskThreads(task.id)).toEqual([expect.objectContaining({ threadId: "thr_existing", title: "Current work" })]);
-      expect(store.tasks.listComments(task.id)).toHaveLength(1);
+      expect(store.tasks.listComments(task.id).map((comment) => [comment.authorName, comment.body])).toEqual([
+        ["Work Board", "Status changed to In Progress by Work Board (dispatched to an existing thread)"],
+        ["Work Board", expect.stringContaining("Dispatched to existing thread")],
+      ]);
       expect(harness.realtimeSignals.map((event) => event.channel)).toEqual(["threads:changed", "tasks:changed", "comments:changed"]);
       for (const args of [[], ["--preset", "worker", "--thread", "thr_existing"]]) {
         const invalid = await harness.runCli(["dispatch", task.key, ...args]);

@@ -928,6 +928,8 @@ it("advances only confirmed delivering open PRs from early statuses", async () =
   f.store.tasks.updateTask(f.tasks[7]!.id, { status: "in_review" });
   await f.service.syncProject(f.project.id);
   expect(f.tasks.slice(0, 8).map(task => f.store.tasks.getTask(task.id)!.status)).toEqual(["in_review", "todo", "todo", "todo", "todo", "done", "canceled", "in_review"]);
+  // Path 6: the automatic move names Work Board and its cause in the card history.
+  expect(f.store.tasks.listComments(f.tasks[0]!.id).filter(comment => comment.kind === "system").map(comment => [comment.authorName, comment.body])).toContainEqual(["Work Board", "Status changed to In Review by Work Board (example/service#42 open for review)"]);
 });
 
 it("skips a card whose plan is not approved in a required project while the sync succeeds and the approved card advances", async () => {

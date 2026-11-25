@@ -199,8 +199,16 @@ export interface CreateTaskInput {
   epicId?: string | null;
 }
 
+/** Who changed a status and why; the store writes it into the card history. Only these two fields are accepted. */
+export interface StatusLog {
+  by: string;
+  cause?: string;
+}
+
 export interface UpdateTaskInput {
   notifyStatus?: boolean;
+  /** The history entry for a status change; without it the entry names Work Board and no cause. */
+  statusLog?: StatusLog;
   /** The thread that closes the card; it is archived after its closing turn instead of at once. */
   closerThreadId?: string | null;
   progressNote?: string | null;
@@ -251,6 +259,7 @@ export interface ListTasksPage {
 
 export interface UpdateTaskPositionInput {
   notifyStatus?: boolean;
+  statusLog?: StatusLog;
   closerThreadId?: string | null;
   status: TaskStatus;
   beforeTaskId?: string | null;

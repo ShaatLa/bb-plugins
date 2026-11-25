@@ -461,7 +461,7 @@ export function createGitSyncService(
                     target < 0 || statuses.findIndex((status) => status.id === task.status) >= target) continue;
                 // A card whose plan is not approved stays put while the PR and its other cards are processed.
                 if (store.tasks.planGate(task, policy.reviewStatus!)) continue;
-                store.tasks.updateTask(task.id, { status: policy.reviewStatus! });
+                store.tasks.updateTask(task.id, { status: policy.reviewStatus!, statusLog: { by: "Work Board", cause: `${snapshot.repository}#${snapshot.number} open for review` } });
                 publishTasksChanged(bb, task.id, projectId);
               }
             }

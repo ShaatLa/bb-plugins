@@ -27,7 +27,7 @@ function setup(planning: "off" | "required" = "off") {
   const epic = (status = "backlog") => task("Epic", { type: "epic", status });
   const call = (method: string, input: Record<string, unknown>) => host.harness.callRpc(method as never, input as never) as Promise<any>;
   const status = (id: string) => store.tasks.getTask(id)!.status;
-  const history = (id: string) => store.tasks.listComments(id).filter((comment) => comment.authorName === "Work Board");
+  const history = (id: string) => store.tasks.listComments(id).filter((comment) => comment.authorName === "Work Board" && comment.body.endsWith(" started)"));
   const signals = (channel: string, id: string) => host.harness.realtimeSignals.filter((signal) => signal.channel === channel && (signal.payload as { taskId: string }).taskId === id);
   const statuses = (policy: Record<string, unknown>, list: Array<{ id: string; name: string }> = DEFAULT_TASK_STATUSES) =>
     store.tasks.updateProject(project.id, { statuses: list as never, workflowPolicy: workflowPolicySchema.parse({ ...store.tasks.getProject(project.id)!.workflowPolicy, ...policy }) });
@@ -46,7 +46,7 @@ describe("an epic follows its first started task", () => {
     await flush();
     expect(f.status(epic.id)).toBe("in_progress");
     expect(f.history(epic.id).map((comment) => ({ kind: comment.kind, body: comment.body }))).toEqual([
-      { kind: "system", body: `Status changed to In Progress automatically: ${child.key} started (In Progress)` },
+      { kind: "system", body: `Status changed to In Progress by Work Board (${child.key} started)` },
     ]);
     // A second child finds the epic moved: no second entry.
     const other = f.task("More", { epicId: epic.id });
@@ -61,7 +61,7 @@ describe("an epic follows its first started task", () => {
     const child = f.task("Work", { epicId: epic.id });
     f.store.tasks.updateTask(child.id, { status: "planning" });
     expect(f.status(epic.id)).toBe("in_progress");
-    expect(f.history(epic.id)[0]!.body).toBe(`Status changed to In Progress automatically: ${child.key} started (Planning)`);
+    expect(f.history(epic.id)[0]!.body).toBe(`Status changed to In Progress by Work Board (${child.key} started)`);
   });
 
   it("follows a sub-task to its parent's epic, a reparented started sub-task, a task joining with started sub-tasks, and a started creation", () => {
@@ -85,7 +85,7 @@ describe("an epic follows its first started task", () => {
     const thirdParent = f.task("Third parent", { epicId: third.id });
     f.store.tasks.updateTask(sub2.id, { parentTaskId: thirdParent.id });
     expect(f.status(third.id)).toBe("in_progress");
-    expect(f.history(third.id).map((comment) => comment.body)).toEqual([`Status changed to In Progress automatically: ${sub2.key} started (In Progress)`]);
+    expect(f.history(third.id).map((comment) => comment.body)).toEqual([`Status changed to In Progress by Work Board (${sub2.key} started)`]);
     const fourth = f.epic();
     f.task("Born started", { epicId: fourth.id, status: "in_progress" });
     expect(f.status(fourth.id)).toBe("in_progress");

@@ -210,7 +210,7 @@ describe("conversion and cancellation races", () => {
     expect(f.store.tasks.listTaskThreads(task.id)).toEqual([expect.objectContaining({ threadId: "thr_existing" })]);
   });
 
-  it("keeps a card canceled during a preset spawn canceled, with no Status changed comment", async () => {
+  it("keeps a card canceled during a preset spawn canceled, with no dispatch status entry", async () => {
     let cancel = () => {};
     const f = setup("optional", { onSpawn: () => cancel() });
     const task = f.card("Work");
@@ -218,7 +218,7 @@ describe("conversion and cancellation races", () => {
     await f.call("delegate", { taskId: task.id, presetId: f.preset.id });
     expect(f.status(task.id)).toBe("canceled");
     expect(f.store.tasks.listTaskThreads(task.id)).toEqual([expect.objectContaining({ threadId: "thr_spawned" })]);
-    expect(f.store.tasks.listComments(task.id).some((comment) => comment.body.includes("Status changed"))).toBe(false);
+    expect(f.store.tasks.listComments(task.id).some((comment) => comment.body.includes("dispatched to"))).toBe(false);
   });
 });
 
