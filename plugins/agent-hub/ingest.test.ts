@@ -224,6 +224,12 @@ describe('updates',()=>{
   const db=setup(); applyEvents(db,'u',[req(1,'r',{source:'spawn'}),start(),accept(),message(),done(),req(6,'r2',{input:[{type:'text',text:'Is the check green?'}]}),start(7,'y'),accept(8,'r2','y'),message(9,'Yes, it is green','y'),done(10,'completed','y')],null,0,false);
   expect(rows(db).map(r => [r.kind,r.read_at === null])).toEqual([['mine',false],['mine',true]]);
  });
+ it('keeps the agent\'s message after the owner\'s quoted answer to its question read in a sub-thread',()=>{
+  const db=setup(); db.prepare("INSERT INTO items(id,kind,thread_id,status,question,created_at,updated_at) VALUES ('q','for_me','u','replied','May I rebase EXA-1?\nIt needs your permission.',1,1)").run();
+  const say=(seq:number,id:string,text:string)=>[req(seq,id,{input:[{type:'text',text}]}),start(seq+1,id),accept(seq+2,id,id),message(seq+3,'Done',id),done(seq+4,'completed',id)];
+  applyEvents(db,'u',[...say(1,'a','> May I rebase EXA-1?\n> It needs your permission.\n\nYes'),...say(6,'b','> Done\n\nWhy?'),...say(11,'c','> May I\n\nWhy?')],null,0,false);
+  expect(rows(db).filter(r => r.kind==='mine').map(r => r.read_at === null)).toEqual([false,true,false]); // answer, a quote of a non-question, a partial quote of the question
+ });
  it('keeps a sub-thread final message read and ignores empty final messages',()=>{
   const db=setup(); applyEvents(db,'t',[req(1,'s',wake),start(),accept(3,'s'),done(4)]);
   applyEvents(db,'u',[req(1,'s',wake),start(),accept(3,'s'),message(),done()],null,0,false);

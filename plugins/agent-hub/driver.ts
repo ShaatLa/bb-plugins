@@ -100,7 +100,7 @@ export function createDriver(bb: BbPluginApi, db: Database.Database, invalidate:
     }
     if (!questions) db.transaction(() => {
       db.prepare('INSERT OR IGNORE INTO sub_threads VALUES (?)').run(id);
-      db.prepare("UPDATE items SET read_at=coalesce(read_at,?),notify_state=0,asks=0 WHERE thread_id=? AND NOT (kind='for_me' AND chat_asked=0) AND NOT (kind='mine' AND spawned=0) AND (read_at IS NULL OR notify_state<>0 OR asks<>0)").run(Date.now(),id);
+      db.prepare("UPDATE items SET read_at=coalesce(read_at,?),notify_state=0,asks=0 WHERE thread_id=? AND NOT (kind='for_me' AND chat_asked=0) AND NOT (kind='mine' AND spawned=0 AND answers_ask=0) AND (read_at IS NULL OR notify_state<>0 OR asks<>0)").run(Date.now(),id);
     })();
     // A sub-session whose parent was cleared in bb is a top-level chat again.
     else if (db.prepare('DELETE FROM sub_threads WHERE thread_id=?').run(id).changes) changed = true;

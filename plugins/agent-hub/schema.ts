@@ -184,4 +184,18 @@ WHEN NEW.thread_id IN (SELECT thread_id FROM sub_threads) AND NOT (NEW.kind='for
 BEGIN
   UPDATE items SET read_at=coalesce(NEW.read_at,NEW.updated_at),notify_state=0,asks=0 WHERE id=NEW.id;
 END;`,
+  // The owner's quoted answer to an agent's question in a sub-session lets the agent carry on, so its next message stays read.
+  `ALTER TABLE items ADD COLUMN answers_ask INTEGER NOT NULL DEFAULT 0;
+DROP TRIGGER sub_items_read_insert;
+DROP TRIGGER sub_items_read_update;
+CREATE TRIGGER sub_items_read_insert AFTER INSERT ON items
+WHEN NEW.thread_id IN (SELECT thread_id FROM sub_threads) AND NOT (NEW.kind='for_me' AND NEW.chat_asked=0) AND NOT (NEW.kind='mine' AND NEW.spawned=0 AND NEW.answers_ask=0)
+BEGIN
+  UPDATE items SET read_at=coalesce(NEW.read_at,NEW.updated_at),notify_state=0,asks=0 WHERE id=NEW.id;
+END;
+CREATE TRIGGER sub_items_read_update AFTER UPDATE OF read_at,notify_state,asks ON items
+WHEN NEW.thread_id IN (SELECT thread_id FROM sub_threads) AND NOT (NEW.kind='for_me' AND NEW.chat_asked=0) AND NOT (NEW.kind='mine' AND NEW.spawned=0 AND NEW.answers_ask=0) AND (NEW.read_at IS NULL OR NEW.notify_state<>0 OR NEW.asks<>0)
+BEGIN
+  UPDATE items SET read_at=coalesce(NEW.read_at,NEW.updated_at),notify_state=0,asks=0 WHERE id=NEW.id;
+END;`,
 ];

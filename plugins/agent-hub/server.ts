@@ -421,7 +421,7 @@ function start(bb: BbPluginApi, migrationError: string | null) {
       const threadMap=new Map(threads.map(t=>[t.id,t]));
       // Reading a thread in bb counts as reading it here: what arrived before bb's lastReadAt was seen there.
       // Unread replies to the owner in sub-sessions: they badge the sub-session row and its contact, not a contact of their own.
-      const subRows=db.prepare(`SELECT thread_id,count(*) AS unread FROM items WHERE thread_id IN (SELECT thread_id FROM sub_threads) AND kind='mine' AND spawned=0 AND thread_deleted=0 AND ${ATTENTION_SQL} GROUP BY thread_id LIMIT 200`).all() as {thread_id:string;unread:number}[];
+      const subRows=db.prepare(`SELECT thread_id,count(*) AS unread FROM items WHERE thread_id IN (SELECT thread_id FROM sub_threads) AND kind='mine' AND spawned=0 AND answers_ask=0 AND thread_deleted=0 AND ${ATTENTION_SQL} GROUP BY thread_id LIMIT 200`).all() as {thread_id:string;unread:number}[];
       const unreadIds=[...rows.filter(r=>r.unread>0).map(r=>r.thread_id as string),...subRows.map(r=>r.thread_id)].slice(0,200);
       const fresh=unreadIds.length ? await bb.sdk.threads.list({threadIds:unreadIds,includeHidden:true,limit:200}) : [];
       const readTimes=new Map(fresh.map(t=>[t.id,t.lastReadAt]));

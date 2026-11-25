@@ -132,3 +132,12 @@ it('badges a sub-session with unread replies to the owner, adds them once to its
     cleanup();
   }
 });
+it('keeps the nesting of a collapsed tree: a nested sub-session with unread replies shows under its parent sub-session', async () => {
+  const nested = 'thr_example_nested';
+  const { slot } = setup(false, false, parent, [], {}, { [nested]: 1 }, [{ ...idle, id: nested, title: 'Nested', parentThreadId: child }]);
+  await slot.findAllByLabelText('2 unread');
+  const subs = within(slot.getByRole('list', { name: 'Sub-sessions of Parent' }));
+  expect(subs.getAllByRole('listitem').map(li => li.textContent)).toEqual(['Child', 'Nested1']);
+  const indent = (name: string) => parseInt(subs.getByText(name).closest('button')!.style.paddingLeft);
+  expect(indent('Nested')).toBeGreaterThan(indent('Child'));
+});

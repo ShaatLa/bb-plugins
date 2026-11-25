@@ -9,8 +9,8 @@ export const QUESTION_SQL = "(instr(question,'?')>0 OR instr(question,'？')>0)"
 export const ACTIVE_THREAD_SQL = "thread_id NOT IN (SELECT thread_id FROM archived_threads)";
 // Explicit asks still reach the owner when a sub-agent calls agent_hub_ask.
 export const CHAT_QUESTION_WARNING = '[agent-hub] Your last reply asks the owner a question in chat. Call `agent_hub_ask` now with that question (add options and recommended if you have them), then end the turn without waiting; the answer arrives as a new message.';
-// In a sub-session the owner still gets explicit asks and replies to the owner's own messages (not the brief it was spawned with); the rest there is background.
-export const OWNER_ITEM_SQL = "(thread_id NOT IN (SELECT thread_id FROM sub_threads) OR (kind='for_me' AND chat_asked=0) OR (kind='mine' AND spawned=0))";
+// In a sub-session the owner still gets explicit asks and replies to the owner's own messages (not the brief it was spawned with, nor a quoted answer to the agent's question); the rest there is background.
+export const OWNER_ITEM_SQL = "(thread_id NOT IN (SELECT thread_id FROM sub_threads) OR (kind='for_me' AND chat_asked=0) OR (kind='mine' AND spawned=0 AND answers_ask=0))";
 export const ATTENTION_SQL = OWNER_ITEM_SQL + " AND thread_id NOT IN (SELECT thread_id FROM archived_threads) AND dismissed_at IS NULL AND declined_at IS NULL AND read_at IS NULL AND snoozed_until IS NULL AND ((kind IN ('mine','update') AND status='answered') OR (kind='for_me' AND status='open') OR (kind='mine' AND status IN ('waiting','deferred') AND failed_at IS NOT NULL))";
 // A question the agent put to the owner as plain text: the last sentence ending in '?' outside code, links, blockquotes and
 // quoted phrases, that does not name the channel it was asked through (a card, Agent Hub). A short one ("Хотите?") keeps the
@@ -123,7 +123,10 @@ export function applyEvents(db: Database.Database, threadId: string, events: Eve
    // bb records a script's `bb thread tell` into its own thread as the user's; such scripts start the text with a [tag].
    const tag = SCRIPT_TAG.exec(text)?.[1] ?? null;
    if (!tag && d.initiator === 'user' && d.senderThreadId == null && (d.originPluginId == null || ['agent-hub','answers'].includes(d.originPluginId)) && (text || attachments.length > 0) && !command) {
-    db.prepare(`INSERT OR IGNORE INTO items(id,kind,thread_id,project_id,status,question,attachments,question_seq,request_id,attempt_request_id,spawned,created_at,updated_at) VALUES (?,'mine',?,?,'waiting',?,?,?,?,?,?,?,?)`).run('ans_'+createHash('sha256').update(threadId+'|'+e.seq).digest('hex'),threadId,projectId,cap(text,4000),JSON.stringify(attachments),e.seq,d.requestId ?? null,d.requestId ?? null,Number(d.source === 'spawn'),e.createdAt ?? now,now);
+    // A message that opens with a quote of the agent's question answers it (Agent Hub's Reply sends it so).
+    const quote = /^(?:>.*(?:\n|$))+/.exec(text)?.[0].split('\n').map(line => line.replace(/^> ?/,'')).join('\n').trim();
+    const answersAsk = !!quote && !!db.prepare("SELECT 1 FROM items WHERE thread_id=? AND kind='for_me' AND instr(question,?)>0").get(threadId,quote);
+    db.prepare(`INSERT OR IGNORE INTO items(id,kind,thread_id,project_id,status,question,attachments,question_seq,request_id,attempt_request_id,spawned,answers_ask,created_at,updated_at) VALUES (?,'mine',?,?,'waiting',?,?,?,?,?,?,?,?,?)`).run('ans_'+createHash('sha256').update(threadId+'|'+e.seq).digest('hex'),threadId,projectId,cap(text,4000),JSON.stringify(attachments),e.seq,d.requestId ?? null,d.requestId ?? null,Number(d.source === 'spawn'),Number(answersAsk),e.createdAt ?? now,now);
    } else if (d.requestId) {
     // Remember what else can start a turn, so its final message can reach the owner as an update.
     const kind = d.senderThreadId ? 'agent' : d.originPluginId ? 'plugin' : d.initiator === 'system' ? 'system' : 'other';
