@@ -7,6 +7,7 @@ const priority = z.enum(["normal", "high", "urgent"]);
 const time = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER);
 const thread = { threadId: id };
 const host = { hostId: id };
+const device = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,31}$/, "Device name: 1–32 letters, digits, '.', '_' or '-'");
 export const observerEventsSchema = z.string().refine(value => value.trim() === "" || value.split(",").every(name => OBSERVER_EVENTS.includes(name.trim() as ObserverEvent)), "Unknown observer event");
 export const parseObserverEvents = (value: string): ObserverEvent[] => [...new Set(observerEventsSchema.parse(value).split(",").map(name => name.trim()).filter(Boolean))] as ObserverEvent[];
 export const inputs = {
@@ -14,8 +15,8 @@ export const inputs = {
   settingsWrite: z.object({ values: z.partialRecord(z.enum(SETTING_KEYS), z.union([z.number(), z.string()])).optional(), unset: z.array(z.enum(SETTING_KEYS)).optional() }).strict(),
   config: z.object({ operation: z.enum(["show", "get", "set", "unset"]).default("show"), key: z.enum(SETTING_KEYS).optional(), value: z.union([z.number(), z.string()]).optional() }).strict(),
   observer: z.object({ threadId: id.optional(), self: z.boolean().optional(), toThreadId: id.optional(), clear: z.boolean().optional(), events: observerEventsSchema.optional() }).strict().refine(p => Number(!!p.self) + Number(!!p.toThreadId) + Number(!!p.clear) <= 1 && (!p.self || !!p.threadId), "Choose self, target thread or clear; self requires a caller"),
-  request: z.object({ ...thread, ...host, pool, job: z.string().trim().min(1).max(2000), estMs: time.positive(), priority: priority.optional(), wait: z.literal(false).optional(), timeoutMs: time.optional() }).strict(),
-  acquire: z.object({ ...thread, ...host, pool, job: z.string().trim().min(1).max(2000), estMs: time.positive(), priority: priority.optional() }).strict(),
+  request: z.object({ ...thread, ...host, pool, job: z.string().trim().min(1).max(2000), estMs: time.positive(), priority: priority.optional(), device: device.optional(), wait: z.literal(false).optional(), timeoutMs: time.optional() }).strict(),
+  acquire: z.object({ ...thread, ...host, pool, job: z.string().trim().min(1).max(2000), estMs: time.positive(), priority: priority.optional(), device: device.optional() }).strict(),
   done: z.object({ ...thread, useId: id }).strict(),
   detach: z.object({ ...thread, useId: id }).strict(),
   heartbeatUse: z.object({ ...thread, useId: id }).strict(),
@@ -29,6 +30,7 @@ export const inputs = {
   grant: z.object({ requestId: id }).strict(),
   setCapacity: z.object({ ...host, pool, capacity: z.number().int().min(0).max(10000) }).strict(),
   log: z.object({ since: time.optional(), hostId: id.optional(), limit: z.number().int().min(1).max(1000).optional() }).strict(),
+  devices: z.object({ hostId: id.optional(), devices: z.array(z.object({ name: device, capacity: z.number().int().min(0).max(100).default(1) }).strict()).max(32).optional() }).strict(),
 };
 // The engine produces typed JSON results; input schemas are the trust boundary.
 function method<K extends keyof RpcMethods>(key: K) {
@@ -38,16 +40,16 @@ export const rpcContract = defineRpcContract({
   config: method("config"), settingsRead: method("settingsRead"), settingsWrite: method("settingsWrite"),
   observer: method("observer"), request: method("request"), acquire: method("acquire"), done: method("done"), detach: method("detach"), heartbeatUse: method("heartbeatUse"), release: method("release"), heartbeat: method("heartbeat"),
   gate: method("gate"), status: method("status"), transfer: method("transfer"), port: method("port"),
-  prioritize: method("prioritize"), revoke: method("revoke"), grant: method("grant"), setCapacity: method("setCapacity"), log: method("log"),
+  prioritize: method("prioritize"), revoke: method("revoke"), grant: method("grant"), setCapacity: method("setCapacity"), log: method("log"), devices: method("devices"),
 });
 const use = z.object({ id, threadId: id, startedAt: time, expiresAt: time });
 const useFields = { uses: z.array(use).default([]), autoRelease: z.boolean().default(false), graceUntil: time.nullable().default(null) };
 const request = inputs.request.omit({ wait: true, timeoutMs: true }).extend({ id, createdAt: time, priority, queueWaitAlerted: z.boolean().default(false), ...useFields });
 const lease = z.object({ id, requestId: id, hostId: id, pool, slotIndex: time, ownerThreadId: id, holderThreadId: id,
-  job: z.string(), estMs: time.positive(), grantedAt: time, lastHeartbeatAt: time, expiresAt: time, warnedAt: time.nullable(), idle: z.object({ since: time.nullable(), alerted: z.boolean() }).optional(), holdingSince: time.optional(), ...useFields });
+  job: z.string(), estMs: time.positive(), grantedAt: time, lastHeartbeatAt: time, expiresAt: time, warnedAt: time.nullable(), device: device.optional(), idle: z.object({ since: time.nullable(), alerted: z.boolean() }).optional(), holdingSince: time.optional(), ...useFields });
 const readings = z.object({ memFreePct: z.number().min(0).max(100), load1: z.number().nonnegative(), at: time, passed: z.boolean() });
 export const stateSchema: z.ZodType<State> = z.object({ version: z.literal(1), nextId: time.positive(), nextAuditSeq: time.positive(),
-  hosts: z.record(id, z.object({ watch: z.object({ lastEndAt: time.nullable(), settings: z.string(), heavyEndAt: z.record(id, time), subjects: z.record(z.string().min(1), z.object({ threadIds: z.array(id), ancestorThreadIds: z.array(id).optional(), intervals: z.array(z.object({ startAt: time, endAt: time, cores: z.number().nonnegative() })), episode: z.boolean(), lastAlertAt: time.nullable(), seenAt: time })) }).optional(), gate: z.object({ latest: readings.nullable(), streak: time, lastCountedAt: time.nullable(), failingSince: time.nullable().default(null), holdAlerted: z.boolean().default(false) }) })),
+  hosts: z.record(id, z.object({ watch: z.object({ lastEndAt: time.nullable(), settings: z.string(), heavyEndAt: z.record(id, time), subjects: z.record(z.string().min(1), z.object({ threadIds: z.array(id), ancestorThreadIds: z.array(id).optional(), intervals: z.array(z.object({ startAt: time, endAt: time, cores: z.number().nonnegative() })), episode: z.boolean(), lastAlertAt: time.nullable(), seenAt: time })) }).optional(), gate: z.object({ latest: readings.nullable(), streak: time, lastCountedAt: time.nullable(), failingSince: time.nullable().default(null), holdAlerted: z.boolean().default(false) }), devices: z.array(z.object({ name: device, capacity: time })).optional() })),
   requests: z.array(request), leases: z.array(lease), ports: z.array(z.object({ hostId: id, threadId: id, port: time.min(1).max(65535), createdAt: time })),
-  audit: z.array(z.object({ seq: time, at: time, type: z.enum(["request", "grant", "release", "expire", "warn", "revoke", "use-expired", "use-dropped", "unclaimed", "transfer", "gate", "prioritize", "capacity", "port", "port-release", "queue-wait", "gate-hold", "observer", "unleased-load", "idle-lease"]), hostId: id.optional(), pool: pool.optional(), threadId: id.optional(), requestId: id.optional(), leaseId: id.optional(), port: time.optional(), readings: readings.omit({ passed: true }).optional(), reason: z.string().optional(), manual: z.boolean().optional() })),
+  audit: z.array(z.object({ seq: time, at: time, type: z.enum(["request", "grant", "release", "expire", "warn", "revoke", "use-expired", "use-dropped", "unclaimed", "transfer", "gate", "prioritize", "capacity", "port", "port-release", "queue-wait", "gate-hold", "observer", "unleased-load", "idle-lease"]), hostId: id.optional(), pool: pool.optional(), device: device.optional(), threadId: id.optional(), requestId: id.optional(), leaseId: id.optional(), port: time.optional(), readings: readings.omit({ passed: true }).optional(), reason: z.string().optional(), manual: z.boolean().optional() })),
 });

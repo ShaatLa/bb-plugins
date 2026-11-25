@@ -269,6 +269,43 @@ describe("Slots deterministic engine", () => {
     h.open(); h.send({ type: "done", threadId: "b", useId: heavy.data.useId }); expect(h.state.leases).toEqual([]); // heavy frees at once
   });
 
+  it("gives each registered device its own local-model capacity: unpinned work takes the first free device, then this Mac", () => {
+    const h = harness(); h.sample(50, 99); // CPU busy: only memory matters for this Mac
+    const ask = (threadId: string, device?: string) => h.send({ type: "request", threadId, hostId: "h", pool: "local-model", job: "ask", estMs: minute, ...(device ? { device } : {}) });
+    expect(ask("x", "M1").result).toMatchObject({ ok: false, error: { code: "invalid-input", message: expect.stringContaining("not registered") } });
+    expect(h.send({ type: "request", threadId: "x", hostId: "h", pool: "heavy", job: "suite", estMs: minute, device: "M1" }).result.ok).toBe(false);
+    expect(h.send({ type: "devices", hostId: "h", devices: [{ name: "local", capacity: 1 }] }).result.ok).toBe(false);
+    expect(h.send({ type: "devices", hostId: "h", devices: [{ name: "M1", capacity: 1 }] }).result).toMatchObject({ ok: true, data: { devices: [{ name: "M1", capacity: 1 }] } });
+    const auditTail = h.state.audit.length;
+    expect(h.send({ type: "devices", hostId: "h", devices: [{ name: "M1", capacity: 1 }] }).effects).toEqual([]); // a repeat probe writes nothing
+    expect(h.state.audit.length).toBe(auditTail);
+    h.sample(50, 1); h.now += 15_000; h.sample(50, 1); expect(h.state.hosts.h.gate.streak).toBe(2);
+    expect(ask("a").result).toMatchObject({ ok: true, data: { kind: "leased", lease: { device: "M1" } } });
+    expect(h.state.hosts.h.gate.streak).toBe(2); // a grant on another device leaves this Mac's streak alone
+    h.sample(50, 99);
+    const onMac = ask("b").result as { ok: true; data: { kind: string; lease: { device?: string } } };
+    expect(onMac.data.kind).toBe("leased"); expect(onMac.data.lease.device).toBeUndefined();
+    expect(ask("c", "M1").result).toMatchObject({ ok: true, data: { kind: "queued", request: { device: "M1" } } });
+    expect(ask("d").result).toMatchObject({ ok: true, data: { kind: "queued" } });
+    expect(ask("a").result).toMatchObject({ ok: true, data: { kind: "leased", lease: { device: "M1" } } }); // unpinned call reuses its lease
+    const pools = statusSnapshot(h.state, { now: h.now, settings: h.settings }, "h").pools.filter(p => p.pool === "local-model");
+    expect(pools.map(p => [p.device, p.capacity, p.leases.length, p.queue.map(r => r.threadId)])).toEqual([[undefined, 1, 1, ["d"]], ["M1", 1, 1, ["c"]]]);
+    // Pinned c waits for M1 even though d asked later and could take any device.
+    h.send({ type: "release", threadId: "a" }); h.send({ type: "tick" });
+    expect(h.state.leases.find(l => l.holderThreadId === "c")?.device).toBe("M1");
+    expect(h.state.requests.map(r => r.threadId)).toEqual(["d"]);
+    // Unregistering keeps the live lease; a request pinned to it waits.
+    h.send({ type: "devices", hostId: "h", devices: [] });
+    expect(h.state.leases.find(l => l.holderThreadId === "c")).toBeDefined();
+    expect(ask("x", "M1").result.ok).toBe(false);
+    expect(statusSnapshot(h.state, { now: h.now, settings: h.settings }, "h").pools.find(p => p.device === "M1")).toMatchObject({ capacity: 0, leases: [{ holderThreadId: "c" }] });
+    // `local` pins this Mac, which still has its memory check.
+    h.send({ type: "release", threadId: "b" }); h.sample(5, 1);
+    expect(h.state.requests.map(r => r.threadId)).toEqual(["d"]);
+    h.sample(50, 99); expect(h.state.leases.find(l => l.holderThreadId === "d")?.device).toBeUndefined();
+    expect(ask("e", "local").result).toMatchObject({ ok: true, data: { kind: "queued", request: { device: "local" } } });
+  });
+
   it("restore retains leases and ports but requires fresh samples", () => {
     const h = harness(); h.request("a"); h.open(); h.open();
     h.send({ type: "portLease", hostId: "h", threadId: "a", port: 41000 });

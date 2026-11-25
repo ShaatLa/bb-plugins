@@ -1,9 +1,9 @@
 import { duration as minutes } from "../lib/duration.js";
 import { updateWatch } from "./watch.js";
 import {
-  DEFAULT_SETTINGS, OBSERVER_EVENTS, POOLS,
+  DEFAULT_SETTINGS, OBSERVER_EVENTS, POOLS, THIS_MAC,
   type AuditEvent, type AuditType, type Context, type Effect, type EngineOutput, type NotificationMessage,
-  type ObserverEvent, type GateState, type HostSettings, type PoolName, type Input, type Lease, type LogParams,
+  type DeviceInfo, type ObserverEvent, type GateState, type HostSettings, type PoolName, type Input, type Lease, type LogParams,
   type Priority, type Result, type Settings, type SlotsError, type State,
   type StatusSnapshot, type Transition,
 } from "../contract.js";
@@ -46,8 +46,20 @@ const sorted = (state: State) => state.requests.map((request, index) => ({ reque
   .sort((a, b) => rank[a.request.priority] - rank[b.request.priority] ||
     a.request.createdAt - b.request.createdAt || a.index - b.index).map(x => x.request);
 const emptyGate = (): GateState => ({ latest: null, streak: 0, lastCountedAt: null, failingSince: null, holdAlerted: false });
-export function capacityFor(state: State, hostId: string, pool: (typeof POOLS)[number], settings: Settings): number {
-  return settingsFor(settings, hostId).capacities[pool];
+export function capacityFor(state: State, hostId: string, pool: (typeof POOLS)[number], settings: Settings, device?: string): number {
+  return device === undefined ? settingsFor(settings, hostId).capacities[pool] : state.hosts[hostId]?.devices?.find(d => d.name === device)?.capacity ?? 0;
+}
+/** Pool and device of a lease for notices, e.g. `local-model M1`. */
+const slotName = (l: Lease) => l.device ? `${l.pool} ${l.device}` : l.pool;
+/** Slot group of a lease or request: a device name, or undefined for this Mac (pinned with `local` or unpinned). */
+const group = (item: { device?: string }) => item.device === THIS_MAC ? undefined : item.device;
+const same = (item: { hostId: string; pool: PoolName; device?: string }, hostId: string, pool: PoolName, device?: string) =>
+  item.hostId === hostId && item.pool === pool && group(item) === device;
+/** A lease serves a call: an unpinned call takes the thread's lease on any device, a pinned one only on its device. */
+const serves = (l: Lease, hostId: string, pool: PoolName, device?: string) =>
+  l.hostId === hostId && l.pool === pool && (device === undefined || l.device === group({ device }));
+export function deviceList(state: State, hostId: string): DeviceInfo[] {
+  return structuredClone(state.hosts[hostId]?.devices ?? []);
 }
 export function gateOpen(gate: GateState, settings: HostSettings): boolean {
   return gate.latest !== null && gate.latest.passed && gate.streak >= settings.gateSamples;
@@ -74,11 +86,14 @@ export function statusSnapshot(state: State, ctx: Context, hostId?: string): Sta
   const queue = sorted(state);
   return structuredClone({
     at: ctx.now,
-    pools: hosts.flatMap(host => POOLS.map(pool => ({ hostId: host, pool,
-      capacity: capacityFor(state, host, pool, ctx.settings),
-      leases: state.leases.filter(l => l.hostId === host && l.pool === pool),
-      queue: queue.filter(r => r.hostId === host && r.pool === pool),
-    }))),
+    // local-model splits per device: this Mac, registered devices, then unregistered ones still in use.
+    pools: hosts.flatMap(host => POOLS.flatMap(pool => [undefined, ...(pool === "heavy" ? [] : [...new Set([...deviceList(state, host).map(d => d.name),
+      ...[...state.leases, ...state.requests].filter(x => x.hostId === host && x.pool === pool && group(x) !== undefined).map(x => x.device!).sort()])])].map(device => ({
+      hostId: host, pool, ...(device === undefined ? {} : { device }),
+      capacity: capacityFor(state, host, pool, ctx.settings, device),
+      leases: state.leases.filter(l => same(l, host, pool, device)),
+      queue: queue.filter(r => same(r, host, pool, device)),
+    })))),
     gates: Object.fromEntries(hosts.map(host => [host, Object.hasOwn(state.hosts, host) ? state.hosts[host].gate : emptyGate()])),
     ports: state.ports.filter(p => hostId === undefined || p.hostId === hostId),
     audit: logSince(state, { hostId }).filter(e => e.type !== "gate").sort((a, b) => b.at - a.at || b.seq - a.seq).slice(0, 15),
@@ -116,13 +131,22 @@ export function apply(original: State, input: Input, ctx: Context): Transition {
     const { observerThreadId: id, observerEvents } = settingsFor(ctx.settings, hostId);
     if (id && !recipients.includes(id) && observerEvents.includes(reason)) notify(id, reason, message, true);
   };
-  const fields = (l: Lease) => ({ hostId: l.hostId, pool: l.pool, threadId: l.holderThreadId, requestId: l.requestId, leaseId: l.id });
+  const fields = (l: Lease) => ({ hostId: l.hostId, pool: l.pool, ...(l.device ? { device: l.device } : {}), threadId: l.holderThreadId, requestId: l.requestId, leaseId: l.id });
   const refresh = (l: Lease) => {
     l.lastHeartbeatAt = ctx.now;
     l.expiresAt = ctx.now + Math.max(settingsFor(ctx.settings, l.hostId).leaseTtlMs, Math.min(l.estMs, settingsFor(ctx.settings, l.hostId).maxEstimateMs) + 900_000);
     l.warnedAt = null;
   };
   const heartbeat = (id: string) => state.leases.filter(l => l.holderThreadId === id).forEach(refresh);
+  const registered = (hostId: string) => (state.hosts[hostId]?.devices ?? []).map(d => d.name);
+  const candidates = (r: { hostId: string; pool: PoolName; device?: string }): (string | undefined)[] =>
+    r.pool === "local-model" && r.device === undefined ? [...registered(r.hostId), undefined] : [group(r)];
+  const checkDevice = (hostId: string, pool: PoolName, device?: string): string | null => {
+    if (device === undefined) return null;
+    if (pool !== "local-model") return "A device applies only to the local-model pool; drop --device for heavy work";
+    const names = registered(hostId);
+    return device === THIS_MAC || names.includes(device) ? null : `Device ${device} is not registered (registered: ${names.join(", ") || "none"}). Pass --device ${THIS_MAC} for this Mac, or omit --device to take the first free device; local-models registers the devices it reaches.`;
+  };
   const reset = (id: string) => { host(id).gate.streak = 0; host(id).gate.lastCountedAt = null; };
   const cleanupPorts = () => {
     state.ports = state.ports.filter(p => {
@@ -135,7 +159,7 @@ export function apply(original: State, input: Input, ctx: Context): Transition {
     if (l.pool === "heavy") { const h = host(l.hostId); h.watch ??= { lastEndAt: null, settings: "", heavyEndAt: {}, subjects: {} }; h.watch.heavyEndAt[l.holderThreadId] = ctx.now; }
     state.leases = state.leases.filter(x => x.id !== l.id);
     audit(type, { ...fields(l), reason });
-    const message: NotificationMessage = { title: type === "release" ? "Slot released" : type === "expire" ? "Lease expired" : "Lease revoked", lines: [{ value: l.job }, { label: "Lease", value: `\`${l.id}\` · ${l.pool} slot ${l.slotIndex}` }, ...(reason === `${type}d` ? [] : [{ label: "Reason", value: type === "revoke" ? reason : `\`${reason}\`` }])] };
+    const message: NotificationMessage = { title: type === "release" ? "Slot released" : type === "expire" ? "Lease expired" : "Lease revoked", lines: [{ value: l.job }, { label: "Lease", value: `\`${l.id}\` · ${slotName(l)} slot ${l.slotIndex}` }, ...(reason === `${type}d` ? [] : [{ label: "Reason", value: type === "revoke" ? reason : `\`${reason}\`` }])] };
     const initiator = by; // the thread that released (CLI release, or its own last `done`) already knows
     for (const id of new Set([l.holderThreadId, l.ownerThreadId])) if (id !== initiator) notify(id, type, message);
     observer(l.hostId, type, message, l.holderThreadId, l.ownerThreadId);
@@ -145,24 +169,32 @@ export function apply(original: State, input: Input, ctx: Context): Transition {
     if (!request) return { ok: false, error: { code: "not-found", message: "Request not found" } };
     const { hostId, pool } = request;
     const gate = host(hostId).gate;
-    if (!poolGateOpen(gate, settingsFor(ctx.settings, hostId), pool, manual)) {
-      return { ok: false, error: { code: "gate-closed", message: "Host gate is closed", ...(gate.latest ? { readings: gate.latest } : {}) } };
+    let failure: SlotsError | null = null;
+    let device: string | undefined, index = 0;
+    // An unpinned local-model request takes the first free registered device, then this Mac.
+    for (device of candidates(request)) {
+      // This Mac's readings say nothing about another device, so a registered device has no machine check.
+      if (device === undefined && !poolGateOpen(gate, settingsFor(ctx.settings, hostId), pool, manual)) {
+        failure = { code: "gate-closed", message: "Host gate is closed", ...(gate.latest ? { readings: gate.latest } : {}) }; continue;
+      }
+      const capacity = capacityFor(state, hostId, pool, ctx.settings, device);
+      const leases = state.leases.filter(l => same(l, hostId, pool, device));
+      index = 0;
+      while (leases.some(l => l.slotIndex === index)) index++;
+      if (leases.length < capacity && index < capacity) { failure = null; break; }
+      failure = { code: "capacity", message: "Pool is at capacity" };
     }
-    const capacity = capacityFor(state, hostId, pool, ctx.settings);
-    const leases = state.leases.filter(l => l.hostId === hostId && l.pool === pool);
-    let index = 0;
-    while (leases.some(l => l.slotIndex === index)) index++;
-    if (leases.length >= capacity || index >= capacity) return { ok: false, error: { code: "capacity", message: "Pool is at capacity" } };
+    if (failure) return { ok: false, error: failure };
     const lease: Lease = { id: `lease-${state.nextId++}`, requestId, hostId, pool, slotIndex: index,
       ownerThreadId: request.threadId, holderThreadId: request.threadId, job: request.job, estMs: request.estMs,
       grantedAt: ctx.now, lastHeartbeatAt: ctx.now, expiresAt: 0, warnedAt: null,
-      uses: request.uses ?? [], autoRelease: request.autoRelease ?? false, graceUntil: request.graceUntil ?? null };
+      uses: request.uses ?? [], autoRelease: request.autoRelease ?? false, graceUntil: request.graceUntil ?? null, ...(device === undefined ? {} : { device }) };
     refresh(lease);
     state.leases.push(lease);
     state.requests = state.requests.filter(r => r.id !== requestId);
-    reset(hostId);
+    if (device === undefined) reset(hostId); // a grant on another device leaves this Mac's streak alone
     audit("grant", { ...fields(lease), manual });
-    const message: NotificationMessage = { title: "Slot granted", lines: [{ value: lease.job }, { label: "Lease", value: `\`${lease.id}\` · ${pool} slot ${index}` }], hint: `Run heavy commands through \`slots-run\` (\`bb slots wrapper\`); release with \`bb slots release ${lease.id}\`.` };
+    const message: NotificationMessage = { title: "Slot granted", lines: [{ value: lease.job }, { label: "Lease", value: `\`${lease.id}\` · ${pool}${device === undefined ? "" : ` ${device}`} slot ${index}` }], hint: `Run heavy commands through \`slots-run\` (\`bb slots wrapper\`); release with \`bb slots release ${lease.id}\`.` };
     // A live use means a waiter (slots-run, acquire RPC) already sees the grant; a message would only cost a turn.
     if (!lease.uses?.length) notify(lease.holderThreadId, "grant", message);
     observer(hostId, "grant", message, lease.holderThreadId);
@@ -182,7 +214,7 @@ export function apply(original: State, input: Input, ctx: Context): Transition {
         for (const use of l.uses ?? []) audit("use-dropped", { ...fields(l), reason: use.id });
         l.uses = []; l.holderThreadId = l.ownerThreadId; refresh(l);
         audit("transfer", { ...fields(l), reason: "returned-to-owner" });
-        const message: NotificationMessage = { title: "Slot returned to you", lines: [{ value: l.job }, { label: "Lease", value: `\`${l.id}\` · ${l.pool} slot ${l.slotIndex}` }] };
+        const message: NotificationMessage = { title: "Slot returned to you", lines: [{ value: l.job }, { label: "Lease", value: `\`${l.id}\` · ${slotName(l)} slot ${l.slotIndex}` }] };
         notify(l.ownerThreadId, "transfer", message);
         observer(l.hostId, "transfer", message, l.ownerThreadId);
         result.returned.push(l.id);
@@ -215,15 +247,17 @@ export function apply(original: State, input: Input, ctx: Context): Transition {
           (input.priority !== undefined && !priority(input.priority))) return fail("invalid-input", "Job, positive estimate and valid priority required, e.g. --job \"full test suite\" --est 20m");
       const estCap = settingsFor(ctx.settings, input.hostId).maxEstimateMs;
       if (input.estMs > estCap) return fail("invalid-input", `Estimate ${minutes(input.estMs)} is above the ${minutes(estCap)} ceiling. Pass a realistic estimate with a unit, e.g. --est 45m or --est 2h (a bare --est number means minutes; the tool's estMs is milliseconds). Heartbeats keep a longer job's lease alive.`);
+      const deviceError = checkDevice(input.hostId, input.pool, input.device);
+      if (deviceError) return fail("invalid-input", deviceError);
       host(input.hostId);
-      const lease = state.leases.find(l => l.hostId === input.hostId && l.pool === input.pool &&
+      const lease = state.leases.find(l => serves(l, input.hostId, input.pool, input.device) &&
         (l.holderThreadId === input.threadId || l.ownerThreadId === input.threadId));
       heartbeat(input.threadId);
       if (lease) { data = { kind: "leased", lease }; break; }
-      const existing = state.requests.find(r => r.hostId === input.hostId && r.pool === input.pool && r.threadId === input.threadId);
+      const existing = state.requests.find(r => r.hostId === input.hostId && r.pool === input.pool && r.device === input.device && r.threadId === input.threadId);
       if (existing) { data = { kind: "queued", request: existing }; break; }
       const request = { id: `req-${state.nextId++}`, hostId: input.hostId, pool: input.pool,
-        threadId: input.threadId, job: input.job, estMs: input.estMs, priority: input.priority ?? "normal", createdAt: ctx.now };
+        threadId: input.threadId, job: input.job, estMs: input.estMs, priority: input.priority ?? "normal", createdAt: ctx.now, ...(input.device === undefined ? {} : { device: input.device }) };
       state.requests.push(request);
       audit("request", { hostId: request.hostId, pool: request.pool, threadId: request.threadId, requestId: request.id });
       if (request.pool === "local-model") schedule(request.hostId);
@@ -236,12 +270,14 @@ export function apply(original: State, input: Input, ctx: Context): Transition {
           (input.priority !== undefined && !priority(input.priority))) return fail("invalid-input", "Job, positive estimate and valid priority required, e.g. --job \"full test suite\" --est 20m");
       const estCap = settingsFor(ctx.settings, input.hostId).maxEstimateMs;
       if (input.estMs > estCap) return fail("invalid-input", `Estimate ${minutes(input.estMs)} is above the ${minutes(estCap)} ceiling. Pass a realistic estimate with a unit, e.g. --est 45m or --est 2h (a bare --est number means minutes; the tool's estMs is milliseconds). Heartbeats keep a longer job's lease alive.`);
-      const lease = state.leases.find(l => l.hostId === input.hostId && l.pool === input.pool && (l.holderThreadId === input.threadId || l.ownerThreadId === input.threadId));
+      const deviceError = checkDevice(input.hostId, input.pool, input.device);
+      if (deviceError) return fail("invalid-input", deviceError);
+      const lease = state.leases.find(l => serves(l, input.hostId, input.pool, input.device) && (l.holderThreadId === input.threadId || l.ownerThreadId === input.threadId));
       if (lease && lease.holderThreadId !== input.threadId) return fail("transferred", "Lease is held by another thread");
-      let request = state.requests.find(r => r.hostId === input.hostId && r.pool === input.pool && r.threadId === input.threadId);
+      let request = state.requests.find(r => r.hostId === input.hostId && r.pool === input.pool && r.device === input.device && r.threadId === input.threadId);
       if (!lease && !request) {
         request = { id: `req-${state.nextId++}`, hostId: input.hostId, pool: input.pool, threadId: input.threadId,
-          job: input.job, estMs: input.estMs, priority: input.priority ?? "normal", createdAt: ctx.now, autoRelease: true };
+          job: input.job, estMs: input.estMs, priority: input.priority ?? "normal", createdAt: ctx.now, autoRelease: true, ...(input.device === undefined ? {} : { device: input.device }) };
         state.requests.push(request);
         audit("request", { hostId: request.hostId, pool: request.pool, threadId: request.threadId, requestId: request.id });
       }
@@ -277,7 +313,7 @@ export function apply(original: State, input: Input, ctx: Context): Transition {
           else if (lease) free(lease, "release", "last use completed", input.threadId);
           else release(input.threadId, target.id, "last use completed");
         }
-        if (input.type === "detach") data = { kind: "queued", position: sorted(state).filter(r => r.hostId === target.hostId && r.pool === target.pool).findIndex(r => r.id === target.id) + 1 };
+        if (input.type === "detach") data = { kind: "queued", position: sorted(state).filter(r => same(r, target.hostId, target.pool, group(target))).findIndex(r => r.id === target.id) + 1 };
       }
       break;
     }
@@ -336,7 +372,7 @@ export function apply(original: State, input: Input, ctx: Context): Transition {
           state.requests.some(r => r.hostId === lease.hostId && r.pool === lease.pool && r.threadId === input.toThreadId)) return fail("invalid-input", "Target already has an open request or lease in this pool; the child can use its own slot instead");
       lease.holderThreadId = input.toThreadId; refresh(lease);
       audit("transfer", { ...fields(lease), reason: `from ${input.threadId}` });
-      const message: NotificationMessage = { title: "Slot transferred to you", lines: [{ value: lease.job }, { label: "Lease", value: `\`${lease.id}\` · ${lease.pool} slot ${lease.slotIndex}` }], hint: `Run heavy commands through \`slots-run\` (\`bb slots wrapper\`); release with \`bb slots release ${lease.id}\`.` };
+      const message: NotificationMessage = { title: "Slot transferred to you", lines: [{ value: lease.job }, { label: "Lease", value: `\`${lease.id}\` · ${slotName(lease)} slot ${lease.slotIndex}` }], hint: `Run heavy commands through \`slots-run\` (\`bb slots wrapper\`); release with \`bb slots release ${lease.id}\`.` };
       notify(lease.holderThreadId, "transfer", message);
       observer(lease.hostId, "transfer", message, lease.holderThreadId);
       data = lease; break;
@@ -380,6 +416,24 @@ export function apply(original: State, input: Input, ctx: Context): Transition {
       observer(input.hostId, "capacity", { title: "Capacity changed", lines: [{ value: `${input.pool} capacity set to ${input.capacity}.` }, { label: "Host", value: `\`${input.hostId}\`` }] });
       data = { capacity: input.capacity }; break;
     }
+    case "devices": {
+      const next = new Map<string, number>();
+      for (const d of input.devices) {
+        if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,31}$/.test(d.name) || d.name === THIS_MAC || !Number.isSafeInteger(d.capacity) || d.capacity < 0 || d.capacity > 100 || next.has(d.name)) return fail("invalid-input", `Invalid or duplicate device ${JSON.stringify(d.name)}: a name is 1–32 letters, digits, '.', '_' or '-', not "${THIS_MAC}"; capacity 0–100`);
+        next.set(d.name, d.capacity);
+      }
+      const h = host(input.hostId), previous = new Map((h.devices ?? []).map(d => [d.name, d.capacity]));
+      const changes = [...[...previous.keys()].filter(name => !next.has(name)).map(name => [name, "removed"]),
+        ...[...next].filter(([name, capacity]) => previous.get(name) !== capacity).map(([name, capacity]) => [name, `capacity ${capacity}`])];
+      const reordered = [...previous.keys()].filter(name => next.has(name)).join() !== [...next.keys()].filter(name => previous.has(name)).join();
+      if (changes.length || reordered) {
+        h.devices = [...next].map(([name, capacity]) => ({ name, capacity }));
+        for (const [device, reason] of changes) audit("capacity", { hostId: input.hostId, pool: "local-model", device, reason });
+        if (changes.length) observer(input.hostId, "capacity", { title: "Capacity changed", lines: [...changes.map(([device, reason]) => ({ value: `local-model ${device}: ${reason}.` })), { label: "Host", value: `\`${input.hostId}\`` }] });
+        schedule(input.hostId);
+      }
+      data = { devices: deviceList(state, input.hostId) }; break;
+    }
     case "tick": {
       for (const target of [...state.requests, ...state.leases]) {
         const expired = (target.uses ?? []).filter(u => ctx.now >= u.expiresAt);
@@ -396,7 +450,7 @@ export function apply(original: State, input: Input, ctx: Context): Transition {
         if (ctx.now >= lease.expiresAt) free(lease, "expire", "expired");
         else if (lease.warnedAt === null && ctx.now >= lease.expiresAt - settingsFor(ctx.settings, lease.hostId).heartbeatIntervalMs) {
           lease.warnedAt = ctx.now; audit("warn", fields(lease));
-          const message: NotificationMessage = { title: "Expiry warning", lines: [{ value: lease.job }, { label: "Lease", value: `\`${lease.id}\` · ${lease.pool}` }, { label: "Expires", value: `in ${minutes(lease.expiresAt - ctx.now)}` }], hint: `Run \`bb slots heartbeat\` to keep it, or \`bb slots release ${lease.id}\`.` };
+          const message: NotificationMessage = { title: "Expiry warning", lines: [{ value: lease.job }, { label: "Lease", value: `\`${lease.id}\` · ${slotName(lease)}` }, { label: "Expires", value: `in ${minutes(lease.expiresAt - ctx.now)}` }], hint: `Run \`bb slots heartbeat\` to keep it, or \`bb slots release ${lease.id}\`.` };
           notify(lease.holderThreadId, "warn", message);
           observer(lease.hostId, "warn", message, lease.holderThreadId);
         }
@@ -407,10 +461,12 @@ export function apply(original: State, input: Input, ctx: Context): Transition {
         if (request.queueWaitAlerted || ctx.now - request.createdAt < settings.observerQueueWaitMs) continue;
         request.queueWaitAlerted = true;
         const reasons = [];
-        if (state.leases.filter(l => l.hostId === request.hostId && l.pool === request.pool).length >= settings.capacities[request.pool]) reasons.push("no free slot");
-        if (!poolGateOpen(host(request.hostId).gate, settings, request.pool)) reasons.push("gate not open");
+        const devices = candidates(request);
+        if (group(request) !== undefined && !registered(request.hostId).includes(request.device!)) reasons.push("device not registered");
+        else if (devices.every(d => state.leases.filter(l => same(l, request.hostId, request.pool, d)).length >= capacityFor(state, request.hostId, request.pool, ctx.settings, d))) reasons.push("no free slot");
+        if (devices.includes(undefined) && !poolGateOpen(host(request.hostId).gate, settings, request.pool)) reasons.push("gate not open");
         if (settings.grantMode === "manual") reasons.push("manual grant mode");
-        const position = sorted(state).filter(r => r.hostId === request.hostId && r.pool === request.pool).findIndex(r => r.id === request.id) + 1;
+        const position = sorted(state).filter(r => same(r, request.hostId, request.pool, group(request))).findIndex(r => r.id === request.id) + 1;
         const message = `Request ${request.id} by ${request.threadId} on ${request.hostId}, ${request.pool}: ${request.job}; estimate ${minutes(request.estMs)}, waiting ${minutes(ctx.now - request.createdAt)}, position ${position}: ${reasons.join(" / ")}.`;
         audit("queue-wait", { hostId: request.hostId, pool: request.pool, threadId: request.threadId, requestId: request.id, reason: message });
         observer(request.hostId, "queue-wait", { title: "Request waiting too long", lines: [{ value: request.job }, { label: "Request", value: `\`${request.id}\` · ${request.pool} · \`${request.hostId}\`` }, { label: "Thread", value: `\`${request.threadId}\`` }, { label: "Queue", value: `estimate ${minutes(request.estMs)}, waiting ${minutes(ctx.now - request.createdAt)}, position ${position}` }, { label: "Reasons", value: reasons.join(" / ") }] });
@@ -418,7 +474,7 @@ export function apply(original: State, input: Input, ctx: Context): Transition {
       for (const [hostId, { gate }] of Object.entries(state.hosts)) {
         const settings = settingsFor(ctx.settings, hostId);
         if (gate.latest?.passed !== false || gate.failingSince == null || gate.holdAlerted ||
-            ctx.now - gate.failingSince < settings.observerGateHoldMs || !state.requests.some(r => r.hostId === hostId && !poolGateOpen(gate, settings, r.pool))) continue;
+            ctx.now - gate.failingSince < settings.observerGateHoldMs || !state.requests.some(r => r.hostId === hostId && group(r) === undefined && !poolGateOpen(gate, settings, r.pool))) continue;
         gate.holdAlerted = true;
         const { memFreePct, load1, at } = gate.latest;
         const message = `Gate on ${hostId} failing for ${minutes(ctx.now - gate.failingSince)}: memory free ${memFreePct.toFixed(0)}% (min ${settings.memFreeMinPct.toFixed(0)}%), load ${load1.toFixed(1)} (max ${settings.loadMax.toFixed(1)}), sampled ${new Date(at).toISOString().slice(11, 16)}Z.`;

@@ -20,7 +20,12 @@ stays alive through heartbeats, so give the realistic estimate.
 Use `--pool local-model` for LLM inference. That pool checks only free memory,
 not CPU load, and is granted on the next reading. After its last use is done the
 lease stays with the thread for 90 s, so the next turn's acquire gets it back at
-once; `bb slots release <id>` frees it earlier. A holder may reuse its lease for
+once; `bb slots release <id>` frees it earlier. Each inference device that
+local-models registers (for example `M1`, the prefix of an `M1/...` model id)
+has its own local-model slot. Without `--device` the first free registered
+device is granted, then this Mac; `--device M1` pins that device and
+`--device local` pins this Mac. The grant prints the device (`local-model M1`,
+no name = this Mac): run your model there, or pin the device you need. A holder may reuse its lease for
 nested, sequential or concurrent runs without another gate check. Signal the
 process group to cancel. `bb slots request --wait` timeout exits 75 and keeps
 the request queued until canceled or the thread ends; rerun the same command

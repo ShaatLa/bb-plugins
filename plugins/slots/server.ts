@@ -5,7 +5,7 @@ import { dirname } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { z } from "zod";
 import { DEFAULT_SETTINGS, SLOTS_CHANGED, type Effect, type Settings, type State, type Input, type Result, type RpcMethods, type HostSettings, SETTING_KEYS, type SettingKey, type SettingValues, type SettingsFormView, type SettingView } from "./contract.js";
-import { apply, initialState, portCandidates, statusSnapshot, validateSettings, settingsFor } from "./core/index.js";
+import { apply, deviceList, initialState, portCandidates, statusSnapshot, validateSettings, settingsFor } from "./core/index.js";
 import { DiskStore, metrics, probePort } from "./runtime.js";
 import { inputs, parseObserverEvents, observerEventsSchema, rpcContract, stateSchema } from "./schemas.js";
 import { createWatcher } from "./watcher.js";
@@ -266,6 +266,8 @@ export async function register(bb: BbPluginApi, overrides: Partial<Runtime> = {}
         const hostSettings: Record<string, HostSettings> = { [localHostId]: settings };
         return { ok: true, data: { ...snapshot, hostSettings, localHostId, settingsWarnings, watcher: watcher.diagnostics() } };
       }
+      // Device registration belongs to local-models; it is an RPC only, not an agent tool or CLI command.
+      if (method === "devices") return p.devices ? transition({ type: "devices", hostId: localHostId, devices: p.devices }) : { ok: true, data: { devices: deviceList(state, localHostId) } };
       if (method === "log") return { ok: true, data: { events: await store.logs(p.since ?? 0, p.limit ?? 100, runtime.now(), p.hostId) } };
       if (method === "gate" || method === "grant") await sample(method === "grant");
       if (method === "transfer") {
@@ -314,8 +316,8 @@ export async function register(bb: BbPluginApi, overrides: Partial<Runtime> = {}
   bb.rpc.register(rpcContract, handlers as unknown as Parameters<typeof bb.rpc.register<typeof rpcContract>>[1]);
   // Agent-facing rules live here, in the skill and in CLI help; keep the three in step.
   const TOOL_DESCRIPTIONS: Partial<Record<keyof RpcMethods, string>> = {
-    request: "Queue a heavy or local-model slot for your thread and return at once (granted or queued). Example: {pool:\"heavy\", job:\"full test suite\", estMs:1200000} (estMs is milliseconds; estimates above maxEstimateMinutes, default 12 h, are refused). For a command, prefer the slots-run wrapper from `bb slots wrapper`; it waits and releases for you.",
-    acquire: "Queue a use for a script and return a use ID at once. Renew with slots_heartbeatUse while it runs and finish with slots_done; an unrenewed use expires.",
+    request: "Queue a heavy or local-model slot for your thread and return at once (granted or queued). Example: {pool:\"heavy\", job:\"full test suite\", estMs:1200000} (estMs is milliseconds; estimates above maxEstimateMinutes, default 12 h, are refused). For a command, prefer the slots-run wrapper from `bb slots wrapper`; it waits and releases for you. local-model only: device pins a registered inference device (\"local\" = this Mac); without it the first free device is granted, then this Mac.",
+    acquire: "Queue a use for a script and return a use ID at once. Renew with slots_heartbeatUse while it runs and finish with slots_done; an unrenewed use expires. local-model: device works as in slots_request.",
     done: "Finish one of your uses. The lease is released when its last use is done.",
     detach: "Stop waiting for a queued use while keeping its queue place for one heartbeat interval.",
     heartbeatUse: "Renew one of your uses so it does not expire.",
@@ -333,7 +335,7 @@ export async function register(bb: BbPluginApi, overrides: Partial<Runtime> = {}
     config: "Read or change one setting: {operation:\"get\", key:\"loadMax\"} or {operation:\"set\", key:\"loadMax\", value:12}; unset resets to the machine default. Returns only that key. operation \"show\" without key lists all.",
     observer: "Show or change the manager (observer) thread and its event filter. Only the manager or owner changes it.",
   };
-  const agentMethods = (Object.keys(inputs) as (keyof RpcMethods)[]).filter(method => !["settingsRead", "settingsWrite"].includes(method));
+  const agentMethods = (Object.keys(inputs) as (keyof RpcMethods)[]).filter(method => !["settingsRead", "settingsWrite", "devices"].includes(method));
   for (const method of agentMethods) {
     bb.agents.registerTool({ name: `slots_${method}`, description: TOOL_DESCRIPTIONS[method] ?? `Slots ${method}. Returns immediately.`,
       parameters: z.object(Object.fromEntries(Object.entries(inputs[method].shape).filter(([key]) => key !== "threadId").map(([key, schema]) => [key, key === "hostId" ? schema.optional() : schema]))),

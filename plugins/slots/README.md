@@ -74,6 +74,7 @@ bb slots acquire --pool heavy --job "full test suite" --est 35m
 bb slots heartbeat --use <use-id>
 bb slots done <use-id>
 bb slots request --pool heavy --job "full test suite" --est 35m --wait --timeout 30m
+bb slots request --pool local-model --device M1 --job "summarize logs" --est 5m --wait
 bb slots gate
 bb slots heartbeat
 bb slots config [show | set <key> <value> | unset <key>] [--json]
@@ -108,6 +109,30 @@ is granted at request time when that passes. When the last use of a
 `acquire` from that thread takes it back without a gate check, otherwise it is
 released quietly as `unclaimed`. Heavy leases free at the last `done`.
 
+**Inference devices.** The local-models plugin registers each other machine
+that serves models (for example `M1`, the prefix of `M1/owner/Model-GGUF:QUANT`)
+with the `devices` RPC and unregisters it when its server stops answering. Each
+device has its own `local-model` capacity (1 by default) and no machine check:
+this Mac's readings say nothing about another machine. A `request` or `acquire`
+without `device` is granted on the first free registered device, in
+registration order, and then on this Mac; the lease reports the device, absent
+for this Mac. `--device M1` (`device: "M1"`) waits for that device only and
+`--device local` for this Mac, whose capacity stays `localModelCapacity`. `slots-run --pool local-model` always pins
+this Mac, because its command runs here. An
+unregistered name is refused. Unregistering keeps that device's live leases;
+requests pinned to it wait until it returns. Queue order is per device: an
+earlier unpinned request can take `M1` while a later `M1`-pinned one waits even
+though this Mac is free. `status` lists one local-model entry per device. The RPC is not an agent tool or CLI command:
+
+```json
+{"devices": [{"name": "M1", "capacity": 1}]}
+```
+
+Without `devices` it reads the list; with it, it replaces the registered set
+and returns `{devices: [{name, capacity}]}`. Registrations persist across
+restarts with no expiry; `{"devices": []}` clears them. A call that changes
+nothing writes nothing.
+
 The wrapper runs the command in the foreground and calls done only after it exits.
 Signal the process group to cancel; signals to the wrapper PID alone are not
 forwarded. If renewal stops, the use can expire while the command still runs;
@@ -117,7 +142,7 @@ an in-flight heartbeat running until it returns. The wrapper supports macOS and
 Linux. Acquire timeout exits 75 and keeps the queue position for one use TTL;
 retry within that grace period. A holder may reuse its lease for nested, sequential or concurrent wrapper runs without re-gating. Each use must be renewed independently.
 
-A thread has one request or lease per pool. Release without an ID works only
+A thread has one request or lease per pool (per device for `local-model`). Release without an ID works only
 when the thread has exactly one lease or request; with several it is refused and
 lists their IDs. `--all` (`all: true`) releases all its leases and cancels all its
 queued requests. A request ID cancels only that

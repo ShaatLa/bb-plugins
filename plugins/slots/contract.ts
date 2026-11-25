@@ -43,6 +43,8 @@ export interface SlotRequest {
   id: string; hostId: string; pool: PoolName; threadId: string;
   job: string; estMs: number; priority: Priority; createdAt: number;
   queueWaitAlerted?: boolean; uses?: Use[]; autoRelease?: boolean; graceUntil?: number | null;
+  /** local-model only: a registered device or `local` (this Mac) pins the request; absent takes the first free device, then this Mac. */
+  device?: string;
 }
 export type QueueEntry = SlotRequest;
 export interface Lease {
@@ -51,6 +53,8 @@ export interface Lease {
   grantedAt: number; lastHeartbeatAt: number; expiresAt: number; warnedAt: number | null;
   idle?: { since: number | null; alerted: boolean }; holdingSince?: number;
   uses?: Use[]; autoRelease?: boolean; graceUntil?: number | null;
+  /** Registered device the lease runs on; absent means this Mac. */
+  device?: string;
 }
 export interface GateReadings { memFreePct: number; load1: number; at: number }
 export interface GateState {
@@ -62,7 +66,7 @@ export interface PortLease { hostId: string; threadId: string; port: number; cre
 export type AuditType = "request" | "grant" | "release" | "expire" | "warn" | "revoke" |
   "use-expired" | "use-dropped" | "unclaimed" | "transfer" | "gate" | "prioritize" | "capacity" | "port" | "port-release" | "queue-wait" | "gate-hold" | "observer" | "unleased-load" | "idle-lease";
 export interface AuditEvent {
-  seq: number; at: number; type: AuditType; hostId?: string; pool?: PoolName;
+  seq: number; at: number; type: AuditType; hostId?: string; pool?: PoolName; device?: string;
   threadId?: string; requestId?: string; leaseId?: string; port?: number;
   readings?: GateReadings; reason?: string; manual?: boolean;
 }
@@ -76,6 +80,8 @@ export interface WatchDiagnostics { last: WatchRunStats | null; average10m: Omit
 export interface HostState {
   watch?: WatchState;
   gate: GateState;
+  /** Inference devices local-models registered, in its order (grant preference). This Mac is not listed. */
+  devices?: { name: string; capacity: number }[];
 }
 export interface State {
   version: 1; nextId: number; nextAuditSeq: number;
@@ -84,6 +90,8 @@ export interface State {
 }
 export interface PoolSnapshot {
   hostId: string; pool: PoolName; capacity: number; leases: Lease[]; queue: QueueEntry[];
+  /** Set on local-model entries of a registered (or just unregistered) device; absent for this Mac, whose queue also holds unpinned requests. */
+  device?: string;
 }
 export interface StatusSnapshot {
   at: number; pools: PoolSnapshot[];
@@ -108,7 +116,7 @@ export interface SlotsError {
 }
 export type Result<T> = { ok: true; data: T } | { ok: false; error: SlotsError };
 export interface RequestParams {
-  hostId: string; pool: PoolName; threadId: string; job: string; estMs: number; priority?: Priority;
+  hostId: string; pool: PoolName; threadId: string; job: string; estMs: number; priority?: Priority; device?: string;
   /** Waiting is implemented by the server, never by the reducer. */
   wait?: boolean; timeoutMs?: number;
 }
@@ -127,6 +135,11 @@ export interface PrioritizeParams { requestId: string; priority: Priority }
 export interface RevokeParams { leaseId: string; reason: string }
 export interface GrantParams { requestId: string }
 export interface SetCapacityParams { hostId: string; pool: PoolName; capacity: number }
+/** `device` value that pins this Mac; never a registered name. */
+export const THIS_MAC = "local";
+export interface DeviceInfo { name: string; capacity: number }
+/** Without `devices` it reads; with it, it replaces the registered set. */
+export interface DevicesParams { hostId?: string; devices?: { name: string; capacity?: number }[] }
 export interface LogParams { since?: number; hostId?: string; limit?: number }
 /** Server implements these methods with boundary validation; these types have no SDK dependency. */
 export interface ObserverParams { threadId?: string; self?: boolean; toThreadId?: string; clear?: boolean; events?: string }
@@ -157,12 +170,14 @@ export interface RpcMethods {
   grant: { input: GrantParams; output: Result<Lease> };
   setCapacity: { input: SetCapacityParams; output: Result<{ capacity: number }> };
   log: { input: LogParams; output: Result<{ events: AuditEvent[] }> };
+  devices: { input: DevicesParams; output: Result<{ devices: DeviceInfo[] }> };
 }
 export type RpcRequest<K extends keyof RpcMethods> = RpcMethods[K]["input"];
 export type RpcResponse<K extends keyof RpcMethods> = RpcMethods[K]["output"];
 export type Input =
   | { type: "usage"; hostId: string; startAt: number; endAt: number; valid: boolean; unknownCores: number; subjects: UsageSubject[]; resetKeys?: string[] }
-  | { type: "request"; hostId: string; pool: PoolName; threadId: string; job: string; estMs: number; priority?: Priority }
+  | { type: "request"; hostId: string; pool: PoolName; threadId: string; job: string; estMs: number; priority?: Priority; device?: string }
+  | { type: "devices"; hostId: string; devices: { name: string; capacity: number }[] }
   | ({ type: "acquire" } & Omit<RequestParams, "wait" | "timeoutMs">)
   | { type: "done" | "detach" | "heartbeatUse"; threadId: string; useId: string }
   | ({ type: "release" } & ReleaseParams)
@@ -182,6 +197,6 @@ export type NotificationMessage = { title: string; lines: { label?: string; valu
 export type Effect = ({ type: "notify"; threadId: string; reason: AuditType; queue?: true; watch?: { hostId: string; subject: UsageSubject; holderThreadId?: string } } & NotificationMessage) |
   { type: "audit"; event: AuditEvent };
 export type EngineOutput = UseOutcome | { kind: "queued"; position: number } | RequestOutcome | ReleaseOutcome | HeartbeatOutcome | GateOutcome |
-  Lease | PortLease | SlotRequest | { capacity: number } | null;
+  Lease | PortLease | SlotRequest | { capacity: number } | { devices: DeviceInfo[] } | null;
 export interface Context { now: number; settings: Settings }
 export interface Transition { state: State; effects: Effect[]; result: Result<EngineOutput> }

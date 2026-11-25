@@ -7,7 +7,7 @@ import { plural } from "./lib/plural.js";
 import { parseSince } from "./runtime.js";
 
 const line = (text: string) => text.replace(/\s+/g, " ").slice(0, 200);
-const leaseLine = (lease: Lease) => `${lease.id} ${lease.pool} #${lease.slotIndex} · ${lease.holderThreadId} · ${line(lease.job)} · expires ${new Date(lease.expiresAt).toISOString()}`;
+const leaseLine = (lease: Lease) => `${lease.id} ${lease.pool}${lease.device ? ` ${lease.device}` : ""} #${lease.slotIndex} · ${lease.holderThreadId} · ${line(lease.job)} · expires ${new Date(lease.expiresAt).toISOString()}`;
 function humanOutput(method: string, data: unknown): string {
   switch (method) {
     case "config": return "key" in (data as object) ? `${(data as SettingView).key} = ${(data as SettingView).value}` : Object.entries((data as SettingsFormView).values).map(([key, value]) => `${key} = ${value}`).join("\n");
@@ -24,14 +24,14 @@ function humanOutput(method: string, data: unknown): string {
     case "request": {
       const outcome = data as RequestOutcome;
       return outcome.kind === "leased" ? `Granted ${leaseLine(outcome.lease)}` :
-        `Queued ${outcome.request.id} · ${outcome.request.pool} · ${outcome.request.priority} · ${line(outcome.request.job)} · estimate ${Math.ceil(outcome.request.estMs / 60000)}m`;
+        `Queued ${outcome.request.id} · ${outcome.request.pool}${outcome.request.device ? ` ${outcome.request.device}` : ""} · ${outcome.request.priority} · ${line(outcome.request.job)} · estimate ${Math.ceil(outcome.request.estMs / 60000)}m`;
     }
     case "status": {
       const view = data as StatusView;
       return [...(view.settingsWarnings ?? []).map(message => `Warning: ${message}`), ...view.pools.flatMap(p => [
-        `${p.pool} · ${p.leases.length}/${plural(p.capacity, "slot")} held · ${p.queue.length} queued`,
+        `${p.pool}${p.pool === "local-model" ? ` · ${p.device ?? "this Mac"}` : ""} · ${p.leases.length}/${plural(p.capacity, "slot")} held · ${p.queue.length} queued`,
         ...p.leases.map(l => `  ${leaseLine(l)} · ${line(view.titles[l.holderThreadId] ?? l.holderThreadId)}`),
-        ...p.queue.map(r => `  queued ${r.id} · ${r.priority} · ${line(view.titles[r.threadId] ?? r.threadId)} · ${line(r.job)}`),
+        ...p.queue.map(r => `  queued ${r.id}${p.pool === "local-model" && r.device === undefined ? " (any device)" : ""} · ${r.priority} · ${line(view.titles[r.threadId] ?? r.threadId)} · ${line(r.job)}`),
       ])].join("\n");
     }
     case "log": {
@@ -62,6 +62,7 @@ export function registerCli(bb: BbPluginApi, invoke: Invoke) {
   const thread = { type: "string", description: "Caller thread when run outside a thread; inside a thread it must be your own" } as const;
   const pool = { type: "enum", values: ["heavy", "local-model"], description: "Resource pool", required: true } as const;
   const priority = { type: "enum", values: ["normal", "high", "urgent"], description: "Queue priority" } as const;
+  const device = { type: "string", description: "local-model only: pin a registered inference device (e.g. M1) or `local` for this Mac; omitted takes the first free device, then this Mac" } as const;
   const id = (name: string, required = true) => [{ name, description: `${name} identifier`, required }] as const;
   // --thread is for callers outside a thread; inside one it must not act for another thread.
   const foreign = (own: string): Result<never> => ({ ok: false, error: { code: "forbidden", message: `--thread must be your own thread (${own}) or omitted; ask the other thread or the manager to act on its slots` } });
@@ -100,7 +101,7 @@ export function registerCli(bb: BbPluginApi, invoke: Invoke) {
     } }),
     request: cliCommand({ summary: "Queue heavy work; optionally wait for a grant", options: {
       json, thread, pool, job: { type: "string", required: true, description: "Job description (max 2000 characters)" },
-      est: { type: "duration", defaultUnit: "m", required: true, description: "Estimated duration (35m)" }, priority,
+      est: { type: "duration", defaultUnit: "m", required: true, description: "Estimated duration (35m)" }, priority, device,
       wait: { type: "boolean", description: "Wait for a grant; disconnect withdraws the request" },
       timeout: { type: "duration", defaultUnit: "m", description: "Wait deadline (default 30m, maximum 60m)" },
     }, async run(input, ctx) {
@@ -109,7 +110,7 @@ export function registerCli(bb: BbPluginApi, invoke: Invoke) {
       if (timeout <= 0 || timeout > 3600000) return renderResult("request", { ok: false, error: { code: "invalid-input", message: "timeout must be positive and at most 60m" } }, !!o.json);
       if (o.thread && ctx.threadId && o.thread !== ctx.threadId) return renderResult("request", foreign(ctx.threadId), !!o.json);
       const caller = o.thread ?? ctx.threadId;
-      let result = await call("request", { threadId: caller, pool: o.pool, job: o.job, estMs: o.est, ...(o.priority ? { priority: o.priority } : {}) }, ctx);
+      let result = await call("request", { threadId: caller, pool: o.pool, job: o.job, estMs: o.est, ...(o.priority ? { priority: o.priority } : {}), ...(o.device ? { device: o.device } : {}) }, ctx);
       if (!result.ok || !o.wait || (result.data as RequestOutcome).kind !== "queued") return renderResult("request", result, !!o.json);
       const requestId = ((result.data as RequestOutcome) as Extract<RequestOutcome, {kind: "queued"}>).request.id;
       const deadline = Date.now() + timeout;
@@ -148,13 +149,13 @@ export function registerCli(bb: BbPluginApi, invoke: Invoke) {
     } }),
     acquire: cliCommand({ summary: "Acquire a use and wait for a slot", options: {
       json, thread, pool, job: { type: "string", required: true, description: "Job description" },
-      est: { type: "duration", defaultUnit: "m", required: true, description: "Estimated duration" }, priority,
+      est: { type: "duration", defaultUnit: "m", required: true, description: "Estimated duration" }, priority, device,
       timeout: { type: "duration", defaultUnit: "m", description: "Wait deadline (default 30m, maximum 60m)" },
     }, async run(i, c) {
       if (i.options.thread && c.threadId && i.options.thread !== c.threadId) return renderResult("acquire", foreign(c.threadId), !!i.options.json);
       const o = i.options, caller = o.thread ?? c.threadId, timeout = o.timeout ?? 1800000;
       if (timeout <= 0 || timeout > 3600000) return renderResult("acquire", { ok: false, error: { code: "invalid-input", message: "timeout must be positive and at most 60m" } }, !!o.json);
-      const params: Record<string, unknown> = { threadId: caller, pool: o.pool, job: o.job, estMs: o.est, ...(o.priority ? { priority: o.priority } : {}) };
+      const params: Record<string, unknown> = { threadId: caller, pool: o.pool, job: o.job, estMs: o.est, ...(o.priority ? { priority: o.priority } : {}), ...(o.device ? { device: o.device } : {}) };
       let result = await call("acquire", params, c);
       if (!result.ok) return renderResult("acquire", result, !!o.json);
       const initial = result.data as UseOutcome, useId = initial.useId;

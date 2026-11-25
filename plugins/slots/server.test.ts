@@ -690,3 +690,19 @@ it("the auto-mode warning stays a plain send even when our row is queued", async
   service.controller.abort(); await service.done;
   expect(h.harness.sdk.callsTo("threads.queuedMessages.update")).toEqual([]);
 });
+
+it("registers inference devices over RPC only, persists them, and leases a pinned device from the CLI", async () => {
+  const h = await setup();
+  expect(await h.harness.behavior.callRpc("devices", {})).toMatchObject({ ok: true, data: { devices: [] } });
+  await expect(h.harness.behavior.callRpc("devices", { devices: [{ name: "bad name" }] })).rejects.toThrow();
+  expect(await h.harness.behavior.callRpc("devices", { devices: [{ name: "M1" }] })).toEqual({ ok: true, data: { devices: [{ name: "M1", capacity: 1 }] } });
+  await expect(h.harness.behavior.callAgentTool("slots_devices", {})).rejects.toThrow();
+  const pinned = await h.harness.behavior.runCli(["request", "--pool", "local-model", "--device", "M1", "--job", "ask", "--est", "5m"], { threadId: "a" });
+  expect(pinned.stdout).toContain("Granted lease-"); expect(pinned.stdout).toContain("local-model M1 #0");
+  const status = await h.harness.behavior.runCli(["status"]);
+  expect(status.stdout).toContain("local-model · this Mac · 0/1 slot held"); expect(status.stdout).toContain("local-model · M1 · 1/1 slot held");
+  expect(await h.invoke("request", { threadId: "b", hostId: "local", pool: "local-model", job: "ask", estMs: 60000, device: "M1" })).toMatchObject({ ok: true, data: { kind: "queued" } });
+  const restored = await setup(h.path);
+  expect((await restored.view()).pools.find(p => p.device === "M1")).toMatchObject({ capacity: 1, leases: [{ device: "M1", holderThreadId: "a" }], queue: [{ device: "M1", threadId: "b" }] });
+  expect((await restored.view()).audit.find(e => e.type === "grant")).toMatchObject({ device: "M1" });
+});

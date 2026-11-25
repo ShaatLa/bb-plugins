@@ -42,6 +42,8 @@ done
 line=$(
   set -- --pool "$pool" --job "$job" --est "$est"
   [ -z "$priority" ] || set -- "$@" --priority "$priority"
+  # The command runs here, so a local-model use pins this Mac rather than taking another device.
+  [ "$pool" != local-model ] || set -- "$@" --device local
   [ -z "$timeout" ] || set -- "$@" --timeout "$timeout"
   bb slots acquire "$@"
 )

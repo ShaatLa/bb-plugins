@@ -6,7 +6,7 @@ import { Summary } from "./components/ui/summary";
 import { LoadingSkeleton, Skeleton } from "./components/ui/skeleton";
 import { plural } from "./lib/plural";
 import { cn } from "./lib/utils";
-import type { AuditEvent, StatusView } from "./contract";
+import type { AuditEvent, PoolSnapshot, StatusView } from "./contract";
 import { SlotsSettings } from "./settings";
 import { useStatus } from "./use-status";
 
@@ -22,6 +22,8 @@ const empty = "text-sm text-muted-foreground";
 const badge = "rounded border px-1.5 py-0.5 text-xs font-medium";
 const warning = "text-amber-700 dark:text-amber-400";
 const poolName = (pool: string) => pool === "heavy" ? "Heavy jobs" : "Local model";
+/** Card title; local-model names its device once another device is registered. */
+const poolTitle = (pool: PoolSnapshot, split: boolean) => pool.pool === "heavy" ? poolName(pool.pool) : pool.device ? `Local model · ${pool.device}` : split ? "Local model · this Mac" : "Local model";
 
 function Tile({ label, value, children }: { label: string; value: ReactNode; children: ReactNode }) {
   return <Card role="region" aria-label={label} className="min-w-0 space-y-2 p-4">
@@ -85,7 +87,8 @@ export function eventSentence(event: AuditEvent, view: StatusView) {
 function StatusContent({ view, now }: { view: StatusView; now: number }) {
   const settings = view.hostSettings[view.localHostId], latest = view.gates[view.localHostId]?.latest;
   const heavy = view.pools.find(pool => pool.hostId === view.localHostId && pool.pool === "heavy");
-  const local = view.pools.find(pool => pool.hostId === view.localHostId && pool.pool === "local-model");
+  const locals = view.pools.filter(pool => pool.hostId === view.localHostId && pool.pool === "local-model");
+  const local = locals.length ? { leases: locals.flatMap(pool => pool.leases), capacity: locals.reduce((sum, pool) => sum + pool.capacity, 0) } : undefined;
   const events = view.audit.filter(event => event.type !== "gate").sort((a, b) => b.at - a.at || b.seq - a.seq).slice(0, 15);
   return <>
     {view.settingsWarnings?.map(message => <p key={message} role="alert" className="text-sm text-amber-700 dark:text-amber-400">{message}</p>)}
@@ -102,8 +105,8 @@ function StatusContent({ view, now }: { view: StatusView; now: number }) {
       <Tile label="Heavy slots" value={heavy ? heavy.capacity === 0 && !heavy.leases.length ? "No slots configured" : `${heavy.leases.length} of ${heavy.capacity} in use` : "—"}>{heavy?.queue.length ?? 0} waiting</Tile>
       <Tile label="Local model" value={local ? local.leases.length ? "In use" : local.capacity === 0 ? "No slots configured" : "Free" : "—"}>{local?.leases.length ? local.leases.map(lease => view.titles[lease.holderThreadId] || "thread").join(", ") : "No active jobs"}</Tile>
     </div>
-    <div className="grid gap-3 lg:grid-cols-2">{view.pools.map(pool => <Card role="region" aria-label={poolName(pool.pool)} key={`${pool.hostId}/${pool.pool}`} className="min-w-0 space-y-4 p-4 sm:p-5">
-      <div className="flex flex-wrap items-baseline justify-between gap-2"><h2 className="text-sm font-medium">{poolName(pool.pool)}</h2><span className={empty}>{pool.leases.length} of {pool.capacity} in use</span></div>
+    <div className="grid gap-3 lg:grid-cols-2">{view.pools.map(pool => <Card role="region" aria-label={poolTitle(pool, locals.length > 1)} key={`${pool.hostId}/${pool.pool}/${pool.device ?? ""}`} className="min-w-0 space-y-4 p-4 sm:p-5">
+      <div className="flex flex-wrap items-baseline justify-between gap-2"><h2 className="text-sm font-medium">{poolTitle(pool, locals.length > 1)}</h2><span className={empty}>{pool.leases.length} of {pool.capacity} in use</span></div>
       <div role="img" aria-label={`${pool.leases.length} of ${plural(pool.capacity, "slot")} in use`} className="flex flex-wrap gap-1.5">{Array.from({ length: Math.max(pool.capacity, pool.leases.length) }, (_, index) => <span data-held={index < pool.leases.length} key={index} className={cn("h-2.5 w-6 rounded-sm border", index < pool.leases.length ? "border-emerald-600 bg-emerald-600" : "border-border bg-muted")} />)}</div>
       {pool.leases.length === 0 ? <p className={empty}>{pool.capacity === 0 ? "No slots configured" : pool.capacity === 1 ? "Slot free" : `All ${plural(pool.capacity, "slot")} free`}</p> : <ul className="divide-y divide-border">{pool.leases.map(lease => {
         const elapsed = Math.max(0, now - lease.grantedAt);
@@ -119,9 +122,9 @@ function StatusContent({ view, now }: { view: StatusView; now: number }) {
       })}</ul>}
       <div className="space-y-3 border-t border-border pt-3">
         {pool.queue.length === 0 ? <p className={empty}>Nothing waiting</p> : <><h3 className="text-sm font-medium">Waiting · {pool.queue.length}</h3>
-          <p className="text-xs text-muted-foreground">{view.hostSettings[pool.hostId]?.grantMode === "manual" ? "Manual grant mode — waiting for the manager" : !gateOpen(view, pool.hostId) ? "Next — waiting for the machine check" : "Next — waiting for a free slot"}</p>
-          <ol aria-label={`${poolName(pool.pool)} queue`} className="divide-y divide-border">{pool.queue.map((request, index) => <li key={request.id} className="space-y-2 py-3 first:pt-0 last:pb-0 text-sm">
-            <div className="flex flex-wrap items-baseline gap-2"><span className="text-xs text-muted-foreground">#{index + 1}</span><ThreadLink id={request.threadId} titles={view.titles} />{request.priority !== "normal" && <span className={cn(badge, request.priority === "urgent" ? "border-destructive/30 text-destructive" : "border-amber-500/30 " + warning)}>{request.priority}</span>}</div>
+          <p className="text-xs text-muted-foreground">{view.hostSettings[pool.hostId]?.grantMode === "manual" ? "Manual grant mode — waiting for the manager" : !pool.device && !gateOpen(view, pool.hostId) ? "Next — waiting for the machine check" : "Next — waiting for a free slot"}</p>
+          <ol aria-label={`${poolTitle(pool, locals.length > 1)} queue`} className="divide-y divide-border">{pool.queue.map((request, index) => <li key={request.id} className="space-y-2 py-3 first:pt-0 last:pb-0 text-sm">
+            <div className="flex flex-wrap items-baseline gap-2"><span className="text-xs text-muted-foreground">#{index + 1}</span><ThreadLink id={request.threadId} titles={view.titles} />{locals.length > 1 && pool.pool === "local-model" && !request.device && <span className={cn(badge, "text-muted-foreground")}>any device</span>}{request.priority !== "normal" && <span className={cn(badge, request.priority === "urgent" ? "border-destructive/30 text-destructive" : "border-amber-500/30 " + warning)}>{request.priority}</span>}</div>
             <p className="break-words">{request.job}</p><p className="text-xs text-muted-foreground tabular-nums">Estimate {duration(request.estMs)} · waiting {duration(now - request.createdAt)}</p>
           </li>)}</ol>
         </>}
