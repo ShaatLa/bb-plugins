@@ -1,4 +1,5 @@
 import { expect, test } from "vitest";
+import { DEPLOY_REASON } from "./ci-classify";
 import { alertProblemId, buildProblems, withoutBenignAlerts, EVENT_PROBLEM_MS, problemContext, seedPrompt, type ProblemContextInput } from "./ci-problems";
 import type { Run } from "./ci-insights";
 import type { Signal } from "./ci-jobs-types";
@@ -131,6 +132,9 @@ test.each<[string, ReturnType<typeof onMain>[], string]>([
   ["a flake and a real failure", [onMain(52, "flake"), onMain(52, "real", { jobId: 2 })], "yes"],
   ["only infrastructure, refusals and cancels", [onMain(52, "runner_loss"), onMain(52, "refused", { jobId: 2 }), onMain(52, "transient", { jobId: 3 }), onMain(52, "timeout", { jobId: 4 }), onMain(52, "superseded", { jobId: 5 })], "no"],
   ["an unrecognised cause", [onMain(52, "unknown")], "unknown"],
+  ["a deploy step that alone failed after build and checks passed", [{ ...onMain(52, "unknown"), reason: DEPLOY_REASON }], "unknown (deploy path failed)"],
+  ["a deploy-path failure next to a flake", [{ ...onMain(52, "unknown"), reason: DEPLOY_REASON }, onMain(52, "flake", { jobId: 2 })], "unknown (deploy path failed)"],
+  ["a deploy-path failure next to an unrecognised one", [{ ...onMain(52, "unknown"), reason: DEPLOY_REASON }, onMain(52, "unknown", { jobId: 2 })], "unknown"],
   ["jobs that are not stored yet", [], "unknown"],
 ])("Code looks broken with %s: %s", (_name, classified, expected) => {
   const sections = problemContext(problem("run:main:52", { runId: 52 }), base({ classified, alerts: [streakAlert], runs: [streakRuns[3]!] }));

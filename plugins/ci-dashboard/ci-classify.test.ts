@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { classifyJobs, detectMassCancel, percentile, queueOnlyJobs, queuePullRequest, runnerLosses, summarizeReruns, summarizeTimings, timingSamples } from "./ci-classify";
+import { classifyJobs, DEPLOY_REASON, detectMassCancel, percentile, queueOnlyJobs, queuePullRequest, runnerLosses, summarizeReruns, summarizeTimings, timingSamples } from "./ci-classify";
 import type { FailureClass, JobRecord } from "./ci-jobs-types";
 import { at, classify, failed, failure, job, LOSS, MANUAL, SUPERSEDED, TIMEOUT } from "./test-support";
 
@@ -136,6 +136,33 @@ describe("classifyJobs", () => {
     const result = classifyJobs([job(), failed({ jobId: 2 }), failed({ jobId: 3, carried: true }), failed({ jobId: 4, status: "in_progress", conclusion: null }),
       job({ jobId: 5, conclusion: "skipped" }), job({ jobId: 6, conclusion: "timed_out", failedSteps: ["Run tests"] }), job({ jobId: 7, conclusion: "startup_failure" })]);
     expect(result.map((c) => c.job.jobId)).toEqual([2, 6, 7]);
+  });
+});
+
+describe("GitHub-side deploy failures", () => {
+  // A deploy job on the default branch after build and verify passed at the same sha.
+  const build = job({ runId: 2, jobId: 1, jobName: "Build" }), verify = job({ runId: 2, jobId: 2, jobName: "Verify" });
+  const deploy = (over: Partial<JobRecord> = {}) => failed({ jobId: 3, jobName: "Deploy application", event: "push", headBranch: "main", failedSteps: ["Update deploy application"], annotations: [], ...over });
+  const graphql = "@root: updating manifests: pushing commit: All attempts fail:\n#1: updating git ref \"deploy/app-dev\": All attempts fail:\n#1: input: Something went wrong while executing your query on 2026-10-20T10:04:00Z. Please include `ABCD:1234` when reporting this issue.";
+  it("classes GitHub infrastructure signatures in failure annotations as transient", () => {
+    expect(classifyJobs([build, verify, deploy({ annotations: [failure(graphql)] })]).map((c) => c.class)).toEqual(["transient"]);
+    expect(one(failed({ annotations: [failure("HTTP 502: Bad Gateway (https://api.github.com/repos/acme/app/actions/runs/12/rerun-failed-jobs)")] }))?.class).toBe("transient");
+    expect(one(failed({ annotations: [failure("Request to https://api.github.com/graphql failed with status code 500")] }))?.class).toBe("transient");
+    // A retried ref update is GitHub's fault only through a server-side cause; a refused write is deterministic.
+    expect(one(failed({ annotations: [failure("updating git ref \"deploy/app-dev\": All attempts fail:\n#1: 403 Resource not accessible by integration")] }))?.class).toBe("real");
+  });
+  it("does not blame code for a deploy step that alone failed after other jobs passed at its sha", () => {
+    expect(classifyJobs([build, verify, deploy()])[0]).toMatchObject({ class: "unknown", reason: DEPLOY_REASON, evidence: "Update deploy application" });
+    expect(classifyJobs([build, deploy({ failedSteps: ["Sync ArgoCD application"] })])[0]?.class).toBe("unknown");
+  });
+  it("keeps real for post-deploy tests, another failure at the sha, or no pass in another run", () => {
+    expect(classifyJobs([build, deploy({ failedSteps: ["Smoke test deployment"] })])[0]?.class).toBe("real");
+    expect(classifyJobs([build, failed({ runId: 3, jobId: 5, jobName: "Integration tests", event: "push", headBranch: "main" }), deploy()]).find((c) => c.job.jobId === 3)?.class).toBe("real");
+    expect(classifyJobs([job({ jobId: 6, jobName: "Prepare" }), deploy()])[0]?.class).toBe("real");
+    expect(classifyJobs([build, deploy({ failedSteps: ["Run tests"], logExcerpt: "--- FAIL: TestHandler (0.01s)\n##[error]Process completed with exit code 1." })])[0]?.class).toBe("real");
+    expect(classifyJobs([build, failed({ jobId: 4, jobName: "Lint", event: "push", headBranch: "main" }), deploy()]).find((c) => c.job.jobId === 3)?.class).toBe("real");
+    expect(classifyJobs([deploy()])[0]?.class).toBe("real");
+    expect(classifyJobs([job({ runId: 2, jobId: 1, headSha: "" }), deploy({ headSha: "" })])[0]?.class).toBe("real");
   });
 });
 

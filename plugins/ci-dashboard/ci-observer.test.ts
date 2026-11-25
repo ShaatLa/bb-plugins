@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { classifyJobs, detectMassCancel } from "./ci-classify";
+import { classifyJobs, DEPLOY_REASON, detectMassCancel } from "./ci-classify";
 import type { CiInsights } from "./ci-insights";
 import type { ClassifiedJob, Signal } from "./ci-jobs-types";
 import { deploymentMode, acceptEvents, attachPrHeads, confirmRemovals, defaultRedEvents, deployRunOutcome, deploymentEvents, dispatch, emptyGlobal, emptyRepoState, enabledEvents, fit, massCancelEvent, observerThreadsSchema, parseObserverThreads, queueRemovalEvents, REJECTED, repoStateSchema, runnerLossEvents, stallEvent, subscriptionNotice, syncGlobal, type ObserverConfig, type ObserverEvent, type ObserverType, type QueueRemoval, type Rendered } from "./ci-observer";
@@ -311,6 +311,8 @@ describe("default branch red", () => {
     expect(text(event!)).toBe(`CI red on main · jobs: 1 real, 2 consequence · Code looks broken: yes · inspect \`run:70:1\` · [run 70](https://github.com/${REPO}/actions/runs/70)`);
     expect(text(defaultRedEvents(REPO, [classify(onMain({ jobId: 1 }), "flake")], [alert()])[0]!)).toContain("jobs: 1 flake · Code looks broken: no (red on flakes only)");
     expect(text(defaultRedEvents(REPO, [classify(onMain({ jobId: 1 }), "unknown")], [alert()])[0]!)).toContain("Code looks broken: unknown");
+    expect(text(defaultRedEvents(REPO, [{ ...classify(onMain({ jobId: 1 }), "unknown"), reason: DEPLOY_REASON }], [alert()])[0]!)).toContain("jobs: 1 unknown · Code looks broken: unknown (deploy path failed)");
+    expect(text(defaultRedEvents(REPO, [classify(onMain({ jobId: 1 }), "transient")], [alert()])[0]!)).toContain("Code looks broken: no ·");
   });
   it("uses the failure streak like Investigate, waits for stored jobs and ignores other alerts", () => {
     const classified = [classify(onMain({ jobId: 1, runId: 70 }), "flake"), classify(onMain({ jobId: 2, runId: 69 }), "real")];

@@ -1,6 +1,6 @@
 import { alertStreak, type CiInsights, type Run } from "./ci-insights";
 import type { Actor, ClassifiedJob, FailureClass, JobRecord, PoolQueueState, RerunSummary, Signal } from "./ci-jobs-types";
-import type { MassCancel } from "./ci-classify";
+import { DEPLOY_PATH_VERDICT, DEPLOY_REASON, type MassCancel } from "./ci-classify";
 import type { Handled, Problem } from "./ci-signals-contract";
 
 /** Server titles carry internal wording; problems and the card show the plain one. */
@@ -108,13 +108,15 @@ const brief = (repository: string, { job, class: cls, reason }: ClassifiedJob) =
 
 /**
  * Verdict "Code looks broken" for the failing jobs of some runs: any real failure = yes; jobs of a run that are not stored or unclassifiable = unknown;
- * a flake is nondeterminism, not broken code, so red on flakes only reads "no" with the reason. Shared by Investigate prompts and observer messages.
+ * a flake is nondeterminism, not broken code, so red on flakes only reads "no" with the reason; a deploy step that alone failed after build and checks passed is unknown, never yes.
+ * Shared by Investigate prompts and observer messages.
  */
-export function codeBrokenVerdict(ofRuns: ClassifiedJob[], runIds: number[]): "yes" | "no" | "no (red on flakes only)" | "unknown" {
+export function codeBrokenVerdict(ofRuns: ClassifiedJob[], runIds: number[]): "yes" | "no" | "no (red on flakes only)" | typeof DEPLOY_PATH_VERDICT | "unknown" {
   const unstored = runIds.filter((id) => !ofRuns.some((c) => c.job.runId === id));
+  const deploy = (c: ClassifiedJob) => c.class === "unknown" && c.reason.startsWith(DEPLOY_REASON);
   return ofRuns.some((c) => c.class === "real") ? "yes"
-    : !ofRuns.length || unstored.length || ofRuns.some((c) => c.class === "unknown") ? "unknown"
-      : ofRuns.some((c) => c.class === "flake") ? "no (red on flakes only)" : "no";
+    : !ofRuns.length || unstored.length || ofRuns.some((c) => c.class === "unknown" && !deploy(c)) ? "unknown"
+      : ofRuns.some(deploy) ? DEPLOY_PATH_VERDICT : ofRuns.some((c) => c.class === "flake") ? "no (red on flakes only)" : "no";
 }
 
 /** Everything the dashboard already knows about one problem, as plain-text sections; sections without data are left out. Pure: no GitHub requests. */

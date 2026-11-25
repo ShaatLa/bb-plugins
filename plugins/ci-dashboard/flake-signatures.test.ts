@@ -324,7 +324,7 @@ describe("test reports win over log lines", () => {
   it("a failed test that does not match gets no label even when the log matches; only a same-sha pass makes it a flake", async () => {
     const { target, verdict } = await run(goFailedTest("assertion failed: want 1, got 2"));
     expect(target.signature).toMatchObject({ label: null, match: null, source: null });
-    expect(verdict()).toMatchObject({ class: "real", reason: "same job never passed at this sha" });
+    expect(verdict()).toMatchObject({ class: "real", reason: "failed on the first attempt, no pass at this sha to compare" });
     const pass = job({ jobId: 99, runId: 2, jobName: "Integration tests", headSha: target.headSha, conclusion: "success" });
     expect(verdict([target, pass])).toMatchObject({ class: "flake", reason: "same job passed at the same sha" });
   });

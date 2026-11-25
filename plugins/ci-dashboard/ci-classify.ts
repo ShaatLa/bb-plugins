@@ -6,7 +6,9 @@ export const BAD = new Set(["failure", "cancelled", "timed_out", "startup_failur
 const TRANSIENT = [/http_50[234]/i, / 50[234] /, /Bad Gateway/i, /Gateway Time-?out/i, /Service Unavailable/i, /ECONNRESET/, /ETIMEDOUT/, /EAI_AGAIN/,
   /TLS handshake timeout/i, /i\/o timeout/i, /connection reset/i, /429 Too Many Requests/i, /download\w*?[_ -](?:unavailable|timed[_ -]?out)/i,
   // An HTTP client's "<METHOD> <url>: <status>" error (Go net/http style; containerd/buildx: "<METHOD> request to <url>") answered with a server error.
-  /\b(?:GET|HEAD|POST|PUT|PATCH|DELETE)(?: request to)? https?:\/\/\S+: 5\d\d\b/];
+  /\b(?:GET|HEAD|POST|PUT|PATCH|DELETE)(?: request to)? https?:\/\/\S+: 5\d\d\b/,
+  // GitHub's own infrastructure: a GraphQL server error, a gh/Octokit 5xx from the API. A retried git ref update ("All attempts fail") counts only through such a cause.
+  /Something went wrong while executing your query/i, /\bHTTP 5\d\d\b[^\n]*api\.github\.com|api\.github\.com[^\n]*\b(?:HTTP|status(?: code)?:?) 5\d\d\b/i];
 const stripTimestamp = (line: string) => line.replace(/^\s*\d{4}-\d\d-\d\dT[\d:.]+Z\s*/, "").trim();
 const ms = (job: JobRecord) => job.startedAt && job.completedAt ? Math.max(0, Date.parse(job.completedAt) - Date.parse(job.startedAt)) : 0;
 /** PR number of a merge queue run: head branch gh-readonly-queue/<base>/pr-<N>-<sha>; <base> may contain slashes. */
@@ -20,6 +22,10 @@ export type ClassifyOptions = { aggregatorJobs?: string[]; policyJobs?: string[]
 export const SIGNATURE_REASON = "matches a known flaky signature";
 export const BUILD_REASON = "build or setup failed";
 export const PASS_REASON = "same job passed at the same sha";
+export const DEPLOY_REASON = "deploy step failed after build and checks passed at this sha (infrastructure or deploy path)";
+export const DEPLOY_PATH_VERDICT = "unknown (deploy path failed)";
+// Post-deploy tests and checks fail on code, so they never count as the deploy path.
+const deployStep = (step: string) => /\b(?:deploy\w*|argo ?cd|gitops|helm|kubectl|rollout)\b/i.test(step) && !/test|verif|smoke|e2e|check/i.test(step);
 /** Own failures a group run can inherit; runner losses, timeouts, transient and refused failures never are. */
 export const INHERITABLE = new Set<FailureClass>(["real", "flake", "unknown"]);
 /** A merge queue failure whose group may have been built on a failed group ahead. */
@@ -38,6 +44,15 @@ export function classifyJobs(jobs: JobRecord[], opts: ClassifyOptions = {}): Cla
   // Failed or cancelled jobs per run attempt, aggregators aside: a job cancelled alone had nothing to be collateral to.
   const attemptOf = (job: JobRecord) => `${job.runId}:${job.attempt}`, troubled = new Map<string, number>();
   for (const job of jobs) if ((job.conclusion === "failure" || job.conclusion === "cancelled") && !(opts.aggregatorJobs ?? []).includes(job.jobName)) troubled.set(attemptOf(job), (troubled.get(attemptOf(job)) ?? 0) + 1);
+  // A deploy job that alone failed at its sha while another run passed there: the code built and passed checks, so "never passed here" proves nothing.
+  const leaf = (job: JobRecord) => job.jobName.split(" / ").pop();
+  const greenRuns = new Map<string, Set<number>>(), failedAt = new Map<string, JobRecord[]>();
+  for (const job of jobs) if (job.headSha && !job.carried) {
+    if (job.conclusion === "success") greenRuns.set(job.headSha, (greenRuns.get(job.headSha) ?? new Set()).add(job.runId));
+    else if (job.conclusion === "failure" && !(opts.aggregatorJobs ?? []).includes(job.jobName)) failedAt.set(job.headSha, [...failedAt.get(job.headSha) ?? [], job]);
+  }
+  const deployPath = (job: JobRecord) => job.headSha !== "" && job.failedSteps.every(deployStep) && [...greenRuns.get(job.headSha) ?? []].some((run) => run !== job.runId)
+    && !(failedAt.get(job.headSha) ?? []).some((other) => leaf(other) !== leaf(job));
   const verdict = (job: JobRecord): Omit<ClassifiedJob, "job"> => {
     const messages = job.annotations.filter((a) => a.level === "failure").map((a) => a.message);
     const find = (re: RegExp) => messages.find((m) => re.test(m)) ?? null;
@@ -74,7 +89,8 @@ export function classifyJobs(jobs: JobRecord[], opts: ClassifyOptions = {}): Cla
       const known = policy ? null : annotationHit(opts.flakeRules ?? [], job.annotations) ?? stored;
       if (known) return { ...make("flake", SIGNATURE_REASON, `${known.label}: ${known.match}`), flakeLabel: known.label };
       const pass = policy ? null : passedElsewhere(job);
-      return pass ? make("flake", PASS_REASON, `${pass.workflowName} run ${pass.runId}`) : make("real", "same job never passed at this sha");
+      if (pass) return make("flake", PASS_REASON, `${pass.workflowName} run ${pass.runId}`);
+      return deployPath(job) ? make("unknown", DEPLOY_REASON, job.failedSteps[0]!) : make("real", job.attempt === 1 ? "failed on the first attempt, no pass at this sha to compare" : "same job never passed at this sha");
     }
     return make("unknown", "no recognizable cause");
   };
