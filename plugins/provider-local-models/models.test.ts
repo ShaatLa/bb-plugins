@@ -45,6 +45,7 @@ test('merges models from several servers and skips the ones that do not answer',
 
 test('Splash names and effective server URLs preserve the shared pool',()=>{
   assert.equal(displayName('splash/inco/Qwen3.6-35B-A3B-GGUF:Q4_K_M'),'Qwen3.6-35B-A3B (Q4_K_M) · Splash');
+  assert.equal(displayName('M1/owner/Qwen3.6-35B-A3B-GGUF:Q4_K_M'),'Qwen3.6-35B-A3B (Q4_K_M) · M1');assert.equal(displayName('owner/Qwen3.6-35B-A3B-GGUF:Q4_K_M'),'Qwen3.6-35B-A3B (Q4_K_M)');
   assert.equal(effectiveBaseUrl({baseUrl:'http://one/v1/, http://two/v1',splash:true,splashProxyPort:8123}),'http://one/v1, http://two/v1, http://127.0.0.1:8123/v1');
   assert.equal(effectiveBaseUrl({splash:true}),'http://127.0.0.1:9931/v1, http://127.0.0.1:8011/v1');
   assert.equal(effectiveBaseUrl({baseUrl:'http://127.0.0.1:8011/v1',splash:true}),'http://127.0.0.1:8011/v1');

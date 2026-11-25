@@ -22,7 +22,7 @@ bb provider models local-models
 
 | Setting | Default | Purpose |
 | --- | --- | --- |
-| `baseUrl` | `http://127.0.0.1:9931/v1` | Local server endpoints, separated by commas or spaces; first wins on duplicate ids. |
+| `baseUrl` | `http://127.0.0.1:9931/v1` | Local server endpoints, separated by commas or spaces; first wins on duplicate ids. A server on another Mac can name its models `<machine>/owner/Model-GGUF:QUANT` (in that Mac's `models.user.ini`), and the model list shows them as `Model (QUANT) · <machine>`. |
 | `defaultModel` | empty | Model for new threads; empty picks the first listed model. |
 | `splash` | `false` | Supervise Splash on demand using Llama.app’s GGUF pool. |
 | `splashBinary` | `/opt/homebrew/bin/splash` | Splash executable. |

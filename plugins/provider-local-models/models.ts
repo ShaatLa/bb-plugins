@@ -9,8 +9,10 @@ const modelListSchema = z.object({ data: z.array(z.object({ id: z.string().min(1
 
 // "ggml-org/gpt-oss-20b-GGUF:MXFP4" -> "gpt-oss-20b (MXFP4)"
 export function displayName(id: string) {
-  const [name, quant] = (id.split("/").at(-1) ?? id).split(":");
-  return name.replace(/-GGUF$/i, "") + (quant ? ` (${quant})` : "") + (id.startsWith("splash/") ? " · Splash" : "");
+  const parts = id.split("/"), [name, quant] = (parts.at(-1) ?? id).split(":");
+  // A segment before owner/repo names where the model runs: Splash, or a machine such as m1/owner/Model-GGUF:Q4_K_M.
+  const where = parts[0] === "splash" ? " · Splash" : parts.length > 2 ? " · " + parts[0] : "";
+  return name.replace(/-GGUF$/i, "") + (quant ? ` (${quant})` : "") + where;
 }
 
 export function preferSplash<T extends { id: string }>(entries: T[], enabled = true) {
