@@ -6,6 +6,9 @@ Run `bb local-models status --json` for installed model ids, load state, context
 size and known reasoning levels. The router usually keeps one model loaded:
 switching costs seconds for small MoE models and minutes for large dense ones.
 
+When the owner set model guidance in the plugin settings, it is in your
+instructions: pick models by it.
+
 Rules for dispatching a local-models thread:
 - Run at most one local-models thread per GPU at a time. Threads do not take a
   Slots use on their own, so hold a `local-model` lease for the child:

@@ -29,6 +29,7 @@ bb provider models local-models
 | `splashPort` | `8010` | Loopback engine port. |
 | `splashProxyPort` | `8011` | Loopback proxy port appended to the server list. |
 | `splashIdleMinutes` | `10` | Stop Splash after this long without requests. |
+| `modelGuidance` | empty | Which model suits which work; added to every agent's instructions except local-models threads, from the next thread start. |
 
 ```sh
 bb plugin config local-models set defaultModel 'ggml-org/gpt-oss-20b-GGUF:MXFP4'

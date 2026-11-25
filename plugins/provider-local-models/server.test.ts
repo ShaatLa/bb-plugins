@@ -21,7 +21,7 @@ test('registers CLI and native tool, queries fake router and excludes self',asyn
   const {startModelsServer}=await import('./test/models-server.ts');
   const server=await startModelsServer();let cli:any,tool:any,configure:any;
   let baseUrl=server.baseUrl;
-  const bb={log:{error:()=>{},info:()=>{}},onDispose:()=>{},pluginId:'local-models',server:{experimental_dataDir:'/tmp'},settings:{define:()=>({onChange:()=>{},get:async()=>({baseUrl,defaultModel:''})})},providers:{register:()=>{},experimental_contributeEnv:()=>{}},rpc:{register:()=>{}},agents:{registerTool:(v:any)=>tool=v,configure:(v:any)=>configure=v},cli:{register:(v:any)=>cli=v}} as unknown as BbPluginApi;
+  const bb={log:{error:()=>{},info:()=>{}},onDispose:()=>{},pluginId:'local-models',server:{experimental_dataDir:'/tmp'},settings:{define:()=>({onChange:()=>{},get:async()=>({baseUrl,defaultModel:'',modelGuidance:' Use org/Large for specs. '})})},providers:{register:()=>{},experimental_contributeEnv:()=>{}},rpc:{register:()=>{}},agents:{registerTool:(v:any)=>tool=v,configure:(v:any)=>configure=v},cli:{register:(v:any)=>cli=v}} as unknown as BbPluginApi;
   plugin(bb);
   const ctx={signal:new AbortController().signal};
   try{
@@ -30,6 +30,7 @@ test('registers CLI and native tool, queries fake router and excludes self',asyn
     assert.equal((await cli.run(['splash-setup','org/Unknown'],ctx)).exitCode,1);
     assert.equal(tool.name,'local_models_ask');assert.deepEqual(configure({provider:{id:'local-models'}}).tools,[]);
     assert.deepEqual(configure({provider:{id:'codex'}}).tools,['local_models_ask']);
+    assert.match(configure({provider:{id:'codex'}}).instructions,/\nUse org\/Large for specs\.$/);assert.equal(configure({provider:{id:'local-models'}}).instructions,undefined);
     const result=await cli.run(['ask','hello','--effort','high','--json'],ctx);
     assert.equal(result.exitCode,0);assert.equal(JSON.parse(result.stdout).content,'fixture reply');
     assert.equal(server.chats.at(-1).reasoning_effort,'xhigh');

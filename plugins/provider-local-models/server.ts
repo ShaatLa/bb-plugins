@@ -25,7 +25,10 @@ export function createPlugin(bb: BbPluginApi, testing: Pick<Parameters<typeof sp
     splashPort: { type: "number", label: "Splash engine port", default: 8010, experimental_schema: z.number().int().min(1).max(65535) },
     splashProxyPort: { type: "number", label: "Splash proxy port", default: 8011, experimental_schema: z.number().int().min(1).max(65535) },
     splashIdleMinutes: { type: "number", label: "Splash idle minutes", default: 10, experimental_schema: z.number().positive().finite() },
+    modelGuidance: { type: "string", label: "Model guidance", default: "", experimental_multiline: true, description: "Which model suits which work, added to the instructions of every agent except local-models threads, e.g. 'Use org/Large-GGUF:Q4_K_M for spec-heavy work and org/Small-GGUF:Q4_K_M for drafts.' Threads started after a change see it." },
   });
+  // configure() must answer synchronously, so the guidance is cached from the settings.
+  let guidance = "";
   let splash: Awaited<ReturnType<typeof startSplash>> | undefined, splashKey = "", disposed = false;
   // A failed start (e.g. EADDRINUSE) is remembered per settings key so polls and env resolution do not retry it every call.
   let splashFail: { key: string; at: number; error: string } | undefined;
@@ -78,9 +81,10 @@ export function createPlugin(bb: BbPluginApi, testing: Pick<Parameters<typeof sp
     doctor(input) { return controls.detect(input?.force); },
     installSplash({command,confirmed}) { void controls.install(command,confirmed).catch(error => bb.log.error(String(error))); return ok; },
   });
-  const ready = settings.get().then(syncSplash);
+  const apply = (value: Awaited<ReturnType<typeof settings.get>>) => { guidance = String(value.modelGuidance ?? "").trim(); return syncSplash(value); };
+  const ready = settings.get().then(apply);
   void ready.catch(error => bb.log.error('Splash proxy failed: ' + String(error)));
-  settings.onChange(value => { void syncSplash(value).catch(error => bb.log.error('Splash proxy failed: ' + String(error))); });
+  settings.onChange(value => { void apply(value).catch(error => bb.log.error('Splash proxy failed: ' + String(error))); });
   bb.onDispose(async () => { disposed = true; clearInterval(devicesTimer); await controls.dispose(); await ready.catch(() => {}); await lifecycle.catch(() => {}); await splash?.dispose(); });
   bb.providers.register({
     id: PROVIDER_ID, displayName: "Local models", icon: "./icons/local-models.svg",
@@ -148,7 +152,8 @@ export function createPlugin(bb: BbPluginApi, testing: Pick<Parameters<typeof sp
       catch(error) {return {content:[{type:'text' as const,text:'Local model request failed: '+(error instanceof Error ? error.message : String(error))+(error instanceof PluginCliError && error.hint ? ' '+error.hint : '')}],isError:true};}
     },
   });
-  bb.agents.configure(context => ({tools:context.provider.id === PROVIDER_ID ? [] : ['local_models_ask'],skills:['local-models']}));
+  bb.agents.configure(context => context.provider.id === PROVIDER_ID ? {tools:[],skills:['local-models']}
+    : {tools:['local_models_ask'],skills:['local-models'],...(guidance ? {instructions:'Owner guidance for choosing a local model (local_models_ask, local-models threads); it overrides general advice:\n'+guidance} : {})});
   const json = {type:'boolean' as const,description:'Print JSON'};
   bb.cli.register(defineCli({name:'local-models',summary:'Inspect and query the local model router',commands:{
     status:cliCommand({summary:'Show router and model status',options:{json},async run({options},ctx){
