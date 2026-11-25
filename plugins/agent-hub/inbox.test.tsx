@@ -38,7 +38,7 @@ it('previews a contact with sub-sessions as their tally: direct and nested, work
   fireEvent.click(recipients.getByRole('button', { name:'Show sub-sessions' }));
   const subs = within(recipients.getByRole('list', { name:'Sub-sessions of One' }));
   expect(subs.getAllByRole('listitem').map(li => [li.textContent, !!within(li).queryByRole('img', { name:'Working' }), li.querySelector('button')!.style.paddingLeft])).toEqual([['Lead A', true, '32px'], ['Nested C', true, '56px'], ['Idle B', false, '32px']]);
-  expect(subs.queryAllByRole('option')).toHaveLength(0); expect(subs.queryAllByRole('button')).toHaveLength(3);
+  expect(subs.queryAllByRole('option')).toHaveLength(0); expect(subs.queryAllByRole('button')).toHaveLength(4); expect(subs.getAllByRole('button', { name:'Hide nested sub-sessions' })).toHaveLength(1);
   // Unbroken guides as bb draws them: a level's line runs under its parent's icon down to the middle of its last child.
   expect(subs.getAllByRole('listitem').map(li => Array.from(li.querySelectorAll<HTMLElement>('[data-guide]'), g => `${g.style.left} ${g.classList.contains('h-1/2') ? 'half' : 'full'}`))).toEqual([['24px full'], ['24px full', '40px half'], ['24px half']]);
   fireEvent.contextMenu(subs.getByText('Nested C'));

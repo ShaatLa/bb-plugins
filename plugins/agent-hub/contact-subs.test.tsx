@@ -2,7 +2,7 @@
 import { afterEach, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, waitFor, within } from '@testing-library/react';
 import { renderSlot } from '@get-bb/plugin-sdk/testing/app';
-import { beginContactDrag } from './open-chat';
+import { beginContactDrag, selectContact } from './open-chat';
 import { AgentHubContacts, ContactsList, useContacts } from './contacts';
 import { COMPOSE_KEY } from './drafts';
 const navigate = vi.hoisted(() => ({ toThread: vi.fn(), toPluginPanel: vi.fn() }));
@@ -11,11 +11,11 @@ vi.mock('@get-bb/plugin-sdk/app', async importOriginal => ({ ...await importOrig
 afterEach(() => { cleanup(); localStorage.clear(); vi.clearAllMocks(); });
 const parent = 'thr_example', child = 'thr_example_child', stored = 'bb-plugin-answers:page:open-subs';
 const idle = { projectId: null, parentThreadId: null, parentNotifications: 'all', archivedAt: null, pinnedAt: null, sectionId: null, isUnread: false, status: 'idle', runtimeStatus: 'idle', queuedWork: 'none', hasPendingInteraction: false, indicator: 'none', activity: { workflows: 0, backgroundAgents: 0, backgroundCommands: 0, planMode: false }, environment: null };
-function setup(open = false, sidebar = false, selected = parent, asking: string[] = [], childFields: object = {}, subUnread: Record<string, number> = {}, extra: object[] = []) {
+function setup(open = false, sidebar = false, selected = parent, asking: string[] = [], childFields: object = {}, subUnread: Record<string, number> = {}, extra: object[] = [], active = child) {
   if (open) localStorage.setItem(stored, JSON.stringify([parent]));
   const onSelect = vi.fn(), onNavigate = vi.fn(), markThreadRead = vi.fn(() => ({ batch: null, count: 1 }));
   function Contacts() { return <ContactsList model={useContacts(selected)} selected={selected} onSelect={onSelect} onNavigate={onNavigate} />; }
-  const slot = renderSlot({ component: sidebar ? AgentHubContacts : Contacts }, { activeThreadId: child, activeProjectId: null, isCompactViewport: false, searchQuery: '', onNavigate }, { rpc: { recipients: () => ({ asking, subUnread, recipients: [{ threadId: parent, threadTitle: 'Parent', projectId: null, projectName: null, unread: 1, lastAt: 1, preview: '' }] }), markThreadRead }, sidebarThreads: { threads: [{ ...idle, id: parent, title: 'Parent' }, { ...idle, id: child, title: 'Child', parentThreadId: parent, ...childFields }, { ...idle, id: 'thr_example_quiet', title: 'Quiet', parentThreadId: parent }, ...extra], projects: [] } } as any);
+  const slot = renderSlot({ component: sidebar ? AgentHubContacts : Contacts }, { activeThreadId: active, activeProjectId: null, isCompactViewport: false, searchQuery: '', onNavigate }, { rpc: { recipients: () => ({ asking, subUnread, recipients: [{ threadId: parent, threadTitle: 'Parent', projectId: null, projectName: null, unread: 1, lastAt: 1, preview: '' }] }), markThreadRead }, sidebarThreads: { threads: [{ ...idle, id: parent, title: 'Parent' }, { ...idle, id: child, title: 'Child', parentThreadId: parent, ...childFields }, { ...idle, id: 'thr_example_quiet', title: 'Quiet', parentThreadId: parent }, ...extra], projects: [] } } as any);
   return { slot, onSelect, onNavigate, markThreadRead };
 }
 it('toggles and stores sub-sessions only through a separate chevron button', async () => {
@@ -140,4 +140,47 @@ it('keeps the nesting of a collapsed tree: a nested sub-session with unread repl
   expect(subs.getAllByRole('listitem').map(li => li.textContent)).toEqual(['Child', 'Nested1']);
   const indent = (name: string) => parseInt(subs.getByText(name).closest('button')!.style.paddingLeft);
   expect(indent('Nested')).toBeGreaterThan(indent('Child'));
+});
+const closedKey = 'bb-plugin-answers:page:closed-subs', nested = 'thr_example_nested', deep = 'thr_example_deep';
+const deeper = [{ ...idle, id: nested, title: 'Nested', parentThreadId: child }, { ...idle, id: deep, title: 'Deep', parentThreadId: nested }];
+const shown = (slot: ReturnType<typeof setup>['slot']) => within(slot.getByRole('list', { name: 'Sub-sessions of Parent' })).getAllByRole('listitem').map(li => li.firstElementChild!.textContent);
+const chevronOf = (slot: ReturnType<typeof setup>['slot'], title: string) => within(within(slot.getByRole('list', { name: 'Sub-sessions of Parent' })).getByText(title).closest('li')!).queryByRole('button', { name: /nested sub-sessions/ });
+it('collapses a nested sub-session from its own chevron at any depth, without opening it, and keeps the choice', async () => {
+  for (const sidebar of [false, true]) {
+    const { slot, onSelect } = setup(true, sidebar, parent, [], {}, {}, deeper);
+    await slot.findByText('Deep');
+    expect(chevronOf(slot, 'Quiet')).toBeNull(); expect(chevronOf(slot, 'Deep')).toBeNull();
+    expect(chevronOf(slot, 'Nested')!.getAttribute('aria-expanded')).toBe('true');
+    fireEvent.click(chevronOf(slot, 'Nested')!);
+    expect(shown(slot)).toEqual(['Child', 'Nested', 'Quiet']); expect(chevronOf(slot, 'Nested')!.getAttribute('aria-label')).toBe('Show nested sub-sessions');
+    fireEvent.click(chevronOf(slot, 'Child')!);
+    expect(shown(slot)).toEqual(['Child', 'Quiet']);
+    await waitFor(() => expect(JSON.parse(localStorage.getItem(closedKey)!)).toEqual([nested, child]));
+    expect(onSelect).not.toHaveBeenCalled();
+    slot.unmount();
+    const restored = setup(true, sidebar, parent, [], {}, {}, deeper);
+    await restored.slot.findByText('Child'); expect(shown(restored.slot)).toEqual(['Child', 'Quiet']);
+    fireEvent.click(chevronOf(restored.slot, 'Child')!);
+    expect(shown(restored.slot)).toEqual(['Child', 'Nested', 'Quiet']);
+    cleanup(); localStorage.clear();
+  }
+});
+it('shows the unread answers and questions of hidden sub-sessions on the collapsed row', async () => {
+  localStorage.setItem(closedKey, JSON.stringify([child]));
+  const { slot } = setup(true, false, parent, [deep], {}, { [child]: 1, [nested]: 1, [deep]: 2 }, deeper);
+  const row = within((await slot.findByText('Child')).closest('li')!);
+  expect(row.getByLabelText('4 unread')).toBeTruthy(); expect(row.getByRole('img', { name: 'Asking you' })).toBeTruthy();
+});
+it('surfaces a collapsed sub-session, not its hidden child, under a collapsed contact', async () => {
+  localStorage.setItem(closedKey, JSON.stringify([nested]));
+  const { slot } = setup(false, false, parent, [], {}, { [deep]: 2 }, deeper);
+  await slot.findByText('Nested');
+  expect(shown(slot)).toEqual(['Child', 'Nested2']);
+});
+it('does not select the contact while bb shows a sub-session hidden in a collapsed row', async () => {
+  localStorage.setItem(closedKey, JSON.stringify([child])); selectContact(parent);
+  const { slot } = setup(true, true, parent, [], {}, {}, deeper, deep);
+  await slot.findByText('Child');
+  expect(slot.queryByText('Deep')).toBeNull();
+  expect(slot.getByRole('option', { name: /Parent/ }).getAttribute('aria-selected')).toBe('false');
 });
