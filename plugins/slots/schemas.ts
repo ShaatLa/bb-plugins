@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { defineRpcContract } from "@get-bb/plugin-sdk";
-import { SETTING_KEYS, OBSERVER_EVENTS, type ObserverEvent, type RpcMethods, type State } from "./contract.js";
+import { SETTING_KEYS, LOCAL_MODEL_MAX, OBSERVER_EVENTS, type ObserverEvent, type RpcMethods, type State } from "./contract.js";
 const id = z.string().trim().min(1).max(200);
 const pool = z.enum(["heavy", "local-model"]);
 const priority = z.enum(["normal", "high", "urgent"]);
@@ -34,7 +34,7 @@ export const inputs = {
   prioritize: z.object({ requestId: id, priority }).strict(),
   revoke: z.object({ leaseId: id, reason: z.string().trim().min(1).max(2000) }).strict(),
   grant: z.object({ requestId: id }).strict(),
-  setCapacity: z.object({ ...host, pool, capacity: z.number().int().min(0).max(10000) }).strict(),
+  setCapacity: z.object({ ...host, pool, capacity: z.number().int().min(0).max(10000) }).strict().refine(p => p.pool !== "local-model" || p.capacity <= LOCAL_MODEL_MAX, { message: `Local model capacity cannot exceed ${LOCAL_MODEL_MAX}`, path: ["capacity"] }),
   log: z.object({ since: time.optional(), hostId: id.optional(), limit: z.number().int().min(1).max(1000).optional() }).strict(),
   devices: z.object({ hostId: id.optional(), devices: z.array(z.object({ name: device, capacity: z.number().int().min(0).max(100).default(1) }).strict()).max(32).optional() }).strict(),
 };

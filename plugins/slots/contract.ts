@@ -2,6 +2,7 @@ export const SLOTS_CHANGED = "slots.changed";
 
 /** Wire and persistence contract. All times and durations are milliseconds. */
 export const POOLS = ["heavy", "local-model"] as const;
+export const LOCAL_MODEL_MAX = 16;
 export type PoolName = (typeof POOLS)[number];
 export type Priority = "urgent" | "high" | "normal";
 export const OBSERVER_EVENTS = ["warn", "expire", "revoke", "queue-wait", "gate-hold", "grant", "release", "transfer", "capacity", "unleased-load", "idle-lease"] as const;
@@ -159,7 +160,7 @@ export interface ObserverView { threadId: string | null; title: string | null; e
 export const SETTING_KEYS = ["heavyCapacity", "localModelCapacity", "memFreeMinPct", "loadMax", "gateSamples", "gateIntervalSeconds", "leaseTtlMinutes", "maxEstimateMinutes", "heartbeatIntervalMinutes", "observerThreadId", "observerEvents", "observerQueueWaitMinutes", "observerGateHoldMinutes", "portFrom", "portTo", "grantMode", "watchPolicy", "watchCores", "watchWindowSeconds", "idleLeaseMinutes", "remoteHosts"] as const;
 export type SettingKey = (typeof SETTING_KEYS)[number];
 export type SettingValues = Record<SettingKey, number | string>;
-export interface SettingsFormView { values: SettingValues; defaults: SettingValues; maxima: Partial<Record<SettingKey, number>>; setKeys: SettingKey[]; cores: number; heavyDefault: number }
+export interface SettingsFormView { values: SettingValues; defaults: SettingValues; maxima: Partial<Record<SettingKey, number>>; setKeys: SettingKey[]; cores: number; heavyDefault: number; hosts?: { id: string; name: string | null; connected: boolean }[] }
 export interface SettingView { key: SettingKey; value: number | string; default: number | string; max?: number; set: boolean }
 export interface RpcMethods {
   settingsRead: { input: Record<string, never>; output: Result<SettingsFormView> };

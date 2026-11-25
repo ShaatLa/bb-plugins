@@ -4,6 +4,8 @@ import { afterEach, expect, test, vi } from "vitest";
 import { loadPluginApp, renderSlot } from "@get-bb/plugin-sdk/testing/app";
 import { DEFAULT_SETTINGS, SLOTS_CHANGED, type StatusView } from "./contract";
 
+// jsdom has no scrollIntoView; the bb Select calls it on open.
+Element.prototype.scrollIntoView ??= () => {};
 const app = await loadPluginApp(() => import("./app"));
 const at = Date.parse("2026-11-07T12:00:00Z");
 const fixture: StatusView = {
@@ -331,42 +333,50 @@ test("keeps summary values compact and shows clamped-setting warnings", async ()
   expect(slot.container.textContent).not.toContain("(auto)");
 });
 
-test("settings groups, bounded steppers, reset, events, picker selection and inline errors", async () => {
+const settingValues = { heavyCapacity: 4, localModelCapacity: 1, memFreeMinPct: 20, loadMax: 18, gateSamples: 2,
+  gateIntervalSeconds: 15, leaseTtlMinutes: 30, maxEstimateMinutes: 720, heartbeatIntervalMinutes: 10, observerThreadId: "", observerEvents: "warn,expire",
+  observerQueueWaitMinutes: 20, observerGateHoldMinutes: 15, portFrom: 41000, portTo: 41099, grantMode: "auto",
+  watchPolicy: "warn", watchCores: 3, watchWindowSeconds: 120, idleLeaseMinutes: 30, remoteHosts: "" };
+const form = (values: Record<string, unknown>, extra: Record<string, unknown> = {}) =>
+  ({ cores: 18, heavyDefault: 4, values, defaults: settingValues, maxima: { localModelCapacity: 16 }, setKeys: [], ...extra });
+const pick = async (combobox: HTMLElement, name: string) => {
+  fireEvent.keyDown(combobox, { key: "Enter" });
+  await act(async () => { fireEvent.keyDown(await within(document.body).findByRole("option", { name }), { key: "Enter" }); });
+};
+
+test("settings sections, collapsed summaries, bb selects, bounded steppers, events, picker selection and inline errors", async () => {
   Object.defineProperties(HTMLDialogElement.prototype, {
     showModal: { configurable: true, value: function (this: HTMLDialogElement) { this.open = true; } },
     close: { configurable: true, value: function (this: HTMLDialogElement) { this.open = false; } },
   });
-  const values = { heavyCapacity: 4, localModelCapacity: 1, memFreeMinPct: 20, loadMax: 18, gateSamples: 2,
-    gateIntervalSeconds: 15, leaseTtlMinutes: 30, maxEstimateMinutes: 720, heartbeatIntervalMinutes: 10, observerThreadId: "", observerEvents: "warn,expire",
-    observerQueueWaitMinutes: 20, observerGateHoldMinutes: 15, portFrom: 41000, portTo: 41099, grantMode: "auto",
-    watchPolicy: "warn", watchCores: 3, watchWindowSeconds: 120, idleLeaseMinutes: 30 };
   const write = vi.fn((input: unknown) => {
     const change = input as { values?: Record<string, unknown>; unset?: string[] };
-    const key = change.unset?.[0] ?? Object.keys(change.values ?? {})[0];
-    const value = change.unset ? null : change.values?.[key];
-    if (key === "portFrom") return { ok: false, error: { code: "invalid-input", message: "Invalid port range" } };
-    return { ok: true, data: { cores: 18, heavyDefault: 4, values: { ...values, [key]: value === null ? 4 : value } } };
+    if (change.values?.portFrom) return { ok: false, error: { code: "invalid-input", message: "Invalid port range" } };
+    return { ok: true, data: form({ ...settingValues, ...change.values }) };
   });
   const slot = renderSlot(app.settingsSections[0], {}, { rpc: {
-    settingsRead: () => ({ ok: true, data: { cores: 18, heavyDefault: 4, values } }), settingsWrite: write,
+    settingsRead: () => ({ ok: true, data: form(settingValues) }), settingsWrite: write,
     status: () => ({ ok: true, data: fixture }),
   }, sdk: { threads: { list: async () => [{ id: "manager", title: "Manager session", status: "idle" }] as any,
     get: async () => ({ title: "Manager session" }) as any } } });
-  await slot.findByRole("region", { name: "Slots" });
-  for (const name of ["Machine check", "Leases", "Load watch", "Manager / observer", "Grant mode", "Dev-server ports"]) expect(slot.getByRole("region", { name })).toBeTruthy();
-  expect(slot.getByText(/Warns when processes in a session/)).toBeTruthy();
-  await act(async () => { fireEvent.click(slot.getByRole("button", { name: "Reset Cores threshold to default" })); });
-  expect(write).toHaveBeenLastCalledWith({ unset: ["watchCores"] });
-  await act(async () => { fireEvent.change(slot.getByRole("combobox", { name: "Load watch policy" }), { target: { value: "off" } }); });
+  await slot.findByRole("heading", { name: "Slots" });
+  expect(slot.getByRole("heading", { name: "Machine check" })).toBeTruthy();
+  for (const text of ["Warn · 3 cores for 120 s · idle notice 30 min", "30 min · heartbeat 10 min · longest 12 h", "No observer · 2 of 11 events on", "41000–41099", "Events · 2 of 11 on", "Advanced"])
+    expect(slot.getByText(text).closest("details")?.open).toBe(false);
+  expect(slot.getByText("Local model capacity (this Mac)")).toBeTruthy();
+  expect(slot.getByText("Default 1 · max 16. Zero disables the pool.")).toBeTruthy();
+  expect(slot.getAllByText("Grant mode")).toHaveLength(1);
+  expect(slot.queryAllByRole("button", { name: /^Reset / })).toEqual([]);
+  await pick(slot.getByRole("combobox", { name: "Load watch policy" }), "Off");
   expect(write).toHaveBeenLastCalledWith({ values: { watchPolicy: "off" } });
+  await pick(slot.getByRole("combobox", { name: "Grant mode" }), "Manual (manager grants)");
+  expect(write).toHaveBeenLastCalledWith({ values: { grantMode: "manual" } });
   write.mockClear();
   const heavy = slot.getByRole("spinbutton", { name: "Heavy jobs capacity" });
   fireEvent.change(heavy, { target: { value: "19" } });
   fireEvent.blur(heavy);
   expect(write).not.toHaveBeenCalled();
   expect((heavy as HTMLInputElement).value).toBe("4");
-  await act(async () => { fireEvent.click(slot.getByRole("button", { name: "Reset Heavy jobs capacity to default" })); });
-  expect(write).toHaveBeenLastCalledWith({ unset: ["heavyCapacity"] });
   await act(async () => { fireEvent.click(slot.getByRole("switch", { name: "Expiry warning" })); });
   expect(write).toHaveBeenLastCalledWith({ values: { observerEvents: "expire" } });
   await act(async () => { fireEvent.click(slot.getByRole("button", { name: "Choose thread…" })); });
@@ -378,13 +388,54 @@ test("settings groups, bounded steppers, reset, events, picker selection and inl
   expect(slot.getByRole("alert").textContent).toBe("Invalid port range");
 });
 
+test("Reset appears exactly on fields that differ from their default and unsets them", async () => {
+  const write = vi.fn(() => ({ ok: true, data: form(changed) }));
+  const changed = { ...settingValues, watchCores: 5, leaseTtlMinutes: 45, grantMode: "manual", remoteHosts: "host_a=2" };
+  const slot = renderSlot(app.settingsSections[0], {}, { rpc: { settingsRead: () => ({ ok: true, data: form(changed) }), settingsWrite: write, status: () => ({ ok: true, data: fixture }) } });
+  await slot.findByRole("heading", { name: "Slots" });
+  expect(slot.getAllByRole("button", { name: /^Reset / }).map(button => button.getAttribute("aria-label")))
+    .toEqual(["Reset Other machines to default", "Reset Cores threshold to default", "Reset Lease time (minutes) to default", "Reset Grant mode to default"]);
+  expect(slot.getByText("Default 30 · a lease lasts the longer of this or its estimate + 15 minutes")).toBeTruthy();
+  for (const [name, key] of [["Cores threshold", "watchCores"], ["Grant mode", "grantMode"], ["Other machines", "remoteHosts"]]) {
+    await act(async () => { fireEvent.click(slot.getByRole("button", { name: `Reset ${name} to default` })); });
+    expect(write).toHaveBeenLastCalledWith({ unset: [key] });
+  }
+});
+
+test("other machines are picked by name, edited, removed, and unknown ids stay listed", async () => {
+  const values = { ...settingValues, remoteHosts: "host_a=2,host_gone=3" };
+  const hosts = [{ id: "laptop", name: "This Mac", connected: true }, { id: "host_a", name: "Build box", connected: false }, { id: "host_b", name: "Spare Mac", connected: true }];
+  const write = vi.fn(() => ({ ok: true, data: form(values, { hosts }) }));
+  const slot = renderSlot(app.settingsSections[0], {}, { rpc: { settingsRead: () => ({ ok: true, data: form(values, { hosts }) }), settingsWrite: write, status: () => ({ ok: true, data: fixture }) } });
+  await slot.findByText("Build box");
+  expect(slot.getByText("offline")).toBeTruthy();
+  expect(slot.getByText("host_gone")).toBeTruthy();
+  const add = slot.getByRole("combobox", { name: "Add machine" });
+  fireEvent.keyDown(add, { key: "Enter" });
+  expect((await within(document.body).findAllByRole("option")).map(option => option.textContent)).toEqual(["Spare Mac"]);
+  await act(async () => { fireEvent.keyDown(within(document.body).getByRole("option", { name: "Spare Mac" }), { key: "Enter" }); });
+  expect(write).toHaveBeenLastCalledWith({ values: { remoteHosts: "host_a=2,host_gone=3,host_b=2" } });
+  const capacity = slot.getByRole("spinbutton", { name: "Build box heavy jobs capacity" });
+  fireEvent.change(capacity, { target: { value: "5" } });
+  await act(async () => { fireEvent.keyDown(capacity, { key: "Enter" }); });
+  expect(write).toHaveBeenLastCalledWith({ values: { remoteHosts: "host_a=5,host_gone=3" } });
+  await act(async () => { fireEvent.click(slot.getByRole("button", { name: "Remove host_gone" })); });
+  expect(write).toHaveBeenLastCalledWith({ values: { remoteHosts: "host_a=2" } });
+});
+
+test("removing the only other machine unsets the setting", async () => {
+  const values = { ...settingValues, remoteHosts: "host_a=2" };
+  const write = vi.fn(() => ({ ok: true, data: form(values) }));
+  const slot = renderSlot(app.settingsSections[0], {}, { rpc: { settingsRead: () => ({ ok: true, data: form(values) }), settingsWrite: write, status: () => ({ ok: true, data: fixture }) } });
+  const remove = await slot.findByRole("button", { name: "Remove host_a" });
+  await act(async () => { fireEvent.click(remove); });
+  expect(write).toHaveBeenLastCalledWith({ unset: ["remoteHosts"] });
+});
+
 function settingsSlot(extra: Record<string, unknown> = {}) {
-  const values = { heavyCapacity: 4, localModelCapacity: 1, memFreeMinPct: 20, loadMax: 18, gateSamples: 2,
-    gateIntervalSeconds: 15, leaseTtlMinutes: 30, maxEstimateMinutes: 720, heartbeatIntervalMinutes: 10, observerThreadId: "", observerEvents: "warn",
-    observerQueueWaitMinutes: 20, observerGateHoldMinutes: 15, portFrom: 41000, portTo: 41099, grantMode: "auto",
-    watchPolicy: "warn", watchCores: 3, watchWindowSeconds: 120, idleLeaseMinutes: 30 };
-  const read = vi.fn(() => ({ ok: true, data: { cores: 18, heavyDefault: 4, values } }));
-  const write = vi.fn((input: unknown) => ({ ok: true, data: { cores: 18, heavyDefault: 4, values: { ...values, ...(input as { values: object }).values } } }));
+  const values = { ...settingValues, watchCores: 2 };
+  const read = vi.fn(() => ({ ok: true, data: form(values) }));
+  const write = vi.fn((input: unknown) => ({ ok: true, data: form({ ...values, ...(input as { values: object }).values }) }));
   const slot = renderSlot(app.settingsSections[0], {}, { rpc: { settingsRead: read, settingsWrite: write, status: () => ({ ok: true, data: fixture }), ...extra } });
   return { slot, read, write };
 }
@@ -412,7 +463,7 @@ test("numeric settings commit once on blur or Enter, not per keystroke", async (
 test("the settings form does not run the 1 s clock", async () => {
   const interval = vi.spyOn(globalThis, "setInterval");
   const { slot } = settingsSlot();
-  await slot.findByRole("region", { name: "Slots" });
+  await slot.findByRole("heading", { name: "Slots" });
   expect(interval.mock.calls.map(call => call[1])).not.toContain(1000);
 });
 
@@ -446,7 +497,7 @@ test("Reset to default after typing drops the draft and resets instead of commit
   await act(async () => { fireEvent.click(reset); });
   expect(write).toHaveBeenCalledTimes(1);
   expect(write).toHaveBeenLastCalledWith({ unset: ["watchCores"] });
-  expect(input.value).toBe("3");
+  expect(input.value).toBe("2");
 });
 
 test("marks a lease past its estimate in amber with the overrun", async () => {

@@ -236,7 +236,7 @@ remain policy choices rather than machine-derived limits.
 | Setting | Default | Range |
 | --- | --- | --- |
 | heavyCapacity | CPU/memory formula above | 0–CPU cores |
-| localModelCapacity | 1 | 0–10000 |
+| localModelCapacity | 1 | 0–16 |
 | memFreeMinPct | 20 | 0–100% |
 | loadMax | CPU cores | >0, at most CPU cores |
 | gateSamples | 2 | 1–100 |

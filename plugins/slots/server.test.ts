@@ -145,7 +145,7 @@ it("resolves a grant at the wait deadline and withdraws on abort", async () => {
   await host.harness.lifecycle.dispose();
 });
 it("uses public SDK imports only", () => {
-  const scan = experimental_scanPublicSdkOnly(import.meta.dirname, { allow: [/^(react|@radix-ui\/react-slot|class-variance-authority|clsx|tailwind-merge|@testing-library\/react)$/] });
+  const scan = experimental_scanPublicSdkOnly(import.meta.dirname, { allow: [/^(react|react-dom|@radix-ui\/react-slot|@radix-ui\/react-select|class-variance-authority|clsx|tailwind-merge|@testing-library\/react)$/] });
   expect(scan.violations).toEqual([]); expect(scan.privateDependencies).toEqual([]);
 });
 
@@ -331,6 +331,32 @@ it.each([false, true])("uses current definition defaults after reload; explicit 
   cleanups.push(() => replacement.harness.lifecycle.dispose());
   const result = await invoke("status", {});
   expect(result).toMatchObject({ ok: true, data: { hostSettings: { local: { loadMax: explicit ? 18 : 24, capacities: { heavy: explicit ? 4 : 6 } } } } });
+});
+
+it("settings list other bb machines by name, and an empty list when listing fails or times out", async () => {
+  const h = await setup();
+  h.harness.sdk.stub("hosts.list", async () => [makeHostResponse({ id: "local", name: "Work laptop" }), makeHostResponse({ id: "host_example", name: "Build box", status: "disconnected" })] as never);
+  const expected = [{ id: "host_example", name: "Build box", connected: false }];
+  expect(await h.invoke("settingsRead", {})).toMatchObject({ ok: true, data: { hosts: expected } });
+  expect(await h.invoke("config", { operation: "show" })).toMatchObject({ ok: true, data: { hosts: expected } });
+  for (const failing of [() => Promise.reject(new Error("offline")), () => new Promise(() => {})]) {
+    const next = await setup();
+    next.harness.sdk.stub("hosts.list", failing as never);
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      const read = next.invoke("settingsRead", {}); await vi.advanceTimersByTimeAsync(10001);
+      expect(await read).toMatchObject({ ok: true, data: { hosts: [] } });
+    } finally { vi.useRealTimers(); }
+  }
+});
+
+it("caps local model capacity at 16: maxima, writes, setCapacity, and a stored larger value warns and clamps", async () => {
+  const h = await setup(undefined, undefined, { localModelCapacity: 40 });
+  expect(await h.view()).toMatchObject({ hostSettings: { local: { capacities: { "local-model": 16 } } }, settingsWarnings: ["Saved local model capacity 40 exceeds 16; using 16."] });
+  expect(await h.invoke("settingsRead", {})).toMatchObject({ ok: true, data: { maxima: { localModelCapacity: 16 } } });
+  await expect(h.configure({ localModelCapacity: 17 })).rejects.toThrow("Local model capacity cannot exceed 16");
+  expect(await h.invoke("setCapacity", { hostId: "local", pool: "local-model", capacity: 17 })).toMatchObject({ ok: false });
+  expect(await h.invoke("setCapacity", { hostId: "local", pool: "local-model", capacity: 16 })).toMatchObject({ ok: true });
 });
 
 it("clamps saved values on smaller machines and surfaces warnings without rewriting them", async () => {
