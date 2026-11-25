@@ -22,14 +22,14 @@ bb provider models local-models
 
 | Setting | Default | Purpose |
 | --- | --- | --- |
-| `baseUrl` | `http://127.0.0.1:9931/v1` | Local server endpoints, separated by commas or spaces; first wins on duplicate ids. A server on another Mac can name its models `<machine>/owner/Model-GGUF:QUANT` (in that Mac's `models.user.ini`), and the model list shows them as `Model (QUANT) · <machine>`. |
+| `baseUrl` | `http://127.0.0.1:9931/v1` | Local server endpoints, one per line (commas and spaces also work); first wins on duplicate ids. A server on another Mac can name its models `<machine>/owner/Model-GGUF:QUANT` (in that Mac's `models.user.ini`), and the model list shows them as `Model (QUANT) · <machine>`. |
 | `defaultModel` | empty | Model for new threads; empty picks the first listed model. |
+| `modelGuidance` | empty | Which model suits which work; added to every agent's instructions except local-models threads, from the next thread start. |
 | `splash` | `false` | Supervise Splash on demand using Llama.app’s GGUF pool. |
 | `splashBinary` | `/opt/homebrew/bin/splash` | Splash executable. |
 | `splashPort` | `8010` | Loopback engine port. |
 | `splashProxyPort` | `8011` | Loopback proxy port appended to the server list. |
 | `splashIdleMinutes` | `10` | Stop Splash after this long without requests. |
-| `modelGuidance` | empty | Which model suits which work; added to every agent's instructions except local-models threads, from the next thread start. |
 
 ```sh
 bb plugin config local-models set defaultModel 'ggml-org/gpt-oss-20b-GGUF:MXFP4'

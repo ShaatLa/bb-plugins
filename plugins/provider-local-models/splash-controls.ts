@@ -7,7 +7,7 @@ import { doctor, runCommand, SPLASH_INSTALL, SPLASH_UPDATE, type DoctorOptions, 
 type ProcessStatus = { model: string | null; pid: number | null; port: number; ready: boolean; idleLeftMs: number; error: string | null };
 type DraftState = { state: 'missing' | 'downloading' | 'ready' | 'error'; done: number; total: number | null; error: string | null };
 type Job = { abort: AbortController; promise: Promise<string>; progress: DraftState };
-type Settings = { splashBinary: string; baseUrl: string; splashPort: number };
+type Settings = { splashBinary: string; baseUrl: string; servers?: string[]; splashPort: number };
 export function splashControls(options: {
   settings: () => Promise<Settings>; process: () => ProcessStatus; restart: (id: string) => Promise<void>; log: (line: string) => void;
   modelsIni?: string; userIni?: string; draftsDir?: string; modelsDir?: string; fetcher?: typeof fetch; run?: RunCommand; doctorOptions?: Partial<DoctorOptions>; onDetected?: (report: DoctorReport) => void;
@@ -27,7 +27,8 @@ export function splashControls(options: {
       const source = parseUpstream(id)!, path = join(modelsDir, source.owner, source.repo, source.file), job = pulls.get(id);
       const size = await stat(path).then(value => value.size, () => null), partial = await stat(path + '.part').then(value => value.size, () => 0);
       const gguf: DraftState = job && job.progress.state !== 'ready' ? { ...job.progress } : { state: size === null ? 'missing' : 'ready', done: size ?? partial, total: size, error: null };
-      return { id, path, gguf, vision: !!await projectorFor(path), draft: splashFamily(id) ? await inspectDraft(id) : null };
+      const unfinished = (await readdir(dirname(path)).catch(() => [] as string[])).some(name => name.endsWith('.part'));
+      return { id, path, gguf, vision: !!await projectorFor(path), unfinished, draft: splashFamily(id) ? await inspectDraft(id) : null };
     }));
   }
   function source(id: string) {
@@ -40,7 +41,9 @@ export function splashControls(options: {
     if (job?.progress.state === 'downloading' || job?.progress.state === 'error') return { ...job.progress };
     const dir = join(draftsDir, key + '-DFlash2');
     if (await verifiedDraft(dir)) { const size = (await stat(join(dir, 'model.safetensors'))).size; return { state: 'ready', done: size, total: size, error: null }; }
-    try { const info = await source(id); return { state: 'missing', done: 0, total: info.size, error: null }; }
+    // A cancelled download leaves a resumable .part; its size lets the page offer Delete draft.
+    const partial = await stat(join(dir, 'model.safetensors.part')).then(value => value.size, () => 0);
+    try { const info = await source(id); return { state: 'missing', done: partial, total: info.size, error: null }; }
     catch (error) { return { state: 'error', done: 0, total: null, error: String(error) }; }
   }
   async function status() {
@@ -129,9 +132,9 @@ export function splashControls(options: {
   // Memoized per binary and server for 60 s; doctor spawns ~7 processes and takes about a second.
   let detected: { key: string; at: number; report: Promise<DoctorReport> } | undefined;
   const detect = async (force = false) => {
-    const settings = await options.settings(), key = settings.splashBinary + '\n' + settings.baseUrl;
+    const settings = await options.settings(), key = settings.splashBinary + '\n' + settings.baseUrl + '\n' + (settings.servers ?? []).join(' ');
     if (!force && detected?.key === key && Date.now() - detected.at < 60000) return detected.report;
-    const current = { key, at: Date.now(), report: doctor({ binary: settings.splashBinary, baseUrl: settings.baseUrl, run: options.run, fetcher, ...options.doctorOptions }, lifetime.signal).then(report => { options.onDetected?.(report); return report; }) };
+    const current = { key, at: Date.now(), report: doctor({ binary: settings.splashBinary, baseUrl: settings.baseUrl, servers: settings.servers, run: options.run, fetcher, ...options.doctorOptions }, lifetime.signal).then(report => { options.onDetected?.(report); return report; }) };
     detected = current; current.report.catch(() => { if (detected === current) detected = undefined; }); return current.report;
   };
   async function install(command: string, confirmed: boolean) {

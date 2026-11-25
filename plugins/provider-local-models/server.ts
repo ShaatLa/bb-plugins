@@ -18,14 +18,14 @@ export const PROVIDER_ID = "local-models";
 export default function plugin(bb: BbPluginApi) { return createPlugin(bb); }
 export function createPlugin(bb: BbPluginApi, testing: Pick<Parameters<typeof splashControls>[0], 'run' | 'doctorOptions'> = {}) {
   const settings = bb.settings.define({
-    baseUrl: { type: "string", label: "Local server URLs", default: DEFAULT_BASE_URL, description: "OpenAI-compatible endpoints with /models and /chat/completions, separated by commas, e.g. llama.cpp's llama serve and Splash. On duplicate model ids the first server wins." },
-    defaultModel: { type: "string", label: "Default model", default: "", description: "Model id for new threads, e.g. ggml-org/gpt-oss-20b-GGUF:MXFP4. Empty picks the first model the server lists." },
+    baseUrl: { type: "string", label: "Local server URLs", default: DEFAULT_BASE_URL, experimental_multiline: true, description: "OpenAI-compatible endpoints such as llama.cpp's llama serve or Splash, one per line. On duplicate model ids the first server wins." },
+    defaultModel: { type: "string", label: "Default model", default: "", description: "Model id for new threads. Empty picks the first model the servers list." },
+    modelGuidance: { type: "string", label: "Model guidance", default: "", experimental_multiline: true, description: "Which model suits which work, e.g. 'org/Large-GGUF:Q4_K_M for spec-heavy work, org/Small-GGUF:Q4_K_M for drafts'. Added to other agents' instructions from their next start." },
     splash: { type: "boolean", label: "Use Splash", default: false },
     splashBinary: { type: "string", label: "Splash binary", default: "/opt/homebrew/bin/splash" },
     splashPort: { type: "number", label: "Splash engine port", default: 8010, experimental_schema: z.number().int().min(1).max(65535) },
     splashProxyPort: { type: "number", label: "Splash proxy port", default: 8011, experimental_schema: z.number().int().min(1).max(65535) },
     splashIdleMinutes: { type: "number", label: "Splash idle minutes", default: 10, experimental_schema: z.number().positive().finite() },
-    modelGuidance: { type: "string", label: "Model guidance", default: "", experimental_multiline: true, description: "Which model suits which work, added to the instructions of every agent except local-models threads, e.g. 'Use org/Large-GGUF:Q4_K_M for spec-heavy work and org/Small-GGUF:Q4_K_M for drafts.' Threads started after a change see it." },
   });
   // configure() must answer synchronously, so the guidance is cached from the settings.
   let guidance = "";
@@ -60,7 +60,7 @@ export function createPlugin(bb: BbPluginApi, testing: Pick<Parameters<typeof sp
     return splash?.status() ?? {model:null,pid:null,port:value.splashPort,ready:false,idleLeftMs:0,error:splashFail?.error ?? null};
   };
   const controls = splashControls({
-    settings: async () => { const value = await settings.get(); return {...value, baseUrl:serverUrls(value.baseUrl)[0]}; },
+    settings: async () => { const value = await settings.get(); const servers = serverUrls(value.baseUrl); return {...value, baseUrl:servers[0], servers}; },
     process: () => splash?.status() ?? {model:null,pid:null,port:stoppedPort,ready:false,idleLeftMs:0,error:splashFail?.error ?? null},
     restart: async id => { await processStatus(); if (!splash) throw Error(splashFail?.error ?? 'Enable Splash first.'); await splash.restart(id); },
     log: line => bb.log.info(line), onDetected: report => { compatibility = report; }, ...testing,

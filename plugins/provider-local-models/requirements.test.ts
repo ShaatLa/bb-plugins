@@ -45,3 +45,11 @@ test('command output streams and cancellation reaps a fake command', async () =>
   const result=runCommand(process.execPath,['-e','console.log("ready");setInterval(()=>{},1000)'],abort.signal,()=>abort.abort());
   await assert.rejects(()=>result,/abort/i);
 });
+
+test('doctor checks every configured server and counts its models', async () => {
+  const run: RunCommand = async binary => ({ code: 0, output: binary.endsWith('sw_vers') ? '26.4' : 'Apple M3' });
+  const report = await doctor({ binary: '/fake/splash', baseUrl: 'http://a/v1', servers: ['http://a/v1', 'http://b/v1', 'http://c/v1', 'http://d/v1'], run, brew: null, exists: async () => false, platform: 'darwin', arch: 'arm64',
+    fetcher: async url => String(url).startsWith('http://a') ? Response.json({ data: [{}, {}] }) : String(url).startsWith('http://b') ? new Response(null, { status: 503 }) : String(url).startsWith('http://d') ? new Response('<html>', { status: 200 }) : Promise.reject(Error('EHOSTUNREACH')) }, signal());
+  assert.deepEqual(report.servers, [{ url: 'http://a/v1', reachable: true, models: 2 }, { url: 'http://b/v1', reachable: false, models: null }, { url: 'http://c/v1', reachable: false, models: null }, { url: 'http://d/v1', reachable: false, models: null }]);
+  assert.equal(report.llama.reachable, true);
+});

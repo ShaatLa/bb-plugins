@@ -30,7 +30,7 @@ async function brewPath() {
   }
   return null;
 }
-export type DoctorOptions = { binary: string; baseUrl: string; run?: RunCommand; exists?: typeof fileExists; brew?: string | null; platform?: string; arch?: string; memoryBytes?: number; fetcher?: typeof fetch; resolveBinary?: typeof realpath };
+export type DoctorOptions = { binary: string; baseUrl: string; servers?: string[]; run?: RunCommand; exists?: typeof fileExists; brew?: string | null; platform?: string; arch?: string; memoryBytes?: number; fetcher?: typeof fetch; resolveBinary?: typeof realpath };
 export async function doctor(options: DoctorOptions, signal: AbortSignal) {
   const run = options.run ?? runCommand, exists = options.exists ?? fileExists;
   const command = async (binary: string, args: string[]) => {
@@ -60,11 +60,19 @@ export async function doctor(options: DoctorOptions, signal: AbortSignal) {
     const value = await command('/usr/libexec/PlistBuddy', ['-c', 'Print :CFBundleShortVersionString', '/Applications/Llama.app/Contents/Info.plist']);
     if (value.code === 0) llamaVersion = value.output;
   }
-  const reachable = await (options.fetcher ?? fetch)(options.baseUrl + '/models', { signal: AbortSignal.any([signal, AbortSignal.timeout(3000)]) }).then(async response => { await response.body?.cancel(); return response.ok; }, () => false);
+  // Every configured server, so a second machine that stopped answering shows on the settings page.
+  const servers = await Promise.all([...new Set([options.baseUrl, ...options.servers ?? []])].map(async url => {
+    const models = await (options.fetcher ?? fetch)(url + '/models', { signal: AbortSignal.any([signal, AbortSignal.timeout(3000)]) })
+      .then(async response => { if (!response.ok) { await response.body?.cancel(); return null; } const body = await response.json(); return Array.isArray(body?.data) ? body.data.length as number : null; })
+      .catch(() => null);
+    return { url, reachable: models !== null, models };
+  }));
+  const reachable = servers[0].reachable;
   return {
     machine, supported: device ? device.code === 0 : eligible,
     supportMessage: device ? device.output || (device.code === 0 ? 'Splash device-check passed' : 'Splash device-check failed') : eligible ? 'Apple silicon, macOS and GPU requirements met' : 'Splash not supported on this Mac: requires arm64, macOS 26.4+, and Apple M3 or later.',
     llama: { installed: llamaInstalled, version: llamaVersion, reachable, url: options.baseUrl, downloadUrl: 'https://llama.app/' },
+    servers, checkedAt: Date.now(),
     brew: { path: brew, url: 'https://brew.sh', bootstrap: BREW_BOOTSTRAP },
     splash: { installed, binary: options.binary, version: splashVersion?.code === 0 ? splashVersion.output : null, error: splashVersion && splashVersion.code !== 0 ? splashVersion.output : null, outdated: brewOk && /^incoai\/tap\/splash$/m.test(outdated!.output), updateError: outdated && !brewOk ? outdated.output : null },
   };

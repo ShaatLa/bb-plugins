@@ -8,7 +8,9 @@
 .lm-settings button, .lm-settings input { border: 1px solid var(--border, #8886); border-radius: .3rem; background: transparent; color: inherit; padding: .25rem .5rem; }
 .lm-settings button:not(:disabled) { cursor: pointer; }
 .lm-settings button:disabled { opacity: .5; }
-.lm-settings input { width: 8rem; }
+.lm-settings input[type="number"] { width: 8rem; }
+.lm-pull input { flex: 1; min-width: 14rem; }
+.lm-settings button, .lm-settings input { min-height: 1.75rem; }
 .lm-settings :focus-visible { outline: 2px solid var(--ring, currentColor); outline-offset: 2px; }
 .lm-table { overflow-x: auto; }
 .lm-settings table { width: 100%; border-collapse: collapse; text-align: left; }
@@ -17,3 +19,14 @@
 .lm-settings [role="alert"] { color: var(--destructive, #c44); }
 .lm-confirm { max-width: min(36rem, 90vw); border: 1px solid var(--border, #8886); border-radius: .5rem; background: var(--background, Canvas); color: var(--foreground, CanvasText); padding: 1.5rem; }
 .lm-confirm::backdrop { background: #0008; }
+.lm-health { list-style: none; padding: 0; margin: .5rem 0; display: grid; gap: .35rem; }
+.lm-state { font-weight: 600; margin-right: .25rem; }
+.lm-ok { color: var(--success, #3a3); }
+.lm-bad { color: var(--destructive-text, var(--destructive, #c44)); }
+.lm-warn { color: var(--warning-text, var(--warning, #b80)); }
+.lm-settings .lm-warning { color: var(--warning-text, var(--warning, #b80)); border-left: 3px solid var(--warning, #b80); padding-left: .5rem; }
+.lm-settings details summary { cursor: pointer; opacity: .75; }
+.lm-page-alert { position: sticky; top: 0; z-index: 1; background: var(--background, Canvas); padding: .5rem; border: 1px solid var(--destructive, #c44); border-radius: .3rem; }
+.lm-confirm .lm-danger { border-color: var(--destructive, #c44); color: var(--destructive-text, var(--destructive, #c44)); }
+.lm-settings form small { display: block; }
+.lm-settings button { white-space: nowrap; }
