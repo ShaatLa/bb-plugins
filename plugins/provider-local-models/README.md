@@ -60,7 +60,9 @@ bb plugin config local-models set defaultModel 'ggml-org/gpt-oss-20b-GGUF:MXFP4'
 - With a second machine in `baseUrl` (model ids `<machine>/owner/Model-GGUF:QUANT`),
   the plugin registers each answering machine with Machine Slots every minute, so
   each has its own `local-model` slot. A model with a machine prefix leases that
-  machine, a model only on this Mac leases `local`, and a model both serve runs on
+  machine and any other id (`splash/...` or plain) leases `local` and runs on this
+  Mac, even when another machine serves the same model. Only `ask --any-device`
+  or `local_models_ask` with `anyDevice: true` lets a model both serve run on
   whichever machine Slots grants first.
 - The plugin registers the agent tool `local_models_ask` for one-shot prompts
   to local models. It is available to threads using other providers; local-models

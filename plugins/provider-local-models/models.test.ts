@@ -159,16 +159,19 @@ test('ask surfaces stream errors and truncated streams as errors',async t=>{
   await assert.rejects(ask,/answered 400/);
 });
 
-test('routes a model another machine also serves through the device Slots grants', async (t) => {
-  const lists:Record<string,string[]>={here:['splash/org/Qwen-GGUF:Q4','org/Only-GGUF:Q4'],m1:['M1/org/Qwen-GGUF:Q4','M1/org/Big-GGUF:Q4']};
+test('routes by the id; only anyDevice lets Slots pick among machines that serve the model', async (t) => {
+  const lists:Record<string,string[]>={here:['splash/org/Qwen-GGUF:Q4','org/Qwen-GGUF:Q4','org/Only-GGUF:Q4'],m1:['box2/org/Qwen-GGUF:Q4','box2/org/Big-GGUF:Q4']};
   t.mock.method(globalThis,'fetch',async (input:any)=>Response.json({data:lists[new URL(String(input)).hostname].map(id=>({id}))}));
   const {router}=await import('./router.ts');const client=router('http://here/v1,http://m1/v1','org/Qwen-GGUF:Q4','',true),signal=AbortSignal.timeout(1000);
-  assert.deepEqual(await client.devices(signal),['M1']);
-  assert.deepEqual(await client.route(undefined,signal),{id:'splash/org/Qwen-GGUF:Q4',device:undefined,variants:{'':'splash/org/Qwen-GGUF:Q4',M1:'M1/org/Qwen-GGUF:Q4'}});
-  assert.deepEqual(await client.route('M1/org/Big-GGUF:Q4',signal),{id:'M1/org/Big-GGUF:Q4',device:'M1',variants:{M1:'M1/org/Big-GGUF:Q4'}});
+  assert.deepEqual(await client.devices(signal),['box2']);
+  assert.deepEqual(await client.route(undefined,signal),{id:'splash/org/Qwen-GGUF:Q4',device:'local',variants:{'':'splash/org/Qwen-GGUF:Q4'}});
+  assert.deepEqual(await client.route('org/Qwen-GGUF:Q4',signal),{id:'org/Qwen-GGUF:Q4',device:'local',variants:{'':'org/Qwen-GGUF:Q4'}});
+  assert.deepEqual(await client.route('box2/org/Big-GGUF:Q4',signal),{id:'box2/org/Big-GGUF:Q4',device:'box2',variants:{box2:'box2/org/Big-GGUF:Q4'}});
   assert.equal((await client.route('org/Only-GGUF:Q4',signal)).device,'local');
+  assert.deepEqual(await client.route(undefined,signal,true),{id:'splash/org/Qwen-GGUF:Q4',device:undefined,variants:{'':'splash/org/Qwen-GGUF:Q4',box2:'box2/org/Qwen-GGUF:Q4'}});
   lists.m2=['M2/org/Other-GGUF:Q4'];const three=router('http://here/v1,http://m1/v1,http://m2/v1','org/Qwen-GGUF:Q4','',true);
-  assert.equal((await three.route(undefined,signal)).device,'M1');
+  assert.equal((await three.route(undefined,signal,true)).device,'box2');
+  assert.equal((await three.route(undefined,signal)).device,'local');
 });
 
 test('asks again when a queued request gets no headers in time', async (t) => {

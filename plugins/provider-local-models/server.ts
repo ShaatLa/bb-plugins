@@ -125,9 +125,10 @@ export function createPlugin(bb: BbPluginApi, testing: Pick<Parameters<typeof sp
   };
   const slots = async (method: string, input: Record<string, unknown>) => bb.sdk.plugins.callRpc({pluginId:'slots',method,input:(method==='acquire'?{...input,hostId:(await bb.sdk.system.config()).primaryHostId}:input) as any,outputSchema:z.any(),signal:AbortSignal.timeout(10000)}) as Promise<any>;
   const signal = (parent: AbortSignal | undefined, timeout = 20*60000) => AbortSignal.any([...(parent ? [parent] : []), AbortSignal.timeout(timeout)]);
-  // Runs on the machine Machine Slots grants when another machine serves the same model; a machine prefix pins it.
-  async function leasedAsk(threadId: string | undefined, job: string, input: {prompt:string;model?:string;system?:string;max_tokens?:number;effort?:string}, abort: AbortSignal) {
-    const c = await client(), route = await c.route(input.model, abort);
+  // Runs where the id says (`<device>/...` on that device, other ids on this Mac); with anyDevice, on the machine Machine Slots grants
+  // when another machine serves the same model.
+  async function leasedAsk(threadId: string | undefined, job: string, {anyDevice, ...input}: {prompt:string;model?:string;system?:string;max_tokens?:number;effort?:string;anyDevice?:boolean}, abort: AbortSignal) {
+    const c = await client(), route = await c.route(input.model, abort, anyDevice);
     return withSlot(slots, threadId, job, abort, device => c.ask({...input, model: route.variants[device ?? ''] ?? route.id}, abort), line => bb.log.info(line), undefined, undefined, route.device);
   }
   // Registers the machines whose servers answer, so Machine Slots keeps one local-model slot per machine and stops
@@ -145,7 +146,7 @@ export function createPlugin(bb: BbPluginApi, testing: Pick<Parameters<typeof sp
   bb.agents.registerTool({
     name: 'local_models_ask',
     description: 'One-shot prompt (no tools) to a local llama.cpp model: private and free but slow; for summaries, drafts, classification. Queues behind other Machine Slots local-model work and fails after 20 minutes.',
-    parameters: z.object({prompt:z.string().min(1).max(200000),model:z.string().optional().describe('Model id from `bb local-models status`, e.g. ggml-org/gpt-oss-20b-GGUF:MXFP4; omit for the default model'),system:z.string().optional().describe('System prompt text'),max_tokens:z.number().int().min(1).max(8192).default(1024).describe('Output token limit, reasoning included'),effort:z.enum(['none','low','medium','high','xhigh']).optional().describe('Reasoning level; omit for the model default')}),
+    parameters: z.object({prompt:z.string().min(1).max(200000),model:z.string().optional().describe('Model id from `bb local-models status`, e.g. ggml-org/gpt-oss-20b-GGUF:MXFP4; omit for the default model'),system:z.string().optional().describe('System prompt text'),max_tokens:z.number().int().min(1).max(8192).default(1024).describe('Output token limit, reasoning included'),effort:z.enum(['none','low','medium','high','xhigh']).optional().describe('Reasoning level; omit for the model default'),anyDevice:z.boolean().default(false).describe('Run on whichever machine Machine Slots grants first when several serve this model; by default the id decides: <device>/... runs on that device, other ids on this Mac')}),
     presentation: {label:{pending:'Asking local model',completed:'Asked local model'}},
     async execute(input,ctx) {
       try {const abort=signal(ctx.signal);const result=await leasedAsk(ctx.threadId,'local_models_ask · '+(input.model??'default model'),input,abort);void journal('tool',ctx.threadId,result);return result.content;}
@@ -160,8 +161,8 @@ export function createPlugin(bb: BbPluginApi, testing: Pick<Parameters<typeof sp
       const result=await (await client()).status(signal(ctx.signal,10000));
       return {exitCode:0,stdout:(options.json?JSON.stringify(result):result.models.map(m=>m.id+' · '+m.displayName+' · '+m.status+' · context '+(m.contextSize??'Splash default')+(m.reasoningLevels?' · reasoning '+(m.reasoningLevels.join(', ')||'not adjustable'):'')).join('\n'))+'\n'};
     }}),
-    ask:cliCommand({summary:'Send one prompt without tools',positionals:[{name:'prompt',description:'Prompt text',required:true}],options:{json,model:{type:'string',description:'Model id'},system:{type:'string',description:'System text'},'max-tokens':{type:'integer',min:1,max:8192,default:1024,description:'Output token limit'},effort:{type:'enum',values:REASONING_EFFORTS,description:'Reasoning level'},timeout:{type:'duration',defaultUnit:'m',default:1200000,min:1,max:2147483647,description:'Request timeout such as 90s or 20m; a bare number means minutes. Default 20m (shown in ms)'}},async run({options,positionals},ctx){
-      const abort=signal(ctx.signal,options.timeout),result=await leasedAsk(ctx.threadId,'bb local-models ask · '+(options.model??'default model'),{prompt:positionals.prompt,model:options.model,system:options.system,max_tokens:options['max-tokens'],effort:options.effort},abort);
+    ask:cliCommand({summary:'Send one prompt without tools',positionals:[{name:'prompt',description:'Prompt text',required:true}],options:{json,model:{type:'string',description:'Model id'},system:{type:'string',description:'System text'},'max-tokens':{type:'integer',min:1,max:8192,default:1024,description:'Output token limit'},effort:{type:'enum',values:REASONING_EFFORTS,description:'Reasoning level'},'any-device':{type:'boolean',description:'Run on whichever machine Machine Slots grants when several serve the model (default: <device>/... on that device, other ids on this Mac)'},timeout:{type:'duration',defaultUnit:'m',default:1200000,min:1,max:2147483647,description:'Request timeout such as 90s or 20m; a bare number means minutes. Default 20m (shown in ms)'}},async run({options,positionals},ctx){
+      const abort=signal(ctx.signal,options.timeout),result=await leasedAsk(ctx.threadId,'bb local-models ask · '+(options.model??'default model'),{prompt:positionals.prompt,model:options.model,system:options.system,max_tokens:options['max-tokens'],effort:options.effort,anyDevice:options['any-device']},abort);
       void journal('cli',ctx.threadId,result);
       return {exitCode:0,stdout:(options.json?JSON.stringify(result):result.content)+'\n'};
     }}),

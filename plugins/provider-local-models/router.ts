@@ -68,12 +68,14 @@ export function router(baseUrl: string, defaultModel: string, dataDir: string, s
     },
     // Machines that serve models now, in server order: the devices to register with Machine Slots.
     async devices(signal: AbortSignal) { return [...new Set((await models(signal)).map((m:any)=>machineOf(m.id)).filter(Boolean))] as string[]; },
-    // Where a request may run: a model with a machine prefix pins that machine; one that another machine also serves
-    // leaves the choice to Slots (device undefined), and `variants` maps each device ('' for this Mac) to its id.
-    async route(model: string|undefined, signal: AbortSignal) {
+    // Where a request may run: the id decides (a machine prefix pins that machine, any other id this Mac). Only with
+    // anyDevice may a model another machine also serves go to the device Slots grants (device undefined);
+    // `variants` maps each device ('' for this Mac) to its id.
+    async route(model: string|undefined, signal: AbortSignal, anyDevice=false) {
       const listed=await models(signal), id=select(listed,model)?.id;
       if(!id)return {id:model, device:'local', variants:{} as Record<string,string>};
       const pinned=machineOf(id); if(pinned)return {id, device:pinned, variants:{[pinned]:id}};
+      if(!anyDevice)return {id, device:'local', variants:{'':id} as Record<string,string>};
       const base=baseOf(id), variants:Record<string,string>={'':id};
       for(const m of listed){const machine=machineOf(m.id); if(machine&&baseOf(m.id)===base)variants[machine]??=m.id;}
       // Unpinned only when every answering machine and this Mac serve it, since Slots may grant any of them;

@@ -30,10 +30,11 @@ reasoning knob. Muse uses reasoning_strength low/medium/high/xhigh; thinking
 cannot be disabled. Unknown capabilities send no reasoning parameters.
 
 `bb local-models ask "prompt" --model <id> --effort medium --max-tokens 1024
---timeout 20m [--system "text"] [--json]` is a one-shot request without tools.
-When the same model is served by this Mac and another machine (`splash/org/Model` and
-`M1/org/Model`), `ask` and `local_models_ask` without a machine prefix take whichever
-machine Slots grants first and run that machine's copy.
+--timeout 20m [--system "text"] [--any-device] [--json]` is a one-shot request without tools.
+The id decides where it runs: `<device>/org/Model` on that device, `splash/org/Model` or
+`org/Model` on this Mac, even when another machine serves the same model. Pass
+`--any-device` (`anyDevice: true` in `local_models_ask`) only when any machine
+will do: then it runs on whichever machine Slots grants first.
 `local_models_ask` offers the same task to agents (20-minute timeout), except
 local-models threads, to avoid recursive GPU requests. Both hold a Machine Slots
 `local-model` use for the request (queueing behind other local-model work) when

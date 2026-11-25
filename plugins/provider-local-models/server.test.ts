@@ -81,3 +81,37 @@ test('install-splash re-reads requirements, so an update found after a cached ch
     assert.ok(calls.some(a=>a[0]==='upgrade'));
   }finally{await dispose?.();}
 });
+
+test('ask runs on the device its id names; anyDevice lets Slots pick',async()=>{
+  const {startModelsServer}=await import('./test/models-server.ts');
+  const here=await startModelsServer({data:[{id:'org/Model-GGUF:Q4'},{id:'splash/org/Model-GGUF:Q4'}]});
+  const m1=await startModelsServer({data:[{id:'box2/org/Model-GGUF:Q4'},{id:'box2/org/Missing-GGUF:Q4'}]});
+  let cli:any,tool:any;const acquires:any[]=[];
+  // Fake Machine Slots: grants the pinned device, or box2 (the first registered device) when none is pinned.
+  const callRpc=async({method,input}:any)=>{if(method!=='acquire')return {ok:true,data:{}};acquires.push(input);return {ok:true,data:{kind:'leased',useId:'use-1',device:input.device??'box2'}};};
+  const bb={log:{error:()=>{},info:()=>{}},onDispose:()=>{},pluginId:'local-models',server:{experimental_dataDir:'/tmp'},sdk:{plugins:{callRpc},system:{config:async()=>({primaryHostId:'host_example'})}},settings:{define:()=>({onChange:()=>{},get:async()=>({baseUrl:here.baseUrl+'\n'+m1.baseUrl,defaultModel:''})})},providers:{register:()=>{},experimental_contributeEnv:()=>{}},rpc:{register:()=>{}},agents:{registerTool:(v:any)=>tool=v,configure:()=>{}},cli:{register:(v:any)=>cli=v}} as unknown as BbPluginApi;
+  plugin(bb);
+  const ctx={signal:new AbortController().signal,threadId:'thr_example'};
+  const check=async(ask:()=>Promise<unknown>,device:string|undefined,server:typeof here,model:string)=>{
+    const before=[here.chats.length,m1.chats.length];await ask();
+    assert.equal(acquires.at(-1).device,device);
+    assert.equal(server.chats.length,(server===here?before[0]:before[1])+1);assert.equal(server.chats.at(-1).model,model);
+    assert.equal((server===here?m1:here).chats.length,server===here?before[1]:before[0]);
+  };
+  const viaTool=(input:any)=>async()=>assert.equal(await tool.execute({prompt:'hello',...input},ctx),'fixture reply');
+  const viaCli=(...args:string[])=>async()=>assert.equal((await cli.run(['ask','hello',...args],ctx)).exitCode,0);
+  try{
+    for(const id of ['org/Model-GGUF:Q4','splash/org/Model-GGUF:Q4']){
+      await check(viaTool({model:id}),'local',here,id);await check(viaCli('--model',id),'local',here,id);
+    }
+    await check(viaTool({model:'box2/org/Model-GGUF:Q4'}),'box2',m1,'box2/org/Model-GGUF:Q4');
+    await check(viaCli('--model','box2/org/Model-GGUF:Q4'),'box2',m1,'box2/org/Model-GGUF:Q4');
+    await check(viaTool({model:'org/Model-GGUF:Q4',anyDevice:true}),undefined,m1,'box2/org/Model-GGUF:Q4');
+    await check(viaCli('--model','org/Model-GGUF:Q4','--any-device'),undefined,m1,'box2/org/Model-GGUF:Q4');
+    // A plain id this Mac does not list fails; it never falls back to another machine's copy.
+    const chats=m1.chats.length;
+    assert.match((await tool.execute({prompt:'hello',model:'org/Missing-GGUF:Q4'},ctx)).content[0].text,/Local model not found/);
+    assert.equal((await cli.run(['ask','hello','--model','org/Missing-GGUF:Q4'],ctx)).exitCode,1);
+    assert.equal(m1.chats.length,chats);
+  }finally{await here.close();await m1.close();}
+});
