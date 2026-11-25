@@ -114,6 +114,7 @@ describe("task questions", () => {
     const ask = (prompt: string, steps: string[]) => structured.handlers.createQuestion({ kind: "check", askedByThread: "thr_example", taskId: task.id, prompt, steps, mode: "single", options: [] });
     await expect(ask("Does [the page](https://example.com/a) look right?", ["Open [state B](https://example.com/b)"])).rejects.toThrow(/at most one link.*has 2.*several --kind check questions/);
     await expect(ask("See https://example.com/a and https://example.com/b", [])).rejects.toThrow(/has 2/);
+    await expect(ask("Open [one](/docs/a(b)/one)", ["Then [two](/docs/a(b)/two)"])).rejects.toThrow(/has 2/);
     await expect(ask("Open [the board](/plugins/work-board/work-board/task/EXA-1)", ["Then [the plan](/plugins/work-board/work-board/task/EXA-1/plan)"])).rejects.toThrow(/has 2/);
     // The same link twice is one link.
     const { question } = await ask("Does [the page](https://example.com/a) look right?", ["Open https://example.com/a", "Press Save"]);

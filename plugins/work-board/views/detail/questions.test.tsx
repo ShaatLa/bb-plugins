@@ -590,7 +590,7 @@ it("closes the edit form and keeps a withdrawn chain head and its predecessor in
   const { task, rpc, structured } = setup();
   const input = { kind: "check" as const, askedByThread: null, taskId: task.id, mode: "single" as const, options: [] };
   const { question: old } = await structured.handlers.createQuestion({ ...input, prompt: "Does the list load?" });
-  const { question: head } = await structured.handlers.createQuestion({ ...input, prompt: "Does the new list load?", supersedes: { questionId: old.id, revision: 1 } });
+  const { question: head } = await structured.handlers.createQuestion({ ...input, prompt: "Does the [new list](https://example.com/list) load?", supersedes: { questionId: old.id, revision: 1 } });
   const slot = renderSlot(app.navPanels[0]!, { subPath: `task/${task.key}` }, { rpc });
   const group = await slot.findByRole("group", { name: head.prompt });
   fireEvent.click(within(group).getByRole("button", { name: "Edit question" }));
@@ -604,6 +604,9 @@ it("closes the edit form and keeps a withdrawn chain head and its predecessor in
   expect(earlier.textContent).toContain("Review canceled");
   expect(earlier.querySelector("time")?.dateTime).toBe(question.withdrawnAt);
   expect(within(earlier).getByText("Replaces an earlier check")).toBeTruthy();
+  // The withdrawn card's own prompt renders its Markdown link.
+  const promptLink = within(earlier).getAllByRole("link", { name: "new list" }).find((link) => link.closest("p.font-medium"));
+  expect(promptLink?.getAttribute("href")).toBe("https://example.com/list");
 });
 
 it("closes an open edit form when the check is superseded and shows it dimmed under its successor without controls", async () => {

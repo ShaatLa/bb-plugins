@@ -43,6 +43,8 @@ describe("task link interception", () => {
     renderSlot({ component: Host }, {}, { experimental_panel: { openTab } });
     expect(clickLink("/plugins/work-board/work-board/task/EXA-12", { metaKey: true }).defaultPrevented).toBe(false);
     expect(clickLink("/plugins/other/page").defaultPrevented).toBe(false);
+    expect(clickLink("https://example.com/plugins/work-board/work-board/task/EXA-12").defaultPrevented).toBe(false);
+    expect(clickLink("/other/plugins/work-board/work-board/task/EXA-12").defaultPrevented).toBe(false);
     expect(clickLink("/plugins/work-board/work-board/task/EXA-12").defaultPrevented).toBe(false);
     expect(openTab).toHaveBeenCalledTimes(1);
   });

@@ -506,7 +506,7 @@ export function QuestionsSection({
       {question.supersededBy ? renderSuperseded(question) : <>
         {question.withdrawnAt ? <div className="space-y-1 rounded-md border border-border p-3">
           {replacement(question)}
-          <p className="font-medium">{question.prompt}</p>
+          <p className="font-medium break-words"><LinkedText text={question.prompt} /></p>
           <p className="text-xs text-muted-foreground">Withdrawn by <ActorLabel name={question.withdrawnBy!} /> · <time dateTime={question.withdrawnAt} title={new Date(question.withdrawnAt).toLocaleString()}>{formatRelativeTime(question.withdrawnAt, now)}</time>: {question.withdrawReason}</p>
         </div> : <QuestionAnswer
           key={`${question.id}:${question.revision}`}

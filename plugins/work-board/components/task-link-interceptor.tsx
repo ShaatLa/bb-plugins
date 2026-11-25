@@ -6,7 +6,7 @@ import {
 import { TASK_TAB } from "../views/embed/index.js";
 import { openPlanTab } from "../views/plan/open.js";
 
-const TASK_LINK = /\/plugins\/work-board\/work-board\/task\/([^/?#]+)(\/plan(?![^/?#]))?/;
+const TASK_LINK = /^\/plugins\/work-board\/work-board\/task\/([^/?#]+)(\/plan(?![^/?#]))?/;
 
 /**
  * Opens chat links to Work Board tasks (and their plans) in the thread's side-panel tabs
@@ -26,7 +26,17 @@ export function useTaskLinkInterception(_input: ExperimentalThreadContextSegment
       if (event.defaultPrevented || event.button !== 0) return;
       if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
       const anchor = event.target instanceof Element ? event.target.closest("a[href]") : null;
-      const match = anchor?.getAttribute("href")?.match(TASK_LINK);
+      const href = anchor?.getAttribute("href");
+      if (!href) return;
+      let url: URL;
+      try {
+        url = new URL(href, document.baseURI);
+      } catch {
+        return;
+      }
+      // Only this app's own task routes; an external page with the same path stays a web link.
+      if (url.origin !== new URL(document.baseURI).origin) return;
+      const match = url.pathname.match(TASK_LINK);
       if (!match) return;
       let taskKey: string;
       try {

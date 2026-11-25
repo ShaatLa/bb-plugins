@@ -55,7 +55,8 @@ export function assertSupersessionLinks(questions: readonly TaskQuestion[]): voi
   }
 }
 
-const MARKDOWN_LINK = /\]\(\s*<?([^)\s>]+)>?(?:\s+"[^"]*")?\s*\)/g;
+// The target may hold one level of parentheses, as the task panel renders it (`/docs/a(b)/end`).
+const MARKDOWN_LINK = /\]\(\s*<?((?:[^()\s<>]|\([^()\s<>]*\))+)>?(?:\s+"[^"]*")?\s*\)/g;
 const BARE_URL = /\bhttps?:\/\/[^\s<>()\]]+/g;
 
 /** Distinct link targets in a question's prompt and steps: Markdown link targets and bare web URLs. */
