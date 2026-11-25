@@ -11,7 +11,7 @@ import { kindState } from "../attention/modes";
 import { CHECK_FIELDS, CHECKS_CONFIG_KEYS, CHECKS_ENABLED_OWNER_ONLY, CHECKS_PREFIX, type CheckField } from "../checks/config";
 import { checksService } from "../checks/service";
 import { PR_EVENT_KEYS, prEventSettings, setPrEventSetting } from "../git-sync/events";
-import { archiveSettingSchema, autoArchiveAfterDaysSchema, READINESS_OWNER_ONLY, PLANNING_OWNER_ONLY, planningSchema, staleIdleThresholdSchema, statusNotificationsSchema } from "../shared/project-settings";
+import { archiveSettingSchema, autoArchiveAfterDaysSchema, READINESS_OWNER_ONLY, DONE_REVIEW_OWNER_ONLY, PLANNING_OWNER_ONLY, planningSchema, staleIdleThresholdSchema, statusNotificationsSchema } from "../shared/project-settings";
 
 // Per-project settings addressable one key at a time; Git settings carry a "git." prefix.
 const PROJECT_KEYS = {
@@ -21,6 +21,7 @@ const PROJECT_KEYS = {
   archiveThreadsOnClose: archiveSettingSchema,
   archiveReviewerOnApproval: archiveSettingSchema,
   checkReadiness: archiveSettingSchema,
+  doneRequiresReview: archiveSettingSchema,
   planning: planningSchema,
 } as const;
 type ProjectKey = keyof typeof PROJECT_KEYS;
@@ -72,6 +73,7 @@ export function projectConfigHandlers(bb: BbPluginApi, store: TasksApiStore) {
       if (expected !== undefined && !key.startsWith("git.")) throw new Error(`expected applies to git.* keys only, not ${key}`);
       // The owner changes planning in the project settings (updateProject from the app); no setting call proves the caller is the owner.
       if (key === "checkReadiness") throw new Error(READINESS_OWNER_ONLY);
+      if (key === "doneRequiresReview") throw new Error(DONE_REVIEW_OWNER_ONLY);
       if (key === "planning") throw new Error(PLANNING_OWNER_ONLY);
       if (ATTENTION_KEYS.includes(key)) throw new Error(ATTENTION_OWNER_ONLY);
       requireProject(projectId);

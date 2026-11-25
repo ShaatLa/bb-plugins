@@ -543,3 +543,9 @@ The **Copy task link** button next to the card key copies a Markdown task link f
 Export v14 (0.28.0) adds optional per-project workflow policy, outcome evidence and deploy PR citations; imports retain v1–v13 compatibility. Older releases cannot read v14 exports.
 
 Use `list --stale-status` to filter diagnostic warnings before pagination; `list --json` and `show --json` expose `staleStatusFlags`. Diagnostics use recorded state, not a fresh remote check. Record non-PR results explicitly with `comment KEY --kind outcome --body "Result"`. Existing done cards with ordinary non-system comments are grandfathered until a status change. Configure rules using `project update PREFIX --workflow-policy-file policy.json`; omitted fields reset to defaults, null disables the corresponding rule.
+
+## Done after review
+
+Only the owner sets `doneRequiresReview` in project settings (default off). When it is on, create cards outside Done. Before moving a card into any Done status, including from Canceled, pass the project's listed open review or testing role (distinct from In Progress), or record an approving review with `bb work-board comment EXA-1 --kind review --head <sha> --verdict approve --thread thr_example --body "..."`. Follow the refusal's status hint. Only entries since the latest In Progress count, or the whole history when the card never entered it. A project move applies the destination roles to every newly done family member.
+
+Entering Canceled, panel moves and automatic moves stay free. A visit to review can be followed immediately by Done. Raw RPC without `agentThreadId` has panel access. Archive v26 saves the switch for newly restored projects. Existing projects keep the local switch, the log stays local, and imported approval comments never satisfy the gate.

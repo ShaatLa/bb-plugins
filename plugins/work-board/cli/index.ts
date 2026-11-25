@@ -6,7 +6,7 @@ import { gitSyncConfigSchema } from "../shared/git-sync";
 import { advisoryText } from "../shared/task-advisories";
 import { openPlanDebt, pendingLookupsOf, unsentNoticesOf } from "../plan-debt/store";
 import { TASK_DATE_FIELDS } from "../shared/task-dates.js";
-import { workflowPolicySchema } from "../shared/workflow-policy.js";
+import { getWorkflowPolicy, workflowPolicySchema } from "../shared/workflow-policy.js";
 import { DEFAULT_TASK_STATUSES, taskStatusesSchema } from "../shared/statuses.js";
 import { resolve } from "node:path";
 import {
@@ -81,7 +81,7 @@ import { LITERAL_TEXT_FIELDS } from "../checks/config";
 import { planCommands } from "./plan";
 import { planAdvisory } from "../shared/plan";
 import { startHint } from "../shared/start-hint";
-import { planningOn, planningRequired, READINESS_HINT, READINESS_OWNER_ONLY, PLANNING_OWNER_ONLY } from "../shared/project-settings";
+import { planningOn, planningRequired, READINESS_HINT, READINESS_OWNER_ONLY, DONE_REVIEW_OWNER_ONLY, PLANNING_OWNER_ONLY } from "../shared/project-settings";
 import { planGatedStatuses } from "../shared/workflow-policy";
 import { createPlanStore } from "../plans/store";
 
@@ -1997,6 +1997,7 @@ export function registerTasksCli(
                 ["BB project", project.linkedBbProjectId ?? "-"],
                 ["Auto archive (days)", project.autoArchiveAfterDays ?? "off"],
                 ["Idle warning (minutes)", project.staleIdleMinutes ?? "45"],
+                ["Done after review", project.doneRequiresReview ?? "off"],
                 ["Planning", project.planning ?? "off"],
                 ["Plan-gated statuses", planGatedStatuses(project).join(", ") || "-"],
                 ["Planning changed", project.planningChangedAt ? `${project.planningChangedAt}, was ${project.planningPrevious ?? "off"}` : "-"],
@@ -2022,6 +2023,7 @@ export function registerTasksCli(
             "stale-idle": { type: "enum", values: ["off", "30", "45", "60", "120"] as const, description: "Project idle warning threshold in minutes" },
             "status-notifications": { type: "enum", values: ["off", "all", "done"] as const, description: "Project status change push notifications" },
             "check-readiness": { type: "string", description: READINESS_OWNER_ONLY },
+            "done-requires-review": { type: "string", description: DONE_REVIEW_OWNER_ONLY },
             planning: { type: "enum", values: ["off", "optional", "required"] as const, description: "Owner only, set in the project settings: the CLI refuses it" },
             machine: MACHINE_OPTION,
             name: { type: "string", description: "New project name" },
@@ -2088,6 +2090,7 @@ export function registerTasksCli(
                 catch { throw new CliError("Invalid workflow policy file"); }
               }
               if (input.options["check-readiness"] !== undefined) throw new CliError(READINESS_OWNER_ONLY, { code: "owner_only" });
+              if (input.options["done-requires-review"] !== undefined) throw new CliError(DONE_REVIEW_OWNER_ONLY, { code: "owner_only" });
               if (input.options.planning !== undefined) throw new CliError(PLANNING_OWNER_ONLY, { code: "owner_only" });
               const changes = {
                 workflowPolicy,
@@ -2153,8 +2156,18 @@ export function registerTasksCli(
                   `Project prefix is already in use: ${renameInput.prefix}`,
                 );
               }
-              const updated = store.transaction(() =>
-                store.tasks.updateProject(project.id, {
+              const updated = store.transaction(() => {
+                const policy = updateInput?.workflowPolicy;
+                if (policy) {
+                  const current = store.tasks.getProject(project.id);
+                  if (current?.doneRequiresReview === "on") {
+                    const previous = getWorkflowPolicy(current);
+                    const roles = ["doneStatus", "inProgressStatus", "reviewStatus", "testingStatus"] as const;
+                    if (roles.some(role => policy[role] !== previous[role]))
+                      throw new CliError("workflow roles of a project with Done after review are changed by the owner in the project settings", { code: "owner_only" });
+                  }
+                }
+                return store.tasks.updateProject(project.id, {
                   prefix: renameInput?.prefix,
                   workflowPolicy: updateInput?.workflowPolicy,
                   statuses: updateInput?.statuses,
@@ -2166,8 +2179,8 @@ export function registerTasksCli(
                   color: updateInput?.color,
                   folderId: updateInput?.folderId,
                   linkedBbProjectId: updateInput?.linkedBbProjectId,
-                }),
-              );
+                });
+              });
               publishProjectsChanged(bb, updated.id);
               return input.options.json
                 ? JSON.stringify({ project: updated })
@@ -2516,6 +2529,7 @@ export function registerTasksCli(
                 : undefined;
               const created = tasksRpcContract.createTask.input.parse({
                 projectId: project.id,
+                agentThreadId: ctx.threadId ?? null,
                 title: input.options.title,
                 status: input.options.status,
                 template: input.options.template,
@@ -3318,6 +3332,7 @@ ${activity.diagnostics?.inactiveSessions.map((session) => `@thread:${session.thr
                   tasksRpcContract.moveTaskToProject.input.parse({
                     taskId: task.id,
                     projectId: project.id,
+                    agentThreadId: ctx.threadId ?? null,
                     authorName: taskAuthor(ctx),
                   }),
                 ),

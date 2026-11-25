@@ -364,6 +364,13 @@ function labelChangeBody(
     : `Labels changed to ${names.join(", ")} by ${authorName}`;
 }
 
+function assertReviewBeforeDone(store: TasksApiStore, task: StoredTask, target: string | undefined, agentThreadId?: string | null): void {
+  // shortcut: raw RPC may omit agentThreadId, use authenticated caller identity when the SDK exposes it.
+  if (!agentThreadId || !target) return;
+  const refusal = store.tasks.reviewGateRefusal(task, target);
+  if (refusal) throw new Error(refusal);
+}
+
 /** An agent may not close a card while a question to the owner is open; the owner and automatic moves are not checked. */
 function assertNoOpenOwnerQuestions(
   bb: BbPluginApi,
@@ -1150,6 +1157,7 @@ export function registerHandlers(
       });
       // shortcut: raw RPC can change readiness or withdraw an answer, enforce owner identity when the platform authenticates app calls.
       if (project.checkReadiness !== before?.checkReadiness) bb.log.info(`check readiness for ${project.prefix}: ${before?.checkReadiness} → ${project.checkReadiness}`);
+      if (project.doneRequiresReview !== before?.doneRequiresReview) bb.log.info(`done after review for ${project.prefix}: ${before?.doneRequiresReview} → ${project.doneRequiresReview}`);
       if ((project.planning ?? "off") !== (before?.planning ?? "off")) bb.log.info(`planning for ${project.prefix}: ${before?.planning ?? "off"} → ${project.planning}`);
       publishProjectsChanged(bb, project.id);
       return { project };
@@ -1204,6 +1212,7 @@ export function registerHandlers(
         validateTaskLabels(store, input.projectId, input.labelIds);
         const task = store.transaction(() => {
           const created = store.tasks.createTask({
+            agentThreadId: input.agentThreadId,
             projectId: input.projectId,
             title: input.title,
             description: structured.applyTemplate(
@@ -1290,6 +1299,7 @@ export function registerHandlers(
           if (!before) throw new Error(`Task not found: ${input.taskId}`);
           // The caller's own session is attached first, so the closure snapshot below includes it.
           assertNoOpenOwnerQuestions(bb, store, before, input.status, input.agentThreadId);
+          assertReviewBeforeDone(store, before, input.status, input.agentThreadId);
           const attached = attachment && !before.archivedAt
             ? attachManualLink(store.tasks, current.id, attachment) : undefined;
           const updated = store.tasks.updateTask(current.id, {
@@ -1443,6 +1453,7 @@ export function registerHandlers(
         const before = store.tasks.getTask(current.id);
         if (!before) throw new Error(`Task not found: ${input.taskId}`);
         assertNoOpenOwnerQuestions(bb, store, before, input.status, input.agentThreadId);
+        assertReviewBeforeDone(store, before, input.status, input.agentThreadId);
         const moved = store.tasks.updatePosition(current.id, {
           closerThreadId: input.agentThreadId ?? null,
           status: input.status,
@@ -1471,6 +1482,7 @@ export function registerHandlers(
         const outcome = store.tasks.moveTaskToProject(
           current.id,
           input.projectId,
+          input.agentThreadId,
         );
         if (bb.storage.database().prepare<[], { found: number }>(`
           SELECT 1 AS found FROM task_dependencies d JOIN tasks t ON t.id=d.task_id

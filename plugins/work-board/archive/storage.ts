@@ -59,7 +59,7 @@ export function captureProject(
       .sort((a, b) => a.id.localeCompare(b.id));
     const manifest = archiveProjectSchema.parse({
       format: "bb-work-board",
-      version: 25,
+      version: 26,
       gitSync: createGitSyncStore(bb.storage.database()).config(projectId),
       project,
       folders,
@@ -249,6 +249,7 @@ export function restoreProject(
   markTrackerDirty(projectId);
   let confirmedLinks = false;
   store.transaction(() => {
+    const reviewMark = db.prepare<[], { id: number }>("SELECT coalesce(max(id), 0) AS id FROM task_review_log").get()!.id;
     const localTaskIds = new Set(db.prepare<[string], { id: string }>("SELECT id FROM tasks WHERE project_id=?").all(projectId).map(row => row.id));
     const localDependencies = new Map<string, string[]>();
     for (const row of db.prepare<[string], { taskId: string; blockingTaskId: string }>(`
@@ -386,7 +387,7 @@ export function restoreProject(
       throw new Error("Task number exceeds the supported range");
     // Planning is the owner's setting: an import never changes an existing project's. A project the import creates takes
     // the snapshot's value; a snapshot from before v20 has none, so it is inferred from its plans.
-    const { checkReadiness, planning: snapshotPlanning, planningChangedAt, planningPrevious, planFlagsInitialized, archiveThreadsOnClose, archiveReviewerOnApproval, ...manifestProject } = manifest.project;
+    const { doneRequiresReview, checkReadiness, planning: snapshotPlanning, planningChangedAt, planningPrevious, planFlagsInitialized, archiveThreadsOnClose, archiveReviewerOnApproval, ...manifestProject } = manifest.project;
     // The two thread-archive switches are the project owner's too: an existing project keeps its own, a project the
     // import creates takes a v21 snapshot's value, and an older snapshot has none, so the defaults (on) apply.
     const snapshotArchiveSettings = manifest.version >= 21 ? { ...(archiveThreadsOnClose === undefined ? {} : { archiveThreadsOnClose }), ...(archiveReviewerOnApproval === undefined ? {} : { archiveReviewerOnApproval }) } : {};
@@ -399,7 +400,7 @@ export function restoreProject(
       : settlePlanFlags({ statuses: incomingStatuses, previous: null, planning: "off", initialized: true }).statuses;
     const project = {
       ...manifestProject,
-      ...(currentProject ? {} : { ...snapshotArchiveSettings, checkReadiness: checkReadiness ?? "off", planning: snapshotPlanning ?? (records.some((record) => record.plan) ? "optional" : "off"), ...(planningChangedAt === undefined ? {} : { planningChangedAt, planningPrevious }), planFlagsInitialized: planFlagsInitialized ?? false }),
+      ...(currentProject ? {} : { ...snapshotArchiveSettings, doneRequiresReview: doneRequiresReview ?? "off", checkReadiness: checkReadiness ?? "off", planning: snapshotPlanning ?? (records.some((record) => record.plan) ? "optional" : "off"), ...(planningChangedAt === undefined ? {} : { planningChangedAt, planningPrevious }), planFlagsInitialized: planFlagsInitialized ?? false }),
       statuses: settledStatuses,
       nextTaskNumber: Math.max(
         manifest.project.nextTaskNumber,
@@ -568,6 +569,8 @@ export function restoreProject(
       ).run(...columns.map((key) => row[key]!));
       if (replacedLink) db.prepare<[SqlValue]>("UPDATE task_threads SET created_for_task = 0, link_origin = NULL WHERE id = ?").run(row.id!);
     }
+    // Restored evidence is historical; only approvals actually recorded here open the gate.
+    db.prepare<[number]>("DELETE FROM task_review_log WHERE id > ? AND kind = 'approval'").run(reviewMark);
     // Validated against what the merge leaves behind: a kept local question may point at one the archive replaced.
     for (const record of records)
       assertSupersessionLinks(db.prepare<[string], { payload: string }>("SELECT payload FROM task_questions WHERE task_id = ?").all(record.task.id)

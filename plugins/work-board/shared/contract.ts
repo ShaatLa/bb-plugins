@@ -347,6 +347,7 @@ export const projectSchema = z
     archiveThreadsOnClose: archiveSettingSchema.optional(),
     /** v21: archive a dedicated plan reviewer after it approved the plan (default on). */
     checkReadiness: archiveSettingSchema.optional(),
+    doneRequiresReview: archiveSettingSchema.optional(),
     archiveReviewerOnApproval: archiveSettingSchema.optional(),
     planning: planningSchema.optional(),
     /** False until the "only with an approved plan" flags were set up (by the owner, or by the first switch to required). */
@@ -633,6 +634,7 @@ const updateProjectInputSchema = z
     statusNotifications: statusNotificationsSchema.optional(),
     archiveThreadsOnClose: archiveSettingSchema.optional(),
     checkReadiness: archiveSettingSchema.optional(),
+    doneRequiresReview: archiveSettingSchema.optional(),
     archiveReviewerOnApproval: archiveSettingSchema.optional(),
     planning: planningSchema.optional(),
     color: nonBlankStringSchema.optional(),
@@ -649,6 +651,7 @@ const updateProjectInputSchema = z
       input.statusNotifications !== undefined ||
       input.archiveThreadsOnClose !== undefined ||
       input.checkReadiness !== undefined ||
+      input.doneRequiresReview !== undefined ||
       input.archiveReviewerOnApproval !== undefined ||
       input.planning !== undefined ||
       input.name !== undefined ||
@@ -1041,6 +1044,7 @@ export const tasksRpcContract = {
     input: z
       .object({
         projectId: idSchema,
+        agentThreadId: evidenceThreadSchema.nullable().optional(),
         title: nonBlankStringSchema,
         description: z.string().default(""),
         status: taskStatusSchema.default("backlog"),
@@ -1339,6 +1343,7 @@ export const tasksRpcContract = {
       .object({
         taskId: idSchema,
         projectId: idSchema,
+        agentThreadId: evidenceThreadSchema.nullable().optional(),
         authorName: nonBlankStringSchema.default("You"),
       })
       .strict(),

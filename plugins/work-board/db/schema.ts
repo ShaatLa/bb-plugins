@@ -920,6 +920,28 @@ export const MIGRATIONS = [
   `ALTER TABLE pr_event_state ADD COLUMN queue_enqueued_at TEXT;`,
   `ALTER TABLE projects ADD COLUMN check_readiness TEXT NOT NULL DEFAULT 'off' CHECK (check_readiness IN ('off', 'on'));`,
   `DROP TRIGGER IF EXISTS task_scheduled_status;`,
+  `ALTER TABLE projects ADD COLUMN done_requires_review TEXT NOT NULL DEFAULT 'off' CHECK (done_requires_review IN ('off','on'));
+   CREATE TABLE task_review_log (
+     id INTEGER PRIMARY KEY AUTOINCREMENT,
+     task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+     kind TEXT NOT NULL CHECK (kind IN ('status','approval')),
+     status TEXT
+   );
+   CREATE INDEX task_review_log_order ON task_review_log(task_id, id);
+   INSERT INTO task_review_log(task_id, kind)
+     SELECT task_id, 'approval' FROM comments
+     WHERE json_extract(evidence,'$.kind')='review' AND json_extract(evidence,'$.verdict')='approve' ORDER BY rowid;
+   INSERT INTO task_review_log(task_id, kind, status) SELECT id, 'status', status FROM tasks;
+   CREATE TRIGGER task_review_initial AFTER INSERT ON tasks BEGIN
+     INSERT INTO task_review_log(task_id, kind, status) VALUES (NEW.id, 'status', NEW.status);
+   END;
+   CREATE TRIGGER task_review_status AFTER UPDATE OF status ON tasks WHEN NEW.status <> OLD.status BEGIN
+     INSERT INTO task_review_log(task_id, kind, status) VALUES (NEW.id, 'status', NEW.status);
+   END;
+   CREATE TRIGGER task_review_approval AFTER INSERT ON comments
+   WHEN json_extract(NEW.evidence,'$.kind')='review' AND json_extract(NEW.evidence,'$.verdict')='approve' BEGIN
+     INSERT INTO task_review_log(task_id, kind) VALUES (NEW.task_id, 'approval');
+   END;`,
 ] as const;
 
 export function initializeTasksSchema(db: PluginDatabase, log: Log = () => {}): void {

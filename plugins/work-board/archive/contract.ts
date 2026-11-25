@@ -53,6 +53,7 @@ export const archiveProjectSchema = z
       z.literal(23),
       z.literal(24),
       z.literal(25),
+      z.literal(26),
     ]),
     project: projectSchema,
     gitSync: gitSyncConfigSchema.optional(),
@@ -166,7 +167,7 @@ function unique(ids: readonly string[], label: string) {
 // Schedules must own their template task; sources and runs are provenance and may outlive their schedule.
 function validateScheduled({ manifest, records }: ProjectArchive): void {
   const { schedules = [], scheduleSources: sources = [], scheduleRuns: runs = [] } = manifest;
-  if (manifest.version === 25 && (manifest.schedules || manifest.scheduleSources || manifest.scheduleRuns)) throw new Error("Schedule history is unsupported in archive v25");
+  if (manifest.version >= 25 && (manifest.schedules || manifest.scheduleSources || manifest.scheduleRuns)) throw new Error(`Schedule history is unsupported in archive v${manifest.version}`);
   if (manifest.version < 13) {
     if (schedules.length || sources.length || runs.length) throw new Error("Scheduled tasks require archive v13");
     return;
@@ -215,6 +216,8 @@ export function validateArchive(archive: ProjectArchive): void {
   const taskIds = new Set(manifest.taskIds);
   const incoming = new Map(manifest.taskIds.map(id => [id, 0]));
   const successors = new Map<string, string[]>();
+  if (manifest.version < 26 && manifest.project.doneRequiresReview !== undefined)
+    throw new Error("Done after review requires archive v26");
   if (manifest.version < 24 && manifest.project.checkReadiness !== undefined)
     throw new Error("Check readiness requires archive v24");
   for (const record of records) {

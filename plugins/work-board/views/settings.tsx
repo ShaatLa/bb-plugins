@@ -414,6 +414,7 @@ type ProjectChanges = {
   statusNotifications?: z.infer<typeof statusNotificationsSchema>;
   archiveThreadsOnClose?: z.infer<typeof archiveSettingSchema>;
   checkReadiness?: z.infer<typeof archiveSettingSchema>;
+  doneRequiresReview?: z.infer<typeof archiveSettingSchema>;
   archiveReviewerOnApproval?: z.infer<typeof archiveSettingSchema>;
   planning?: z.infer<typeof planningSchema>;
 };
@@ -513,6 +514,9 @@ function PlanningBlock({ project, updater }: { project: Project; updater: Projec
       <SwitchRow label="Check readiness" checked={project.checkReadiness === "on"} disabled={busy}
         onChange={(on) => void update({ checkReadiness: on ? "on" : "off" })}
         hint="Before an agent asks you to check something, it records a quick smoke test of what it sends and lists anything built beyond the approved plan and design." />
+      <SwitchRow label="Done after review" checked={project.doneRequiresReview === "on"} disabled={busy}
+        onChange={(on) => void update({ doneRequiresReview: on ? "on" : "off" })}
+        hint="An agent can move a card to Done only after it passed In Review or In Testing since it last entered In Progress, or after an approving review is recorded. Your own moves are never blocked." />
       {planning !== "off" ? (
         <SwitchRow label="Archive the plan reviewer after approval" checked={(project.archiveReviewerOnApproval ?? "on") === "on"} disabled={busy}
           onChange={(on) => void update({ archiveReviewerOnApproval: on ? "on" : "off" })}

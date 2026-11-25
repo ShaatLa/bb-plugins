@@ -10,7 +10,7 @@ Daily cleanup removes orphan activity claims/queue markers and PR snapshots with
 
 **Optimize storage** also shares identical immutable blobs using filesystem hard links, preserving every attachment ID/path/URL and exact contents, then rebuilds SQLite and truncates its WAL when readers permit. The operation can take time on large boards. Unsupported hard links leave originals intact and report skips. Fresh databases use incremental vacuum; older databases enable it after the first explicit optimization. Later daily cleanups return up to 256 free pages per sweep. Retained WAL allocation is limited to 4 MiB when SQLite can reset it after checkpoints; active readers or a transaction may temporarily require more. Live data still consumes space as the board grows; this is not a retention policy that deletes accessible history.
 
-CLI: `bb work-board storage status --json`, `storage clean --json`, `storage optimize --json`. Actions return before/after usage, removed file/cache-row counts, shared duplicate count and warnings. Statistics count allocated blocks by unique inode; filesystem compression/clones can make these differ from device-wide free space. Current export format is v25. Maintenance only touches this plugin's database and managed blob directories, not external project exports, repository files, old installation releases, BB logs or backups.
+CLI: `bb work-board storage status --json`, `storage clean --json`, `storage optimize --json`. Actions return before/after usage, removed file/cache-row counts, shared duplicate count and warnings. Statistics count allocated blocks by unique inode; filesystem compression/clones can make these differ from device-wide free space. Current export format is v26. Maintenance only touches this plugin's database and managed blob directories, not external project exports, repository files, old installation releases, BB logs or backups.
 
 
 ## Task plan (0.56.0)
@@ -198,7 +198,7 @@ The **Search tasks** field in both the list and board accepts input immediately 
 
 ## Migrating from Agent Board / Tasks Plus to Work Board (0.11.0)
 
-This is a plugin ID change, not the installation of a second, independent board. The new ID and collection folder are `work-board`, and the command is **`bb work-board …`**. There are no legacy CLI aliases. First, update your command consumers: automations, agent roles, and strict export validation. The `project.json.format` marker is now `bb-work-board`; exports then used version **v13** (now v25). Imports also accept `bb-agent-board` and `bb-tasks-plus` (v1–v13).
+This is a plugin ID change, not the installation of a second, independent board. The new ID and collection folder are `work-board`, and the command is **`bb work-board …`**. There are no legacy CLI aliases. First, update your command consumers: automations, agent roles, and strict export validation. The `project.json.format` marker is now `bb-work-board`; exports then used version **v13** (now v26). Imports also accept `bb-agent-board` and `bb-tasks-plus` (v1–v13).
 
 Save your settings (`bb plugin config agent-board --json`) and back up the database using the SQLite backup API along with a copy of the `blobs` folder. Stop the old plugin before migration; the destination directory must not exist:
 
@@ -393,7 +393,7 @@ bb work-board import --from .bb/tasks/<project-id> --overwrite
   attachments/<attachment-id>
 ```
 
-`project.json` contains the bb-work-board format marker, version 25, project metadata, folders, labels, task IDs and templates. Task files preserve Markdown, comments/evidence, questions, worker links, aliases, dependencies and attachment hashes. Attachments use immutable IDs. Export contains no storage paths. Imports support v1–v25.
+`project.json` contains the bb-work-board format marker, version 26, project metadata, folders, labels, task IDs and templates. Task files preserve Markdown, comments/evidence, questions, worker links, aliases, dependencies and attachment hashes. Attachments use immutable IDs. Export contains no storage paths. Imports support v1–v26.
 
 The export is first assembled in a temporary directory, then replaces the existing copy. On write or replacement failure, the original copy is preserved. Unrelated files are not allowed in the export directory; repository sources must be kept outside it.
 
@@ -775,7 +775,7 @@ Periodic scans share repository discovery, revalidate current checks independent
 
 **Post-merge workflows** are optional, read-only push-run observation on the PR base branch. Configure exact workflow names or stable workflow ID strings. A cancelled run remains pending; a later run covers it only if it is the same workflow/base branch/repository and the compare API confirms its commit contains the merge commit. The card then shows **Superseded … covered by run X on commit C**, with the covering run's pending/passed/failed/skipped result. Diverged/behind commits do not cover it. Ambiguous names across workflow IDs yield unknown. This records workflow coverage, not a task-completion or deployment guarantee.
 
-Export v8 adds required top-level `project.json.gitSync` and `tasks/<id>.json.pullRequests` arrays (including exclusions), preserves v7 archival fields, and contains no CI snapshots, credentials, HTTP caches, cursors or last-poll timestamps. Files/directories are unchanged. Imports accept v1–v25; legacy imports without these fields preserve existing local sync settings/links. Conflicting imported links/config require `--overwrite`; missing links are not deletions. Imported snapshots are never trusted—remote state is fetched again. Coordinate downstream strict export checkers before upgrading to the v13 exporter.
+Export v8 adds required top-level `project.json.gitSync` and `tasks/<id>.json.pullRequests` arrays (including exclusions), preserves v7 archival fields, and contains no CI snapshots, credentials, HTTP caches, cursors or last-poll timestamps. Files/directories are unchanged. Imports accept v1–v26; legacy imports without these fields preserve existing local sync settings/links. Conflicting imported links/config require `--overwrite`; missing links are not deletions. Imported snapshots are never trusted—remote state is fetched again. Coordinate downstream strict export checkers before upgrading to the v13 exporter.
 
 ## Dispatch and Thread Hierarchy
 
@@ -799,7 +799,7 @@ In Work Board settings (Settings → Plugins → Work Board or the gear icon on 
 
 ### Upgrade and rollback (0.16.0)
 
-Export v9 preserves optional workflow status icons and colors. Imports accept v1–v25, including v8 archives that already contain this metadata. Update strict archive consumers before upgrading. Before rolling back, keep a v9 backup: older releases may reject v9 archives or status metadata; do not remove icons or colors from live data to make a rollback work.
+Export v9 preserves optional workflow status icons and colors. Imports accept v1–v26, including v8 archives that already contain this metadata. Update strict archive consumers before upgrading. Before rolling back, keep a v9 backup: older releases may reject v9 archives or status metadata; do not remove icons or colors from live data to make a rollback work.
 
 Each project can configure workflow rules with `bb work-board project update PREFIX --workflow-policy-file policy.json` (also accepts `--machine`). RPC clients can set `updateProject({projectId, workflowPolicy})`. The JSON object accepts `bugfixStatus`, `doneStatus`, `inProgressStatus`, `reviewStatus`, `testingStatus`, `planningStatus`, `earlyStatuses`, and `ownerDecisionLabel`; omitted fields use defaults. `earlyStatuses` are the statuses an open delivering PR moves to `reviewStatus`. While a task has an open question, Work Board adds the label named by `ownerDecisionLabel` (default `owner decision`; projects created before 0.47.0 keep `решение владельца`), creating it if missing. Set a status or label to `null` to disable rules that depend on it, or use an empty array for `earlyStatuses`. The default bugfix-to-done transition is rejected because review or testing failed; other exits remain available. Policy travels with project exports.
 
@@ -809,7 +809,7 @@ Export v14 includes optional per-project workflow policy, outcome evidence and d
 
 ### Related tasks (0.29.0)
 
-The Dependencies section has one Add button (pick Blocked by, Blocks or Related, then a task) and lists every link on its own line. Related is for tasks that share context without blocking each other. The link is symmetric, stays within one project and never affects Blocked badges or advisories. CLI: `dependency add KEY --relates-to KEY` and `dependency remove KEY --relates-to KEY`; `dependency list` and `show --json` include `related`. Export v15 carries related links; imports accept v1–v25.
+The Dependencies section has one Add button (pick Blocked by, Blocks or Related, then a task) and lists every link on its own line. Related is for tasks that share context without blocking each other. The link is symmetric, stays within one project and never affects Blocked badges or advisories. CLI: `dependency add KEY --relates-to KEY` and `dependency remove KEY --relates-to KEY`; `dependency list` and `show --json` include `related`. Export v15 carries related links; imports accept v1–v26.
 Question creation, answer changes, revisions and deletion reconcile the configured owner decision label with open questions. Manual task label edits, label renames/deletion, policy changes and archive imports do not reconcile existing questions; the next question change does. A null ownerDecisionLabel disables this reconciliation.
 `bb work-board list --stale-status` filters diagnostic flags before pagination. List and show JSON expose `staleStatusFlags`; list RPC returns flags separately from task records. These diagnostics use the last recorded thread statuses and PR snapshots, not a live remote check. An unavailable PR snapshot is reported as `pr_state_unavailable`, except that a PR last seen merged stays merged when a later refresh fails (0.55.2); recorded active thread status may be out of date. A task in the review or testing status with no open PR gets `no_open_pr`; in the testing status a merged PR also counts, since testing after the merge is expected (0.55.3). In the review status a PR merged less than 2 hours ago counts too (0.75.0), while the lead collects post-merge evidence; the latest merge time that parses and is not in the future is used, and a merged PR without one gets no grace. After the grace the flag appears, and the attention pilot's 10-minute hold starts then. One request uses one clock: `list --stale-status` selects and shows the flags of the same instant, and a cursor from before an expiry is refused as stale. Nonexcluded closed PRs produce `closed_unmerged_pr`. A done task clears `no_merge_or_outcome` with structured merge evidence or `bb work-board comment KEY --kind outcome --body '…'`. Existing done tasks with a non-system comment are grandfathered until they change status. Diagnostics never move tasks.
 ## Card activity (0.18.0)
@@ -864,3 +864,11 @@ bb work-board question add EXA-1 --kind check --prompt "Does Save work?" --smoke
 ```
 
 The smoke note is a card comment. Each question revision keeps its beyond-the-design line. The switch defaults to off. The CLI can read it with `config get checkReadiness`. Direct RPC callers can change it or clear an answer because the platform cannot distinguish them from the owner panel.
+
+## Done after review
+
+In project settings, the owner can enable **Done after review** (`doneRequiresReview`, default `off`). Read it with `bb work-board config get doneRequiresReview --project EXA`. An agent entering Done, including a custom Done status or a move from Canceled, needs a recorded visit to the project's review or testing status, or an approving review comment, since the card last entered In Progress. Without a prior In Progress entry, the whole history counts. Only configured, listed, open roles distinct from In Progress qualify. The refusal gives the applicable commands, such as `bb work-board update EXA-1 --status in_review`. An agent can move on to Done immediately after review. The switch records the step without assessing review quality.
+
+Agents must create new cards in another status first. On a project move, each family member newly considered done must qualify under the destination's roles. Entering Canceled, owner actions and automatic moves stay free of this gate. Raw RPC callers that omit `agentThreadId` have the same access as the panel.
+
+Archive v26 adds `project.doneRequiresReview`. Restoring a new project uses the saved setting (older archives default to off). Existing projects retain their local setting on overwrite. The review log stays local. Importing cards restores their recorded status, and replaying an approval comment never qualifies a card.

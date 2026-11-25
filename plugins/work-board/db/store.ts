@@ -1,5 +1,5 @@
 import { WAITING_ON_OWNER, NEWEST_UNANSWERED, UNANSWERED_QUESTION } from "./waiting-on-owner";
-import { ensurePlanningStatus, getWorkflowPolicy, inWorkZone, isClosedStatus, planningStatusOf, settlePlanFlags, usableStartTarget, withPlanningStatus, workflowPolicySchema } from "../shared/workflow-policy.js";
+import { effectiveInProgressStatus, ensurePlanningStatus, getWorkflowPolicy, inWorkZone, isClosedStatus, planningStatusOf, settlePlanFlags, usableStartTarget, withPlanningStatus, workflowPolicySchema } from "../shared/workflow-policy.js";
 import { syncPlanDebt, syncProjectPlanDebt } from "../plan-debt/store";
 import { createClosureStore } from "../closure/store";
 import { prSettled, projectPolicies, staleRows, staleStatusObservations as observeStaleStatus } from "../attention/observe";
@@ -91,6 +91,7 @@ interface ProjectRow {
   status_notifications: string | null;
   archive_threads_on_close: string;
   check_readiness: string;
+  done_requires_review: string;
   archive_reviewer_on_approval: string;
   planning: string | null;
   plan_flags_initialized: number;
@@ -404,6 +405,7 @@ function projectFromRow(row: ProjectRow): Project {
     statusNotifications: statusNotificationsSchema.parse(row.status_notifications ?? "off"),
     archiveThreadsOnClose: archiveSettingSchema.parse(row.archive_threads_on_close),
     checkReadiness: archiveSettingSchema.parse(row.check_readiness),
+    doneRequiresReview: archiveSettingSchema.parse(row.done_requires_review),
     archiveReviewerOnApproval: archiveSettingSchema.parse(row.archive_reviewer_on_approval),
     planning: planningSchema.parse(row.planning ?? "off"),
     planFlagsInitialized: row.plan_flags_initialized === 1,
@@ -848,12 +850,12 @@ export function createTasksStore(db: PluginDatabase, log: (message: string) => v
       // A tracker bound to manager attention keeps its BB project link; a bound BB project takes no second tracker.
       if (input.linkedBbProjectId !== undefined) assertLinkChangeAllowed(db, id, current.linkedBbProjectId ?? null, validateLinkedBbProjectId(input.linkedBbProjectId));
       db.prepare<
-        [string, string, string, string | null, string | null, string, string | null, string, string, string, string, string, string, string, number, string | null, string | null, string]
+        [string, string, string, string | null, string | null, string, string | null, string, string, string, string, string, string, string, string, number, string | null, string | null, string]
       >(
         `
       UPDATE projects
       SET name = ?, prefix = ?, color = ?, folder_id = ?, linked_bb_project_id = ?, statuses = ?, workflow_policy = ?,
-          auto_archive_after_days = ?, stale_idle_minutes = ?, status_notifications = ?, archive_threads_on_close = ?, archive_reviewer_on_approval = ?, check_readiness = ?, planning = ?, plan_flags_initialized = ?, planning_changed_at = ?, planning_previous = ?
+          auto_archive_after_days = ?, stale_idle_minutes = ?, status_notifications = ?, archive_threads_on_close = ?, archive_reviewer_on_approval = ?, check_readiness = ?, done_requires_review = ?, planning = ?, plan_flags_initialized = ?, planning_changed_at = ?, planning_previous = ?
       WHERE id = ?
     `,
       ).run(
@@ -878,6 +880,7 @@ export function createTasksStore(db: PluginDatabase, log: (message: string) => v
         archiveSettingSchema.parse(input.archiveThreadsOnClose ?? current.archiveThreadsOnClose ?? "on"),
         archiveSettingSchema.parse(input.archiveReviewerOnApproval ?? current.archiveReviewerOnApproval ?? "on"),
         archiveSettingSchema.parse(input.checkReadiness ?? current.checkReadiness ?? "off"),
+        archiveSettingSchema.parse(input.doneRequiresReview ?? current.doneRequiresReview ?? "off"),
         nextPlanning,
         settled.initialized ? 1 : 0,
         planningChanged ? nowIso() : (current.planningChangedAt ?? null),
@@ -1072,6 +1075,8 @@ export function createTasksStore(db: PluginDatabase, log: (message: string) => v
       validateTaskStatus(project.id, status);
       const parentTaskId = input.parentTaskId ?? null;
       const type = input.type ?? "task";
+      if (input.agentThreadId && project.doneRequiresReview === "on" && isDone(project, status))
+        throw new Error("This project requires review before Done. Create the card in another status first.");
       // A new card has no plan yet, so a project that requires one cannot have it created in In progress.
       if (project.planning === "required" && type !== "epic" && inWorkZone(project, status))
         throw new Error(noPlanCreateRefusal(project.prefix, statusLabel(status, project.statuses)));
@@ -1514,6 +1519,38 @@ export function createTasksStore(db: PluginDatabase, log: (message: string) => v
     const plan = db.prepare<[string], { version: number; state: PlanState }>("SELECT version, state FROM task_plans WHERE task_id = ?").get(task.id);
     return plan ? planGateRefusal(task.key, plan, target) : noPlanGateRefusal(task.key, target);
   }
+  function isDone(project: Project, status: string) {
+    return status !== "canceled" && isClosedStatus(project, status);
+  }
+
+  function reviewRoles(project: Project) {
+    const progress = effectiveInProgressStatus(project);
+    const policy = getWorkflowPolicy(project);
+    const statuses = project.statuses ?? DEFAULT_TASK_STATUSES;
+    return [...new Set([policy.reviewStatus, policy.testingStatus])].filter((id): id is string =>
+      !!id && id !== progress && !isClosedStatus(project, id) && statuses.some(status => status.id === id));
+  }
+
+  function reviewGateRefusal(task: Task, target: string, project = requireProject(task.projectId), source = project): string | null {
+    if (project.doneRequiresReview !== "on" || !isDone(project, target) || isDone(source, task.status)) return null;
+    const statuses = project.statuses ?? DEFAULT_TASK_STATUSES;
+    const progress = effectiveInProgressStatus(project);
+    const roles = reviewRoles(project);
+    const passed = db.prepare<[string, string, string | null, string | null, string | null]>(`
+      SELECT 1 FROM task_review_log WHERE task_id = ?
+        AND id > (SELECT coalesce(max(id), 0) FROM task_review_log WHERE task_id = ? AND status = ?)
+        AND (kind = 'approval' OR status IN (?, ?)) LIMIT 1
+    `).get(task.id, task.id, progress, roles[0] ?? null, roles[1] ?? null);
+    if (passed) return null;
+    const cutoff = progress ? ` since it last entered ${statusLabel(progress, statuses)}` : "";
+    const missing = roles.length ? `It has not passed ${roles.map(id => statusLabel(id, statuses)).join(" or ")}${cutoff}. ` : "";
+    const sourceRoles = source === project ? roles : reviewRoles(source);
+    const hint = roles.find(id => sourceRoles.includes(id));
+    const move = hint ? `Move it to review first (\`bb work-board update ${task.key} --status ${hint}\`), or record` : "Record";
+    return `${task.key} cannot move to ${statusLabel(target, statuses)}: this project requires review before Done. ${missing}${move}` +
+      ` an approving review (\`bb work-board comment ${task.key} --kind review --head <sha> --verdict approve --thread <reviewer thread> --body "..."\`). The owner can still move it on the board.`;
+  }
+
   function planGate(task: Task, status: string): string | null {
     const project = requireProject(task.projectId);
     return gateRefusal(task, status, project, project);
@@ -1617,7 +1654,7 @@ export function createTasksStore(db: PluginDatabase, log: (message: string) => v
   const scheduleTemplate = db.prepare("SELECT 1 FROM task_schedules WHERE template_task_id=?");
 
   const moveTaskToProjectTransaction = db.transaction(
-    (id: string, projectId: string): MoveTaskToProjectResult => {
+    (id: string, projectId: string, agentThreadId?: string | null): MoveTaskToProjectResult => {
       const root = requireTask(id);
       const target = requireProject(projectId);
       if (root.projectId === target.id) return { task: root, moved: [] };
@@ -1634,7 +1671,7 @@ export function createTasksStore(db: PluginDatabase, log: (message: string) => v
       for (const task of moving) validateTaskStatus(target.id, task.status);
       // The whole family stays in the source when any non-epic card would enter the destination's gated work zone.
       for (const task of moving) {
-        const refusal = gateRefusal(task, task.status, source, target);
+        const refusal = gateRefusal(task, task.status, source, target) ?? (agentThreadId && reviewGateRefusal(task, task.status, target, source));
         if (refusal) throw new Error(`${refusal}; the whole family stays in ${source.prefix} because of ${task.key}`);
       }
       const movingIds = new Set(moving.map((task) => task.id));
@@ -1732,8 +1769,9 @@ export function createTasksStore(db: PluginDatabase, log: (message: string) => v
   function moveTaskToProject(
     id: string,
     projectId: string,
+    agentThreadId?: string | null,
   ): MoveTaskToProjectResult {
-    return moveTaskToProjectTransaction(id, projectId);
+    return moveTaskToProjectTransaction(id, projectId, agentThreadId);
   }
 
   function renormalizeColumn(
@@ -2655,6 +2693,7 @@ export function createTasksStore(db: PluginDatabase, log: (message: string) => v
     onClosure: (listener: (closureId: string) => void) => { closureListener = listener; },
     onEpicMoved: (listener: (move: { epicId: string; commentId: string; projectId: string }) => void) => { epicMoveListener = listener; },
     planGate,
+    reviewGateRefusal,
     moveTaskToProject: moveTaskToProjectHooked,
     updatePosition: updatePositionHooked,
     deleteTask: deleteTaskHooked,

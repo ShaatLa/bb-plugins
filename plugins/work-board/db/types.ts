@@ -39,6 +39,7 @@ export interface Project {
   statusNotifications?: ProjectContract["statusNotifications"];
   archiveThreadsOnClose?: ProjectContract["archiveThreadsOnClose"];
   checkReadiness?: ProjectContract["checkReadiness"];
+  doneRequiresReview?: ProjectContract["doneRequiresReview"];
   archiveReviewerOnApproval?: ProjectContract["archiveReviewerOnApproval"];
   planning?: ProjectContract["planning"];
   planFlagsInitialized?: boolean;
@@ -172,6 +173,7 @@ export interface UpdateProjectInput {
   statusNotifications?: ProjectContract["statusNotifications"];
   archiveThreadsOnClose?: ProjectContract["archiveThreadsOnClose"];
   checkReadiness?: ProjectContract["checkReadiness"];
+  doneRequiresReview?: ProjectContract["doneRequiresReview"];
   archiveReviewerOnApproval?: ProjectContract["archiveReviewerOnApproval"];
   planning?: ProjectContract["planning"];
   name?: string;
@@ -183,6 +185,7 @@ export interface UpdateProjectInput {
 }
 
 export interface CreateTaskInput {
+  agentThreadId?: string | null;
   projectId: string;
   title: string;
   description?: string;

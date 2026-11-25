@@ -387,6 +387,7 @@ describe("project archives", () => {
     await exportProject(source.bb, source.store, source.project.id, out);
     const manifestPath = join(out, "project.json");
     const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
+    delete manifest.project.doneRequiresReview;
     delete manifest.project.checkReadiness;
     manifest.version = 1;
     delete manifest.gitSync;
@@ -423,6 +424,7 @@ describe("project archives", () => {
     await exportProject(source.bb, source.store, source.project.id, out);
     const path = join(out, "project.json");
     const manifest = JSON.parse(await readFile(path, "utf8"));
+    delete manifest.project.doneRequiresReview;
     delete manifest.project.checkReadiness;
     manifest.version = 2;
     delete manifest.gitSync;
@@ -455,7 +457,8 @@ describe("project archives", () => {
     expect(createStructuredStore(target.bb, target.store).listQuestions(source.task.id)).toContainEqual(withdrawn.question);
     const path = join(out, "project.json");
     const manifest = JSON.parse(await readFile(path, "utf8"));
-    expect(manifest.version).toBe(25);
+    expect(manifest.version).toBe(26);
+    delete manifest.project.doneRequiresReview;
     delete manifest.project.checkReadiness;
     await writeFile(path, jsonText({ ...manifest, version: 22 }));
     await expect(importProject(target.bb, target.store, out, true)).rejects.toThrow("Withdrawn questions require archive v23");
@@ -489,7 +492,8 @@ describe("project archives", () => {
     // The links need v22; a v21 snapshot without them still imports.
     const manifestPath = join(out, "project.json");
     const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
-    expect(manifest.version).toBe(25);
+    expect(manifest.version).toBe(26);
+    delete manifest.project.doneRequiresReview;
     delete manifest.project.checkReadiness;
     manifest.version = 21;
     await writeFile(manifestPath, jsonText(manifest));
@@ -907,7 +911,7 @@ it("exports v17 typed questions and imports v16 owner tasks as plain tasks", asy
   await exportProject(source.bb, source.store, source.project.id, out);
   const manifestPath = join(out, "project.json");
   const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
-  expect(manifest.version).toBe(25);
+  expect(manifest.version).toBe(26);
   const path = join(out, "tasks", `${source.task.id}.json`);
   const record = JSON.parse(await readFile(path, "utf8"));
   expect(record.task).not.toHaveProperty("executionTarget");
@@ -917,6 +921,7 @@ it("exports v17 typed questions and imports v16 owner tasks as plain tasks", asy
   const target = setup();
   await importProject(target.bb, target.store, out, false);
   expect(createStructuredStore(target.bb, target.store).listQuestions(source.task.id)).toEqual(structured.listQuestions(source.task.id));
+  delete manifest.project.doneRequiresReview;
   delete manifest.project.checkReadiness;
   manifest.version = 16;
   await writeFile(manifestPath, jsonText(manifest));
@@ -945,7 +950,7 @@ it("exports plans (v18+) with every version, refuses a differing local plan with
   await exportProject(source.bb, source.store, source.project.id, out);
   const manifestPath = join(out, "project.json");
   const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
-  expect(manifest.version).toBe(25);
+  expect(manifest.version).toBe(26);
   const recordPath = join(out, "tasks", `${source.task.id}.json`);
   const record = JSON.parse(await readFile(recordPath, "utf8"));
   expect(record.plan).toMatchObject({ format: "markdown", version: 2, state: "in_review", body: "# Plan\n\n## Steps\n- one\n- two\n", reviewer: { kind: "thread", threadId: "thr_reviewer" }, reviewVersion: 2 });
@@ -972,6 +977,7 @@ it("exports plans (v18+) with every version, refuses a differing local plan with
   expect(targetPlans.listVersions(source.task.id).versions).toHaveLength(2);
 
   // v17 archives have no plan key: they import and leave the local plan alone.
+  delete manifest.project.doneRequiresReview;
   delete manifest.project.checkReadiness;
   manifest.version = 17;
   await writeFile(manifestPath, jsonText(manifest));
@@ -1036,6 +1042,7 @@ it("exports v19 plan notes with their replies, refuses differing local notes wit
   // v18 archives have no notes key: they import and leave local notes alone; v19 requires the key; older versions refuse notes.
   const manifestPath = join(out, "project.json");
   const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
+  delete manifest.project.doneRequiresReview;
   delete manifest.project.checkReadiness;
   manifest.version = 18;
   await writeFile(manifestPath, jsonText(manifest));
@@ -1067,7 +1074,7 @@ it("round-trips configurable project statuses, their order and custom task stage
   const out = join(await directory(), "statuses-v6");
   await exportProject(source.bb, source.store, source.project.id, out);
   const manifest = JSON.parse(await readFile(join(out, "project.json"), "utf8"));
-  expect(manifest.version).toBe(25);
+  expect(manifest.version).toBe(26);
   expect(manifest.project.statuses).toEqual(statuses);
   expect(manifest.project).toMatchObject({ autoArchiveAfterDays: "14", staleIdleMinutes: "120" });
   const target = setup();
@@ -1082,6 +1089,7 @@ it("round-trips configurable project statuses, their order and custom task stage
   expect(await readFile(join(again, "project.json"), "utf8")).toBe(await readFile(join(out, "project.json"), "utf8"));
   for (const id of manifest.taskIds) expect(await readFile(join(again, "tasks", `${id}.json`), "utf8")).toBe(await readFile(join(out, "tasks", `${id}.json`), "utf8"));
   // Earlier exporters could already write status metadata under v8.
+  delete manifest.project.doneRequiresReview;
   delete manifest.project.checkReadiness;
   manifest.version = 8;
   for (const id of manifest.taskIds) { const taskFile = join(out, "tasks", `${id}.json`); const row = JSON.parse(await readFile(taskFile, "utf8")); delete row.dependencies; await writeFile(taskFile, jsonText(row)); }
@@ -1132,6 +1140,7 @@ async function legacySnapshot(version: 23 | 24) {
   await exportProject(source.bb, source.store, f.projectId, out);
   const path = join(out, "project.json");
   const manifest = JSON.parse(await readFile(path, "utf8"));
+  delete manifest.project.doneRequiresReview;
   if (version === 23) delete manifest.project.checkReadiness;
   await writeFile(path, jsonText({ ...manifest, version, schedules: f.schedules, scheduleSources: f.scheduleSources, scheduleRuns: f.scheduleRuns }));
   const recordPath = join(out, "tasks", f.template + ".json");
@@ -1168,7 +1177,7 @@ describe("retired schedule archives", () => {
     }
   });
 
-  it("restores both v25 snapshots in either order after direct and family moves", async () => {
+  it("restores both current snapshots in either order after direct and family moves", async () => {
     const source = setup(legacyBoard);
     const f = source.fixture!;
     const targetProject = source.store.tasks.createProject({ prefix: "DST", name: "Destination", color: "blue" });
@@ -1179,7 +1188,7 @@ describe("retired schedule archives", () => {
       const path = join(await directory(), "snapshot");
       await exportProject(source.bb, source.store, id, path);
       const manifest = JSON.parse(await readFile(join(path, "project.json"), "utf8"));
-      expect(manifest.version).toBe(25);
+      expect(manifest.version).toBe(26);
       for (const key of ["schedules", "scheduleSources", "scheduleRuns"]) expect(manifest).not.toHaveProperty(key);
       paths.push(path);
     }
@@ -1222,10 +1231,11 @@ it("round-trips v16 current state and imports v15 without it", async () => {
   await exportProject(source.bb, source.store, source.project.id, out);
   const manifestPath = join(out, "project.json");
   const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
-  expect(manifest.version).toBe(25);
+  expect(manifest.version).toBe(26);
   const target = setup();
   await importProject(target.bb, target.store, out, false);
   expect(target.store.tasks.getTask(source.task.id)).toEqual(source.store.tasks.getTask(source.task.id));
+  delete manifest.project.doneRequiresReview;
   delete manifest.project.checkReadiness;
   manifest.version = 15;
   await writeFile(manifestPath, jsonText(manifest));
@@ -1263,6 +1273,7 @@ describe("archive v20: reviewers, review history and planning", () => {
   async function toV19(out: string) {
   const manifestPath = join(out, "project.json");
   const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
+  delete manifest.project.doneRequiresReview;
   delete manifest.project.checkReadiness;
   manifest.version = 19;
   delete manifest.project.planning;
@@ -1368,6 +1379,7 @@ describe("archive v20: reviewers, review history and planning", () => {
       await createStructuredStore(source.bb, source.store).handlers.createQuestion({ taskId: source.task.id, kind: "decision", askedByThread: null, prompt: "Which one?", steps: [], options: ["A", "B"], mode: "single" });
       const out = await exported(source, "v20-paused");
       await editProject(out, (manifest) => {
+        delete manifest.project.doneRequiresReview;
         delete manifest.project.checkReadiness;
         manifest.version = 20;
         delete manifest.project.archiveThreadsOnClose;
@@ -1694,6 +1706,7 @@ describe("archive v20: reviewers, review history and planning", () => {
     await toV19(out);
     const manifestPath = join(out, "project.json");
     const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
+    delete manifest.project.doneRequiresReview;
     delete manifest.project.checkReadiness;
     manifest.version = 18;
     await writeFile(manifestPath, jsonText(manifest));
@@ -1793,6 +1806,7 @@ describe("archive v21: thread-archive settings and links", () => {
   const asV20 = async (out: string) => {
     const path = join(out, "project.json");
     const manifest = JSON.parse(await readFile(path, "utf8"));
+    delete manifest.project.doneRequiresReview;
     delete manifest.project.checkReadiness;
     manifest.version = 20;
     delete manifest.project.archiveThreadsOnClose;
@@ -1805,7 +1819,7 @@ describe("archive v21: thread-archive settings and links", () => {
     source.store.tasks.updateProject(source.project.id, { archiveThreadsOnClose: "off", archiveReviewerOnApproval: "off" });
     const out = await exportOf(source, "v21-settings");
     const manifest = JSON.parse(await readFile(join(out, "project.json"), "utf8"));
-    expect(manifest.version).toBe(25);
+    expect(manifest.version).toBe(26);
     expect(manifest.project).toMatchObject({ archiveThreadsOnClose: "off", archiveReviewerOnApproval: "off" });
     const target = setup();
     await importProject(target.bb, target.store, out, false);
@@ -1994,6 +2008,7 @@ it("round-trips readiness on a new project and keeps local readiness on overwrit
   await writeFile(path, jsonText(manifest));
   await restore();
   expect(readiness()).toBe("on");
+  delete manifest.project.doneRequiresReview;
   manifest.version = 23;
   await writeFile(path, jsonText({ ...manifest, taskIds: [] }));
   await expect(restore()).rejects.toThrow(/archive v24/);
@@ -2013,4 +2028,60 @@ it("round-trips readiness on a new project and keeps local readiness on overwrit
   const legacy = setup();
   await importProject(legacy.bb, legacy.store, root, false);
   expect(legacy.store.tasks.getProject(source.project.id)?.checkReadiness).toBe("off");
+});
+
+it("restores the switch and current status, keeping replayed approvals outside the local work cycle", async () => {
+  const source = setup();
+  const project = source.store.tasks.createProject({ name: "Example", prefix: "EXA", color: "blue" });
+  source.store.tasks.updateProject(project.id, { doneRequiresReview: "on" });
+  const task = source.store.tasks.createTask({ projectId: project.id, title: "Card", status: "in_review" });
+  const approve = (f: typeof source) => f.store.tasks.createComment({ taskId: task.id, kind: "agent", authorName: "Reviewer", body: "Reviewed", evidence: { kind: "review", verdict: "approve", head: "a".repeat(40), thread: "thr_example" } });
+  const gate = (f: typeof source) => f.store.tasks.reviewGateRefusal(f.store.tasks.getTask(task.id)!, "done");
+  const old = approve(source);
+  source.store.tasks.updateTask(task.id, { status: "in_progress" });
+  expect(gate(source)).toBeTruthy();
+  const root = join(await directory(), "review");
+  const save = () => exportProject(source.bb, source.store, project.id, root);
+  await save();
+  const target = setup();
+  const restore = () => importProject(target.bb, target.store, root, true);
+  await restore();
+  const db = target.bb.storage.database();
+  const rows = () => db.prepare("SELECT * FROM task_review_log ORDER BY id").all();
+  expect(rows()).toEqual([expect.objectContaining({ kind: "status", status: "in_progress" })]);
+  expect(gate(target)).toBeTruthy();
+  db.prepare("DELETE FROM comments WHERE id=?").run(old.id);
+  await restore();
+  expect(gate(target)).toBeTruthy();
+  source.store.tasks.updateTask(task.id, { status: "todo" });
+  await save();
+  db.prepare("DELETE FROM comments WHERE id=?").run(old.id);
+  await restore();
+  expect(rows()).toHaveLength(2);
+  db.prepare("DELETE FROM comments WHERE id=?").run(old.id);
+  await restore();
+  expect(rows()).toHaveLength(2);
+  expect(gate(target)).toBeTruthy();
+  approve(target);
+  expect(gate(target)).toBeNull();
+  const before = rows();
+  await exportProject(target.bb, target.store, project.id, root);
+  await restore();
+  expect(rows()).toEqual(before);
+  expect(gate(target)).toBeNull();
+  target.store.tasks.updateProject(project.id, { doneRequiresReview: "off" });
+  await restore();
+  expect(target.store.tasks.getProject(project.id)?.doneRequiresReview).toBe("off");
+  const path = join(root, "project.json");
+  const manifest = JSON.parse(await readFile(path, "utf8"));
+  expect(manifest.version).toBe(26);
+  expect(manifest.project.doneRequiresReview).toBe("on");
+  manifest.version = 25;
+  await writeFile(path, jsonText(manifest));
+  await expect(restore()).rejects.toThrow(/requires archive v26/);
+  delete manifest.project.doneRequiresReview;
+  await writeFile(path, jsonText(manifest));
+  const legacy = setup();
+  await importProject(legacy.bb, legacy.store, root, false);
+  expect(legacy.store.tasks.getProject(project.id)?.doneRequiresReview).toBe("off");
 });

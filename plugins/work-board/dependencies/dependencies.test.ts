@@ -76,7 +76,7 @@ it("round-trips archive v12, rejects bad graphs, and preserves links on legacy i
   source.dependencies.add(source.b.id, source.a.id);
   const capture = captureProject(source.bb, source.store, source.project.id);
   const archive = { manifest: capture.manifest, records: capture.records.map(record => archiveTaskSchema.parse(record)) };
-  expect(archive.manifest.version).toBe(25);
+  expect(archive.manifest.version).toBe(26);
   const targetHost = createFakePluginHost({ pluginId: "work-board" });
   hosts.push(targetHost);
   const targetStore = createStore(targetHost.bb);
@@ -85,6 +85,7 @@ it("round-trips archive v12, rejects bad graphs, and preserves links on legacy i
   expect(target.dependencies.list(source.b.id).blockedBy[0]?.id).toBe(source.a.id);
   const legacy = structuredClone(archive);
   legacy.manifest.version = 11;
+  delete legacy.manifest.project.doneRequiresReview;
   delete legacy.manifest.project.checkReadiness;
   for (const record of legacy.records) { delete record.dependencies; delete record.related; }
   restoreProject(target.bb, target.store, legacy, new Map(), true);

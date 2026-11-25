@@ -256,7 +256,7 @@ it("exports v8 config and links/exclusions, excludes CI snapshots, and restores 
   await f.service.syncProject(f.project.id);
   const capture = captureProject(f.bb, f.store, f.project.id);
   const records = await archiveRecords(f.store, capture, async () => {});
-  expect(capture.manifest.version).toBe(25);
+  expect(capture.manifest.version).toBe(26);
   expect(capture.manifest.gitSync?.repositories).toEqual(["example/service"]);
   expect(JSON.stringify(records)).not.toContain('"checks":');
   expect(

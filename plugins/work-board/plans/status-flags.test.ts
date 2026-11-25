@@ -116,6 +116,30 @@ describe("status flags", () => {
     expect(f.current().statuses!.find((status) => status.id === "later")).not.toHaveProperty("requiresApprovedPlan");
   });
 
+  it("reserves review gate role changes for project settings while the gate is enabled", async () => {
+    const f = setup();
+    const dir = await mkdtemp(join(tmpdir(), "workflow-policy-"));
+    directories.push(dir);
+    const path = join(dir, "policy.json");
+    const args = ["project", "update", "EXA", "--workflow-policy-file", path];
+    f.store.tasks.updateProject(f.project.id, { doneRequiresReview: "on" });
+    const before = f.current().workflowPolicy;
+    for (const role of ["doneStatus", "inProgressStatus", "reviewStatus", "testingStatus"]) {
+      await writeFile(path, JSON.stringify({ [role]: "todo" }));
+      for (const ctx of [{}, { threadId: "thr_example" }]) {
+        const refused = await f.harness.runCli(args, ctx);
+        expect(refused.stderr).toContain("workflow roles of a project with Done after review are changed by the owner in the project settings");
+        expect(f.current().workflowPolicy).toEqual(before);
+      }
+    }
+    await writeFile(path, JSON.stringify({ bugfixStatus: "todo" }));
+    expect((await f.harness.runCli(args)).exitCode).toBe(0);
+    f.store.tasks.updateProject(f.project.id, { doneRequiresReview: "off" });
+    await writeFile(path, JSON.stringify({ doneStatus: "todo" }));
+    expect((await f.harness.runCli(args)).exitCode).toBe(0);
+    expect(f.current().workflowPolicy?.doneStatus).toBe("todo");
+  });
+
   it("is not changed by a CLI status file: an existing status keeps its flag and a new one gets the default", async () => {
     const f = setup("required");
     const dir = await mkdtemp(join(tmpdir(), "status-flags-"));

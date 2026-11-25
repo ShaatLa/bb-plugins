@@ -100,3 +100,74 @@ describe("an agent cannot close a card while an owner question is open", () => {
     expect(f.status()).toBe("in_progress");
   });
 });
+
+describe("Done after review", () => {
+  it.each(["boardMove", "updateTask"])("%s checks an agent entering Done from work or cancellation", async method => {
+    const f = setup();
+    f.store.tasks.updateProject(f.project.id, { doneRequiresReview: "on" });
+    for (const status of ["in_progress", "canceled"]) {
+      f.store.tasks.updateTask(f.task.id, { status });
+      const before = f.store.tasks.getTask(f.task.id);
+      const comments = f.store.tasks.listComments(f.task.id);
+      await expect(f.harness.callRpc(method, { ...f.agent, status: "done" })).rejects.toThrow(/EXA-1 cannot move to Done.*--status in_review.*--verdict approve/);
+      expect(f.store.tasks.getTask(f.task.id)).toEqual(before);
+      expect(f.store.tasks.listComments(f.task.id)).toEqual(comments);
+      await f.harness.callRpc(method, { taskId: f.task.id, status: "done" });
+      expect(f.status()).toBe("done");
+    }
+  });
+
+  it("refuses agent creation in Done and atomic family moves into a newly closed status", async () => {
+    const f = setup();
+    const tasks = f.store.tasks;
+    const target = tasks.createProject({ name: "Destination", prefix: "DST", color: "blue" });
+    tasks.updateProject(target.id, { doneRequiresReview: "on", workflowPolicy: { doneStatus: "in_progress" } as never });
+    const ctx = { threadId: "thr_example" };
+    const create = await f.harness.runCli(["create", "--project", target.prefix, "--title", "Card", "--status", "done"], ctx);
+    expect(create.stderr).toContain("Create the card in another status");
+    expect(tasks.listTasks({ projectId: target.id })).toHaveLength(0);
+    await f.harness.callRpc("createTask", { projectId: target.id, title: "Panel card", status: "done" });
+    tasks.updateTask(f.task.id, { status: "todo" });
+    const child = tasks.createTask({ projectId: f.project.id, parentTaskId: f.task.id, title: "Child", status: "in_progress" });
+    const move = await f.harness.runCli(["move", f.task.key, "--project", target.prefix], ctx);
+    expect(move.stderr).toContain("whole family stays in EXA because of " + child.key);
+    expect(tasks.getTask(f.task.id)?.projectId).toBe(f.project.id);
+    expect(tasks.getTask(child.id)?.projectId).toBe(f.project.id);
+    await f.harness.callRpc("moveTaskToProject", { taskId: f.task.id, projectId: target.id });
+    expect(tasks.getTask(child.id)?.projectId).toBe(target.id);
+  });
+
+  it("offers only shared review roles for a project move and evaluates history under destination roles", async () => {
+    const f = setup();
+    const tasks = f.store.tasks;
+    const target = tasks.createProject({ name: "Destination", prefix: "DST", color: "blue" });
+    const policy = { doneStatus: "todo", reviewStatus: "inspection", testingStatus: "in_review" };
+    tasks.updateProject(target.id, { doneRequiresReview: "on", workflowPolicy: policy as never,
+      statuses: [...DEFAULT_TASK_STATUSES, { id: "inspection", name: "Inspection" }] });
+    tasks.updateTask(f.task.id, { status: "todo" });
+    const move = () => f.harness.callRpc("moveTaskToProject", { ...f.agent, projectId: target.id });
+    await expect(move()).rejects.toThrow(/--status in_review/);
+    tasks.updateProject(target.id, { workflowPolicy: { ...policy, testingStatus: "backlog" } as never });
+    const refused = move();
+    await expect(refused).rejects.toThrow(/--verdict approve/);
+    await expect(refused).rejects.not.toThrow(/--status/);
+    tasks.updateTask(f.task.id, { status: "backlog" });
+    tasks.updateTask(f.task.id, { status: "todo" });
+    const log = () => f.bb.storage.database().prepare("SELECT * FROM task_review_log WHERE task_id=? ORDER BY id").all(f.task.id);
+    const before = log();
+    await move();
+    expect(tasks.getTask(f.task.id)?.projectId).toBe(target.id);
+    expect(log()).toEqual(before);
+  });
+
+  it("reserves changing the switch for project settings", async () => {
+    const f = setup();
+    for (const ctx of [{}, { threadId: "thr_example" }]) {
+      for (const args of [["config", "set", "doneRequiresReview", "on", "--project", "EXA"], ["project", "update", "EXA", "--done-requires-review", "on"]])
+        expect((await f.harness.runCli(args, ctx)).stderr).toContain("done after review is changed by the owner in the project settings");
+    }
+    await f.harness.callRpc("updateProject", { projectId: f.project.id, doneRequiresReview: "on" });
+    expect(f.harness.logEntries).toContainEqual({ level: "info", message: "done after review for EXA: off → on" });
+    expect((await f.harness.runCli(["config", "get", "doneRequiresReview", "--project", "EXA"])).stdout).toContain("doneRequiresReview=on");
+  });
+});

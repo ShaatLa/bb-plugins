@@ -499,6 +499,8 @@ it("lets the owner pick each planning mode for the selected project, and the cho
     expect(mode().textContent).toContain("Off");
     fireEvent.click(region().getByRole("switch", { name: "Check readiness" }));
     await waitFor(() => expect(store.tasks.getProject(alpha.id)?.checkReadiness).toBe("on"));
+    fireEvent.click(region().getByRole("switch", { name: "Done after review" }));
+    await waitFor(() => expect(store.tasks.getProject(alpha.id)?.doneRequiresReview).toBe("on"));
     // The reviewer switch is shown only while planning is not Off.
     expect(region().queryByRole("switch", { name: "Archive the plan reviewer after approval" })).toBeNull();
     for (const [label, value] of [["Optional", "optional"], ["Required", "required"], ["Off", "off"], ["Required", "required"]] as const) {

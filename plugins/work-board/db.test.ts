@@ -2,7 +2,8 @@ import { legacyBoard, scheduleHistory } from "./db/legacy-schedule-fixture";
 import { getWorkflowPolicy } from "./shared/workflow-policy";
 import { createHash } from "node:crypto";
 import { createFakePluginHost } from "@get-bb/plugin-sdk/testing";
-import { describe, expect, it } from "vitest";
+import { DEFAULT_TASK_STATUSES } from "./shared/statuses";
+import { describe, expect, it, vi } from "vitest";
 import {
   createTasksStore,
   type CreatePresetInput,
@@ -79,7 +80,7 @@ describe("tasks storage", () => {
             "SELECT COUNT(*) AS count FROM schema_version",
           )
           .get()?.count,
-      ).toBe(54);
+      ).toBe(55);
       expect(db.prepare<[], { name: string }>("PRAGMA index_info(idx_task_pr_links_identity)").all().map((column) => column.name)).toEqual(["identity", "task_id"]);
       const columns = db.prepare<[], { name: string }>("PRAGMA table_info(tasks)").all().map(column => column.name);
       expect(columns).toEqual(expect.arrayContaining(["progress_note", "progress_updated_at", "progress_updated_by"]));
@@ -996,5 +997,83 @@ describe("tasks storage", () => {
     } finally {
       await harness.dispose();
     }
+  });
+});
+
+describe("review history", () => {
+  it("backfills approvals before current statuses and records only status changes and new approvals", async () => {
+    const { bb, harness } = createFakePluginHost({ pluginId: "work-board" });
+    try {
+      const db = bb.storage.database();
+      const f = legacyBoard(db);
+      db.prepare("UPDATE tasks SET status='in_progress' WHERE id=?").run(f.pending);
+      db.prepare("UPDATE tasks SET status='in_review' WHERE id=?").run(f.parent);
+      const approve = db.prepare("INSERT INTO comments(id,task_id,kind,author_name,body,created_at,evidence) VALUES (?,?,'agent','Reviewer','Review',CURRENT_TIMESTAMP,?)");
+      const evidence = (verdict: string) => JSON.stringify({ kind: "review", head: "a".repeat(40), verdict, thread: "thr_example" });
+      approve.run("older", f.parent, evidence("approve"));
+      approve.run("newer", f.pending, evidence("approve"));
+      const store = createTasksStore(db);
+      expect(store.getProject(f.projectId)?.doneRequiresReview).toBe("off");
+      const rows = () => db.prepare<[], {task_id: string; kind: string; status: string | null}>("SELECT task_id,kind,status FROM task_review_log ORDER BY id").all();
+      expect(rows().slice(0, 2)).toEqual([f.parent, f.pending].map(task_id => ({ task_id, kind: "approval", status: null })));
+      expect(rows().slice(2)).toHaveLength(6);
+      expect(new Set(rows().slice(2).map(row => row.task_id)).size).toBe(6);
+      store.updateProject(f.projectId, { doneRequiresReview: "on" });
+      expect(store.reviewGateRefusal(store.getTask(f.pending)!, "done")).toBeTruthy();
+      expect(store.reviewGateRefusal(store.getTask(f.parent)!, "done")).toBeNull();
+      const task = store.createTask({ projectId: f.projectId, title: "Task" });
+      store.updateTask(task.id, { title: "Renamed", status: task.status });
+      approve.run("changes", task.id, evidence("changes"));
+      store.updateTask(task.id, { status: "in_progress" });
+      approve.run("approval", task.id, evidence("approve"));
+      expect(rows().filter(row => row.task_id === task.id).map(row => [row.kind, row.status])).toEqual([
+        ["status", "backlog"], ["status", "in_progress"], ["approval", null],
+      ]);
+    } finally { await harness.dispose(); }
+  });
+
+  it("uses durable write order and the current project's eligible roles", async () => {
+    const { store, harness } = setup();
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-01-01T00:00:00Z"));
+    try {
+      const project = createProject(store, "EXA");
+      const task = store.createTask({ projectId: project.id, title: "Task", status: "in_progress" });
+      const gate = (target = "done") => store.reviewGateRefusal(store.getTask(task.id)!, target);
+      const move = (status: string) => store.updateTask(task.id, { status });
+      const review = (verdict: "approve" | "changes") => store.createComment({ taskId: task.id, authorName: "Reviewer", kind: "agent", body: "Reviewed", evidence: { kind: "review", verdict, head: "a".repeat(40), thread: "thr_example" } });
+      expect(gate()).toBeNull();
+      store.updateProject(project.id, { doneRequiresReview: "on", statuses: [...DEFAULT_TASK_STATUSES, { id: "in_testing", name: "QA" }, { id: "shipped", name: "Shipped" }], workflowPolicy: { ...getWorkflowPolicy(project), doneStatus: "shipped" } });
+      expect(gate("shipped")).toContain("cannot move to Shipped");
+      expect(gate("canceled")).toBeNull();
+      move("canceled");
+      expect(gate()).toContain("--status in_review");
+      move("in_progress");
+      move("in_review");
+      expect(gate()).toBeNull();
+      review("approve");
+      move("in_progress");
+      review("changes");
+      expect(gate()).toBeTruthy();
+      const another = store.createTask({ projectId: project.id, title: "Other card", status: "in_review" });
+      expect(store.reviewGateRefusal(another, "done")).toBeNull();
+      store.deleteTask(another.id);
+      review("approve");
+      expect(gate()).toBeNull();
+      move("todo");
+      move("in_progress");
+      for (const reviewStatus of [null, "absent", "done", "in_progress"]) {
+        store.updateProject(project.id, { workflowPolicy: { ...getWorkflowPolicy(project), reviewStatus } });
+        expect(gate()).toContain("--status in_testing");
+        move("in_testing");
+        expect(gate()).toBeNull();
+        move("in_progress");
+      }
+      store.updateProject(project.id, { workflowPolicy: { ...getWorkflowPolicy(project), reviewStatus: null, testingStatus: "canceled" } });
+      expect(gate()).not.toContain("--status");
+      expect(gate()).toContain("--verdict approve");
+      move("done");
+      expect(gate()).toBeNull();
+    } finally { vi.useRealTimers(); await harness.dispose(); }
   });
 });
