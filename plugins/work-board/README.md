@@ -872,3 +872,25 @@ In project settings, the owner can enable **Done after review** (`doneRequiresRe
 Agents must create new cards in another status first. On a project move, each family member newly considered done must qualify under the destination's roles. Entering Canceled, owner actions and automatic moves stay free of this gate. Raw RPC callers that omit `agentThreadId` have the same access as the panel.
 
 Archive v26 adds `project.doneRequiresReview`. Restoring a new project uses the saved setting (older archives default to off). Existing projects retain their local setting on overwrite. The review log stays local. Importing cards restores their recorded status, and replaying an approval comment never qualifies a card.
+
+### Check receipts
+
+On the primary host, save the registry as UTF-8 JSON in `~/.bb/work-board-receipt-validators.json` under the BB server user’s home directory. For example:
+
+```json
+{"preview":{"argv":["/opt/validation/check"],"cwd":"/opt/validation"}}
+```
+
+Work Board reads the file on each validation, so edits take effect without a restart. A missing file means there are no registered validators. An unreadable or invalid file prevents gated writes. Keep the program, its dependencies and its directory under the owner's control. In project settings, enable **Check receipt**, enter the registered ID, timeout (5–300 seconds, default 60), and a hint telling agents how to produce the receipt. Optionally scope checks with a URL path regex such as `^/canvas/` and a wrapper such as `/_frame?src`. A wrapper follows one same-origin parameter value once. Ordinary queries and fragments do not count.
+
+An agent supplies `--receipt <file>` on check add, supersede, reopen or changes to prompt or steps. The CLI reads up to 256 KiB of UTF-8 from the caller's machine. With readiness enabled, supply its flags too. A scoped clear uses reopen, and moving cards into a gated project requires withdrawing their open scoped checks first.
+
+The registered program runs without a shell. Its UTF-8 JSON stdin has this shape:
+
+```json
+{"version":1,"action":"add","project":"EXA","task":"EXA-1","question":{"id":null,"revision":null,"prompt":"Check [preview](/canvas/example)","steps":[],"links":["/canvas/example"]},"callerThreadId":"thr_example","callerWorktree":null,"receipt":"receipt text"}
+```
+
+Update and reopen carry the pre-write question ID and revision. Supersede adds a `predecessor` with its ID and revision. A local caller's worktree is data for inspection only. Never execute code from it. Exit zero with a fresh non-empty stdout verdict line (up to 500 characters). Work Board records the line verbatim and the SHA-256 of the original receipt bytes alongside the saved check revision. Reused verdicts and stale validations are refused.
+
+The normal CLI enforces this workflow. BB cannot authenticate panel actions separately from raw RPC calls. A raw client can omit or substitute its thread or select or disable a registered validator. An archive can introduce an open check. Work Board exposes no RPC to write the registry. Local agents running as the server user have the same filesystem access and can edit it. The setting and verdict ledger stay local, and changing the selection is logged.

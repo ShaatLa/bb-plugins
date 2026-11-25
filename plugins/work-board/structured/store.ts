@@ -1,3 +1,5 @@
+import { receiptGate } from "./check-receipt";
+import { receiptInScope } from "../shared/check-receipt";
 import { assertNotPlanApproval, assertQuestionShape, assertReopenKeepsScope, assertStepsAtomic, assertStepsSingleAction, checkGuidance, isQuestionOpen, normalizedPrompt, supersededRefusal } from "../shared/questions";
 import { UNANSWERED_QUESTION, WAITING_ON_OWNER, NEWEST_UNANSWERED } from "../db/waiting-on-owner";
 import type { BbPluginApi, PluginRpcHandlers } from "@get-bb/plugin-sdk";
@@ -30,6 +32,7 @@ import {
 
 export function createStructuredStore(bb: BbPluginApi, store: TasksApiStore) {
   const db = bb.storage.database();
+  const prepareReceipt = receiptGate(bb, store);
   const changed = (taskId: string) => {
     const task = store.tasks.getTask(taskId)!;
     bb.realtime.publish("tasks:changed", { taskId, projectId: task.projectId });
@@ -333,8 +336,13 @@ export function createStructuredStore(bb: BbPluginApi, store: TasksApiStore) {
         ...(input.supersedes ? { supersedes: input.supersedes.questionId } : {}),
       });
       assertNoSecretsInValue(question, "question");
-      const warnings: string[] = [];
+      const predecessor = input.supersedes ? findQuestion(input.supersedes.questionId) : undefined;
+      if (input.supersedes && (!predecessor || predecessor.taskId !== input.taskId))
+        throw new Error(`Question ${input.supersedes.questionId} is not on ${taskKey(input.taskId)}; --supersedes names a check on the same card (see \`bb work-board question list ${taskKey(input.taskId)}\`).`);
+      const receipt = await prepareReceipt(input.supersedes ? "supersede" : "add", question, input, predecessor);
+      const warnings: string[] = receipt.warnings;
       const wake = store.transaction(() => {
+        receipt.verify?.();
         const before = openDecisionIds(db, question.taskId).length;
         const key = taskKey(question.taskId);
         if (input.supersedes) {
@@ -365,10 +373,11 @@ export function createStructuredStore(bb: BbPluginApi, store: TasksApiStore) {
           "INSERT INTO task_questions (id, task_id, payload) VALUES (?, ?, ?)",
         ).run(question.id, question.taskId, JSON.stringify(question));
         recordReadiness(question, input);
+        receipt.record?.(question);
         syncDecisionLabel(question.taskId);
         return decisionTransition(question.taskId, before);
       });
-      if (input.smoke && question.kind === "check") bb.realtime.publish("comments:changed", { taskId: question.taskId });
+      if ((input.smoke || receipt.record) && question.kind === "check") bb.realtime.publish("comments:changed", { taskId: question.taskId });
       changed(question.taskId);
       const planWake = await announce(wake);
       return { question, ...(planWake ? { planWake } : {}), ...(warnings.length ? { warnings } : {}) };
@@ -398,8 +407,11 @@ export function createStructuredStore(bb: BbPluginApi, store: TasksApiStore) {
         if (input.refuseReadinessClear && clearing && current.kind === "check") {
           const task = store.tasks.getTask(current.taskId)!;
           // The card's project as it is now, inside this write, so a concurrent move cannot slip a clear through.
-          if (store.tasks.getProject(task.projectId)?.checkReadiness === "on")
-            throw new Error(`${READINESS_HINT}. Use \`bb work-board question update ${task.key} --question ${current.id} --revision ${current.revision} --reopen --smoke "<what you ran and saw>" --beyond-design "<extras or none>"\`.`);
+          const project = store.tasks.getProject(task.projectId)!;
+          const readiness = project.checkReadiness === "on";
+          const receipt = receiptInScope(project.checkReceipt, current.prompt, current.steps);
+          if (readiness || receipt)
+            throw new Error(`${readiness ? READINESS_HINT : "This project requires a UI receipt"}. Use \`bb work-board question update ${task.key} --question ${current.id} --revision ${current.revision} --reopen${readiness ? ' --smoke "<what you ran and saw>" --beyond-design "<extras or none>"' : ""}${receipt ? " --receipt <file>" : ""}\`.`);
         }
         const next = questionSchema.parse({
           ...current,
@@ -494,8 +506,13 @@ export function createStructuredStore(bb: BbPluginApi, store: TasksApiStore) {
       };
     },
     async updateQuestion(input) {
+      const previous = getQuestion(input.questionId);
+      const check = { ...previous, prompt: input.prompt.trim(), steps: input.steps?.map(step => step.trim()) ?? previous.steps };
+      const changedContent = check.prompt !== previous.prompt || JSON.stringify(check.steps) !== JSON.stringify(previous.steps);
+      const receipt = await prepareReceipt(input.reopen ? "reopen" : changedContent ? "update" : null, check, input, previous);
       let wake: Wake = null;
       const question = store.transaction(() => {
+        receipt.verify?.();
         const current = getQuestion(input.questionId);
         assertQuestionCurrent(current);
         const before = openDecisionIds(db, current.taskId).length;
@@ -552,6 +569,7 @@ export function createStructuredStore(bb: BbPluginApi, store: TasksApiStore) {
           history: [...current.history, snapshotOf(current)],
         });
         assertNoSecretsInValue(next, "question");
+        receipt.record?.(next);
         recordReadiness(next, input, current);
         db.prepare<[string, string]>(
           "UPDATE task_questions SET payload = ? WHERE id = ?",
@@ -569,7 +587,7 @@ export function createStructuredStore(bb: BbPluginApi, store: TasksApiStore) {
       changed(question.taskId);
       bb.realtime.publish("comments:changed", { taskId: question.taskId });
       const planWake = await announce(wake);
-      return { question, ...(planWake ? { planWake } : {}) };
+      return { question, ...(planWake ? { planWake } : {}), ...(receipt.warnings.length ? { warnings: receipt.warnings } : {}) };
     },
     async withdrawQuestion(input) {
       let wake: Wake = null;

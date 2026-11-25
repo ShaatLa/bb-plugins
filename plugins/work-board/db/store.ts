@@ -1,3 +1,5 @@
+import { checkReceiptSchema, receiptInScope } from "../shared/check-receipt";
+import { OPEN_QUESTION_SQL } from "../shared/questions";
 import { WAITING_ON_OWNER, NEWEST_UNANSWERED, UNANSWERED_QUESTION } from "./waiting-on-owner";
 import { effectiveInProgressStatus, ensurePlanningStatus, getWorkflowPolicy, inWorkZone, isClosedStatus, planningStatusOf, settlePlanFlags, usableStartTarget, withPlanningStatus, workflowPolicySchema } from "../shared/workflow-policy.js";
 import { syncPlanDebt, syncProjectPlanDebt } from "../plan-debt/store";
@@ -90,6 +92,7 @@ interface ProjectRow {
   stale_idle_minutes: string | null;
   status_notifications: string | null;
   archive_threads_on_close: string;
+  check_receipt: string | null;
   check_readiness: string;
   done_requires_review: string;
   archive_reviewer_on_approval: string;
@@ -404,6 +407,7 @@ function projectFromRow(row: ProjectRow): Project {
     staleIdleMinutes: staleIdleThresholdSchema.parse(row.stale_idle_minutes ?? "45"),
     statusNotifications: statusNotificationsSchema.parse(row.status_notifications ?? "off"),
     archiveThreadsOnClose: archiveSettingSchema.parse(row.archive_threads_on_close),
+    checkReceipt: row.check_receipt ? checkReceiptSchema.parse(JSON.parse(row.check_receipt)) : null,
     checkReadiness: archiveSettingSchema.parse(row.check_readiness),
     doneRequiresReview: archiveSettingSchema.parse(row.done_requires_review),
     archiveReviewerOnApproval: archiveSettingSchema.parse(row.archive_reviewer_on_approval),
@@ -850,12 +854,12 @@ export function createTasksStore(db: PluginDatabase, log: (message: string) => v
       // A tracker bound to manager attention keeps its BB project link; a bound BB project takes no second tracker.
       if (input.linkedBbProjectId !== undefined) assertLinkChangeAllowed(db, id, current.linkedBbProjectId ?? null, validateLinkedBbProjectId(input.linkedBbProjectId));
       db.prepare<
-        [string, string, string, string | null, string | null, string, string | null, string, string, string, string, string, string, string, string, number, string | null, string | null, string]
+        [string, string, string, string | null, string | null, string, string | null, string, string, string, string, string, string | null, string, string, string, number, string | null, string | null, string]
       >(
         `
       UPDATE projects
       SET name = ?, prefix = ?, color = ?, folder_id = ?, linked_bb_project_id = ?, statuses = ?, workflow_policy = ?,
-          auto_archive_after_days = ?, stale_idle_minutes = ?, status_notifications = ?, archive_threads_on_close = ?, archive_reviewer_on_approval = ?, check_readiness = ?, done_requires_review = ?, planning = ?, plan_flags_initialized = ?, planning_changed_at = ?, planning_previous = ?
+          auto_archive_after_days = ?, stale_idle_minutes = ?, status_notifications = ?, archive_threads_on_close = ?, archive_reviewer_on_approval = ?, check_receipt = ?, check_readiness = ?, done_requires_review = ?, planning = ?, plan_flags_initialized = ?, planning_changed_at = ?, planning_previous = ?
       WHERE id = ?
     `,
       ).run(
@@ -879,6 +883,7 @@ export function createTasksStore(db: PluginDatabase, log: (message: string) => v
         statusNotificationsSchema.parse(input.statusNotifications ?? current.statusNotifications ?? "off"),
         archiveSettingSchema.parse(input.archiveThreadsOnClose ?? current.archiveThreadsOnClose ?? "on"),
         archiveSettingSchema.parse(input.archiveReviewerOnApproval ?? current.archiveReviewerOnApproval ?? "on"),
+        input.checkReceipt === null ? null : JSON.stringify(checkReceiptSchema.parse(input.checkReceipt ?? current.checkReceipt ?? null)),
         archiveSettingSchema.parse(input.checkReadiness ?? current.checkReadiness ?? "off"),
         archiveSettingSchema.parse(input.doneRequiresReview ?? current.doneRequiresReview ?? "off"),
         nextPlanning,
@@ -1671,6 +1676,14 @@ export function createTasksStore(db: PluginDatabase, log: (message: string) => v
       for (const task of moving) validateTaskStatus(target.id, task.status);
       // The whole family stays in the source when any non-epic card would enter the destination's gated work zone.
       for (const task of moving) {
+        if (agentThreadId && target.checkReceipt) {
+          const checks = db.prepare<[string], { payload: string }>(`SELECT payload FROM task_questions q WHERE task_id=? AND json_extract(payload, '$.kind')='check' AND ${OPEN_QUESTION_SQL}`).all(task.id);
+          for (const row of checks) {
+            const check = JSON.parse(row.payload);
+            if (receiptInScope(target.checkReceipt, check.prompt, check.steps ?? []))
+              throw new Error(`${task.key}: withdraw the open checks or move without them, then ask again with a receipt`);
+          }
+        }
         const refusal = gateRefusal(task, task.status, source, target) ?? (agentThreadId && reviewGateRefusal(task, task.status, target, source));
         if (refusal) throw new Error(`${refusal}; the whole family stays in ${source.prefix} because of ${task.key}`);
       }

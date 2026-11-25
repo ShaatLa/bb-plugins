@@ -38,6 +38,7 @@ export interface Project {
   staleIdleMinutes?: ProjectContract["staleIdleMinutes"];
   statusNotifications?: ProjectContract["statusNotifications"];
   archiveThreadsOnClose?: ProjectContract["archiveThreadsOnClose"];
+  checkReceipt?: ProjectContract["checkReceipt"];
   checkReadiness?: ProjectContract["checkReadiness"];
   doneRequiresReview?: ProjectContract["doneRequiresReview"];
   archiveReviewerOnApproval?: ProjectContract["archiveReviewerOnApproval"];
@@ -172,6 +173,7 @@ export interface UpdateProjectInput {
   staleIdleMinutes?: ProjectContract["staleIdleMinutes"];
   statusNotifications?: ProjectContract["statusNotifications"];
   archiveThreadsOnClose?: ProjectContract["archiveThreadsOnClose"];
+  checkReceipt?: ProjectContract["checkReceipt"];
   checkReadiness?: ProjectContract["checkReadiness"];
   doneRequiresReview?: ProjectContract["doneRequiresReview"];
   archiveReviewerOnApproval?: ProjectContract["archiveReviewerOnApproval"];

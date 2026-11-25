@@ -57,11 +57,12 @@ export function captureProject(
     const tasks = store.tasks
       .listTasks({ projectId })
       .sort((a, b) => a.id.localeCompare(b.id));
+    const { checkReceipt: _localValidator, ...archiveProject } = project;
     const manifest = archiveProjectSchema.parse({
       format: "bb-work-board",
       version: 26,
       gitSync: createGitSyncStore(bb.storage.database()).config(projectId),
-      project,
+      project: archiveProject,
       folders,
       labels: store.tasks
         .listLabels(projectId)

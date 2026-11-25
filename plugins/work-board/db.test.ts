@@ -80,7 +80,7 @@ describe("tasks storage", () => {
             "SELECT COUNT(*) AS count FROM schema_version",
           )
           .get()?.count,
-      ).toBe(55);
+      ).toBe(56);
       expect(db.prepare<[], { name: string }>("PRAGMA index_info(idx_task_pr_links_identity)").all().map((column) => column.name)).toEqual(["identity", "task_id"]);
       const columns = db.prepare<[], { name: string }>("PRAGMA table_info(tasks)").all().map(column => column.name);
       expect(columns).toEqual(expect.arrayContaining(["progress_note", "progress_updated_at", "progress_updated_by"]));
@@ -89,7 +89,7 @@ describe("tasks storage", () => {
       expect(planColumns("task_plans")).toEqual(expect.arrayContaining(["reviewer_kind", "reviewer_thread", "review_version"]));
       expect(planColumns("task_plan_notes")).toEqual(expect.arrayContaining(["author_kind", "author_thread"]));
       expect(planColumns("task_plan_reviews")).toEqual(expect.arrayContaining(["task_id", "version", "reviewer_kind", "reviewer_thread", "submitted_by_thread", "submitted_at", "outcome", "decided_at", "decided_by"]));
-      expect(planColumns("projects")).toEqual(expect.arrayContaining(["planning", "planning_changed_at", "planning_previous", "check_readiness"]));
+      expect(planColumns("projects")).toEqual(expect.arrayContaining(["planning", "planning_changed_at", "planning_previous", "check_readiness", "check_receipt"]));
       expect(planColumns("task_plan_versions")).toEqual(expect.arrayContaining(["task_id", "version", "body", "base_version", "op", "target", "summary", "author_kind", "author_thread", "author_name", "created_at"]));
     } finally {
       await harness.dispose();

@@ -1,3 +1,4 @@
+import { checkReceiptSchema, RECEIPT_LIMIT } from "./check-receipt";
 import { workflowPolicySchema } from "./workflow-policy.js";
 import { taskAdvisorySchema } from "./task-advisories";
 import { taskActivitySchema } from "./task-activity.js";
@@ -188,6 +189,7 @@ const questionOptionInputSchema = z
 const beyondDesignSchema = z.string().trim().min(1).max(500);
 export const smokeSchema = z.string().trim().min(20).max(2000);
 const readinessInputs = {
+  receipt: z.string().refine(s => Buffer.byteLength(s) <= RECEIPT_LIMIT, "Receipt exceeds 256 KB").optional(),
   smoke: smokeSchema.optional(),
   beyondDesign: beyondDesignSchema.optional(),
 };
@@ -346,6 +348,7 @@ export const projectSchema = z
     /** v21: archive the sessions Work Board created for a card when it closes (default on). */
     archiveThreadsOnClose: archiveSettingSchema.optional(),
     /** v21: archive a dedicated plan reviewer after it approved the plan (default on). */
+    checkReceipt: checkReceiptSchema.optional(),
     checkReadiness: archiveSettingSchema.optional(),
     doneRequiresReview: archiveSettingSchema.optional(),
     archiveReviewerOnApproval: archiveSettingSchema.optional(),
@@ -633,6 +636,7 @@ const updateProjectInputSchema = z
     staleIdleMinutes: staleIdleThresholdSchema.optional(),
     statusNotifications: statusNotificationsSchema.optional(),
     archiveThreadsOnClose: archiveSettingSchema.optional(),
+    checkReceipt: checkReceiptSchema.optional(),
     checkReadiness: archiveSettingSchema.optional(),
     doneRequiresReview: archiveSettingSchema.optional(),
     archiveReviewerOnApproval: archiveSettingSchema.optional(),
@@ -650,6 +654,7 @@ const updateProjectInputSchema = z
       input.staleIdleMinutes !== undefined ||
       input.statusNotifications !== undefined ||
       input.archiveThreadsOnClose !== undefined ||
+      input.checkReceipt !== undefined ||
       input.checkReadiness !== undefined ||
       input.doneRequiresReview !== undefined ||
       input.archiveReviewerOnApproval !== undefined ||
@@ -1157,7 +1162,7 @@ export const tasksRpcContract = {
         authorName: nonBlankStringSchema.default("You"),
       })
       .strict(),
-    output: z.object({ question: questionSchema, planWake: planWakeSchema.optional() }).strict(),
+    output: z.object({ question: questionSchema, planWake: planWakeSchema.optional(), warnings: z.array(z.string()).optional() }).strict(),
   },
   withdrawQuestion: {
     input: z.object({

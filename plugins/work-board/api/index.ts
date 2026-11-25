@@ -1,3 +1,4 @@
+import { registeredValidator } from "../checks/receipt-registry";
 import { createHash } from "node:crypto";
 import { UNANSWERED_QUESTION } from "../db/waiting-on-owner";
 import { getWorkflowPolicy, isClosedStatus } from "../shared/workflow-policy";
@@ -1150,12 +1151,20 @@ export function registerHandlers(
     updateProject(input) {
       const { projectId, baseStatuses, ...changes } = input;
       const before = store.tasks.getProject(projectId);
+      const registration = changes.checkReceipt && registeredValidator(changes.checkReceipt.validatorId);
       const canonical = (statuses: unknown) => JSON.stringify(taskStatusesSchema.parse(statuses));
       const project = store.transaction(() => {
         if (baseStatuses && canonical(store.tasks.getProject(projectId)?.statuses ?? DEFAULT_TASK_STATUSES) !== canonical(baseStatuses)) throw new Error(STALE_STATUSES);
         return store.tasks.updateProject(projectId, changes);
       });
       // shortcut: raw RPC can change readiness or withdraw an answer, enforce owner identity when the platform authenticates app calls.
+      // shortcut: raw clients can change the selection, omit caller identity or import open checks, and local agents
+      // running as the server user can edit its registry, upgrade when owner calls and host files can be isolated.
+      if (JSON.stringify(before?.checkReceipt) !== JSON.stringify(project.checkReceipt)) {
+        let oldRegistration;
+        try { oldRegistration = before?.checkReceipt && registeredValidator(before.checkReceipt.validatorId); } catch { oldRegistration = "registration removed"; }
+        bb.log.info(`check receipt for ${project.prefix}: ${JSON.stringify([before?.checkReceipt, oldRegistration])} → ${JSON.stringify([project.checkReceipt, registration])}`);
+      }
       if (project.checkReadiness !== before?.checkReadiness) bb.log.info(`check readiness for ${project.prefix}: ${before?.checkReadiness} → ${project.checkReadiness}`);
       if (project.doneRequiresReview !== before?.doneRequiresReview) bb.log.info(`done after review for ${project.prefix}: ${before?.doneRequiresReview} → ${project.doneRequiresReview}`);
       if ((project.planning ?? "off") !== (before?.planning ?? "off")) bb.log.info(`planning for ${project.prefix}: ${before?.planning ?? "off"} → ${project.planning}`);

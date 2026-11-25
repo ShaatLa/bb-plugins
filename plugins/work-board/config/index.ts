@@ -1,3 +1,4 @@
+import { checkReceiptSchema, RECEIPT_OWNER_ONLY } from "../shared/check-receipt";
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import type { z } from "zod";
 import type { TasksApiStore } from "../api";
@@ -20,6 +21,7 @@ const PROJECT_KEYS = {
   statusNotifications: statusNotificationsSchema,
   archiveThreadsOnClose: archiveSettingSchema,
   archiveReviewerOnApproval: archiveSettingSchema,
+  checkReceipt: checkReceiptSchema,
   checkReadiness: archiveSettingSchema,
   doneRequiresReview: archiveSettingSchema,
   planning: planningSchema,
@@ -72,6 +74,7 @@ export function projectConfigHandlers(bb: BbPluginApi, store: TasksApiStore) {
       requireKey(key);
       if (expected !== undefined && !key.startsWith("git.")) throw new Error(`expected applies to git.* keys only, not ${key}`);
       // The owner changes planning in the project settings (updateProject from the app); no setting call proves the caller is the owner.
+      if (key === "checkReceipt") throw new Error(RECEIPT_OWNER_ONLY);
       if (key === "checkReadiness") throw new Error(READINESS_OWNER_ONLY);
       if (key === "doneRequiresReview") throw new Error(DONE_REVIEW_OWNER_ONLY);
       if (key === "planning") throw new Error(PLANNING_OWNER_ONLY);

@@ -55,7 +55,7 @@ export const archiveProjectSchema = z
       z.literal(25),
       z.literal(26),
     ]),
-    project: projectSchema,
+    project: projectSchema.omit({ checkReceipt: true }),
     gitSync: gitSyncConfigSchema.optional(),
     folders: z.array(folderSchema),
     labels: z.array(labelSchema),

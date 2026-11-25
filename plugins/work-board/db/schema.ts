@@ -942,6 +942,14 @@ export const MIGRATIONS = [
    WHEN json_extract(NEW.evidence,'$.kind')='review' AND json_extract(NEW.evidence,'$.verdict')='approve' BEGIN
      INSERT INTO task_review_log(task_id, kind) VALUES (NEW.task_id, 'approval');
    END;`,
+  `ALTER TABLE projects ADD COLUMN check_receipt TEXT;
+   CREATE TABLE check_receipt_verdicts (
+     project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+     verdict TEXT NOT NULL, task_id TEXT NOT NULL, question_id TEXT NOT NULL,
+     revision INTEGER NOT NULL, comment_id TEXT NOT NULL,
+     PRIMARY KEY(project_id, verdict)
+   );
+   CREATE INDEX receipt_verdicts_card ON check_receipt_verdicts(task_id, comment_id);`,
 ] as const;
 
 export function initializeTasksSchema(db: PluginDatabase, log: Log = () => {}): void {

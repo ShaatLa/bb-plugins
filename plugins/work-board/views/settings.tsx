@@ -413,6 +413,7 @@ type ProjectChanges = {
   staleIdleMinutes?: z.infer<typeof staleIdleThresholdSchema>;
   statusNotifications?: z.infer<typeof statusNotificationsSchema>;
   archiveThreadsOnClose?: z.infer<typeof archiveSettingSchema>;
+  checkReceipt?: Project["checkReceipt"];
   checkReadiness?: z.infer<typeof archiveSettingSchema>;
   doneRequiresReview?: z.infer<typeof archiveSettingSchema>;
   archiveReviewerOnApproval?: z.infer<typeof archiveSettingSchema>;
@@ -459,6 +460,36 @@ function StatusesBlock({ project }: { project: Project }) {
       )}
     </section>
   );
+}
+
+function ReceiptBlock({ project, updater }: { project: Project; updater: ProjectUpdate }) {
+  const saved = project.checkReceipt;
+  const [enabled, setEnabled] = useState(Boolean(saved));
+  const [validatorId, setValidator] = useState(saved?.validatorId ?? "");
+  const [hint, setHint] = useState(saved?.hint ?? "");
+  const [timeout, setTimeoutSeconds] = useState(String(saved?.timeoutSeconds ?? 60));
+  const [pattern, setPattern] = useState(saved?.linkPathPattern ?? "");
+  const [wrappers, setWrappers] = useState(saved?.linkWrappers?.join("\n") ?? "");
+  return <div className="space-y-2">
+    <SwitchRow label="Check receipt" checked={enabled} disabled={updater.busy}
+      onChange={async on => {
+        if (!on && saved && !(await updater.update({ checkReceipt: null }))) return;
+        setEnabled(on);
+      }}
+      hint="When on, an agent's check or reopen needs a receipt that this command accepts. Work Board runs the command on this machine without a shell. Your own actions are never blocked." />
+    {enabled && <fieldset disabled={updater.busy} className="grid gap-2 text-sm">
+      <p className="text-xs text-muted-foreground">Register the program and its working directory in <code>~/.bb/work-board-receipt-validators.json</code> on the primary host. Work Board reads this file on each validation. Keep it and its dependencies outside agent-edited files. The validator may inspect the caller worktree as data only.</p>
+      <label>Registered validator ID<Input value={validatorId} onChange={e => setValidator(e.target.value)} /></label>
+      <label>Receipt timeout (seconds)<Input type="number" min={5} max={300} value={timeout} onChange={e => setTimeoutSeconds(e.target.value)} /></label>
+      <label>Receipt production hint<Input value={hint} onChange={e => setHint(e.target.value)} /></label>
+      <label>Link path pattern<Input value={pattern} onChange={e => setPattern(e.target.value)} /></label>
+      <label>Link wrappers (one per line)<textarea className="block w-full rounded border" value={wrappers} onChange={e => setWrappers(e.target.value)} /></label>
+      <Button size="sm" disabled={!validatorId || !hint} onClick={() => void updater.update({ checkReceipt: {
+        validatorId, hint, timeoutSeconds: Number(timeout), ...(pattern ? { linkPathPattern: pattern } : {}),
+        ...(wrappers.trim() ? { linkWrappers: wrappers.trim().split(/\r?\n/).map(line => line.trim()) } : {}),
+      } })}>Save check receipt</Button>
+    </fieldset>}
+  </div>;
 }
 
 function PlanningBlock({ project, updater }: { project: Project; updater: ProjectUpdate }) {
@@ -514,6 +545,7 @@ function PlanningBlock({ project, updater }: { project: Project; updater: Projec
       <SwitchRow label="Check readiness" checked={project.checkReadiness === "on"} disabled={busy}
         onChange={(on) => void update({ checkReadiness: on ? "on" : "off" })}
         hint="Before an agent asks you to check something, it records a quick smoke test of what it sends and lists anything built beyond the approved plan and design." />
+      <ReceiptBlock key={project.id + JSON.stringify(project.checkReceipt)} project={project} updater={updater} />
       <SwitchRow label="Done after review" checked={project.doneRequiresReview === "on"} disabled={busy}
         onChange={(on) => void update({ doneRequiresReview: on ? "on" : "off" })}
         hint="An agent can move a card to Done only after it passed In Review or In Testing since it last entered In Progress, or after an approving review is recorded. Your own moves are never blocked." />

@@ -2085,3 +2085,25 @@ it("restores the switch and current status, keeping replayed approvals outside t
   await importProject(legacy.bb, legacy.store, root, false);
   expect(legacy.store.tasks.getProject(project.id)?.doneRequiresReview).toBe("off");
 });
+
+it("excludes the receipt validator and preserves the local selection on overwrite", async () => {
+  const source = await seed();
+  const setting = {validatorId:"preview",timeoutSeconds:60,hint:"make receipt"};
+  source.store.tasks.updateProject(source.project.id, {checkReceipt:setting});
+  const root = join(await directory(), "receipt");
+  await exportProject(source.bb, source.store, source.project.id, root);
+  const path = join(root, "project.json");
+  const manifest = JSON.parse(await readFile(path, "utf8"));
+  expect(manifest.project).not.toHaveProperty("checkReceipt");
+  const target = setup();
+  const restore = () => importProject(target.bb,target.store,root,true);
+  await restore();
+  expect(target.store.tasks.getProject(source.project.id)?.checkReceipt).toBeNull();
+  target.store.tasks.updateProject(source.project.id,{checkReceipt:setting});
+  await restore();
+  expect(target.store.tasks.getProject(source.project.id)?.checkReceipt).toEqual(setting);
+  manifest.project.checkReceipt = null;
+  await writeFile(path,jsonText(manifest));
+  await expect(restore()).rejects.toThrow();
+  expect(target.store.tasks.getProject(source.project.id)?.checkReceipt).toEqual(setting);
+});

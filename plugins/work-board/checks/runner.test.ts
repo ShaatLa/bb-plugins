@@ -204,3 +204,21 @@ describe("execution", () => {
     expect(existsSync(readFileSync(join(checkout(dir), "path.txt"), "utf8").trim())).toBe(false);
   });
 });
+
+describe("command receipt input", () => {
+  const fixture = join(import.meta.dirname, "fixtures/receipt-validator.mjs");
+  const runFixture = (mode: string, input: string, timeoutMs = 5000) =>
+    command(process.execPath, [fixture, mode], process.cwd(), signal(), { input, separateStdout: true, timeoutMs });
+  it("captures stdout separately with stderr first and enforces their combined limit", async () => {
+    const input = JSON.stringify({ receipt: "example" });
+    expect(await runFixture("accept", input)).toEqual({
+      code: 0, output: "validator diagnostic\n\n  verified example  \n", stdout: "\n  verified example  \n",
+    });
+    await expect(runFixture("overflow", input)).rejects.toThrow(/exceeds/);
+  });
+  it("handles closed and stalled stdin", async () => {
+    const pending = "x".repeat(4_000_000);
+    await expect(runFixture("exit-early", pending)).rejects.toThrow();
+    await expect(runFixture("never-read", pending, 250)).rejects.toThrow(/timed out/);
+  });
+});

@@ -16,6 +16,8 @@ function missingIsNull(error: NodeJS.ErrnoException) {
 }
 
 export interface CommandOptions {
+  input?: string;
+  separateStdout?: boolean;
   timeoutMs?: number;
   env?: NodeJS.ProcessEnv;
   /** A lock file this command may create; after a timeout or a cancellation, a lock that did not exist before it started is removed. */
@@ -27,13 +29,13 @@ export interface CommandOptions {
  * Runs one command and captures its UTF-8 stdout and stderr (at most 1 MB). On POSIX the command leads its own process group,
  * so a timeout or a shutdown ends its helpers too: SIGTERM, then SIGKILL, and the result waits for the exit.
  */
-export async function command(cmd: string, args: string[], cwd: string, signal: AbortSignal, options: CommandOptions = {}): Promise<{ code: number; output: string }> {
+export async function command(cmd: string, args: string[], cwd: string, signal: AbortSignal, options: CommandOptions = {}): Promise<{ code: number; output: string; stdout?: string }> {
   const { timeoutMs = GIT_TIMEOUT_MS, env = process.env, shallowLock, killGraceMs = KILL_GRACE_MS } = options;
   const couldCreateLock = !!shallowLock && !(await lstat(shallowLock).catch(missingIsNull));
   const grouped = process.platform !== "win32";
   return new Promise((resolve, reject) => {
-    const child = spawn(cmd, args, { cwd, env, detached: grouped, stdio: ["ignore", "pipe", "pipe"] });
-    let output = "", bytes = 0, failure: Error | undefined, timedOut = false, cancelled = false, settled = false;
+    const child = spawn(cmd, args, { cwd, env, detached: grouped, stdio: [options.input === undefined ? "ignore" : "pipe", "pipe", "pipe"] });
+    let stdout = "", output = "", bytes = 0, failure: Error | undefined, timedOut = false, cancelled = false, settled = false;
     let escalation: ReturnType<typeof setTimeout> | undefined;
     const killGroup = (sig: NodeJS.Signals) => {
       try {
@@ -59,13 +61,35 @@ export async function command(cmd: string, args: string[], cwd: string, signal: 
     }, timeoutMs);
     const onAbort = () => { cancelled = true; failure ??= signal.reason instanceof Error ? signal.reason : new Error("aborted"); killGroup("SIGKILL"); };
     if (signal.aborted) onAbort(); else signal.addEventListener("abort", onAbort, { once: true });
-    child.stdout.setEncoding("utf8"); child.stderr.setEncoding("utf8");
+    child.stderr!.setEncoding("utf8");
     const collect = (chunk: string) => {
       if (failure) return;
       output += chunk; bytes += Buffer.byteLength(chunk);
       if (bytes > OUTPUT_LIMIT_BYTES) { failure = new Error(`${cmd} output exceeds 1 MB`); killGroup("SIGKILL"); }
     };
-    child.stdout.on("data", collect); child.stderr.on("data", collect);
+    if (options.separateStdout) {
+      const decoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
+      const decode = (chunk?: Buffer) => {
+        if (failure) return;
+        try {
+          const text = decoder.decode(chunk, { stream: chunk !== undefined });
+          collect(text);
+          if (!failure) stdout += text;
+        } catch (cause) {
+          failure = new Error("Validator stdout is not valid UTF-8", { cause });
+          killGroup("SIGKILL");
+        }
+      };
+      child.stdout!.on("data", decode);
+      child.stdout!.on("end", () => decode());
+    } else {
+      child.stdout!.setEncoding("utf8").on("data", collect);
+    }
+    child.stderr!.on("data", collect);
+    if (child.stdin && options.input !== undefined) {
+      child.stdin.on("error", error => { failure ??= error; killGroup("SIGKILL"); });
+      child.stdin.end(options.input, "utf8");
+    }
     child.on("error", (error) => {
       failure ??= error;
       // A command that never started has no exit to wait for.
@@ -84,9 +108,9 @@ export async function command(cmd: string, args: string[], cwd: string, signal: 
         }
       }
       finish(() => {
-        if (failure) reject(failure);
-        else if (code === null) reject(new Error(`${cmd} killed by ${sig}`));
-        else resolve({ code, output });
+        if (code === null) failure ??= new Error(`${cmd} killed by ${sig}`);
+        if (failure) reject(options.separateStdout ? Object.assign(failure, { output }) : failure);
+        else resolve({ code: code!, output, ...(options.separateStdout ? { stdout } : {}) });
       });
     });
   });

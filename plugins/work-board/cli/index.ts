@@ -1,3 +1,4 @@
+import { RECEIPT_OWNER_ONLY, RECEIPT_LIMIT } from "../shared/check-receipt";
 import { isQuestionOpen } from "../shared/questions";
 import { newestOpenQuestion, waitingOnOwner } from "../shared/waiting-on-owner";
 import { createGithubClient, githubToken } from "../git-sync/github";
@@ -657,7 +658,17 @@ function withdrawalLine(q: { id: string; withdrawnBy?: string; withdrawReason?: 
   return `Question ${q.id} withdrawn by ${q.withdrawnBy}: ${q.withdrawReason}`;
 }
 
+async function clientReceipt(bb: BbPluginApi, domain: TasksDomain, ctx: PluginCliContext, path?: string) {
+  if (path === undefined) return undefined;
+  const threadId = ctx.threadId ?? process.env.BB_THREAD_ID;
+  const hostId = await resolveClientHostId(bb, domain, undefined, { ...ctx, threadId });
+  const { bytes } = await readClientFile(bb, hostId, resolve(ctx.cwd ?? process.cwd(), path));
+  if (bytes.length > RECEIPT_LIMIT) throw new CliError("Receipt exceeds 256 KB");
+  return new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes);
+}
+
 const READINESS_OPTIONS = {
+  receipt: { type: "string", description: "Read a UTF-8 check receipt from this machine (up to 256 KB)." },
   smoke: { type: "string", description: `${READINESS_HINT}. Use --smoke for what you ran and saw (20–2000 characters) and --beyond-design for extras or none.` },
   "beyond-design": { type: "string", description: `${READINESS_HINT}. Use --beyond-design for extras or none (1–500 characters) and --smoke for the test.` },
 } as const;
@@ -1357,6 +1368,7 @@ export function registerTasksCli(
                   askedByThread: ctx.threadId ?? process.env.BB_THREAD_ID ?? null,
                   prompt: input.options.prompt,
                   authorName: taskAuthor(ctx),
+                  receipt: await clientReceipt(bb, domain, ctx, input.options.receipt),
                   smoke: input.options.smoke,
                   beyondDesign: input.options["beyond-design"],
                   steps: input.options.step,
@@ -1588,6 +1600,7 @@ export function registerTasksCli(
                 ...(input.options.step.length ? { steps: input.options.step } : {}),
                 mode: input.options.mode ?? current.mode,
                 options,
+                receipt: await clientReceipt(bb, domain, ctx, input.options.receipt),
                 smoke: input.options.smoke,
                 beyondDesign: input.options["beyond-design"],
                 reopen: input.options.reopen,
@@ -1628,7 +1641,7 @@ export function registerTasksCli(
                 }));
               }
               const result = await domain.updateQuestion(update);
-              const warnings = planWakeLine(result.planWake);
+              const warnings = [...(result.warnings ?? []), ...planWakeLine(result.planWake)];
               return input.options.json
                 ? JSON.stringify({ ...result, warnings })
                 : { exitCode: 0, stdout: `Saved question ${result.question.id} (revision ${result.question.revision})`, stderr: warnings.join("\n") };
@@ -1997,6 +2010,7 @@ export function registerTasksCli(
                 ["BB project", project.linkedBbProjectId ?? "-"],
                 ["Auto archive (days)", project.autoArchiveAfterDays ?? "off"],
                 ["Idle warning (minutes)", project.staleIdleMinutes ?? "45"],
+                ["Check receipt", JSON.stringify(project.checkReceipt ?? null)],
                 ["Done after review", project.doneRequiresReview ?? "off"],
                 ["Planning", project.planning ?? "off"],
                 ["Plan-gated statuses", planGatedStatuses(project).join(", ") || "-"],
@@ -2022,6 +2036,7 @@ export function registerTasksCli(
             "auto-archive": { type: "enum", values: ["off", "3", "7", "14", "30"] as const, description: "Project auto-archive interval in days" },
             "stale-idle": { type: "enum", values: ["off", "30", "45", "60", "120"] as const, description: "Project idle warning threshold in minutes" },
             "status-notifications": { type: "enum", values: ["off", "all", "done"] as const, description: "Project status change push notifications" },
+            "check-receipt": { type: "string", description: RECEIPT_OWNER_ONLY },
             "check-readiness": { type: "string", description: READINESS_OWNER_ONLY },
             "done-requires-review": { type: "string", description: DONE_REVIEW_OWNER_ONLY },
             planning: { type: "enum", values: ["off", "optional", "required"] as const, description: "Owner only, set in the project settings: the CLI refuses it" },
@@ -2089,6 +2104,7 @@ export function registerTasksCli(
                 try { workflowPolicy = workflowPolicySchema.parse(JSON.parse(text!)); }
                 catch { throw new CliError("Invalid workflow policy file"); }
               }
+              if (input.options["check-receipt"] !== undefined) throw new CliError(RECEIPT_OWNER_ONLY, { code: "owner_only" });
               if (input.options["check-readiness"] !== undefined) throw new CliError(READINESS_OWNER_ONLY, { code: "owner_only" });
               if (input.options["done-requires-review"] !== undefined) throw new CliError(DONE_REVIEW_OWNER_ONLY, { code: "owner_only" });
               if (input.options.planning !== undefined) throw new CliError(PLANNING_OWNER_ONLY, { code: "owner_only" });
@@ -3332,7 +3348,7 @@ ${activity.diagnostics?.inactiveSessions.map((session) => `@thread:${session.thr
                   tasksRpcContract.moveTaskToProject.input.parse({
                     taskId: task.id,
                     projectId: project.id,
-                    agentThreadId: ctx.threadId ?? null,
+                    agentThreadId: ctx.threadId ?? process.env.BB_THREAD_ID ?? null,
                     authorName: taskAuthor(ctx),
                   }),
                 ),

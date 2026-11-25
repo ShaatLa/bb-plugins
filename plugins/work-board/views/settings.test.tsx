@@ -1,4 +1,7 @@
 // @vitest-environment jsdom
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import os from "node:os";
+import { join } from "node:path";
 import { cleanup, fireEvent, waitFor, within } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
 import { loadPluginApp, renderSlot } from "@get-bb/plugin-sdk/testing/app";
@@ -795,4 +798,35 @@ it("refreshes only the checks and attention getters on a settings signal, whiche
     expect(await burst("settings:changed", "tracker_other")).toEqual(["getAttentionSettings", "getChecksStatus"]);
     expect(await burst("projects:changed", null)).toEqual(["config.get", "getAttentionSettings", "getChecksStatus", "getGitSyncConfig", "listProjects"]);
   } finally { cleanup(); await harness.dispose(); }
+});
+
+it("reopens every receipt policy field saved for the project", async () => {
+  const {bb,harness}=createFakePluginHost({pluginId:"work-board"});
+  const dir = mkdtempSync(join(os.tmpdir(), "receipt-settings-"));
+  const home = vi.spyOn(os, "homedir").mockReturnValue(dir);
+  try {
+    mkdirSync(join(dir, ".bb"));
+    writeFileSync(join(dir, ".bb", "work-board-receipt-validators.json"), JSON.stringify({
+      preview: { argv: ["/opt/validation/check"], cwd: "/opt/validation" },
+    }));
+    const store=createStore(bb);
+    const project=store.tasks.createProject({name:"Example",prefix:"EXA",color:"blue"});
+    registerTasksApi(bb,store);
+    const rpc=Object.fromEntries(Object.keys(tasksRpcContract).map(method=>[method,(input:unknown)=>harness.callRpc(method,input)]));
+    const show=()=>renderSlot(app.settingsSections[0]!,{},{rpc});
+    const fields={"Registered validator ID":"preview","Receipt timeout (seconds)":"45","Receipt production hint":"make receipt","Link path pattern":"^/canvas/","Link wrappers (one per line)":"/_frame?src\n/view?url"};
+    const panel=show();
+    fireEvent.click(await panel.findByRole("switch",{name:"Check receipt"}));
+    for(const [name,value] of Object.entries(fields)) fireEvent.change(panel.getByLabelText(name),{target:{value}});
+    fireEvent.click(panel.getByRole("button",{name:"Save check receipt"}));
+    await waitFor(()=>expect(store.tasks.getProject(project.id)?.checkReceipt?.linkWrappers).toEqual(["/_frame?src","/view?url"]));
+    cleanup();
+    const reloaded=show();
+    for(const [name,value] of Object.entries(fields)) expect(((await reloaded.findByLabelText(name)) as HTMLInputElement).value).toBe(value);
+  } finally {
+    home.mockRestore();
+    rmSync(dir, { recursive: true, force: true });
+    cleanup();
+    await harness.dispose();
+  }
 });
