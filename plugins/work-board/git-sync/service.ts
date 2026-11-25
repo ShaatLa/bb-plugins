@@ -1,5 +1,7 @@
 import type { BbPluginApi, PluginRpcHandlers } from "@get-bb/plugin-sdk";
 import { environmentPullRequests } from "./environment-prs";
+import { moveCardsToReview } from "./review-moves";
+import { recordPrAuthors } from "../review-gate/authors";
 import type { TasksApiStore } from "../api";
 import type { tasksRpcContract } from "../shared/contract";
 import { publishProjectsChanged, publishTasksChanged } from "../api";
@@ -276,12 +278,14 @@ export function createGitSyncService(
           /* Unavailable workers must not erase persistent links. */
         }
       }
+      const environmentThreads = new Map<string, Set<string>>();
       for (const link of links) {
         const environmentId = environments.get(link.threadId);
         if (!environmentId) continue;
         const members = environmentTasks.get(environmentId) ?? new Set<string>();
         members.add(link.taskId);
         environmentTasks.set(environmentId, members);
+        environmentThreads.set(environmentId, (environmentThreads.get(environmentId) ?? new Set<string>()).add(link.threadId));
       }
       if (!current()) return finish();
       phase = "environment PR read";
@@ -293,8 +297,10 @@ export function createGitSyncService(
         if (result.outcome !== "available" || !current()) continue;
         try {
           const parsed = parsePrUrl(result.pullRequest.url);
-          if (!config.repositories.includes(parsed.repository)) continue;
           const identity = prIdentity(parsed);
+          // The attached threads working in this PR's environment are its authors: kept even after the worktree is gone.
+          recordPrAuthors(db, projectId, identity, environmentThreads.get(environmentId) ?? []);
+          if (!config.repositories.includes(parsed.repository)) continue;
           let text = references.get(identity);
           if (!text) {
             text = client.referenceText(parsed.repository, parsed.number);
@@ -446,26 +452,8 @@ export function createGitSyncService(
           });
           // Messages go out while the pass reads the next PRs; the drain chain runs one drain at a time.
           if (delivers) void events.drain();
-          if (snapshot.state === "open" || snapshot.state === "draft") {
-            const latestProject = store.tasks.getProject(projectId);
-            if (latestProject && current()) {
-              const policy = getWorkflowPolicy(latestProject);
-              const statuses = latestProject.statuses ?? DEFAULT_TASK_STATUSES;
-              const target = statuses.findIndex((status) => status.id === policy.reviewStatus);
-              for (const attached of linksByPr.get(prIdentity(link)) ?? []) {
-                if (!current()) break;
-                if (prIdentity(attached) !== prIdentity(snapshot) || attached.excluded || !attached.confirmed || attached.role !== "delivers") continue;
-                const task = store.tasks.getTask(attached.taskId);
-                if (!task || task.projectId !== projectId || task.archivedAt || !policy.earlyStatuses.includes(task.status) ||
-                    [policy.bugfixStatus, policy.doneStatus, "canceled"].includes(task.status) ||
-                    target < 0 || statuses.findIndex((status) => status.id === task.status) >= target) continue;
-                // A card whose plan is not approved stays put while the PR and its other cards are processed.
-                if (store.tasks.planGate(task, policy.reviewStatus!)) continue;
-                store.tasks.updateTask(task.id, { status: policy.reviewStatus!, statusLog: { by: "Work Board", cause: `${snapshot.repository}#${snapshot.number} open for review` } });
-                publishTasksChanged(bb, task.id, projectId);
-              }
-            }
-          }
+          if (current())
+            for (const id of moveCardsToReview(db, store, projectId, snapshot, linksByPr.get(prIdentity(link)) ?? [])) publishTasksChanged(bb, id, projectId);
           const { observedAt: _previousObservedAt, ...oldVisible } = previous.snapshot ?? { observedAt: undefined };
           const { observedAt: _observedAt, ...visible } = snapshot;
           // A stale-to-current refresh is visible even when the facts are identical. Freshness is judged at commit time,

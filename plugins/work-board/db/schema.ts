@@ -1012,7 +1012,84 @@ export const MIGRATIONS = [
      INSERT OR IGNORE INTO project_pr_history(project_id, first_linked_at)
        VALUES (NEW.project_id, strftime('%Y-%m-%dT%H:%M:%fZ','now'));
    END;`,
+  // Review evidence for Done (local, never exported like task_review_log): author threads, the automatic-review marker,
+  // the gate's decision record and an append-only history of PR link roles. The review log learns which comment an approval is.
+  (db: PluginDatabase) => {
+    db.exec(`
+      ALTER TABLE task_review_log ADD COLUMN comment_id TEXT;
+      ALTER TABLE task_review_log ADD COLUMN at TEXT;
+      DROP TRIGGER task_review_initial;
+      DROP TRIGGER task_review_status;
+      DROP TRIGGER task_review_approval;
+      CREATE TRIGGER task_review_initial AFTER INSERT ON tasks BEGIN
+        INSERT INTO task_review_log(task_id, kind, status, at) VALUES (NEW.id, 'status', NEW.status, strftime('%Y-%m-%dT%H:%M:%fZ','now'));
+      END;
+      CREATE TRIGGER task_review_status AFTER UPDATE OF status ON tasks WHEN NEW.status <> OLD.status BEGIN
+        INSERT INTO task_review_log(task_id, kind, status, at) VALUES (NEW.id, 'status', NEW.status, strftime('%Y-%m-%dT%H:%M:%fZ','now'));
+      END;
+      CREATE TRIGGER task_review_approval AFTER INSERT ON comments
+      WHEN (json_extract(NEW.evidence,'$.kind')='review' AND json_extract(NEW.evidence,'$.verdict')='approve')
+        OR (json_extract(NEW.evidence,'$.kind')='qa' AND json_extract(NEW.evidence,'$.verdict')='pass') BEGIN
+        INSERT INTO task_review_log(task_id, kind, comment_id, at) VALUES (NEW.task_id, 'approval', NEW.id, strftime('%Y-%m-%dT%H:%M:%fZ','now'));
+      END;
+      CREATE TABLE pr_author_threads (
+        project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+        identity TEXT NOT NULL, thread_id TEXT NOT NULL, first_seen_at TEXT NOT NULL,
+        PRIMARY KEY(project_id, identity, thread_id)
+      );
+      CREATE TABLE pr_review_moves (
+        task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+        identity TEXT NOT NULL, reviewed_head TEXT, state TEXT NOT NULL CHECK (state IN ('open','not_open')),
+        PRIMARY KEY(task_id, identity)
+      );
+      CREATE TABLE review_gate_decisions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, at TEXT NOT NULL, task_id TEXT NOT NULL, mover TEXT NOT NULL,
+        path TEXT NOT NULL CHECK (path IN ('A','B')), result TEXT NOT NULL CHECK (result IN ('passed','refused')), detail TEXT NOT NULL
+      );
+      CREATE INDEX review_gate_decisions_task ON review_gate_decisions(task_id, id);
+      CREATE TABLE pr_link_history (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, task_id TEXT NOT NULL, identity TEXT NOT NULL, at TEXT NOT NULL,
+        role TEXT, confirmed INTEGER NOT NULL, excluded INTEGER NOT NULL, deleted INTEGER NOT NULL DEFAULT 0
+      );
+      CREATE INDEX pr_link_history_link ON pr_link_history(task_id, identity, id);
+      INSERT INTO pr_link_history(task_id, identity, at, role, confirmed, excluded)
+        SELECT task_id, identity, strftime('%Y-%m-%dT%H:%M:%fZ','now'), json_extract(payload,'$.role'),
+          COALESCE(json_extract(payload,'$.confirmed'),0), COALESCE(json_extract(payload,'$.excluded'),0) FROM task_pr_links;
+      CREATE TRIGGER pr_link_history_insert AFTER INSERT ON task_pr_links BEGIN
+        INSERT INTO pr_link_history(task_id, identity, at, role, confirmed, excluded)
+        VALUES (NEW.task_id, NEW.identity, strftime('%Y-%m-%dT%H:%M:%fZ','now'), json_extract(NEW.payload,'$.role'),
+          COALESCE(json_extract(NEW.payload,'$.confirmed'),0), COALESCE(json_extract(NEW.payload,'$.excluded'),0));
+      END;
+      CREATE TRIGGER pr_link_history_update AFTER UPDATE ON task_pr_links
+      WHEN json_extract(NEW.payload,'$.role') IS NOT json_extract(OLD.payload,'$.role')
+        OR COALESCE(json_extract(NEW.payload,'$.confirmed'),0) <> COALESCE(json_extract(OLD.payload,'$.confirmed'),0)
+        OR COALESCE(json_extract(NEW.payload,'$.excluded'),0) <> COALESCE(json_extract(OLD.payload,'$.excluded'),0) BEGIN
+        INSERT INTO pr_link_history(task_id, identity, at, role, confirmed, excluded)
+        VALUES (NEW.task_id, NEW.identity, strftime('%Y-%m-%dT%H:%M:%fZ','now'), json_extract(NEW.payload,'$.role'),
+          COALESCE(json_extract(NEW.payload,'$.confirmed'),0), COALESCE(json_extract(NEW.payload,'$.excluded'),0));
+      END;
+      CREATE TRIGGER pr_link_history_delete AFTER DELETE ON task_pr_links BEGIN
+        INSERT INTO pr_link_history(task_id, identity, at, role, confirmed, excluded, deleted)
+        VALUES (OLD.task_id, OLD.identity, strftime('%Y-%m-%dT%H:%M:%fZ','now'), json_extract(OLD.payload,'$.role'),
+          COALESCE(json_extract(OLD.payload,'$.confirmed'),0), COALESCE(json_extract(OLD.payload,'$.excluded'),0), 1);
+      END;
+    `);
+    backfillApprovalComments(db);
+  },
 ] as const;
+
+/** Approval rows written before the comment id existed: the N-th row is the N-th approving review comment, only where the counts agree. */
+export function backfillApprovalComments(db: PluginDatabase): void {
+  const cards = db.prepare<[], { task_id: string }>("SELECT DISTINCT task_id FROM task_review_log WHERE kind='approval' AND comment_id IS NULL").all();
+  const rows = db.prepare<[string], { id: number }>("SELECT id FROM task_review_log WHERE task_id=? AND kind='approval' ORDER BY id");
+  const comments = db.prepare<[string], { id: string }>(
+    "SELECT id FROM comments WHERE task_id=? AND json_extract(evidence,'$.kind')='review' AND json_extract(evidence,'$.verdict')='approve' ORDER BY rowid");
+  const set = db.prepare<[string, number]>("UPDATE task_review_log SET comment_id=? WHERE id=?");
+  for (const { task_id } of cards) {
+    const log = rows.all(task_id), found = comments.all(task_id);
+    if (log.length === found.length) log.forEach((row, index) => set.run(found[index]!.id, row.id));
+  }
+}
 
 export function initializeTasksSchema(db: PluginDatabase, log: Log = () => {}): void {
   db.pragma("foreign_keys = ON");

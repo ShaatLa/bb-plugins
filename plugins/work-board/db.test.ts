@@ -1063,30 +1063,25 @@ describe("review history", () => {
       expect(gate("shipped")).toContain("cannot move to Shipped");
       expect(gate("canceled")).toBeNull();
       move("canceled");
-      expect(gate()).toContain("--status in_review");
+      expect(gate()).toContain("no approving review from a thread other than you since the card last entered In Progress");
+      expect(gate()).not.toContain("--status");
       move("in_progress");
       move("in_review");
-      expect(gate()).toBeNull();
+      move("in_testing");
+      // Passing through a review status is not a review.
+      expect(gate()).toContain("no approving review");
       review("approve");
+      expect(gate()).toBeNull();
       move("in_progress");
       review("changes");
       expect(gate()).toBeTruthy();
       const another = store.createTask({ projectId: project.id, title: "Other card", status: "in_review" });
-      expect(store.reviewGateRefusal(another, "done")).toBeNull();
+      expect(store.reviewGateRefusal(another, "done")).toBeTruthy();
       store.deleteTask(another.id);
       review("approve");
       expect(gate()).toBeNull();
       move("todo");
       move("in_progress");
-      for (const reviewStatus of [null, "absent", "done", "in_progress"]) {
-        store.updateProject(project.id, { workflowPolicy: { ...getWorkflowPolicy(project), reviewStatus } });
-        expect(gate()).toContain("--status in_testing");
-        move("in_testing");
-        expect(gate()).toBeNull();
-        move("in_progress");
-      }
-      store.updateProject(project.id, { workflowPolicy: { ...getWorkflowPolicy(project), reviewStatus: null, testingStatus: "canceled" } });
-      expect(gate()).not.toContain("--status");
       expect(gate()).toContain("--verdict approve");
       move("done");
       expect(gate()).toBeNull();

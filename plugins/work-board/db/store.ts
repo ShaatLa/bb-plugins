@@ -2,11 +2,14 @@ import { checkReceiptSchema, receiptInScope } from "../shared/check-receipt";
 import { OPEN_QUESTION_SQL } from "../shared/questions";
 import { WAITING_ON_OWNER, NEWEST_UNANSWERED, UNANSWERED_QUESTION } from "./waiting-on-owner";
 import { effectiveInProgressStatus, ensurePlanningStatus, getWorkflowPolicy, inWorkZone, isClosedStatus, planningStatusOf, settlePlanFlags, usableStartTarget, withPlanningStatus, workflowPolicySchema } from "../shared/workflow-policy.js";
-import { syncPlanDebt, syncProjectPlanDebt } from "../plan-debt/store";
+import { recordPlanDebtEvent, syncPlanDebt, syncProjectPlanDebt } from "../plan-debt/store";
+import { prIdentity, prLinkSchema } from "../shared/git-sync";
 import { createClosureStore } from "../closure/store";
 import { prSettled, projectPolicies, staleRows, staleStatusObservations as observeStaleStatus } from "../attention/observe";
 import { closeTaskOccurrences, markTrackerDirty, touchAttention } from "../attention/ledger";
 import { endPauses } from "../pause/store";
+import { recordPrAuthors } from "../review-gate/authors";
+import { evaluateReviewGate, recordReviewGateDecision, ReviewGateRefused, type GateAuthors, type GateDecision, type GateResult } from "../review-gate/gate";
 import { assertLinkChangeAllowed } from "../attention/modes";
 import { assertChecksDeleteAllowed } from "../checks/ownership";
 import { archiveSettingSchema, autoArchiveAfterDaysSchema, planningSchema, staleIdleThresholdSchema, statusNotificationsSchema } from "../shared/project-settings";
@@ -1534,24 +1537,34 @@ export function createTasksStore(db: PluginDatabase, log: (message: string) => v
       !!id && id !== progress && !isClosedStatus(project, id) && statuses.some(status => status.id === id));
   }
 
-  function reviewGateRefusal(task: Task, target: string, project = requireProject(task.projectId), source = project): string | null {
-    if (project.doneRequiresReview !== "on" || !isDone(project, target) || isDone(source, task.status)) return null;
-    const statuses = project.statuses ?? DEFAULT_TASK_STATUSES;
+  /** Whether moving the card to `target` is a move into Done that this project gates. */
+  function reviewGateApplies(task: Task, target: string, project = requireProject(task.projectId), source = project): boolean {
+    return project.doneRequiresReview === "on" && isDone(project, target) && !isDone(source, task.status);
+  }
+
+  /** The Done rule for an agent move; null when the project does not gate it. Reads only. */
+  function reviewGate(task: Task, target: string, project = requireProject(task.projectId), source = project, context: { mover?: string | null; authors?: GateAuthors } = {}): GateResult | null {
+    if (!reviewGateApplies(task, target, project, source)) return null;
     const progress = effectiveInProgressStatus(project);
-    const roles = reviewRoles(project);
-    const passed = db.prepare<[string, string, string | null, string | null, string | null]>(`
-      SELECT 1 FROM task_review_log WHERE task_id = ?
-        AND id > (SELECT coalesce(max(id), 0) FROM task_review_log WHERE task_id = ? AND status = ?)
-        AND (kind = 'approval' OR status IN (?, ?)) LIMIT 1
-    `).get(task.id, task.id, progress, roles[0] ?? null, roles[1] ?? null);
-    if (passed) return null;
-    const cutoff = progress ? ` since it last entered ${statusLabel(progress, statuses)}` : "";
-    const missing = roles.length ? `It has not passed ${roles.map(id => statusLabel(id, statuses)).join(" or ")}${cutoff}. ` : "";
-    const sourceRoles = source === project ? roles : reviewRoles(source);
-    const hint = roles.find(id => sourceRoles.includes(id));
-    const move = hint ? `Move it to review first (\`bb work-board update ${task.key} --status ${hint}\`), or record` : "Record";
-    return `${task.key} cannot move to ${statusLabel(target, statuses)}: this project requires review before Done. ${missing}${move}` +
-      ` an approving review (\`bb work-board comment ${task.key} --kind review --head <sha> --verdict approve --thread <reviewer thread> --body "..."\`). The owner can still move it on the board.`;
+    const statuses = project.statuses ?? DEFAULT_TASK_STATUSES;
+    // The authors were read before this transaction: threads attached since then may be authors too, so the lookup counts as failed.
+    let authors = context.authors;
+    if (authors?.threads) {
+      const now = new Set(listTaskThreads(task.id).map((attached) => attached.threadId));
+      if (now.size !== authors.threads.length || authors.threads.some((id) => !now.has(id))) authors = { ...authors, failed: true };
+    }
+    return evaluateReviewGate(db, {
+      task: { id: task.id, key: task.key, projectId: task.projectId },
+      targetLabel: statusLabel(target, statuses),
+      progressStatus: progress ?? null,
+      progressLabel: progress ? statusLabel(progress, statuses) : null,
+      mover: context.mover ?? null,
+      ...(authors ? { authors } : {}),
+    });
+  }
+
+  function reviewGateRefusal(task: Task, target: string, project = requireProject(task.projectId), source = project, context: { mover?: string | null; authors?: GateAuthors } = {}): string | null {
+    return reviewGate(task, target, project, source, context)?.refusal ?? null;
   }
 
   function planGate(task: Task, status: string): string | null {
@@ -1674,18 +1687,12 @@ export function createTasksStore(db: PluginDatabase, log: (message: string) => v
   const scheduleTemplate = db.prepare("SELECT 1 FROM task_schedules WHERE template_task_id=?");
 
   const moveTaskToProjectTransaction = db.transaction(
-    (id: string, projectId: string, agentThreadId?: string | null): MoveTaskToProjectResult => {
+    (id: string, projectId: string, agentThreadId?: string | null, gateAuthors?: (taskId: string) => GateAuthors | undefined): MoveTaskToProjectResult => {
       const root = requireTask(id);
       const target = requireProject(projectId);
       if (root.projectId === target.id) return { task: root, moved: [] };
       const source = requireProject(root.projectId);
-      const members =
-        root.type === "epic" ? listTasks({ epicId: root.id }) : [];
-      const moving = [
-        root,
-        ...members,
-        ...[root, ...members].flatMap((task) => listSubtasks(task.id)),
-      ];
+      const moving = archiveFamily(root.id);
       if (moving.some(task => scheduleTemplate.get(task.id)))
         throw new Error("This card was a schedule template and keeps its schedule history in its project. Archive it instead, or create a new card in the target project.");
       for (const task of moving) validateTaskStatus(target.id, task.status);
@@ -1699,8 +1706,14 @@ export function createTasksStore(db: PluginDatabase, log: (message: string) => v
               throw new Error(`${task.key}: withdraw the open checks or move without them, then ask again with a receipt`);
           }
         }
-        const refusal = gateRefusal(task, task.status, source, target) ?? (agentThreadId && reviewGateRefusal(task, task.status, target, source));
-        if (refusal) throw new Error(`${refusal}; the whole family stays in ${source.prefix} because of ${task.key}`);
+        const planRefusal = gateRefusal(task, task.status, source, target);
+        const gate = planRefusal || !agentThreadId ? null : reviewGate(task, task.status, target, source, { mover: agentThreadId, authors: gateAuthors?.(task.id) });
+        const refusal = planRefusal ?? gate?.refusal;
+        if (refusal) {
+          const message = `${refusal}; the whole family stays in ${source.prefix} because of ${task.key}`;
+          throw gate ? new ReviewGateRefused(message, gate.decision) : new Error(message);
+        }
+        if (gate) recordReviewGateDecision(db, gate.decision);
       }
       const movingIds = new Set(moving.map((task) => task.id));
 
@@ -1799,8 +1812,9 @@ export function createTasksStore(db: PluginDatabase, log: (message: string) => v
     id: string,
     projectId: string,
     agentThreadId?: string | null,
+    gateAuthors?: (taskId: string) => GateAuthors | undefined,
   ): MoveTaskToProjectResult {
-    return moveTaskToProjectTransaction(id, projectId, agentThreadId);
+    return moveTaskToProjectTransaction(id, projectId, agentThreadId, gateAuthors);
   }
 
   function renormalizeColumn(
@@ -2096,7 +2110,32 @@ export function createTasksStore(db: PluginDatabase, log: (message: string) => v
     return comment;
   }
 
-  function createComment(input: CreateCommentInput): Comment {
+  /**
+   * A merge record says its PR was delivered: the card's one link with that number, if it is unconfirmed or a discovered
+   * `related`, becomes a confirmed delivering link, in the record's transaction. A manual role, an excluded link and a
+   * number shared by several links are left alone (the gate still counts the record).
+   */
+  function confirmMergedLink(taskId: string, pr: number): void {
+    const named = db.prepare<[string, number], { identity: string; payload: string }>(
+      "SELECT identity, payload FROM task_pr_links WHERE task_id=? AND json_extract(payload,'$.number')=? AND COALESCE(json_extract(payload,'$.excluded'),0)=0",
+    ).all(taskId, pr);
+    if (named.length !== 1) return;
+    const link = prLinkSchema.parse(JSON.parse(named[0]!.payload));
+    if (link.source === "manual" || (link.confirmed && link.role !== "related")) return;
+    db.prepare<[string, string, string]>("UPDATE task_pr_links SET payload=? WHERE task_id=? AND identity=?")
+      .run(JSON.stringify({ ...link, confirmed: true, role: "delivers", updatedAt: new Date().toISOString() }), taskId, named[0]!.identity);
+    if (!link.confirmed) recordPlanDebtEvent(db, taskId, `pr:${prIdentity(link)}`);
+    touchAttention(db, [taskId]);
+    insertComment({ taskId, kind: "system", authorName: "Work Board", presetName: null, threadId: null, body: `${link.repository}#${link.number} confirmed as delivering: a merge was recorded on this card` });
+  }
+
+  const createComment = (input: CreateCommentInput): Comment => db.transaction(() => {
+    const comment = insertComment(input);
+    if (comment.evidence?.kind === "merge") confirmMergedLink(comment.taskId, comment.evidence.pr);
+    return comment;
+  })();
+
+  function insertComment(input: CreateCommentInput): Comment {
     assertNoSecrets(input.body, "comment body");
     const evidence =
       input.evidence === undefined
@@ -2752,6 +2791,11 @@ export function createTasksStore(db: PluginDatabase, log: (message: string) => v
     onEpicMoved: (listener: (move: { epicId: string; commentId: string; projectId: string }) => void) => { epicMoveListener = listener; },
     planGate,
     reviewGateRefusal,
+    reviewGate,
+    reviewGateApplies,
+    recordPrAuthors: (projectId: string, identity: string, threadIds: Iterable<string>) => recordPrAuthors(db, projectId, identity, threadIds),
+    recordReviewGateDecision: (decision: GateDecision) => recordReviewGateDecision(db, decision),
+    archiveFamily,
     moveTaskToProject: moveTaskToProjectHooked,
     updatePosition: updatePositionHooked,
     deleteTask: deleteTaskHooked,

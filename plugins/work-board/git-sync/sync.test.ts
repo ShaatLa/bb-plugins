@@ -1,5 +1,5 @@
 import { createPlanStore } from "../plans/store";
-import { afterEach, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { createFakePluginHost, makeThreadResponse } from "@get-bb/plugin-sdk/testing";
 import { createStore, registerTasksApi } from "../api";
 import { registerTasksCli } from "../cli";
@@ -929,7 +929,7 @@ it("advances only confirmed delivering open PRs from early statuses", async () =
   await f.service.syncProject(f.project.id);
   expect(f.tasks.slice(0, 8).map(task => f.store.tasks.getTask(task.id)!.status)).toEqual(["in_review", "todo", "todo", "todo", "todo", "done", "canceled", "in_review"]);
   // Path 6: the automatic move names Work Board and its cause in the card history.
-  expect(f.store.tasks.listComments(f.tasks[0]!.id).filter(comment => comment.kind === "system").map(comment => [comment.authorName, comment.body])).toContainEqual(["Work Board", "Status changed to In Review by Work Board (example/service#42 open for review)"]);
+  expect(f.store.tasks.listComments(f.tasks[0]!.id).filter(comment => comment.kind === "system").map(comment => [comment.authorName, comment.body])).toContainEqual(["Work Board", `Status changed to In Review by Work Board (example/service#42 ready for review at ${a.slice(0, 7)})`]);
 });
 
 it("skips a card whose plan is not approved in a required project while the sync succeeds and the approved card advances", async () => {
@@ -961,6 +961,8 @@ it("uses custom workflow status IDs and does not reverse a closed PR", async () 
   await f.service.handlers.linkPr({ taskId: f.task.id, url: "https://github.com/example/service/pull/42", role: "delivers", part: null });
   f.client.snapshot.mockResolvedValueOnce({ ...snapshot(), state: "draft" });
   await f.service.syncProject(f.project.id);
+  expect(f.store.tasks.getTask(f.task.id)!.status).toBe("ready_custom");
+  await f.service.syncProject(f.project.id, true);
   expect(f.store.tasks.getTask(f.task.id)!.status).toBe("review_custom");
   f.client.snapshot.mockResolvedValueOnce({ ...snapshot(), state: "closed" });
   await f.service.syncProject(f.project.id, true);
@@ -1534,4 +1536,118 @@ it("drops the forced wait of a PR that leaves eligibility, so re-linking it star
   f.client.snapshot.mockClear();
   await f.service.syncProject(f.project.id, true);
   expect(fetched(f)).toEqual([42, 43, 44]);
+});
+
+describe("automatic In Review follows a reviewable PR", () => {
+  const url = "https://github.com/example/service/pull/42";
+  const head = (n: number) => String(n).repeat(40);
+  async function reviewFixture(status = "todo") {
+    const f = setup();
+    f.store.tasks.updateProject(f.project.id, { statuses: [...f.project.statuses!, { id: "bugfix", name: "Bugfix" }, { id: "in_testing", name: "In Testing" }] });
+    await f.service.handlers.setGitSyncConfig({ projectId: f.project.id, config: gitSyncConfigSchema.parse({ repositories: ["example/service"], titleDiscovery: false }) });
+    f.store.tasks.updateTask(f.task.id, { status, statusLog: { by: "test" } });
+    await f.service.handlers.linkPr({ taskId: f.task.id, url, role: "delivers", part: null });
+    const poll = async (state: "open" | "draft" | "closed" | "merged", n: number) => {
+      f.client.snapshot.mockResolvedValue({ ...snapshot(), state, headSha: head(n) });
+      await f.service.syncProject(f.project.id, true);
+      return f.store.tasks.getTask(f.task.id)!.status;
+    };
+    const marker = () => f.bb.storage.database().prepare("SELECT reviewed_head, state FROM pr_review_moves WHERE task_id=?").get(f.task.id);
+    const set = (to: string) => f.store.tasks.updateTask(f.task.id, { status: to, statusLog: { by: "test" } });
+    return { ...f, poll, marker, set };
+  }
+
+  it("moves a card when its PR is first seen open, and a draft moves nothing", async () => {
+    const f = await reviewFixture();
+    expect(await f.poll("draft", 1)).toBe("todo");
+    expect(f.marker()).toBeUndefined();
+    expect(await f.poll("open", 1)).toBe("in_review"); // draft to ready
+    expect(f.marker()).toEqual({ reviewed_head: head(1), state: "open" });
+  });
+
+  it("does not bounce a card an agent moved back, until a new head arrives", async () => {
+    const f = await reviewFixture();
+    expect(await f.poll("open", 1)).toBe("in_review");
+    f.set("in_progress");
+    expect(await f.poll("open", 1)).toBe("in_progress");
+    expect(await f.poll("open", 2)).toBe("in_review");
+    expect(f.marker()).toEqual({ reviewed_head: head(2), state: "open" });
+  });
+
+  it("moves again for a reopened PR and for open, draft, open at the same head", async () => {
+    const f = await reviewFixture();
+    await f.poll("open", 1);
+    f.set("in_progress");
+    expect(await f.poll("closed", 1)).toBe("in_progress");
+    expect(f.marker()).toEqual({ reviewed_head: head(1), state: "not_open" });
+    expect(await f.poll("open", 1)).toBe("in_review");
+    f.set("in_progress");
+    await f.poll("draft", 1);
+    expect(await f.poll("open", 1)).toBe("in_review");
+  });
+
+  it("never pulls a card at or past In Review, but records the marker", async () => {
+    const f = await reviewFixture("in_testing");
+    expect(await f.poll("open", 1)).toBe("in_testing");
+    expect(f.marker()).toEqual({ reviewed_head: head(1), state: "open" });
+  });
+
+  it("moves a bugfix card only for a head pushed after a reviewable one", async () => {
+    const f = await reviewFixture("bugfix");
+    expect(await f.poll("open", 1)).toBe("bugfix"); // first sighting: newness unknown
+    expect(f.marker()).toEqual({ reviewed_head: head(1), state: "open" });
+    expect(await f.poll("draft", 1)).toBe("bugfix");
+    expect(await f.poll("open", 1)).toBe("bugfix"); // ready again without a push
+    await f.poll("closed", 1);
+    expect(await f.poll("open", 1)).toBe("bugfix"); // reopened without a push
+    expect(await f.poll("open", 2)).toBe("in_review"); // the fix was sent
+    f.set("bugfix");
+    expect(await f.poll("draft", 3)).toBe("bugfix");
+    expect(f.marker()).toEqual({ reviewed_head: head(2), state: "not_open" }); // a draft keeps the reviewable baseline
+    expect(await f.poll("open", 3)).toBe("in_review");
+  });
+
+  it("keeps the baseline across a restart between a draft head and its ready state", async () => {
+    const f = await reviewFixture("todo");
+    await f.poll("open", 1);
+    f.set("bugfix");
+    await f.poll("draft", 2);
+    const restarted = gitSyncService(f.bb, f.store, f.client);
+    f.client.snapshot.mockResolvedValue({ ...snapshot(), state: "open", headSha: head(2) });
+    await restarted.syncProject(f.project.id, true);
+    expect(f.store.tasks.getTask(f.task.id)!.status).toBe("in_review");
+  });
+
+  it("leaves no marker while the plan gate blocks, then moves on the first poll after approval", async () => {
+    const f = await reviewFixture("todo");
+    f.store.tasks.updateProject(f.project.id, { planning: "required" });
+    expect(await f.poll("open", 1)).toBe("todo");
+    expect(f.marker()).toBeUndefined();
+    const plans = createPlanStore(f.bb.storage.database(), f.store.tasks);
+    plans.save({ taskId: f.task.id, op: "replace", baseVersion: 0, body: "# Plan\n", summary: "Plan", author: { kind: "agent", threadId: "thr_example", name: "agent (thr_example)" } });
+    f.set("todo");
+    plans.setState(f.task.id, "approved", { kind: "person", threadId: null, name: "Owner" });
+    expect(await f.poll("open", 1)).toBe("in_review");
+  });
+
+  it("leaves no marker when the move fails between the snapshot save and the move", async () => {
+    const f = await reviewFixture("todo");
+    const update = vi.spyOn(f.store.tasks, "updateTask").mockImplementationOnce(() => { throw new Error("crash"); });
+    await f.poll("open", 1).catch(() => undefined);
+    update.mockRestore();
+    expect(f.marker()).toBeUndefined();
+    expect(f.store.tasks.getTask(f.task.id)!.status).toBe("todo");
+    expect(await f.poll("open", 1)).toBe("in_review");
+  });
+
+  it("records the threads of the PR's environment as its authors, which outlive the PR", async () => {
+    const f = await reviewFixture();
+    f.harness.sdk.stub("threads.list", async ({ threadIds }: { threadIds?: readonly string[] }) =>
+      (threadIds ?? []).map((id) => makeThreadResponse({ id, environmentId: "env_author" })));
+    f.harness.sdk.stub("plugins.callRpc", async () => ({ env_author: { outcome: "available", pullRequest: { number: 42, title: "Work", state: "open", url, updatedAt: "2026-11-04T00:00:00.000Z" } } }));
+    f.store.tasks.upsertTaskThread({ taskId: f.task.id, threadId: "thr_author", title: "Worker", presetName: "Default", liveStatus: "working" });
+    await f.poll("open", 1);
+    await f.poll("merged", 1);
+    expect(f.bb.storage.database().prepare("SELECT identity, thread_id FROM pr_author_threads").all()).toEqual([{ identity: prIdentity({ repository: "example/service", number: 42 }), thread_id: "thr_author" }]);
+  });
 });

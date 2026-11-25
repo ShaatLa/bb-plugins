@@ -109,7 +109,14 @@ describe("Done after review", () => {
       f.store.tasks.updateTask(f.task.id, { status });
       const before = f.store.tasks.getTask(f.task.id);
       const comments = f.store.tasks.listComments(f.task.id);
-      await expect(f.harness.callRpc(method, { ...f.agent, status: "done" })).rejects.toThrow(/EXA-1 cannot move to Done.*--status in_review.*--verdict approve/);
+      const decisions = () => f.bb.storage.database().prepare("SELECT path, result FROM review_gate_decisions WHERE task_id=? ORDER BY id").all(f.task.id);
+      const attempts = decisions().length;
+      const refused = f.harness.callRpc(method, { ...f.agent, status: "done" });
+      await expect(refused).rejects.toThrow(/EXA-1 cannot move to Done[\s\S]*no approving review from a thread other than you[\s\S]*--verdict approve/);
+      await expect(refused).rejects.not.toThrow(/--status/);
+      // The refusal rolled the move back but its decision is kept.
+      expect(decisions()).toHaveLength(attempts + 1);
+      expect(decisions().at(-1)).toEqual({ path: "B", result: "refused" });
       expect(f.store.tasks.getTask(f.task.id)).toEqual(before);
       expect(f.store.tasks.listComments(f.task.id)).toEqual(comments);
       await f.harness.callRpc(method, { taskId: f.task.id, status: "done" });
@@ -146,13 +153,14 @@ describe("Done after review", () => {
       statuses: [...DEFAULT_TASK_STATUSES, { id: "inspection", name: "Inspection" }] });
     tasks.updateTask(f.task.id, { status: "todo" });
     const move = () => f.harness.callRpc("moveTaskToProject", { ...f.agent, projectId: target.id });
-    await expect(move()).rejects.toThrow(/--status in_review/);
+    await expect(move()).rejects.toThrow(/no approving review from a thread other than you/);
     tasks.updateProject(target.id, { workflowPolicy: { ...policy, testingStatus: "backlog" } as never });
     const refused = move();
     await expect(refused).rejects.toThrow(/--verdict approve/);
     await expect(refused).rejects.not.toThrow(/--status/);
     tasks.updateTask(f.task.id, { status: "backlog" });
     tasks.updateTask(f.task.id, { status: "todo" });
+    tasks.createComment({ taskId: f.task.id, authorName: "Reviewer", kind: "agent", body: "Reviewed", evidence: { kind: "review", verdict: "approve", head: "a".repeat(40), thread: "thr_reviewer" } });
     const log = () => f.bb.storage.database().prepare("SELECT * FROM task_review_log WHERE task_id=? ORDER BY id").all(f.task.id);
     const before = log();
     await move();

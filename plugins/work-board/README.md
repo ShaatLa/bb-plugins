@@ -867,11 +867,22 @@ The smoke note is a card comment. Each question revision keeps its beyond-the-de
 
 ## Done after review
 
-In project settings, the owner can enable **Done after review** (`doneRequiresReview`, default `off`). Read it with `bb work-board config get doneRequiresReview --project EXA`. An agent entering Done, including a custom Done status or a move from Canceled, needs a recorded visit to the project's review or testing status, or an approving review comment, since the card last entered In Progress. Without a prior In Progress entry, the whole history counts. Only configured, listed, open roles distinct from In Progress qualify. The refusal gives the applicable commands, such as `bb work-board update EXA-1 --status in_review`. An agent can move on to Done immediately after review. The switch records the step without assessing review quality.
+In project settings, the owner can enable **Done after review** (`doneRequiresReview`, default `off`). Read it with `bb work-board config get doneRequiresReview --project EXA`. An agent entering Done, including a custom Done status or a move from Canceled, needs a real review, not a pass through a review status.
 
-Agents must create new cards in another status first. On a project move, each family member newly considered done must qualify under the destination's roles. Entering Canceled, owner actions and automatic moves stay free of this gate. Raw RPC callers that omit `agentThreadId` have the same access as the panel.
+- **Cards that deliver PRs.** Each PR the card delivers (confirmed `delivers` links, plus every PR a `merge` evidence record names) needs an approving `review` or passing `qa` comment that names the PR and its gate head, from a thread that is neither the mover nor a known author of that PR. The gate head is the merged PR's final head, the head of a current open snapshot, or the head of the `merge` record when there is no snapshot. With no current snapshot the move is refused and says to run `bb work-board sync --project EXA`. An approval older than the last In Progress still counts when it matches the gate head.
+- **Cards with no PR.** They need one approving review from a thread other than the mover, recorded after the card last entered In Progress.
+- **Refusal.** It lists what is missing per PR and shows `bb work-board comment EXA-1 --kind review --pr 12 --head <sha> --verdict approve --thread thr_example --body "..."`. The project manager or the owner can record the review, and the owner can still move the card on the board.
+- **Authors are best effort.** They are the bb threads attached to the card whose environment holds the PR, recorded from environments Work Board has seen. A thread that was never seen can still approve; a Done entry written with no known author ends in `(no author known)`.
+- **Merge records.** Recording a `merge` confirms the card's single unconfirmed or discovered `related` link for that PR as `delivers`, and writes a system comment. A manual role, an excluded link, or a number shared by several links is left alone, and Done is refused for a shared number until one link is removed.
+- **Audit.** Every agent attempt at Done, passed or refused, is kept in a local decision record (links, merge records, gate head, snapshot state, authors and approvals used). A passed Done entry ends in `(review: #12 approve@1a2b3c4 by thr_example)`.
 
-Archive v26 adds `project.doneRequiresReview`. Restoring a new project uses the saved setting (older archives default to off). Existing projects retain their local setting on overwrite. The review log stays local. Importing cards restores their recorded status, and replaying an approval comment never qualifies a card.
+Agents must create new cards in another status first. On a project move, each family member newly considered done must qualify. Entering Canceled, owner moves on the board and automatic moves stay free of this gate. Raw RPC callers that omit `agentThreadId` have the same access as the panel.
+
+Archive v26 adds `project.doneRequiresReview`. Restoring a new project uses the saved setting (older archives default to off). Existing projects retain their local setting on overwrite. The review log, author threads, gate decisions and link history stay local, and replaying an approval comment never qualifies a card.
+
+### Automatic In Review
+
+A card in Todo or In Progress moves to In Review by itself when a PR it delivers becomes ready for review: the snapshot is open and not a draft, and the PR is new to the card, was a draft or closed before, or has a new head. The history entry reads `Status changed to In Review by Work Board (owner/repo#12 ready for review at 1a2b3c4)`. A card an agent moved back to In Progress to fix findings stays there until a new head arrives. Drafts never move a card, `in_testing` and later statuses are never pulled, and a `bugfix` card moves only for a head pushed after a reviewable one. A card whose plan gate blocks the move is tried again on the next poll.
 
 ### Check receipts
 

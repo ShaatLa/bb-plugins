@@ -49,6 +49,8 @@ import { discoverRunningTaskThreads } from "../lifecycle/discovery";
 import { displayName } from "../shared/display-name";
 import { evaluateThreadHealth } from "../shared/thread-health";
 import { environmentPullRequests } from "../git-sync/environment-prs";
+import { ReviewGateRefused, type GateAuthors } from "../review-gate/gate";
+import { parsePrUrl, prIdentity } from "../shared/git-sync";
 import { navigationBadgeCounts } from "./badge";
 import { BADGE_CRITERIA, DEFAULT_BADGE_CRITERIA } from "../shared/badge";
 import { errorMessage } from "../shared/errors";
@@ -369,11 +371,60 @@ function labelChangeBody(
     : `Labels changed to ${names.join(", ")} by ${authorName}`;
 }
 
-function assertReviewBeforeDone(store: TasksApiStore, task: StoredTask, target: string | undefined, agentThreadId?: string | null): void {
+/**
+ * The Done rule for an agent move. Returns the review clause of the history entry when the gate passed; a refusal throws
+ * with its decision, which the caller records after the rollback (a passed decision is written inside the transaction).
+ */
+function assertReviewBeforeDone(store: TasksApiStore, task: StoredTask, target: string | undefined, agentThreadId?: string | null, authors?: GateAuthors): string | undefined {
   // shortcut: raw RPC may omit agentThreadId, use authenticated caller identity when the SDK exposes it.
-  if (!agentThreadId || !target) return;
-  const refusal = store.tasks.reviewGateRefusal(task, target);
-  if (refusal) throw new Error(refusal);
+  if (!agentThreadId || !target) return undefined;
+  const gate = store.tasks.reviewGate(task, target, undefined, undefined, { mover: agentThreadId, authors });
+  if (!gate) return undefined;
+  if (gate.refusal) throw new ReviewGateRefused(gate.refusal, gate.decision);
+  store.tasks.recordReviewGateDecision(gate.decision);
+  return gate.clause ?? undefined;
+}
+
+/** Runs a move; a refusal by the Done gate is recorded once its transaction has rolled back. */
+function recordingGateRefusal<T>(store: TasksApiStore, run: () => T): T {
+  try { return run(); }
+  catch (error) {
+    if (error instanceof ReviewGateRefused) store.tasks.recordReviewGateDecision(error.decision);
+    throw error;
+  }
+}
+
+/** The bb threads attached to the card whose environment's PR is each PR, read now; `failed` when any read could not be completed. */
+async function liveAuthorThreads(bb: BbPluginApi, store: TasksApiStore, task: StoredTask): Promise<GateAuthors> {
+  const byIdentity = new Map<string, string[]>();
+  const threads = store.tasks.listTaskThreads(task.id).map((attached) => attached.threadId);
+  try {
+    const byEnvironment = new Map<string, string[]>();
+    for (const attached of store.tasks.listTaskThreads(task.id)) {
+      let thread;
+      try { thread = await bb.sdk.threads.get({ threadId: attached.threadId }); }
+      catch (error) { if (sdkErrorCode(error) === "thread_not_found") continue; throw error; }
+      if (thread.environmentId) byEnvironment.set(thread.environmentId, [...(byEnvironment.get(thread.environmentId) ?? []), attached.threadId]);
+    }
+    const lookups = await environmentPullRequests(bb, byEnvironment.keys());
+    for (const [environmentId, threads] of byEnvironment) {
+      const result = lookups.get(environmentId);
+      if (result?.outcome !== "absent" && result?.outcome !== "available") throw new Error("environment PR unavailable");
+      if (result.outcome === "absent") continue;
+      const identity = prIdentity(parsePrUrl(result.pullRequest.url)); // an unreadable URL fails the lookup: the PR's authors are unknown
+      byIdentity.set(identity, [...(byIdentity.get(identity) ?? []), ...threads]);
+    }
+  } catch {
+    return { failed: true, threads, byIdentity };
+  }
+  for (const [identity, threads] of byIdentity) store.tasks.recordPrAuthors(task.projectId, identity, threads);
+  return { failed: false, threads, byIdentity };
+}
+
+/** Looks the authors up only for a move the gate applies to. */
+async function gateAuthorsFor(bb: BbPluginApi, store: TasksApiStore, task: StoredTask, target: string | undefined, agentThreadId?: string | null, project = store.tasks.getProject(task.projectId), source = project): Promise<GateAuthors | undefined> {
+  if (!agentThreadId || !target || !project || !source || !store.tasks.reviewGateApplies(task, target, project, source)) return undefined;
+  return liveAuthorThreads(bb, store, task);
 }
 
 /** An agent may not close a card while a question to the owner is open; the owner and automatic moves are not checked. */
@@ -1336,6 +1387,7 @@ export function registerHandlers(
             attachWarning = `Could not attach ${caller ?? "the caller"} to the card: ${errorMessage(error)}; run bb work-board attach KEY`;
           }
         }
+        const gateAuthors = await gateAuthorsFor(bb, store, current, input.status, input.agentThreadId);
         const closureBefore = store.tasks.closures.currentId(current.id);
         const result = store.transaction(() => {
           const beforeLabelIds = store.tasks
@@ -1346,7 +1398,7 @@ export function registerHandlers(
           if (!before) throw new Error(`Task not found: ${input.taskId}`);
           // The caller's own session is attached first, so the closure snapshot below includes it.
           assertNoOpenOwnerQuestions(bb, store, before, input.status, input.agentThreadId);
-          assertReviewBeforeDone(store, before, input.status, input.agentThreadId);
+          const doneClause = assertReviewBeforeDone(store, before, input.status, input.agentThreadId, gateAuthors);
           const attached = attachment && !before.archivedAt
             ? attachManualLink(store.tasks, current.id, attachment) : undefined;
           const updated = store.tasks.updateTask(current.id, {
@@ -1357,7 +1409,7 @@ export function registerHandlers(
             progressNote: input.progressNote,
             authorName: input.authorName,
             status: input.status,
-            statusLog: { by: input.authorName },
+            statusLog: { by: input.authorName, ...(doneClause ? { cause: doneClause } : {}) },
             priority: input.priority,
             dueDate: input.dueDate,
             parentTaskId: input.parentTaskId,
@@ -1429,6 +1481,7 @@ export function registerHandlers(
           };
         }
         if (error instanceof TasksDomainFailure) return taskFailure(error);
+        if (error instanceof ReviewGateRefused) store.tasks.recordReviewGateDecision(error.decision);
         throw error;
       }
     },
@@ -1491,37 +1544,46 @@ export function registerHandlers(
     async boardMove(input) {
       const current = store.tasks.getTask(input.taskId);
       if (!current) throw new Error(`Task not found: ${input.taskId}`);
+      const gateAuthors = await gateAuthorsFor(bb, store, current, input.status, input.agentThreadId);
       const closureBefore = store.tasks.closures.currentId(current.id);
-      const result = store.transaction(() => {
+      const result = recordingGateRefusal(store, () => store.transaction(() => {
         const before = store.tasks.getTask(current.id);
         if (!before) throw new Error(`Task not found: ${input.taskId}`);
         assertNoOpenOwnerQuestions(bb, store, before, input.status, input.agentThreadId);
-        assertReviewBeforeDone(store, before, input.status, input.agentThreadId);
+        const doneClause = assertReviewBeforeDone(store, before, input.status, input.agentThreadId, gateAuthors);
         const moved = store.tasks.updatePosition(current.id, {
           closerThreadId: input.agentThreadId ?? null,
           status: input.status,
-          statusLog: { by: input.authorName },
+          statusLog: { by: input.authorName, ...(doneClause ? { cause: doneClause } : {}) },
           notifyStatus: Boolean(input.agentThreadId),
           beforeTaskId: input.beforeTaskId,
           afterTaskId: input.afterTaskId,
         });
         const statusChanged = moved.status !== current.status;
         return { task: apiTask(store, moved), statusChanged };
-      });
+      }));
       publishTasksChanged(bb, result.task.id, result.task.projectId);
       if (result.statusChanged) publishCommentsChanged(bb, result.task.id);
       const closureAfter = store.tasks.closures.currentId(current.id);
       const closedThreads = closureAfter && closureAfter !== closureBefore ? await store.closures.onClosed(closureAfter) : undefined;
       return { ok: true, task: result.task, ...(closedThreads ? { closedThreads } : {}) };
     },
-    moveTaskToProject(input) {
+    async moveTaskToProject(input) {
       const current = store.tasks.getTask(input.taskId);
       if (!current) throw new Error(`Task not found: ${input.taskId}`);
-      const result = store.transaction(() => {
+      const gateAuthors = new Map<string, GateAuthors>();
+      const destination = store.tasks.getProject(input.projectId);
+      if (input.agentThreadId && destination && destination.id !== current.projectId)
+        for (const member of store.tasks.archiveFamily(current.id)) {
+          const authors = await gateAuthorsFor(bb, store, member, member.status, input.agentThreadId, destination, store.tasks.getProject(member.projectId));
+          if (authors) gateAuthors.set(member.id, authors);
+        }
+      const result = recordingGateRefusal(store, () => store.transaction(() => {
         const outcome = store.tasks.moveTaskToProject(
           current.id,
           input.projectId,
           input.agentThreadId,
+          (taskId) => gateAuthors.get(taskId),
         );
         if (bb.storage.database().prepare<[], { found: number }>(`
           SELECT 1 AS found FROM task_dependencies d JOIN tasks t ON t.id=d.task_id
@@ -1535,7 +1597,7 @@ export function registerHandlers(
           ]);
         }
         return { task: apiTask(store, outcome.task), moved: outcome.moved };
-      });
+      }));
       if (result.moved.length > 0) {
         for (const { task } of result.moved) {
           publishTasksChanged(bb, task.id, current.projectId);

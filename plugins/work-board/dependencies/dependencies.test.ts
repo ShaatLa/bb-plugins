@@ -61,7 +61,7 @@ it("preserves dependencies on a whole-family move and refuses a partial move wit
   const h = setup(), api = registerHandlers(h.bb, h.store);
   const project = h.store.tasks.createProject({ name: "Target", prefix: "TGT", color: "blue" });
   h.dependencies.add(h.b.id, h.a.id);
-  expect(() => api.moveTaskToProject({ taskId: h.b.id, projectId: project.id, authorName: "Owner" })).toThrow(/dependencies/);
+  await expect(api.moveTaskToProject({ taskId: h.b.id, projectId: project.id, authorName: "Owner" })).rejects.toThrow(/dependencies/);
   expect(h.store.tasks.getTask(h.b.id)?.projectId).toBe(h.project.id);
   expect(h.dependencies.list(h.b.id).blockedBy[0]?.key).toBe(h.a.key);
   h.store.tasks.updateTask(h.b.id, { parentTaskId: h.a.id });

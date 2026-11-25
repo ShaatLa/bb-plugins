@@ -548,9 +548,18 @@ Use `list --stale-status` to filter diagnostic warnings before pagination; `list
 
 ## Done after review
 
-Only the owner sets `doneRequiresReview` in project settings (default off). When it is on, create cards outside Done. Before moving a card into any Done status, including from Canceled, pass the project's listed open review or testing role (distinct from In Progress), or record an approving review with `bb work-board comment EXA-1 --kind review --head <sha> --verdict approve --thread thr_example --body "..."`. Follow the refusal's status hint. Only entries since the latest In Progress count, or the whole history when the card never entered it. A project move applies the destination roles to every newly done family member.
+Only the owner sets `doneRequiresReview` in project settings (default off). When it is on, create cards outside Done. An agent moving a card into any Done status, including from Canceled, needs a real review, not a pass through a status:
 
-Entering Canceled, panel moves and automatic moves stay free. A visit to review can be followed immediately by Done. Raw RPC without `agentThreadId` has panel access. Archive v26 saves the switch for newly restored projects. Existing projects keep the local switch, the log stays local, and imported approval comments never satisfy the gate.
+- **A card that delivers PRs** (confirmed `delivers` links, plus every PR a `merge` record names) needs, for each PR, an approving `review` (or `qa` `pass`) comment that names the PR and its gate head and comes from a thread that is neither you nor a known author of that PR. The gate head is the merged PR's final head, the head of a current open snapshot, or, with no snapshot, the head of the `merge` record. With no current snapshot (sync off or stale) the move is refused: run `bb work-board sync --project EXA` and retry. Approvals older than the last In Progress still count when they match that head.
+- **A card with no PR** needs one approving review from a thread other than you, recorded after the card last entered In Progress.
+- Record it with `bb work-board comment EXA-1 --kind review --pr 12 --head <sha> --verdict approve --thread thr_example --body "..."`. The manager or the owner can record it for the reviewer. The refusal names the missing evidence; it never suggests moving through In Review.
+- Authors are the bb threads attached to the card whose worktree holds the PR. Work Board records them from environments it has seen, so the exclusion is best effort: a thread it never saw can still approve. A Done entry written with no known author says `(no author known)`.
+- Recording a `merge` confirms the card's single matching unconfirmed or discovered `related` link as `delivers`. Two links with the same PR number, or a merge record with no link in a project of several repositories, refuse Done: unlink one, or `bb work-board pr link EXA-1 <url> --role delivers`.
+- Every agent attempt, passed or refused, is kept in a local decision record; a passed Done entry reads `(review: #12 approve@1a2b3c4 by thr_example)`.
+
+A project move applies the same rule to every newly done family member. Entering Canceled, owner moves on the board and automatic moves stay free. Raw RPC without `agentThreadId` has panel access. Archive v26 saves the switch for newly restored projects. Existing projects keep the local switch; the review log, author threads, decisions and link history stay local, and imported approval comments never satisfy the gate.
+
+A card moves to In Review by itself when a PR it delivers becomes ready: the snapshot is open (not a draft) and the PR is new to the card, was a draft or closed before, or has a new head. The entry reads `Status changed to In Review by Work Board (owner/repo#12 ready for review at 1a2b3c4)`. A card you moved back to In Progress stays there until a new head arrives. `in_testing` and later statuses are never pulled; a `bugfix` card moves only for a new head.
 
 An agent can enable Check receipt with a host-registered validator. For example,
 
