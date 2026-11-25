@@ -1,5 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createDependencyStore } from "../dependencies/store";
+import { createStructuredStore } from "../structured/store";
+import { getWorkflowPolicy } from "../shared/workflow-policy";
 import { accept, goLive, setup } from "./fixtures";
 import { GRACE_MS, scanTracker } from "./ledger";
 import { POST_MERGE_REVIEW_GRACE_MS } from "./observe";
@@ -59,6 +61,31 @@ describe("scope", () => {
     f.store.tasks.addTaskLabel(epic.id, label.id);
     expect(f.occurrences().map((o) => o.task_id)).toEqual([member.id]);
     expect(f.occurrences(true).find((o) => o.task_id === epic.id)).toMatchObject({ retired_reason: "ongoing" });
+  });
+
+  it("clears no_active_thread when a question opens and starts a new occurrence after the last open one is answered, without the decision label", async () => {
+    const f = await make();
+    f.store.tasks.updateProject(f.tracker.id, { workflowPolicy: { ...getWorkflowPolicy(f.tracker), ownerDecisionLabel: null } });
+    const card = f.card("Waiting");
+    const first = f.occurrences().find((o) => o.task_id === card.id && o.signal === "no_active_thread");
+    expect(first).toBeDefined();
+    const questions = createStructuredStore(f.bb, f.store).handlers;
+    const ask = async (prompt: string) => (await questions.createQuestion({ taskId: card.id, kind: "decision", askedByThread: null, prompt, steps: [], options: ["A", "B"], mode: "single" })).question;
+    const one = await ask("Which one?");
+    expect(f.occurrences().filter((o) => o.task_id === card.id)).toHaveLength(0);
+    const two = await ask("And which other?");
+    expect(f.occurrences().filter((o) => o.task_id === card.id)).toHaveLength(0);
+    await questions.answerQuestion({ questionId: one.id, revision: one.revision, selectedOptionIds: [one.options[0]!.id], authorName: "You" });
+    expect(f.occurrences().filter((o) => o.task_id === card.id)).toHaveLength(0);
+    const withdrawnAt = Date.parse(first.first_seen_at) + 60 * 60_000;
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(withdrawnAt);
+    await questions.withdrawQuestion({ taskId: card.id, questionId: two.id, revision: two.revision, reason: "No longer needed", authorName: "You" });
+    const second = f.occurrences().find((o) => o.task_id === card.id && o.signal === "no_active_thread");
+    expect(second).toBeDefined();
+    expect(second.id).not.toBe(first.id);
+    expect(Date.parse(second.first_seen_at)).toBe(withdrawnAt);
+    expect(Date.parse(second.eligible_at)).toBe(withdrawnAt + GRACE_MS);
   });
 
   it("puts a card held by an unfinished blocker out of scope", async () => {

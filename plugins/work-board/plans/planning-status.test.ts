@@ -297,8 +297,18 @@ describe("signals", () => {
     const predecessor = f.card("todo", "Predecessor");
     await f.harness.callRpc("addTaskDependency" as never, { taskId: task.id, blockingTaskId: predecessor.id, authorName: "Owner" } as never);
     expect(flags(f, task.id)).toEqual([]);
-    // A Planning status that is no longer a valid target raises nothing.
     await f.harness.callRpc("removeTaskDependency" as never, { taskId: task.id, blockingTaskId: predecessor.id, authorName: "Owner" } as never);
+    expect(flags(f, task.id)).toEqual(["no_active_thread"]);
+    // An open owner question means the card waits for the owner, not that it was abandoned.
+    const questions = createStructuredStore(f.bb, f.store).handlers;
+    const { question } = await questions.createQuestion({ taskId: task.id, kind: "decision", askedByThread: null, prompt: "Which one?", steps: [], options: ["A", "B"], mode: "single" });
+    expect(flags(f, task.id)).toEqual([]);
+    await questions.answerQuestion({ questionId: question.id, revision: question.revision, selectedOptionIds: [question.options[0]!.id], authorName: "You" });
+    // The answer wakes the attached thread; once it is idle again and no question is open, the flag returns.
+    expect(flags(f, task.id)).toEqual([]);
+    f.store.tasks.upsertTaskThread({ taskId: task.id, threadId: "thr_example", presetName: "Default", title: "Planner", liveStatus: "idle" });
+    expect(flags(f, task.id)).toEqual(["no_active_thread"]);
+    // A Planning status that is no longer a valid target raises nothing.
     f.edit((statuses) => statuses.map((status) => (status.id === "planning" ? { ...status, requiresApprovedPlan: true } : status)));
     expect(flags(f, task.id)).toEqual([]);
   });

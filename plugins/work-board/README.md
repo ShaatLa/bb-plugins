@@ -853,7 +853,7 @@ A session that took its card by message is not attached by the title scan. Its f
 
 ### Held cards are not stale (0.41.2)
 
-An in-progress card that has an unfinished blocked-by predecessor (one in any status except Done, including Canceled) is held by rule. It no longer gets the `no_active_thread` stale flag or the `no-live-session` advisory. An in-progress card with no live thread and no unfinished predecessor is still flagged.
+An in-progress card that has an unfinished blocked-by predecessor (one in any status except Done, including Canceled) is held by rule. It no longer gets the `no_active_thread` stale flag or the `no-live-session` advisory. A card with an open owner question (unanswered, not superseded and not withdrawn) waits for the owner and does not get the `no_active_thread` stale flag either; the flag returns once the question is answered or withdrawn and no thread works on the card. An in-progress card with no live thread, no unfinished predecessor and no open owner question is still flagged.
 
 ## Check readiness
 

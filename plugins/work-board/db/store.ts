@@ -1177,8 +1177,8 @@ export function createTasksStore(db: PluginDatabase, log: (message: string) => v
       const policy = policies.get(row.project_id);
       if (!policy) continue;
       const flags: string[] = [];
-      // A card held behind an unfinished predecessor is waiting by rule, not abandoned. Planning is active work like In progress.
-      if ((row.status === policy.inProgressStatus || (planning.get(row.project_id) ?? null) === row.status) && !row.active && !row.held) flags.push("no_active_thread");
+      // A card held behind an unfinished predecessor, or waiting on an open owner question, is waiting, not abandoned. Planning is active work like In progress.
+      if ((row.status === policy.inProgressStatus || (planning.get(row.project_id) ?? null) === row.status) && !row.active && !row.held && !row.waiting_owner) flags.push("no_active_thread");
       // Testing after the merge (a check on a shared environment) is expected, so a merged PR satisfies it; review gets a grace.
       if ((row.status === policy.reviewStatus || row.status === policy.testingStatus) && !prSettled(row, policy, nowMs)) flags.push(row.unknown_pr ? "pr_state_unavailable" : "no_open_pr");
       if (row.status === policy.doneStatus && !row.merge_evidence && !row.outcome && !row.legacy_outcome) flags.push("no_merge_or_outcome");

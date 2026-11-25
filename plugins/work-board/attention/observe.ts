@@ -1,4 +1,5 @@
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
+import { UNANSWERED_QUESTION } from "../db/waiting-on-owner";
 import { getWorkflowPolicy, type WorkflowPolicy } from "../shared/workflow-policy";
 
 type Database = ReturnType<BbPluginApi["storage"]["database"]>;
@@ -21,6 +22,8 @@ export interface StaleRow {
   ongoing: number;
   active: number;
   held: number;
+  /** An open owner question: the card waits for the owner, so it is not abandoned. */
+  waiting_owner: number;
   merged_pr: number;
   merge_evidence: number;
   outcome: number;
@@ -60,6 +63,7 @@ export function staleRows(db: Database, taskIds?: readonly string[], projectId?:
         CASE WHEN t.type='epic' AND EXISTS(SELECT 1 FROM task_labels tl JOIN labels l ON l.id=tl.label_id WHERE tl.task_id=t.id AND l.name='ongoing') THEN 1 ELSE 0 END AS ongoing,
         EXISTS(SELECT 1 FROM task_threads x WHERE x.task_id=t.id AND x.live_status IN ('starting','working')) AS active,
         EXISTS(SELECT 1 FROM task_dependencies d JOIN tasks b ON b.id=d.blocking_task_id WHERE d.task_id=t.id AND b.status <> 'done') AS held,
+        EXISTS(SELECT 1 FROM task_questions q WHERE q.task_id=t.id AND ${UNANSWERED_QUESTION}) AS waiting_owner,
         EXISTS(SELECT 1 FROM task_pr_links l JOIN git_pr_snapshots s ON s.project_id=t.project_id AND s.identity=l.identity
           WHERE l.task_id=t.id AND COALESCE(json_extract(l.payload,'$.excluded'),0)=0 AND json_extract(s.payload,'$.state')='merged') AS merged_pr,
         EXISTS(SELECT 1 FROM comments c WHERE c.task_id=t.id AND json_extract(c.evidence,'$.kind')='merge') AS merge_evidence,
@@ -119,7 +123,7 @@ export function staleStatusObservations(db: Database, taskIds?: readonly string[
       scopeReason: row.archived ? "archived" : row.ongoing ? "ongoing" : row.held ? "blocked" : "status_changed",
       doneScope: !row.archived && row.status === policy.doneStatus && !row.ongoing,
       signals: {
-        no_active_thread: valid(row.status === policy.inProgressStatus && !row.active && !row.held),
+        no_active_thread: valid(row.status === policy.inProgressStatus && !row.active && !row.held && !row.waiting_owner),
         no_open_pr: prUnresolved && unknownPr ? { present: false, validity: "unknown" } : valid(prUnresolved),
         pr_state_unavailable: valid(prUnresolved && unknownPr),
         closed_unmerged_pr: Boolean(row.closed_known) ? valid(true) : unknownPr ? { present: false, validity: "unknown" } : valid(false),

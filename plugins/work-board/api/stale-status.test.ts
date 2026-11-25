@@ -130,3 +130,30 @@ it("scopes the raw rows by ids and by project together, and an empty id list sel
   } finally { capture.restore(); }
   await harness.dispose();
 });
+
+it("does not flag a card waiting on an open owner question as having no active thread", () => {
+  const { bb } = createFakePluginHost({ pluginId: "work-board" });
+  const store = createStore(bb);
+  const project = store.tasks.createProject({ name: "Waiting", prefix: "WAI", color: "blue" });
+  const card = store.tasks.createTask({ projectId: project.id, title: "waits", status: "in_progress" });
+  const db = bb.storage.database();
+  const setQuestion = (id: string, payload: Record<string, unknown>) =>
+    db.prepare<[string, string, string]>("INSERT INTO task_questions (id, task_id, payload) VALUES (?, ?, ?) ON CONFLICT(id) DO UPDATE SET payload = excluded.payload")
+      .run(id, card.id, JSON.stringify({ selectedOptionIds: [], answerText: "", ...payload }));
+  const observed = () => store.tasks.staleStatusObservations(project.id, [card.id])[0]!.signals.no_active_thread.present;
+  expect(store.tasks.staleStatusFlags().get(card.id)).toEqual(["no_active_thread"]);
+  expect(observed()).toBe(true);
+  setQuestion("q1", {});
+  expect(store.tasks.staleStatusFlags().has(card.id)).toBe(false);
+  expect(observed()).toBe(false);
+  setQuestion("q1", { answerText: "Confirmed" });
+  expect(store.tasks.staleStatusFlags().get(card.id)).toEqual(["no_active_thread"]);
+  expect(observed()).toBe(true);
+  setQuestion("q2", { withdrawnAt: "2000-01-01T00:00:00.000Z" });
+  setQuestion("q3", { supersededBy: "q4" });
+  expect(store.tasks.staleStatusFlags().get(card.id)).toEqual(["no_active_thread"]);
+  store.tasks.updateTask(card.id, { status: "todo" });
+  setQuestion("q5", {});
+  store.tasks.updateTask(card.id, { status: "in_progress" });
+  expect(store.tasks.staleStatusFlags().has(card.id)).toBe(false);
+});

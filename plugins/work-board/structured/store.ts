@@ -6,6 +6,7 @@ import type { BbPluginApi, PluginRpcHandlers } from "@get-bb/plugin-sdk";
 import type { TasksApiStore } from "../api";
 import { createUlid } from "../db/store";
 import { getWorkflowPolicy } from "../shared/workflow-policy";
+import { touchAttention } from "../attention/ledger";
 import { planningOn, READINESS_HINT } from "../shared/project-settings";
 import { defaultTaskThreadId, deliverCommentToLatestAgent, notifyThread } from "../steer";
 import { errorMessage } from "../shared/errors";
@@ -198,7 +199,10 @@ export function createStructuredStore(bb: BbPluginApi, store: TasksApiStore) {
   const answerCommentId = (question: TaskQuestion) => question.answeredBy ? db.prepare<[string, string], { id: string }>(
     "SELECT id FROM comments WHERE task_id = ? AND kind = 'system' AND body LIKE ? ORDER BY id DESC LIMIT 1",
   ).get(question.taskId, `%\nQuestion ID: ${question.id}; revision: %`)?.id ?? null : null;
+  // Called by every question write, inside its transaction, after the question state is saved.
   const syncDecisionLabel = (taskId: string) => {
+    // An open owner question changes the stale-status observation (no_active_thread), so the ledger is updated in this write.
+    touchAttention(db, [taskId]);
     const task = store.tasks.getTask(taskId)!;
     const name = getWorkflowPolicy(store.tasks.getProject(task.projectId)!).ownerDecisionLabel;
     if (!name) return;
