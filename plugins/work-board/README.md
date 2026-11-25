@@ -902,3 +902,11 @@ The registered program runs without a shell. Its UTF-8 JSON stdin has this shape
 Update and reopen carry the pre-write question ID and revision. Supersede adds a `predecessor` with its ID and revision. A local caller's worktree is data for inspection only. Never execute code from it. Exit zero with a fresh non-empty stdout verdict line (up to 500 characters). Work Board records the line verbatim and the SHA-256 of the original receipt bytes alongside the saved check revision. Reused verdicts and stale validations are refused.
 
 The normal CLI enforces this workflow. BB cannot authenticate panel actions separately from raw RPC calls. A raw client can omit or substitute its thread or select or disable a registered validator. An archive can introduce an open check. Work Board exposes no RPC to write the registry. Local agents running as the server user have the same filesystem access and can edit it. The setting and verdict ledger stay local, and changing the selection is logged.
+
+### Pausing work
+
+When an unfinished card is waiting, use `bb work-board pause EXA-1 --reason "waiting for a release" --for 2h` (1 minute to 8 hours). `bb work-board resume EXA-1` ends the pause; `bb work-board pause log EXA-1 --json` shows its history. Work or a status change also ends it. Pauses suppress stale-status pilot notices while they last.
+
+In projects with automatic pause enabled, an idle linked thread's background commands, agents and workflows pause its card until the work ends or eight hours pass. Held and owner-question waits are recorded as well. Automatic pause can be Off, A/B test, or On in Manager settings; `show` identifies the card's arm. In the treatment arm, the executor receives a notice first and has ten minutes to act before the manager is told. `bb work-board pause report --project EXA` compares both arms and reports sampling gaps and the proposed keep rule. The owner decides whether to keep it.
+
+A project receives no missing-PR flag until any card in that project has had a PR linked; excluded PR links count too.

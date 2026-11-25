@@ -1,4 +1,5 @@
 import { randomBytes } from "node:crypto";
+import { transitionExecutors } from "../pause/executor";
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import { currentRev, invalidateAttentionCache, retireOpenOccurrences, scanTracker } from "./ledger";
 import { ATTENTION_KIND } from "./observe";
@@ -116,6 +117,7 @@ export function requestMode(db: Database, input: RequestInput): KindState {
       record("requested_mode='shadow', requested_generation=?, transition_token=?, transition_direction='to_shadow', transition_state='preparing', ready_at=NULL, ready_rev=NULL", generation, newToken());
       completeTransition(db, tracker.id, kind);
     }
+    transitionExecutors(db, tracker.id);
     return kindState(db, tracker.id, kind);
   });
   return run();

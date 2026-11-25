@@ -34,6 +34,7 @@ import { createPlanStore } from "../plans/store";
 import { createPlanNoteStore } from "../plans/notes";
 import { createGitSyncStore } from "../git-sync/store";
 import { prIdentity, prLinkSchema } from "../shared/git-sync";
+import { startManualPause } from "../pause/store";
 
 const harnesses: FakePluginHarness[] = [];
 const directories: string[] = [];
@@ -262,6 +263,31 @@ async function fileTree(root: string): Promise<Record<string, string>> {
 }
 
 describe("project archives", () => {
+  it("records project PR history from an imported link", async () => {
+    const source = await seed();
+    const now = new Date().toISOString();
+    createGitSyncStore(source.bb.storage.database()).saveLink(prLinkSchema.parse({ repository: "owner/repo", number: 7, url: "https://github.com/owner/repo/pull/7", taskId: source.task.id, source: "manual", role: "delivers", part: null, confirmed: true, excluded: false, remoteId: null, createdAt: now, updatedAt: now }));
+    const out = join(await directory(), "snapshot");
+    await exportProject(source.bb, source.store, source.project.id, out);
+    const target = setup();
+    await importProject(target.bb, target.store, out, false);
+    const db = target.bb.storage.database();
+    expect(db.prepare("SELECT first_linked_at FROM project_pr_history WHERE project_id=?").get(source.project.id)).toEqual({ first_linked_at: expect.any(String) });
+    db.prepare("DELETE FROM task_pr_links WHERE task_id=?").run(source.task.id);
+    const review = target.store.tasks.createTask({ projectId: source.project.id, title: "Review", status: "in_review" });
+    expect(target.store.tasks.staleStatusFlags([review.id]).get(review.id)).toContain("no_open_pr");
+  });
+  it("ends a local pause when an import changes the status", async () => {
+    const source = await seed();
+    const out = join(await directory(), "snapshot");
+    await exportProject(source.bb, source.store, source.project.id, out);
+    source.store.tasks.updateTask(source.task.id, { status: "in_progress" });
+    const db = source.bb.storage.database();
+    startManualPause(db, source.task.id, "Waiting", 60_000, "thr_example");
+    await importProject(source.bb, source.store, out, true);
+    expect(db.prepare("SELECT end_reason,thread_id FROM pause_log WHERE task_id=? AND event='end'").get(source.task.id)).toEqual({ end_reason: "status_change", thread_id: "import" });
+    expect(db.prepare("SELECT count(*) AS n FROM task_pauses WHERE task_id=?").get(source.task.id)).toEqual({ n: 0 });
+  });
   it("round-trips questions, stable choice IDs, answers, evidence and templates, preserving conflicts", async () => {
     const source = await seed();
     const structured = createStructuredStore(source.bb, source.store);

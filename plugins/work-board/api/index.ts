@@ -1,4 +1,7 @@
 import { logReceiptChange } from "../checks/receipt-log";
+import { endPauses, pauseArm, setPauseMode, startManualPause, type PauseRow } from "../pause/store";
+import { pauseReport } from "../pause/report";
+import { assertNoSecrets } from "../shared/secret-guard";
 import { registeredValidator } from "../checks/receipt-registry";
 import { createHash } from "node:crypto";
 import { UNANSWERED_QUESTION } from "../db/waiting-on-owner";
@@ -1009,6 +1012,43 @@ export function registerHandlers(
     return { changed };
   }
   return {
+    pauseReport: ({ projectId, since, until }) => pauseReport(bb.storage.database(), projectId, since, until),
+    updatePauseMode: ({ projectId, mode }) => {
+      if (!store.tasks.getProject(projectId)) throw new Error("Project not found");
+      setPauseMode(bb.storage.database(), projectId, mode);
+      publishProjectsChanged(bb, projectId);
+      return { mode };
+    },
+    pauseTask: ({ taskId, reason, durationMs, actor }) => {
+      assertNoSecrets(reason, "pause reason");
+      const row = startManualPause(bb.storage.database(), taskId, reason, durationMs, actor);
+      const task = store.tasks.getTask(taskId)!;
+      publishTasksChanged(bb, taskId, task.projectId); publishCommentsChanged(bb, taskId);
+      return { ok: true as const, until: row.until! };
+    },
+    resumeTask: ({ taskId, actor }) => {
+      const db = bb.storage.database();
+      const task = store.tasks.getTask(taskId);
+      if (!task) throw new Error("Task not found");
+      const ended = db.transaction(() => endPauses(db, taskId, "resume", actor))();
+      if (ended) { publishTasksChanged(bb, taskId, task.projectId); publishCommentsChanged(bb, taskId); }
+      return { ended };
+    },
+    listPauses: ({ taskId }) => {
+      const db = bb.storage.database();
+      const task = store.tasks.getTask(taskId);
+      if (!task) throw new Error("Task not found");
+      const mode = db.prepare<[string], { mode: string }>("SELECT mode FROM pause_modes WHERE project_id=?").get(task.projectId)?.mode ?? "off";
+      const automatic = mode === "off" ? "off in this project" : mode === "on" || pauseArm(taskId) === "auto" ? "on for this card" : "off for this card (control arm)";
+      const pauses = db.prepare<[string, string], PauseRow>("SELECT * FROM task_pauses WHERE task_id=? AND applied=1 AND (until IS NULL OR until>?) ORDER BY started_at").all(taskId, new Date().toISOString()).map(row => ({ id: row.id, source: row.source, signal: row.signal, threadId: row.thread_id, reason: row.reason, startedAt: row.started_at, until: row.until }));
+      return { pauses, automatic };
+    },
+    listPauseLog: ({ taskId, projectId, since, cursor, limit }) => {
+      const db = bb.storage.database();
+      const rows = db.prepare<(string | number | null)[], Record<string, unknown>>("SELECT * FROM pause_log WHERE (? IS NULL OR task_id=?) AND (? IS NULL OR project_id=?) AND (? IS NULL OR at>=?) AND (? IS NULL OR id<?) ORDER BY id DESC LIMIT ?").all(taskId ?? null, taskId ?? null, projectId ?? null, projectId ?? null, since ?? null, since ?? null, cursor ?? null, cursor ?? null, limit + 1);
+      const page = rows.slice(0, limit);
+      return { entries: page, nextCursor: rows.length > limit ? page.at(-1)!.id as number : null };
+    },
     getTaskPlan: ({ taskId, version }) => {
       const plan = plans.get(taskId, version);
       return { plan: plan && { ...plan, noteCounts: planNotes.counts(taskId) } };
@@ -1675,6 +1715,7 @@ export function registerHandlers(
       const counts = new Map(bb.storage.database().prepare<string[], { task_id: string; count: number }>(
         `SELECT task_id, COUNT(*) AS count FROM attachments WHERE task_id IN (${ids.map(() => "?").join(",")}) GROUP BY task_id`,
       ).all(...ids).map((row) => [row.task_id, row.count]));
+      const pauses = bb.storage.database().prepare<(string | number)[], { task_id: string; signal: string; reason: string; until: string | null }>(`SELECT task_id,signal,reason,until FROM task_pauses WHERE task_id IN (${ids.map(() => "?").join(",")}) AND applied=1 AND (until IS NULL OR until>?)`).all(...ids, new Date().toISOString());
       const threads = new Map<string, TaskThread[]>();
       const allLinks = store.tasks.listTaskThreadsForTasks(ids);
       for (const thread of allLinks) {
@@ -1700,6 +1741,7 @@ export function registerHandlers(
           taskId,
           attachmentCount: counts.get(taskId) ?? 0,
           staleStatusFlags: flags.get(taskId) ?? [],
+          pauses: pauses.filter(pause => pause.task_id === taskId).map(({ signal, reason, until }) => ({ signal, reason, until })),
           activity: scopedActivity.get(taskId),
           blockedBy: blockedBy.get(taskId) ?? [],
           advisories: advisories.get(taskId) ?? [],

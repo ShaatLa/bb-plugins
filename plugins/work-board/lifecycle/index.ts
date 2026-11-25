@@ -3,6 +3,7 @@ import { publishCommentsChanged, type TasksApiStore } from "../api";
 import type { TaskThread, TaskThreadLiveStatus } from "../db";
 import { createSystemComment, publishThreadsChanged } from "../delegate";
 import { errorMessage } from "../shared/errors";
+import { endPauses } from "../pause/store";
 import { reconcileTaskThreads, recordThreadLink } from "./thread-links";
 import { isClosedStatus } from "../shared/workflow-policy";
 import { attachNamedTaskThread } from "./discovery";
@@ -120,8 +121,19 @@ function transitionTrackedThread(
   store: TasksApiStore,
   threadId: string,
   liveStatus: TaskThreadLiveStatus,
+  event?: "active" | "idle",
 ): void {
-  for (const thread of store.tasks.listTaskThreadsByThreadId(threadId)) {
+  const links = store.tasks.listLifecycleTaskThreads(threadId);
+  if (links.length && event === "active") store.transaction(() => {
+    const db = bb.storage.database();
+    const at = new Date().toISOString();
+    for (const link of links) {
+      if (link.hasPause) endPauses(db, link.taskId, "turn_started", threadId);
+      if (link.sampling) db.prepare<[string, string]>("UPDATE task_threads SET last_working_at=? WHERE id=?").run(at, link.id);
+    }
+  });
+  if (event === "idle" && links.some(link => link.hasLatch)) bb.storage.database().prepare<[string]>("DELETE FROM pause_latches WHERE thread_id=? AND release_on='idle'").run(threadId);
+  for (const thread of links) {
     transitionThread(bb, store, thread, liveStatus);
   }
 }
@@ -197,7 +209,7 @@ export async function registerLifecycle(
     const kept = store.tasks.closures.markActive(thread.id);
     const started = store.closures.turnStarted(thread, kept).catch((error) => bb.log.warn(`Could not sample ${thread.id} at its turn start: ${errorMessage(error)}`));
     attachNamedTaskThread(bb, store, thread);
-    transitionTrackedThread(bb, store, thread.id, "working");
+    transitionTrackedThread(bb, store, thread.id, "working", "active");
     await started;
   });
   bb.events.on("thread.idle", async ({ thread }) => {
@@ -205,7 +217,7 @@ export async function registerLifecycle(
     const claimed = store.closures.claimIdle(thread.id);
     // Taken synchronously too; the Git reads and notices run beside the archive decisions, which never wait on them.
     const ended = store.closures.turnEnded(thread).catch((error) => bb.log.warn(`Could not compare ${thread.id} at its turn end: ${errorMessage(error)}`));
-    transitionTrackedThread(bb, store, thread.id, "idle");
+    transitionTrackedThread(bb, store, thread.id, "idle", "idle");
     await store.closures.settleIdle(claimed);
     await store.closures.reviewerIdle(thread.id);
     await ended;

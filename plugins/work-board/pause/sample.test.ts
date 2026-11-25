@@ -1,0 +1,53 @@
+import { expect, it } from "vitest";
+import { createFakePluginHost } from "@get-bb/plugin-sdk/testing";
+import { createStore } from "../api";
+import { samplePauses } from "./sample";
+import { setPauseMode, startManualPause } from "./store";
+
+it("records short turns and ignores pause bookkeeping as work", async () => {
+  const { bb, harness } = createFakePluginHost({ pluginId: "work-board" });
+  const store = createStore(bb);
+  const project = store.tasks.createProject({ name: "Example", prefix: "EXA", color: "blue" });
+  const task = store.tasks.createTask({ projectId: project.id, title: "Example", status: "in_progress" });
+  const link = store.tasks.upsertTaskThread({ taskId: task.id, threadId: "thr_example", title: "Worker", presetName: "Agent", liveStatus: "idle" });
+  const db = bb.storage.database();
+  setPauseMode(db, project.id, "ab");
+  const now = Date.now();
+  samplePauses(bb, now - 600_000);
+  startManualPause(db, task.id, "Waiting", 60_000, "thr_example");
+  samplePauses(bb, now);
+  expect(db.prepare("SELECT worked FROM pause_samples WHERE task_id=? ORDER BY at DESC LIMIT 1").get(task.id)).toEqual({ worked: 0 });
+  store.tasks.updateTaskThreadStatus(link.id, "working");
+  store.tasks.updateTaskThreadStatus(link.id, "idle");
+  samplePauses(bb, now + 600_000);
+  expect(db.prepare("SELECT worked FROM pause_samples WHERE task_id=? ORDER BY at DESC LIMIT 1").get(task.id)).toEqual({ worked: 1 });
+  await harness.dispose();
+});
+
+it("excludes Planning and ongoing epics while counting an idle In Progress card as a miss", async () => {
+  const { bb, harness } = createFakePluginHost({ pluginId: "work-board" });
+  const { pauseReport } = await import("./report");
+  const { pauseArm } = await import("./store");
+  const store = createStore(bb);
+  const project = store.tasks.createProject({ name: "Example", prefix: "EXA", color: "blue" });
+  store.tasks.updateProject(project.id, { planning: "optional" });
+  const task = store.tasks.createTask({ projectId: project.id, title: "Planning", status: "planning" });
+  const progress = store.tasks.createTask({ projectId: project.id, title: "Working", status: "in_progress" });
+  const epic = store.tasks.createTask({ projectId: project.id, title: "Ongoing", status: "in_progress", type: "epic" });
+  const label = store.tasks.createLabel({ projectId: project.id, name: "ongoing", color: "blue" });
+  store.tasks.addTaskLabel(epic.id, label.id);
+  const db = bb.storage.database();
+  setPauseMode(db, project.id, "ab");
+  const end = Date.now(), start = end - 2 * 3600_000, work = start - 8 * 3600_000;
+  db.prepare("UPDATE pause_log SET at=? WHERE project_id=? AND event='mode'").run(new Date(work).toISOString(), project.id);
+  for (let at = work; at < end; at += 600_000) samplePauses(bb, at);
+  expect(db.prepare("SELECT in_scope FROM pause_samples WHERE task_id=? LIMIT 1").get(task.id)).toEqual({ in_scope: 0 });
+  expect(db.prepare("SELECT in_scope FROM pause_samples WHERE task_id=? LIMIT 1").get(epic.id)).toEqual({ in_scope: 0 });
+  expect(store.tasks.staleStatusObservations(project.id, [task.id])[0]).toMatchObject({ inScope: false });
+  expect(store.tasks.staleStatusObservations(project.id, [progress.id])[0]).toMatchObject({ inScope: true, signals: { no_active_thread: { present: true } } });
+  const report = () => pauseReport(db, project.id, new Date(start).toISOString(), new Date(end).toISOString(), end);
+  expect(report().arms[pauseArm(progress.id)].misses).toBe(1);
+  db.prepare("DELETE FROM pause_samples WHERE task_id=?").run(progress.id);
+  expect(report().arms.control.misses + report().arms.auto.misses).toBe(0);
+  await harness.dispose();
+});

@@ -196,6 +196,7 @@ function TaskCard({
             ) : null}
             <TaskActivityIndicator activity={meta.activity} failureMarker={!!meta.threadHealth?.failed.length} />
             <DependencyWarning blockedBy={meta.blockedBy} />
+            {meta.pauses?.map((pause, i) => <span key={`${pause.signal}-${i}`} title={pause.until ? `${pause.reason}, until ${new Date(pause.until).toLocaleString()}` : pause.reason}>Paused: {pause.reason}</span>)}
             <TaskAdvisories items={meta.advisories} compact />
             <ThreadHealthMarkers health={meta.threadHealth} />
           </div>
@@ -375,7 +376,7 @@ export function BoardView({ projectId, highlightKeys }: BoardViewProps) {
     const map = new Map(board.data?.metaByTaskId);
     if (metadata.data) for (const [id, value] of map) map.set(id, { ...value, activity: undefined });
     for (const row of metadata.data ?? []) map.set(row.taskId, {
-      ...(map.get(row.taskId) ?? EMPTY_META), workingThreads: row.taskThreads, activity: row.activity, blockedBy: row.blockedBy, advisories: row.advisories, threadHealth: row.threadHealth, attachmentCount: row.attachmentCount,
+      ...(map.get(row.taskId) ?? EMPTY_META), workingThreads: row.taskThreads, activity: row.activity, blockedBy: row.blockedBy, pauses: row.pauses, advisories: row.advisories, threadHealth: row.threadHealth, attachmentCount: row.attachmentCount,
     });
     return map;
   }, [board.data?.metaByTaskId, metadata.data]);

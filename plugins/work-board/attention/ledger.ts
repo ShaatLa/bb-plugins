@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
+import { treatment } from "../pause/executor";
 import { ATTENTION_KIND, ATTENTION_SIGNALS, staleStatusObservations, type AttentionSignal, type CardObservation } from "./observe";
 
 type Database = ReturnType<BbPluginApi["storage"]["database"]>;
@@ -113,9 +114,9 @@ function applyCard(db: Database, trackerId: string, kind: string, card: CardObse
     changed = clearUnknown(db, trackerId, kind, card.taskId, signal) || changed;
     if (observed.present && !occurrence) {
       const rev = bumpRev(db, trackerId);
-      db.prepare<[string, string, string, string, string, string, string, string, number, number]>(
-        "INSERT INTO manager_attention(id, tracker_id, task_id, task_key, kind, signal, first_seen_at, eligible_at, created_rev, rev) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-      ).run(randomUUID(), trackerId, card.taskId, card.key, kind, signal, new Date(at).toISOString(), new Date(at + GRACE_MS).toISOString(), rev, rev);
+      db.prepare<[string, string, string, string, string, string, string, string, number, number, string | null]>(
+        "INSERT INTO manager_attention(id, tracker_id, task_id, task_key, kind, signal, first_seen_at, eligible_at, created_rev, rev, executor_state) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      ).run(randomUUID(), trackerId, card.taskId, card.key, kind, signal, new Date(at).toISOString(), new Date(at + GRACE_MS).toISOString(), rev, rev, signal !== "no_merge_or_outcome" && treatment(db, trackerId, card.taskId) ? "pending" : null);
       changed = true;
     } else if (!observed.present && occurrence) {
       closeOccurrence(db, occurrence, "cleared");

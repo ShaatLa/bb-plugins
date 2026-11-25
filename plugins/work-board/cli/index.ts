@@ -990,6 +990,57 @@ export function registerTasksCli(
       description:
         "Tasks are addressed by key (ABC-12) or ULID. --project takes a tracker project prefix or id, never a bb project id (proj_...).",
       commands: {
+        pause: cliCommand({
+          summary: "Pause an unfinished task while waiting",
+          positionals: [KEY_POSITIONAL],
+          options: { reason: { type: "string", required: true, description: "What the card is waiting for" }, for: { type: "string", required: true, description: "Duration, e.g. 30m or 2h (maximum 8h)" }, json: JSON_OPTION },
+          run(input, ctx) { return guard(async () => {
+            const task = await resolveTask(domain, input.positionals["key-or-id"]);
+            const match = /^(\d+)(m|h)$/.exec(input.options.for);
+            if (!match) throw new CliError("Duration must use minutes or hours, e.g. 30m or 2h; maximum 8h");
+            const durationMs = Number(match[1]) * (match[2] === "h" ? 3_600_000 : 60_000);
+            const result = await domain.pauseTask({ taskId: task.id, reason: input.options.reason, durationMs, actor: ctx.threadId ?? process.env.BB_THREAD_ID ?? "owner" });
+            return input.options.json ? JSON.stringify(result) : `Paused ${task.key} until ${result.until}`;
+          }); },
+        }),
+        resume: cliCommand({
+          summary: "Resume a paused task", positionals: [KEY_POSITIONAL], options: { json: JSON_OPTION },
+          run(input, ctx) { return guard(async () => {
+            const task = await resolveTask(domain, input.positionals["key-or-id"]);
+            const result = await domain.resumeTask({ taskId: task.id, actor: ctx.threadId ?? process.env.BB_THREAD_ID ?? "owner" });
+            return input.options.json ? JSON.stringify(result) : result.ended ? `Resumed ${task.key}` : `${task.key} is not paused`;
+          }); },
+        }),
+        "pause log": cliCommand({
+          summary: "Show pause history", positionals: [{ name: "key-or-id", description: "Optional task key" }],
+          options: { project: PROJECT_OPTION, since: { type: "string", description: "ISO timestamp" }, cursor: { type: "integer", min: 1, max: Number.MAX_SAFE_INTEGER, description: "Next page cursor" }, limit: { type: "integer", min: 1, max: 200, description: "Page size" }, json: JSON_OPTION },
+          run(input, ctx) { return guard(async () => {
+            const task = input.positionals["key-or-id"] ? await resolveTask(domain, input.positionals["key-or-id"]) : undefined;
+            const project = input.options.project ? await requiredProject(domain, ctx, input.options.project) : undefined;
+            const result = await domain.listPauseLog(tasksRpcContract.listPauseLog.input.parse({ taskId: task?.id, projectId: project?.id, since: input.options.since, cursor: input.options.cursor, limit: input.options.limit }));
+            if (input.options.json) return JSON.stringify(result);
+            const lines = result.entries.map(row => `${row.at}  ${row.task_key ?? "-"}  ${row.event}  ${row.signal ?? "-"}  ${row.end_reason ?? row.detail ?? "-"}`);
+            if (result.nextCursor) lines.push(`More: --cursor ${result.nextCursor}`);
+            return lines.join("\n") || "No pause history.";
+          }); },
+        }),
+        "pause report": cliCommand({
+          summary: "Compare automatic pause against control", options: { project: REQUIRED_PROJECT_OPTION, since: { type: "string", description: "Window start (ISO)" }, until: { type: "string", description: "Window end (ISO)" }, json: JSON_OPTION },
+          run(input, ctx) { return guard(async () => {
+            const project = await requiredProject(domain, ctx, input.options.project);
+            const result = await domain.pauseReport({ projectId: project.id, since: input.options.since, until: input.options.until });
+            if (input.options.json) return JSON.stringify(result);
+            const arms = result.arms as Record<string, { cardDays: number; notices: number; noiseRate: number | null; unnecessary: number; matureNotices: number; censoredNotices: number; episodes: number; misses: number; unknownEpisodes: number; censoredEpisodes: number; totalUnflaggedMs: number; longestUnflaggedMs: number; executor: Record<string, number>; closedBeforeManager: number; controlBackgroundNotices: number }>;
+            const window = result.window as { since: string; until: string; abMs: number; outsideAbMs: number; unsampledMs: number };
+            return [
+              `A/B window: ${window.since} to ${window.until}; A/B ${(window.abMs / 86400000).toFixed(2)} days; outside A/B ${(window.outsideAbMs / 3600000).toFixed(1)}h; unsampled ${(window.unsampledMs / 3600000).toFixed(1)}h`,
+              ...Object.entries(arms).map(([name, arm]) => `${name}: ${arm.cardDays.toFixed(2)} card-days, ${arm.notices} notices, rate ${arm.noiseRate?.toFixed(3) ?? "n/a"}/card-day; unnecessary ${arm.unnecessary}/${arm.matureNotices} (${arm.censoredNotices} censored); episodes ${arm.episodes}, misses ${arm.misses}, unknown ${arm.unknownEpisodes}, censored ${arm.censoredEpisodes}, unflagged ${(arm.totalUnflaggedMs / 3600000).toFixed(2)}h total / ${(arm.longestUnflaggedMs / 3600000).toFixed(2)}h longest; executor ${JSON.stringify(arm.executor)}, cleared before manager ${arm.closedBeforeManager}, control background notices ${arm.controlBackgroundNotices}`),
+              `Pause diagnostics: ${JSON.stringify(result.diagnostics)}`,
+              `Verdict: ${result.verdict} (minimum 7 days, ≤10% unsampled, ≥20 control notices, auto rate ≤60% of control, ≤1 extra miss and longest miss ≤8h)`,
+              String(result.limitations),
+            ].join("\n");
+          }); },
+        }),
         ...checksCliCommands(bb, { group: groupCommand, guard, project: (ctx, address) => requiredProject(domain, ctx, address) }),
         storage: groupCommand("storage", "Inspect and maintain plugin-owned storage", [["status", "Show disk usage and unreachable files"], ["clean", "Remove orphan files older than 24h and unreachable cache rows"], ["optimize", "Also share identical blobs and compact SQLite (may take time)"]]),
         ...Object.fromEntries((["status", "clean", "optimize"] as const).map(action => [`storage ${action}`, cliCommand({
@@ -2936,6 +2987,7 @@ export function registerTasksCli(
               } : question) : questions;
               const latestCommentId = comments.at(-1)?.id ?? null;
               const cardMeta = (await domain.listTaskCardMeta({ taskIds: [task.id] })).metadata[0]!;
+              const { pauses, automatic } = await domain.listPauses({ taskId: task.id });
               const activity = cardMeta.activity;
               const threadHealth = threadHealthJson(cardMeta.threadHealth, Date.now());
               const { pullRequests, unavailableThreadIds } =
@@ -2972,6 +3024,8 @@ export function registerTasksCli(
                   prLinks,
                   overlaps,
                   planDebt,
+                  pauses,
+                  automaticPause: automatic,
                   task: { ...task, waitingOnOwner: waiting },
                   link: taskMarkdownLink(task.key),
                   startHint: hint,
@@ -3025,6 +3079,8 @@ export function registerTasksCli(
                   ["ID", task.id],
                   ["Project", `${project.prefix} — ${project.name}`],
                   ["Status", task.status],
+                  ["Automatic pause", automatic],
+                  ...pauses.map(pause => ["Paused", `${pause.reason}${pause.until ? `, until ${pause.until}` : ""}`] as const),
                   ["Blocked by", dependencies.blockedBy.map(blocker => `${blocker.key} (${blocker.status}${blocker.status === "done" ? "; satisfied" : "; waiting for Done"})`).join(", ") || "-"],
                   ["Blocks", dependencies.blocks.map(dependent => `${dependent.key} (${dependent.status})`).join(", ") || "-"],
                   ["Related", dependencies.related.map(other => `${other.key} (${other.status})`).join(", ") || "-"],

@@ -582,6 +582,7 @@ function TaskDetail({
   const parentTask = parent.data ?? null;
   const activityStatus = <>
     <ActivityStatus task={task} threads={threads.data ?? []} onStatusChange={(status) => void updateTask({ status })} activity={activity.data?.activity} advisories={activity.data?.advisories} isFetching={activity.isFetching} error={activity.error} />
+    {activity.data?.pauses?.map((pause, i) => <p key={`${pause.signal}-${i}`} className="text-sm text-muted-foreground">Paused: {pause.reason}{pause.until ? `, until ${new Date(pause.until).toLocaleString()}` : ""}</p>)}
     {!task.archivedAt ? <div className="mb-4">
       <DispatchControl taskId={task.id} projectId={task.projectId} threads={threads.data ?? []} presets={presets.data} onError={push} align="start" className="w-full" />
     </div> : null}

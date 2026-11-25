@@ -951,6 +951,67 @@ export const MIGRATIONS = [
    );
    CREATE INDEX receipt_verdicts_card ON check_receipt_verdicts(task_id, comment_id);`,
   `ALTER TABLE checks_config ADD COLUMN remote TEXT;`,
+  // Pause state and experiment data are local and deliberately excluded from archives.
+  `CREATE TABLE task_pauses (
+     id TEXT PRIMARY KEY, task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+     source TEXT NOT NULL CHECK(source IN ('manual','auto')), signal TEXT NOT NULL,
+     thread_id TEXT NOT NULL, reason TEXT NOT NULL, started_at TEXT NOT NULL,
+     until TEXT, applied INTEGER NOT NULL CHECK(applied IN (0,1)),
+     UNIQUE(task_id, signal, thread_id)
+   );
+   CREATE UNIQUE INDEX task_pauses_manual ON task_pauses(task_id) WHERE signal='manual';
+   CREATE TABLE pause_log (
+     id INTEGER PRIMARY KEY AUTOINCREMENT, project_id TEXT NOT NULL, task_id TEXT,
+     task_key TEXT, at TEXT NOT NULL, event TEXT NOT NULL, source TEXT, signal TEXT,
+     end_reason TEXT, thread_id TEXT, previous_threads TEXT, arm TEXT, applied INTEGER,
+     until TEXT, detail TEXT
+   );
+   CREATE INDEX pause_log_project_at ON pause_log(project_id, at);
+   CREATE TABLE pause_latches (
+     task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE, thread_id TEXT NOT NULL,
+     release_on TEXT NOT NULL CHECK(release_on IN ('idle','cleared')),
+     PRIMARY KEY(task_id, thread_id)
+   );
+   CREATE TABLE pause_modes (
+     project_id TEXT PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
+     mode TEXT NOT NULL CHECK(mode IN ('off','ab','on')), changed_at TEXT NOT NULL
+   );
+   CREATE TABLE pause_samples (
+     at TEXT NOT NULL, project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+     task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE, arm TEXT NOT NULL,
+     status TEXT NOT NULL, in_scope INTEGER NOT NULL, held INTEGER NOT NULL,
+     waiting_owner INTEGER NOT NULL, paused INTEGER NOT NULL, worked INTEGER NOT NULL,
+     PRIMARY KEY(project_id, task_id, at)
+   );
+   CREATE INDEX pause_samples_project_at ON pause_samples(project_id, at);
+   ALTER TABLE task_threads ADD COLUMN last_working_at TEXT;
+   ALTER TABLE manager_attention ADD COLUMN executor_state TEXT CHECK(executor_state IS NULL OR executor_state IN ('pending','sending','sent','none','failed','unknown'));
+   ALTER TABLE manager_attention ADD COLUMN executor_at TEXT;
+   CREATE TRIGGER task_pause_status_guard BEFORE UPDATE OF status ON tasks
+   WHEN NEW.status <> OLD.status AND EXISTS (
+     SELECT 1 FROM task_pauses WHERE task_id=OLD.id AND applied=1 AND signal IN ('manual','background')
+   ) BEGIN SELECT RAISE(ABORT, 'end applied pauses before changing status'); END;`,
+  `CREATE TABLE pause_sample_runs (
+     project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+     at TEXT NOT NULL, PRIMARY KEY(project_id,at)
+   );`,
+  `ALTER TABLE pause_log ADD COLUMN signal_thread_id TEXT;`,
+  `CREATE TABLE project_pr_history (
+     project_id TEXT PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
+     first_linked_at TEXT NOT NULL
+   );
+   INSERT OR IGNORE INTO project_pr_history(project_id, first_linked_at)
+     SELECT t.project_id, COALESCE(MIN(json_extract(l.payload,'$.createdAt')), strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+     FROM task_pr_links l JOIN tasks t ON t.id=l.task_id GROUP BY t.project_id;
+   CREATE TRIGGER project_pr_history_insert AFTER INSERT ON task_pr_links BEGIN
+     INSERT OR IGNORE INTO project_pr_history(project_id, first_linked_at)
+       SELECT project_id, strftime('%Y-%m-%dT%H:%M:%fZ','now') FROM tasks WHERE id=NEW.task_id;
+   END;
+   CREATE TRIGGER project_pr_history_move AFTER UPDATE OF project_id ON tasks
+   WHEN NEW.project_id <> OLD.project_id AND EXISTS(SELECT 1 FROM task_pr_links WHERE task_id=NEW.id) BEGIN
+     INSERT OR IGNORE INTO project_pr_history(project_id, first_linked_at)
+       VALUES (NEW.project_id, strftime('%Y-%m-%dT%H:%M:%fZ','now'));
+   END;`,
 ] as const;
 
 export function initializeTasksSchema(db: PluginDatabase, log: Log = () => {}): void {

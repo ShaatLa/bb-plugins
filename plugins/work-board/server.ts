@@ -17,6 +17,8 @@ import { TASK_LINK_INSTRUCTIONS } from "./shared/task-link";
 import { registerMentions } from "./mentions";
 import { planDebtService } from "./plan-debt/service";
 import { autoArchiveTasks } from "./lifecycle/task-archive";
+import { sweepPauseSignals } from "./pause/signals";
+import { samplePauses } from "./pause/sample";
 import pkg from "./package.json" with { type: "json" };
 
 const WORK_BOARD_PLUGIN_NAME = "Work Board";
@@ -66,6 +68,9 @@ export default async function plugin(bb: BbPluginApi) {
   });
 
   bb.background.schedule("git-pr-sync", "* * * * *", () => gitSyncService(bb, store).runDue());
+  bb.background.schedule("pause-signals", "* * * * *", () => sweepPauseSignals(bb));
+  bb.background.schedule("pause-samples", "*/10 * * * *", () => samplePauses(bb));
+  bb.events.on("thread.idle", () => { void sweepPauseSignals(bb); });
   void gitSyncService(bb, store).startEvents().catch((error: unknown) => bb.log.warn(`PR event startup failed: ${error instanceof Error ? error.message : String(error)}`));
   bb.background.schedule("storage-maintenance", "17 3 * * *", async () => {
     const result = await storageService(bb).run(false);

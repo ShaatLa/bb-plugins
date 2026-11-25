@@ -178,6 +178,7 @@ function createService(bb: BbPluginApi) {
       `SELECT o.id, ${CURRENT_KEY_SQL} AS task_key, o.signal, o.eligible_at FROM manager_attention o
        WHERE o.tracker_id=? AND o.kind=? AND o.cleared_at IS NULL AND o.sweep_baselined_generation IS NULL AND o.eligible_at${upcoming ? ">" : "<="}?
        AND o.signal IN (${PILOT_SIGNALS.map((signal) => `'${signal}'`).join(", ")})
+       AND COALESCE(o.executor_state,'') NOT IN ('pending','sending')
        AND NOT EXISTS (SELECT 1 FROM attention_unknown u WHERE u.tracker_id=o.tracker_id AND u.kind=o.kind AND u.task_id=o.task_id AND u.signal=o.signal)
        AND NOT EXISTS (SELECT 1 FROM attention_attempt_items i JOIN attention_attempts a ON a.attempt_id=i.attempt_id WHERE i.occurrence_id=o.id AND a.attempt_id IS NOT ?
          AND (a.outcome IN ('claimed', 'sending', 'appended', 'queued', 'inline') OR (a.outcome='unknown' AND COALESCE(a.disposition, '')<>'retry')))
@@ -310,6 +311,7 @@ function createService(bb: BbPluginApi) {
       return;
     }
     await recover(trackerId, true);
+    await drainExecutors(trackerId);
     if (!claimable(trackerId, Date.now()).length) return;
     // Only a verified, usable manager receives claims; otherwise the open occurrences stay pending and the lookup is retried next pass.
     const lookup = await lookupManager(configuredManager(db, trackerId));
@@ -320,6 +322,37 @@ function createService(bb: BbPluginApi) {
     const run = transport(claimed, recipient.threadId, trackerId).catch(warn).finally(() => inflight.delete(claimed.attempt));
     inflight.set(claimed.attempt, run);
     await run;
+  }
+
+  async function drainExecutors(trackerId: string): Promise<void> {
+    const pending = db.prepare<[string], { id: string; task_id: string; task_key: string; signal: string }>("SELECT o.id,o.task_id,o.task_key,o.signal FROM manager_attention o WHERE o.tracker_id=? AND o.kind='stale-status' AND o.cleared_at IS NULL AND o.executor_state='pending' AND NOT EXISTS (SELECT 1 FROM attention_unknown u WHERE u.tracker_id=o.tracker_id AND u.kind=o.kind AND u.task_id=o.task_id AND u.signal=o.signal) ORDER BY o.created_rev").all(trackerId);
+    for (const taskId of new Set(pending.map(row => row.task_id))) {
+      const group = db.transaction(() => {
+        const rows = pending.filter(row => row.task_id === taskId);
+        return rows.filter(row => db.prepare<[string]>("UPDATE manager_attention SET executor_state='sending' WHERE id=? AND executor_state='pending' AND cleared_at IS NULL").run(row.id).changes > 0);
+      })();
+      if (!group.length) continue;
+      const ids = db.prepare<[string], { thread_id: string }>("SELECT DISTINCT thread_id FROM task_threads WHERE task_id=? AND live_status NOT IN ('completed','failed')").all(taskId).map(row => row.thread_id);
+      let outcome: "sent" | "none" | "failed" | "unknown" = ids.length ? "failed" : "none";
+      try {
+        const threads = ids.length ? await bb.sdk.threads.list({ threadIds: ids, limit: ids.length, includeHidden: true }) : [];
+        const executors = threads.filter(thread => !thread.archivedAt && !thread.deletedAt);
+        if (!executors.length) outcome = "none";
+        const fixes: Record<string, string> = { no_active_thread: "continue the work", no_open_pr: "open or link the PR", pr_state_unavailable: "check that the linked PR is reachable", closed_unmerged_pr: "reopen, replace or exclude the closed PR" };
+        const text = `${group[0]!.task_key} is flagged by Work Board: ${group.map(row => SIGNAL_TEXT[row.signal] ?? row.signal).join("; ")}. Within 10 minutes: ${group.map(row => fixes[row.signal]).join("; ")}; or, if you wait for something, \`bb work-board pause ${group[0]!.task_key} --reason \"<why>\" --for <duration>\`; or, if you are not working on it, \`bb work-board update ${group[0]!.task_key} --status todo\`. Otherwise the project manager is told.`;
+        for (const thread of executors) {
+          const receipt = await deliverWithReceipt(bb, thread.id, text, `<!-- work-board-executor:${group[0]!.id} -->`);
+          if (receipt.outcome === "appended" || receipt.outcome === "queued" || receipt.outcome === "inline") outcome = "sent";
+          else if (receipt.outcome !== "failed" && outcome !== "sent") outcome = "unknown";
+          else if (receipt.outcome === "failed") bb.log.warn(`Executor notice failed for ${thread.id}: ${receipt.error}`);
+        }
+      } catch (error) { bb.log.warn(`Executor notice failed: ${errorMessage(error)}`); }
+      const at = nowIso();
+      const eligible = new Date(Date.now() + (outcome === "sent" || outcome === "unknown" ? 600_000 : 0)).toISOString();
+      db.transaction(() => {
+        for (const row of group) db.prepare<[string, string, string, string]>("UPDATE manager_attention SET executor_state=?,executor_at=?,eligible_at=MAX(eligible_at,?) WHERE id=? AND executor_state='sending'").run(outcome, at, eligible, row.id);
+      })();
+    }
   }
 
   const activeTrackerIds = () => db.prepare<[string], { tracker_id: string }>("SELECT tracker_id FROM attention_modes WHERE kind=? AND (effective_mode<>'off' OR requested_mode IS NOT NULL)").all(ATTENTION_KIND).map((row) => row.tracker_id);
@@ -431,6 +464,7 @@ function createService(bb: BbPluginApi) {
   function register() {
     // Before the startup reconciliation and the first drain, so no legacy Shadow row is ever read as live.
     normalizeLegacyModes(db);
+    db.prepare<[string, string]>("UPDATE manager_attention SET executor_state='unknown', executor_at=?, eligible_at=MAX(eligible_at,?) WHERE executor_state='sending'").run(nowIso(), new Date(Date.now() + 600_000).toISOString());
     const stops = [onAttentionChanged(notifyChanged), onTrackerDirty(scheduleScan)];
     // The settings follow the configured manager: an event for any other thread changes nothing.
     for (const type of ["thread.archived", "thread.unarchived", "thread.deleted"] as const) {

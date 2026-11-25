@@ -6,6 +6,7 @@ import { syncPlanDebt, syncProjectPlanDebt } from "../plan-debt/store";
 import { createClosureStore } from "../closure/store";
 import { prSettled, projectPolicies, staleRows, staleStatusObservations as observeStaleStatus } from "../attention/observe";
 import { closeTaskOccurrences, markTrackerDirty, touchAttention } from "../attention/ledger";
+import { endPauses } from "../pause/store";
 import { assertLinkChangeAllowed } from "../attention/modes";
 import { assertChecksDeleteAllowed } from "../checks/ownership";
 import { archiveSettingSchema, autoArchiveAfterDaysSchema, planningSchema, staleIdleThresholdSchema, statusNotificationsSchema } from "../shared/project-settings";
@@ -1169,7 +1170,7 @@ export function createTasksStore(db: PluginDatabase, log: (message: string) => v
 
   function staleStatusFlags(taskIds?: readonly string[], projectId?: string, nowMs = Date.now()): Map<string, string[]> {
     const policies = projectPolicies(db);
-    const rows = staleRows(db, taskIds, projectId);
+    const rows = staleRows(db, taskIds, projectId, nowMs);
     const result = new Map<string, string[]>();
     // The planning status is read from the live project, so a settings edit that made it invalid counts at once.
     const planning = new Map(listProjects().map((project) => [project.id, planningStatusOf(project)]));
@@ -1178,11 +1179,11 @@ export function createTasksStore(db: PluginDatabase, log: (message: string) => v
       if (!policy) continue;
       const flags: string[] = [];
       // A card held behind an unfinished predecessor, or waiting on an open owner question, is waiting, not abandoned. Planning is active work like In progress.
-      if ((row.status === policy.inProgressStatus || (planning.get(row.project_id) ?? null) === row.status) && !row.active && !row.held && !row.waiting_owner) flags.push("no_active_thread");
+      if (!row.paused && (row.status === policy.inProgressStatus || (planning.get(row.project_id) ?? null) === row.status) && !row.active && !row.held && !row.waiting_owner) flags.push("no_active_thread");
       // Testing after the merge (a check on a shared environment) is expected, so a merged PR satisfies it; review gets a grace.
-      if ((row.status === policy.reviewStatus || row.status === policy.testingStatus) && !prSettled(row, policy, nowMs)) flags.push(row.unknown_pr ? "pr_state_unavailable" : "no_open_pr");
+      if (!row.paused && (row.status === policy.reviewStatus || row.status === policy.testingStatus) && !prSettled(row, policy, nowMs) && (row.unknown_pr || row.project_uses_prs)) flags.push(row.unknown_pr ? "pr_state_unavailable" : "no_open_pr");
       if (row.status === policy.doneStatus && !row.merge_evidence && !row.outcome && !row.legacy_outcome) flags.push("no_merge_or_outcome");
-      if (row.closed_known) flags.push("closed_unmerged_pr");
+      if (!row.paused && row.closed_known) flags.push("closed_unmerged_pr");
       if (flags.length) result.set(row.id, flags);
     }
     return result;
@@ -1572,6 +1573,8 @@ export function createTasksStore(db: PluginDatabase, log: (message: string) => v
     (id: string, input: UpdateTaskInput): Task => {
       const current = requireTask(id);
       const status = input.status ?? current.status;
+      if (input.closerThreadId && !getTaskThreadByThreadId(id, input.closerThreadId) && !db.prepare<[string, string]>("SELECT 1 FROM task_pauses WHERE task_id=? AND thread_id=? AND signal='manual'").get(id, input.closerThreadId))
+        endPauses(db, id, "takeover", input.closerThreadId);
       const type = input.type ?? current.type;
       validateTaskStatus(current.projectId, status);
       // The gate reads the resulting type: converting an epic and moving it in one update is judged as the task it becomes.
@@ -1597,6 +1600,11 @@ export function createTasksStore(db: PluginDatabase, log: (message: string) => v
             .get(current.projectId, status)?.position ?? POSITION_STEP;
       }
 
+      if (status !== current.status) {
+        const actor = input.closerThreadId ?? "owner";
+        const linked = actor === "owner" || Boolean(getTaskThreadByThreadId(id, actor)) || Boolean(db.prepare<[string, string]>("SELECT 1 FROM task_pauses WHERE task_id=? AND thread_id=? AND signal='manual'").get(id, actor));
+        endPauses(db, id, linked ? "status_change" : "takeover", actor);
+      }
       trackClosure(current, status, input.closerThreadId);
       db.prepare<
         [
@@ -1745,6 +1753,7 @@ export function createTasksStore(db: PluginDatabase, log: (message: string) => v
 
       const updatedAt = nowIso();
       const moved = moving.map((task, index) => {
+        endPauses(db, task.id, agentThreadId && !getTaskThreadByThreadId(task.id, agentThreadId) ? "takeover" : "status_change", agentThreadId ?? "owner");
         const number = target.nextTaskNumber + index;
         const sourceLabels = listLabelsForTask(task.id);
         recordAlias.run(source.prefix, task.number, task.id);
@@ -1870,6 +1879,11 @@ export function createTasksStore(db: PluginDatabase, log: (message: string) => v
             .get(task.projectId, input.status, id)?.position ?? POSITION_STEP;
       }
 
+      if (input.status !== task.status) {
+        const actor = input.closerThreadId ?? "owner";
+        const linked = actor === "owner" || Boolean(getTaskThreadByThreadId(id, actor)) || Boolean(db.prepare<[string, string]>("SELECT 1 FROM task_pauses WHERE task_id=? AND thread_id=? AND signal='manual'").get(id, actor));
+        endPauses(db, id, linked ? "status_change" : "takeover", actor);
+      }
       trackClosure(task, input.status, input.closerThreadId);
       db.prepare<[Task["status"], number, string, string]>(
         `
@@ -2083,6 +2097,10 @@ export function createTasksStore(db: PluginDatabase, log: (message: string) => v
     if (evidence) assertNoSecretsInValue(evidence, "evidence");
     const id = createUlid();
     requireTask(input.taskId);
+    if (input.kind === "agent" && input.threadId && !getTaskThreadByThreadId(input.taskId, input.threadId)) {
+      const author = db.prepare<[string, string]>("SELECT 1 FROM task_pauses WHERE task_id=? AND thread_id=? AND signal='manual'").get(input.taskId, input.threadId);
+      if (!author) endPauses(db, input.taskId, "takeover", input.threadId);
+    }
     db.prepare<
       [
         string,
@@ -2318,6 +2336,16 @@ export function createTasksStore(db: PluginDatabase, log: (message: string) => v
       .map(taskThreadFromRow);
   }
 
+  function listLifecycleTaskThreads(threadId: string) {
+    return db.prepare<[string], TaskThreadRow & { has_pause: number; has_latch: number; sampling: number }>(`
+      SELECT task_threads.*,
+        EXISTS(SELECT 1 FROM task_pauses p WHERE p.task_id=task_threads.task_id AND p.signal IN ('manual','background')) AS has_pause,
+        EXISTS(SELECT 1 FROM pause_latches l WHERE l.task_id=task_threads.task_id AND l.thread_id=task_threads.thread_id AND l.release_on='idle') AS has_latch,
+        EXISTS(SELECT 1 FROM tasks t JOIN pause_modes m ON m.project_id=t.project_id WHERE t.id=task_threads.task_id AND m.mode IN ('ab','on')) AS sampling
+      FROM task_threads WHERE thread_id = ? ORDER BY task_id, id
+    `).all(threadId).map(row => ({ ...taskThreadFromRow(row), hasPause: !!row.has_pause, hasLatch: !!row.has_latch, sampling: !!row.sampling }));
+  }
+
   function requireTaskThread(id: string): TaskThread {
     const thread = getTaskThread(id);
     if (!thread) throw new Error(`Task thread not found: ${id}`);
@@ -2326,6 +2354,8 @@ export function createTasksStore(db: PluginDatabase, log: (message: string) => v
 
   function upsertTaskThread(input: UpsertTaskThreadInput): TaskThread {
     requireTask(input.taskId);
+    const previous = getTaskThreadByThreadId(input.taskId, input.threadId);
+    if (!previous) endPauses(db, input.taskId, "takeover", input.threadId);
     const id = createUlid();
     const timestamp = nowIso();
     db.prepare<
@@ -2366,6 +2396,8 @@ export function createTasksStore(db: PluginDatabase, log: (message: string) => v
       input.createdForTask && input.linkOrigin ? 1 : 0,
       input.linkOrigin ?? null,
     );
+    if ((input.liveStatus === "starting" || input.liveStatus === "working") && previous?.liveStatus !== input.liveStatus)
+      db.prepare<[string, string, string]>("UPDATE task_threads SET last_working_at=? WHERE task_id=? AND thread_id=?").run(timestamp, input.taskId, input.threadId);
     const thread = getTaskThreadByThreadId(input.taskId, input.threadId);
     if (!thread) throw new Error("Task thread upsert failed");
     return thread;
@@ -2419,10 +2451,15 @@ export function createTasksStore(db: PluginDatabase, log: (message: string) => v
     id: string,
     liveStatus: TaskThreadLiveStatus,
   ): TaskThread {
-    requireTaskThread(id);
-    db.prepare<[TaskThreadLiveStatus, string, string]>(
-      "UPDATE task_threads SET live_status = ?, updated_at = ? WHERE id = ?",
-    ).run(liveStatus, nowIso(), id);
+    const row = db.prepare<[string], TaskThreadRow & { has_pause: number }>("SELECT task_threads.*, EXISTS(SELECT 1 FROM task_pauses p WHERE p.task_id=task_threads.task_id AND p.signal IN ('manual','background')) AS has_pause FROM task_threads WHERE id = ?").get(id);
+    if (!row) throw new Error(`Task thread not found: ${id}`);
+    const previous = taskThreadFromRow(row);
+    const at = nowIso();
+    if (row.has_pause && (liveStatus === "starting" || liveStatus === "working") && previous.liveStatus !== liveStatus)
+      endPauses(db, previous.taskId, "turn_started", previous.threadId);
+    db.prepare<[TaskThreadLiveStatus, string, TaskThreadLiveStatus, TaskThreadLiveStatus, string, string]>(
+      "UPDATE task_threads SET live_status = ?, updated_at = ?, last_working_at = CASE WHEN ? IN ('starting','working') AND live_status <> ? THEN ? ELSE last_working_at END WHERE id = ?",
+    ).run(liveStatus, at, liveStatus, liveStatus, at, id);
     return requireTaskThread(id);
   }
 
@@ -2740,6 +2777,7 @@ export function createTasksStore(db: PluginDatabase, log: (message: string) => v
     getTaskThread,
     getTaskThreadByThreadId,
     listTaskThreadsByThreadId,
+    listLifecycleTaskThreads,
     listTaskThreads,
     listTaskThreadsForProject,
     listTaskThreadsForTasks,

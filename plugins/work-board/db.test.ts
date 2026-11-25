@@ -1,4 +1,5 @@
 import { legacyBoard, scheduleHistory } from "./db/legacy-schedule-fixture";
+import { MIGRATIONS } from "./db/schema";
 import { getWorkflowPolicy } from "./shared/workflow-policy";
 import { createHash } from "node:crypto";
 import { createFakePluginHost } from "@get-bb/plugin-sdk/testing";
@@ -91,7 +92,7 @@ describe("tasks storage", () => {
             "SELECT COUNT(*) AS count FROM schema_version",
           )
           .get()?.count,
-      ).toBe(57);
+      ).toBe(MIGRATIONS.length);
       expect(db.prepare<[], { name: string }>("PRAGMA index_info(idx_task_pr_links_identity)").all().map((column) => column.name)).toEqual(["identity", "task_id"]);
       const columns = db.prepare<[], { name: string }>("PRAGMA table_info(tasks)").all().map(column => column.name);
       expect(columns).toEqual(expect.arrayContaining(["progress_note", "progress_updated_at", "progress_updated_by"]));
@@ -149,7 +150,11 @@ describe("tasks storage", () => {
       createTasksStore(db);
       const store = createTasksStore(db);
       expect(trigger()).toBeUndefined();
-      expect(related()).toEqual(before);
+      const after = related();
+      expect(after[0]).toEqual(before[0]);
+      expect(after[1].every(value => (value as Record<string, unknown>).last_working_at === null)).toBe(true);
+      expect(after[1].map((value) => { const { last_working_at: _added, ...row } = value as Record<string, unknown>; return row; })).toEqual(before[1]);
+      expect(after[2]).toEqual(before[2]);
       expect(scheduleHistory(db)).toEqual(history);
       expect(db.pragma("foreign_key_check")).toEqual([]);
       expect(store.listTasks({ projectId: f.projectId }).map(t => t.id).sort()).toEqual([f.template, f.pending, f.completed, f.parent, f.once, f.expired].sort());

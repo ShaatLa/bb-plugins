@@ -24,6 +24,8 @@ export interface StaleRow {
   held: number;
   /** An open owner question: the card waits for the owner, so it is not abandoned. */
   waiting_owner: number;
+  paused: number;
+  project_uses_prs: number;
   merged_pr: number;
   merge_evidence: number;
   outcome: number;
@@ -55,7 +57,7 @@ export function prSettled(row: StaleRow, policy: WorkflowPolicy, nowMs: number):
 }
 
 /** The raw per-card facts behind the stale-status flags; one query for a task list or a whole project. */
-export function staleRows(db: Database, taskIds?: readonly string[], projectId?: string): StaleRow[] {
+export function staleRows(db: Database, taskIds?: readonly string[], projectId?: string, nowMs = Date.now()): StaleRow[] {
   const ids = taskIds ? JSON.stringify(taskIds) : null;
   return db.prepare<(string | null)[], StaleRow>(`
       SELECT t.id, t.project_id, p.prefix || '-' || t.number AS key, t.status, t.type,
@@ -64,6 +66,8 @@ export function staleRows(db: Database, taskIds?: readonly string[], projectId?:
         EXISTS(SELECT 1 FROM task_threads x WHERE x.task_id=t.id AND x.live_status IN ('starting','working')) AS active,
         EXISTS(SELECT 1 FROM task_dependencies d JOIN tasks b ON b.id=d.blocking_task_id WHERE d.task_id=t.id AND b.status <> 'done') AS held,
         EXISTS(SELECT 1 FROM task_questions q WHERE q.task_id=t.id AND ${UNANSWERED_QUESTION}) AS waiting_owner,
+        EXISTS(SELECT 1 FROM task_pauses x WHERE x.task_id=t.id AND x.applied=1 AND x.signal IN ('manual','background') AND x.until > ?) AS paused,
+        EXISTS(SELECT 1 FROM project_pr_history h WHERE h.project_id=t.project_id) AS project_uses_prs,
         EXISTS(SELECT 1 FROM task_pr_links l JOIN git_pr_snapshots s ON s.project_id=t.project_id AND s.identity=l.identity
           WHERE l.task_id=t.id AND COALESCE(json_extract(l.payload,'$.excluded'),0)=0 AND json_extract(s.payload,'$.state')='merged') AS merged_pr,
         EXISTS(SELECT 1 FROM comments c WHERE c.task_id=t.id AND json_extract(c.evidence,'$.kind')='merge') AS merge_evidence,
@@ -80,7 +84,7 @@ export function staleRows(db: Database, taskIds?: readonly string[], projectId?:
       FROM tasks t JOIN projects p ON p.id=t.project_id
       ${ids === null ? "WHERE (? IS NULL OR t.project_id=?)" : "WHERE t.id IN (SELECT value FROM json_each(?)) AND (? IS NULL OR t.project_id=?)"} ORDER BY t.id`)
     // An ID-scoped read must seek by key: an `? IS NULL OR` arm on the ID predicate forces a scan of every task.
-    .all(...(ids === null ? [projectId ?? null, projectId ?? null] : [ids, projectId ?? null, projectId ?? null]));
+    .all(new Date(nowMs).toISOString(), ...(ids === null ? [projectId ?? null, projectId ?? null] : [ids, projectId ?? null, projectId ?? null]));
 }
 
 export function projectPolicies(db: Database): Map<string, WorkflowPolicy> {
@@ -108,7 +112,7 @@ export interface CardObservation {
 export function staleStatusObservations(db: Database, taskIds?: readonly string[], projectId?: string, nowMs = Date.now()): CardObservation[] {
   const policies = projectPolicies(db);
   const result: CardObservation[] = [];
-  for (const row of staleRows(db, taskIds, projectId)) {
+  for (const row of staleRows(db, taskIds, projectId, nowMs)) {
     const policy = policies.get(row.project_id);
     if (!policy) continue;
     const valid = (present: boolean) => ({ present, validity: "valid" as const });
@@ -123,10 +127,10 @@ export function staleStatusObservations(db: Database, taskIds?: readonly string[
       scopeReason: row.archived ? "archived" : row.ongoing ? "ongoing" : row.held ? "blocked" : "status_changed",
       doneScope: !row.archived && row.status === policy.doneStatus && !row.ongoing,
       signals: {
-        no_active_thread: valid(row.status === policy.inProgressStatus && !row.active && !row.held && !row.waiting_owner),
-        no_open_pr: prUnresolved && unknownPr ? { present: false, validity: "unknown" } : valid(prUnresolved),
-        pr_state_unavailable: valid(prUnresolved && unknownPr),
-        closed_unmerged_pr: Boolean(row.closed_known) ? valid(true) : unknownPr ? { present: false, validity: "unknown" } : valid(false),
+        no_active_thread: valid(!row.paused && row.status === policy.inProgressStatus && !row.active && !row.held && !row.waiting_owner),
+        no_open_pr: !row.paused && prUnresolved && unknownPr ? { present: false, validity: "unknown" } : valid(!row.paused && Boolean(row.project_uses_prs) && prUnresolved),
+        pr_state_unavailable: valid(!row.paused && prUnresolved && unknownPr),
+        closed_unmerged_pr: row.paused ? valid(false) : Boolean(row.closed_known) ? valid(true) : unknownPr ? { present: false, validity: "unknown" } : valid(false),
         no_merge_or_outcome: valid(row.status === policy.doneStatus && !row.merge_evidence && !row.outcome && !row.legacy_outcome),
       },
     });

@@ -911,6 +911,30 @@ const planReviewResultSchema = z.discriminatedUnion("ok", [
 ]);
 
 export const tasksRpcContract = {
+  pauseReport: {
+    input: z.object({ projectId: idSchema, since: z.string().datetime().optional(), until: z.string().datetime().optional() }).strict(),
+    output: z.record(z.string(), z.unknown()),
+  },
+  updatePauseMode: {
+    input: z.object({ projectId: idSchema, mode: z.enum(["off", "ab", "on"]) }).strict(),
+    output: z.object({ mode: z.enum(["off", "ab", "on"]) }).strict(),
+  },
+  pauseTask: {
+    input: z.object({ taskId: idSchema, reason: z.string().trim().min(1).max(300), durationMs: z.number().int().min(60000).max(28800000), actor: z.string().min(1) }).strict(),
+    output: z.object({ ok: z.literal(true), until: z.string() }).strict(),
+  },
+  resumeTask: {
+    input: z.object({ taskId: idSchema, actor: z.string().min(1) }).strict(),
+    output: z.object({ ended: z.number().int().nonnegative() }).strict(),
+  },
+  listPauses: {
+    input: z.object({ taskId: idSchema }).strict(),
+    output: z.object({ pauses: z.array(z.object({ id: z.string(), source: z.string(), signal: z.string(), threadId: z.string(), reason: z.string(), startedAt: z.string(), until: z.string().nullable() }).strict()), automatic: z.string() }).strict(),
+  },
+  listPauseLog: {
+    input: z.object({ taskId: idSchema.optional(), projectId: idSchema.optional(), since: z.string().datetime().optional(), cursor: z.number().int().positive().optional(), limit: z.number().int().min(1).max(200).default(50) }).strict(),
+    output: z.object({ entries: z.array(z.record(z.string(), z.unknown())), nextCursor: z.number().nullable() }).strict(),
+  },
   // One per-project setting at a time; without a key, get lists them all.
   "config.get": {
     input: z.object({ projectId: z.string(), key: z.string().optional() }).strict(),
@@ -1455,6 +1479,7 @@ export const tasksRpcContract = {
       taskThreads: z.array(taskThreadSchema),
       activity: taskActivitySchema.optional(),
       blockedBy: z.array(dependencyTaskSchema).optional(),
+      pauses: z.array(z.object({ signal: z.string(), reason: z.string(), until: z.string().nullable() }).strict()).optional(),
       advisories: z.array(taskAdvisorySchema).optional(),
       threadHealth: threadHealthSchema,
       staleStatusFlags: z.array(z.string()).default([]),

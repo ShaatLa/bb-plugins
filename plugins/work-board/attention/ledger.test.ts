@@ -119,6 +119,8 @@ describe("validity", () => {
 
   it("creates pr_state_unavailable when only unavailable PRs exist, and still raises closed_unmerged_pr next to a failed one", async () => {
     const f = await make();
+    const other = f.card("Linked PR", "todo");
+    f.linkPr(other.id, 3, "open");
     const task = f.card("Unavailable", "in_review");
     f.linkPr(task.id, 1, "failed");
     // The earlier no_open_pr occurrence stays open: an unknown signal neither creates nor clears.

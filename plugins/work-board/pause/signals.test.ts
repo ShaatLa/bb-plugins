@@ -1,0 +1,156 @@
+import { createFakePluginHost, makeThreadResponse } from "@get-bb/plugin-sdk/testing";
+import { expect, it } from "vitest";
+import { createStore } from "../api";
+import { setPauseMode } from "./store";
+import { sweepPauseSignals } from "./signals";
+
+it("pauses an idle background run and resumes when it ends", async () => {
+  const { bb, harness } = createFakePluginHost({ pluginId: "work-board" });
+  const store = createStore(bb);
+  const project = store.tasks.createProject({ name: "Example", prefix: "EXA", color: "blue" });
+  const task = store.tasks.createTask({ projectId: project.id, title: "Example", status: "in_progress" });
+  store.tasks.upsertTaskThread({ taskId: task.id, threadId: "thr_example", title: "Worker", presetName: "Agent", liveStatus: "idle" });
+  const db = bb.storage.database();
+  setPauseMode(db, project.id, "on");
+  let count = 1;
+  harness.sdk.stub("threads.list", async () => [{ ...makeThreadResponse({ id: "thr_example", status: "idle" }), activity: { activeBackgroundAgentCount: 0, activeBackgroundCommandCount: count, activePlanModeCount: 0, activeWorkflowCount: 0 } }]);
+  await sweepPauseSignals(bb);
+  expect(store.tasks.staleStatusFlags([task.id]).has(task.id)).toBe(false);
+  expect(db.prepare("SELECT event,signal,applied FROM pause_log WHERE task_id=?").get(task.id)).toEqual({ event: "start", signal: "background", applied: 1 });
+  count = 0;
+  await sweepPauseSignals(bb);
+  expect(store.tasks.staleStatusFlags([task.id]).get(task.id)).toEqual(["no_active_thread"]);
+  expect(db.prepare("SELECT end_reason FROM pause_log WHERE task_id=? AND event='end'").get(task.id)).toEqual({ end_reason: "signal_cleared" });
+  await harness.dispose();
+});
+
+it("keeps a resumed background run latched until its counts clear", async () => {
+  const { bb, harness } = createFakePluginHost({ pluginId: "work-board" });
+  const store = createStore(bb);
+  const project = store.tasks.createProject({ name: "Example", prefix: "EXA", color: "blue" });
+  const task = store.tasks.createTask({ projectId: project.id, title: "Example", status: "in_progress" });
+  store.tasks.upsertTaskThread({ taskId: task.id, threadId: "thr_example", title: "Worker", presetName: "Agent", liveStatus: "idle" });
+  const db = bb.storage.database();
+  setPauseMode(db, project.id, "on");
+  let count = 1;
+  harness.sdk.stub("threads.list", async () => [{ ...makeThreadResponse({ id: "thr_example", status: "idle" }), activity: { activeBackgroundAgentCount: 0, activeBackgroundCommandCount: count, activePlanModeCount: 0, activeWorkflowCount: 0 } }]);
+  await sweepPauseSignals(bb);
+  const { endPauses } = await import("./store");
+  db.transaction(() => endPauses(db, task.id, "resume", "owner"))();
+  await sweepPauseSignals(bb);
+  expect(db.prepare("SELECT count(*) AS n FROM task_pauses").get()).toEqual({ n: 0 });
+  count = 0;
+  await sweepPauseSignals(bb);
+  count = 1;
+  await sweepPauseSignals(bb);
+  expect(db.prepare("SELECT count(*) AS n FROM task_pauses").get()).toEqual({ n: 1 });
+  setPauseMode(db, project.id, "off");
+  expect(db.prepare("SELECT count(*) AS n FROM pause_latches").get()).toEqual({ n: 0 });
+  expect(db.prepare("SELECT end_reason FROM pause_log WHERE event='end' ORDER BY id DESC").get()).toEqual({ end_reason: "mode_change" });
+  await harness.dispose();
+});
+
+it("logs control signals without applying them and preserves state on a failed read", async () => {
+  const { bb, harness } = createFakePluginHost({ pluginId: "work-board" });
+  const store = createStore(bb);
+  const { pauseArm } = await import("./store");
+  const project = store.tasks.createProject({ name: "Example", prefix: "EXA", color: "blue" });
+  let task = store.tasks.createTask({ projectId: project.id, title: "Example", status: "in_progress" });
+  while (pauseArm(task.id) !== "control") task = store.tasks.createTask({ projectId: project.id, title: "Example", status: "in_progress" });
+  store.tasks.upsertTaskThread({ taskId: task.id, threadId: "thr_example", title: "Worker", presetName: "Agent", liveStatus: "idle" });
+  const db = bb.storage.database();
+  setPauseMode(db, project.id, "ab");
+  harness.sdk.stub("threads.list", async () => [{ ...makeThreadResponse({ id: "thr_example", status: "idle" }), activity: { activeBackgroundAgentCount: 0, activeBackgroundCommandCount: 1, activePlanModeCount: 0, activeWorkflowCount: 0 } }]);
+  await sweepPauseSignals(bb);
+  expect(db.prepare("SELECT applied FROM task_pauses WHERE task_id=?").get(task.id)).toEqual({ applied: 0 });
+  expect(store.tasks.staleStatusFlags([task.id]).get(task.id)).toEqual(["no_active_thread"]);
+  expect(store.tasks.listComments(task.id)).toHaveLength(0);
+  harness.sdk.stub("threads.list", async () => { throw new Error("offline"); });
+  await sweepPauseSignals(bb);
+  expect(db.prepare("SELECT applied FROM task_pauses WHERE task_id=?").get(task.id)).toEqual({ applied: 0 });
+  await harness.dispose();
+});
+
+it("holds a turn-start latch until a real idle event and a mode change clears it", async () => {
+  const { bb, harness } = createFakePluginHost({ pluginId: "work-board" });
+  const { registerLifecycle } = await import("../lifecycle");
+  const store = createStore(bb);
+  const project = store.tasks.createProject({ name: "Example", prefix: "EXA", color: "blue" });
+  const task = store.tasks.createTask({ projectId: project.id, title: "Example", status: "in_progress" });
+  const link = store.tasks.upsertTaskThread({ taskId: task.id, threadId: "thr_example", title: "Worker", presetName: "Agent", liveStatus: "idle" });
+  const db = bb.storage.database();
+  setPauseMode(db, project.id, "on");
+  harness.sdk.stub("threads.list", async () => [{ ...makeThreadResponse({ id: "thr_example", status: "idle" }), activity: { activeBackgroundAgentCount: 0, activeBackgroundCommandCount: 1, activePlanModeCount: 0, activeWorkflowCount: 0 } }]);
+  await sweepPauseSignals(bb);
+  store.tasks.updateTaskThreadStatus(link.id, "working");
+  store.tasks.updateTaskThreadStatus(link.id, "idle");
+  await sweepPauseSignals(bb);
+  expect(db.prepare("SELECT release_on FROM pause_latches").get()).toEqual({ release_on: "idle" });
+  expect(db.prepare("SELECT count(*) AS n FROM task_pauses").get()).toEqual({ n: 0 });
+  await registerLifecycle(bb, store);
+  await harness.emitThreadEvent("thread.idle", { thread: makeThreadResponse({ id: "thr_example", status: "idle" }), lastAssistantText: null });
+  await sweepPauseSignals(bb);
+  expect(db.prepare("SELECT count(*) AS n FROM task_pauses").get()).toEqual({ n: 1 });
+  setPauseMode(db, project.id, "off");
+  expect(db.prepare("SELECT count(*) AS n FROM pause_latches").get()).toEqual({ n: 0 });
+  await harness.dispose();
+});
+
+it("does not recreate a pause after the mode changes during an SDK read", async () => {
+  const { bb, harness } = createFakePluginHost({ pluginId: "work-board" });
+  const store = createStore(bb);
+  const project = store.tasks.createProject({ name: "Example", prefix: "EXA", color: "blue" });
+  const task = store.tasks.createTask({ projectId: project.id, title: "Example", status: "in_progress" });
+  store.tasks.upsertTaskThread({ taskId: task.id, threadId: "thr_example", title: "Worker", presetName: "Agent", liveStatus: "idle" });
+  const db = bb.storage.database();
+  setPauseMode(db, project.id, "on");
+  let release!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  harness.sdk.stub("threads.list", async () => { await gate; return [{ ...makeThreadResponse({ id: "thr_example", status: "idle" }), activity: { activeBackgroundAgentCount: 0, activeBackgroundCommandCount: 1, activePlanModeCount: 0, activeWorkflowCount: 0 } }]; });
+  const sweep = sweepPauseSignals(bb);
+  setPauseMode(db, project.id, "off");
+  release();
+  await sweep;
+  expect(db.prepare("SELECT count(*) AS n FROM task_pauses").get()).toEqual({ n: 0 });
+  await harness.dispose();
+});
+
+it("keeps independent background episodes for two threads", async () => {
+  const { bb, harness } = createFakePluginHost({ pluginId: "work-board" });
+  const store = createStore(bb);
+  const project = store.tasks.createProject({ name: "Example", prefix: "EXA", color: "blue" });
+  const task = store.tasks.createTask({ projectId: project.id, title: "Example", status: "in_progress" });
+  for (const id of ["thr_a", "thr_b"]) store.tasks.upsertTaskThread({ taskId: task.id, threadId: id, title: "Worker", presetName: "Agent", liveStatus: "idle" });
+  const db = bb.storage.database();
+  setPauseMode(db, project.id, "on");
+  let first = 1;
+  harness.sdk.stub("threads.list", async () => ["thr_a", "thr_b"].map(id => ({ ...makeThreadResponse({ id, status: "idle" }), activity: { activeBackgroundAgentCount: 0, activeBackgroundCommandCount: id === "thr_a" ? first : 1, activePlanModeCount: 0, activeWorkflowCount: 0 } })));
+  await sweepPauseSignals(bb);
+  expect(db.prepare("SELECT count(*) AS n FROM task_pauses WHERE signal='background'").get()).toEqual({ n: 2 });
+  first = 0;
+  await sweepPauseSignals(bb);
+  expect(db.prepare("SELECT thread_id FROM task_pauses WHERE signal='background'").get()).toEqual({ thread_id: "thr_b" });
+  expect(store.tasks.staleStatusFlags([task.id]).has(task.id)).toBe(false);
+  await harness.dispose();
+});
+
+it("records and clears predecessor and owner-question waits", async () => {
+  const { bb, harness } = createFakePluginHost({ pluginId: "work-board" });
+  const { registerTasksApi } = await import("../api");
+  const store = createStore(bb);
+  registerTasksApi(bb, store);
+  const project = store.tasks.createProject({ name: "Example", prefix: "EXA", color: "blue" });
+  const task = store.tasks.createTask({ projectId: project.id, title: "Example", status: "in_progress" });
+  const blocker = store.tasks.createTask({ projectId: project.id, title: "Blocker", status: "todo" });
+  const db = bb.storage.database();
+  db.prepare("INSERT INTO task_dependencies(task_id,blocking_task_id) VALUES (?,?)").run(task.id, blocker.id);
+  await harness.callRpc("createQuestion", { taskId: task.id, kind: "check", prompt: "Ready?" });
+  setPauseMode(db, project.id, "on");
+  await sweepPauseSignals(bb);
+  expect(db.prepare("SELECT signal FROM task_pauses WHERE task_id=? ORDER BY signal").all(task.id)).toEqual([{ signal: "held" }, { signal: "owner_question" }]);
+  store.tasks.updateTask(blocker.id, { status: "done" });
+  db.prepare("DELETE FROM task_questions WHERE task_id=?").run(task.id);
+  await sweepPauseSignals(bb);
+  expect(db.prepare("SELECT count(*) AS n FROM task_pauses WHERE task_id=?").get(task.id)).toEqual({ n: 0 });
+  await harness.dispose();
+});

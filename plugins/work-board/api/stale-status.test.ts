@@ -2,7 +2,7 @@ import { expect, it } from "vitest";
 import { createFakePluginHost } from "@get-bb/plugin-sdk/testing";
 import { createStore, registerTasksApi } from ".";
 import { registerTasksCli } from "../cli";
-import { initializeTasksSchema } from "../db/schema";
+import { initializeTasksSchema, MIGRATIONS } from "../db/schema";
 import { staleRows } from "../attention/observe";
 import { captureStatements } from "../test-capture";
 
@@ -156,4 +156,52 @@ it("does not flag a card waiting on an open owner question as having no active t
   setQuestion("q5", {});
   store.tasks.updateTask(card.id, { status: "in_progress" });
   expect(store.tasks.staleStatusFlags().has(card.id)).toBe(false);
+});
+
+it("retains PR history after unlinking the last PR and deleting its card", async () => {
+  const { bb, harness } = createFakePluginHost({ pluginId: "work-board" });
+  const store = createStore(bb);
+  const project = store.tasks.createProject({ name: "Example", prefix: "EXA", color: "blue" });
+  const review = store.tasks.createTask({ projectId: project.id, title: "Review", status: "in_review" });
+  const linked = store.tasks.createTask({ projectId: project.id, title: "Linked", status: "todo" });
+  const db = bb.storage.database();
+  expect(store.tasks.staleStatusFlags([review.id]).has(review.id)).toBe(false);
+  db.prepare("INSERT INTO task_pr_links(task_id,identity,payload) VALUES (?, ?, ?)").run(linked.id, "example/one#1", JSON.stringify({ excluded: true }));
+  expect(store.tasks.staleStatusFlags([review.id]).get(review.id)).toContain("no_open_pr");
+  db.prepare("DELETE FROM task_pr_links WHERE task_id=?").run(linked.id);
+  expect(store.tasks.staleStatusFlags([review.id]).get(review.id)).toContain("no_open_pr");
+  db.prepare("INSERT INTO task_pr_links(task_id,identity,payload) VALUES (?, ?, ?)").run(linked.id, "example/one#1", JSON.stringify({ excluded: true }));
+  store.tasks.deleteTask(linked.id);
+  expect(store.tasks.staleStatusFlags([review.id]).get(review.id)).toContain("no_open_pr");
+  await harness.dispose();
+});
+
+it("backfills project PR history when upgrading an existing database", async () => {
+  const { bb, harness } = createFakePluginHost({ pluginId: "work-board" });
+  const store = createStore(bb);
+  const project = store.tasks.createProject({ name: "Example", prefix: "EXA", color: "blue" });
+  const task = store.tasks.createTask({ projectId: project.id, title: "Linked", status: "todo" });
+  const db = bb.storage.database();
+  db.exec("DROP TRIGGER project_pr_history_insert; DROP TRIGGER project_pr_history_move; DROP TABLE project_pr_history");
+  db.prepare("DELETE FROM schema_version WHERE version=?").run(MIGRATIONS.length);
+  db.prepare("INSERT INTO task_pr_links(task_id,identity,payload) VALUES (?, ?, ?)").run(task.id, "example/one#1", JSON.stringify({ createdAt: "2026-01-01T00:00:00.000Z" }));
+  initializeTasksSchema(db);
+  expect(db.prepare("SELECT first_linked_at FROM project_pr_history WHERE project_id=?").get(project.id)).toEqual({ first_linked_at: "2026-01-01T00:00:00.000Z" });
+  await harness.dispose();
+});
+
+it("records PR history when the first linked card moves into another project", async () => {
+  const { bb, harness } = createFakePluginHost({ pluginId: "work-board" });
+  const store = createStore(bb);
+  const source = store.tasks.createProject({ name: "Source", prefix: "SRC", color: "blue" });
+  const target = store.tasks.createProject({ name: "Target", prefix: "DST", color: "blue" });
+  const linked = store.tasks.createTask({ projectId: source.id, title: "Linked", status: "todo" });
+  const review = store.tasks.createTask({ projectId: target.id, title: "Review", status: "in_review" });
+  const db = bb.storage.database();
+  db.prepare("INSERT INTO task_pr_links(task_id,identity,payload) VALUES (?, ?, ?)").run(linked.id, "example/one#1", JSON.stringify({ excluded: true }));
+  expect(store.tasks.staleStatusFlags([review.id]).has(review.id)).toBe(false);
+  store.tasks.moveTaskToProject(linked.id, target.id);
+  expect(store.tasks.staleStatusFlags([review.id]).get(review.id)).toContain("no_open_pr");
+  expect(db.prepare("SELECT first_linked_at FROM project_pr_history WHERE project_id=?").get(target.id)).toEqual({ first_linked_at: expect.any(String) });
+  await harness.dispose();
 });

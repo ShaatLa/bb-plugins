@@ -69,7 +69,7 @@ describe("Tasks plugin scaffold", () => {
     await plugin(bb);
 
     const { schedules, cli, rpcMethods } = harness.registrations;
-    expect(schedules.map(job => job.name).sort()).toEqual(["attention-reconcile", "auto-archive-tasks", "checks", "git-pr-sync", "plan-debt", "storage-maintenance"]);
+    expect(schedules.map(job => job.name).sort()).toEqual(["attention-reconcile", "auto-archive-tasks", "checks", "git-pr-sync", "pause-samples", "pause-signals", "plan-debt", "storage-maintenance"]);
     expect(cli!.commands.filter(cmd => /^schedule(?: |$)/.test(cmd.name))).toEqual([]);
     expect(rpcMethods.filter(method => /schedule/i.test(method))).toEqual([]);
     expect(harness.logEntries).toEqual([

@@ -1,4 +1,5 @@
 import { markTrackerDirty } from "../attention/ledger";
+import { endPauses } from "../pause/store";
 import { assertLinkChangeAllowed } from "../attention/modes";
 import { createGitSyncStore } from "../git-sync/store";
 import { prIdentity, prLinkSchema } from "../shared/git-sync";
@@ -559,7 +560,13 @@ export function restoreProject(
     const confirmedNow = (payload: string | undefined) => { const link = payload ? prLinkSchema.parse(JSON.parse(payload)) : null; return Boolean(link?.confirmed && !link.excluded); };
     const newlyConfirmed = changes.filter(({ table, row }) => table === "task_pr_links" && confirmedNow(row.payload as string) && !confirmedNow(db.prepare<[SqlValue, SqlValue], { payload: string }>("SELECT payload FROM task_pr_links WHERE task_id=? AND identity=?").get(row.task_id!, row.identity!)?.payload))
       .map(({ row }) => ({ taskId: row.task_id as string, identity: row.identity as string }));
-    for (const { table, row, keys } of changes) {
+    // A PR-link insert must see its task: the history trigger derives the project from it.
+    const orderedChanges = [...changes.filter(change => change.table !== "task_pr_links"), ...changes.filter(change => change.table === "task_pr_links")];
+    for (const { table, row, keys } of orderedChanges) {
+      if (table === "tasks" && typeof row.id === "string" && typeof row.status === "string") {
+        const current = db.prepare<[string], { status: string }>("SELECT status FROM tasks WHERE id=?").get(row.id);
+        if (current && current.status !== row.status) endPauses(db, row.id, "status_change", "import");
+      }
       // An overwrite that gives a link id to another thread must not keep the local authority to archive it.
       const previousThread = table === "task_threads" ? db.prepare<[SqlValue], { thread_id: string }>("SELECT thread_id FROM task_threads WHERE id = ?").get(row.id!)?.thread_id : undefined;
       const replacedLink = previousThread !== undefined && previousThread !== row.thread_id;

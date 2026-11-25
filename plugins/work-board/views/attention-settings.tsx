@@ -160,6 +160,7 @@ function PrMessages({ projectId, save }: { projectId: string; save: ReturnType<t
   const eventsOff = value("prEvents") !== "on";
   return (
     <div className="space-y-3">
+      <AutomaticPause projectId={projectId} save={save} value={query.data?.values.autoPause} refresh={query.refresh} />
       <h4 className="text-sm font-medium">Pull request messages</h4>
       {PR_SWITCHES.map(({ key, label, hint }) => {
         const needsEvents = key === "prEventsManager" && eventsOff;
@@ -169,6 +170,19 @@ function PrMessages({ projectId, save }: { projectId: string; save: ReturnType<t
       {query.error && !query.data ? <p role="alert" className="text-xs text-destructive">{query.error}</p> : null}
     </div>
   );
+}
+
+function AutomaticPause({ projectId, save, value, refresh }: { projectId: string; save: ReturnType<typeof useSaveStatus>; value: unknown; refresh: () => Promise<unknown> }) {
+  const rpc = useTasksRpc();
+  const mode = String(value ?? "off");
+  return <label className="flex items-center justify-between gap-3 text-sm">Automatic pause
+    <select aria-label="Automatic pause" value={mode} disabled={value === undefined} onChange={event => {
+      const next = event.target.value as "off" | "ab" | "on";
+      void save.track(async () => { await rpc.call("updatePauseMode", { projectId, mode: next }); await refresh(); }, undefined, "autoPause");
+    }} className="rounded border border-border bg-background px-2 py-1">
+      <option value="off">Off</option><option value="ab">A/B test</option><option value="on">On</option>
+    </select>
+  </label>;
 }
 
 /** Owner-only setting: the platform cannot tell the app from an agent, so a change is only recorded and shown here. */
