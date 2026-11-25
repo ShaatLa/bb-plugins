@@ -65,7 +65,7 @@ def read_config(project_id):
 
 
 def plugin_scope(description, config, parent):
-    lines = [line for line in description.splitlines() if line.startswith("Scope:")]
+    lines = [line.rstrip() for line in description.splitlines() if line.startswith("Scope:")]
     owner_scopes = [plugin for plugin, thread in config["owners"].items() if thread == parent]
     if not lines and len(owner_scopes) == 1:
         lines = [f"Scope: plugins/{owner_scopes[0]}/"]
@@ -106,8 +106,10 @@ def assemble(card, config, request, role):
     parent = request["parentThreadId"]
     if card["project"]["linkedBbProjectId"] != request["projectId"]:
         raise Refusal("wrong_project", "Use a task linked to the launch project's BB project.")
-    if task["type"] != "task" or task.get("archivedAt") or task["status"] in {"done", "canceled"}:
+    if task.get("archivedAt") or task["status"] in {"done", "canceled"}:
         raise Refusal("card_closed", "Use an open Work Board task.")
+    if task["type"] != "task":
+        raise Refusal("unsupported_card_type", "Use the key of a Work Board task within the epic.")
     if any(item["status"] != "done" for item in card["dependencies"]["blockedBy"]):
         raise Refusal("open_dependency", "Wait until all blocking Work Board tasks are Done.")
     if role == "plan-review" and (not plan or not plan.get("body")):

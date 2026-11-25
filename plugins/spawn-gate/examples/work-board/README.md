@@ -42,9 +42,10 @@ bb agent-spawn-gate start --project proj_example --parent-thread thr_example --d
 
 The task must be open, its blockers must be Done, and its Work Board project
 must be linked to the launch project. Add one line to the description such as
-`Scope: plugins/example/`. For a plugin owner mapped to exactly one directory,
-an omitted scope uses that directory. Only the mapped owner or manager can
-launch for that scope.
+`Scope: plugins/example/`. Trailing whitespace on that line is allowed. For
+a plugin owner mapped to exactly one directory, an omitted scope uses that
+directory. Only the mapped owner or manager can launch for that scope. An open
+epic returns `unsupported_card_type`; use a task key from the epic.
 
 - `impl` starts implementation in a worktree from the approved plan.
 - `review` reviews code in a worktree. The implementation agent must post
@@ -53,6 +54,10 @@ launch for that scope.
 - `check` runs the checks or captures in the approved plan.
 - `plan-review` starts a reviewer on a different provider from the caller.
   Save the draft, launch the reviewer, and submit the plan to its thread ID.
+
+For `impl` and `review`, the BB project source on the execution machine must
+point at the Git checkout. BB uses that source to provision each child's
+worktree.
 
 Spawn Gate counts successful starts, dry-runs and builder refusals with
 enforcement disabled. In this mode, project instructions must tell agents how

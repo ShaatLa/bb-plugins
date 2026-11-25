@@ -180,10 +180,11 @@ it("runs the Work Board builder and counts successes and fixed refusals through 
   const base = "a".repeat(40), head = "b".repeat(40);
   const parent = f.request.parentThreadId;
   const models = [{ providerId: "codex", model: "codex-model" }, { providerId: "claude-code", model: "claude-model" }];
-  await writeFile(configPath, JSON.stringify({
+  const config = {
     managerThreadId: "thr_manager", owners: { example: parent, other: "thr_other" },
     roles: { impl: models, review: models, check: models, "plan-review": models },
-  }));
+  };
+  await writeFile(configPath, JSON.stringify(config));
   vi.stubEnv("BB_SPAWN_GATE_WORK_BOARD_CONFIG", configPath);
   vi.stubEnv("EXAMPLE_CARD_JSON", cardPath);
   await writeFile(join(f.root, "bin", "bb"), `#!/bin/sh
@@ -202,7 +203,7 @@ fi
   f.harness.sdk.stub("environments.get", async () => ({ hostId: "host_example" }));
   f.harness.sdk.stub("providers.list", async () => []);
   f.harness.sdk.stub("plugins.callRpc", async () => { throw new Error("Account Pooler not installed"); });
-  const task = { key: "EXA-1", status: "in_progress", type: "task", title: "Example", description: "Scope: plugins/example/\nFix the test." };
+  const task = { key: "EXA-1", status: "in_progress", type: "task", title: "Example", description: "Scope: plugins/example/ \t\r\nFix the test." };
   const plan = { state: "approved", version: 1, body: "Use the fixture.\nagent-admission example" };
   const card = {
     task, plan, project: { linkedBbProjectId: f.request.projectId }, dependencies: { blockedBy: [] as { status: string }[] },
@@ -223,13 +224,29 @@ fi
   await expect(launch("unrecognized")).rejects.toThrow('{"reasonCode": "unknown_role"}');
   task.status = "done"; await saveCard();
   await expect(launch("check")).rejects.toThrow('{"reasonCode": "card_closed"}');
-  task.status = "in_progress"; plan.state = "approved"; task.description = "Scope: plugins/other/"; await saveCard();
+  task.status = "in_progress"; task.type = "epic"; await saveCard();
+  await expect(launch("check")).rejects.toThrow('{"reasonCode": "unsupported_card_type"}');
+  task.type = "task"; plan.state = "approved";
+  card.dependencies.blockedBy.push({ status: "in_progress" }); await saveCard();
+  await expect(launch("impl")).rejects.toThrow('{"reasonCode": "open_dependency"}');
+  card.dependencies.blockedBy[0].status = "done";
+  card.project.linkedBbProjectId = "proj_other"; await saveCard();
+  await expect(launch("impl")).rejects.toThrow('{"reasonCode": "wrong_project"}');
+  card.project.linkedBbProjectId = f.request.projectId;
+  const comments = card.comments.splice(0); await saveCard();
+  await expect(launch("review")).rejects.toThrow('{"reasonCode": "missing_review_range"}');
+  card.comments = comments; await saveCard();
+  await writeFile(configPath, JSON.stringify({ ...config, roles: { ...config.roles, review: [models[0]] } }));
+  await expect(launch("review")).rejects.toThrow('{"reasonCode": "no_eligible_provider"}');
+  task.description = "Scope: plugins/other/"; await saveCard();
   await expect(launch("impl")).rejects.toThrow('{"reasonCode": "scope_not_allowed"}');
   expect(f.spawn).toHaveBeenCalledTimes(1);
   const report = await f.report({ events: true });
   expect(report.projects[0]).toMatchObject({ starts: 1, dryRuns: 3, blockedStarts: 0 });
   expect(report.events?.map(event => event.reason).sort()).toEqual([
-    "builder:card_closed", "builder:no_approved_plan", "builder:scope_not_allowed", "builder:unknown_role",
+    "builder:card_closed", "builder:missing_review_range", "builder:no_approved_plan", "builder:no_eligible_provider",
+    "builder:open_dependency", "builder:scope_not_allowed", "builder:unknown_role", "builder:unsupported_card_type",
+    "builder:wrong_project",
   ]);
 });
 
