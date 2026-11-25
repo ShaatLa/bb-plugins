@@ -26,6 +26,8 @@ const repo = { projectName: null, range: resolveRange(null, new Date("2026-10-20
 };
 const data = { repositories: [repo], authSource: "gh", discoveryError: null };
 afterEach(() => { vi.useRealTimers(); localStorage.clear(); });
+// jsdom has no scrollIntoView; the Radix select calls it on its highlighted option.
+Element.prototype.scrollIntoView ??= () => {};
 
 test("CI cards show actionable failures, workflow breakdown and overall and individual timing", async () => {
   vi.resetModules();
@@ -344,31 +346,92 @@ test("refreshes on interval, keeps stale data on failure, supports retry, and st
 });
 
 
-test("renders imported and additional repositories independently", async () => {
+const other = { ...repo, repository: "acme/other", projectName: "release platform", pullRequests: { ...metric, value: 7 } };
+const two = { ...data, repositories: [repo, other] };
+// Each selector test gets fresh module state: the known repository order lives at module level.
+const freshApp = async () => { vi.resetModules(); return loadPluginApp(() => import("./app")); };
+const pickRepository = async (slot: ReturnType<typeof renderSlot>, name: string) => {
+  fireEvent.keyDown(slot.getByRole("combobox", { name: "Repository" }), { key: "Enter" });
+  fireEvent.keyDown(await within(document.body).findByRole("option", { name }), { key: "Enter" });
+};
+
+test("shows one repository at a time and switches with the repository selector", async () => {
+  const isolated = await freshApp();
   const openUrl = vi.fn(() => true);
-  const slot = renderSlot(app.navPanels[0], { subPath: "" }, {
-    rpc: { snapshot: () => null, metrics: () => ({ ...data, repositories: [repo, { ...repo, repository: "acme/other", projectName: "release platform", pullRequests: { ...metric, value: 7 } }] }) }, settings: {}, openUrl,
-  });
+  const slot = renderSlot(isolated.navPanels[0], { subPath: "" }, { rpc: { snapshot: () => null, metrics: () => two }, settings: {}, openUrl });
   try {
     expect(await slot.findByRole("region", { name: "acme/widgets" })).toBeTruthy();
-    expect(slot.getByRole("region", { name: "acme/other" })).toBeTruthy();
-    expect(slot.getAllByText("7").length).toBeGreaterThan(0);
+    expect(slot.queryByRole("region", { name: "acme/other" })).toBeNull();
     expect(slot.queryByText("GitHub CLI authorization")).toBeNull();
-    expect(slot.getByRole("heading", { name: "Widgets" })).toBeTruthy();
-    expect(slot.getByRole("heading", { name: "Release platform" })).toBeTruthy();
     const repositoryLink = slot.getByRole("link", { name: "Widgets" });
     expect(repositoryLink.getAttribute("href")).toBe("https://github.com/acme/widgets");
     expect(repositoryLink.querySelector('[data-icon="ExternalLink"][aria-hidden="true"]')).not.toBeNull();
     fireEvent.click(repositoryLink);
     expect(openUrl).toHaveBeenLastCalledWith("https://github.com/acme/widgets");
-    fireEvent.click(slot.getByRole("link", { name: "Release platform" }));
-    expect(openUrl).toHaveBeenLastCalledWith("https://github.com/acme/other");
-    expect(slot.getAllByText("Last 7 days")).toHaveLength(2);
-    expect(slot.getAllByText(/13.*20 Oct 2026/)).toHaveLength(2);
-    expect(slot.queryByText("Date range")).toBeNull();
+    expect(slot.getAllByText("Last 7 days")).toHaveLength(1);
+    const trigger = slot.getByRole("combobox", { name: "Repository" });
+    expect(trigger.textContent).toBe("Widgets");
+    fireEvent.keyDown(trigger, { key: "Enter" });
+    expect(within(document.body).getAllByRole("option").map((option) => option.textContent)).toEqual(["Widgets", "Release platform"]);
+    fireEvent.keyDown(document.activeElement ?? trigger, { key: "Escape" });
+    const range = slot.getByRole("combobox", { name: "Date range" }) as HTMLSelectElement;
+    fireEvent.change(range, { target: { value: "30" } });
+    await pickRepository(slot, "Release platform");
+    expect(await slot.findByRole("region", { name: "acme/other" })).toBeTruthy();
+    expect(slot.queryByRole("region", { name: "acme/widgets" })).toBeNull();
+    expect(slot.getByRole("heading", { name: "Release platform" })).toBeTruthy();
+    expect(range.value).toBe("30");
+    expect(localStorage.getItem("ci-dashboard:repository")).toBe("acme/other");
   } finally { slot.lifecycle.unmount(); }
 });
 
+test("keeps the chosen repository across navigation and visits, and falls back to the first", async () => {
+  const isolated = await freshApp();
+  const options = { rpc: { snapshot: () => null, metrics: () => two }, settings: {} };
+  let slot = renderSlot(isolated.navPanels[0], { subPath: "" }, options);
+  try {
+    await slot.findByRole("region", { name: "acme/widgets" });
+    await pickRepository(slot, "Release platform");
+    await slot.findByRole("region", { name: "acme/other" });
+  } finally { slot.lifecycle.unmount(); }
+  // Sidebar navigation remounts the page in the same window.
+  slot = renderSlot(isolated.navPanels[0], { subPath: "" }, options);
+  try { expect(await slot.findByRole("region", { name: "acme/other" })).toBeTruthy(); } finally { slot.lifecycle.unmount(); }
+  // Reopening loads the app afresh; the choice comes from storage.
+  slot = renderSlot((await freshApp()).navPanels[0], { subPath: "" }, options);
+  try { expect(await slot.findByRole("region", { name: "acme/other" })).toBeTruthy(); } finally { slot.lifecycle.unmount(); }
+  localStorage.setItem("ci-dashboard:repository", "acme/removed");
+  slot = renderSlot((await freshApp()).navPanels[0], { subPath: "" }, options);
+  try { expect(await slot.findByRole("region", { name: "acme/widgets" })).toBeTruthy(); } finally { slot.lifecycle.unmount(); }
+});
+
+test("keeps the configured order and default while repositories stream in out of order", async () => {
+  const isolated = await freshApp();
+  const slot = renderSlot(isolated.navPanels[0], { subPath: "" }, { rpc: { snapshot: () => null, metrics: () => new Promise<typeof data>(() => {}) }, settings: {} });
+  try {
+    await act(async () => {});
+    const order = ["acme/widgets", "acme/other"];
+    await slot.behavior.emitRealtime("metrics-progress", { selection: JSON.stringify({ days: 7 }), startedAt: 1, order, metrics: other });
+    expect(slot.queryByRole("region", { name: "acme/other" })).toBeNull();
+    expect(slot.getByRole("status", { name: "Loading GitHub metrics…" })).toBeTruthy();
+    const trigger = slot.getByRole("combobox", { name: "Repository" });
+    expect(trigger.textContent).toBe("Widgets");
+    fireEvent.keyDown(trigger, { key: "Enter" });
+    expect(within(document.body).getAllByRole("option").map((option) => option.textContent)).toEqual(["Widgets", "Release platform"]);
+    fireEvent.keyDown(document.activeElement ?? trigger, { key: "Escape" });
+    await slot.behavior.emitRealtime("metrics-progress", { selection: JSON.stringify({ days: 7 }), startedAt: 2, order, metrics: { ...repo, projectName: null } });
+    expect(slot.getByRole("region", { name: "acme/widgets" })).toBeTruthy();
+    expect(slot.getByRole("combobox", { name: "Repository" }).textContent).toBe("Widgets");
+  } finally { slot.lifecycle.unmount(); }
+});
+
+test("shows no repository selector for a single repository", async () => {
+  const slot = renderSlot((await freshApp()).navPanels[0], { subPath: "" }, { rpc: { snapshot: () => null, metrics: () => data }, settings: {} });
+  try {
+    expect(await slot.findByRole("region", { name: "acme/widgets" })).toBeTruthy();
+    expect(slot.queryByRole("combobox", { name: "Repository" })).toBeNull();
+  } finally { slot.lifecycle.unmount(); }
+});
 
 test("registers only a sidebar page and renders accessible charts from real series", async () => {
   expect(app.homepageSections).toHaveLength(0);

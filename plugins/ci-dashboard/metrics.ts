@@ -64,7 +64,8 @@ export const metricsSchema = z.object({
 });
 export type Metrics = z.infer<typeof metricsSchema>;
 export const metricsProgressSchema = z.object({
-  selection: z.string(), startedAt: z.number(), metrics: metricsSchema.extend({ projectName: z.string().nullable() }),
+  // order: the collection's configured repositories in display order, so streamed results keep their place.
+  selection: z.string(), startedAt: z.number(), order: z.array(z.string()).optional(), metrics: metricsSchema.extend({ projectName: z.string().nullable() }),
 });
 
 const countSchema = z.object({ total_count: z.number().int().nonnegative() });

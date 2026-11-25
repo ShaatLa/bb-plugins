@@ -12,6 +12,7 @@ import { IntervalDialog, type IntervalSelection } from "./interval-dialog";
 import { HistoryCharts, trendKeysBySource } from "./history-chart";
 import { CiTiming } from "./ci-cards";
 import { RepositoryActivity, RepositoryDetails, CiOutcomes } from "./repository-details";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "./components/ui/select";
 import { metricsProgressSchema } from "./metrics";
 import { useSignalsBadge } from "./signals-panel";
 
@@ -32,6 +33,22 @@ function rememberSnapshot(snapshot: DashboardSnapshot) {
   if (snapshots.size > 8) snapshots.delete(snapshots.keys().next().value!);
 }
 let lastSelection: RangeInput = { days: 7 };
+// The configured repositories in the server's order: streamed results arrive in any order, the selector and its default must not.
+let repositoryOrder: string[] = [];
+// The picked repository is a UI choice, not repository data: it persists across visits; memory covers storage that is unavailable.
+const REPOSITORY_KEY = "ci-dashboard:repository";
+let memoryChoice: string | null = null;
+function storedRepository() {
+  try { return localStorage.getItem(REPOSITORY_KEY); } catch { return memoryChoice; }
+}
+function storeRepository(repository: string) {
+  memoryChoice = repository;
+  try { localStorage.setItem(REPOSITORY_KEY, repository); } catch { /* Memory keeps it for this window. */ }
+}
+function repositoryTitle(repository: string, projectName?: string | null) {
+  const name = projectName?.trim() || (repository.split("/")[1] ?? repository).replace(/[-_]+/g, " ");
+  return name.charAt(0).toUpperCase() + name.slice(1);
+}
 
 export function Dashboard() {
   const rpc = useRpc<typeof rpcContract>();
@@ -72,6 +89,7 @@ export function Dashboard() {
     const event = metricsProgressSchema.safeParse(payload);
     if (!event.success || isLoading || event.data.selection !== selection) return;
     const { metrics, startedAt } = event.data;
+    if (event.data.order) repositoryOrder = event.data.order;
     const progressKey = JSON.stringify([selection, metrics.repository]);
     if (startedAt < (progressStarted.current.get(progressKey) ?? 0)) return;
     progressStarted.current.set(progressKey, startedAt);
@@ -105,6 +123,7 @@ export function Dashboard() {
   });
   useRealtime("configuration-changed", () => {
     cacheGeneration++;
+    repositoryOrder = [];
     snapshots.clear();
     progressStarted.current.clear();
     lastSnapshot = null;
@@ -134,6 +153,7 @@ export function Dashboard() {
         if (!cached) {
           const snapshot = await rpc.call("snapshot", range).catch(() => null);
           if (snapshot && generation === cacheGeneration && !snapshots.has(key)) {
+            repositoryOrder = snapshot.repositories.map((repo) => repo.repository);
             const entry = { configuration, selection, result: snapshot };
             rememberSnapshot(entry);
             if (!disposed) {
@@ -155,6 +175,7 @@ export function Dashboard() {
         }
         const result = await rpc.call("metrics", force ? { selection: range, force: true } : range);
         if (generation === cacheGeneration) {
+          repositoryOrder = result.repositories.map((repo) => repo.repository);
           const entry = { configuration, selection, result };
           rememberSnapshot(entry);
           if (!disposed) {
@@ -178,10 +199,21 @@ export function Dashboard() {
 
   // Another range's numbers must not sit under this range's label; show the skeleton until its own data arrives.
   const current = data && (isLoading || (data.configuration === configuration && data.selection === selection)) ? data.result : null;
+  const [chosen, setChosen] = useState(storedRepository);
+  const loaded = current?.repositories ?? [];
+  const order = [...repositoryOrder, ...loaded.map((repo) => repo.repository).filter((name) => !repositoryOrder.includes(name))];
+  const selected = chosen && order.includes(chosen) ? chosen : order[0];
+  const shown = loaded.filter((repo) => repo.repository === selected);
   if (isLoading && !current) return <p role="status" className="text-sm text-muted-foreground">Loading dashboard settings…</p>;
   return (
     <section aria-label="GitHub CI metrics" aria-busy={busy && !current} className="space-y-6">
-      <div className="flex items-center gap-3" aria-label="Date range filters">
+      <div className="flex flex-wrap items-center gap-3" aria-label="Date range filters">
+        {order.length > 1 && selected && <Select value={selected} onValueChange={(repository) => { storeRepository(repository); setChosen(repository); }}>
+          <SelectTrigger aria-label="Repository" className="h-9 w-auto min-w-40 max-w-64 gap-3"><SelectValue /></SelectTrigger>
+          <SelectContent>
+            {order.map((repository) => <SelectItem key={repository} value={repository}>{repositoryTitle(repository, loaded.find((repo) => repo.repository === repository)?.projectName)}</SelectItem>)}
+          </SelectContent>
+        </Select>}
         <span className="relative inline-block">
           <select aria-label="Date range" value={mode} className="h-9 appearance-none rounded-md border border-input bg-background pl-3 pr-9 text-sm text-foreground" onChange={(event) => {
             const value = event.target.value;
@@ -208,14 +240,15 @@ export function Dashboard() {
       {error && <p role="alert" className="text-sm text-destructive-text">{error}</p>}
       {current?.discoveryError && <p role="alert" className="text-sm text-destructive-text">{current.discoveryError}</p>}
       {current?.repositories.length === 0 && <p className="text-sm text-muted-foreground">No GitHub repositories found. Add a BB project with a GitHub remote or list repositories in Settings → Plugins → CI Dashboard.</p>}
-      {current?.repositories.map((repo) => {
+      {/* The selected repository is still loading while others have arrived: wait for it rather than show another. */}
+      {current && loaded.length > 0 && !shown.length && <DashboardSkeleton />}
+      {shown.map((repo) => {
         const cards = [
           { title: "CI pass rate", pending: "ci", metric: repo.ci, format: (n: number) => `${n.toFixed(1)}%` },
           { title: "Deploy frequency", pending: "deployments", metric: repo.deployments, format: (n: number) => `${n.toFixed(1)} / day` },
           { title: "Open pull requests", pending: "pullRequests", metric: repo.pullRequests, format: (n: number) => n.toLocaleString() },
         ];
-        const name = repo.projectName?.trim() || repo.repository.split("/")[1].replace(/[-_]+/g, " ");
-        const projectTitle = name.charAt(0).toUpperCase() + name.slice(1);
+        const projectTitle = repositoryTitle(repo.repository, repo.projectName);
         const rangeTitle = repo.range.label === "today" ? "Today" : repo.range.label.startsWith("last ") ? `L${repo.range.label.slice(1)}` : "Custom range";
         const dates = new Intl.DateTimeFormat("en-GB", { day: "numeric", month: "short", year: "numeric", timeZone: "UTC" })
           .formatRange(new Date(repo.range.since), new Date(repo.range.until));

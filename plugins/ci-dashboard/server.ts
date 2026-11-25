@@ -287,7 +287,7 @@ export default async function plugin(bb: BbPluginApi) {
     }
     return {
       repositories: await Promise.all(names.map(async (repo) => ({
-        ...await collectRepository(repo, input, range, values, token, force, version, projectNames.get(repo.toLowerCase()) ?? null, source, (records) => { histories[repo] = records; }),
+        ...await collectRepository(repo, input, range, values, token, force, version, projectNames.get(repo.toLowerCase()) ?? null, source, (records) => { histories[repo] = records; }, names),
         projectName: projectNames.get(repo.toLowerCase()) ?? null,
       }))),
       authSource: source,
@@ -316,7 +316,7 @@ export default async function plugin(bb: BbPluginApi) {
     if (best && !controller.signal.aborted) database.prepare("INSERT INTO repository_history (repository, configuration, data, last_used_at) VALUES (?, ?, ?, ?) ON CONFLICT(repository, configuration) DO NOTHING").run(repository, config, compress(JSON.stringify(best)), Date.now());
     return best;
   }
-  async function collectRepository(repository: string, input: RangeInput, range: DateRange, values: Awaited<ReturnType<typeof settings.get>>, token: string | undefined, force: boolean, version: number, projectName: string | null, authSource: DashboardData["authSource"], onHistory: (records: HistoricalRecords) => void): Promise<Metrics> {
+  async function collectRepository(repository: string, input: RangeInput, range: DateRange, values: Awaited<ReturnType<typeof settings.get>>, token: string | undefined, force: boolean, version: number, projectName: string | null, authSource: DashboardData["authSource"], onHistory: (records: HistoricalRecords) => void, order: string[]): Promise<Metrics> {
     const config = configuration(values);
     const key = JSON.stringify([version, config, repository]);
     const running = repositoryPending.get(key);
@@ -333,7 +333,7 @@ export default async function plugin(bb: BbPluginApi) {
       if (metrics.loading && pendingKey === lastPending && Date.now() - lastPublished < 2000) return;
       lastPending = pendingKey;
       lastPublished = Date.now();
-      if (canWrite()) bb.realtime.publish("metrics-progress", { selection: JSON.stringify(input ?? { days: 7 }), startedAt, metrics: { ...metrics, projectName } });
+      if (canWrite()) bb.realtime.publish("metrics-progress", { selection: JSON.stringify(input ?? { days: 7 }), startedAt, order, metrics: { ...metrics, projectName } });
     };
     let asOf = range;
     if (source) { try { asOf = resolveRange(input, new Date(source.coverage.until)); } catch { /* A newer calendar selection requires fresh coverage. */ } }
