@@ -12,7 +12,7 @@ import { IntervalDialog, type IntervalSelection } from "./interval-dialog";
 import { HistoryCharts, trendKeysBySource } from "./history-chart";
 import { CiTiming } from "./ci-cards";
 import { RepositoryActivity, RepositoryDetails, CiOutcomes } from "./repository-details";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "./components/ui/select";
+import { Tabs, TabsList, TabsTrigger } from "./components/ui/tabs";
 import { metricsProgressSchema } from "./metrics";
 import { useSignalsBadge } from "./signals-panel";
 
@@ -35,6 +35,8 @@ function rememberSnapshot(snapshot: DashboardSnapshot) {
 let lastSelection: RangeInput = { days: 7 };
 // The configured repositories in the server's order: streamed results arrive in any order, the selector and its default must not.
 let repositoryOrder: string[] = [];
+// Project names seen so far, so segments keep their names while another range loads.
+const projectNames = new Map<string, string | null>();
 // The picked repository is a UI choice, not repository data: it persists across visits; memory covers storage that is unavailable.
 const REPOSITORY_KEY = "ci-dashboard:repository";
 let memoryChoice: string | null = null;
@@ -90,6 +92,7 @@ export function Dashboard() {
     if (!event.success || isLoading || event.data.selection !== selection) return;
     const { metrics, startedAt } = event.data;
     if (event.data.order) repositoryOrder = event.data.order;
+    projectNames.set(metrics.repository, metrics.projectName);
     const progressKey = JSON.stringify([selection, metrics.repository]);
     if (startedAt < (progressStarted.current.get(progressKey) ?? 0)) return;
     progressStarted.current.set(progressKey, startedAt);
@@ -124,6 +127,7 @@ export function Dashboard() {
   useRealtime("configuration-changed", () => {
     cacheGeneration++;
     repositoryOrder = [];
+    projectNames.clear();
     snapshots.clear();
     progressStarted.current.clear();
     lastSnapshot = null;
@@ -154,6 +158,7 @@ export function Dashboard() {
           const snapshot = await rpc.call("snapshot", range).catch(() => null);
           if (snapshot && generation === cacheGeneration && !snapshots.has(key)) {
             repositoryOrder = snapshot.repositories.map((repo) => repo.repository);
+            for (const repo of snapshot.repositories) projectNames.set(repo.repository, repo.projectName ?? null);
             const entry = { configuration, selection, result: snapshot };
             rememberSnapshot(entry);
             if (!disposed) {
@@ -176,6 +181,7 @@ export function Dashboard() {
         const result = await rpc.call("metrics", force ? { selection: range, force: true } : range);
         if (generation === cacheGeneration) {
           repositoryOrder = result.repositories.map((repo) => repo.repository);
+          for (const repo of result.repositories) projectNames.set(repo.repository, repo.projectName ?? null);
           const entry = { configuration, selection, result };
           rememberSnapshot(entry);
           if (!disposed) {
@@ -208,12 +214,11 @@ export function Dashboard() {
   return (
     <section aria-label="GitHub CI metrics" aria-busy={busy && !current} className="space-y-6">
       <div className="flex flex-wrap items-center gap-3" aria-label="Date range filters">
-        {order.length > 1 && selected && <Select value={selected} onValueChange={(repository) => { storeRepository(repository); setChosen(repository); }}>
-          <SelectTrigger aria-label="Repository" className="h-9 w-auto min-w-40 max-w-64 gap-3"><SelectValue /></SelectTrigger>
-          <SelectContent>
-            {order.map((repository) => <SelectItem key={repository} value={repository}>{repositoryTitle(repository, loaded.find((repo) => repo.repository === repository)?.projectName)}</SelectItem>)}
-          </SelectContent>
-        </Select>}
+        {order.length > 1 && selected && <Tabs value={selected} onValueChange={(repository) => { storeRepository(repository); setChosen(repository); }}>
+          <TabsList aria-label="Repository" className="h-auto flex-wrap">
+            {order.map((repository) => <TabsTrigger key={repository} value={repository}>{repositoryTitle(repository, projectNames.get(repository))}</TabsTrigger>)}
+          </TabsList>
+        </Tabs>}
         <span className="relative inline-block">
           <select aria-label="Date range" value={mode} className="h-9 appearance-none rounded-md border border-input bg-background pl-3 pr-9 text-sm text-foreground" onChange={(event) => {
             const value = event.target.value;

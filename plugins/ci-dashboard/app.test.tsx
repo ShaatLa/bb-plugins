@@ -26,8 +26,6 @@ const repo = { projectName: null, range: resolveRange(null, new Date("2026-10-20
 };
 const data = { repositories: [repo], authSource: "gh", discoveryError: null };
 afterEach(() => { vi.useRealTimers(); localStorage.clear(); });
-// jsdom has no scrollIntoView; the Radix select calls it on its highlighted option.
-Element.prototype.scrollIntoView ??= () => {};
 
 test("CI cards show actionable failures, workflow breakdown and overall and individual timing", async () => {
   vi.resetModules();
@@ -350,10 +348,10 @@ const other = { ...repo, repository: "acme/other", projectName: "release platfor
 const two = { ...data, repositories: [repo, other] };
 // Each selector test gets fresh module state: the known repository order lives at module level.
 const freshApp = async () => { vi.resetModules(); return loadPluginApp(() => import("./app")); };
-const pickRepository = async (slot: ReturnType<typeof renderSlot>, name: string) => {
-  fireEvent.keyDown(slot.getByRole("combobox", { name: "Repository" }), { key: "Enter" });
-  fireEvent.keyDown(await within(document.body).findByRole("option", { name }), { key: "Enter" });
-};
+// Radix tabs activate on a primary-button mouse down.
+const pickRepository = async (slot: ReturnType<typeof renderSlot>, name: string) => { fireEvent.mouseDown(slot.getByRole("tab", { name }), { button: 0 }); };
+const repositoryTabs = (slot: ReturnType<typeof renderSlot>) => within(slot.getByRole("tablist", { name: "Repository" })).getAllByRole("tab");
+const selectedTab = (slot: ReturnType<typeof renderSlot>) => repositoryTabs(slot).find((tab) => tab.getAttribute("aria-selected") === "true")?.textContent;
 
 test("shows one repository at a time and switches with the repository selector", async () => {
   const isolated = await freshApp();
@@ -369,11 +367,8 @@ test("shows one repository at a time and switches with the repository selector",
     fireEvent.click(repositoryLink);
     expect(openUrl).toHaveBeenLastCalledWith("https://github.com/acme/widgets");
     expect(slot.getAllByText("Last 7 days")).toHaveLength(1);
-    const trigger = slot.getByRole("combobox", { name: "Repository" });
-    expect(trigger.textContent).toBe("Widgets");
-    fireEvent.keyDown(trigger, { key: "Enter" });
-    expect(within(document.body).getAllByRole("option").map((option) => option.textContent)).toEqual(["Widgets", "Release platform"]);
-    fireEvent.keyDown(document.activeElement ?? trigger, { key: "Escape" });
+    expect(selectedTab(slot)).toBe("Widgets");
+    expect(repositoryTabs(slot).map((tab) => tab.textContent)).toEqual(["Widgets", "Release platform"]);
     const range = slot.getByRole("combobox", { name: "Date range" }) as HTMLSelectElement;
     fireEvent.change(range, { target: { value: "30" } });
     await pickRepository(slot, "Release platform");
@@ -414,14 +409,11 @@ test("keeps the configured order and default while repositories stream in out of
     await slot.behavior.emitRealtime("metrics-progress", { selection: JSON.stringify({ days: 7 }), startedAt: 1, order, metrics: other });
     expect(slot.queryByRole("region", { name: "acme/other" })).toBeNull();
     expect(slot.getByRole("status", { name: "Loading GitHub metrics…" })).toBeTruthy();
-    const trigger = slot.getByRole("combobox", { name: "Repository" });
-    expect(trigger.textContent).toBe("Widgets");
-    fireEvent.keyDown(trigger, { key: "Enter" });
-    expect(within(document.body).getAllByRole("option").map((option) => option.textContent)).toEqual(["Widgets", "Release platform"]);
-    fireEvent.keyDown(document.activeElement ?? trigger, { key: "Escape" });
+    expect(selectedTab(slot)).toBe("Widgets");
+    expect(repositoryTabs(slot).map((tab) => tab.textContent)).toEqual(["Widgets", "Release platform"]);
     await slot.behavior.emitRealtime("metrics-progress", { selection: JSON.stringify({ days: 7 }), startedAt: 2, order, metrics: { ...repo, projectName: null } });
     expect(slot.getByRole("region", { name: "acme/widgets" })).toBeTruthy();
-    expect(slot.getByRole("combobox", { name: "Repository" }).textContent).toBe("Widgets");
+    expect(selectedTab(slot)).toBe("Widgets");
   } finally { slot.lifecycle.unmount(); }
 });
 
@@ -429,7 +421,7 @@ test("shows no repository selector for a single repository", async () => {
   const slot = renderSlot((await freshApp()).navPanels[0], { subPath: "" }, { rpc: { snapshot: () => null, metrics: () => data }, settings: {} });
   try {
     expect(await slot.findByRole("region", { name: "acme/widgets" })).toBeTruthy();
-    expect(slot.queryByRole("combobox", { name: "Repository" })).toBeNull();
+    expect(slot.queryByRole("tablist", { name: "Repository" })).toBeNull();
   } finally { slot.lifecycle.unmount(); }
 });
 

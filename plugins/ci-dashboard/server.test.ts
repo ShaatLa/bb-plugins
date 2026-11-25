@@ -236,7 +236,7 @@ test("real SDK validates settings and RPC, re-reads settings, and aborts on disp
 });
 
 test("plugin only imports public SDK surfaces", async () => {
-  const result = await experimental_scanPublicSdkOnly(process.cwd(), { allow: [/^(react|react-dom|@radix-ui\/react-slot|@radix-ui\/react-select|class-variance-authority|clsx|tailwind-merge|vitest|@testing-library\/react)$/] });
+  const result = await experimental_scanPublicSdkOnly(process.cwd(), { allow: [/^(react|@radix-ui\/react-slot|@radix-ui\/react-tabs|class-variance-authority|clsx|tailwind-merge|vitest|@testing-library\/react)$/] });
   expect(result.violations).toEqual([]);
   expect(result.privateDependencies).toEqual([]);
 });
