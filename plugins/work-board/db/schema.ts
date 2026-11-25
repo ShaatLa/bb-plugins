@@ -918,6 +918,7 @@ const MIGRATIONS = [
    ALTER TABLE pr_event_deliveries ADD COLUMN woken_at TEXT;`,
   // The known queue entry's enqueue time pairs its departure with its own add and removal on the timeline.
   `ALTER TABLE pr_event_state ADD COLUMN queue_enqueued_at TEXT;`,
+  `ALTER TABLE projects ADD COLUMN check_readiness TEXT NOT NULL DEFAULT 'off' CHECK (check_readiness IN ('off', 'on'));`,
 ] as const;
 
 export function initializeTasksSchema(db: PluginDatabase, log: Log = () => {}): void {

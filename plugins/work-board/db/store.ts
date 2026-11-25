@@ -91,6 +91,7 @@ interface ProjectRow {
   stale_idle_minutes: string | null;
   status_notifications: string | null;
   archive_threads_on_close: string;
+  check_readiness: string;
   archive_reviewer_on_approval: string;
   planning: string | null;
   plan_flags_initialized: number;
@@ -407,6 +408,7 @@ function projectFromRow(row: ProjectRow): Project {
     staleIdleMinutes: staleIdleThresholdSchema.parse(row.stale_idle_minutes ?? "45"),
     statusNotifications: statusNotificationsSchema.parse(row.status_notifications ?? "off"),
     archiveThreadsOnClose: archiveSettingSchema.parse(row.archive_threads_on_close),
+    checkReadiness: archiveSettingSchema.parse(row.check_readiness),
     archiveReviewerOnApproval: archiveSettingSchema.parse(row.archive_reviewer_on_approval),
     planning: planningSchema.parse(row.planning ?? "off"),
     planFlagsInitialized: row.plan_flags_initialized === 1,
@@ -853,12 +855,12 @@ export function createTasksStore(db: PluginDatabase, log: (message: string) => v
       // A tracker bound to manager attention keeps its BB project link; a bound BB project takes no second tracker.
       if (input.linkedBbProjectId !== undefined) assertLinkChangeAllowed(db, id, current.linkedBbProjectId ?? null, validateLinkedBbProjectId(input.linkedBbProjectId));
       db.prepare<
-        [string, string, string, string | null, string | null, string, string | null, string, string, string, string, string, string, number, string | null, string | null, string]
+        [string, string, string, string | null, string | null, string, string | null, string, string, string, string, string, string, string, number, string | null, string | null, string]
       >(
         `
       UPDATE projects
       SET name = ?, prefix = ?, color = ?, folder_id = ?, linked_bb_project_id = ?, statuses = ?, workflow_policy = ?,
-          auto_archive_after_days = ?, stale_idle_minutes = ?, status_notifications = ?, archive_threads_on_close = ?, archive_reviewer_on_approval = ?, planning = ?, plan_flags_initialized = ?, planning_changed_at = ?, planning_previous = ?
+          auto_archive_after_days = ?, stale_idle_minutes = ?, status_notifications = ?, archive_threads_on_close = ?, archive_reviewer_on_approval = ?, check_readiness = ?, planning = ?, plan_flags_initialized = ?, planning_changed_at = ?, planning_previous = ?
       WHERE id = ?
     `,
       ).run(
@@ -882,6 +884,7 @@ export function createTasksStore(db: PluginDatabase, log: (message: string) => v
         statusNotificationsSchema.parse(input.statusNotifications ?? current.statusNotifications ?? "off"),
         archiveSettingSchema.parse(input.archiveThreadsOnClose ?? current.archiveThreadsOnClose ?? "on"),
         archiveSettingSchema.parse(input.archiveReviewerOnApproval ?? current.archiveReviewerOnApproval ?? "on"),
+        archiveSettingSchema.parse(input.checkReadiness ?? current.checkReadiness ?? "off"),
         nextPlanning,
         settled.initialized ? 1 : 0,
         planningChanged ? nowIso() : (current.planningChangedAt ?? null),

@@ -51,6 +51,7 @@ export const archiveProjectSchema = z
       z.literal(21),
       z.literal(22),
       z.literal(23),
+      z.literal(24),
     ]),
     project: projectSchema,
     gitSync: gitSyncConfigSchema.optional(),
@@ -209,7 +210,11 @@ export function validateArchive(archive: ProjectArchive): void {
   const taskIds = new Set(manifest.taskIds);
   const incoming = new Map(manifest.taskIds.map(id => [id, 0]));
   const successors = new Map<string, string[]>();
+  if (manifest.version < 24 && manifest.project.checkReadiness !== undefined)
+    throw new Error("Check readiness requires archive v24");
   for (const record of records) {
+    if (manifest.version < 24 && record.questions.some(q => q.beyondDesign !== undefined || q.history.some(h => h.beyondDesign !== undefined)))
+      throw new Error("Beyond the design requires archive v24");
     if (manifest.version >= 12 && !record.dependencies) throw new Error("Archive v12 requires dependencies");
     if (manifest.version < 12 && record.dependencies !== undefined) throw new Error("Task dependencies require archive v12");
     unique(record.dependencies ?? [], "task dependency");

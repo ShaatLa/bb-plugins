@@ -4,7 +4,7 @@ import type { BbPluginApi, PluginRpcHandlers } from "@get-bb/plugin-sdk";
 import type { TasksApiStore } from "../api";
 import { createUlid } from "../db/store";
 import { getWorkflowPolicy } from "../shared/workflow-policy";
-import { planningOn } from "../shared/project-settings";
+import { planningOn, READINESS_HINT } from "../shared/project-settings";
 import { defaultTaskThreadId, deliverCommentToLatestAgent, notifyThread } from "../steer";
 import { errorMessage } from "../shared/errors";
 import { planReviewThread, wakeReviewer } from "../plans/delivery";
@@ -16,6 +16,7 @@ import { createPlanStore } from "../plans/store";
 import { buildOwnerReviewSettledMessage, buildResultCopyMessage, buildReviewPausedMessage, buildReviewResumedMessage } from "../shared/plan-notes";
 import {
   questionSchema,
+  smokeSchema,
   templateSchema,
   type TaskQuestion,
   type PlanWake,
@@ -35,6 +36,40 @@ export function createStructuredStore(bb: BbPluginApi, store: TasksApiStore) {
   };
   const requireTask = (id: string) => {
     if (!store.tasks.getTask(id)) throw new Error(`Task not found: ${id}`);
+  };
+  type ReadinessWrite = {
+    smoke?: string;
+    beyondDesign?: string;
+    askedByThread?: string | null;
+    authorName?: string;
+    supersedes?: { questionId: string; revision: number };
+    reopen?: boolean;
+  };
+  const recordReadiness = (question: TaskQuestion, input: ReadinessWrite, previous?: TaskQuestion) => {
+    if (question.kind !== "check") return;
+    const asking = !previous || input.reopen || previous.prompt !== question.prompt ||
+      JSON.stringify(previous.steps) !== JSON.stringify(question.steps);
+    if (asking && (!input.smoke || !input.beyondDesign)) {
+      const task = store.tasks.getTask(question.taskId)!;
+      if (store.tasks.getProject(task.projectId)?.checkReadiness === "on") {
+        const command = previous
+          ? `update ${task.key} --question ${question.id} --revision ${previous.revision}${input.reopen ? " --reopen" : ""}`
+          : `add ${task.key} --kind check${input.supersedes ? ` --supersedes ${input.supersedes.questionId} --supersedes-revision ${input.supersedes.revision}` : ""}`;
+        const prompt = !previous || previous.prompt !== question.prompt ? ' --prompt "<prompt>"' : "";
+        const steps = question.steps.length && (!previous || JSON.stringify(previous.steps) !== JSON.stringify(question.steps)) ? ' --step "<step>"' : "";
+        throw new Error(`${READINESS_HINT}. Use \`bb work-board question ${command}${prompt}${steps} --smoke "<what you ran and saw>" --beyond-design "<extras or none>"\`.`);
+      }
+    }
+    if (input.smoke !== undefined) {
+      const smoke = smokeSchema.parse(input.smoke);
+      assertNoSecrets(smoke, "smoke test");
+      store.tasks.createComment({
+        taskId: question.taskId,
+        kind: "system",
+        authorName: input.askedByThread ? `agent (${input.askedByThread})` : input.authorName ?? "You",
+        body: `Smoke test for check ${question.id} rev ${question.revision} (${question.prompt.slice(0, 100)}): ${smoke}`,
+      });
+    }
   };
   const assertNotPlanQuestion = (taskId: string, prompt: string, steps: readonly string[]) => {
     const task = store.tasks.getTask(taskId)!;
@@ -281,6 +316,7 @@ export function createStructuredStore(bb: BbPluginApi, store: TasksApiStore) {
         taskId: input.taskId,
         kind: input.kind ?? "decision",
         askedByThread: input.askedByThread ?? null,
+        ...(input.kind === "check" && input.beyondDesign ? { beyondDesign: input.beyondDesign } : {}),
         prompt: input.prompt,
         steps: input.steps ?? [],
         mode: input.mode,
@@ -328,9 +364,11 @@ export function createStructuredStore(bb: BbPluginApi, store: TasksApiStore) {
         db.prepare<[string, string, string]>(
           "INSERT INTO task_questions (id, task_id, payload) VALUES (?, ?, ?)",
         ).run(question.id, question.taskId, JSON.stringify(question));
+        recordReadiness(question, input);
         syncDecisionLabel(question.taskId);
         return decisionTransition(question.taskId, before);
       });
+      if (input.smoke && question.kind === "check") bb.realtime.publish("comments:changed", { taskId: question.taskId });
       changed(question.taskId);
       const planWake = await announce(wake);
       return { question, ...(planWake ? { planWake } : {}), ...(warnings.length ? { warnings } : {}) };
@@ -356,6 +394,13 @@ export function createStructuredStore(bb: BbPluginApi, store: TasksApiStore) {
           throw new Error("Attachments require an answer");
         if (input.revision !== current.revision)
           throw new Error("Question changed; reload it before answering");
+        const clearing = !input.selectedOptionIds.length && !input.answerText?.trim();
+        if (input.refuseReadinessClear && clearing && current.kind === "check") {
+          const task = store.tasks.getTask(current.taskId)!;
+          // The card's project as it is now, inside this write, so a concurrent move cannot slip a clear through.
+          if (store.tasks.getProject(task.projectId)?.checkReadiness === "on")
+            throw new Error(`${READINESS_HINT}. Use \`bb work-board question update ${task.key} --question ${current.id} --revision ${current.revision} --reopen --smoke "<what you ran and saw>" --beyond-design "<extras or none>"\`.`);
+        }
         const next = questionSchema.parse({
           ...current,
           // Free text is always allowed now; stamping it keeps answered records valid under the pre-0.33 rule.
@@ -394,6 +439,11 @@ export function createStructuredStore(bb: BbPluginApi, store: TasksApiStore) {
           `**Question:** ${next.prompt}`,
           answer ? `**Answer:** ${answer}` : withdrawn ? `**Answer withdrawn** (was: ${previous})` : "**Answer:** (cleared)",
           `Question ID: ${next.id}; revision: ${next.revision}`,
+          ...(next.kind === "check" && next.beyondDesign && isQuestionOpen(current) &&
+            // Confirmed alone: a multiple-choice answer that also reports a problem is not a confirmation.
+            next.selectedOptionIds.length === 1 && next.options.find(option => option.id === next.selectedOptionIds[0])?.label === "Confirmed" &&
+            !listQuestions(next.taskId).some(q => q.kind === "check" && isQuestionOpen(q))
+            ? ["The owner confirmed the last open check. If this card's work goes to a PR, run the full review and the tests once now, then open it."] : []),
         ].join("\n\n");
         for (const id of attachmentIds) db.prepare<[string, string]>(
           "UPDATE attachments SET task_id = NULL, comment_id = ? WHERE id = ?",
@@ -467,6 +517,7 @@ export function createStructuredStore(bb: BbPluginApi, store: TasksApiStore) {
         const content = {
           prompt: input.prompt.trim(),
           steps: input.steps?.map((step) => step.trim()) ?? current.steps,
+          ...(current.kind === "check" && input.beyondDesign ? { beyondDesign: input.beyondDesign } : {}),
           mode: input.mode,
           options,
           allowOther: true,
@@ -501,6 +552,7 @@ export function createStructuredStore(bb: BbPluginApi, store: TasksApiStore) {
           history: [...current.history, snapshotOf(current)],
         });
         assertNoSecretsInValue(next, "question");
+        recordReadiness(next, input, current);
         db.prepare<[string, string]>(
           "UPDATE task_questions SET payload = ? WHERE id = ?",
         ).run(JSON.stringify(next), next.id);

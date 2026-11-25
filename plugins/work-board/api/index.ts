@@ -1145,14 +1145,15 @@ export function registerHandlers(
     },
     updateProject(input) {
       const { projectId, baseStatuses, ...changes } = input;
-      const before = store.tasks.getProject(projectId)?.planning ?? "off";
+      const before = store.tasks.getProject(projectId);
       const canonical = (statuses: unknown) => JSON.stringify(taskStatusesSchema.parse(statuses));
       const project = store.transaction(() => {
         if (baseStatuses && canonical(store.tasks.getProject(projectId)?.statuses ?? DEFAULT_TASK_STATUSES) !== canonical(baseStatuses)) throw new Error(STALE_STATUSES);
         return store.tasks.updateProject(projectId, changes);
       });
-      // The platform cannot tell the app from another caller, so a change is only made visible: a log entry.
-      if ((project.planning ?? "off") !== before) bb.log.info(`planning for ${project.prefix}: ${before} → ${project.planning}`);
+      // shortcut: raw RPC can change readiness or withdraw an answer, enforce owner identity when the platform authenticates app calls.
+      if (project.checkReadiness !== before?.checkReadiness) bb.log.info(`check readiness for ${project.prefix}: ${before?.checkReadiness} → ${project.checkReadiness}`);
+      if ((project.planning ?? "off") !== (before?.planning ?? "off")) bb.log.info(`planning for ${project.prefix}: ${before?.planning ?? "off"} → ${project.planning}`);
       publishProjectsChanged(bb, project.id);
       return { project };
     },

@@ -154,7 +154,7 @@ it("exports both scopes in v7 and restores archive timestamps while importing ol
   f.store.tasks.setTaskArchived(f.done.id, true);
   const capture = captureProject(f.bb, f.store, f.project.id);
   const records = await archiveRecords(f.store, capture, async () => {});
-  expect(capture.manifest.version).toBe(23);
+  expect(capture.manifest.version).toBe(24);
   expect(records).toHaveLength(2);
   const dest = createFakePluginHost({ pluginId: "work-board" });
   hosts.push(dest);
@@ -169,7 +169,8 @@ it("exports both scopes in v7 and restores archive timestamps while importing ol
   expect(restored.tasks.getTask(f.done.id)?.archivedAt).toBe(
     f.store.tasks.getTask(f.done.id)?.archivedAt,
   );
-  const { gitSync, ...legacyManifest } = capture.manifest;
+  const { gitSync, ...legacyManifest } = structuredClone(capture.manifest);
+  delete legacyManifest.project.checkReadiness;
   const legacyRecords = records.map(({ pullRequests, dependencies, ...record }) => record);
   expect(() =>
     validateArchive({ manifest: { ...legacyManifest, version: 6 }, records: legacyRecords }),

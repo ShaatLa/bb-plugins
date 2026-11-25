@@ -1498,3 +1498,89 @@ describe("superseding an owner check", () => {
     expect(sent).not.toMatch(/open again/);
   });
 });
+
+describe("owner check readiness", () => {
+  const evidence = { smoke: "Opened the form and saved a draft.", beyondDesign: "none" };
+  it("gates additions, replacements and revisions atomically across moves", async () => {
+    const { structured, task, harness, store } = setup();
+    const { createQuestion, updateQuestion } = structured.handlers;
+    const add = { taskId: task.id, kind: "check", prompt: "Does Save work?", askedByThread: "thr_example", mode: "single", options: [] } as const;
+    const ask = (extra = {}) => createQuestion({ ...add, options: [], ...extra });
+    const previous = (await ask()).question;
+    const project = store.tasks.createProject({ name: "Example", prefix: "EXA", color: "blue" });
+    store.tasks.updateProject(project.id, { checkReadiness: "on" });
+    store.tasks.moveTaskToProject(task.id, project.id);
+    expect(structured.listQuestions(task.id)).toEqual([previous]);
+    const hint = /smoke-test.*--smoke.*--beyond-design/;
+    await expect(harness.callRpc("createQuestion", add)).rejects.toThrow(hint);
+    const supersedes = { questionId: previous.id, revision: 1 };
+    await expect(ask({ supersedes, smoke: evidence.smoke })).rejects.toThrow(hint);
+    await expect(ask({ beyondDesign: "none" })).rejects.toThrow(hint);
+    await ask({ kind: "decision", options: ["Yes"] });
+    const q = (await ask({ supersedes, ...evidence })).question;
+    const smokeComments = () => store.tasks.listComments(task.id).filter(c => c.body.startsWith("Smoke test for check"));
+    expect(smokeComments()).toMatchObject([{ body: `Smoke test for check ${q.id} rev 1 (${q.prompt}): ${evidence.smoke}`, authorName: "agent (thr_example)" }]);
+    const edit = (extra = {}) => updateQuestion({ questionId: q.id, revision: 1, prompt: q.prompt, mode: q.mode, options: q.options, authorName: "You", ...extra });
+    for (const changes of [{ steps: ["Press Save"] }, { prompt: "Does Reload work?" }, { reopen: true }])
+      await expect(edit(changes)).rejects.toThrow(hint);
+    expect((await edit(evidence)).question.revision).toBe(1);
+    await expect(edit({ ...evidence, reopen: true, revision: 2 })).rejects.toThrow(/reload/);
+    expect(smokeComments()).toHaveLength(1);
+    const updated = (await edit({ steps: ["Press Save"], ...evidence, beyondDesign: "Extra label" })).question;
+    expect(updated).toMatchObject({ beyondDesign: "Extra label", history: [{ beyondDesign: "none" }] });
+    expect(smokeComments()).toHaveLength(2);
+    expect((await edit({ revision: 2, options: [{ label: "Works" }] })).question.beyondDesign).toBe("Extra label");
+    for (const extra of [{ smoke: "short" }, { smoke: "x".repeat(2001) }, { beyondDesign: " " }, { beyondDesign: "x".repeat(501) },
+      { smoke: "Found -----BEGIN PRIVATE KEY-----" }, { beyondDesign: "-----BEGIN PRIVATE KEY-----" }])
+      await expect(harness.callRpc("createQuestion", { ...add, ...evidence, ...extra })).rejects.toThrow();
+    expect(smokeComments()).toHaveLength(2);
+  });
+
+  it("reserves the setting and answer withdrawal for the panel even without a calling thread", async () => {
+    const { harness, store, project, task, structured } = setup();
+    const prior = process.env.BB_THREAD_ID;
+    delete process.env.BB_THREAD_ID;
+    try {
+      for (const args of [["config", "set", "checkReadiness", "on", "--project", project.prefix], ["project", "update", project.prefix, "--check-readiness", "on"]]) {
+        const refused = await harness.runCli(args);
+        expect(refused.stderr).toContain("check readiness is changed by the owner");
+      }
+      await harness.callRpc("updateProject", { projectId: project.id, checkReadiness: "on" });
+      expect(harness.logEntries).toContainEqual({ level: "info", message: `check readiness for ${project.prefix}: off → on` });
+      expect((await harness.runCli(["config", "get", "checkReadiness", "--project", project.prefix])).stdout).toContain("checkReadiness=on");
+      const result = await harness.runCli(["question", "add", task.key, "--kind", "check", "--prompt", "Can you save?", "--smoke", evidence.smoke, "--beyond-design", " NONE "]);
+      expect(result.exitCode, result.stderr).toBe(0);
+      const q = structured.listQuestions(task.id)[0]!;
+      await structured.handlers.answerQuestion({ questionId: q.id, revision: 1, selectedOptionIds: [q.options[0]!.id], authorName: "You" });
+      expect((await harness.runCli(["question", "answer", task.key, "--question", q.id, "--revision", "2", "--clear"])).stderr).toMatch(/--reopen.*--smoke.*--beyond-design/);
+      expect(structured.listQuestions(task.id)[0]).toMatchObject({ revision: 2, answeredBy: "You", beyondDesign: "NONE" });
+      for (const flags of [[], ["--json"]])
+        expect((await harness.runCli(["show", task.key, "--brief", ...flags])).stdout).toContain("NONE");
+      expect(store.tasks.listTasks({ waitingOnOwner: true })).toHaveLength(0);
+    } finally {
+      if (prior !== undefined) process.env.BB_THREAD_ID = prior;
+    }
+  });
+
+  it("reminds the asker only on confirming the last open check carrying a design line", async () => {
+    const { harness, task, structured } = setup();
+    harness.sdk.stub("threads.get", async ({ threadId }) => makeThreadResponse({ id: threadId, status: "idle" }));
+    harness.sdk.stub("threads.send", async () => {});
+    const ask = async (prompt: string, extras = {}) => (await structured.handlers.createQuestion({ taskId: task.id, kind: "check", askedByThread: "thr_example", prompt, mode: "single", options: [], ...extras })).question;
+    const first = await ask("Does reload work?", evidence);
+    const second = await ask("Does save work?", evidence);
+    const answer = async (check: typeof first, option: number) => {
+      await structured.handlers.answerQuestion({ questionId: check.id, revision: 1, selectedOptionIds: [check.options[option]!.id], authorName: "You" });
+      return JSON.stringify(harness.sdk.callsTo("threads.send").at(-1));
+    };
+    const reminder = "confirmed the last open check";
+    expect(await answer(first, 0)).not.toContain(reminder);
+    expect(await answer(second, 1)).not.toContain(reminder);
+    expect(await answer(await ask("Does cancel work?"), 0)).not.toContain(reminder);
+    expect(await answer(await ask("Does retry work?", evidence), 0)).toContain(reminder);
+    // A multiple-choice answer that also reports a problem is not a confirmation.
+    const mixed = await ask("Does export work?", { ...evidence, mode: "multiple" });
+    await structured.handlers.answerQuestion({ questionId: mixed.id, revision: 1, selectedOptionIds: mixed.options.map(option => option.id), authorName: "You" });
+    expect(JSON.stringify(harness.sdk.callsTo("threads.send").at(-1))).not.toContain(reminder);
+  });
+});

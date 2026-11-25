@@ -362,6 +362,8 @@ Rules for owner questions (long questions are hard to answer):
 4. Acceptance material is links only (a local design/canvas server or the product), never screenshots or image pairs.
 5. Never ask the owner to accept or approve a plan. Put the plan in `plan`, run `plan submit KEY --reviewer <thread, or owner only when the user asked to approve the plan>` and wait for the approval or the notes (see Task plan → Review loop). `question add` refuses a question that links a task plan, and, on a task that has a plan, one that asks to accept or approve a plan.
 
+For a readiness-gated check, pass both `--smoke "what you ran and saw"` and `--beyond-design "extras or none"` on add, supersede, reopen and prompt/steps edits. Use update --reopen with both flags to ask again.
+
 `question add` warns (stderr; `warnings` in JSON) when a prompt is longer than 300 characters; it still saves the question.
 
 `question update --reopen` asks the same check again and makes your thread the asker, so the new answer comes to you. For an answered check the ordered steps and the prompt's links must stay exactly the same; any change is refused with the `--supersedes` command. An answered decision refuses new steps or links; ask the changed decision as a fresh decision question.

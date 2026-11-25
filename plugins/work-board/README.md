@@ -851,3 +851,13 @@ A session that took its card by message is not attached by the title scan. Its f
 ### Held cards are not stale (0.41.2)
 
 An in-progress card that has an unfinished blocked-by predecessor (one in any status except Done, including Canceled) is held by rule. It no longer gets the `no_active_thread` stale flag or the `no-live-session` advisory. An in-progress card with no live thread and no unfinished predecessor is still flagged.
+
+## Check readiness
+
+In project settings, turn on **Check readiness** to require a smoke note and a beyond-the-design line when someone adds, replaces, reopens or changes the prompt or steps of an owner check. Record what you ran on the linked feature (or the command for a card without UI) and what you saw. List additions beyond the approved plan and design, or write `none`.
+
+```sh
+bb work-board question add EXA-1 --kind check --prompt "Does Save work?" --smoke "Saved a draft and reopened it successfully." --beyond-design none
+```
+
+The smoke note is a card comment. Each question revision keeps its beyond-the-design line. The switch defaults to off. The CLI can read it with `config get checkReadiness`. Direct RPC callers can change it or clear an answer because the platform cannot distinguish them from the owner panel.

@@ -82,7 +82,7 @@ import { LITERAL_TEXT_FIELDS } from "../checks/config";
 import { planCommands } from "./plan";
 import { planAdvisory } from "../shared/plan";
 import { startHint } from "../shared/start-hint";
-import { planningOn, planningRequired, PLANNING_OWNER_ONLY } from "../shared/project-settings";
+import { planningOn, planningRequired, READINESS_HINT, READINESS_OWNER_ONLY, PLANNING_OWNER_ONLY } from "../shared/project-settings";
 import { planGatedStatuses } from "../shared/workflow-policy";
 import { createPlanStore } from "../plans/store";
 
@@ -657,6 +657,11 @@ function projectTable(
 function withdrawalLine(q: { id: string; withdrawnBy?: string; withdrawReason?: string }): string {
   return `Question ${q.id} withdrawn by ${q.withdrawnBy}: ${q.withdrawReason}`;
 }
+
+const READINESS_OPTIONS = {
+  smoke: { type: "string", description: `${READINESS_HINT}. Use --smoke for what you ran and saw (20–2000 characters) and --beyond-design for extras or none.` },
+  "beyond-design": { type: "string", description: `${READINESS_HINT}. Use --beyond-design for extras or none (1–500 characters) and --smoke for the test.` },
+} as const;
 
 function taskAuthor(ctx: PluginCliContext): string {
   return ctx.threadId ? `agent (${ctx.threadId})` : "cli";
@@ -1284,6 +1289,7 @@ export function registerTasksCli(
           summary: "Ask the owner one decision or one check (short, one link; check steps in --step, evidence in a comment)",
           positionals: [KEY_POSITIONAL],
           options: {
+            ...READINESS_OPTIONS,
             kind: { type: "enum", values: ["decision", "check"] as const, description: "Question type (default decision); a check is refused while the card has plan debt. When an existing check's state changed, do not add a parallel check: edit it while it is open, --reopen it when its prompt and steps are unchanged, or replace it with --supersedes" },
             supersedes: {
               type: "string",
@@ -1359,6 +1365,9 @@ export function registerTasksCli(
                   kind: input.options.kind ?? "decision",
                   askedByThread: ctx.threadId ?? process.env.BB_THREAD_ID ?? null,
                   prompt: input.options.prompt,
+                  authorName: taskAuthor(ctx),
+                  smoke: input.options.smoke,
+                  beyondDesign: input.options["beyond-design"],
                   steps: input.options.step,
                   options: optionLabels.map((label, index) =>
                     recommended.includes(index + 1)
@@ -1421,7 +1430,7 @@ export function registerTasksCli(
               repeatable: true,
               description: "Selected option ID; repeat for multiple choice",
             },
-            clear: { type: "boolean", description: "Clear the answer" },
+            clear: { type: "boolean", description: "Clear the answer. For a readiness-gated check use question update --reopen with --smoke and --beyond-design." },
             text: {
               type: "string",
               description: "Free-text answer",
@@ -1443,14 +1452,8 @@ export function registerTasksCli(
                 domain,
                 input.positionals["key-or-id"],
               );
-              if (
-                !(
-                  await domain.listQuestions({ taskId: task.id })
-                ).questions.some(
-                  (question) => question.id === input.options.question,
-                )
-              )
-                throw new CliError("Question does not belong to this task");
+              const question = (await domain.listQuestions({ taskId: task.id })).questions.find(q => q.id === input.options.question);
+              if (!question) throw new CliError("Question does not belong to this task");
               if (
                 Boolean(input.options.clear) ===
                 (input.options.answer.length > 0 ||
@@ -1480,6 +1483,7 @@ export function registerTasksCli(
                   answerText: input.options.clear ? null : input.options.text,
                   revision: input.options.revision,
                   authorName: taskAuthor(ctx),
+                  ...(input.options.clear ? { refuseReadinessClear: true } : {}),
                 }),
               );
               } catch (error) {
@@ -1496,6 +1500,7 @@ export function registerTasksCli(
           summary: "Edit question content at its current revision",
           positionals: [KEY_POSITIONAL],
           options: {
+            ...READINESS_OPTIONS,
             question: {
               type: "string",
               required: true,
@@ -1592,6 +1597,8 @@ export function registerTasksCli(
                 ...(input.options.step.length ? { steps: input.options.step } : {}),
                 mode: input.options.mode ?? current.mode,
                 options,
+                smoke: input.options.smoke,
+                beyondDesign: input.options["beyond-design"],
                 reopen: input.options.reopen,
                 ...((ctx.threadId ?? process.env.BB_THREAD_ID) ? { askedByThread: ctx.threadId ?? process.env.BB_THREAD_ID } : {}),
                 authorName: taskAuthor(ctx),
@@ -2023,6 +2030,7 @@ export function registerTasksCli(
             "auto-archive": { type: "enum", values: ["off", "3", "7", "14", "30"] as const, description: "Project auto-archive interval in days" },
             "stale-idle": { type: "enum", values: ["off", "30", "45", "60", "120"] as const, description: "Project idle warning threshold in minutes" },
             "status-notifications": { type: "enum", values: ["off", "all", "done"] as const, description: "Project status change push notifications" },
+            "check-readiness": { type: "string", description: READINESS_OWNER_ONLY },
             planning: { type: "enum", values: ["off", "optional", "required"] as const, description: "Owner only, set in the project settings: the CLI refuses it" },
             machine: MACHINE_OPTION,
             name: { type: "string", description: "New project name" },
@@ -2088,6 +2096,7 @@ export function registerTasksCli(
                 try { workflowPolicy = workflowPolicySchema.parse(JSON.parse(text!)); }
                 catch { throw new CliError("Invalid workflow policy file"); }
               }
+              if (input.options["check-readiness"] !== undefined) throw new CliError(READINESS_OWNER_ONLY, { code: "owner_only" });
               if (input.options.planning !== undefined) throw new CliError(PLANNING_OWNER_ONLY, { code: "owner_only" });
               const changes = {
                 workflowPolicy,
@@ -2897,6 +2906,7 @@ export function registerTasksCli(
               const omittedComments = comments.length - shownComments.length;
               const shownQuestions = brief ? questions.map(({ history: _history, ...question }) => !isQuestionOpen(question) ? {
                 id: question.id, prompt: question.prompt, kind: question.kind, askedByThread: question.askedByThread,
+                ...(question.beyondDesign ? { beyondDesign: question.beyondDesign } : {}),
                 ...(question.withdrawnAt ? {
                   withdrawnAt: question.withdrawnAt, withdrawnBy: question.withdrawnBy, withdrawReason: question.withdrawReason,
                 } : {
@@ -2977,9 +2987,10 @@ export function registerTasksCli(
                 });
               }
               const questionText = brief ? shownQuestions.map(q => {
-                if ("withdrawnAt" in q && q.withdrawnAt) return `${oneLine(q.prompt)} — ${withdrawalLine(q)}`;
-                if (q.supersededBy) return `superseded by ${q.supersededBy}: ${oneLine(q.prompt).slice(0, 160)}${"answer" in q && q.answer ? ` → ${oneLine(q.answer).slice(0, 160)}` : ""} (${q.id})`;
-                if ("answer" in q) return `✓ ${oneLine(q.prompt).slice(0, 160)} → ${oneLine(q.answer).slice(0, 160)} (${q.id})`;
+                const design = q.beyondDesign ? `\nBeyond the design: ${q.beyondDesign}` : "";
+                if ("withdrawnAt" in q && q.withdrawnAt) return `${oneLine(q.prompt)} — ${withdrawalLine(q)}${design}`;
+                if (q.supersededBy) return `superseded by ${q.supersededBy}: ${oneLine(q.prompt).slice(0, 160)}${"answer" in q && q.answer ? ` → ${oneLine(q.answer).slice(0, 160)}` : ""} (${q.id})${design}`;
+                if ("answer" in q) return `✓ ${oneLine(q.prompt).slice(0, 160)} → ${oneLine(q.answer).slice(0, 160)} (${q.id})${design}`;
                 return JSON.stringify(q);
               }).join("\n") : [JSON.stringify(shownQuestions, null, 2), ...questions.filter(q => q.withdrawnAt).map(withdrawalLine)].join("\n");
               return [

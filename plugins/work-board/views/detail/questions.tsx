@@ -73,6 +73,7 @@ function meaningfulHistory(question: TaskQuestion) {
   return question.history.filter((entry, index) => {
     const next = states[index + 1]!;
     return Boolean(entry.answeredBy) || entry.prompt !== next.prompt || entry.mode !== next.mode ||
+      entry.beyondDesign !== next.beyondDesign || JSON.stringify(entry.steps) !== JSON.stringify(next.steps) ||
       JSON.stringify(entry.options.map(option => option.label)) !== JSON.stringify(next.options.map(option => option.label));
   });
 }
@@ -112,6 +113,10 @@ function OptionText({ option }: { option: TaskQuestion["options"][number] }) {
   );
 }
 
+function BeyondDesign({ line }: { line?: string }) {
+  return line ? <p className="whitespace-pre-wrap break-words text-xs text-muted-foreground">Beyond the design: {line}</p> : null;
+}
+
 /** Read-only revision history; shared by live questions and superseded checks. */
 function QuestionHistory({ question }: { question: TaskQuestion }) {
   return meaningfulHistory(question).length ? (
@@ -131,6 +136,8 @@ function QuestionHistory({ question }: { question: TaskQuestion }) {
             <p className="whitespace-pre-wrap break-words">
               <LinkedText text={entry.prompt} />
             </p>
+            {entry.steps.length > 0 && <ol className="list-decimal pl-6">{entry.steps.map((step, i) => <li key={i}><LinkedText text={step} /></li>)}</ol>}
+            <BeyondDesign line={entry.beyondDesign} />
             <p>
               {entry.mode === "single"
                 ? "Single choice"
@@ -214,6 +221,7 @@ function SupersededQuestion({ question, successor, targetId, replacement }: {
     <div id={targetId} tabIndex={-1} aria-label={`Superseded check: ${question.prompt}`} className="space-y-1 rounded-md border border-dashed border-border p-3 text-sm opacity-70">
       {replacement}
       <p className="break-words"><LinkedText text={question.prompt} /> <span className="text-xs text-muted-foreground">Check</span></p>
+      <BeyondDesign line={question.beyondDesign} />
       <p className="text-xs text-muted-foreground">
         Replaced by a later check{successor && <>: <span className="inline-block max-w-[40ch] truncate align-bottom" title={successor.prompt}><LinkedText text={successor.prompt} /></span></>}
         {question.supersededAt ? ` · ${new Date(question.supersededAt).toLocaleString()}` : ""}
@@ -297,6 +305,7 @@ function QuestionAnswer({
           {question.steps.map((step, index) => <li key={index} className="break-words"><LinkedText text={step} /></li>)}
         </ol>
       ) : null}
+      <BeyondDesign line={question.beyondDesign} />
       <p className="text-xs text-muted-foreground">
         {question.mode === "single"
           ? "Choose one answer"
@@ -436,12 +445,14 @@ function QuestionAnswer({
 
 export function QuestionsSection({
   taskId,
+  checkReadiness,
   query,
   adding,
   onAddingChange,
   onError,
 }: {
   taskId: string;
+  checkReadiness?: boolean;
   query: ReturnType<typeof useTasksQuery<TaskQuestion[]>>;
   adding: boolean;
   onAddingChange: (adding: boolean) => void;
@@ -453,6 +464,8 @@ export function QuestionsSection({
   const [options, setOptions] = useState<
     (Omit<TaskQuestion["options"][number], "id"> & { id?: string })[]
   >([{ label: "" }, { label: "" }]);
+  const [smoke, setSmoke] = useState("");
+  const [beyondDesign, setBeyondDesign] = useState("");
   const [multiple, setMultiple] = useState(false);
   const [kind, setKind] = useState<"decision" | "check">("decision");
   const [saving, setSaving] = useState(false);
@@ -465,8 +478,12 @@ export function QuestionsSection({
     setOptions([{ label: "" }, { label: "" }]);
     setMultiple(false);
     setKind("decision");
+    setSmoke("");
+    setBeyondDesign("");
     setReopen(false);
   }, [adding]);
+  const showReadiness = checkReadiness && kind === "check";
+  const requireReadiness = showReadiness && (!editing || reopen || prompt.trim() !== editing.prompt);
   const closeForm = () => {
     setEditing(null);
     onAddingChange(false);
@@ -520,6 +537,8 @@ export function QuestionsSection({
             setOptions(question.options);
             setMultiple(question.mode === "multiple");
             setKind(question.kind);
+            setSmoke("");
+            setBeyondDesign("");
             setReopen(false);
           }}
           onSave={async (selectedOptionIds, answerText, files) => {
@@ -614,8 +633,10 @@ export function QuestionsSection({
                   ? { recommendationReason: option.recommendationReason }
                   : {}),
               }));
+              const readiness = showReadiness ? { smoke: smoke || undefined, beyondDesign: beyondDesign || undefined } : {};
               if (editing) {
                 await rpc.call("updateQuestion", {
+                  ...readiness,
                   questionId: editing.id,
                   revision: editing.revision,
                   prompt,
@@ -626,6 +647,7 @@ export function QuestionsSection({
                 });
               } else {
                 await rpc.call("createQuestion", {
+                  ...readiness,
                   taskId,
                   prompt,
                   mode: multiple ? "multiple" : "single",
@@ -669,6 +691,14 @@ export function QuestionsSection({
             disabled={saving}
             onChange={(event) => setPrompt(event.target.value)}
           />
+          {showReadiness && <>
+            <label className="block text-sm">Smoke test
+              <Textarea value={smoke} onChange={e => setSmoke(e.target.value)} required={requireReadiness} minLength={20} maxLength={2000} disabled={saving} />
+            </label>
+            <label className="block text-sm">Beyond the design
+              <Textarea value={beyondDesign} onChange={e => setBeyondDesign(e.target.value)} required={requireReadiness} maxLength={500} disabled={saving} />
+            </label>
+          </>}
           {options.map((value, index) => (
             <div key={index} className="space-y-2">
               <div className="flex items-center gap-2">

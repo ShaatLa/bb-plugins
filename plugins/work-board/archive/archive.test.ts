@@ -385,6 +385,7 @@ describe("project archives", () => {
     await exportProject(source.bb, source.store, source.project.id, out);
     const manifestPath = join(out, "project.json");
     const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
+    delete manifest.project.checkReadiness;
     manifest.version = 1;
     delete manifest.gitSync;
     delete manifest.project.statuses;
@@ -420,6 +421,7 @@ describe("project archives", () => {
     await exportProject(source.bb, source.store, source.project.id, out);
     const path = join(out, "project.json");
     const manifest = JSON.parse(await readFile(path, "utf8"));
+    delete manifest.project.checkReadiness;
     manifest.version = 2;
     delete manifest.gitSync;
     for (const id of manifest.taskIds) { const taskFile = join(out, "tasks", `${id}.json`); const row = JSON.parse(await readFile(taskFile, "utf8")); delete row.pullRequests; delete row.dependencies; await writeFile(taskFile, jsonText(row)); }
@@ -451,7 +453,8 @@ describe("project archives", () => {
     expect(createStructuredStore(target.bb, target.store).listQuestions(source.task.id)).toContainEqual(withdrawn.question);
     const path = join(out, "project.json");
     const manifest = JSON.parse(await readFile(path, "utf8"));
-    expect(manifest.version).toBe(23);
+    expect(manifest.version).toBe(24);
+    delete manifest.project.checkReadiness;
     await writeFile(path, jsonText({ ...manifest, version: 22 }));
     await expect(importProject(target.bb, target.store, out, true)).rejects.toThrow("Withdrawn questions require archive v23");
   });
@@ -484,7 +487,8 @@ describe("project archives", () => {
     // The links need v22; a v21 snapshot without them still imports.
     const manifestPath = join(out, "project.json");
     const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
-    expect(manifest.version).toBe(23);
+    expect(manifest.version).toBe(24);
+    delete manifest.project.checkReadiness;
     manifest.version = 21;
     await writeFile(manifestPath, jsonText(manifest));
     const linked = { ...record, questions: [{ ...record.questions[0], supersededBy: next.id, supersededAt: new Date().toISOString() }] };
@@ -901,7 +905,7 @@ it("exports v17 typed questions and imports v16 owner tasks as plain tasks", asy
   await exportProject(source.bb, source.store, source.project.id, out);
   const manifestPath = join(out, "project.json");
   const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
-  expect(manifest.version).toBe(23);
+  expect(manifest.version).toBe(24);
   const path = join(out, "tasks", `${source.task.id}.json`);
   const record = JSON.parse(await readFile(path, "utf8"));
   expect(record.task).not.toHaveProperty("executionTarget");
@@ -911,6 +915,7 @@ it("exports v17 typed questions and imports v16 owner tasks as plain tasks", asy
   const target = setup();
   await importProject(target.bb, target.store, out, false);
   expect(createStructuredStore(target.bb, target.store).listQuestions(source.task.id)).toEqual(structured.listQuestions(source.task.id));
+  delete manifest.project.checkReadiness;
   manifest.version = 16;
   await writeFile(manifestPath, jsonText(manifest));
   record.task.executionTarget = "owner";
@@ -938,7 +943,7 @@ it("exports plans (v18+) with every version, refuses a differing local plan with
   await exportProject(source.bb, source.store, source.project.id, out);
   const manifestPath = join(out, "project.json");
   const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
-  expect(manifest.version).toBe(23);
+  expect(manifest.version).toBe(24);
   const recordPath = join(out, "tasks", `${source.task.id}.json`);
   const record = JSON.parse(await readFile(recordPath, "utf8"));
   expect(record.plan).toMatchObject({ format: "markdown", version: 2, state: "in_review", body: "# Plan\n\n## Steps\n- one\n- two\n", reviewer: { kind: "thread", threadId: "thr_reviewer" }, reviewVersion: 2 });
@@ -965,6 +970,7 @@ it("exports plans (v18+) with every version, refuses a differing local plan with
   expect(targetPlans.listVersions(source.task.id).versions).toHaveLength(2);
 
   // v17 archives have no plan key: they import and leave the local plan alone.
+  delete manifest.project.checkReadiness;
   manifest.version = 17;
   await writeFile(manifestPath, jsonText(manifest));
   delete record.plan;
@@ -1028,6 +1034,7 @@ it("exports v19 plan notes with their replies, refuses differing local notes wit
   // v18 archives have no notes key: they import and leave local notes alone; v19 requires the key; older versions refuse notes.
   const manifestPath = join(out, "project.json");
   const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
+  delete manifest.project.checkReadiness;
   manifest.version = 18;
   await writeFile(manifestPath, jsonText(manifest));
   const { planNotes, ...withoutNotes } = record;
@@ -1058,7 +1065,7 @@ it("round-trips configurable project statuses, their order and custom task stage
   const out = join(await directory(), "statuses-v6");
   await exportProject(source.bb, source.store, source.project.id, out);
   const manifest = JSON.parse(await readFile(join(out, "project.json"), "utf8"));
-  expect(manifest.version).toBe(23);
+  expect(manifest.version).toBe(24);
   expect(manifest.project.statuses).toEqual(statuses);
   expect(manifest.project).toMatchObject({ autoArchiveAfterDays: "14", staleIdleMinutes: "120" });
   const target = setup();
@@ -1073,6 +1080,7 @@ it("round-trips configurable project statuses, their order and custom task stage
   expect(await readFile(join(again, "project.json"), "utf8")).toBe(await readFile(join(out, "project.json"), "utf8"));
   for (const id of manifest.taskIds) expect(await readFile(join(again, "tasks", `${id}.json`), "utf8")).toBe(await readFile(join(out, "tasks", `${id}.json`), "utf8"));
   // Earlier exporters could already write status metadata under v8.
+  delete manifest.project.checkReadiness;
   manifest.version = 8;
   for (const id of manifest.taskIds) { const taskFile = join(out, "tasks", `${id}.json`); const row = JSON.parse(await readFile(taskFile, "utf8")); delete row.dependencies; await writeFile(taskFile, jsonText(row)); }
   delete manifest.project.autoArchiveAfterDays;
@@ -1159,7 +1167,7 @@ describe("archive v13 scheduled tasks", () => {
     const out = join(await directory(), "scheduled-v13");
     await exportProject(f.bb, f.store, f.project.id, out);
     const manifest = JSON.parse(await readFile(join(out, "project.json"), "utf8"));
-    expect(manifest.version).toBe(23);
+    expect(manifest.version).toBe(24);
     expect(manifest.schedules).toHaveLength(2);
     expect(JSON.stringify(manifest)).not.toMatch(/thr_server_local|thr_gone|q_live|req_live|01ARZ3NDEKTSV4RRFFQ69G5FAV/);
     const target = setup();
@@ -1208,6 +1216,7 @@ describe("archive v13 scheduled tasks", () => {
     await exportProject(f.bb, f.store, f.project.id, out);
     const path = join(out, "project.json");
     const manifest = JSON.parse(await readFile(path, "utf8"));
+    delete manifest.project.checkReadiness;
     manifest.version = 12;
     await writeFile(path, jsonText(manifest));
     await expect(importProject(setup().bb, setup().store, out, false)).rejects.toThrow(/require archive v13/);
@@ -1293,10 +1302,11 @@ it("round-trips v16 current state and imports v15 without it", async () => {
   await exportProject(source.bb, source.store, source.project.id, out);
   const manifestPath = join(out, "project.json");
   const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
-  expect(manifest.version).toBe(23);
+  expect(manifest.version).toBe(24);
   const target = setup();
   await importProject(target.bb, target.store, out, false);
   expect(target.store.tasks.getTask(source.task.id)).toEqual(source.store.tasks.getTask(source.task.id));
+  delete manifest.project.checkReadiness;
   manifest.version = 15;
   await writeFile(manifestPath, jsonText(manifest));
   for (const id of manifest.taskIds) {
@@ -1333,6 +1343,7 @@ describe("archive v20: reviewers, review history and planning", () => {
   async function toV19(out: string) {
   const manifestPath = join(out, "project.json");
   const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
+  delete manifest.project.checkReadiness;
   manifest.version = 19;
   delete manifest.project.planning;
   await writeFile(manifestPath, jsonText(manifest));
@@ -1437,6 +1448,7 @@ describe("archive v20: reviewers, review history and planning", () => {
       await createStructuredStore(source.bb, source.store).handlers.createQuestion({ taskId: source.task.id, kind: "decision", askedByThread: null, prompt: "Which one?", steps: [], options: ["A", "B"], mode: "single" });
       const out = await exported(source, "v20-paused");
       await editProject(out, (manifest) => {
+        delete manifest.project.checkReadiness;
         manifest.version = 20;
         delete manifest.project.archiveThreadsOnClose;
         delete manifest.project.archiveReviewerOnApproval;
@@ -1762,6 +1774,7 @@ describe("archive v20: reviewers, review history and planning", () => {
     await toV19(out);
     const manifestPath = join(out, "project.json");
     const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
+    delete manifest.project.checkReadiness;
     manifest.version = 18;
     await writeFile(manifestPath, jsonText(manifest));
     for (const id of manifest.taskIds) {
@@ -1860,6 +1873,7 @@ describe("archive v21: thread-archive settings and links", () => {
   const asV20 = async (out: string) => {
     const path = join(out, "project.json");
     const manifest = JSON.parse(await readFile(path, "utf8"));
+    delete manifest.project.checkReadiness;
     manifest.version = 20;
     delete manifest.project.archiveThreadsOnClose;
     delete manifest.project.archiveReviewerOnApproval;
@@ -1871,7 +1885,7 @@ describe("archive v21: thread-archive settings and links", () => {
     source.store.tasks.updateProject(source.project.id, { archiveThreadsOnClose: "off", archiveReviewerOnApproval: "off" });
     const out = await exportOf(source, "v21-settings");
     const manifest = JSON.parse(await readFile(join(out, "project.json"), "utf8"));
-    expect(manifest.version).toBe(23);
+    expect(manifest.version).toBe(24);
     expect(manifest.project).toMatchObject({ archiveThreadsOnClose: "off", archiveReviewerOnApproval: "off" });
     const target = setup();
     await importProject(target.bb, target.store, out, false);
@@ -2036,4 +2050,47 @@ describe("plan debt and imports", () => {
     await importProject(f.bb, f.store, withLink, true);
     expect(events()).toHaveLength(1);
   });
+});
+
+it("round-trips readiness on a new project and keeps local readiness on overwrite", async () => {
+  const source = await seed();
+  const questions = createStructuredStore(source.bb, source.store).handlers;
+  const input = { kind: "check", taskId: source.task.id, mode: "single", askedByThread: null, prompt: "Does Save work?" } as const;
+  const { question } = await questions.createQuestion({ ...input, options: [], beyondDesign: "Extra label" });
+  const updated = await questions.updateQuestion({ questionId: question.id, revision: 1, mode: "single", options: question.options, authorName: "You", prompt: question.prompt, beyondDesign: "none" });
+  source.store.tasks.updateProject(source.project.id, { checkReadiness: "on" });
+  const root = join(await directory(), "readiness");
+  await exportProject(source.bb, source.store, source.project.id, root);
+  const target = setup();
+  const restore = () => importProject(target.bb, target.store, root, true);
+  await restore();
+  const readiness = () => target.store.tasks.getProject(source.project.id)?.checkReadiness;
+  expect(readiness()).toBe("on");
+  expect(createStructuredStore(target.bb, target.store).listQuestions(source.task.id)).toContainEqual(updated.question);
+  expect(target.store.tasks.listComments(source.task.id)).toEqual(source.store.tasks.listComments(source.task.id));
+  const path = join(root, "project.json");
+  const manifest = JSON.parse(await readFile(path, "utf8"));
+  manifest.project.checkReadiness = "off";
+  await writeFile(path, jsonText(manifest));
+  await restore();
+  expect(readiness()).toBe("on");
+  manifest.version = 23;
+  await writeFile(path, jsonText({ ...manifest, taskIds: [] }));
+  await expect(restore()).rejects.toThrow(/archive v24/);
+  delete manifest.project.checkReadiness;
+  await writeFile(path, jsonText(manifest));
+  await expect(restore()).rejects.toThrow(/archive v24/);
+  const recordPath = join(root, "tasks", `${source.task.id}.json`);
+  const record = JSON.parse(await readFile(recordPath, "utf8"));
+  const check = record.questions.find((q: { id: string }) => q.id === question.id);
+  delete check.beyondDesign;
+  await writeFile(recordPath, jsonText(record));
+  await expect(restore()).rejects.toThrow(/archive v24/);
+  delete check.history[0].beyondDesign;
+  await writeFile(recordPath, jsonText(record));
+  await restore();
+  expect(readiness()).toBe("on");
+  const legacy = setup();
+  await importProject(legacy.bb, legacy.store, root, false);
+  expect(legacy.store.tasks.getProject(source.project.id)?.checkReadiness).toBe("off");
 });

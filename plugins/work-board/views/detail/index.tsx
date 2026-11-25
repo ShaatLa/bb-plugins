@@ -767,6 +767,7 @@ function TaskDetail({
             <QuestionsSection
               key={task.id}
               taskId={task.id}
+              checkReadiness={project?.checkReadiness === "on"}
               query={questions}
               adding={addingQuestion === task.id}
               onAddingChange={(adding) =>

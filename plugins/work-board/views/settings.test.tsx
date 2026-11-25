@@ -497,6 +497,8 @@ it("lets the owner pick each planning mode for the selected project, and the cho
     expect(within(settings.getByRole("region", { name: "Archiving" })).getAllByRole("combobox").map(box => box.getAttribute("aria-label"))).toEqual(["Archive completed tasks after"]);
     expect(within(settings.getByRole("region", { name: "Activity and notifications" })).getAllByRole("combobox").map(box => box.getAttribute("aria-label"))).toEqual(["Flag idle threads after", "Notify me of status changes"]);
     expect(mode().textContent).toContain("Off");
+    fireEvent.click(region().getByRole("switch", { name: "Check readiness" }));
+    await waitFor(() => expect(store.tasks.getProject(alpha.id)?.checkReadiness).toBe("on"));
     // The reviewer switch is shown only while planning is not Off.
     expect(region().queryByRole("switch", { name: "Archive the plan reviewer after approval" })).toBeNull();
     for (const [label, value] of [["Optional", "optional"], ["Required", "required"], ["Off", "off"], ["Required", "required"]] as const) {

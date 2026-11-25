@@ -185,11 +185,19 @@ const questionOptionInputSchema = z
   })
   .strict();
 
+const beyondDesignSchema = z.string().trim().min(1).max(500);
+export const smokeSchema = z.string().trim().min(20).max(2000);
+const readinessInputs = {
+  smoke: smokeSchema.optional(),
+  beyondDesign: beyondDesignSchema.optional(),
+};
+
 const questionStateSchema = z
   .object({
     kind: z.enum(["decision", "check"]).default("decision"),
     askedByThread: evidenceThreadSchema.nullable().default(null),
     prompt: nonBlankStringSchema.max(10_000),
+    beyondDesign: beyondDesignSchema.optional(),
     /** "How to check": short ordered steps shown under the prompt. */
     steps: z.array(nonBlankStringSchema.max(500)).max(10).default([]),
     mode: z.enum(["single", "multiple"]),
@@ -338,6 +346,7 @@ export const projectSchema = z
     /** v21: archive the sessions Work Board created for a card when it closes (default on). */
     archiveThreadsOnClose: archiveSettingSchema.optional(),
     /** v21: archive a dedicated plan reviewer after it approved the plan (default on). */
+    checkReadiness: archiveSettingSchema.optional(),
     archiveReviewerOnApproval: archiveSettingSchema.optional(),
     planning: planningSchema.optional(),
     /** False until the "only with an approved plan" flags were set up (by the owner, or by the first switch to required). */
@@ -625,6 +634,7 @@ const updateProjectInputSchema = z
     staleIdleMinutes: staleIdleThresholdSchema.optional(),
     statusNotifications: statusNotificationsSchema.optional(),
     archiveThreadsOnClose: archiveSettingSchema.optional(),
+    checkReadiness: archiveSettingSchema.optional(),
     archiveReviewerOnApproval: archiveSettingSchema.optional(),
     planning: planningSchema.optional(),
     color: nonBlankStringSchema.optional(),
@@ -640,6 +650,7 @@ const updateProjectInputSchema = z
       input.staleIdleMinutes !== undefined ||
       input.statusNotifications !== undefined ||
       input.archiveThreadsOnClose !== undefined ||
+      input.checkReadiness !== undefined ||
       input.archiveReviewerOnApproval !== undefined ||
       input.planning !== undefined ||
       input.name !== undefined ||
@@ -1077,6 +1088,8 @@ export const tasksRpcContract = {
   createQuestion: {
     input: z
       .object({
+        ...readinessInputs,
+        authorName: nonBlankStringSchema.optional(),
         taskId: idSchema,
         kind: z.enum(["decision", "check"]).default("decision"),
         askedByThread: evidenceThreadSchema.nullable().default(null),
@@ -1105,6 +1118,8 @@ export const tasksRpcContract = {
         answerText: z.string().trim().max(10_000).nullable().optional(),
         revision: z.number().int().positive(),
         authorName: nonBlankStringSchema.default("You"),
+        /** Set by the CLI: a clear of a check in a project that checks readiness is refused, read inside the answer write. */
+        refuseReadinessClear: z.boolean().optional(),
       })
       .strict(),
     output: z
@@ -1122,6 +1137,7 @@ export const tasksRpcContract = {
   updateQuestion: {
     input: z
       .object({
+        ...readinessInputs,
         questionId: idSchema,
         revision: z.number().int().positive(),
         prompt: nonBlankStringSchema.max(10_000),

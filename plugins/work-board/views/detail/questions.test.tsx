@@ -307,10 +307,12 @@ describe("question and evidence UI", () => {
     await structured.handlers.answerQuestion({ questionId: question.id, revision: question.revision, selectedOptionIds: [question.options[0]!.id], authorName: "You" });
     const slot = renderSlot(app.navPanels[0]!, { subPath: `task/${task.key}` }, { rpc });
     fireEvent.click(await slot.findByText("Earlier (1)"));
+    store.tasks.updateProject(task.projectId, { checkReadiness: "on" });
     fireEvent.click(await slot.findByRole("button", { name: "Withdraw answer" }));
     fireEvent.click(slot.getByRole("button", { name: "Confirm: withdraw and notify the agent" }));
     await waitFor(() => expect(structured.listQuestions(task.id)[0]?.answeredBy).toBeNull());
     expect(store.tasks.listComments(task.id).map(comment => comment.body).join("\n")).toContain("Answer withdrawn (was: Confirmed)");
+    expect(store.tasks.listTasks({ waitingOnOwner: true }).map(t => t.id)).toContain(task.id);
   });
 
   it("saves an allowed custom answer and restores it in the card", async () => {
@@ -756,4 +758,58 @@ it.each([
   const slot = renderSlot(app.navPanels[0]!, { subPath: `task/${task.key}` }, { rpc });
   const line = await slot.findByText("Changed from the replaced check:");
   expect([...line.querySelectorAll("span")].map(span => span.textContent)).toEqual(expected);
+});
+
+it("collects readiness for a check on add, edit and reopen", async () => {
+  const { store, project, task, structured, rpc } = setup();
+  store.tasks.updateProject(project.id, { checkReadiness: "on" });
+  const slot = renderSlot(app.navPanels[0]!, { subPath: `task/${task.key}` }, { rpc });
+  fireEvent.click(within(await slot.findByRole("complementary")).getByRole("button", { name: "Add question" }));
+  expect(slot.queryByLabelText("Smoke test")).toBeNull();
+  const fill = (label: string, value: string) => fireEvent.change(slot.getByLabelText(label), { target: { value } });
+  fill("Question type", "check");
+  fill("Question", "Does Save work?");
+  const submit = async (button: string, line: string) => {
+    fill("Smoke test", "Opened the form and saved a draft.");
+    fill("Beyond the design", line);
+    fireEvent.click(slot.getByRole("button", { name: button }));
+    await waitFor(() => expect(structured.listQuestions(task.id)[0]?.beyondDesign).toBe(line));
+    expect(await slot.findByText(`Beyond the design: ${line}`)).toBeTruthy();
+  };
+  await submit("Create question", "none");
+  fireEvent.click(slot.getByRole("button", { name: "Edit question" }));
+  // Only the design line changes in this revision.
+  await submit("Save question", "Extra label");
+  expect(slot.getByText("History · 1")).toBeTruthy();
+  // A prompt edit needs a fresh smoke note, recorded with the new revision.
+  fireEvent.click(slot.getByRole("button", { name: "Edit question" }));
+  fill("Question", "Does Save work twice?");
+  fill("Smoke test", "Saved the same draft twice in a row.");
+  fill("Beyond the design", "Extra label");
+  fireEvent.click(slot.getByRole("button", { name: "Save question" }));
+  await waitFor(() => expect(structured.listQuestions(task.id)[0]?.revision).toBe(3));
+  expect(store.tasks.listComments(task.id).map(comment => comment.body).join("\n"))
+    .toMatch(/Smoke test for check \S+ rev 3 .*Saved the same draft twice in a row\./);
+  const group = slot.getByRole("group", { name: /Does Save work/ });
+  fireEvent.click(within(group).getByLabelText("Confirmed"));
+  fireEvent.click(within(group).getByRole("button", { name: "Save answer" }));
+  fireEvent.click(await slot.findByText("Earlier (1)"));
+  fireEvent.click(await slot.findByRole("button", { name: "Edit question" }));
+  fireEvent.click(slot.getByLabelText("Clear the saved answer and request a new decision"));
+  await submit("Save question", "Extra label revised");
+  expect(structured.listQuestions(task.id)[0]?.answeredBy).toBeNull();
+});
+
+it("shows a steps-only history revision and omits readiness inputs in an ungated check form", async () => {
+  const { task, rpc, structured } = setup();
+  const { question } = await structured.handlers.createQuestion({ taskId: task.id, kind: "check", askedByThread: null,
+    prompt: "Does Save work?", steps: ["Open the form"], options: [], mode: "single" });
+  await structured.handlers.updateQuestion({ questionId: question.id, revision: 1, prompt: question.prompt, steps: ["Press Save"],
+    options: question.options, mode: question.mode, authorName: "You" });
+  const slot = renderSlot(app.navPanels[0]!, { subPath: `task/${task.key}` }, { rpc });
+  expect(await slot.findByText("History · 1")).toBeTruthy();
+  expect(slot.getByText("Open the form")).toBeTruthy();
+  fireEvent.click(slot.getByRole("button", { name: "Edit question" }));
+  expect(slot.queryByLabelText("Smoke test")).toBeNull();
+  expect(slot.queryByLabelText("Beyond the design")).toBeNull();
 });
