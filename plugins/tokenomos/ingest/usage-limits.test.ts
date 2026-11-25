@@ -28,6 +28,19 @@ describe('collectLimits', () => {
     expect(calls.some(c => c.startsWith('tokenomos'))).toBe(false);
   });
 
+  it('names the machine a host-scoped resource comes from, unless several machines report the account', async () => {
+    const host = (id: string) => ({ kind: 'host', hostId: id, hostName: 'Mac' });
+    const list = { resources: [
+      { id: 'a', providerId: 'claude-code', label: 'Claude Code', accountKey: 'acct', scope: host('host_a') },
+      { id: 'b', providerId: 'claude-code', label: 'Claude Code', accountKey: 'acct', scope: host('host_b') },
+      { id: 'c', providerId: 'codex', label: 'Codex', accountKey: null, scope: host('host_b') },
+    ] };
+    const got: Record<string, unknown> = { a: usage('acct', [week(12)]), b: usage('acct', [week(12)]), c: { accountKey: null, observedAt: null, usage: { status: 'expired' } } };
+    const accounts = (await collectLimits(async () => [{ pluginId: 'provider-x' }],
+      async (_p, method, input) => method.endsWith('listResources') ? list : got[(input as { resourceId: string }).resourceId], 'tokenomos')).map(r => r.account);
+    expect(accounts.map(a => [a.label, a.status, a.host])).toEqual([['Claude Code', 'ok', null], ['Codex', 'expired', { id: 'host_b', name: 'Mac' }]]);
+  });
+
   it('reports a failing resource as an error and skips a plugin whose inventory is malformed', async () => {
     const accounts = (await collectLimits(
       async () => [{ pluginId: 'provider-a' }, { pluginId: 'provider-b' }],
@@ -38,7 +51,7 @@ describe('collectLimits', () => {
       },
       'tokenomos',
     )).map(r => r.account);
-    expect(accounts).toEqual([{ providerId: 'a', label: 'A', plan: null, status: 'error', message: 'offline', observedAt: null, windows: [] }]);
+    expect(accounts).toEqual([{ providerId: 'a', label: 'A', host: null, plan: null, status: 'error', message: 'offline', observedAt: null, windows: [] }]);
   });
 
   it('takes a failed provider plugin\'s account from an aggregator, and shows the last good numbers when both fail', async () => {

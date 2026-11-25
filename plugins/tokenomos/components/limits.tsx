@@ -9,6 +9,13 @@ import { Card, Hint, Section, useOpen } from "./shared";
 
 /** A subscription inside a pool goes by its plan; the provider name is the pool's. */
 export const poolMember = (a: { label: string; plan: string | null }) => (a.plan ? fmtPlan(a.plan) : a.label);
+/** The other machine an account is reported from, so its state does not read as this machine's. */
+export function Machine({ a, className = "" }: { a: Account; className?: string }) {
+  const t = useT();
+  return a.machine ? <span className={`min-w-0 truncate font-normal text-muted-foreground ${className}`} title={a.machine}>{t("limits.machine", { name: a.machine })}</span> : null;
+}
+/** Two accounts can share a label (one per machine). */
+export const accountKey = (a: Account) => `${a.providerId}:${a.label}:${a.machine ?? ""}`;
 
 export type LimitWindow = z.infer<typeof limitWindowSchema>;
 export const WARN = "var(--warning-text, #b45309)";
@@ -167,8 +174,8 @@ function PoolCard({ pool, target }: { pool: Pool; target: number | null }) {
         <Icon name={open ? "ChevronDown" : "ChevronRight"} className="size-3.5" aria-hidden />{t("pool.accounts", { n: pool.accounts.length })}
       </button>
       {open && pool.accounts.map((a) => (
-        <div key={a.label} className="space-y-3 border-l-2 border-border pl-3">
-          <h4 className="text-sm font-medium text-foreground" title={a.label}>{poolMember(a)}</h4>
+        <div key={accountKey(a)} className="space-y-3 border-l-2 border-border pl-3">
+          <h4 className="flex items-baseline gap-2 text-sm font-medium text-foreground"><span title={a.label}>{poolMember(a)}</span><Machine a={a} /></h4>
           <AccountWindows a={a} target={target} />
         </div>
       ))}
@@ -195,7 +202,7 @@ export function Limits() {
       <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
         {(pooled ? poolAccounts(data.accounts, Date.now(), sizes) : data.accounts).map((a, i) => isPool(a) ? <PoolCard key={`pool:${a.providerId}`} pool={a} target={data.heavyTarget} /> : (
           <Card key={`${a.providerId}:${i}`} className="space-y-3">
-            <h3 className="flex flex-wrap items-baseline justify-between gap-x-2 text-sm font-medium text-foreground"><span title={a.label}>{accountName(a, data.accounts, t)}{a.plan && <span className="font-normal text-muted-foreground"> · {fmtPlan(a.plan)}</span>}</span></h3>
+            <h3 className="flex flex-wrap items-baseline justify-between gap-x-2 text-sm font-medium text-foreground"><span title={a.label}>{accountName(a, data.accounts, t)}{a.plan && <span className="font-normal text-muted-foreground"> · {fmtPlan(a.plan)}</span>}</span><Machine a={a} /></h3>
             <AccountWindows a={a} target={data.heavyTarget} />
           </Card>
         ))}

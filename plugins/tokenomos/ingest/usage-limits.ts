@@ -12,12 +12,15 @@ export type LimitAccount = {
   planId?: string | null; multiplier?: number | null;
   /** The source failed this time; these are its last good numbers, measured at `observedAt`. */
   stale?: boolean;
+  /** The machine a host-scoped source reports this account from; null when several machines (or a shared source) report it. */
+  host?: { id: string; name: string } | null;
 };
 export type CallRpc = (pluginId: string, method: string, input: unknown, signal: AbortSignal) => Promise<unknown>;
 export type Discover = (method: string) => Promise<{ pluginId: string }[]>;
 
 // Other plugins' output is untrusted: parse it loosely and drop what does not fit.
-const listSchema = z.object({ resources: z.array(z.object({ id: z.string().min(1), providerId: z.string().min(1), label: z.string(), accountKey: z.string().nullish() })) });
+const scopeSchema = z.object({ kind: z.string(), hostId: z.string().optional(), hostName: z.string().optional() }).nullish().catch(null);
+const listSchema = z.object({ resources: z.array(z.object({ id: z.string().min(1), providerId: z.string().min(1), label: z.string(), accountKey: z.string().nullish(), scope: scopeSchema })) });
 const windowSchema = z.object({
   id: z.string().optional(), label: z.string(), kind: z.string().optional(), usedPercent: z.number(), resetsAt: z.string().nullish(), model: z.string().nullish(),
 });
@@ -62,9 +65,11 @@ export async function collectLimits(discover: Discover, callRpc: CallRpc, selfId
   const out = new Map<string, LimitAccount>();
   for (const { id, account } of perPlugin.flat()) {
     const kept = out.get(id);
+    if (!kept) { out.set(id, account); continue; }
     // An aggregator standing in for a failed provider plugin keeps the provider's own label.
-    if (!kept) out.set(id, account);
-    else if (kept.status !== 'ok' && account.status === 'ok') out.set(id, { ...account, label: kept.label });
+    const next = kept.status !== 'ok' && account.status === 'ok' ? { ...account, label: kept.label } : kept;
+    // An account several machines (or a shared source) report belongs to none of them.
+    out.set(id, kept.host?.id === account.host?.id ? next : { ...next, host: null });
   }
   return [...out].map(([id, account]) => ({ id, account }));
 }
@@ -125,7 +130,7 @@ export function createLimitCollector(discover: Discover, callRpc: CallRpc, selfI
 function toAccount(r: z.infer<typeof listSchema>['resources'][number], got: z.infer<typeof resourceSchema>): LimitAccount {
   const u = got.usage;
   return {
-    providerId: r.providerId, label: r.label, plan: u.planLabel ?? null, planId: u.plan?.id ?? null, multiplier: u.plan?.multiplier ?? null, status: u.status, message: u.message ?? null, observedAt: got.observedAt ?? null,
+    providerId: r.providerId, label: r.label, host: hostOf(r), plan: u.planLabel ?? null, planId: u.plan?.id ?? null, multiplier: u.plan?.multiplier ?? null, status: u.status, message: u.message ?? null, observedAt: got.observedAt ?? null,
     windows: (u.windows ?? []).map((w, i) => {
       const resetsAt = w.resetsAt ? Date.parse(w.resetsAt) : NaN;
       // Sources lowercase a model family after the separator ("Weekly · fable"); names are capitalized as bb writes them.
@@ -135,6 +140,9 @@ function toAccount(r: z.infer<typeof listSchema>['resources'][number], got: z.in
   };
 }
 
+const hostOf = ({ scope: s }: z.infer<typeof listSchema>['resources'][number]) =>
+  s?.kind === 'host' && s.hostId ? { id: s.hostId, name: s.hostName || s.hostId } : null;
+
 const failed = (r: z.infer<typeof listSchema>['resources'][number], error: unknown): LimitAccount => ({
-  providerId: r.providerId, label: r.label, plan: null, status: 'error', message: error instanceof Error ? error.message : String(error), observedAt: null, windows: [],
+  providerId: r.providerId, label: r.label, host: hostOf(r), plan: null, status: 'error', message: error instanceof Error ? error.message : String(error), observedAt: null, windows: [],
 });

@@ -75,6 +75,22 @@ describe('RPC and CLI', () => {
       expect(await harness.behavior.callRpc('limits',{})).toMatchObject({ heavyTarget:null });
     } finally { await harness.lifecycle.dispose(); }
   });
+  it('names the other machine an account is reported from, by id when two machines share a name', async () => {
+    const scope=(hostId:string) => ({ kind:'host',hostId,hostName:'Mac' });
+    const rpc=async ({ method,input }: { method:string;input:{ resourceId?:string } }) => method.endsWith('listResources')
+      ? { resources:[{ id:'here',providerId:'codex',label:'Codex',accountKey:'acct',scope:scope('host_a') },{ id:'there',providerId:'codex',label:'Codex',accountKey:null,scope:scope('host_b') }] }
+      : input.resourceId==='here' ? { accountKey:'acct',observedAt:1,usage:{ status:'ok',planLabel:'Pro',windows:[] } } : { accountKey:null,observedAt:null,usage:{ status:'expired' } };
+    const { bb,harness }=createFakePluginHost({ pluginId:'tokenomos',sdk:{ projects:{ list: async () => [] },
+      system:{ config: async () => ({ primaryHostId:'host_a' }) },
+      hosts:{ list: async () => [{ id:'host_a',name:'Mac' },{ id:'host_b',name:'Mac' },{ id:'host_c',name:'Studio' }] },
+      plugins:{ experimental_discoverRpc: async () => [{ pluginId:'provider-codex' }],callRpc: rpc } } as never });
+    const db=bb.storage.database(); bb.storage.migrate(db,MIGRATIONS);
+    registerRpc(bb,db,bb.settings.define({ rawRetentionDays:{ type:'number',default:30,label:'Raw' } }) as never);
+    try {
+      const r=await harness.behavior.callRpc('limits',{}) as { accounts:{ status:string;machine:string|null }[] };
+      expect(r.accounts.map(a => [a.status,a.machine])).toEqual([['ok',null],['expired','Mac (host_b)']]);
+    } finally { await harness.lifecycle.dispose(); }
+  });
   it('offers the priced models of bb providers as reference models, with the built-in list as fallback', async () => {
     const models: Record<string,string[]> = { 'claude-code':['claude-opus-5-5','claude-sonnet-5-5','mystery-model'], codex:['gpt-6.2-sol'], 'local-models':['qwen-local'] };
     const { bb,harness }=createFakePluginHost({ pluginId:'tokenomos',sdk:{ projects:{ list: async () => [] },
@@ -120,7 +136,7 @@ describe('RPC and CLI', () => {
     db.prepare("INSERT INTO cursor(name,value) VALUES ('limits-last',?)").run(JSON.stringify({ at:1,accounts:[{ ...account,windows:[over] }] }));
     const settings=bb.settings.define({ rawRetentionDays:{ type:'number',default:30,label:'Raw' },rollupRetentionDays:{ type:'number',default:200,label:'Rollups' },referenceModel:{ type:'string',default:'claude-sonnet-5-5',label:'Reference' },includeOutsideBb:{ type:'boolean',default:false,label:'Outside' },priceOverrides:{ type:'string',default:'{}',label:'Overrides' } });
     registerRpc(bb,db,settings);
-    try { expect((await harness.behavior.callRpc('limits',{}) as { accounts:unknown[] }).accounts).toEqual([{ ...account,message:'reset, no fresh report yet',stale:true }]); }
+    try { expect((await harness.behavior.callRpc('limits',{}) as { accounts:unknown[] }).accounts).toEqual([{ ...account,machine:null,message:'reset, no fresh report yet',stale:true }]); }
     finally { await harness.lifecycle.dispose(); }
   });
   it('runs status and summary with JSON and bounded text output', async () => {

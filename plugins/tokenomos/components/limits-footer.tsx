@@ -4,7 +4,7 @@ import { rpcContract } from "../contract";
 import { accountName, fmtPercent, fmtPlan, fmtSpan, providerName } from "./format";
 import { useT, type T } from "./i18n";
 import { Hint, useOpen } from "./shared";
-import { BAD, Tick, WARN, paceColor, poolMember, tickHint, type LimitWindow } from "./limits";
+import { BAD, Machine, Tick, WARN, accountKey, paceColor, poolMember, tickHint, type LimitWindow } from "./limits";
 import { isPool, parseSizes, poolAccounts, type Account, type Pool } from "./pool";
 
 const KIND_LABEL: Record<string, string> = { weekly: "7d", daily: "1d", "five-hour": "5h" };
@@ -121,11 +121,12 @@ export function LimitsFooter() {
             <ul className="col-span-4 grid grid-cols-subgrid gap-y-1">{windows.map((w) => { const k = `${a.providerId}:${w.id}`; return <Row key={w.id} w={w} now={now} target={data.heavyTarget} mode={modes[k] ?? "forecast"} easter={easter === k} onClick={(f) => click(k, f)} />; })}</ul>
           );
           const account = (a: Account, nested: boolean) => (
-            <section key={`${a.providerId}:${a.label}`} className={`col-span-4 grid grid-cols-subgrid gap-y-1 ${nested ? "mt-1.5 rounded-md bg-muted/50 px-2 py-1.5" : i ? "mt-1.5 border-t border-border pt-2.5" : ""}`}>
+            <section key={accountKey(a)} className={`col-span-4 grid grid-cols-subgrid gap-y-1 ${nested ? "mt-1.5 rounded-md bg-muted/50 px-2 py-1.5" : i ? "mt-1.5 border-t border-border pt-2.5" : ""}`}>
               <div className="col-span-4 flex items-center gap-2">
                 <span className="min-w-0 truncate font-medium text-foreground" title={a.label}>{nested ? poolMember(a) : accountName(a, data.accounts, t)}</span>
                 {a.plan && !nested && <span className="min-w-0 truncate rounded bg-muted px-1 py-px text-[10px] text-muted-foreground" title={a.plan}>{fmtPlan(a.plan)}</span>}
               </div>
+              <Machine a={a} className="col-span-4 -mt-1 text-[11px]" />
               {a.status !== "ok" || a.windows.length === 0
                 ? <p className="col-span-4 text-[11px] text-muted-foreground">{t("limits.unavailable", { status: a.message ?? a.status })}</p>
                 : rows(a, a.windows)}

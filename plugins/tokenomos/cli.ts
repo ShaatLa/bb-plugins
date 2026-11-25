@@ -18,7 +18,7 @@ export function registerCli(bb: BbPluginApi, api: Pick<ReturnType<typeof registe
       if (i.options.json) return { exitCode: 0, stdout: JSON.stringify(r) };
       const lines = r.accounts.length ? [] : ['No plugin reports provider limits (provider-usage.v1).'];
       for (const a of r.accounts) {
-        lines.push(`${clean(a.label)} [${a.providerId}]${a.plan ? ` ${clean(a.plan)}` : ''}: ${a.stale ? `stale, last known data from ${when(a.observedAt)}` : a.status}${a.message ? ` (${clean(a.message)})` : ''}`);
+        lines.push(`${clean(a.label)} [${a.providerId}]${a.plan ? ` ${clean(a.plan)}` : ''}${a.machine ? ` on ${clean(a.machine)}` : ''}: ${a.stale ? `stale, last known data from ${when(a.observedAt)}` : a.status}${a.message ? ` (${clean(a.message)})` : ''}`);
         for (const w of a.windows) {
           const pace = w.usedPercent >= 100 ? 'exhausted until reset' : w.runsOutAt !== null ?`runs out ${when(w.runsOutAt)}` : w.forecastPercent !== null ? `~${Math.round(w.forecastPercent)}% at reset` : 'no forecast';
           const u = w.usage;

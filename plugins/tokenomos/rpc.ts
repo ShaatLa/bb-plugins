@@ -52,13 +52,24 @@ export function registerRpc(bb: BbPluginApi, db: Database, settings: SettingsHan
     undefined,
     restored,
   );
-  const refreshLimits = () => limitPending ??= collectLimitsNow().then(accounts => {
+  // This machine, and a name for each other one; machines can share a hostname, so a shared one gets its id too.
+  let machines: { self: string | null; names: Map<string, string> } = { self: null, names: new Map() };
+  const refreshMachines = async () => {
+    try {
+      const [config, hosts] = await Promise.all([sdk.system.config(), sdk.hosts.list()]);
+      machines = { self: config.primaryHostId, names: new Map(hosts.map(h => [h.id, hosts.some(o => o.id !== h.id && o.name === h.name) ? `${h.name} (${h.id})` : h.name])) };
+    } catch { /* machines unknown: cards just do not name one */ }
+  };
+  const refreshLimits = () => limitPending ??= Promise.all([collectLimitsNow(), refreshMachines()]).then(([accounts]) => {
     const had = limitCache !== undefined;
     limitCache = { at: Date.now(), accounts };
     if (accounts.length) db.prepare('INSERT INTO cursor(name,value) VALUES (?,?) ON CONFLICT(name) DO UPDATE SET value=excluded.value').run(LAST_LIMITS, JSON.stringify({ ...limitCache, ...collectLimitsNow.state() }));
     if (had) bb.rpc.experimental_invalidate(['usage']);
   }, () => { limitCache ??= { at: Date.now(), accounts: [] }; }).finally(() => { limitPending = undefined; });
+  let machinesKnown: Promise<void> | undefined;
   const limitAccounts = async () => {
+    // A restart restores the accounts but not the machines; the first read learns them.
+    await (machinesKnown ??= refreshMachines());
     if (!limitCache) await refreshLimits();
     else if (Date.now()-limitCache.at>=60_000) void refreshLimits();
     return limitCache!.accounts;
@@ -95,10 +106,12 @@ export function registerRpc(bb: BbPluginApi, db: Database, settings: SettingsHan
     limits: async () => {
       const o = await options(), heavy = parseHeavy(o.heavyModels ?? DEFAULT_HEAVY_MODELS);
       // A window past its reset comes from a last known report; its numbers belong to a period that is over.
-      const accounts = (await limitAccounts()).map(a => {
+      const accounts = (await limitAccounts()).map(({ host, ...a }) => {
+        // Unknown until bb names this machine: then no card claims to be from another one.
+        const machine = host && machines.self && host.id !== machines.self ? machines.names.get(host.id) ?? host.name : null;
         const live = a.windows.filter(w => w.resetsAt === null || w.resetsAt > o.now);
         // All windows over and no fresh report yet: say so, instead of "no data: ok".
-        return { ...a, message: live.length || !a.windows.length ? a.message : a.message ?? 'reset, no fresh report yet', windows: live.map(w => {
+        return { ...a, machine, message: live.length || !a.windows.length ? a.message : a.message ?? 'reset, no fresh report yet', windows: live.map(w => {
           const length = windowLength(w.kind, w.label), startsAt = w.resetsAt === null || length === null ? null : w.resetsAt - length;
           const usage = startsAt === null ? null : windowUsage(db, a.providerId, startsAt, w.usedPercent, w.model, heavy, o.overrides);
           // shortcut: the last week's spend counts from the first stored hour, so a fresh install underrates the pace for its first week.
