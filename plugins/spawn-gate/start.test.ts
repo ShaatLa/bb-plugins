@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { afterEach, expect, it, vi } from "vitest";
@@ -171,6 +171,66 @@ it("refuses declared heavy work on a host without Slots support and reads new ho
     ok: true, data: { localHostId: "host_server", leaseHosts: { [f.host.id]: { pools: ["heavy"] } } },
   }));
   expect(await f.start({ ...request, dryRun: true })).toMatchObject({ hostId: f.host.id, build: { requiresHeavyLease: true } });
+});
+
+it("runs the Work Board builder and counts successes and fixed refusals through start", async () => {
+  const f = await fixture();
+  const configPath = join(f.root, "builder-config.json");
+  const cardPath = join(f.root, "card.json");
+  const base = "a".repeat(40), head = "b".repeat(40);
+  const parent = f.request.parentThreadId;
+  const models = [{ providerId: "codex", model: "codex-model" }, { providerId: "claude-code", model: "claude-model" }];
+  await writeFile(configPath, JSON.stringify({
+    managerThreadId: "thr_manager", owners: { example: parent, other: "thr_other" },
+    roles: { impl: models, review: models, check: models, "plan-review": models },
+  }));
+  vi.stubEnv("BB_SPAWN_GATE_WORK_BOARD_CONFIG", configPath);
+  vi.stubEnv("EXAMPLE_CARD_JSON", cardPath);
+  await writeFile(join(f.root, "bin", "bb"), `#!/bin/sh
+if [ "$1" = thread ]; then
+  printf '%s\\n' '{"thread":{"providerId":"codex"}}'
+else
+  cat "$EXAMPLE_CARD_JSON"
+fi
+`, { mode: 0o755 });
+  await writeFile(join(f.repo, "builder.py"), await readFile(new URL("./examples/work-board/build.py", import.meta.url)));
+  f.git("add", "builder.py"); f.git("commit", "-m", "Use the card builder");
+  f.harness.sdk.stub("projects.get", async () => ({
+    gitRemoteUrl: f.repo, sources: [{ isDefault: true, hostId: "host_example" }],
+  }));
+  f.harness.sdk.stub("threads.get", async () => makeThreadResponse({ projectId: f.request.projectId, environmentId: "env_example" }));
+  f.harness.sdk.stub("environments.get", async () => ({ hostId: "host_example" }));
+  f.harness.sdk.stub("providers.list", async () => []);
+  f.harness.sdk.stub("plugins.callRpc", async () => { throw new Error("Account Pooler not installed"); });
+  const task = { key: "EXA-1", status: "in_progress", type: "task", title: "Example", description: "Scope: plugins/example/\nFix the test." };
+  const plan = { state: "approved", version: 1, body: "Use the fixture.\nagent-admission example" };
+  const card = {
+    task, plan, project: { linkedBbProjectId: f.request.projectId }, dependencies: { blockedBy: [] as { status: string }[] },
+    comments: [{ kind: "agent", threadId: parent, body: `Review range: ${base}..${head}`, provider: { id: "codex" } }],
+  };
+  const saveCard = () => writeFile(cardPath, JSON.stringify(card));
+  const launch = (role: string, dryRun = true) => f.start({ ...f.request, args: ["--card", task.key, "--role", role], dryRun });
+  await saveCard();
+  expect(await launch("impl")).toMatchObject({ build: { brief: expect.stringContaining("> agent-admission example"), spawn: { providerId: "codex" } } });
+  expect(await launch("review")).toMatchObject({ build: {
+    brief: expect.stringContaining(head), spawn: { providerId: "claude-code" },
+    providerPolicy: { eligible: [models[1]] },
+  } });
+  expect(await launch("check", false)).toMatchObject({ dryRun: false, threadId: "thr_child" });
+  plan.state = "draft"; await saveCard();
+  expect(await launch("plan-review")).toMatchObject({ build: { spawn: { providerId: "claude-code" } } });
+  await expect(launch("impl")).rejects.toThrow('{"reasonCode": "no_approved_plan"}');
+  await expect(launch("unrecognized")).rejects.toThrow('{"reasonCode": "unknown_role"}');
+  task.status = "done"; await saveCard();
+  await expect(launch("check")).rejects.toThrow('{"reasonCode": "card_closed"}');
+  task.status = "in_progress"; plan.state = "approved"; task.description = "Scope: plugins/other/"; await saveCard();
+  await expect(launch("impl")).rejects.toThrow('{"reasonCode": "scope_not_allowed"}');
+  expect(f.spawn).toHaveBeenCalledTimes(1);
+  const report = await f.report({ events: true });
+  expect(report.projects[0]).toMatchObject({ starts: 1, dryRuns: 3, blockedStarts: 0 });
+  expect(report.events?.map(event => event.reason).sort()).toEqual([
+    "builder:card_closed", "builder:no_approved_plan", "builder:scope_not_allowed", "builder:unknown_role",
+  ]);
 });
 
 it("fetches an orphan builder branch and refuses a tag with the same name as a missing branch", async () => {

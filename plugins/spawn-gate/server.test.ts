@@ -33,8 +33,11 @@ async function setup(enabled = true, existing = false) {
 it("defaults off and reacts to the enforcement switch", async () => {
   const h = await setup(false);
   expect((await h.check()).action).toBe("proceed");
+  const instructions = () => h.harness.registrations.instructionProvider!({ projectId: PROJECT, threadId: "thr_parent" });
+  expect(instructions()).toBeNull();
   await h.setSettings({ enabled: true });
   expect((await h.check()).action).toBe("reject");
+  expect(instructions()).toContain("Use this launch script");
 });
 it.each(["claude-code", "codex", "antigravity"])("rejects direct %s starts, including parentless agents", async providerId => {
   const h = await setup();
