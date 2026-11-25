@@ -420,11 +420,14 @@ function start(bb: BbPluginApi, migrationError: string | null) {
       const projects=rows.length ? await displayProjects() : [];
       const threadMap=new Map(threads.map(t=>[t.id,t]));
       // Reading a thread in bb counts as reading it here: what arrived before bb's lastReadAt was seen there.
-      const unreadIds=rows.filter(r=>r.unread>0).map(r=>r.thread_id as string);
+      // Unread replies to the owner in sub-sessions: they badge the sub-session row and its contact, not a contact of their own.
+      const subRows=db.prepare(`SELECT thread_id,count(*) AS unread FROM items WHERE thread_id IN (SELECT thread_id FROM sub_threads) AND kind='mine' AND spawned=0 AND thread_deleted=0 AND ${ATTENTION_SQL} GROUP BY thread_id LIMIT 200`).all() as {thread_id:string;unread:number}[];
+      const unreadIds=[...rows.filter(r=>r.unread>0).map(r=>r.thread_id as string),...subRows.map(r=>r.thread_id)].slice(0,200);
       const fresh=unreadIds.length ? await bb.sdk.threads.list({threadIds:unreadIds,includeHidden:true,limit:200}) : [];
       const readTimes=new Map(fresh.map(t=>[t.id,t.lastReadAt]));
       let seen=0;
-      for (const r of rows) { const readAt=readTimes.get(r.thread_id); if (r.unread>0 && readAt) { const n=await applyBbRead(r.thread_id,readAt).catch(()=>0); r.unread-=n; seen+=n; } }
+      for (const r of [...rows,...subRows]) { const readAt=readTimes.get(r.thread_id); if (r.unread>0 && readAt) { const n=await applyBbRead(r.thread_id,readAt).catch(()=>0); r.unread-=n; seen+=n; } }
+      const subUnread=Object.fromEntries(subRows.filter(r=>r.unread>0).map(r=>[r.thread_id,r.unread]));
       if (seen) invalidate();
       const projectMap=new Map(projects.map(p=>[p.id,p]));
       const mentioned=[...new Set(rows.flatMap(r=>[...((r.preview ?? '') as string).matchAll(/(?:@thread:|^\[bb message from thread:)(thr_[A-Za-z0-9_-]+)/g)].map(m=>m[1]!)))].filter(id=>!threadMap.has(id)).slice(0,200);
@@ -445,7 +448,7 @@ function start(bb: BbPluginApi, migrationError: string | null) {
       const plain=(text:string)=>unquote(text.replace(/^\[bb message from thread:(thr_[A-Za-z0-9_-]+)\]\s*/,(_,id:string)=>threadMap.get(id)?.title ? `${threadMap.get(id)!.title}: ` : '').replace(/^\[bb (?:message from plugin:([\w.-]+)|automation\b[^\]\n]*)\]\s*(?:\[(?![A-Z][A-Z0-9]*-\d)[^\]\n]{2,40}\](?![(:])\s+)?/,(_,id:string|undefined)=>`${names.get(id ?? 'automations') ?? id ?? 'Automations'}: `)).replace(/^\s*(?:#{1,6}|[-*+]|\d+[.)])\s+/gm,'').replace(/@thread:(thr_[A-Za-z0-9_-]+)(?:#msg=\d+)?/g,(_,id:string)=>'@'+(threadMap.get(id)?.title ?? 'thread')).replace(/\[([^\]]+)\]\([^)\s]+\)/g,'$1').replace(/\*\*|`/g,'').replace(/\s+/g,' ').trim();
       // Threads with an open question to the owner, so contacts can surface a sub-session that asks under its collapsed parent.
       const asking=(db.prepare(`SELECT DISTINCT thread_id FROM items WHERE kind='for_me' AND status='open' AND dismissed_at IS NULL AND declined_at IS NULL AND thread_deleted=0 AND ${ACTIVE_THREAD_SQL} AND ${OWNER_ITEM_SQL}`).all() as {thread_id:string}[]).map(r=>r.thread_id);
-      return {asking,recipients:rows.map(r=>{const t=threadMap.get(r.thread_id),projectId=t?.projectId ?? r.project_id ?? null; return {threadId:r.thread_id,threadTitle:t?.title ?? null,projectId,projectName:projectMap.get(projectId)?.name ?? null,unread:r.unread,questions:r.questions,lastAt:r.last_at,preview:plain(inlineCommentPreview(previewFor(r).replace(/<!--[\s\S]*?-->\s*/g,''))).slice(0,160)};})};
+      return {asking,subUnread,recipients:rows.map(r=>{const t=threadMap.get(r.thread_id),projectId=t?.projectId ?? r.project_id ?? null; return {threadId:r.thread_id,threadTitle:t?.title ?? null,projectId,projectName:projectMap.get(projectId)?.name ?? null,unread:r.unread,questions:r.questions,lastAt:r.last_at,preview:plain(inlineCommentPreview(previewFor(r).replace(/<!--[\s\S]*?-->\s*/g,''))).slice(0,160)};})};
     },
     // A UI crash caught by the app's CrashGuard, so its stack reaches `bb plugin logs agent-hub`.
     logClientError(raw:z.infer<typeof inputs.logClientError>) {const p=inputs.logClientError.parse(raw); bb.log.error(`Agent Hub UI crash (${p.where}): ${p.message}${p.stack ? `\n${p.stack}` : ''}`); return {ok:true as const};},

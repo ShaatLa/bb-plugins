@@ -264,7 +264,7 @@ describe('notice RPC', () => {
 
 it('appends the notices migration and keeps its placeholder literal in step with the constant', () => {
   const entry = migrations.find(m => m.includes('CREATE TABLE notices'))!;
-  expect(migrations.indexOf(entry)).toBe(migrations.length - 1);
+  expect(migrations.indexOf(entry)).toBeGreaterThan(migrations.findIndex(m => m.includes('CREATE TABLE sub_threads'))); // its trigger needs sub_threads
   expect(entry).toContain(`'${NOTICE_THREAD}'`);
   const db = new Database(':memory:'); db.exec(migrations.join('\n'));
   expect(db.prepare("SELECT count(*) AS n FROM sqlite_master WHERE name LIKE 'notices_rehome_%'").get()).toEqual({ n: 2 });

@@ -88,9 +88,9 @@ export function createDriver(bb: BbPluginApi, db: Database.Database, invalidate:
     catch (e) { if (notFound(e)) {remove(id); return;} throw e; }
     const {channelCommands} = await getProjectConfig(bb,projectId);
     let changed = false;
-    async function apply(events: Event[]) {
+    async function apply(events: Event[], baseline?: () => void) {
       const warnings: {text:string;turn:string;seq:number}[] = [];
-      changed = db.transaction(() => applyEvents(db,id,events,projectId,Date.now(),questions,live.has(id),(text,at,turn,seq) => {if (at >= startedAt) warnings.push({text,turn,seq});},channelCommands))() || changed;
+      changed = db.transaction(() => { const result = applyEvents(db,id,events,projectId,Date.now(),questions,live.has(id),(text,at,turn,seq) => {if (at >= startedAt) warnings.push({text,turn,seq});},channelCommands); baseline?.(); return result; })() || changed;
       for (const {text,turn,seq} of warnings) {
         if (signal.aborted || thread.archivedAt || db.prepare('SELECT 1 FROM archived_threads WHERE thread_id=?').get(id) || !await handoffWarnings()) continue;
         if (await usedChannel(id,turn,seq,channelCommands)) {bb.log.warn(`Agent Hub warning skipped: turn ${turn} used a channel its ingest missed`); continue;}
@@ -100,7 +100,7 @@ export function createDriver(bb: BbPluginApi, db: Database.Database, invalidate:
     }
     if (!questions) db.transaction(() => {
       db.prepare('INSERT OR IGNORE INTO sub_threads VALUES (?)').run(id);
-      db.prepare("UPDATE items SET read_at=coalesce(read_at,?),notify_state=0,asks=0 WHERE thread_id=? AND NOT (kind='for_me' AND chat_asked=0) AND (read_at IS NULL OR notify_state<>0 OR asks<>0)").run(Date.now(),id);
+      db.prepare("UPDATE items SET read_at=coalesce(read_at,?),notify_state=0,asks=0 WHERE thread_id=? AND NOT (kind='for_me' AND chat_asked=0) AND NOT (kind='mine' AND spawned=0) AND (read_at IS NULL OR notify_state<>0 OR asks<>0)").run(Date.now(),id);
     })();
     // A sub-session whose parent was cleared in bb is a top-level chat again.
     else if (db.prepare('DELETE FROM sub_threads WHERE thread_id=?').run(id).changes) changed = true;
@@ -116,7 +116,8 @@ export function createDriver(bb: BbPluginApi, db: Database.Database, invalidate:
         if (result.events.length < result.size) break;
         before = Math.min(...result.events.map(e=>e.seq));
       }
-      await apply(events.sort((a,b)=>a.seq-b.seq));
+      // A sub-session seen for the first time replays its history: replies from before this start were missed long ago, not new.
+      await apply(events.sort((a,b)=>a.seq-b.seq), questions ? undefined : () => db.prepare("UPDATE items SET read_at=coalesce(read_at,?),notify_state=0 WHERE thread_id=? AND kind='mine' AND coalesce(answered_at,failed_at,created_at)<? AND (read_at IS NULL OR notify_state<>0)").run(Date.now(),id,startedAt));
     }
     let cursor = (db.prepare('SELECT last_seq FROM threads_state WHERE thread_id=?').get(id) as State).last_seq;
     for (;;) {

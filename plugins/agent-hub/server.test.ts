@@ -56,7 +56,7 @@ describe('server',()=>{
   });
   it('is left alone by Mark all read, and the read guard differs from the attention rule only by the archived clause',async()=>{
    const {harness,db}=archived(); await harness.behavior.callRpc('markRead',{all:true}); expect(unread(db)).toEqual(['ans_old','ans_old2']);
-   db.prepare("DELETE FROM archived_threads").run(); seed(db,'ans_sub','mine','s'); db.prepare("INSERT INTO sub_threads VALUES ('s')").run(); db.prepare("UPDATE items SET status='answered',answer='a' WHERE id='ans_sub'").run();
+   db.prepare("DELETE FROM archived_threads").run(); seed(db,'ans_sub','update','s'); db.prepare("INSERT INTO sub_threads VALUES ('s')").run(); db.prepare("UPDATE items SET status='answered',answer='a' WHERE id='ans_sub'").run();
    await harness.behavior.callRpc('markRead',{ids:['ans_sub']}); expect(unread(db)).toContain('ans_sub');
   });
  });
@@ -89,6 +89,28 @@ describe('server',()=>{
   // A real read in bb later still counts.
   harness.sdk.stub('threads.list',async()=>[makeThreadResponse({id:'t',title:'T',lastReadAt:9000} as any)]);
   expect((await harness.behavior.callRpc('recipients',{}) as any).recipients[0].unread).toBe(0);
+ });
+ it('reconciles bb reads of a sub-session through recipients alone, minding the send-time guard',async()=>{
+  const {harness,db}=setup();
+  db.prepare("INSERT INTO sub_threads VALUES ('s')").run(); seed(db,'ans_sub','mine','s');
+  db.prepare("UPDATE items SET status='answered',answer='b',answered_at=3000 WHERE id='ans_sub'").run();
+  harness.sdk.stub('threads.list',async(args:any)=>args.threadIds.map((id:string)=>makeThreadResponse({id,lastReadAt:5001} as any)));
+  harness.sdk.stub('threads.events.list',async()=>[{seq:9,createdAt:5000,type:'client/turn/requested',data:{initiator:'user'}}] as any);
+  expect(await harness.behavior.callRpc('recipients',{})).toMatchObject({recipients:[],subUnread:{s:1}});
+  expect((await harness.behavior.callRpc('counts',{}) as any).inbox).toBe(1);
+  harness.sdk.stub('threads.list',async(args:any)=>args.threadIds.map((id:string)=>makeThreadResponse({id,lastReadAt:9000} as any)));
+  expect((await harness.behavior.callRpc('recipients',{}) as any).subUnread).toEqual({});
+  expect((await harness.behavior.callRpc('counts',{}) as any).inbox).toBe(0);
+ });
+ it('counts only the owner\'s own replies in a sub-session, not its spawn brief, asks or background',async()=>{
+  const {harness,db}=setup();
+  db.prepare("INSERT INTO sub_threads VALUES ('s')").run();
+  seed(db,'ans_brief','mine','s'); seed(db,'ans_own','mine','s'); seed(db,'ans_ask','for_me','s'); seed(db,'ans_bg','update','s');
+  db.prepare("UPDATE items SET status='answered',answer='a',answered_at=3000,read_at=NULL WHERE kind IN ('mine','update')").run();
+  db.prepare("UPDATE items SET spawned=1,read_at=NULL WHERE id='ans_brief'").run();
+  expect(db.prepare('SELECT id FROM items WHERE read_at IS NULL ORDER BY id').all()).toEqual([{id:'ans_ask'},{id:'ans_own'}]);
+  harness.sdk.stub('threads.list',async()=>[]);
+  expect((await harness.behavior.callRpc('recipients',{}) as any).subUnread).toEqual({s:1});
  });
  it('validates every RPC boundary and tags both reads',async()=>{
   const {harness}=setup();
@@ -254,11 +276,12 @@ describe('server',()=>{
   await harness.behavior.emitThreadEvent('thread.created',{thread:makeThreadResponse({id:'thr_example_child',parentThreadId:'thr_example'})} as any);
   expect((await harness.behavior.callRpc('recipients',{}) as any).recipients.map((r:any)=>r.threadId)).toEqual(['thr_example']);
  });
- it.each(['live','list','recipients','legacy-list','legacy-recipients'])('ingests sub-thread history read and outside aggregates via %s',async mode=>{
+ it.each(['live','list','recipients','legacy-list','legacy-recipients'])('ingests sub-thread history read, background outside aggregates and a later owner reply unread via %s',async mode=>{
   const {harness,db}=setup(), sub='thr_example_child', thread=makeThreadResponse({id:sub,parentThreadId:'thr_example'});
   const push=vi.fn(async()=>({channels:['mobile']}));
   harness.sdk.stub('threads.get',async()=>thread); harness.sdk.stub('plugins.callRpc',push as any);
   const events:any[]=[{seq:1,type:'client/turn/requested',data:{initiator:'user',requestId:'req_example',input:[{type:'text',text:'Inspect the result?'}]}},{seq:2,type:'turn/started',scope:{turnId:'turn_example'},data:{}},{seq:3,type:'turn/input/accepted',scope:{turnId:'turn_example'},data:{clientRequestId:'req_example'}},{seq:4,type:'item/completed',scope:{turnId:'turn_example'},data:{item:{type:'agentMessage',text:'Ready. Shall I continue?'}}},{seq:5,type:'turn/completed',scope:{turnId:'turn_example'},data:{status:'completed'}}];
+  for(const e of events) e.createdAt=1; // from before Agent Hub started
   harness.sdk.stub('threads.events.list',async(a:any)=>events.filter(e=>e.seq>Number(a.afterSeq ?? 0)) as any);
   if(mode.startsWith('legacy')) db.prepare('INSERT INTO threads_state(thread_id,last_seq,updated_at) VALUES (?,0,0)').run(sub);
   if(mode==='live') {
@@ -269,21 +292,33 @@ describe('server',()=>{
   expect(history.items).toMatchObject([{question:'Inspect the result?',answer:'Ready. Shall I continue?'}]);
   expect(history.items.every((i:any)=>i.readAt!==null)).toBe(true);
   if(mode==='live') {
-   events.push(...events.slice(0,5).map(e=>({...e,seq:e.seq+5,scope:e.scope ? {turnId:'turn_example_next'} : undefined,data:{...e.data,...(e.type==='client/turn/requested' ? {requestId:'req_example_next'} : e.type==='turn/input/accepted' ? {clientRequestId:'req_example_next'} : {})}})));
+   events.push(...events.slice(0,5).map(e=>({...e,seq:e.seq+5,createdAt:Date.now(),scope:e.scope ? {turnId:'turn_example_next'} : undefined,data:{...e.data,...(e.type==='client/turn/requested' ? {requestId:'req_example_next'} : e.type==='turn/input/accepted' ? {clientRequestId:'req_example_next'} : {})}})));
    await harness.behavior.emitThreadEvent('experimental_thread.events',{thread,sequence:10} as any);
    await vi.waitFor(()=>expect(db.prepare('SELECT last_seq FROM threads_state WHERE thread_id=?').get(sub)).toEqual({last_seq:10}));
-   expect(db.prepare('SELECT 1 FROM items WHERE read_at IS NULL').get()).toBeUndefined();
+   expect(db.prepare('SELECT kind,question_seq FROM items WHERE read_at IS NULL').all()).toEqual([{kind:'mine',question_seq:6}]);
   }
-  db.prepare('UPDATE items SET read_at=NULL,notify_state=1,asks=1').run();
-  expect(db.prepare('SELECT 1 FROM items WHERE read_at IS NULL OR notify_state<>0 OR asks<>0').get()).toBeUndefined();
-  expect(db.prepare("SELECT 1 FROM items WHERE kind='for_me' OR notify_state<>0").get()).toBeUndefined();
-  expect(await harness.behavior.callRpc('counts',{})).toEqual({unread:0,waiting:0,forMe:0,inbox:0});
-  expect((await harness.behavior.callRpc('recipients',{selected:sub}) as any).recipients).toEqual([]);
+  const fresh=mode==='live' ? 1 : 0;
+  db.prepare("UPDATE items SET read_at=NULL,notify_state=1,asks=1 WHERE kind<>'mine'").run();
+  expect(db.prepare("SELECT 1 FROM items WHERE kind<>'mine' AND (read_at IS NULL OR notify_state<>0 OR asks<>0)").get()).toBeUndefined();
+  expect(db.prepare("SELECT 1 FROM items WHERE kind='for_me'").get()).toBeUndefined();
+  expect(await harness.behavior.callRpc('counts',{})).toEqual({unread:fresh,waiting:0,forMe:0,inbox:fresh});
+  expect(await harness.behavior.callRpc('recipients',{selected:sub})).toMatchObject({recipients:[],subUnread:fresh ? {[sub]:1} : {}});
   db.prepare('UPDATE items SET pinned=1').run();
-  for(const view of ['all','unread','waiting','for_me','saved','pinned']) expect((await harness.behavior.callRpc('list',{view,query:'result'}) as any).items).toEqual([]);
+  for(const view of ['all','unread','waiting','for_me','saved','pinned']) expect((await harness.behavior.callRpc('list',{view,query:'result'}) as any).items.every((i:any)=>i.kind==='mine')).toBe(true);
   const digest=JSON.parse((await harness.behavior.runCli(['digest','--json'])).stdout);
-  expect(digest.newAnswers.total).toBe(0); expect(digest.waiting.total).toBe(0);
-  expect(push).not.toHaveBeenCalled();
+  expect(digest.newAnswers.total).toBe(fresh); expect(digest.waiting.total).toBe(0);
+  expect(push).not.toHaveBeenCalled(); // the default level pushes questions only; notify.test covers the reply at 'all'
+ });
+ it('replays a sub-session first seen after a failed first drain with only its replies since the start unread',async()=>{
+  const {harness,db}=setup(), sub='thr_example_child', thread=makeThreadResponse({id:sub,parentThreadId:'thr_example'});
+  harness.sdk.stub('threads.get',async()=>thread);
+  const turn=(seq:number,at:number,text:string)=>[{seq,createdAt:at,type:'client/turn/requested',data:{initiator:'user',requestId:`req_${seq}`,input:[{type:'text',text}]}},{seq:seq+1,createdAt:at,type:'turn/started',scope:{turnId:`turn_${seq}`},data:{}},{seq:seq+2,createdAt:at,type:'turn/input/accepted',scope:{turnId:`turn_${seq}`},data:{clientRequestId:`req_${seq}`}},{seq:seq+3,createdAt:at,type:'item/completed',scope:{turnId:`turn_${seq}`},data:{item:{type:'agentMessage',text:'It is done, see the summary.'}}},{seq:seq+4,createdAt:at,type:'turn/completed',scope:{turnId:`turn_${seq}`},data:{status:'completed'}}];
+  const events:any[]=[...turn(1,1,'Is the old check green?'),...turn(6,Date.now()+1000,'Is the new check green?')];
+  let fail=true;
+  harness.sdk.stub('threads.events.list',async(a:any)=>{if(fail){fail=false;throw new Error('temporarily unavailable');} return events.filter(e=>e.seq>Number(a.afterSeq ?? 0)) as any;});
+  await harness.behavior.callRpc('recipients',{selected:sub}).catch(()=>{});
+  await vi.waitFor(async()=>{await harness.behavior.callRpc('recipients',{selected:sub}); expect(db.prepare('SELECT last_seq FROM threads_state WHERE thread_id=?').get(sub)).toEqual({last_seq:10});});
+  expect(db.prepare("SELECT question,read_at IS NULL AS unread FROM items WHERE kind='mine' ORDER BY question_seq").all()).toEqual([{question:'Is the old check green?',unread:0},{question:'Is the new check green?',unread:1}]);
  });
  it('keeps explicit sub-agent asks visible and sub-thread reports read',async()=>{
   const {harness,db}=setup(),sub='thr_example_child';

@@ -986,7 +986,8 @@ function InboxChat({ onBulkRead, bbChat = false, search: searchProp, onSearch, t
   // A loaded window of only quiet updates collapses to a single row; reach back (up to 5 pages) to the last real exchange.
   useEffect(() => { if (selected && shown.length === depth && depth < 5 && shown.at(-1)?.nextCursor && !historyGroups.some(entry => !entry.updates && !quietUpdate(entry))) setDepth(d => d + 1); }, [historyGroups]);
   useEffect(() => { if (!selected || !pages.length) return; const questions = [...pages.flatMap(page => page.items)].filter(item => item.threadId === selected); setOptimistic(old => { const remaining = [...questions], matched = new Set<number>(); for (const b of [...old].reverse()) { if (b.threadId !== selected) continue; const index = remaining.findIndex(item => !b.seenIds.includes(item.id) && item.question.trim() === b.text); if (index >= 0) { remaining.splice(index, 1); matched.add(b.id); } } return matched.size ? old.filter(b => !matched.has(b.id)) : old; }); }, [selected, pages]);
-  const openUnread = current?.unread ?? 0;
+  // A sub-session is no contact: its own unread replies (never its children's) make opening it a read.
+  const openUnread = (current?.unread || recipients?.subUnread?.[selected ?? '']) ?? 0;
   // bb's chat has no per-message read marks, so an open conversation counts as read.
   useEffect(() => { if (bbChat && selected && openUnread) void rpc.call('markThreadRead', { threadId: selected }).catch(() => {}); }, [bbChat, selected, openUnread]);
   const [desktop, setDesktop] = useState(() => window.matchMedia?.('(min-width: 640px)').matches ?? true);

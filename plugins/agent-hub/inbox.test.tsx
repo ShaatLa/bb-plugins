@@ -11,6 +11,7 @@ vi.mock('@get-bb/plugin-sdk/app', async importOriginal => { const actual = await
 vi.mock('./app', async importOriginal => { const app = await importOriginal<typeof import('./app')>(); return { ...app, ItemCard: (props: Parameters<typeof app.ItemCard>[0]) => { cards.renders++; cards.byThread[props.item.threadId]=(cards.byThread[props.item.threadId] ?? 0)+1; return app.ItemCard(props); } }; });
 import { receivePage, History, Inbox, groupItems, followTo, atEnd } from './inbox';
 import { VOICE_BUSY } from './composer';
+import { selectContact } from './open-chat';
 import { itemSchema, type Item } from './contract';
 const base: Item = itemSchema.parse({ id:'ans_one', kind:'mine', threadId:'thr_one', projectId:'pr_one', threadTitle:'One', projectName:'Project', status:'answered', question:'Question one', questionSeq:1, requestId:null, turnId:null, candidate:null, candidateSeq:null, interim:null, interimSeq:null, answer:'Answer one', answerSeq:2, answerSource:'turn', resolveTurnId:null, note:null, snoozedUntil:null, failedAt:null, likelyInterim:false, options:null, taskKey:null, readAt:null, pinned:false, dismissedAt:null, threadDeleted:false, createdAt:Date.now(), updatedAt:Date.now() });
 const one = { threadId:'thr_one', threadTitle:'One', projectId:'pr_one', projectName:'Project', unread:1, lastAt:Date.now(), preview:'Answer one' };
@@ -1908,4 +1909,14 @@ it('opens at the newest, and stays there, while the pages of a remembered depth 
     await act(async () => { await new Promise(r => setTimeout(r, 200)); });
     expect(layout.top(scroller)).toBe(9 * 300 - 500);
   } finally { layout.restore(); localStorage.removeItem('bb-plugin-answers:page:scroll'); }
+});
+it('reads a sub-session opened in bb-chat mode by its own unread replies, and never a child through its parent', async () => {
+  const markThreadRead = vi.fn(() => ({ ok: true, batch: null, count: 1 })), subUnread = { thr_example_child: 1 };
+  selectContact('thr_example_child'); setup({ props: { bbChat: true }, rpc: { markThreadRead, recipients: () => ({ recipients: [{ ...one, unread: 0 }], subUnread }) } });
+  await waitFor(() => expect(markThreadRead).toHaveBeenCalledWith({ threadId: 'thr_example_child' }));
+  cleanup(); markThreadRead.mockClear();
+  selectContact('thr_one'); setup({ props: { bbChat: true }, rpc: { markThreadRead, recipients: () => ({ recipients: [{ ...one, unread: 0 }], subUnread }) } });
+  await new Promise(r => setTimeout(r, 50));
+  expect(markThreadRead).not.toHaveBeenCalled();
+  selectContact(undefined);
 });
