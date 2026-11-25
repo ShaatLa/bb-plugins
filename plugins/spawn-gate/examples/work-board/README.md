@@ -56,6 +56,10 @@ epic returns `unsupported_card_type`; use a task key from the epic.
 - `plan-review` starts a reviewer on a different provider from the caller.
   Save the draft, launch the reviewer, and submit the plan to its thread ID.
 
+Every role must message its parent when done or blocked, even if the result
+also appears in the final reply. For example,
+`bb thread tell thr_parent 'Reviewed the change. No blocking findings.'`.
+
 The default `environment`, `managed-worktree`, gives `impl` and `review` a
 fresh worktree. The BB project source on the execution machine must point at
 the Git checkout for BB to provision it.

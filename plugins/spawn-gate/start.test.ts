@@ -257,7 +257,10 @@ fi
   const reused = { type: "reuse", environmentId: "env_example" };
   await writeFile(configPath, JSON.stringify({ ...config, environment: "reuse-parent" }));
   for (const role of ["impl", "review", "check", "plan-review"]) {
-    expect(await launch(role)).toMatchObject({ build: { spawn: { environment: reused } } });
+    expect(await launch(role)).toMatchObject({ build: {
+      brief: expect.stringContaining(`When done or blocked, notify @thread:${parent} with \`bb thread tell ${parent} '<result or blocker>'\`.`),
+      spawn: { environment: reused, parentNotifications: "stuck" },
+    } });
   }
   expect(f.mint).toHaveBeenCalledTimes(1);
   expect(f.spawn).toHaveBeenCalledTimes(1);

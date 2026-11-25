@@ -141,7 +141,9 @@ def assemble(card, config, request, role):
     brief = (
         f"{key} · {role} · {title}\n\n"
         f"{ROLE_RULES[role]}\n"
-        f"Keep work within `{scope}`. Report to @thread:{parent}. Plugin owner: @thread:{owner}.\n"
+        f"Keep work within `{scope}`. Plugin owner: @thread:{owner}.\n"
+        f"When done or blocked, notify @thread:{parent} with `bb thread tell {parent} '<result or blocker>'`.\n"
+        "Send this message even if your final reply already contains the result.\n"
         f"{review}\n## Card ({task['status']})\n{quote(task.get('description') or '')}\n\n"
         f"## Plan v{plan['version']} ({plan['state']})\n{quote(plan['body'])}\n"
     )
