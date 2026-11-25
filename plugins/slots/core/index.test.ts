@@ -359,6 +359,23 @@ describe("Slots deterministic engine", () => {
     expect((off.send({ type: "acquire", threadId: "x", hostId: "h", pool: "heavy", job: "suite", estMs: minute, spill: true } as Input).result as { data: { kind: string } }).data.kind).toBe("queued");
   });
 
+  it("honors placement and tool constraints when joining uses", () => {
+    const remote = { ...structuredClone(DEFAULT_SETTINGS), hosts: undefined, capacities: { heavy: 1, "local-model": 0 }, gated: false, connected: true, tools: ["go"] };
+    const h = harness({ capacities: { heavy: 1, "local-model": 1 }, hosts: { r: remote } as unknown as Settings["hosts"] });
+    const ask = (threadId: string, place: "auto" | "local", needs: string[] = []) => h.send({ type: "acquire", threadId, hostId: "h", pool: "heavy", job: "suite", estMs: minute, place, needs } as Input).result;
+    h.open(); expect(ask("a", "auto")).toMatchObject({ ok: true, data: { kind: "leased", lease: { hostId: "h" } } });
+    expect(ask("b", "auto", ["go"])).toMatchObject({ ok: true, data: { kind: "leased", lease: { hostId: "r" } } });
+    expect(ask("b", "local")).toMatchObject({ ok: true, data: { kind: "busy" } });
+    expect(ask("b", "auto", ["docker"])).toMatchObject({ ok: true, data: { kind: "busy" } });
+    expect(ask("b", "auto", ["go"])).toMatchObject({ ok: true, data: { kind: "leased" } });
+    expect(ask("c", "auto", ["go"])).toMatchObject({ ok: true, data: { kind: "queued" } });
+    expect(ask("c", "local", ["docker"])).toMatchObject({ ok: true, data: { kind: "queued", request: { place: "local", needs: ["go", "docker"] } } });
+    expect(ask("d", "auto", ["go"])).toMatchObject({ ok: true, data: { kind: "queued" } });
+    h.send({ type: "release", threadId: "b", all: true });
+    expect(h.state.requests.find(r => r.threadId === "c")?.place).toBe("local");
+    expect(h.state.leases.find(l => l.holderThreadId === "d")?.hostId).toBe("r");
+  });
+
   it("tells the thread and the observer once when a queued request is dropped because its use expired", () => {
     const h = harness({ observerThreadId: "obs", observerEvents: ["expire", "release"] });
     const notices = (t: Transition) => t.effects.flatMap(e => e.type === "notify" ? [`${e.reason}:${e.threadId}${e.queue ? ":queued" : ""}`] : []);

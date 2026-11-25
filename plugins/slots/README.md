@@ -117,23 +117,19 @@ environment runs on a listed machine may use Slots, and its heavy leases take
 that machine's capacity, granted at once: Slots samples only the server Mac, so
 capacity is the only limit elsewhere. Threads on unlisted machines are refused.
 `local-model` always uses the server host, where its devices are registered.
-`status` reports `leaseHosts` (`{hostId: {pools, name}}`, capacity 0 included),
+`status` reports `leaseHosts` (`{hostId: {pools, name, tools}}`, capacity 0 included),
 the read-only check of which machines take leases.
 
-**Spill.** `slots-run --spill` (or `bb slots acquire --spill`) lets heavy work
-from this Mac run on another listed, connected machine when this Mac has no free
-slot or its machine check fails; without it nothing leaves this Mac. The lease
-names the machine (`hostId`, with `homeHostId` for the thread's own host) and
-the acquire line ends with `host <id>`. `slots-run` then copies the worktree
-(tracked and untracked files, not ignored ones such as `.env` or build output)
-with `bb file write`, mirrors it in `~/.bb-slots/work/<hash>` on that machine,
-runs `npm ci` / `bun install --frozen-lockfile` only when a lockfile on the way
-to the working directory changed, and runs the command there with
-`bb terminal run`, stdin closed. A run from an unchanged worktree reuses the
-mirror untouched. Measured overhead: 5–10 s per run for a repository of a
-thousand files (mostly bb's file and terminal round trips), plus any install; mirrors unused for 7 days are pruned. The exit code comes back;
-69 means the copy or the remote start failed (machine offline), 124 a 12 h
-timeout, 130 an interrupt (the remote terminal is closed). Limits: output
+**Placement.** `slots-run` uses the project's `placement` setting (`auto` by
+default), preferring this machine, then connected configured machines with room.
+Set it with `bb slots config set placement local --project proj_example`.
+Use `--local` or `--anywhere` to override, and `--needs go,docker` to require
+installed tools. Set the inventory with `bb plugin config slots set machineTools
+'host_example=go,docker;host_other=node,bun'`. `--spill` remains an alias for
+`--anywhere`. Commands with absolute path arguments outside the worktree stay local.
+The wrapper retries locally only if copying fails or remote setup proves the
+command did not start; ambiguous failures are never retried. Exit codes include
+69 for a lost machine, 124 for timeout and 130 for interruption. Limits: output
 arrives when the command ends (stdout and stderr merged, last 1 MB), files the
 job writes stay there, environment variables are not forwarded, absolute paths
 into this worktree, git submodules, paths with newlines, ports and dev servers

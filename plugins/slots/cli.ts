@@ -57,7 +57,7 @@ export function renderResult(method: string, result: Result<unknown>, json: bool
   return { exitCode: !result.ok || gate?.passed === false ? 1 : 0,
     stdout: json ? JSON.stringify(result) : result.ok ? humanOutput(method, result.data) : result.error.message };
 }
-export function registerCli(bb: BbPluginApi, invoke: Invoke) {
+export function registerCli(bb: BbPluginApi, invoke: Invoke, projectGet?: (id: string) => Promise<{ placement: "auto" | "local" }>, projectSet?: (id: string, value: "auto" | "local") => Promise<{ placement: "auto" | "local" }>) {
   const json = { type: "boolean", description: "Return bounded JSON" } as const;
   const thread = { type: "string", description: "Caller thread when run outside a thread; inside a thread it must be your own" } as const;
   const pool = { type: "enum", values: ["heavy", "local-model"], description: "Resource pool", required: true } as const;
@@ -85,11 +85,17 @@ export function registerCli(bb: BbPluginApi, invoke: Invoke) {
     },
   });
   bb.cli.register(defineCli({ name: "slots", summary: "Advisory local resource leases and machine gate", commands: {
-    config: cliCommand({ summary: "Get, set or unset one Machine Slots setting; without a key, list all", options: { json }, positionals: [
+    config: cliCommand({ summary: "Get, set or unset one Machine Slots setting; without a key, list all", options: { json, project: { type: "string", description: "Project ID for placement" } }, positionals: [
       { name: "operation", description: "show (alias get), set or unset; with a key, only that key is returned", required: false },
       { name: "key", description: "Setting name", required: false },
       { name: "value", description: "New value", required: false },
-    ], async run(i) { return renderResult("config", await invoke("config", { operation: i.positionals.operation ?? "show", ...(i.positionals.key ? { key: i.positionals.key } : {}), ...(i.positionals.value !== undefined ? { value: i.positionals.value } : {}) }), !!i.options.json); } }),
+    ], async run(i) {
+      if (i.options.project) {
+        const op = i.positionals.operation ?? "get", key = i.positionals.key, value = i.positionals.value;
+        if ((key && key !== "placement") || !projectGet || !projectSet || !["get", "show", "set"].includes(op) || (op === "set" && (key !== "placement" || (value !== "auto" && value !== "local")))) return { exitCode: 1, stdout: "Use config get placement or config set placement auto|local --project <id>" };
+        try { const result = op === "set" ? await projectSet(i.options.project, value as "auto" | "local") : await projectGet(i.options.project); return { exitCode: 0, stdout: i.options.json ? JSON.stringify(result) : `placement = ${result.placement}` }; } catch (error) { return { exitCode: 1, stdout: String(error) }; }
+      }
+      return renderResult("config", await invoke("config", { operation: i.positionals.operation ?? "show", ...(i.positionals.key ? { key: i.positionals.key } : {}), ...(i.positionals.value !== undefined ? { value: i.positionals.value } : {}) }), !!i.options.json); } }),
     observer: cliCommand({ summary: "Show or change the observer and event filter", options: {
       json, thread: { type: "string", description: "New observer thread ID" },
       self: { type: "boolean", description: "Make the calling thread the observer" },
@@ -151,16 +157,26 @@ export function registerCli(bb: BbPluginApi, invoke: Invoke) {
     acquire: cliCommand({ summary: "Acquire a use and wait for a slot", options: {
       json, thread, pool, job: { type: "string", required: true, description: "Job description" },
       est: { type: "duration", defaultUnit: "m", required: true, description: "Estimated duration" }, priority, device,
+      place: { type: "enum", values: ["project", "auto", "local"], description: "Placement policy" },
+      anywhere: { type: "boolean", description: "Allow another machine" },
+      local: { type: "boolean", description: "Stay on this machine" },
+      needs: { type: "string", description: "Comma-separated required tools" },
       spill: { type: "boolean", description: "heavy only: when this machine is full, allow a lease on another configured machine (slots-run then runs the command there)" },
       timeout: { type: "duration", defaultUnit: "m", description: "Wait deadline (default 30m, maximum 60m)" },
     }, async run(i, c) {
       if (i.options.thread && c.threadId && i.options.thread !== c.threadId) return renderResult("acquire", foreign(c.threadId), !!i.options.json);
       const o = i.options, caller = o.thread ?? c.threadId, timeout = o.timeout ?? 1800000;
       if (timeout <= 0 || timeout > 3600000) return renderResult("acquire", { ok: false, error: { code: "invalid-input", message: "timeout must be positive and at most 60m" } }, !!o.json);
-      const params: Record<string, unknown> = { threadId: caller, pool: o.pool, job: o.job, estMs: o.est, ...(o.priority ? { priority: o.priority } : {}), ...(o.device ? { device: o.device } : {}), ...(o.spill ? { spill: true } : {}) };
+      const params: Record<string, unknown> = { threadId: caller, pool: o.pool, job: o.job, estMs: o.est, ...(o.priority ? { priority: o.priority } : {}), ...(o.device ? { device: o.device } : {}), place: o.local ? "local" : o.anywhere || o.spill ? "auto" : o.place ?? "local", ...(o.needs ? { needs: o.needs.split(",") } : {}) };
+      const deadline = Date.now() + timeout;
       let result = await call("acquire", params, c);
+      while (result.ok && (result.data as UseOutcome).kind === "busy" && Date.now() < deadline && !c.signal?.aborted) {
+        try { await sleep(Math.min(3000, deadline - Date.now()), undefined, { signal: c.signal }); } catch { return { exitCode: 1, stdout: "canceled" }; }
+        result = await call("acquire", params, c);
+      }
+      if (result.ok && (result.data as UseOutcome).kind === "busy") return { exitCode: 75, stdout: "lease busy; timed out" };
       if (!result.ok) return renderResult("acquire", result, !!o.json);
-      const initial = result.data as UseOutcome, useId = initial.useId;
+      const initial = result.data as Exclude<UseOutcome, { kind: "busy" }>, useId = initial.useId;
       const status = await invoke("status", {});
       if (!status.ok) { await invoke("done", { threadId: caller, useId }); return renderResult("acquire", status, !!o.json); }
       const hostSettings = (status.data as StatusView).hostSettings[initial.kind === "leased" ? initial.lease.homeHostId ?? initial.lease.hostId : initial.request.hostId];
@@ -170,7 +186,6 @@ export function registerCli(bb: BbPluginApi, invoke: Invoke) {
       const success = (outcome: UseOutcome) => ({ exitCode: 0, stdout: o.json ? JSON.stringify({ ok: true, data: outcome }) : `use ${useId} lease ${(outcome as Extract<UseOutcome, { kind: "leased" }>).lease.id} renew ${renew}${(outcome as Extract<UseOutcome, { kind: "leased" }>).lease.homeHostId ? ` host ${(outcome as Extract<UseOutcome, { kind: "leased" }>).lease.hostId}` : ""}` });
       if (c.signal?.aborted) { await invoke("done", { threadId: caller, useId }); return renderResult("acquire", { ok: false, error: { code: "not-found", message: "canceled" } }, !!o.json); }
       if (initial.kind === "leased") return success(initial);
-      const deadline = Date.now() + timeout;
       const requestId = initial.kind === "queued" ? initial.request.id : "";
       const renewMs = renew * 1000;
       let lastRenew = Date.now();

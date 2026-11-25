@@ -28,7 +28,14 @@ it("pins this Mac for a local-model use because the command runs here", async ()
 it("does not run commands on timeout or malformed acquire output", async () => {
   const timeout = await run('exit 75', 'echo ran'); expect(timeout.result.status).toBe(75); expect(timeout.result.stdout).toBe('');
   const malformed = await run('echo "use use-x lease lease-1 renew 30"', 'echo ran'); expect(malformed.result.status).toBe(70); expect(malformed.log).not.toContain('slots done');
-  const unasked = await run('case $2 in acquire) echo "use use-1 lease lease-2 renew 30 host host_example" ;; esac', 'echo ran'); expect(unasked.result.status).toBe(70); expect(unasked.result.stdout).toBe('');
+  const unasked = await run('case $2 in acquire) echo "use use-1 lease lease-2 renew 30 host host_example" ;; esac', 'echo ran', '', ['--local']); expect(unasked.result.status).toBe(70); expect(unasked.result.stdout).toBe('');
+});
+it("passes placement and tool requirements to acquire", async () => {
+  const bb = 'case $2 in acquire) echo "use use-1 lease lease-2 renew 30" ;; esac';
+  expect((await run(bb, 'true')).log).toContain('--place project');
+  expect((await run(bb, 'true', '', ['--anywhere', '--needs', 'go,docker'])).log).toContain('--place auto --needs go,docker');
+  expect((await run(bb, 'true', '', ['--spill', 'auto'])).log).toContain('--place auto');
+  expect((await run(bb, 'true', '', ['--local'])).log).toContain('--place local');
 });
 it("bounds a hung done and ignores its failure", async () => {
   const hung = await run('case $2 in acquire) echo "use use-1 lease lease-2 renew 30" ;; done) exec sleep 20 ;; esac', 'exit 9');
@@ -142,7 +149,7 @@ esac
   expect(first.stdout).toMatch(/\.bb-slots\/work\/[0-9a-f]{16}\/pkg/);
   expect(first.stdout).not.toContain("gone.txt"); expect(first.stdout).not.toContain("secret.env");
   expect(first.stdout).not.toContain("exited with code");
-  expect((await readFile(log, "utf8")).match(/slots acquire .*--spill/)).toBeTruthy();
+  expect((await readFile(log, "utf8")).match(/slots acquire .*--place auto/)).toBeTruthy();
   expect((await readdir(dir)).filter(f => f.endsWith(".b64"))).toEqual([]); // the upload is removed
   // An unchanged worktree is not unpacked again; a changed one is, and drops a deleted file.
   const [mirror] = await readdir(join(home, ".bb-slots", "work")).then(names => names.filter(n => !n.includes(".")));
@@ -151,8 +158,37 @@ esac
   await rm(join(repo, "pkg", "new.txt"));
   const third = run("ls; cat a.txt");
   expect(third.status).toBe(0); expect(third.stdout).toContain("tracked"); expect(third.stdout).not.toContain("new.txt");
-  // A failed copy is not a test failure.
-  await writeFile(bb, `#!/bin/sh\ncase "$1 $2" in "slots acquire") echo "use use-1 lease lease-2 renew 30 host host_example" ;; "file write") cat >/dev/null; echo "Error: HTTP 404: Host not found" >&2; exit 1 ;; esac\n`);
+  // A command exit of 69 is not proof of setup failure.
+  expect(run("exit 69").status).toBe(69);
+  // The nonce marker immediately before the terminal trailer proves setup failed.
+  await writeFile(bb, `#!/bin/sh
+case "$1 $2" in
+  "slots acquire") case "$*" in *"--place local"*) echo "use use-3 lease lease-4 renew 30" ;; *) echo "use use-1 lease lease-2 renew 30 host host_example" ;; esac ;;
+  "file write") cat >/dev/null ;;
+  "terminal run") shift 2; while [ "$1" != -- ]; do [ "$1" = --id ] && id=$2; shift; done; shift
+    shift 8; echo "slots-run setup-failed $1"; echo "Terminal $id exited with code 69."; exit 69 ;;
+esac
+`);
+  const setupFailed = run("echo retried");
+  expect(setupFailed.status).toBe(0); expect(setupFailed.stdout).toContain("retried");
+  expect(setupFailed.stderr).toContain("retrying locally");
+  // A failed copy proves that the command did not start and is retried here.
+
+  await writeFile(bb, `#!/bin/sh\ncase "$1 $2" in "slots acquire") case "$*" in *"--place local"*) echo "use use-3 lease lease-4 renew 30" ;; *) echo "use use-1 lease lease-2 renew 30 host host_example" ;; esac ;; "file write") cat >/dev/null; echo "Error: HTTP 404: Host not found" >&2; exit 1 ;; esac\n`);
   const offline = run("true");
-  expect(offline.status).toBe(69); expect(offline.stderr).toContain("could not copy the worktree to host_example");
+  expect(offline.status).toBe(0); expect(offline.stderr).toContain("could not copy the worktree to host_example");
+});
+
+it("queues locally outside a git worktree and never starts a remote copy", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "slots-no-git-")); dirs.push(dir);
+  const log = join(dir, "log"), bb = join(dir, "bb");
+  await writeFile(bb, '#!/bin/sh\nprintf "%s\\n" "$*" >> "$LOG"\ncase $2 in acquire) exit 75 ;; esac\nexit 1\n');
+  await chmod(bb, 0o755);
+  const result = spawnSync("sh", [join(import.meta.dirname, "slots-run.sh"), "--anywhere", "--est", "1m", "--job", "test", "--", "true"], {
+    cwd: dir, encoding: "utf8", env: { ...process.env, PATH: `${dir}:${process.env.PATH}`, LOG: log }, timeout: 5000,
+  });
+  expect(result.status).toBe(75);
+  const calls = await readFile(log, "utf8");
+  expect(calls).toContain("--place local");
+  expect(calls).not.toMatch(/file write|terminal run/);
 });

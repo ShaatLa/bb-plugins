@@ -7,7 +7,7 @@ import { z } from "zod";
 import { DEFAULT_SETTINGS, LOCAL_MODEL_MAX, POOLS, SLOTS_CHANGED, type Effect, type Settings, type State, type Input, type Result, type RpcMethods, type HostSettings, SETTING_KEYS, type SettingKey, type SettingValues, type SettingsFormView, type SettingView } from "./contract.js";
 import { apply, deviceList, initialState, portCandidates, statusSnapshot, validateSettings, settingsFor } from "./core/index.js";
 import { DiskStore, metrics, probePort } from "./runtime.js";
-import { inputs, parseObserverEvents, parseRemoteHosts, observerEventsSchema, remoteHostsSchema, rpcContract, stateSchema } from "./schemas.js";
+import { inputs, parseObserverEvents, parseRemoteHosts, observerEventsSchema, remoteHostsSchema, machineToolsSchema, parseMachineTools, rpcContract, stateSchema } from "./schemas.js";
 import { createWatcher } from "./watcher.js";
 import { registerCli } from "./cli.js";
 
@@ -62,19 +62,23 @@ export async function register(bb: BbPluginApi, overrides: Partial<Runtime> = {}
     portFrom: { type: "number", label: "Ports from", description: `First port available for development servers.`, default: 41000, experimental_schema: z.number().int().min(1).max(65535) },
     portTo: { type: "number", label: "Ports to", description: `Last port available; must be at least the first port.`, default: 41099, experimental_schema: z.number().int().min(1).max(65535) },
     remoteHosts: { type: "string", label: "Other machines", description: `bb host id=heavy capacity, comma-separated (e.g. host_example=4). Threads there may lease; \`slots-run --spill\` may run heavy work there. No machine check there; empty means this Mac only.`, default: "", experimental_schema: remoteHostsSchema },
+    machineTools: { type: "string", label: "Installed tools", default: "", experimental_schema: machineToolsSchema },
     grantMode: { type: "select", label: "Grant mode", description: `Automatic grants follow queue order and passing checks; manual grants wait for the manager.`, options: ["auto", "manual"], experimental_optionLabels: { auto: "Automatic", manual: "Manual (manager grants)" }, default: "auto" },
   } satisfies Record<string, PluginSettingDescriptor>;
+  const nativeSettings = bb.settings.define({ machineTools: descriptors.machineTools });
+  let nativeTools = (await nativeSettings.get()).machineTools;
+  nativeSettings.onChange(next => { nativeTools = next.machineTools; bb.realtime.publish(SLOTS_CHANGED, { at: runtime.now() }); });
   const defaults = Object.fromEntries(SETTING_KEYS.map(key => [key, descriptors[key].default])) as SettingValues;
   const store = runtime.store ?? new DiskStore(dirname(bb.storage.database().name));
   const rawConfig = await store.loadConfig();
   const configSchema = z.object({ version: z.literal(1), values: z.partialRecord(z.enum(SETTING_KEYS), z.union([z.number(), z.string()])) }).strict();
   let explicit = rawConfig === undefined ? {} : configSchema.parse(rawConfig).values;
-  const readValues = () => ({ ...defaults, ...explicit }) as Awaited<ReturnType<typeof effectiveValues>>;
+  const readValues = () => ({ ...defaults, ...explicit, machineTools: nativeTools }) as Awaited<ReturnType<typeof effectiveValues>>;
   function effectiveValues() { return Object.fromEntries(SETTING_KEYS.map(key => [key, descriptors[key].default])) as {
     watchPolicy: "off" | "warn"; watchCores: number; watchWindowSeconds: number; idleLeaseMinutes: number;
     heavyCapacity: number; localModelCapacity: number; memFreeMinPct: number; loadMax: number; gateSamples: number;
     gateIntervalSeconds: number; leaseTtlMinutes: number; maxEstimateMinutes: number; heartbeatIntervalMinutes: number; observerThreadId: string;
-    observerEvents: string; observerQueueWaitMinutes: number; observerGateHoldMinutes: number; portFrom: number; portTo: number; grantMode: string; remoteHosts: string;
+    observerEvents: string; observerQueueWaitMinutes: number; observerGateHoldMinutes: number; portFrom: number; portTo: number; grantMode: string; remoteHosts: string; machineTools: string;
   }; }
   function validateField(key: SettingKey, value: unknown, stored = false) {
     const descriptor = descriptors[key];
@@ -88,6 +92,10 @@ export async function register(bb: BbPluginApi, overrides: Partial<Runtime> = {}
     for (const key of SETTING_KEYS) if (patch[key] !== undefined) next[key] = validateField(key, patch[key]);
     for (const key of unset) delete next[key];
     resolveSettings({ ...readValues(), ...next, ...Object.fromEntries(unset.map(key => [key, defaults[key]])) } as ReturnType<typeof readValues>);
+    if (patch.machineTools !== undefined || unset.includes("machineTools")) {
+      nativeTools = (await nativeSettings.experimental_set({ machineTools: unset.includes("machineTools") ? null : String(patch.machineTools) })).machineTools;
+      delete next.machineTools;
+    }
     await store.saveConfig(next);
     explicit = next;
     settings = await getSettings();
@@ -122,15 +130,32 @@ export async function register(bb: BbPluginApi, overrides: Partial<Runtime> = {}
       heartbeatIntervalMs: values.heartbeatIntervalMinutes * 60000, observerThreadId: values.observerThreadId.trim() || null,
       observerEvents: parseObserverEvents(values.observerEvents), observerQueueWaitMs: values.observerQueueWaitMinutes * 60000,
       observerGateHoldMs: values.observerGateHoldMinutes * 60000,
+      primaryHostId: localHostId || undefined, machineTools: parseMachineTools(values.machineTools),
       portRange: { from: values.portFrom, to: values.portTo }, grantMode: values.grantMode as Settings["grantMode"], hosts: {},
     };
     // Other machines reuse these settings with their own heavy capacity and no machine check.
     const { hosts: _, ...base } = settings;
-    for (const [hostId, heavy] of parseRemoteHosts(values.remoteHosts)) if (hostId !== localHostId) settings.hosts[hostId] = { ...base, capacities: { heavy, "local-model": 0 }, gated: false, connected: hostInfo.get(hostId)?.connected ?? true };
+    for (const [hostId, heavy] of parseRemoteHosts(values.remoteHosts)) if (hostId !== localHostId) settings.hosts[hostId] = { ...base, capacities: { heavy, "local-model": 0 }, gated: false, connected: hostInfo.get(hostId)?.connected ?? false, tools: parseMachineTools(values.machineTools)[hostId] ?? [] };
     const error = validateSettings(settings);
     if (error) throw new Error(error);
     return settings;
   }
+  let projectSettings = await bb.storage.kv.get<Record<string, "auto" | "local">>("placement-v1") ?? {};
+  const projectGet = async (projectId: string) => {
+    if (!(await bb.sdk.projects.list()).some(p => p.id === projectId)) throw new Error("Unknown project");
+    return { placement: projectSettings[projectId] ?? "auto" };
+  };
+  let projectWrites: Promise<unknown> = Promise.resolve();
+  const projectSet = (projectId: string, value: "auto" | "local") => {
+    const write = projectWrites.then(async () => {
+      await projectGet(projectId);
+      const next = { ...projectSettings, [projectId]: value };
+      await bb.storage.kv.set("placement-v1", next); projectSettings = next;
+      return { placement: value };
+    });
+    projectWrites = write.catch(() => {});
+    return write;
+  };
   let settings = await getSettings();
   let state: State = initialState();
   let dataDir = "";
@@ -239,6 +264,7 @@ export async function register(bb: BbPluginApi, overrides: Partial<Runtime> = {}
   async function refreshHosts() {
     try { knownHosts = (await deadline(bb.sdk.hosts.list())).filter(h => h.id !== localHostId).map(h => ({ id: h.id, name: h.name, connected: h.status === "connected" })); }
     catch { knownHosts = []; }
+    for (const host of knownHosts) hostInfo.set(host.id, { connected: host.connected, name: host.name });
   }
   const invoke: Invoke = async (method, raw, defaultHost = false) => {
     const result = await serial<Result<unknown>>(async () => {
@@ -248,7 +274,9 @@ export async function register(bb: BbPluginApi, overrides: Partial<Runtime> = {}
     // Every surface uses the same validated dispatcher; caller host comes from the thread.
     const p = parsed.data as Record<string, any>;
     try {
-      const threadHost = p.threadId ? (await localThread(p.threadId)).slotsHostId : null;
+      const thread = p.threadId ? await localThread(p.threadId) : null;
+      const threadHost = thread?.slotsHostId ?? null;
+      if (method === "acquire" && p.place === "project") p.place = thread?.projectId ? (projectSettings[thread.projectId] ?? "auto") : "auto";
       if (threadHost && (method === "request" || method === "acquire" || method === "gate" || method === "port")) {
         // Heavy work runs on the caller's own machine (spill picks another one in the engine); local-model devices and the machine check live on the server host.
         const own = (method === "request" || method === "acquire") && p.pool === "heavy" ? threadHost : localHostId;
@@ -343,12 +371,15 @@ export async function register(bb: BbPluginApi, overrides: Partial<Runtime> = {}
       hostName = { until: runtime.now() + (value === null ? 30000 : 300000), value };
     }
     const localHostName = hostName.value;
-    const leaseHosts = { [localHostId]: { pools: [...POOLS], name: localHostName },
-      ...Object.fromEntries(Object.keys(settings.hosts).map(id => [id, { pools: ["heavy" as const], name: hostInfo.get(id)?.name ?? null }])) };
+    const leaseHosts = { [localHostId]: { pools: [...POOLS], name: localHostName, tools: settings.machineTools?.[localHostId] ?? [] },
+      ...Object.fromEntries(Object.keys(settings.hosts).map(id => [id, { pools: ["heavy" as const], name: hostInfo.get(id)?.name ?? null, tools: settings.hosts[id].tools ?? [] }])) };
     return { ok: true, data: { ...snapshot, localHostName, leaseHosts, titles: Object.fromEntries(resolved) } };
   };
   const handlers = Object.fromEntries(Object.keys(inputs).map(method => [method, (p: unknown) => invoke(method as keyof RpcMethods, p)]));
-  bb.rpc.register(rpcContract, handlers as unknown as Parameters<typeof bb.rpc.register<typeof rpcContract>>[1]);
+  bb.rpc.register(rpcContract, { ...handlers,
+    "config.get": async ({ projectId }: { projectId: string }) => projectGet(projectId),
+    "config.set": async ({ projectId, value }: { projectId: string; value: "auto" | "local" }) => projectSet(projectId, value),
+  } as unknown as Parameters<typeof bb.rpc.register<typeof rpcContract>>[1]);
   // Agent-facing rules live here, in the skill and in CLI help; keep the three in step.
   const TOOL_DESCRIPTIONS: Partial<Record<keyof RpcMethods, string>> = {
     request: "Queue a heavy or local-model slot for your thread and return at once (granted or queued). Example: {pool:\"heavy\", job:\"full test suite\", estMs:1200000} (estMs is milliseconds; estimates above maxEstimateMinutes, default 12 h, are refused). For a command, prefer the slots-run wrapper from `bb slots wrapper`; it waits and releases for you. local-model only: device pins a registered inference device (\"local\" = this Mac); without it the first free device is granted, then this Mac.",
@@ -383,7 +414,7 @@ export async function register(bb: BbPluginApi, overrides: Partial<Runtime> = {}
       },
     });
   }
-  registerCli(bb, invoke);
+  registerCli(bb, invoke, projectGet, projectSet);
   bb.agents.configure(() => ({ tools: agentMethods.map(m => `slots_${m}`), skills: ["slots"] }));
   for (const event of ["thread.archived", "thread.deleted"] as const) bb.events.on(event, ({ thread }) => serial(async () => {
     await initialize();

@@ -15,6 +15,13 @@ export const remoteHostsSchema = z.string().max(4000).refine(value => {
   return ids.every(Boolean) && new Set(ids).size === ids.length;
 }, "Use host_id=capacity, comma-separated, each host once (e.g. host_example=4)");
 export const parseRemoteHosts = (value: string): [string, number][] => value.split(",").map(e => e.trim()).filter(Boolean).map(e => { const [h, n] = e.split("="); return [h, Number(n)]; });
+export const machineToolsSchema = z.string().max(4000).refine(value => {
+  const entries = value.split(";").map(e => e.trim()).filter(Boolean);
+  const ids = entries.map(e => /^([A-Za-z0-9_-]{1,200})=(?:[a-z0-9-]+(?:,[a-z0-9-]+)*)?$/.exec(e)?.[1]);
+  return ids.every(Boolean) && new Set(ids).size === ids.length;
+}, "Use host_id=tool,tool; host_other=tool with lowercase tool names");
+export const parseMachineTools = (value: string): Record<string, string[]> => Object.fromEntries(value.split(";").map(e => e.trim()).filter(Boolean).map(e => { const [host, tools] = e.split("="); return [host, tools ? tools.split(",") : []]; }));
+const needs = z.array(z.string().regex(/^[a-z0-9-]+$/).max(64)).max(64);
 export const parseObserverEvents = (value: string): ObserverEvent[] => [...new Set(observerEventsSchema.parse(value).split(",").map(name => name.trim()).filter(Boolean))] as ObserverEvent[];
 export const inputs = {
   settingsRead: z.object({}).strict(),
@@ -22,7 +29,7 @@ export const inputs = {
   config: z.object({ operation: z.enum(["show", "get", "set", "unset"]).default("show"), key: z.enum(SETTING_KEYS).optional(), value: z.union([z.number(), z.string()]).optional() }).strict(),
   observer: z.object({ threadId: id.optional(), self: z.boolean().optional(), toThreadId: id.optional(), clear: z.boolean().optional(), events: observerEventsSchema.optional() }).strict().refine(p => Number(!!p.self) + Number(!!p.toThreadId) + Number(!!p.clear) <= 1 && (!p.self || !!p.threadId), "Choose self, target thread or clear; self requires a caller"),
   request: z.object({ ...thread, ...host, pool, job: z.string().trim().min(1).max(2000), estMs: time.positive(), priority: priority.optional(), device: device.optional(), wait: z.literal(false).optional(), timeoutMs: time.optional() }).strict(),
-  acquire: z.object({ ...thread, ...host, pool, job: z.string().trim().min(1).max(2000), estMs: time.positive(), priority: priority.optional(), device: device.optional(), spill: z.boolean().optional() }).strict(),
+  acquire: z.object({ ...thread, ...host, pool, job: z.string().trim().min(1).max(2000), estMs: time.positive(), priority: priority.optional(), device: device.optional(), spill: z.boolean().optional(), place: z.enum(["auto", "local", "project"]).optional(), needs: needs.optional() }).strict(),
   done: z.object({ ...thread, useId: id }).strict(),
   detach: z.object({ ...thread, useId: id }).strict(),
   heartbeatUse: z.object({ ...thread, useId: id }).strict(),
@@ -43,6 +50,8 @@ function method<K extends keyof RpcMethods>(key: K) {
   return { input: inputs[key], output: z.custom<RpcMethods[K]["output"]>() };
 }
 export const rpcContract = defineRpcContract({
+  "config.get": { input: z.object({ projectId: id, key: z.literal("placement").optional() }).strict(), output: z.object({ placement: z.enum(["auto", "local"]) }) },
+  "config.set": { input: z.object({ projectId: id, key: z.literal("placement"), value: z.enum(["auto", "local"]) }).strict(), output: z.object({ placement: z.enum(["auto", "local"]) }) },
   config: method("config"), settingsRead: method("settingsRead"), settingsWrite: method("settingsWrite"),
   observer: method("observer"), request: method("request"), acquire: method("acquire"), done: method("done"), detach: method("detach"), heartbeatUse: method("heartbeatUse"), release: method("release"), heartbeat: method("heartbeat"),
   gate: method("gate"), status: method("status"), transfer: method("transfer"), port: method("port"),
@@ -50,7 +59,7 @@ export const rpcContract = defineRpcContract({
 });
 const use = z.object({ id, threadId: id, startedAt: time, expiresAt: time });
 const useFields = { uses: z.array(use).default([]), autoRelease: z.boolean().default(false), graceUntil: time.nullable().default(null) };
-const request = inputs.request.omit({ wait: true, timeoutMs: true }).extend({ id, createdAt: time, priority, queueWaitAlerted: z.boolean().default(false), spill: z.boolean().optional(), ...useFields });
+const request = inputs.request.omit({ wait: true, timeoutMs: true }).extend({ id, createdAt: time, priority, queueWaitAlerted: z.boolean().default(false), spill: z.boolean().optional(), place: z.enum(["auto", "local"]).optional(), needs: needs.optional(), ...useFields });
 const lease = z.object({ id, requestId: id, hostId: id, pool, slotIndex: time, ownerThreadId: id, holderThreadId: id,
   job: z.string(), estMs: time.positive(), grantedAt: time, lastHeartbeatAt: time, expiresAt: time, warnedAt: time.nullable(), device: device.optional(), homeHostId: id.optional(), idle: z.object({ since: time.nullable(), alerted: z.boolean() }).optional(), holdingSince: time.optional(), ...useFields });
 const readings = z.object({ memFreePct: z.number().min(0).max(100), load1: z.number().nonnegative(), at: time, passed: z.boolean() });

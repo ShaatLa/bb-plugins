@@ -107,3 +107,10 @@ it("cleans up when aborted while waiting", async () => {
   expect(invoke).toHaveBeenCalledWith("done", { threadId: "a", useId: USE });
   expect(invoke).not.toHaveBeenCalledWith("detach", expect.anything());
 });
+
+it("polls a busy remote lease and times out without creating a use", async () => {
+  const { out, calls } = await run(600_000, "10s", () => queuedView(), { acquire: () => ({ ok: true, data: { kind: "busy" } }) });
+  expect(out.exitCode).toBe(75);
+  expect(calls.filter(c => c === "acquire").length).toBeGreaterThan(1);
+  expect(calls).not.toContain("done");
+});

@@ -28,8 +28,10 @@ export interface HostSettings {
   gated?: boolean;
   /** false while that machine is disconnected; a spilled job skips it. */
   connected?: boolean;
+  tools?: string[];
 }
 export interface Settings extends HostSettings {
+  primaryHostId?: string; machineTools?: Record<string, string[]>;
   /** Complete host overrides; omitted hosts use the top-level defaults. */
   hosts: Record<string, HostSettings>;
 }
@@ -52,6 +54,7 @@ export interface SlotRequest {
   device?: string;
   /** heavy acquire only: may be granted on another configured machine when its own host is full. */
   spill?: boolean;
+  place?: "auto" | "local"; needs?: string[];
 }
 export type QueueEntry = SlotRequest;
 export interface Lease {
@@ -119,7 +122,7 @@ export interface StatusView extends StatusSnapshot {
   localHostName?: string | null;
   settingsWarnings?: string[];
   /** Every bb host whose threads can lease, with its configured pools (capacity 0 included) and display name. */
-  leaseHosts?: Record<string, { pools: PoolName[]; name: string | null }>;
+  leaseHosts?: Record<string, { pools: PoolName[]; name: string | null; tools?: string[] }>;
 }
 export interface SlotsError {
   code: "invalid-input" | "not-found" | "forbidden" | "capacity" | "gate-closed" | "port-in-use" | "transferred" | "in-use";
@@ -130,10 +133,11 @@ export interface RequestParams {
   hostId: string; pool: PoolName; threadId: string; job: string; estMs: number; priority?: Priority; device?: string;
   /** acquire, heavy only: allow a grant on another configured machine. */
   spill?: boolean;
+  place?: "auto" | "local" | "project"; needs?: string[];
   /** Waiting is implemented by the server, never by the reducer. */
   wait?: boolean; timeoutMs?: number;
 }
-export type UseOutcome = ({ kind: "queued"; request: SlotRequest; useId: string } | { kind: "leased"; lease: Lease; useId: string });
+export type UseOutcome = ({ kind: "busy" } | { kind: "queued"; request: SlotRequest; useId: string } | { kind: "leased"; lease: Lease; useId: string });
 export type RequestOutcome = { kind: "queued"; request: SlotRequest } | { kind: "leased"; lease: Lease };
 export interface ReleaseParams { threadId: string; leaseId?: string; all?: boolean }
 export interface ReleaseOutcome { released: string[]; returned: string[]; canceled: string[] }
@@ -157,7 +161,7 @@ export interface LogParams { since?: number; hostId?: string; limit?: number }
 /** Server implements these methods with boundary validation; these types have no SDK dependency. */
 export interface ObserverParams { threadId?: string; self?: boolean; toThreadId?: string; clear?: boolean; events?: string }
 export interface ObserverView { threadId: string | null; title: string | null; events: ObserverEvent[] }
-export const SETTING_KEYS = ["heavyCapacity", "localModelCapacity", "memFreeMinPct", "loadMax", "gateSamples", "gateIntervalSeconds", "leaseTtlMinutes", "maxEstimateMinutes", "heartbeatIntervalMinutes", "observerThreadId", "observerEvents", "observerQueueWaitMinutes", "observerGateHoldMinutes", "portFrom", "portTo", "grantMode", "watchPolicy", "watchCores", "watchWindowSeconds", "idleLeaseMinutes", "remoteHosts"] as const;
+export const SETTING_KEYS = ["heavyCapacity", "localModelCapacity", "memFreeMinPct", "loadMax", "gateSamples", "gateIntervalSeconds", "leaseTtlMinutes", "maxEstimateMinutes", "heartbeatIntervalMinutes", "observerThreadId", "observerEvents", "observerQueueWaitMinutes", "observerGateHoldMinutes", "portFrom", "portTo", "grantMode", "watchPolicy", "watchCores", "watchWindowSeconds", "idleLeaseMinutes", "remoteHosts", "machineTools"] as const;
 export type SettingKey = (typeof SETTING_KEYS)[number];
 export type SettingValues = Record<SettingKey, number | string>;
 export interface SettingsFormView { values: SettingValues; defaults: SettingValues; maxima: Partial<Record<SettingKey, number>>; setKeys: SettingKey[]; cores: number; heavyDefault: number; hosts?: { id: string; name: string | null; connected: boolean }[] }

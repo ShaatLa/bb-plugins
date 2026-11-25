@@ -146,6 +146,8 @@ export function SlotsSettings() {
     </Row>;
   const selected = String(values.observerEvents).split(",").filter(Boolean);
   const machines = String(values.remoteHosts ?? "").split(",").map(entry => entry.trim()).filter(Boolean).map(entry => entry.split("=") as [string, string]);
+  const toolsByHost = Object.fromEntries(String(values.machineTools ?? "").split(";").map(e => e.trim()).filter(Boolean).map(e => e.split("=") as [string, string]));
+  const writeTools = (id: string, tools: string) => { const next = { ...toolsByHost, [id]: tools }; apply("machineTools", Object.entries(next).map(([host, value]) => `${host}=${value}`).join(";")); };
   const writeMachines = (next: [string, string | number][]) => apply("remoteHosts", next.length ? next.map(([id, capacity]) => `${id}=${capacity}`).join(",") : null);
   const known = (data.hosts ?? []).filter(host => host.id !== view?.localHostId);
   const addable = known.filter(host => !machines.some(([id]) => id === host.id));
@@ -171,6 +173,7 @@ export function SlotsSettings() {
           return <Row key={id} label={name} badge={host?.connected === false ? "offline" : undefined} description="Heavy jobs capacity on that machine.">
             <div className="flex items-center justify-end gap-2">
               <Button type="button" size="sm" variant="ghost" aria-label={`Remove ${name}`} onClick={() => writeMachines(machines.filter((_, other) => other !== index))}>Remove</Button>
+              <Input aria-label={`${name} Installed`} placeholder="Installed: go,docker" defaultValue={toolsByHost[id] ?? ""} key={`${id}:${toolsByHost[id] ?? ""}`} onBlur={event => writeTools(id, event.target.value.trim())} />
               <NumberField label={`${name} heavy jobs capacity`} value={capacity} min={0} max={9999}
                 onCommit={value => save("remoteHosts", machines.map(([other, n]) => `${other}=${other === id ? value : n}`).join(",")).catch(() => {})} />
             </div>

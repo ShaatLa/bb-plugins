@@ -741,7 +741,7 @@ it("lets threads on a configured machine lease its heavy capacity, reports lease
   expect(await heavy("remote-child")).toMatchObject({ ok: false, error: { message: expect.stringContaining("remoteHosts") } });
   expect((await h.invoke("config", { operation: "set", key: "remoteHosts", value: "host_example=x" })).ok).toBe(false);
   await h.configure({ remoteHosts: "host_example=1", heavyCapacity: 1 });
-  expect((await h.view()).leaseHosts).toEqual({ local: { pools: ["heavy", "local-model"], name: "Work laptop" }, host_example: { pools: ["heavy"], name: null } });
+  expect((await h.view()).leaseHosts).toEqual({ local: { pools: ["heavy", "local-model"], name: "Work laptop", tools: [] }, host_example: { pools: ["heavy"], name: null, tools: [] } });
   // A remote thread leases its own machine at once (no machine check there); naming another host is refused.
   expect(await heavy("remote-child")).toMatchObject({ ok: true, data: { kind: "leased", lease: { hostId: "host_example" } } });
   expect(await heavy("b", { hostId: "host_example" })).toMatchObject({ ok: false, error: { message: expect.stringContaining("omit hostId") } });
@@ -753,4 +753,25 @@ it("lets threads on a configured machine lease its heavy capacity, reports lease
   expect((await h.invoke("config", { operation: "get", key: "remoteHosts" }))).toMatchObject({ ok: true, data: { value: "host_example=3" } });
   const status = await h.harness.behavior.runCli(["status"]);
   expect(status.stdout).toContain("heavy · host_example · 1/3 slots held");
+});
+
+it("reads and writes one project placement field and persists queued constraints", async () => {
+  const h = await setup();
+  h.harness.sdk.stub("projects.list", async () => [{ id: "proj_example", name: "Example" }]);
+  h.threads.set("a", makeThreadResponse({ id: "a", title: "A", environmentId: "env", projectId: "proj_example" }));
+  expect(await h.harness.behavior.callRpc("config.get", { projectId: "proj_example", key: "placement" })).toEqual({ placement: "auto" });
+  expect(await h.harness.behavior.callRpc("config.set", { projectId: "proj_example", key: "placement", value: "local" })).toEqual({ placement: "local" });
+  const result = await h.invoke("acquire", { threadId: "a", pool: "heavy", job: "suite", estMs: 60000, place: "project", needs: ["go"] }, true);
+  expect(result).toMatchObject({ ok: true, data: { kind: "queued", request: { place: "local", needs: ["go"] } } });
+  const state = stateSchema.parse(JSON.parse(await readFile(join(h.path, "state.json"), "utf8")));
+  expect(state.requests[0]).toMatchObject({ place: "local", needs: ["go"] });
+  await h.configure({ remoteHosts: "host_example=1", machineTools: "host_example=go,docker" });
+  expect((await h.view()).leaseHosts?.host_example.tools).toEqual(["go", "docker"]);
+});
+it("keeps concurrent placement updates for different projects", async () => {
+  const h = await setup();
+  h.harness.sdk.stub("projects.list", async () => [{ id: "proj_example", name: "Example" }, { id: "proj_other", name: "Other" }]);
+  await Promise.all(["proj_example", "proj_other"].map(projectId => h.harness.behavior.callRpc("config.set", { projectId, key: "placement", value: "local" })));
+  for (const projectId of ["proj_example", "proj_other"]) expect(await h.harness.behavior.callRpc("config.get", { projectId, key: "placement" })).toEqual({ placement: "local" });
+  expect(await h.bb.storage.kv.get("placement-v1")).toEqual({ proj_example: "local", proj_other: "local" });
 });

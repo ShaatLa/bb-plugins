@@ -24,15 +24,15 @@ cleanup() {
 }
 # Runs on the other machine: refresh the worktree mirror, install dependencies when a lockfile changed, then the command.
 RUNNER='
-key=$1 rel=$2 hash=$3 upload=$4; shift 4
+key=$1 rel=$2 hash=$3 upload=$4 nonce=$5; shift 5
 base=$HOME/.bb-slots/work m=$HOME/.bb-slots/work/$key
-mkdir -p "$m" || exit 69
+mkdir -p "$m" || { echo "slots-run setup-failed $nonce"; exit 69; }
 n=0
 while ! mkdir "$m.lock" 2>/dev/null; do
-  n=$((n + 1)); [ "$n" -lt 600 ] || { echo "slots-run: mirror $m is locked; remove $m.lock if no run is active" >&2; rm -f "$upload"; exit 69; }
+  n=$((n + 1)); [ "$n" -lt 600 ] || { echo "slots-run: mirror $m is locked; remove $m.lock if no run is active" >&2; rm -f "$upload"; echo "slots-run setup-failed $nonce"; exit 69; }
   sleep 1
 done
-fail() { rmdir "$m.lock" 2>/dev/null; rm -f "$upload" "$m.tgz"; echo "slots-run: $1" >&2; exit 69; }
+fail() { rmdir "$m.lock" 2>/dev/null; rm -f "$upload" "$m.tgz"; echo "slots-run: $1" >&2; echo "slots-run setup-failed $nonce"; exit 69; }
 trap "fail \"stopped while preparing the mirror\"" HUP INT TERM
 # An unchanged worktree never rewrites files under a run that is still using them.
 if [ "$(cat "$m.hash" 2>/dev/null)" != "$hash" ]; then
@@ -62,7 +62,7 @@ fi
 trap - HUP INT TERM
 rmdir "$m.lock"; rm -f "$upload"; touch "$m"
 find "$base" -mindepth 1 -maxdepth 1 -mtime +7 -exec rm -rf {} + 2>/dev/null
-cd "$m/$rel" || exit 69
+cd "$m/$rel" || { echo "slots-run setup-failed $nonce"; exit 69; }
 exec "$@" </dev/null
 '
 # Copy the worktree (tracked and untracked files, not ignored ones) to the leased machine and run the command there.
@@ -77,13 +77,16 @@ remote_run() {
   hash=$(tar cf - -C "$root" -T "$dir/files" | shasum | cut -c1-40)
   upload=${SLOTS_RUN_UPLOAD_DIR:-/tmp}/bb-slots-$term.b64
   if ! tar czf - -C "$root" -T "$dir/files" | base64 | bb file write --host "$host" --stdin "$upload" >/dev/null 2>"$dir/err"; then
-    echo "slots-run: could not copy the worktree to $host: $(tail -n 1 "$dir/err")" >&2; return 69
+    echo "slots-run: could not copy the worktree to $host: $(tail -n 1 "$dir/err")" >&2; retry=1; return 69
   fi
-  echo "slots-run: running on $host" >&2
-  bb terminal run --machine "$host" --id "$term" --timeout 12h --max-output-bytes 1048576 -- sh -c "$RUNNER" sh "$key" "$rel" "$hash" "$upload" "$@" >"$dir/out" 2>&1
+  nonce=$(LC_ALL=C tr -dc 23456789abcdefghijkmnpqrstuvwxyz </dev/urandom | head -c 24)
+  name=$(bb machine show --json "$host" 2>/dev/null | node -e 'let s="";process.stdin.on("data",x=>s+=x).on("end",()=>{try{process.stdout.write(JSON.parse(s).name||"")}catch{}})' 2>/dev/null)
+  echo "slots-run: running on ${name:-$host}" >&2
+  bb terminal run --machine "$host" --id "$term" --timeout 12h --max-output-bytes 1048576 -- sh -c "$RUNNER" sh "$key" "$rel" "$hash" "$upload" "$nonce" "$@" >"$dir/out" 2>&1
   code=$?
   if [ -n "$interrupted" ]; then bb terminal close "$term" >/dev/null 2>&1; grep -v "^Terminal $term " "$dir/out"; return 130; fi
   if [ "$code" -eq 0 ]; then cat "$dir/out"; return 0; fi
+  if [ "$code" -ne 124 ] && [ "$code" -ne 130 ] && [ "$(tail -n 2 "$dir/out" | head -n 1)" = "slots-run setup-failed $nonce" ] && [ "$(tail -n 1 "$dir/out")" = "Terminal $term exited with code $code." ]; then retry=1; fi
   if grep -qx "Terminal $term exited with code $code\." "$dir/out"; then grep -vx "Terminal $term exited with code $code\." "$dir/out"; return "$code"; fi
   grep -v "^Terminal $term " "$dir/out"
   bb terminal close "$term" >/dev/null 2>&1
@@ -93,11 +96,14 @@ remote_run() {
 }
 trap 'cleanup' EXIT
 trap 'interrupted=1' INT TERM HUP
-pool=heavy job= est= priority= timeout= spill= host= interrupted=
+pool=heavy job= est= priority= timeout= place=project needs= host= interrupted= retry=
 while [ "$#" -gt 0 ]; do
   case $1 in
     --) shift; break ;;
-    --spill) spill=1; shift ;;
+    --spill) place=auto; shift; if [ "${1:-}" = auto ]; then shift; fi ;;
+    --anywhere) place=auto; shift ;;
+    --local) place=local; shift ;;
+    --needs) shift; [ "$#" -gt 0 ] || exit 64; needs=$1; shift ;;
     --pool|--job|--est|--priority|--timeout)
       option=$1; shift; [ "$#" -gt 0 ] || exit 64
       case $option in
@@ -109,13 +115,29 @@ while [ "$#" -gt 0 ]; do
   esac
 done
 [ "$#" -gt 0 ] && [ -n "$job" ] && [ -n "$est" ] || exit 64
+root=$(git rev-parse --show-toplevel 2>/dev/null) || { root=; place=local; echo "slots-run: keeping local because this directory is not in a git worktree" >&2; }
+first=1
+for arg in "$@"; do
+  if [ "$first" = 1 ]; then first=0; continue; fi
+  path=${arg#*=}; case $path in '~/'*) path=$HOME/${path#\~/} ;; esac
+  case $path in /*)
+    parent=$(cd "$(dirname "$path")" 2>/dev/null && pwd -P) || parent=
+    case $path in *"/../"*|*/..|*/./*) parent= ;; esac
+    if [ -n "$root" ] && [ -n "$parent" ] && [ ! -L "$path" ]; then
+      case $parent in "$root"|"$root"/*) continue ;; esac
+    fi
+    place=local; echo "slots-run: keeping local because argument names a path outside the worktree: $arg" >&2 ;;
+  esac
+done
+acquire() {
 line=$(
   set -- --pool "$pool" --job "$job" --est "$est"
   [ -z "$priority" ] || set -- "$@" --priority "$priority"
   # The command runs here, so a local-model use pins this Mac rather than taking another device.
   [ "$pool" != local-model ] || set -- "$@" --device local
   [ -z "$timeout" ] || set -- "$@" --timeout "$timeout"
-  [ -z "$spill" ] || set -- "$@" --spill
+  [ "$pool" != heavy ] || set -- "$@" --place "$place"
+  [ -z "$needs" ] || set -- "$@" --needs "$needs"
   bb slots acquire "$@"
 )
 status=$?
@@ -133,7 +155,10 @@ case $renew in ''|*[!0-9]*|0) use=; exit 70 ;; esac
 [ "$renew" -gt 0 ] 2>/dev/null || { use=; exit 70; }
 [ "$label" = use ] && [ "$label2" = lease ] && [ "$label3" = renew ] && [ -z "$extra" ] || { use=; exit 70; }
 # `host <id>` appears only for a spilled lease on another machine.
-{ [ -z "$label4" ] && [ -z "$host" ]; } || { [ "$label4" = host ] && [ -n "$spill" ] && [ -n "$host" ]; } || { use=; exit 70; }
+{ [ -z "$label4" ] && [ -z "$host" ]; } || { [ "$label4" = host ] && [ "$place" != local ] && [ -n "$host" ]; } || { use=; exit 70; }
+}
+acquire || exit $?
+start_heartbeat() {
 start=$(ps -o lstart= -p "$$" 2>/dev/null) || start=
 (
   trap '' INT TERM HUP
@@ -159,6 +184,17 @@ start=$(ps -o lstart= -p "$$" 2>/dev/null) || start=
     [ "$result" -ne 2 ] || exit
   done
 ) & loop=$!
+}
+start_heartbeat
 if [ -n "$host" ]; then remote_run "$@"; else "$@"; fi
 status=$?
+if [ -n "$retry" ] && [ -z "$interrupted" ]; then
+  echo "slots-run: remote setup failed before the command started; retrying locally" >&2
+  : > "$dir/stop"; kill "$loop" 2>/dev/null; wait "$loop" 2>/dev/null; loop=
+  bb slots done "$use" >/dev/null 2>&1; use=; host=; rm -f "$dir/stop"
+  place=local
+  acquire || exit $?
+  start_heartbeat
+  "$@"; status=$?
+fi
 exit "$status"

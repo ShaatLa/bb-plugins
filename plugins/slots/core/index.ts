@@ -145,9 +145,9 @@ export function apply(original: State, input: Input, ctx: Context): Transition {
   const heartbeat = (id: string) => state.leases.filter(l => keeps(l, id)).forEach(refresh);
   const registered = (hostId: string) => (state.hosts[hostId]?.devices ?? []).map(d => d.name);
   /** Where a request may be granted, in preference order: local-model devices, or its own host then, with spill, other connected machines. */
-  const candidates = (r: { hostId: string; pool: PoolName; device?: string; spill?: boolean }): { hostId: string; device?: string }[] =>
+  const candidates = (r: { hostId: string; pool: PoolName; device?: string; spill?: boolean; place?: "auto" | "local"; needs?: string[] }): { hostId: string; device?: string }[] =>
     r.pool === "local-model" ? (r.device === undefined ? [...registered(r.hostId), undefined] : [group(r)]).map(device => ({ hostId: r.hostId, device }))
-      : [r.hostId, ...(r.spill ? Object.keys(ctx.settings.hosts).filter(h => h !== r.hostId && ctx.settings.hosts[h].connected !== false) : [])].map(hostId => ({ hostId }));
+      : [r.hostId, ...((r.place === "auto" || r.spill) ? [...new Set([...(ctx.settings.primaryHostId ? [ctx.settings.primaryHostId] : []), ...Object.keys(ctx.settings.hosts)])].filter(h => h !== r.hostId && (h === ctx.settings.primaryHostId || ctx.settings.hosts[h]?.connected !== false) && (r.needs ?? []).every(tool => (ctx.settings.hosts[h]?.tools ?? ctx.settings.machineTools?.[h] ?? []).includes(tool))) : [])].map(hostId => ({ hostId }));
   const gateless = (hostId: string) => settingsFor(ctx.settings, hostId).gated === false;
   const checkDevice = (hostId: string, pool: PoolName, device?: string): string | null => {
     if (device === undefined) return null;
@@ -209,9 +209,9 @@ export function apply(original: State, input: Input, ctx: Context): Transition {
     observer(hostId, "grant", message, lease.holderThreadId);
     return { ok: true, data: lease };
   };
-  const schedule = (onlyHost?: string) => {
+  const schedule = (onlyHost?: string, onlyPool?: PoolName) => {
     for (const request of sorted(state)) {
-      if ((onlyHost === undefined || request.hostId === onlyHost) && settingsFor(ctx.settings, request.hostId).grantMode === "auto") grant(request.id, false);
+      if ((onlyHost === undefined || request.hostId === onlyHost) && (onlyPool === undefined || request.pool === onlyPool) && settingsFor(ctx.settings, request.hostId).grantMode === "auto") grant(request.id, false);
     }
   };
   const release = (threadId: string, leaseId?: string, reason = "released", ended = false, quiet = false) => {
@@ -285,10 +285,17 @@ export function apply(original: State, input: Input, ctx: Context): Transition {
       if (deviceError) return fail("invalid-input", deviceError);
       const lease = state.leases.find(l => serves(l, input.hostId, input.pool, input.device) && (l.holderThreadId === input.threadId || l.ownerThreadId === input.threadId));
       if (lease && lease.holderThreadId !== input.threadId) return fail("transferred", "Lease is held by another thread");
+      const place = input.place === "auto" || input.spill ? "auto" : "local";
+      if (lease && lease.hostId !== input.hostId && (place === "local" || !(input.needs ?? []).every(tool => (ctx.settings.hosts[lease.hostId]?.tools ?? ctx.settings.machineTools?.[lease.hostId] ?? []).includes(tool)))) { data = { kind: "busy" }; break; }
       let request = state.requests.find(r => r.hostId === input.hostId && r.pool === input.pool && r.device === input.device && r.threadId === input.threadId);
+      if (request && input.pool === "heavy") {
+        request.place = request.place === "local" || (!request.place && !request.spill) || place === "local" ? "local" : "auto";
+        request.spill = request.place === "auto";
+        request.needs = [...new Set([...(request.needs ?? []), ...(input.needs ?? [])])];
+      }
       if (!lease && !request) {
         request = { id: `req-${state.nextId++}`, hostId: input.hostId, pool: input.pool, threadId: input.threadId,
-          job: input.job, estMs: input.estMs, priority: input.priority ?? "normal", createdAt: ctx.now, autoRelease: true, ...(input.device === undefined ? {} : { device: input.device }), ...(input.spill ? { spill: true } : {}) };
+          job: input.job, estMs: input.estMs, priority: input.priority ?? "normal", createdAt: ctx.now, autoRelease: true, ...(input.device === undefined ? {} : { device: input.device }), ...(input.pool === "heavy" ? { place, needs: input.needs ?? [] } : {}) };
         state.requests.push(request);
         audit("request", { hostId: request.hostId, pool: request.pool, threadId: request.threadId, requestId: request.id });
       }
@@ -296,7 +303,7 @@ export function apply(original: State, input: Input, ctx: Context): Transition {
       const use = { id: `use-${state.nextId++}`, threadId: input.threadId, startedAt: ctx.now,
         expiresAt: ctx.now + settingsFor(ctx.settings, input.hostId).heartbeatIntervalMs };
       (target.uses ??= []).push(use); target.graceUntil = null;
-      if (!lease && (target.pool === "local-model" || request!.spill || gateless(target.hostId))) {
+      if (!lease && (target.pool === "local-model" || (request!.place === "auto" || request!.spill) || gateless(target.hostId))) {
         schedule(target.hostId);
         const granted = state.leases.find(l => l.requestId === target.id);
         if (granted) { data = { kind: "leased", lease: granted, useId: use.id }; break; }
@@ -528,6 +535,7 @@ export function apply(original: State, input: Input, ctx: Context): Transition {
     const old = original.leases.find(o => o.id === l.id);
     if (!old || old.holderThreadId !== l.holderThreadId) { l.idle = { since: null, alerted: false }; l.holdingSince = ctx.now; }
   }
+  if (original.leases.some(l => l.pool === "heavy" && !state.leases.some(current => current.id === l.id))) schedule(undefined, "heavy");
   cleanupPorts();
   return { state, effects, result: { ok: true, data: structuredClone(data) } };
 }
