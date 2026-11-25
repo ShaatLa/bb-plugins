@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { collectLimits, createLimitCollector } from './usage-limits.js';
+import { collectLimits, createLimitCollector, poolPlanName } from './usage-limits.js';
 
 const week = (usedPercent: number) => ({ kind: 'weekly', id: '0:Weekly', label: 'Weekly limit', usedPercent, resetsAt: '2026-11-25T01:00:00.000Z', model: null });
 const usage = (accountKey: string | null, windows: unknown[]) => ({ accountKey, observedAt: 5, usage: { status: 'ok', planLabel: 'Max', windows } });
@@ -26,6 +26,35 @@ describe('collectLimits', () => {
     expect(accounts[0]).toMatchObject({ providerId: 'claude-code', plan: 'Max', status: 'ok', observedAt: 5 });
     expect(accounts[0]!.windows[0]).toEqual({ id: '0:Weekly', label: 'Weekly limit', kind: 'weekly', usedPercent: 12, resetsAt: Date.UTC(2026, 10, 25, 1), model: null });
     expect(calls.some(c => c.startsWith('tokenomos'))).toBe(false);
+  });
+
+  it('names Claude and Codex plans from the Account Pooler fields, falling back to the source label', () => {
+    expect(poolPlanName('claude', 'max', 'default_claude_max_20x')).toBe('Max 20x');
+    expect(poolPlanName('claude', 'max', 'default_claude_max_5x')).toBe('Max 5x');
+    expect(poolPlanName('claude', 'claude_team', 'default_claude_max_5x')).toBe('Team');
+    expect(poolPlanName('claude', 'pro', null)).toBe('Pro');
+    expect(poolPlanName('codex', 'self_serve_business_prolite', null)).toBe('Business Pro Lite');
+    expect(poolPlanName('claude', 'max', null)).toBeNull();
+    expect(poolPlanName('claude', 'enterprise', 'default_claude_max_5x')).toBeNull();
+    expect(poolPlanName('codex', 'pro', null)).toBeNull();
+  });
+
+  it('puts the pooled plan name on the account, also where a provider plugin reports it, and keeps the label when the pool fails', async () => {
+    const resource = (id: string, key: string, label: string) => ({ id, providerId: 'claude-code', label, accountKey: key });
+    const pool = { resources: [resource('p1', 'acct-a', 'pooled'), resource('p2', 'acct-b', 'pooled')] };
+    const plugin = { resources: [resource('r1', 'acct-a', 'Claude Code')] };
+    const run = (poolAccounts: unknown) => collectLimits(async () => [{ pluginId: 'account-pool' }, { pluginId: 'provider-claude-code' }],
+      async (pluginId, method, input) => {
+        if (method === 'account.list') { if (poolAccounts instanceof Error) throw poolAccounts; return poolAccounts; }
+        if (method.endsWith('listResources')) return pluginId === 'account-pool' ? pool : plugin;
+        return usage((input as { resourceId: string }).resourceId === 'p2' ? 'acct-b' : 'acct-a', [week(1)]);
+      }, 'tokenomos');
+    const accounts = [
+      { id: 'p1', provider: 'claude', subscriptionType: 'max', rateLimitTier: 'default_claude_max_20x' },
+      { id: 'p2', provider: 'claude', subscriptionType: 'claude_team', rateLimitTier: 'default_claude_max_5x' },
+    ];
+    expect((await run(accounts)).map(r => [r.account.label, r.account.plan])).toEqual([['Claude Code', 'Max 20x'], ['pooled', 'Team']]);
+    expect((await run(new Error('down'))).map(r => r.account.plan)).toEqual(['Max', 'Max']);
   });
 
   it('names the machine a host-scoped resource comes from, unless several machines report the account', async () => {

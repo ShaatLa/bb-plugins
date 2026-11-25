@@ -35,6 +35,26 @@ const resourceSchema = z.object({
 const LIST = 'provider-usage.v1.listResources', GET = 'provider-usage.v1.getResource';
 
 /**
+ * The plan name from an Account Pooler account's raw fields, or null to keep bb's label. bb names every Claude
+ * `max_Nx` tier "Ultra" or "Max", a Team seat included, and shows some Codex plan ids raw.
+ * shortcut: a copy of bb's plan naming; delete it (and its `account.list` call) once bb names these plans right.
+ */
+export function poolPlanName(provider: string, subscriptionType: string | null | undefined, rateLimitTier: string | null | undefined): string | null {
+  if (provider === 'claude') {
+    if (subscriptionType === 'claude_team') return 'Team';
+    if (subscriptionType === 'pro') return 'Pro';
+    const size = /max_(\d+)x/u.exec(rateLimitTier ?? '')?.[1];
+    if (subscriptionType === 'max' && size) return `Max ${size}x`;
+  }
+  if (provider === 'codex' && subscriptionType === 'self_serve_business_prolite') return 'Business Pro Lite';
+  return null;
+}
+const POOL = 'account-pool';
+const poolSchema = z.array(z.object({
+  id: z.string(), provider: z.string(), subscriptionType: z.string().nullish().catch(null), rateLimitTier: z.string().nullish().catch(null),
+})).catch([]);
+
+/**
  * Every account's limit windows from the plugins that publish provider-usage.v1. Provider plugins come before
  * aggregators (account-pool), and an account reported twice is kept once, by its provider-issued accountKey,
  * preferring a successful report over a failed one. Accounts with an unknown key are never merged, as the
@@ -43,6 +63,12 @@ const LIST = 'provider-usage.v1.listResources', GET = 'provider-usage.v1.getReso
 export async function collectLimits(discover: Discover, callRpc: CallRpc, selfId: string, timeoutMs = 8000, knownKeys = new Map<string, string>()): Promise<{ id: string; account: LimitAccount }[]> {
   const plugins = [...new Set((await discover(LIST)).map(m => m.pluginId))].filter(p => p !== selfId)
     .sort((a, b) => Number(!a.startsWith('provider-')) - Number(!b.startsWith('provider-')) || a.localeCompare(b));
+  // Account Pooler account ids are its provider-usage resource ids.
+  const poolPlans = new Map(plugins.includes(POOL)
+    ? poolSchema.parse(await callRpc(POOL, 'account.list', null, AbortSignal.timeout(timeoutMs)).catch(() => []))
+      .flatMap(a => { const name = poolPlanName(a.provider, a.subscriptionType, a.rateLimitTier); return name ? [[a.id, name] as const] : []; })
+    : []);
+  const plans = new Map<string, string>();
   const perPlugin = await Promise.all(plugins.map(async pluginId => {
     try {
       const { resources } = listSchema.parse(await callRpc(pluginId, LIST, {}, AbortSignal.timeout(timeoutMs)));
@@ -50,12 +76,14 @@ export async function collectLimits(discover: Discover, callRpc: CallRpc, selfId
         // Resource ids are stable, so a key learned earlier still names the account when the source stops reporting it.
         const resource = `${pluginId}\0${r.id}`, listed = r.accountKey ?? knownKeys.get(resource);
         if (r.accountKey) knownKeys.set(resource, r.accountKey);
-        const fallbackId = `${r.providerId}\0${listed ?? resource}`;
+        const fallbackId = `${r.providerId}\0${listed ?? resource}`, plan = pluginId === POOL ? poolPlans.get(r.id) : undefined;
         try {
           const got = resourceSchema.parse(await callRpc(pluginId, GET, { resourceId: r.id, refresh: false }, AbortSignal.timeout(timeoutMs)));
           const key = got.accountKey ?? listed;
           if (key) knownKeys.set(resource, key);
-          return { id: key ? `${r.providerId}\0${key}` : fallbackId, account: toAccount(r, got) };
+          const id = key ? `${r.providerId}\0${key}` : fallbackId;
+          if (plan) plans.set(id, plan);
+          return { id, account: toAccount(r, got) };
         } catch (error) {
           return { id: fallbackId, account: failed(r, error) };
         }
@@ -71,7 +99,8 @@ export async function collectLimits(discover: Discover, callRpc: CallRpc, selfId
     // An account several machines (or a shared source) report belongs to none of them.
     out.set(id, kept.host?.id === account.host?.id ? next : { ...next, host: null });
   }
-  return [...out].map(([id, account]) => ({ id, account }));
+  // Set on the merged account, so it also replaces the label a provider plugin reports for the same account.
+  return [...out].map(([id, account]) => ({ id, account: plans.has(id) ? { ...account, plan: plans.get(id)! } : account }));
 }
 
 /** How long an account's last good report is shown after its source stops answering. */
