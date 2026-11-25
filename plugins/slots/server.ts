@@ -7,7 +7,7 @@ import { z } from "zod";
 import { DEFAULT_SETTINGS, LOCAL_MODEL_MAX, POOLS, SLOTS_CHANGED, type Effect, type Settings, type State, type Input, type Result, type RpcMethods, type HostSettings, SETTING_KEYS, type SettingKey, type SettingValues, type SettingsFormView, type SettingView } from "./contract.js";
 import { apply, deviceList, initialState, portCandidates, statusSnapshot, validateSettings, settingsFor } from "./core/index.js";
 import { DiskStore, metrics, probePort } from "./runtime.js";
-import { inputs, parseObserverEvents, parseRemoteHosts, observerEventsSchema, remoteHostsSchema, machineToolsSchema, parseMachineTools, rpcContract, stateSchema } from "./schemas.js";
+import { inputs, parseObserverEvents, parseRemoteHosts, parseDeviceHosts, deviceHostsSchema, observerEventsSchema, remoteHostsSchema, machineToolsSchema, parseMachineTools, rpcContract, stateSchema } from "./schemas.js";
 import { createWatcher } from "./watcher.js";
 import { registerCli } from "./cli.js";
 
@@ -47,6 +47,10 @@ export async function register(bb: BbPluginApi, overrides: Partial<Runtime> = {}
     watchWindowSeconds: { type: "number", label: "Watch window seconds", default: 120, experimental_schema: z.number().int().min(60).max(900) },
     idleLeaseMinutes: { type: "number", label: "Idle lease minutes", default: 30, experimental_schema: z.number().int().min(10).max(240) },
     heavyCapacity: { type: "number", label: "Heavy jobs", description: `Default ${heavyDefault} · max ${cores} (CPU cores). Zero disables the pool.`, default: heavyDefault, experimental_schema: z.number().int().min(0).max(cores, `Heavy capacity cannot exceed ${cores} CPU cores`) },
+    heavyCapacityWithModel: { type: "number", label: "Heavy jobs with a local model", default: -1, experimental_schema: z.number().int().min(0).max(cores) },
+    remoteHostsWithModel: { type: "string", label: "Other machines with a local model", default: "", experimental_schema: remoteHostsSchema },
+    deviceHosts: { type: "string", label: "Model devices and machines", default: "", experimental_schema: deviceHostsSchema },
+    modelHoldMinutes: { type: "number", label: "Model hold minutes", default: 60, experimental_schema: z.number().int().min(1).max(10080) },
     localModelCapacity: { type: "number", label: "Local model", description: `Default 1 · max ${LOCAL_MODEL_MAX}. Zero disables the pool.`, default: 1, experimental_schema: z.number().int().min(0).max(LOCAL_MODEL_MAX, `Local model capacity cannot exceed ${LOCAL_MODEL_MAX}`) },
     memFreeMinPct: { type: "number", label: "Memory free minimum", description: `Minimum percentage of free memory required to start work.`, default: 20, experimental_schema: z.number().min(0).max(100) },
     loadMax: { type: "number", label: "Load limit", description: `Default and max ${cores} (CPU cores). Lower this to reserve machine capacity.`, default: cores, experimental_schema: z.number().positive().max(cores, `Load limit cannot exceed ${cores} CPU cores`) },
@@ -76,7 +80,7 @@ export async function register(bb: BbPluginApi, overrides: Partial<Runtime> = {}
   const readValues = () => ({ ...defaults, ...explicit, machineTools: nativeTools }) as Awaited<ReturnType<typeof effectiveValues>>;
   function effectiveValues() { return Object.fromEntries(SETTING_KEYS.map(key => [key, descriptors[key].default])) as {
     watchPolicy: "off" | "warn"; watchCores: number; watchWindowSeconds: number; idleLeaseMinutes: number;
-    heavyCapacity: number; localModelCapacity: number; memFreeMinPct: number; loadMax: number; gateSamples: number;
+    heavyCapacity: number; heavyCapacityWithModel: number; remoteHostsWithModel: string; deviceHosts: string; modelHoldMinutes: number; localModelCapacity: number; memFreeMinPct: number; loadMax: number; gateSamples: number;
     gateIntervalSeconds: number; leaseTtlMinutes: number; maxEstimateMinutes: number; heartbeatIntervalMinutes: number; observerThreadId: string;
     observerEvents: string; observerQueueWaitMinutes: number; observerGateHoldMinutes: number; portFrom: number; portTo: number; grantMode: string; remoteHosts: string; machineTools: string;
   }; }
@@ -104,11 +108,11 @@ export async function register(bb: BbPluginApi, overrides: Partial<Runtime> = {}
   }
   function settingView(key: SettingKey): SettingView {
     const view = formView();
-    return { key, value: view.values[key], default: defaults[key], ...(view.maxima[key] !== undefined ? { max: view.maxima[key] } : {}), set: key in explicit };
+    return { key, value: view.values[key], default: key === "heavyCapacityWithModel" ? view.values.heavyCapacity : defaults[key], ...(view.maxima[key] !== undefined ? { max: view.maxima[key] } : {}), set: key in explicit };
   }
   function formView(): SettingsFormView {
-    return { values: { ...readValues(), heavyCapacity: settings.capacities.heavy, loadMax: settings.loadMax, watchCores: settings.watchCores }, defaults,
-      maxima: { watchCores: cores, watchWindowSeconds: 900, idleLeaseMinutes: 240, heavyCapacity: cores, loadMax: cores, localModelCapacity: LOCAL_MODEL_MAX, memFreeMinPct: 100, gateSamples: 100, gateIntervalSeconds: 3600, leaseTtlMinutes: 10080, maxEstimateMinutes: 10080, heartbeatIntervalMinutes: 10079, observerQueueWaitMinutes: 10080, observerGateHoldMinutes: 10080, portFrom: 65535, portTo: 65535 }, setKeys: Object.keys(explicit) as SettingKey[], cores, heavyDefault, hosts: knownHosts };
+    return { values: { ...readValues(), heavyCapacity: settings.capacities.heavy, heavyCapacityWithModel: settings.withModel ?? settings.capacities.heavy, loadMax: settings.loadMax, watchCores: settings.watchCores }, defaults: { ...defaults, heavyCapacityWithModel: settings.capacities.heavy },
+      maxima: { watchCores: cores, watchWindowSeconds: 900, idleLeaseMinutes: 240, heavyCapacity: cores, heavyCapacityWithModel: cores, modelHoldMinutes: 10080, loadMax: cores, localModelCapacity: LOCAL_MODEL_MAX, memFreeMinPct: 100, gateSamples: 100, gateIntervalSeconds: 3600, leaseTtlMinutes: 10080, maxEstimateMinutes: 10080, heartbeatIntervalMinutes: 10079, observerQueueWaitMinutes: 10080, observerGateHoldMinutes: 10080, portFrom: 65535, portTo: 65535 }, setKeys: Object.keys(explicit) as SettingKey[], cores, heavyDefault, hosts: knownHosts };
   }
   const getSettings = async (): Promise<Settings> => {
     const current = readValues();
@@ -130,12 +134,13 @@ export async function register(bb: BbPluginApi, overrides: Partial<Runtime> = {}
       heartbeatIntervalMs: values.heartbeatIntervalMinutes * 60000, observerThreadId: values.observerThreadId.trim() || null,
       observerEvents: parseObserverEvents(values.observerEvents), observerQueueWaitMs: values.observerQueueWaitMinutes * 60000,
       observerGateHoldMs: values.observerGateHoldMinutes * 60000,
+      withModel: values.heavyCapacityWithModel < 0 ? Math.min(values.heavyCapacity, cores) : Math.min(values.heavyCapacityWithModel, cores), deviceHosts: parseDeviceHosts(values.deviceHosts), modelHoldMinutes: values.modelHoldMinutes,
       primaryHostId: localHostId || undefined, machineTools: parseMachineTools(values.machineTools),
       portRange: { from: values.portFrom, to: values.portTo }, grantMode: values.grantMode as Settings["grantMode"], hosts: {},
     };
     // Other machines reuse these settings with their own heavy capacity and no machine check.
     const { hosts: _, ...base } = settings;
-    for (const [hostId, heavy] of parseRemoteHosts(values.remoteHosts)) if (hostId !== localHostId) settings.hosts[hostId] = { ...base, capacities: { heavy, "local-model": 0 }, gated: false, connected: hostInfo.get(hostId)?.connected ?? false, tools: parseMachineTools(values.machineTools)[hostId] ?? [] };
+    for (const [hostId, heavy] of parseRemoteHosts(values.remoteHosts)) if (hostId !== localHostId) settings.hosts[hostId] = { ...base, capacities: { heavy, "local-model": 0 }, withModel: new Map(parseRemoteHosts(values.remoteHostsWithModel)).get(hostId) ?? heavy, gated: false, connected: hostInfo.get(hostId)?.connected ?? false, tools: parseMachineTools(values.machineTools)[hostId] ?? [] };
     const error = validateSettings(settings);
     if (error) throw new Error(error);
     return settings;
@@ -319,7 +324,7 @@ export async function register(bb: BbPluginApi, overrides: Partial<Runtime> = {}
         const snapshot = statusSnapshot(state, { now: runtime.now(), settings }, p.hostId ?? [...new Set([localHostId, ...Object.keys(settings.hosts), ...Object.keys(state.hosts)])]);
         snapshot.pools = snapshot.pools.filter(pool => pool.hostId === localHostId || Object.hasOwn(settings.hosts, pool.hostId) || pool.leases.length || pool.queue.length);
         const hostSettings: Record<string, HostSettings> = { [localHostId]: settings, ...settings.hosts };
-        return { ok: true, data: { ...snapshot, hostSettings, localHostId, settingsWarnings, watcher: watcher.diagnostics() } };
+        return { ok: true, data: { ...snapshot, hostSettings, localHostId, deviceHosts: settings.deviceHosts, modelHoldMinutes: settings.modelHoldMinutes, settingsWarnings, watcher: watcher.diagnostics() } };
       }
       // Device registration belongs to local-models; it is an RPC only, not an agent tool or CLI command.
       if (method === "devices") return p.devices ? transition({ type: "devices", hostId: localHostId, devices: p.devices }) : { ok: true, data: { devices: deviceList(state, localHostId) } };
@@ -338,6 +343,18 @@ export async function register(bb: BbPluginApi, overrides: Partial<Runtime> = {}
           if (await runtime.probePort(port)) return transition({ type: "portLease", hostId: localHostId, threadId: p.threadId, port });
         }
         return invalid("No free ports in the configured range");
+      }
+      if (method === "setCapacity" && p.withModel) {
+        if (p.pool !== "heavy") return invalid("With-model capacity applies only to heavy jobs");
+        if (p.hostId === localHostId) {
+          if (p.capacity > cores) return invalid(`Heavy capacity cannot exceed ${cores} CPU cores`);
+          await persistConfig({ heavyCapacityWithModel: p.capacity });
+        } else {
+          const entries = new Map(parseRemoteHosts(readValues().remoteHostsWithModel));
+          entries.set(p.hostId, p.capacity);
+          await persistConfig({ remoteHostsWithModel: [...entries].map(([h, n]) => `${h}=${n}`).join(",") });
+        }
+        return { ok: true, data: { capacity: p.capacity } };
       }
       if (method === "setCapacity" && p.hostId !== localHostId) {
         if (p.pool !== "heavy") return invalid("Other machines have only the heavy pool");

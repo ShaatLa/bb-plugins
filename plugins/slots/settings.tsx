@@ -140,12 +140,15 @@ export function SlotsSettings() {
   const { values, defaults, cores } = data;
   const latest = view?.gates[view.localHostId]?.latest;
   const number = (key: SettingKey, label: string, min: number, max: number, hint?: string, step = 1) =>
-    <Row key={key} label={label} description={[`Default ${defaults[key]}`, hint].filter(Boolean).join(" · ")}>
-      <NumberField label={label} value={values[key]} fallback={defaults[key]} min={min} max={max} step={step}
+    <Row key={key} label={label} description={[key === "heavyCapacityWithModel" ? "Default: heavy jobs capacity" : `Default ${defaults[key]}`, hint].filter(Boolean).join(" · ")}>
+      <NumberField label={label} value={values[key]} fallback={key === "heavyCapacityWithModel" ? values.heavyCapacity : defaults[key]} min={min} max={max} step={step}
         onCommit={value => save(key, value).catch(() => {})} onReset={() => apply(key, null)} />
     </Row>;
   const selected = String(values.observerEvents).split(",").filter(Boolean);
   const machines = String(values.remoteHosts ?? "").split(",").map(entry => entry.trim()).filter(Boolean).map(entry => entry.split("=") as [string, string]);
+  const withModels = Object.fromEntries(String(values.remoteHostsWithModel ?? "").split(",").filter(Boolean).map(e => e.split("=")));
+  const deviceHosts: Record<string, string> = Object.fromEntries(String(values.deviceHosts ?? "").split(",").filter(Boolean).map(e => e.split("=")));
+  const saveMap = (key: "remoteHostsWithModel" | "deviceHosts", map: Record<string, string>) => apply(key, Object.entries(map).map(([k, v]) => `${k}=${v}`).join(","));
   const toolsByHost = Object.fromEntries(String(values.machineTools ?? "").split(";").map(e => e.trim()).filter(Boolean).map(e => e.split("=") as [string, string]));
   const writeTools = (id: string, tools: string) => { const next = { ...toolsByHost, [id]: tools }; apply("machineTools", Object.entries(next).map(([host, value]) => `${host}=${value}`).join(";")); };
   const writeMachines = (next: [string, string | number][]) => apply("remoteHosts", next.length ? next.map(([id, capacity]) => `${id}=${capacity}`).join(",") : null);
@@ -158,6 +161,8 @@ export function SlotsSettings() {
     <fieldset disabled={busy} aria-busy={busy} className="space-y-6">
       <SettingsSection title="Slots" description="How many heavy jobs and local model runs may hold a slot at once."><SettingsRowList>
         {number("heavyCapacity", "Heavy jobs capacity", 0, cores, `max ${cores} (CPU cores). Zero disables the pool.`)}
+        {number("heavyCapacityWithModel", "Heavy jobs with a local model", 0, cores, "Reset follows heavy jobs capacity")}
+        {number("modelHoldMinutes", "Model hold (minutes)", 1, 10080, "After this time heavy capacity returns to its high value")}
         {number("localModelCapacity", "Local model capacity (this Mac)", 0, data.maxima.localModelCapacity ?? 16, `max ${data.maxima.localModelCapacity ?? 16}. Zero disables the pool.`)}
         <Row label="Other machines" description="Threads there lease that machine; slots-run --spill runs heavy work there when this Mac is full. No machine check there.">
           <div className="flex items-center justify-end gap-2">
@@ -173,6 +178,8 @@ export function SlotsSettings() {
           return <Row key={id} label={name} badge={host?.connected === false ? "offline" : undefined} description="Heavy jobs capacity on that machine.">
             <div className="flex items-center justify-end gap-2">
               <Button type="button" size="sm" variant="ghost" aria-label={`Remove ${name}`} onClick={() => writeMachines(machines.filter((_, other) => other !== index))}>Remove</Button>
+              <Input aria-label={`${name} model device`} placeholder="Model device" defaultValue={Object.keys(deviceHosts).find(device => deviceHosts[device] === id) ?? ""} onBlur={event => { const next = Object.fromEntries(Object.entries(deviceHosts).filter(([, host]) => host !== id)); if (event.target.value.trim()) next[event.target.value.trim()] = id; saveMap("deviceHosts", next); }} />
+              <NumberField label={`${name} with model`} value={withModels[id] ?? capacity} fallback={capacity} min={0} max={9999} onCommit={value => save("remoteHostsWithModel", Object.entries({ ...withModels, [id]: String(value) }).map(([host, n]) => `${host}=${n}`).join(",")).catch(() => {})} onReset={() => { const next = { ...withModels }; delete next[id]; saveMap("remoteHostsWithModel", next); }} />
               <Input aria-label={`${name} Installed`} placeholder="Installed: go,docker" defaultValue={toolsByHost[id] ?? ""} key={`${id}:${toolsByHost[id] ?? ""}`} onBlur={event => writeTools(id, event.target.value.trim())} />
               <NumberField label={`${name} heavy jobs capacity`} value={capacity} min={0} max={9999}
                 onCommit={value => save("remoteHosts", machines.map(([other, n]) => `${other}=${other === id ? value : n}`).join(",")).catch(() => {})} />

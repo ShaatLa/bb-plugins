@@ -10,6 +10,7 @@ export type ObserverEvent = (typeof OBSERVER_EVENTS)[number];
 export interface HostSettings {
   watchPolicy: "off" | "warn"; watchCores: number; watchWindowSeconds: number; idleLeaseMinutes: number;
   capacities: Record<PoolName, number>;
+  withModel?: number;
   memFreeMinPct: number;
   loadMax: number;
   gateSamples: number;
@@ -32,6 +33,7 @@ export interface HostSettings {
 }
 export interface Settings extends HostSettings {
   primaryHostId?: string; machineTools?: Record<string, string[]>;
+  deviceHosts?: Record<string, string>; modelHoldMinutes?: number;
   /** Complete host overrides; omitted hosts use the top-level defaults. */
   hosts: Record<string, HostSettings>;
 }
@@ -104,6 +106,7 @@ export interface PoolSnapshot {
   hostId: string; pool: PoolName; capacity: number; leases: Lease[]; queue: QueueEntry[];
   /** Set on local-model entries of a registered (or just unregistered) device; absent for this Mac, whose queue also holds unpinned requests. */
   device?: string;
+  mode?: { withModel: number; high: number; reason: "model-queued" | "model-running" | "hold-expired"; device?: string; admitting: boolean };
 }
 export interface StatusSnapshot {
   at: number; pools: PoolSnapshot[];
@@ -118,6 +121,7 @@ export interface StatusView extends StatusSnapshot {
   hostSettings: Record<string, HostSettings>;
   /** The BB server host id; the only host whose gate is sampled in v1. */
   localHostId: string;
+  deviceHosts?: Record<string, string>; modelHoldMinutes?: number;
   /** Display name from the SDK; null when unavailable. */
   localHostName?: string | null;
   settingsWarnings?: string[];
@@ -151,7 +155,7 @@ export interface PortParams { hostId: string; threadId: string; probe?: boolean 
 export interface PrioritizeParams { requestId: string; priority: Priority }
 export interface RevokeParams { leaseId: string; reason: string }
 export interface GrantParams { requestId: string }
-export interface SetCapacityParams { hostId: string; pool: PoolName; capacity: number }
+export interface SetCapacityParams { hostId: string; pool: PoolName; capacity: number; withModel?: boolean }
 /** `device` value that pins this Mac; never a registered name. */
 export const THIS_MAC = "local";
 export interface DeviceInfo { name: string; capacity: number }
@@ -161,7 +165,7 @@ export interface LogParams { since?: number; hostId?: string; limit?: number }
 /** Server implements these methods with boundary validation; these types have no SDK dependency. */
 export interface ObserverParams { threadId?: string; self?: boolean; toThreadId?: string; clear?: boolean; events?: string }
 export interface ObserverView { threadId: string | null; title: string | null; events: ObserverEvent[] }
-export const SETTING_KEYS = ["heavyCapacity", "localModelCapacity", "memFreeMinPct", "loadMax", "gateSamples", "gateIntervalSeconds", "leaseTtlMinutes", "maxEstimateMinutes", "heartbeatIntervalMinutes", "observerThreadId", "observerEvents", "observerQueueWaitMinutes", "observerGateHoldMinutes", "portFrom", "portTo", "grantMode", "watchPolicy", "watchCores", "watchWindowSeconds", "idleLeaseMinutes", "remoteHosts", "machineTools"] as const;
+export const SETTING_KEYS = ["heavyCapacity", "heavyCapacityWithModel", "remoteHostsWithModel", "deviceHosts", "modelHoldMinutes", "localModelCapacity", "memFreeMinPct", "loadMax", "gateSamples", "gateIntervalSeconds", "leaseTtlMinutes", "maxEstimateMinutes", "heartbeatIntervalMinutes", "observerThreadId", "observerEvents", "observerQueueWaitMinutes", "observerGateHoldMinutes", "portFrom", "portTo", "grantMode", "watchPolicy", "watchCores", "watchWindowSeconds", "idleLeaseMinutes", "remoteHosts", "machineTools"] as const;
 export type SettingKey = (typeof SETTING_KEYS)[number];
 export type SettingValues = Record<SettingKey, number | string>;
 export interface SettingsFormView { values: SettingValues; defaults: SettingValues; maxima: Partial<Record<SettingKey, number>>; setKeys: SettingKey[]; cores: number; heavyDefault: number; hosts?: { id: string; name: string | null; connected: boolean }[] }

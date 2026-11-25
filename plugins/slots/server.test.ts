@@ -768,6 +768,18 @@ it("reads and writes one project placement field and persists queued constraints
   await h.configure({ remoteHosts: "host_example=1", machineTools: "host_example=go,docker" });
   expect((await h.view()).leaseHosts?.host_example.tools).toEqual(["go", "docker"]);
 });
+
+it("persists per-machine model settings and changes only the selected with-model capacity", async () => {
+  const h = await setup();
+  await h.configure({ heavyCapacity: 4, remoteHosts: "host_example=5,host_other=3", deviceHosts: "GPU=host_example", remoteHostsWithModel: "host_other=1", modelHoldMinutes: 45 });
+  expect((await h.harness.behavior.runCli(["capacity", "--pool", "heavy", "--host", "host_example", "--with-model", "2"])).exitCode).toBe(0);
+  expect(await h.invoke("config", { operation: "get", key: "remoteHostsWithModel" })).toMatchObject({ ok: true, data: { value: "host_other=1,host_example=2" } });
+  expect(await h.view()).toMatchObject({ deviceHosts: { GPU: "host_example" }, modelHoldMinutes: 45, hostSettings: { local: { withModel: 4 }, host_example: { withModel: 2 }, host_other: { withModel: 1 } } });
+  expect((await h.invoke("config", { operation: "set", key: "deviceHosts", value: "GPU=host_example,GPU=host_other" })).ok).toBe(false);
+  expect((await h.harness.behavior.runCli(["capacity", "--pool", "heavy", "--with-model", "0"])).exitCode).toBe(0);
+  expect((await h.view()).hostSettings.local.withModel).toBe(0);
+});
+
 it("keeps concurrent placement updates for different projects", async () => {
   const h = await setup();
   h.harness.sdk.stub("projects.list", async () => [{ id: "proj_example", name: "Example" }, { id: "proj_other", name: "Other" }]);

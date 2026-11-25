@@ -17,6 +17,7 @@ export function settingsFor(settings: Settings, hostId: string): HostSettings {
 export function validateSettings(settings: Settings): string | null {
   const validHost = (s: HostSettings): boolean => Boolean(s && s.capacities && s.portRange) &&
     POOLS.every(p => Number.isSafeInteger(s.capacities[p]) && s.capacities[p] >= 0) &&
+    (s.withModel === undefined || (Number.isSafeInteger(s.withModel) && s.withModel >= 0)) &&
     Number.isFinite(s.memFreeMinPct) && s.memFreeMinPct >= 0 && s.memFreeMinPct <= 100 &&
     Number.isFinite(s.loadMax) && s.loadMax > 0 &&
     Number.isSafeInteger(s.gateSamples) && s.gateSamples > 0 &&
@@ -35,7 +36,7 @@ export function validateSettings(settings: Settings): string | null {
     (s.grantMode === "auto" || s.grantMode === "manual") &&
     Number.isSafeInteger(s.portRange.from) && Number.isSafeInteger(s.portRange.to) &&
     s.portRange.from >= 1 && s.portRange.to <= 65535 && s.portRange.from <= s.portRange.to;
-  return settings && settings.hosts && validHost(settings) && Object.values(settings.hosts).every(validHost)
+  return settings && settings.hosts && (settings.modelHoldMinutes === undefined || (Number.isSafeInteger(settings.modelHoldMinutes) && settings.modelHoldMinutes > 0)) && validHost(settings) && Object.values(settings.hosts).every(validHost)
     ? null : "Invalid settings (capacities, gate thresholds, TTL/heartbeat interval or port range)";
 }
 const text = (value: unknown): value is string => typeof value === "string" && value.trim().length > 0;
@@ -46,7 +47,35 @@ const sorted = (state: State) => state.requests.map((request, index) => ({ reque
   .sort((a, b) => rank[a.request.priority] - rank[b.request.priority] ||
     a.request.createdAt - b.request.createdAt || a.index - b.index).map(x => x.request);
 const emptyGate = (): GateState => ({ latest: null, streak: 0, lastCountedAt: null, failingSince: null, holdAlerted: false });
-export function capacityFor(state: State, hostId: string, pool: (typeof POOLS)[number], settings: Settings, device?: string): number {
+const modelHost = (hostId: string, device: string | undefined, settings: Settings): string | undefined =>
+  device === undefined ? hostId : settings.deviceHosts && Object.hasOwn(settings.deviceHosts, device) ? settings.deviceHosts[device] : undefined;
+const modelCandidates = (state: State, request: { hostId: string; device?: string }) =>
+  (request.device === undefined ? [...(state.hosts[request.hostId]?.devices ?? []).map(d => d.name), undefined] : [request.device === THIS_MAC ? undefined : request.device]);
+const blockedDevice = (state: State, hostId: string, settings: Settings): string | undefined => {
+  for (const request of state.requests.filter(r => r.pool === "local-model")) {
+    for (const device of modelCandidates(state, request)) {
+      if (modelHost(request.hostId, device, settings) !== hostId) continue;
+      const capacity = device === undefined ? settingsFor(settings, request.hostId).capacities["local-model"] : state.hosts[request.hostId]?.devices?.find(d => d.name === device)?.capacity ?? 0;
+      if (state.leases.filter(l => l.pool === "local-model" && l.hostId === request.hostId && l.device === device).length < capacity) return device ?? THIS_MAC;
+    }
+  }
+  return undefined;
+};
+const modelMode = (state: State, hostId: string, settings: Settings, now: number) => {
+  const high = settingsFor(settings, hostId).capacities.heavy;
+  const withModel = settingsFor(settings, hostId).withModel ?? high;
+  const queued = blockedDevice(state, hostId, settings);
+  const models = state.leases.filter(l => l.pool === "local-model" && modelHost(l.hostId, l.device, settings) === hostId);
+  const running = models.find(l => now - l.grantedAt < (settings.modelHoldMinutes ?? 60) * 60000);
+  const lease = running ?? models[0];
+  if (!queued && !lease) return undefined;
+  return { high, withModel, reason: queued ? "model-queued" as const : running ? "model-running" as const : "hold-expired" as const, device: queued ?? lease?.device ?? THIS_MAC, admitting: !queued };
+};
+export function capacityFor(state: State, hostId: string, pool: (typeof POOLS)[number], settings: Settings, device?: string, now = 0): number {
+  if (pool === "heavy") {
+    const mode = modelMode(state, hostId, settings, now);
+    return mode && state.leases.some(l => l.pool === "local-model" && modelHost(l.hostId, l.device, settings) === hostId && now - l.grantedAt < (settings.modelHoldMinutes ?? 60) * 60000) ? mode.withModel : settingsFor(settings, hostId).capacities.heavy;
+  }
   return device === undefined ? settingsFor(settings, hostId).capacities[pool] : state.hosts[hostId]?.devices?.find(d => d.name === device)?.capacity ?? 0;
 }
 /** Pool and device of a lease for notices, e.g. `local-model M1`. */
@@ -93,7 +122,8 @@ export function statusSnapshot(state: State, ctx: Context, hostId?: string | str
     pools: hosts.flatMap(host => POOLS.filter(pool => pool === "heavy" || settingsFor(ctx.settings, host).gated !== false).flatMap(pool => [undefined, ...(pool === "heavy" ? [] : [...new Set([...deviceList(state, host).map(d => d.name),
       ...[...state.leases, ...state.requests].filter(x => x.hostId === host && x.pool === pool && group(x) !== undefined).map(x => x.device!).sort()])])].map(device => ({
       hostId: host, pool, ...(device === undefined ? {} : { device }),
-      capacity: capacityFor(state, host, pool, ctx.settings, device),
+      capacity: capacityFor(state, host, pool, ctx.settings, device, ctx.now),
+      ...(pool === "heavy" && modelMode(state, host, ctx.settings, ctx.now) ? { mode: modelMode(state, host, ctx.settings, ctx.now) } : {}),
       leases: state.leases.filter(l => same(l, host, pool, device)),
       queue: queue.filter(r => same(r, host, pool, device)),
     })))),
@@ -181,12 +211,15 @@ export function apply(original: State, input: Input, ctx: Context): Transition {
     let hostId = request.hostId, device: string | undefined, index = 0;
     // An unpinned local-model request takes the first free registered device, then this Mac; a spilled heavy one its own host, then other machines.
     for ({ hostId, device } of candidates(request)) {
+      const machine = pool === "local-model" ? modelHost(hostId, device, ctx.settings) : hostId;
+      if (pool === "heavy" && blockedDevice(state, hostId, ctx.settings)) { failure = { code: "capacity", message: "Local model queued on this machine" }; continue; }
+      if (pool === "local-model" && machine && state.leases.filter(l => l.pool === "heavy" && l.hostId === machine).length > (settingsFor(ctx.settings, machine).withModel ?? settingsFor(ctx.settings, machine).capacities.heavy)) { failure = { code: "capacity", message: "Waiting for heavy jobs to finish" }; continue; }
       const gate = host(hostId).gate;
       // This Mac's readings say nothing about another device, so a registered device has no machine check.
       if (device === undefined && !poolGateOpen(gate, settingsFor(ctx.settings, hostId), pool, manual)) {
         failure = { code: "gate-closed", message: "Host gate is closed", ...(gate.latest ? { readings: gate.latest } : {}) }; continue;
       }
-      const capacity = capacityFor(state, hostId, pool, ctx.settings, device);
+      const capacity = capacityFor(state, hostId, pool, ctx.settings, device, ctx.now);
       const leases = state.leases.filter(l => same(l, hostId, pool, device));
       index = 0;
       while (leases.some(l => l.slotIndex === index)) index++;
@@ -209,9 +242,9 @@ export function apply(original: State, input: Input, ctx: Context): Transition {
     observer(hostId, "grant", message, lease.holderThreadId);
     return { ok: true, data: lease };
   };
-  const schedule = (onlyHost?: string, onlyPool?: PoolName) => {
-    for (const request of sorted(state)) {
-      if ((onlyHost === undefined || request.hostId === onlyHost) && (onlyPool === undefined || request.pool === onlyPool) && settingsFor(ctx.settings, request.hostId).grantMode === "auto") grant(request.id, false);
+  const schedule = () => {
+    for (const request of sorted(state).sort((a, b) => Number(a.pool === "heavy") - Number(b.pool === "heavy"))) {
+      if (settingsFor(ctx.settings, request.hostId).grantMode === "auto") grant(request.id, false);
     }
   };
   const release = (threadId: string, leaseId?: string, reason = "released", ended = false, quiet = false) => {
@@ -270,7 +303,7 @@ export function apply(original: State, input: Input, ctx: Context): Transition {
         threadId: input.threadId, job: input.job, estMs: input.estMs, priority: input.priority ?? "normal", createdAt: ctx.now, ...(input.device === undefined ? {} : { device: input.device }) };
       state.requests.push(request);
       audit("request", { hostId: request.hostId, pool: request.pool, threadId: request.threadId, requestId: request.id });
-      if (request.pool === "local-model" || gateless(request.hostId)) schedule(request.hostId);
+      if (request.pool === "local-model" || gateless(request.hostId)) schedule();
       const granted = state.leases.find(l => l.requestId === request.id);
       data = granted ? { kind: "leased", lease: granted } : { kind: "queued", request }; break;
     }
@@ -304,7 +337,7 @@ export function apply(original: State, input: Input, ctx: Context): Transition {
         expiresAt: ctx.now + settingsFor(ctx.settings, input.hostId).heartbeatIntervalMs };
       (target.uses ??= []).push(use); target.graceUntil = null;
       if (!lease && (target.pool === "local-model" || (request!.place === "auto" || request!.spill) || gateless(target.hostId))) {
-        schedule(target.hostId);
+        schedule();
         const granted = state.leases.find(l => l.requestId === target.id);
         if (granted) { data = { kind: "leased", lease: granted, useId: use.id }; break; }
       }
@@ -352,7 +385,7 @@ export function apply(original: State, input: Input, ctx: Context): Transition {
       else if (gate.lastCountedAt === null || input.at - gate.lastCountedAt >= settings.gateIntervalMs * 0.9) {
         gate.streak = Math.min(gate.streak + 1, settings.gateSamples); gate.lastCountedAt = input.at;
       }
-      schedule(input.hostId); // a local-model request needs only memory, so try even when the full gate failed
+      schedule(); // a local-model request needs only memory, so try even when the full gate failed
       data = { passed, open: gateOpen(gate, settings), gate }; break;
     }
     case "gate": {
@@ -449,7 +482,7 @@ export function apply(original: State, input: Input, ctx: Context): Transition {
         h.devices = [...next].map(([name, capacity]) => ({ name, capacity }));
         for (const [device, reason] of changes) audit("capacity", { hostId: input.hostId, pool: "local-model", device, reason });
         if (changes.length) observer(input.hostId, "capacity", { title: "Capacity changed", lines: [...changes.map(([device, reason]) => ({ value: `local-model ${device}: ${reason}.` })), { label: "Host", value: `\`${input.hostId}\`` }] });
-        schedule(input.hostId);
+        schedule();
       }
       data = { devices: deviceList(state, input.hostId) }; break;
     }
@@ -535,7 +568,7 @@ export function apply(original: State, input: Input, ctx: Context): Transition {
     const old = original.leases.find(o => o.id === l.id);
     if (!old || old.holderThreadId !== l.holderThreadId) { l.idle = { since: null, alerted: false }; l.holdingSince = ctx.now; }
   }
-  if (original.leases.some(l => l.pool === "heavy" && !state.leases.some(current => current.id === l.id))) schedule(undefined, "heavy");
+  if (original.leases.some(l => !state.leases.some(current => current.id === l.id)) || original.requests.some(r => r.pool === "local-model" && !state.requests.some(current => current.id === r.id))) schedule();
   cleanupPorts();
   return { state, effects, result: { ok: true, data: structuredClone(data) } };
 }

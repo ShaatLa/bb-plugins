@@ -333,7 +333,7 @@ test("keeps summary values compact and shows clamped-setting warnings", async ()
   expect(slot.container.textContent).not.toContain("(auto)");
 });
 
-const settingValues = { heavyCapacity: 4, localModelCapacity: 1, memFreeMinPct: 20, loadMax: 18, gateSamples: 2,
+const settingValues = { heavyCapacity: 4, heavyCapacityWithModel: 4, remoteHostsWithModel: "", deviceHosts: "", modelHoldMinutes: 60, localModelCapacity: 1, memFreeMinPct: 20, loadMax: 18, gateSamples: 2,
   gateIntervalSeconds: 15, leaseTtlMinutes: 30, maxEstimateMinutes: 720, heartbeatIntervalMinutes: 10, observerThreadId: "", observerEvents: "warn,expire",
   observerQueueWaitMinutes: 20, observerGateHoldMinutes: 15, portFrom: 41000, portTo: 41099, grantMode: "auto",
   watchPolicy: "warn", watchCores: 3, watchWindowSeconds: 120, idleLeaseMinutes: 30, remoteHosts: "" };
@@ -524,7 +524,7 @@ test("groups pool cards by machine: this Mac, devices, then other hosts", async 
   const sections = slot.container.querySelectorAll("section");
   expect(Array.from(sections, section => [section.querySelector("h2")!.textContent, Array.from(section.querySelectorAll("h3"), h => h.textContent)])).toEqual([
     ["This Mac", ["Heavy jobs", "Local model"]],
-    ["GPU-1 · local model device", ["Local model"]],
+    ["GPU-1 · local model device (not linked to a machine)", ["Local model"]],
     ["Build box · offline", ["Heavy jobs"]],
   ]);
   expect(slot.getByRole("region", { name: "Heavy jobs · Build box" })).toBeTruthy();
@@ -547,12 +547,12 @@ test.each([
   expect(within(slot.getByRole("region", { name: "Heavy jobs · Build box" })).queryByText(/free heavy slot/)).toBeNull();
 });
 
-const local = ["This Mac", ["Heavy jobs", "Local model"]], device = ["GPU-1 · local model device", ["Local model"]];
+const local = ["This Mac", ["Heavy jobs", "Local model"]], device = ["GPU-1 · local model device (not linked to a machine)", ["Local model"]];
 test.each([
-  ["match", "Build box", "GPU-1 box", [local, ["Build box · offline", ["Heavy jobs"]], ["GPU-1 box", ["Heavy jobs", "Local model · GPU-1"]]]],
+  ["match", "Build box", "GPU-1 box", [local, device, ["Build box · offline", ["Heavy jobs"]], ["GPU-1 box", ["Heavy jobs"]]]],
   ["no match", "Build box", "GPU-10", [local, device, ["Build box · offline", ["Heavy jobs"]], ["GPU-10", ["Heavy jobs"]]]],
   ["two matching hosts", "GPU-1 Max", "gpu-1", [local, device, ["GPU-1 Max · offline", ["Heavy jobs"]], ["gpu-1", ["Heavy jobs"]]]],
-])("a device joins the one other host whose name starts with it: %s", async (_, remoteName, otherName, expected) => {
+])("an unmapped device stays separate regardless of host name: %s", async (_, remoteName, otherName, expected) => {
   const view = machines(false);
   const data: StatusView = { ...view, hostSettings: { ...view.hostSettings, other: remoteHost(true) },
     leaseHosts: { ...view.leaseHosts, remote: { pools: ["heavy"], name: remoteName }, other: { pools: ["heavy"], name: otherName } },
@@ -562,4 +562,15 @@ test.each([
   expect(Array.from(slot.container.querySelectorAll("section"), section => [section.querySelector("h2")!.textContent, Array.from(section.querySelectorAll("h3"), h => h.textContent)])).toEqual(expected);
   expect(slot.getByRole("region", { name: "Local model · GPU-1" })).toBeTruthy();
   expect(slot.getByRole("region", { name: "Local model · this Mac" })).toBeTruthy();
+});
+
+
+test("a mapped model device joins its configured machine and shows a barrier", async () => {
+  const view = machines(true);
+  const data: StatusView = { ...view, deviceHosts: { "GPU-1": "remote" }, pools: view.pools.map(p => p.hostId === "remote" ? { ...p, mode: { high: 2, withModel: 0, reason: "model-queued", admitting: false } } : p) };
+  const slot = render(() => ({ ok: true, data }));
+  const section = (await slot.findByText("Build box")).closest("section")!;
+  expect(within(section).getByText("Local model · GPU-1")).toBeTruthy();
+  expect(within(section).getByText("No new heavy jobs: local model queued")).toBeTruthy();
+  expect(slot.queryByText(/free heavy slot/)).toBeNull();
 });

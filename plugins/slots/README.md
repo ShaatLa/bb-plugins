@@ -317,3 +317,10 @@ of this phase. The sidebar is covered by SDK frontend harness tests.
 A heavy lease also covers the holder’s child threads; open browser-automation sessions in the family count as activity for idle notices. Transfer is the clean way to assign work.
 
 Status views return the newest 15 non-gate audit events, ordered by time and sequence descending. Disk logs and the 50-event state ring are unchanged.
+
+
+### Local models and heavy capacity
+
+Configure `deviceHosts` as `device=host_id` entries to link registered model devices to machines. Unmapped devices do not affect heavy capacity. Set `heavyCapacityWithModel` for this Mac and `remoteHostsWithModel` (`host_id=capacity`) for other machines; unset entries follow their ordinary heavy capacity. `bb slots capacity --host <host> --with-model 2` changes one machine's with-model capacity.
+
+A queued model blocks new heavy grants on candidate machines while their device slot is free and existing heavy work drains. Once the model starts, heavy work is capped at the with-model capacity. After `modelHoldMinutes` (default 60) from grant, heavy capacity returns to its ordinary value even if the model is still running. Existing leases are never revoked.

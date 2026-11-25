@@ -30,6 +30,7 @@ function humanOutput(method: string, data: unknown): string {
       const view = data as StatusView;
       return [...(view.settingsWarnings ?? []).map(message => `Warning: ${message}`), ...view.pools.flatMap(p => [
         `${p.pool}${p.hostId !== view.localHostId ? ` · ${view.leaseHosts?.[p.hostId]?.name ?? p.hostId}` : ""}${p.pool === "local-model" ? ` · ${p.device ?? "this Mac"}` : ""} · ${p.leases.length}/${plural(p.capacity, "slot")} held · ${p.queue.length} queued`,
+        ...(p.mode ? [`  ${p.mode.reason === "model-queued" ? "No new heavy jobs: local model queued" : p.mode.reason === "model-running" ? `Local model running · with model ${p.mode.withModel} · high ${p.mode.high}` : `Model hold over · heavy back to ${p.mode.high}`}`] : []),
         ...p.leases.map(l => `  ${leaseLine(l)} · ${line(view.titles[l.holderThreadId] ?? l.holderThreadId)}`),
         ...p.queue.map(r => `  queued ${r.id}${p.pool === "local-model" && r.device === undefined ? " (any device)" : ""} · ${r.priority} · ${line(view.titles[r.threadId] ?? r.threadId)} · ${line(r.job)}`),
       ])].join("\n");
@@ -248,7 +249,7 @@ export function registerCli(bb: BbPluginApi, invoke: Invoke, projectGet?: (id: s
       async run(i,c) { return renderResult("revoke", await call("revoke", { leaseId: i.positionals.lease, reason: i.options.reason },c,false), !!i.options.json); } }),
     grant: cliCommand({ summary: "Grant out of queue order; still checks capacity and gate (manager only)", options: { json }, positionals: id("request"),
       async run(i,c) { return renderResult("grant", await call("grant", { requestId: i.positionals.request },c,false), !!i.options.json); } }),
-    capacity: cliCommand({ summary: "Persist pool capacity without revoking live leases (manager only)", options: { json, pool, host: { type: "string", description: "Another machine listed in remoteHosts (id or name); default this Mac" } }, positionals: [{ name: "count", description: "Nonnegative capacity", required: true }],
+    capacity: cliCommand({ summary: "Persist pool capacity without revoking live leases (manager only)", options: { json, pool, "with-model": { type: "integer", min: 0, max: 10000, description: "Heavy capacity while a model is running" }, host: { type: "string", description: "Another machine listed in remoteHosts (id or name); default this Mac" } }, positionals: [{ name: "count", description: "Nonnegative capacity", required: false }],
       async run(i,c) {
         let hostId: string | undefined;
         if (i.options.host) {
@@ -257,7 +258,7 @@ export function registerCli(bb: BbPluginApi, invoke: Invoke, projectGet?: (id: s
           hostId = Object.keys(hosts).find(id => id === i.options.host) ?? Object.keys(hosts).find(id => hosts[id].name === i.options.host);
           if (!hostId) return renderResult("setCapacity", { ok: false, error: { code: "not-found", message: `Machine ${i.options.host} is not in remoteHosts; add it with \`bb slots config set remoteHosts <host_id>=<n>\`` } }, !!i.options.json);
         }
-        return renderResult("setCapacity", await call("setCapacity", { pool: i.options.pool, capacity: Number(i.positionals.count), ...(hostId ? { hostId } : {}) },c,false), !!i.options.json); } }),
+        return renderResult("setCapacity", await call("setCapacity", { pool: i.options.pool, capacity: i.options["with-model"] ?? Number(i.positionals.count), ...(i.options["with-model"] !== undefined ? { withModel: true } : {}), ...(hostId ? { hostId } : {}) },c,false), !!i.options.json); } }),
     log: cliCommand({ summary: "Read audit JSONL (retained 14 days)", options: { json, since: { type: "string", description: "Duration (2h) or ISO UTC time" }, limit: { type: "integer", min: 1, max: 1000, description: "Maximum events (1–1000, default 100)" } },
       async run(i,c) { return renderResult("log", await call("log", { ...(i.options.since ? { since: parseSince(i.options.since, Date.now()) } : {}), ...(i.options.limit !== undefined ? { limit: i.options.limit } : {}) },c,false), !!i.options.json); } }),
   } }));

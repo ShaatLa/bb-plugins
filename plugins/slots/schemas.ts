@@ -15,6 +15,12 @@ export const remoteHostsSchema = z.string().max(4000).refine(value => {
   return ids.every(Boolean) && new Set(ids).size === ids.length;
 }, "Use host_id=capacity, comma-separated, each host once (e.g. host_example=4)");
 export const parseRemoteHosts = (value: string): [string, number][] => value.split(",").map(e => e.trim()).filter(Boolean).map(e => { const [h, n] = e.split("="); return [h, Number(n)]; });
+export const deviceHostsSchema = z.string().max(4000).refine(value => {
+  const entries = value.split(",").map(e => e.trim()).filter(Boolean);
+  const names = entries.map(e => /^([A-Za-z0-9][A-Za-z0-9._-]{0,31})=[A-Za-z0-9_-]{1,200}$/.exec(e)?.[1]);
+  return names.every(Boolean) && new Set(names).size === names.length && !names.includes("local");
+}, "Use device=host_id, comma-separated, each device once");
+export const parseDeviceHosts = (value: string): Record<string, string> => Object.fromEntries(value.split(",").map(e => e.trim()).filter(Boolean).map(e => e.split("=")));
 export const machineToolsSchema = z.string().max(4000).refine(value => {
   const entries = value.split(";").map(e => e.trim()).filter(Boolean);
   const ids = entries.map(e => /^([A-Za-z0-9_-]{1,200})=(?:[a-z0-9-]+(?:,[a-z0-9-]+)*)?$/.exec(e)?.[1]);
@@ -41,7 +47,7 @@ export const inputs = {
   prioritize: z.object({ requestId: id, priority }).strict(),
   revoke: z.object({ leaseId: id, reason: z.string().trim().min(1).max(2000) }).strict(),
   grant: z.object({ requestId: id }).strict(),
-  setCapacity: z.object({ ...host, pool, capacity: z.number().int().min(0).max(10000) }).strict().refine(p => p.pool !== "local-model" || p.capacity <= LOCAL_MODEL_MAX, { message: `Local model capacity cannot exceed ${LOCAL_MODEL_MAX}`, path: ["capacity"] }),
+  setCapacity: z.object({ ...host, pool, capacity: z.number().int().min(0).max(10000), withModel: z.boolean().optional() }).strict().refine(p => p.pool !== "local-model" || p.capacity <= LOCAL_MODEL_MAX, { message: `Local model capacity cannot exceed ${LOCAL_MODEL_MAX}`, path: ["capacity"] }),
   log: z.object({ since: time.optional(), hostId: id.optional(), limit: z.number().int().min(1).max(1000).optional() }).strict(),
   devices: z.object({ hostId: id.optional(), devices: z.array(z.object({ name: device, capacity: z.number().int().min(0).max(100).default(1) }).strict()).max(32).optional() }).strict(),
 };

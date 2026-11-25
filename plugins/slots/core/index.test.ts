@@ -326,7 +326,7 @@ describe("Slots deterministic engine", () => {
     expect(ask("x", "M1").result.ok).toBe(false);
     expect(statusSnapshot(h.state, { now: h.now, settings: h.settings }, "h").pools.find(p => p.device === "M1")).toMatchObject({ capacity: 0, leases: [{ holderThreadId: "c" }] });
     // `local` pins this Mac, which still has its memory check.
-    h.send({ type: "release", threadId: "b" }); h.sample(5, 1);
+    h.sample(5, 1); h.send({ type: "release", threadId: "b" });
     expect(h.state.requests.map(r => r.threadId)).toEqual(["d"]);
     h.sample(50, 99); expect(h.state.leases.find(l => l.holderThreadId === "d")?.device).toBeUndefined();
     expect(ask("e", "local").result).toMatchObject({ ok: true, data: { kind: "queued", request: { device: "local" } } });
@@ -666,4 +666,71 @@ it.each(["release", "revoke", "expire", "archive"])("shows job and reason when a
   expect(message).toContain("\na tests\n- Lease:");
   const reason = {release:null, revoke:"revoked by manager", expire:null, archive:"`archived`"}[kind];
   if (reason) expect(message).toContain(`- Reason: ${reason}`); else expect(message).not.toContain("- Reason:");
+});
+
+
+describe("model coordination", () => {
+  it("drains a mapped machine, blocks placement, and restores high capacity after the hold", () => {
+    const base = structuredClone(DEFAULT_SETTINGS);
+    const h = harness({ primaryHostId: "h", capacities: { heavy: 2, "local-model": 1 }, withModel: 0, deviceHosts: { GPU: "remote" }, modelHoldMinutes: 60,
+      hosts: { remote: { ...base, gated: false, connected: true, capacities: { heavy: 3, "local-model": 0 }, withModel: 1 } } });
+    h.send({ type: "devices", hostId: "h", devices: [{ name: "GPU", capacity: 1 }] });
+    const heavy = (threadId: string, hostId = "remote") => h.send({ type: "acquire", hostId, threadId, pool: "heavy", job: "job", estMs: minute, place: "local" });
+    heavy("a"); heavy("b");
+    h.send({ type: "request", hostId: "h", threadId: "model", pool: "local-model", device: "GPU", job: "model", estMs: minute });
+    expect(statusSnapshot(h.state, { now: h.now, settings: h.settings }, "remote").pools[0].mode).toMatchObject({ reason: "model-queued", admitting: false });
+    h.request("c", "normal", "heavy", "remote"); expect(h.state.requests.some(r => r.threadId === "c")).toBe(true);
+    h.send({ type: "release", threadId: "a", all: true });
+    expect(h.state.leases.some(l => l.holderThreadId === "model")).toBe(true);
+    expect(statusSnapshot(h.state, { now: h.now, settings: h.settings }, "remote").pools[0]).toMatchObject({ capacity: 1, mode: { reason: "model-running", admitting: true } });
+    h.send({ type: "heartbeat", threadId: "model" });
+    h.now = 59 * minute; h.send({ type: "heartbeat", threadId: "model" });
+    h.now = 61 * minute; h.send({ type: "tick" });
+    expect(statusSnapshot(h.state, { now: h.now, settings: h.settings }, "remote").pools[0]).toMatchObject({ capacity: 3, mode: { reason: "hold-expired" } });
+    expect(h.state.leases.some(l => l.holderThreadId === "c")).toBe(true);
+  });
+});
+
+describe("model admission across machines", () => {
+  it("blocks each free candidate until an unpinned model starts, then releases the other machine", () => {
+    const base = structuredClone(DEFAULT_SETTINGS);
+    const h = harness({ primaryHostId: "h", withModel: 0, deviceHosts: { GPU: "remote" }, hosts: { remote: { ...base, capacities: { heavy: 2, "local-model": 0 }, withModel: 0, gated: false, connected: true } } });
+    h.send({ type: "devices", hostId: "h", devices: [{ name: "GPU", capacity: 1 }] });
+    h.request("remote-heavy", "normal", "heavy", "remote");
+    h.send({ type: "request", hostId: "h", threadId: "ask", pool: "local-model", job: "ask", estMs: minute });
+    expect(statusSnapshot(h.state, { now: h.now, settings: h.settings }, ["h", "remote"]).pools.filter(p => p.pool === "heavy").map(p => p.mode?.admitting)).toEqual([false, false]);
+    h.sample(50, 1);
+    expect(h.state.leases.find(l => l.holderThreadId === "ask")?.device).toBeUndefined();
+    expect(statusSnapshot(h.state, { now: h.now, settings: h.settings }, "remote").pools[0].mode).toBeUndefined();
+  });
+  it("does not link an unmapped model device to a machine", () => {
+    const h = harness({ withModel: 0 });
+    h.send({ type: "devices", hostId: "h", devices: [{ name: "GPU", capacity: 1 }] });
+    h.send({ type: "request", hostId: "h", threadId: "ask", pool: "local-model", device: "GPU", job: "ask", estMs: minute });
+    expect(statusSnapshot(h.state, { now: h.now, settings: h.settings }, "h").pools[0]).toMatchObject({ capacity: 4 });
+    expect(statusSnapshot(h.state, { now: h.now, settings: h.settings }, "h").pools[0].mode).toBeUndefined();
+  });
+  it("does not let a follower on a busy device prolong a model hold", () => {
+    const base = structuredClone(DEFAULT_SETTINGS);
+    const h = harness({ deviceHosts: { GPU: "remote" }, modelHoldMinutes: 1, hosts: { remote: { ...base, gated: false, capacities: { heavy: 3, "local-model": 0 }, withModel: 0 } } });
+    h.send({ type: "devices", hostId: "h", devices: [{ name: "GPU", capacity: 1 }] });
+    for (const threadId of ["one", "two"]) h.send({ type: "request", hostId: "h", threadId, pool: "local-model", device: "GPU", job: "ask", estMs: minute });
+    h.now = minute; h.send({ type: "tick" });
+    expect(statusSnapshot(h.state, { now: h.now, settings: h.settings }, "remote").pools[0]).toMatchObject({ capacity: 3, mode: { reason: "hold-expired", admitting: true } });
+    h.request("heavy", "normal", "heavy", "remote");
+    expect(h.state.leases.some(l => l.holderThreadId === "heavy")).toBe(true);
+  });
+});
+
+it("placed heavy work skips a machine with a queued model even with spare capacity", () => {
+  const base = structuredClone(DEFAULT_SETTINGS);
+  const h = harness({ primaryHostId: "h", capacities: { heavy: 0, "local-model": 1 }, deviceHosts: { GPU: "remote" }, hosts: {
+    remote: { ...base, gated: false, connected: true, capacities: { heavy: 4, "local-model": 0 }, withModel: 0 },
+    other: { ...base, gated: false, connected: true, capacities: { heavy: 2, "local-model": 0 } },
+  } });
+  h.send({ type: "devices", hostId: "h", devices: [{ name: "GPU", capacity: 1 }] });
+  h.request("running", "normal", "heavy", "remote");
+  h.send({ type: "request", hostId: "h", threadId: "ask", pool: "local-model", device: "GPU", job: "ask", estMs: minute });
+  h.send({ type: "acquire", hostId: "h", threadId: "placed", pool: "heavy", place: "auto", job: "suite", estMs: minute });
+  expect(h.state.leases.find(l => l.holderThreadId === "placed")?.hostId).toBe("other");
 });
