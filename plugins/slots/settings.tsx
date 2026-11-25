@@ -49,6 +49,16 @@ function NumberField({ label, value, min, max, step, hint, reset, onCommit, onRe
   </div>;
 }
 
+function TextField({ label, value, hint, placeholder, onCommit }: { label: string; value: string; hint: string; placeholder: string; onCommit: (value: string) => Promise<void> }) {
+  const [draft, setDraft] = useState<string | null>(null);
+  const commit = () => { if (draft !== null && draft !== value) void onCommit(draft).catch(() => {}); setDraft(null); };
+  return <div className="space-y-1">
+    <label className="flex flex-wrap items-center justify-between gap-3 text-sm"><span>{label}</span><Input aria-label={label} className="w-64" placeholder={placeholder} value={draft ?? value}
+      onChange={event => setDraft(event.target.value)} onBlur={commit} onKeyDown={event => { if (event.key === "Enter") commit(); }} /></label>
+    <p className="text-xs text-muted-foreground">{hint}</p>
+  </div>;
+}
+
 export function SlotsSettings() {
   const rpc = useRpc<Contract>(), sdk = useSdk(), navigate = useBbNavigate();
   const { view } = useStatus({ clock: false });
@@ -122,6 +132,8 @@ export function SlotsSettings() {
       <Group title="Slots">
         {number("heavyCapacity", "Heavy jobs capacity", 0, cores, `Default ${heavyDefault} · max ${cores} (CPU cores). Zero disables the pool.`, true)}
         {number("localModelCapacity", "Local model capacity", 0, 10000, "Default 1 · max 10000. Zero disables the pool.", true)}
+        <TextField label="Other machines" value={String(values.remoteHosts ?? "")} placeholder="host_id=4" onCommit={value => save("remoteHosts", value)}
+          hint="bb host id=heavy capacity, comma-separated. Threads there lease that machine; slots-run --spill runs heavy work there when this Mac is full. No machine check there." />
       </Group>
       <Group title="Machine check">
         {number("memFreeMinPct", "Memory free minimum (%)", 0, 100, latest ? `now ${Math.round(latest.memFreePct)}% free` : "Waiting for a machine reading", false, 0.1)}

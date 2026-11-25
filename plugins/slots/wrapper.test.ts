@@ -28,6 +28,7 @@ it("pins this Mac for a local-model use because the command runs here", async ()
 it("does not run commands on timeout or malformed acquire output", async () => {
   const timeout = await run('exit 75', 'echo ran'); expect(timeout.result.status).toBe(75); expect(timeout.result.stdout).toBe('');
   const malformed = await run('echo "use use-x lease lease-1 renew 30"', 'echo ran'); expect(malformed.result.status).toBe(70); expect(malformed.log).not.toContain('slots done');
+  const unasked = await run('case $2 in acquire) echo "use use-1 lease lease-2 renew 30 host host_example" ;; esac', 'echo ran'); expect(unasked.result.status).toBe(70); expect(unasked.result.stdout).toBe('');
 });
 it("bounds a hung done and ignores its failure", async () => {
   const hung = await run('case $2 in acquire) echo "use use-1 lease lease-2 renew 30" ;; done) exec sleep 20 ;; esac', 'exit 9');
@@ -110,4 +111,48 @@ it("creates and removes its run directory inside TMPDIR", async () => {
   const runDir = (await readFile(marker, "utf8")).trim();
   expect(runDir.startsWith(`${dir}/slots-run.`)).toBe(true);
   expect((await readdir(dir)).filter(name => name.startsWith("slots-run."))).toEqual([]);
+});
+
+it("runs a spilled lease on the other machine against the current worktree and passes its exit code back", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "slots-spill-")); dirs.push(dir);
+  const repo = join(dir, "repo"), home = join(dir, "home"), log = join(dir, "log"), bb = join(dir, "bin", "bb");
+  const git = (...args: string[]) => spawnSync("git", ["-C", repo, ...args], { encoding: "utf8" });
+  spawnSync("mkdir", ["-p", join(repo, "pkg"), join(dir, "bin"), home]);
+  spawnSync("git", ["init", "-q", repo]);
+  await writeFile(join(repo, ".gitignore"), "secret.env\n"); await writeFile(join(repo, "secret.env"), "x");
+  await writeFile(join(repo, "pkg", "a.txt"), "tracked"); await writeFile(join(repo, "gone.txt"), "old");
+  git("add", "."); git("-c", "user.email=t@example.com", "-c", "user.name=t", "commit", "-qm", "init");
+  await rm(join(repo, "gone.txt")); await writeFile(join(repo, "pkg", "new.txt"), "untracked");
+  // Fake bb: file write stores the upload; terminal run executes the runner locally with a separate HOME.
+  await writeFile(bb, `#!/bin/sh
+printf '%s\\n' "$*" >> "$LOG"
+case "$1 $2" in
+  "slots acquire") echo "use use-1 lease lease-2 renew 30 host host_example" ;;
+  "file write") for a; do p=$a; done; cat > "$p" ;;
+  "terminal run") shift 2; while [ "$1" != -- ]; do [ "$1" = --id ] && id=$2; shift; done; shift
+    HOME="$FAKE_HOME" "$@"; rc=$?; [ "$rc" -eq 0 ] || echo "Terminal $id exited with code $rc."; exit "$rc" ;;
+esac
+`); await chmod(bb, 0o755);
+  const run = (command: string) => spawnSync("sh", [join(import.meta.dirname, "slots-run.sh"), "--spill", "--est", "1m", "--job", "t", "--", "sh", "-c", command], {
+    cwd: join(repo, "pkg"), encoding: "utf8", timeout: 10000,
+    env: { ...process.env, PATH: `${join(dir, "bin")}:${process.env.PATH}`, LOG: log, FAKE_HOME: home, SLOTS_RUN_UPLOAD_DIR: dir, SLOTS_RUN_TEST_STEP: "0.01" } });
+  const first = run('pwd; ls -a ..; cat a.txt new.txt; [ -t 0 ] || echo no-tty; exit 7');
+  expect(first.status).toBe(7);
+  expect(first.stdout).toContain("tracked"); expect(first.stdout).toContain("untracked"); expect(first.stdout).toContain("no-tty");
+  expect(first.stdout).toMatch(/\.bb-slots\/work\/[0-9a-f]{16}\/pkg/);
+  expect(first.stdout).not.toContain("gone.txt"); expect(first.stdout).not.toContain("secret.env");
+  expect(first.stdout).not.toContain("exited with code");
+  expect((await readFile(log, "utf8")).match(/slots acquire .*--spill/)).toBeTruthy();
+  expect((await readdir(dir)).filter(f => f.endsWith(".b64"))).toEqual([]); // the upload is removed
+  // An unchanged worktree is not unpacked again; a changed one is, and drops a deleted file.
+  const [mirror] = await readdir(join(home, ".bb-slots", "work")).then(names => names.filter(n => !n.includes(".")));
+  await writeFile(join(home, ".bb-slots", "work", mirror, "pkg", "a.txt"), "edited in mirror");
+  expect(run("cat a.txt").stdout).toContain("edited in mirror");
+  await rm(join(repo, "pkg", "new.txt"));
+  const third = run("ls; cat a.txt");
+  expect(third.status).toBe(0); expect(third.stdout).toContain("tracked"); expect(third.stdout).not.toContain("new.txt");
+  // A failed copy is not a test failure.
+  await writeFile(bb, `#!/bin/sh\ncase "$1 $2" in "slots acquire") echo "use use-1 lease lease-2 renew 30 host host_example" ;; "file write") cat >/dev/null; echo "Error: HTTP 404: Host not found" >&2; exit 1 ;; esac\n`);
+  const offline = run("true");
+  expect(offline.status).toBe(69); expect(offline.stderr).toContain("could not copy the worktree to host_example");
 });

@@ -14,7 +14,7 @@ beforeEach(() => { vi.useFakeTimers({ toFake: ["Date"] }); vi.setSystemTime(0); 
 afterEach(() => { vi.useRealTimers(); });
 
 const USE = "use-1", REQ = "req-1";
-const queuedOutcome = { kind: "queued", request: { id: REQ }, useId: USE };
+const queuedOutcome = { kind: "queued", request: { id: REQ, hostId: "local" }, useId: USE };
 const leaseOf = { id: "lease-1", requestId: REQ, uses: [{ id: USE }] };
 const queuedView = (uses: { id: string }[] = [{ id: USE }]) => ({ pools: [{ leases: [], queue: [{ id: REQ, uses }] }] });
 const args = (timeout: string) => ["acquire", "--pool", "heavy", "--job", "tests", "--est", "1m", "--timeout", timeout];

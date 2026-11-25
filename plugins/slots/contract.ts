@@ -23,6 +23,10 @@ export interface HostSettings {
   observerGateHoldMs: number;
   portRange: { from: number; to: number };
   grantMode: "auto" | "manual";
+  /** false on another bb machine from `remoteHosts`: Slots samples only the server Mac, so capacity is its only limit. */
+  gated?: boolean;
+  /** false while that machine is disconnected; a spilled job skips it. */
+  connected?: boolean;
 }
 export interface Settings extends HostSettings {
   /** Complete host overrides; omitted hosts use the top-level defaults. */
@@ -45,6 +49,8 @@ export interface SlotRequest {
   queueWaitAlerted?: boolean; uses?: Use[]; autoRelease?: boolean; graceUntil?: number | null;
   /** local-model only: a registered device or `local` (this Mac) pins the request; absent takes the first free device, then this Mac. */
   device?: string;
+  /** heavy acquire only: may be granted on another configured machine when its own host is full. */
+  spill?: boolean;
 }
 export type QueueEntry = SlotRequest;
 export interface Lease {
@@ -55,6 +61,8 @@ export interface Lease {
   uses?: Use[]; autoRelease?: boolean; graceUntil?: number | null;
   /** Registered device the lease runs on; absent means this Mac. */
   device?: string;
+  /** Host of the request when a spilled lease runs on another machine (`hostId`). */
+  homeHostId?: string;
 }
 export interface GateReadings { memFreePct: number; load1: number; at: number }
 export interface GateState {
@@ -109,6 +117,8 @@ export interface StatusView extends StatusSnapshot {
   /** Display name from the SDK; null when unavailable. */
   localHostName?: string | null;
   settingsWarnings?: string[];
+  /** Every bb host whose threads can lease, with its configured pools (capacity 0 included) and display name. */
+  leaseHosts?: Record<string, { pools: PoolName[]; name: string | null }>;
 }
 export interface SlotsError {
   code: "invalid-input" | "not-found" | "forbidden" | "capacity" | "gate-closed" | "port-in-use" | "transferred" | "in-use";
@@ -117,6 +127,8 @@ export interface SlotsError {
 export type Result<T> = { ok: true; data: T } | { ok: false; error: SlotsError };
 export interface RequestParams {
   hostId: string; pool: PoolName; threadId: string; job: string; estMs: number; priority?: Priority; device?: string;
+  /** acquire, heavy only: allow a grant on another configured machine. */
+  spill?: boolean;
   /** Waiting is implemented by the server, never by the reducer. */
   wait?: boolean; timeoutMs?: number;
 }
@@ -144,7 +156,7 @@ export interface LogParams { since?: number; hostId?: string; limit?: number }
 /** Server implements these methods with boundary validation; these types have no SDK dependency. */
 export interface ObserverParams { threadId?: string; self?: boolean; toThreadId?: string; clear?: boolean; events?: string }
 export interface ObserverView { threadId: string | null; title: string | null; events: ObserverEvent[] }
-export const SETTING_KEYS = ["heavyCapacity", "localModelCapacity", "memFreeMinPct", "loadMax", "gateSamples", "gateIntervalSeconds", "leaseTtlMinutes", "maxEstimateMinutes", "heartbeatIntervalMinutes", "observerThreadId", "observerEvents", "observerQueueWaitMinutes", "observerGateHoldMinutes", "portFrom", "portTo", "grantMode", "watchPolicy", "watchCores", "watchWindowSeconds", "idleLeaseMinutes"] as const;
+export const SETTING_KEYS = ["heavyCapacity", "localModelCapacity", "memFreeMinPct", "loadMax", "gateSamples", "gateIntervalSeconds", "leaseTtlMinutes", "maxEstimateMinutes", "heartbeatIntervalMinutes", "observerThreadId", "observerEvents", "observerQueueWaitMinutes", "observerGateHoldMinutes", "portFrom", "portTo", "grantMode", "watchPolicy", "watchCores", "watchWindowSeconds", "idleLeaseMinutes", "remoteHosts"] as const;
 export type SettingKey = (typeof SETTING_KEYS)[number];
 export type SettingValues = Record<SettingKey, number | string>;
 export interface SettingsFormView { values: SettingValues; defaults: SettingValues; maxima: Partial<Record<SettingKey, number>>; setKeys: SettingKey[]; cores: number; heavyDefault: number }

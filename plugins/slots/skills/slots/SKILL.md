@@ -13,6 +13,12 @@ Run heavy work through the foreground wrapper:
 sh -c "$(bb slots wrapper)" slots-run --est 20m --job "..." -- <command>
 ```
 
+Add `--spill` to let a test suite or build run on another configured machine
+when this one is full: the wrapper copies your worktree's current files there
+and returns the output and exit code (69: copy or remote start failed). Without
+`--spill` the job always runs here. A thread that itself runs on another
+configured machine leases that machine's capacity; no flag is needed.
+
 `--est` must carry a unit (`45m`, `2h`); a bare number means minutes. Estimates
 above `maxEstimateMinutes` (default 12 h) are refused; the lease of a longer job
 stays alive through heartbeats, so give the realistic estimate.

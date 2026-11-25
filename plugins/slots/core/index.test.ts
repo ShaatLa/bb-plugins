@@ -306,6 +306,33 @@ describe("Slots deterministic engine", () => {
     expect(ask("e", "local").result).toMatchObject({ ok: true, data: { kind: "queued", request: { device: "local" } } });
   });
 
+  it("spills opted-in heavy work to another machine only when its own host is full; nothing else leaves its host", () => {
+    const remote = (connected = true) => ({ ...structuredClone(DEFAULT_SETTINGS), hosts: undefined, capacities: { heavy: 1, "local-model": 0 }, gated: false, connected });
+    const h = harness({ capacities: { heavy: 1, "local-model": 1 }, hosts: { r: remote() } as unknown as Settings["hosts"] });
+    const acquire = (threadId: string, extra: Record<string, unknown> = {}) => h.send({ type: "acquire", threadId, hostId: "h", pool: "heavy", job: "suite", estMs: minute, ...extra } as Input).result as { ok: boolean; data: { kind: string; useId: string; lease?: { id: string; hostId: string; homeHostId?: string } } };
+    h.open();
+    expect(acquire("a", { spill: true }).data).toMatchObject({ kind: "leased", lease: { hostId: "h" } }); // own host first
+    expect(h.state.leases[0].homeHostId).toBeUndefined();
+    h.open(); const streak = h.state.hosts.h.gate.streak;
+    const b = acquire("b", { spill: true }).data;
+    expect(b).toMatchObject({ kind: "leased", lease: { hostId: "r", homeHostId: "h" } });
+    expect(h.state.hosts.h.gate.streak).toBe(streak); // a grant elsewhere leaves this Mac's streak alone
+    expect(acquire("b", { spill: true }).data).toMatchObject({ kind: "leased", lease: { id: b.lease!.id } }); // a second use joins it
+    expect(h.state.leases.find(l => l.id === b.lease!.id)?.uses).toHaveLength(2);
+    expect(acquire("c").data.kind).toBe("queued"); // without spill it waits for its own host
+    expect(acquire("d", { spill: true }).data.kind).toBe("queued"); // every candidate is full
+    expect((h.send({ type: "acquire", threadId: "e", hostId: "h", pool: "local-model", job: "ask", estMs: minute, spill: true } as Input)).result.ok).toBe(false);
+    const pools = statusSnapshot(h.state, { now: h.now, settings: h.settings }, ["h", "r"]).pools;
+    expect(pools.map(p => [p.hostId, p.pool, p.leases.length, p.queue.length])).toEqual([["h", "heavy", 1, 2], ["h", "local-model", 0, 0], ["r", "heavy", 1, 0]]);
+    // A thread on the other machine leases its capacity at once, with no machine check there.
+    const own = harness({ hosts: { r: remote() } as unknown as Settings["hosts"] });
+    expect(own.send({ type: "request", threadId: "child", hostId: "r", pool: "heavy", job: "suite", estMs: minute }).result).toMatchObject({ ok: true, data: { kind: "leased", lease: { hostId: "r" } } });
+    // A disconnected machine is skipped.
+    const off = harness({ capacities: { heavy: 0, "local-model": 1 }, hosts: { r: remote(false) } as unknown as Settings["hosts"] });
+    off.open();
+    expect((off.send({ type: "acquire", threadId: "x", hostId: "h", pool: "heavy", job: "suite", estMs: minute, spill: true } as Input).result as { data: { kind: string } }).data.kind).toBe("queued");
+  });
+
   it("restore retains leases and ports but requires fresh samples", () => {
     const h = harness(); h.request("a"); h.open(); h.open();
     h.send({ type: "portLease", hostId: "h", threadId: "a", port: 41000 });

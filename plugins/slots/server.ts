@@ -4,10 +4,10 @@ import { sendOrAppend } from "./queued-notice";
 import { dirname } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { z } from "zod";
-import { DEFAULT_SETTINGS, SLOTS_CHANGED, type Effect, type Settings, type State, type Input, type Result, type RpcMethods, type HostSettings, SETTING_KEYS, type SettingKey, type SettingValues, type SettingsFormView, type SettingView } from "./contract.js";
+import { DEFAULT_SETTINGS, POOLS, SLOTS_CHANGED, type Effect, type Settings, type State, type Input, type Result, type RpcMethods, type HostSettings, SETTING_KEYS, type SettingKey, type SettingValues, type SettingsFormView, type SettingView } from "./contract.js";
 import { apply, deviceList, initialState, portCandidates, statusSnapshot, validateSettings, settingsFor } from "./core/index.js";
 import { DiskStore, metrics, probePort } from "./runtime.js";
-import { inputs, parseObserverEvents, observerEventsSchema, rpcContract, stateSchema } from "./schemas.js";
+import { inputs, parseObserverEvents, parseRemoteHosts, observerEventsSchema, remoteHostsSchema, rpcContract, stateSchema } from "./schemas.js";
 import { createWatcher } from "./watcher.js";
 import { registerCli } from "./cli.js";
 
@@ -35,6 +35,9 @@ export async function register(bb: BbPluginApi, overrides: Partial<Runtime> = {}
   const cores = Math.max(1, runtime.cores());
   const heavyDefault = Math.max(1, Math.min(Math.floor(cores / 4), Math.floor(runtime.totalMemory() / (16 * 1024 ** 3))));
   let settingsWarnings: string[] = [];
+  let localHostId = "";
+  /** Connection and display name of other machines, refreshed on the sampler tick. */
+  const hostInfo = new Map<string, { connected: boolean; name: string | null }>();
   const descriptors = {
     watchPolicy: { type: "select", label: "Load watch", options: ["off", "warn"], default: "warn" },
     watchCores: { type: "number", label: "Watch cores", default: Math.min(3, Math.max(1, cores - 1)), experimental_schema: z.number().min(1).max(cores) },
@@ -55,6 +58,7 @@ export async function register(bb: BbPluginApi, overrides: Partial<Runtime> = {}
     observerGateHoldMinutes: { type: "number", label: "Machine busy threshold", description: `Minutes before alerting the manager about a failing machine check.`, default: 15, experimental_schema: z.number().int().min(1).max(10080) },
     portFrom: { type: "number", label: "Ports from", description: `First port available for development servers.`, default: 41000, experimental_schema: z.number().int().min(1).max(65535) },
     portTo: { type: "number", label: "Ports to", description: `Last port available; must be at least the first port.`, default: 41099, experimental_schema: z.number().int().min(1).max(65535) },
+    remoteHosts: { type: "string", label: "Other machines", description: `bb host id=heavy capacity, comma-separated (e.g. host_example=4). Threads there may lease; \`slots-run --spill\` may run heavy work there. No machine check there; empty means this Mac only.`, default: "", experimental_schema: remoteHostsSchema },
     grantMode: { type: "select", label: "Grant mode", description: `Automatic grants follow queue order and passing checks; manual grants wait for the manager.`, options: ["auto", "manual"], experimental_optionLabels: { auto: "Automatic", manual: "Manual (manager grants)" }, default: "auto" },
   } satisfies Record<string, PluginSettingDescriptor>;
   const defaults = Object.fromEntries(SETTING_KEYS.map(key => [key, descriptors[key].default])) as SettingValues;
@@ -67,7 +71,7 @@ export async function register(bb: BbPluginApi, overrides: Partial<Runtime> = {}
     watchPolicy: "off" | "warn"; watchCores: number; watchWindowSeconds: number; idleLeaseMinutes: number;
     heavyCapacity: number; localModelCapacity: number; memFreeMinPct: number; loadMax: number; gateSamples: number;
     gateIntervalSeconds: number; leaseTtlMinutes: number; maxEstimateMinutes: number; heartbeatIntervalMinutes: number; observerThreadId: string;
-    observerEvents: string; observerQueueWaitMinutes: number; observerGateHoldMinutes: number; portFrom: number; portTo: number; grantMode: string;
+    observerEvents: string; observerQueueWaitMinutes: number; observerGateHoldMinutes: number; portFrom: number; portTo: number; grantMode: string; remoteHosts: string;
   }; }
   function validateField(key: SettingKey, value: unknown, stored = false) {
     const descriptor = descriptors[key];
@@ -116,13 +120,16 @@ export async function register(bb: BbPluginApi, overrides: Partial<Runtime> = {}
       observerGateHoldMs: values.observerGateHoldMinutes * 60000,
       portRange: { from: values.portFrom, to: values.portTo }, grantMode: values.grantMode as Settings["grantMode"], hosts: {},
     };
+    // Other machines reuse these settings with their own heavy capacity and no machine check.
+    const { hosts: _, ...base } = settings;
+    for (const [hostId, heavy] of parseRemoteHosts(values.remoteHosts)) if (hostId !== localHostId) settings.hosts[hostId] = { ...base, capacities: { heavy, "local-model": 0 }, gated: false, connected: hostInfo.get(hostId)?.connected ?? true };
     const error = validateSettings(settings);
     if (error) throw new Error(error);
     return settings;
   }
   let settings = await getSettings();
   let state: State = initialState();
-  let localHostId = "", dataDir = "";
+  let dataDir = "";
   let initialized = false;
   let disposed = false;
   const titles = new Map<string, { until: number; value: Promise<string> }>();
@@ -209,8 +216,8 @@ export async function register(bb: BbPluginApi, overrides: Partial<Runtime> = {}
     const thread = await checkThread(threadId);
     if (!thread) throw new Error("Thread is missing, archived or deleted");
     const hostId = (thread.environmentId ? (await deadline(bb.sdk.environments.get({ environmentId: thread.environmentId }))).hostId : null);
-    if (hostId !== localHostId) throw new Error(`Slots v1 only supports the BB server host (${localHostId}); thread ${threadId} is on ${hostId ?? "an unknown host"}`);
-    return thread;
+    if (hostId !== localHostId && !(hostId && Object.hasOwn(settings.hosts, hostId))) throw new Error(`Slots leases only on the BB server host (${localHostId}) and machines listed in the remoteHosts setting; thread ${threadId} is on ${hostId ?? "an unknown host"}`);
+    return Object.assign(thread, { slotsHostId: hostId as string });
   }
   async function changeObserver(threadId: string | null, events: string, previousEnded = false) {
     const previousThreadId = settings.observerThreadId;
@@ -232,8 +239,15 @@ export async function register(bb: BbPluginApi, overrides: Partial<Runtime> = {}
     // Every surface uses the same validated dispatcher; caller host comes from the thread.
     const p = parsed.data as Record<string, any>;
     try {
-      if (p.threadId) await localThread(p.threadId);
-      if (p.hostId && p.hostId !== localHostId) return invalid(`Slots v1 only supports the BB server host (${localHostId})`);
+      const threadHost = p.threadId ? (await localThread(p.threadId)).slotsHostId : null;
+      if (threadHost && (method === "request" || method === "acquire" || method === "gate" || method === "port")) {
+        // Heavy work runs on the caller's own machine (spill picks another one in the engine); local-model devices and the machine check live on the server host.
+        const own = (method === "request" || method === "acquire") && p.pool === "heavy" ? threadHost : localHostId;
+        const asked = (raw as Record<string, unknown>).hostId;
+        if (asked && asked !== own) return invalid(`hostId ${String(asked)} is not where this ${method} runs (${own}); omit hostId${method === "acquire" ? ", or pass spill to allow another machine" : ""}`);
+        p.hostId = own;
+      }
+      if (p.hostId && p.hostId !== localHostId && !Object.hasOwn(settings.hosts, p.hostId)) return invalid(`Slots leases only on the BB server host (${localHostId}) and machines listed in the remoteHosts setting`);
       if (method === "settingsRead") return { ok: true, data: formView() };
       if (method === "settingsWrite" || method === "config") {
         let patch: Partial<SettingValues> = p.values ?? {};
@@ -262,8 +276,10 @@ export async function register(bb: BbPluginApi, overrides: Partial<Runtime> = {}
         return { ok: true, data: { threadId: settings.observerThreadId, title: thread?.title ?? null, events: settings.observerEvents } };
       }
       if (method === "status") {
-        const snapshot = statusSnapshot(state, { now: runtime.now(), settings }, localHostId);
-        const hostSettings: Record<string, HostSettings> = { [localHostId]: settings };
+        // This Mac first, then the configured machines, then any other host that still holds work.
+        const snapshot = statusSnapshot(state, { now: runtime.now(), settings }, p.hostId ?? [...new Set([localHostId, ...Object.keys(settings.hosts), ...Object.keys(state.hosts)])]);
+        snapshot.pools = snapshot.pools.filter(pool => pool.hostId === localHostId || Object.hasOwn(settings.hosts, pool.hostId) || pool.leases.length || pool.queue.length);
+        const hostSettings: Record<string, HostSettings> = { [localHostId]: settings, ...settings.hosts };
         return { ok: true, data: { ...snapshot, hostSettings, localHostId, settingsWarnings, watcher: watcher.diagnostics() } };
       }
       // Device registration belongs to local-models; it is an RPC only, not an agent tool or CLI command.
@@ -272,6 +288,7 @@ export async function register(bb: BbPluginApi, overrides: Partial<Runtime> = {}
       if (method === "gate" || method === "grant") await sample(method === "grant");
       if (method === "transfer") {
         const target = await localThread(p.toThreadId);
+        if (target.slotsHostId !== threadHost) return invalid("Transfer only to a child on the same machine; a child elsewhere leases its own machine's capacity");
         return transition({ ...p, type: "transfer", isChild: target.parentThreadId === p.threadId } as Input);
       }
       if (method === "port") {
@@ -283,7 +300,12 @@ export async function register(bb: BbPluginApi, overrides: Partial<Runtime> = {}
         }
         return invalid("No free ports in the configured range");
       }
-      if (method === "setCapacity") {
+      if (method === "setCapacity" && p.hostId !== localHostId) {
+        if (p.pool !== "heavy") return invalid("Other machines have only the heavy pool");
+        // Edit only this machine's entry of remoteHosts.
+        await persistConfig({ remoteHosts: parseRemoteHosts(readValues().remoteHosts).map(([h, n]) => `${h}=${h === p.hostId ? p.capacity : n}`).join(",") });
+        settings = await getSettings();
+      } else if (method === "setCapacity") {
         if (p.pool === "heavy" && p.capacity > cores) return invalid(`Heavy capacity cannot exceed ${cores} CPU cores`);
         await persistConfig(p.pool === "heavy" ? { heavyCapacity: p.capacity } : { localModelCapacity: p.capacity });
         settings = await getSettings();
@@ -310,7 +332,9 @@ export async function register(bb: BbPluginApi, overrides: Partial<Runtime> = {}
       hostName = { until: runtime.now() + (value === null ? 30000 : 300000), value };
     }
     const localHostName = hostName.value;
-    return { ok: true, data: { ...snapshot, localHostName, titles: Object.fromEntries(resolved) } };
+    const leaseHosts = { [localHostId]: { pools: [...POOLS], name: localHostName },
+      ...Object.fromEntries(Object.keys(settings.hosts).map(id => [id, { pools: ["heavy" as const], name: hostInfo.get(id)?.name ?? null }])) };
+    return { ok: true, data: { ...snapshot, localHostName, leaseHosts, titles: Object.fromEntries(resolved) } };
   };
   const handlers = Object.fromEntries(Object.keys(inputs).map(method => [method, (p: unknown) => invoke(method as keyof RpcMethods, p)]));
   bb.rpc.register(rpcContract, handlers as unknown as Parameters<typeof bb.rpc.register<typeof rpcContract>>[1]);
@@ -393,6 +417,11 @@ export async function register(bb: BbPluginApi, overrides: Partial<Runtime> = {}
               if (thread?.status === "active") await transition({ type: "heartbeat", threadId: id });
             } catch (error) { bb.log.warn(`Slots sampler lookup ${id} failed: ${String(error)}`); }
           }
+          for (const hostId of parseRemoteHosts(readValues().remoteHosts).map(([h]) => h)) {
+            const info = await deadline(bb.sdk.hosts.get({ hostId })).then(h => ({ connected: h.status === "connected", name: h.name }), () => ({ connected: false, name: hostInfo.get(hostId)?.name ?? null }));
+            hostInfo.set(hostId, info);
+          }
+          settings = await getSettings();
           await transition({ type: "tick" }); lastTick = now;
           await store.prune(now);
         }

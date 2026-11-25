@@ -101,7 +101,7 @@ it("persists capacity in settings, rejects remote callers and validates RPC/tool
   expect((await h.view()).pools[0]).toMatchObject({ capacity: 0, leases: [expect.anything()] });
   expect(JSON.parse(await readFile(join(h.path, "state.json"), "utf8")).hosts.local).not.toHaveProperty("capacities");
   h.harness.sdk.stub("environments.get", async () => ({ hostId: "remote" }));
-  expect(await h.request("b")).toMatchObject({ ok: false, error: { message: expect.stringContaining("only supports") } });
+  expect(await h.request("b")).toMatchObject({ ok: false, error: { message: expect.stringContaining("leases only on the BB server host") } });
   await expect(h.harness.behavior.callRpc("request", { pool: "bad" })).rejects.toThrow();
   expect(JSON.parse(await h.harness.behavior.callAgentTool("slots_status", {}) as string)).toMatchObject({ ok: true });
 });
@@ -455,7 +455,7 @@ it("acquire resolves a grant at its deadline and cleans up on abort", async () =
   const host = createFakePluginHost({ pluginId: "slots", sdk: { system: { config: async () => ({ primaryHostId: "local" }) } } });
   const lease = { id: "lease-2", requestId: "req-1" };
   const invoke = vi.fn(async (method: string) => {
-    if (method === "acquire") return { ok: true, data: { kind: "queued", request: { id: "req-1" }, useId: "use-3" } };
+    if (method === "acquire") return { ok: true, data: { kind: "queued", request: { id: "req-1", hostId: "local" }, useId: "use-3" } };
     if (method === "status") return { ok: true, data: { hostSettings: { other: { heartbeatIntervalMs: 120000 }, local: { heartbeatIntervalMs: 600000 } },
       pools: [{ leases: [], queue: [{ id: "req-1", uses: [{ id: "use-3" }] }] }] } };
     if (method === "heartbeatUse") return { ok: true, data: { kind: "queued", useId: "use-3" } };
@@ -705,4 +705,26 @@ it("registers inference devices over RPC only, persists them, and leases a pinne
   const restored = await setup(h.path);
   expect((await restored.view()).pools.find(p => p.device === "M1")).toMatchObject({ capacity: 1, leases: [{ device: "M1", holderThreadId: "a" }], queue: [{ device: "M1", threadId: "b" }] });
   expect((await restored.view()).audit.find(e => e.type === "grant")).toMatchObject({ device: "M1" });
+});
+
+it("lets threads on a configured machine lease its heavy capacity, reports leaseHosts, and spills only on acquire", async () => {
+  const h = await setup();
+  h.threads.set("remote-child", makeThreadResponse({ id: "remote-child", title: "Remote", environmentId: "env-r" }));
+  h.harness.sdk.stub("environments.get", async ({ environmentId }: { environmentId: string }) => ({ hostId: environmentId === "env-r" ? "host_example" : "local" }));
+  const heavy = (threadId: string, extra: Record<string, unknown> = {}) => h.invoke("acquire", { threadId, pool: "heavy", job: "suite", estMs: 60000, ...extra }, true);
+  expect(await heavy("remote-child")).toMatchObject({ ok: false, error: { message: expect.stringContaining("remoteHosts") } });
+  expect((await h.invoke("config", { operation: "set", key: "remoteHosts", value: "host_example=x" })).ok).toBe(false);
+  await h.configure({ remoteHosts: "host_example=1", heavyCapacity: 1 });
+  expect((await h.view()).leaseHosts).toEqual({ local: { pools: ["heavy", "local-model"], name: "Work laptop" }, host_example: { pools: ["heavy"], name: null } });
+  // A remote thread leases its own machine at once (no machine check there); naming another host is refused.
+  expect(await heavy("remote-child")).toMatchObject({ ok: true, data: { kind: "leased", lease: { hostId: "host_example" } } });
+  expect(await heavy("b", { hostId: "host_example" })).toMatchObject({ ok: false, error: { message: expect.stringContaining("omit hostId") } });
+  // local-model from a remote thread uses the server host, where the devices are.
+  expect(await h.invoke("request", { threadId: "remote-child", pool: "local-model", job: "ask", estMs: 60000 }, true)).toMatchObject({ ok: true, data: { request: { hostId: "local" } } });
+  await expect(h.harness.behavior.callRpc("request", { threadId: "a", hostId: "local", pool: "heavy", job: "x", estMs: 60000, spill: true })).rejects.toThrow();
+  // capacity --host edits only that machine's entry.
+  expect((await h.harness.behavior.runCli(["capacity", "--pool", "heavy", "--host", "host_example", "3"])).exitCode).toBe(0);
+  expect((await h.invoke("config", { operation: "get", key: "remoteHosts" }))).toMatchObject({ ok: true, data: { value: "host_example=3" } });
+  const status = await h.harness.behavior.runCli(["status"]);
+  expect(status.stdout).toContain("heavy · host_example · 1/3 slots held");
 });

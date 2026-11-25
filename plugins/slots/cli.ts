@@ -29,7 +29,7 @@ function humanOutput(method: string, data: unknown): string {
     case "status": {
       const view = data as StatusView;
       return [...(view.settingsWarnings ?? []).map(message => `Warning: ${message}`), ...view.pools.flatMap(p => [
-        `${p.pool}${p.pool === "local-model" ? ` · ${p.device ?? "this Mac"}` : ""} · ${p.leases.length}/${plural(p.capacity, "slot")} held · ${p.queue.length} queued`,
+        `${p.pool}${p.hostId !== view.localHostId ? ` · ${view.leaseHosts?.[p.hostId]?.name ?? p.hostId}` : ""}${p.pool === "local-model" ? ` · ${p.device ?? "this Mac"}` : ""} · ${p.leases.length}/${plural(p.capacity, "slot")} held · ${p.queue.length} queued`,
         ...p.leases.map(l => `  ${leaseLine(l)} · ${line(view.titles[l.holderThreadId] ?? l.holderThreadId)}`),
         ...p.queue.map(r => `  queued ${r.id}${p.pool === "local-model" && r.device === undefined ? " (any device)" : ""} · ${r.priority} · ${line(view.titles[r.threadId] ?? r.threadId)} · ${line(r.job)}`),
       ])].join("\n");
@@ -69,8 +69,9 @@ export function registerCli(bb: BbPluginApi, invoke: Invoke) {
   async function call(method: keyof RpcMethods, params: Record<string, unknown>, ctx: PluginCliContext, needsThread = true) {
     if (needsThread && params.threadId && ctx.threadId && params.threadId !== ctx.threadId) return foreign(ctx.threadId);
     if (needsThread && !params.threadId) params.threadId = ctx.threadId;
-    if (["request", "acquire", "gate", "port", "setCapacity"].includes(method)) params.hostId = (await bb.sdk.system.config()).primaryHostId;
-    return invoke(method, params);
+    // The server picks the host from the caller thread (heavy runs on the thread's machine); only capacity names one.
+    if (method === "setCapacity" && !params.hostId) params.hostId = (await bb.sdk.system.config()).primaryHostId;
+    return invoke(method, params, ["request", "acquire", "gate", "port"].includes(method));
   }
   const simple = (method: keyof RpcMethods, summary: string, needsThread = true) => cliCommand({ summary,
     options: { json, thread }, async run(input, ctx) {
@@ -150,22 +151,23 @@ export function registerCli(bb: BbPluginApi, invoke: Invoke) {
     acquire: cliCommand({ summary: "Acquire a use and wait for a slot", options: {
       json, thread, pool, job: { type: "string", required: true, description: "Job description" },
       est: { type: "duration", defaultUnit: "m", required: true, description: "Estimated duration" }, priority, device,
+      spill: { type: "boolean", description: "heavy only: when this machine is full, allow a lease on another configured machine (slots-run then runs the command there)" },
       timeout: { type: "duration", defaultUnit: "m", description: "Wait deadline (default 30m, maximum 60m)" },
     }, async run(i, c) {
       if (i.options.thread && c.threadId && i.options.thread !== c.threadId) return renderResult("acquire", foreign(c.threadId), !!i.options.json);
       const o = i.options, caller = o.thread ?? c.threadId, timeout = o.timeout ?? 1800000;
       if (timeout <= 0 || timeout > 3600000) return renderResult("acquire", { ok: false, error: { code: "invalid-input", message: "timeout must be positive and at most 60m" } }, !!o.json);
-      const params: Record<string, unknown> = { threadId: caller, pool: o.pool, job: o.job, estMs: o.est, ...(o.priority ? { priority: o.priority } : {}), ...(o.device ? { device: o.device } : {}) };
+      const params: Record<string, unknown> = { threadId: caller, pool: o.pool, job: o.job, estMs: o.est, ...(o.priority ? { priority: o.priority } : {}), ...(o.device ? { device: o.device } : {}), ...(o.spill ? { spill: true } : {}) };
       let result = await call("acquire", params, c);
       if (!result.ok) return renderResult("acquire", result, !!o.json);
       const initial = result.data as UseOutcome, useId = initial.useId;
       const status = await invoke("status", {});
       if (!status.ok) { await invoke("done", { threadId: caller, useId }); return renderResult("acquire", status, !!o.json); }
-      const hostSettings = (status.data as StatusView).hostSettings[params.hostId as string];
+      const hostSettings = (status.data as StatusView).hostSettings[initial.kind === "leased" ? initial.lease.homeHostId ?? initial.lease.hostId : initial.request.hostId];
       if (!hostSettings) { await invoke("done", { threadId: caller, useId }); return renderResult("acquire", { ok: false, error: { code: "not-found", message: "Host settings not found" } }, !!o.json); }
       const ttl = hostSettings.heartbeatIntervalMs;
       const renew = Math.max(30, Math.floor(ttl / 3000));
-      const success = (outcome: UseOutcome) => ({ exitCode: 0, stdout: o.json ? JSON.stringify({ ok: true, data: outcome }) : `use ${useId} lease ${(outcome as Extract<UseOutcome, { kind: "leased" }>).lease.id} renew ${renew}` });
+      const success = (outcome: UseOutcome) => ({ exitCode: 0, stdout: o.json ? JSON.stringify({ ok: true, data: outcome }) : `use ${useId} lease ${(outcome as Extract<UseOutcome, { kind: "leased" }>).lease.id} renew ${renew}${(outcome as Extract<UseOutcome, { kind: "leased" }>).lease.homeHostId ? ` host ${(outcome as Extract<UseOutcome, { kind: "leased" }>).lease.hostId}` : ""}` });
       if (c.signal?.aborted) { await invoke("done", { threadId: caller, useId }); return renderResult("acquire", { ok: false, error: { code: "not-found", message: "canceled" } }, !!o.json); }
       if (initial.kind === "leased") return success(initial);
       const deadline = Date.now() + timeout;
@@ -231,8 +233,16 @@ export function registerCli(bb: BbPluginApi, invoke: Invoke) {
       async run(i,c) { return renderResult("revoke", await call("revoke", { leaseId: i.positionals.lease, reason: i.options.reason },c,false), !!i.options.json); } }),
     grant: cliCommand({ summary: "Grant out of queue order; still checks capacity and gate (manager only)", options: { json }, positionals: id("request"),
       async run(i,c) { return renderResult("grant", await call("grant", { requestId: i.positionals.request },c,false), !!i.options.json); } }),
-    capacity: cliCommand({ summary: "Persist pool capacity without revoking live leases (manager only)", options: { json, pool }, positionals: [{ name: "count", description: "Nonnegative capacity", required: true }],
-      async run(i,c) { return renderResult("setCapacity", await call("setCapacity", { pool: i.options.pool, capacity: Number(i.positionals.count) },c,false), !!i.options.json); } }),
+    capacity: cliCommand({ summary: "Persist pool capacity without revoking live leases (manager only)", options: { json, pool, host: { type: "string", description: "Another machine listed in remoteHosts (id or name); default this Mac" } }, positionals: [{ name: "count", description: "Nonnegative capacity", required: true }],
+      async run(i,c) {
+        let hostId: string | undefined;
+        if (i.options.host) {
+          const status = await invoke("status", {});
+          const hosts = status.ok ? (status.data as StatusView).leaseHosts ?? {} : {};
+          hostId = Object.keys(hosts).find(id => id === i.options.host) ?? Object.keys(hosts).find(id => hosts[id].name === i.options.host);
+          if (!hostId) return renderResult("setCapacity", { ok: false, error: { code: "not-found", message: `Machine ${i.options.host} is not in remoteHosts; add it with \`bb slots config set remoteHosts <host_id>=<n>\`` } }, !!i.options.json);
+        }
+        return renderResult("setCapacity", await call("setCapacity", { pool: i.options.pool, capacity: Number(i.positionals.count), ...(hostId ? { hostId } : {}) },c,false), !!i.options.json); } }),
     log: cliCommand({ summary: "Read audit JSONL (retained 14 days)", options: { json, since: { type: "string", description: "Duration (2h) or ISO UTC time" }, limit: { type: "integer", min: 1, max: 1000, description: "Maximum events (1–1000, default 100)" } },
       async run(i,c) { return renderResult("log", await call("log", { ...(i.options.since ? { since: parseSince(i.options.since, Date.now()) } : {}), ...(i.options.limit !== undefined ? { limit: i.options.limit } : {}) },c,false), !!i.options.json); } }),
   } }));

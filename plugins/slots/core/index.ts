@@ -50,14 +50,16 @@ export function capacityFor(state: State, hostId: string, pool: (typeof POOLS)[n
   return device === undefined ? settingsFor(settings, hostId).capacities[pool] : state.hosts[hostId]?.devices?.find(d => d.name === device)?.capacity ?? 0;
 }
 /** Pool and device of a lease for notices, e.g. `local-model M1`. */
-const slotName = (l: Lease) => l.device ? `${l.pool} ${l.device}` : l.pool;
+const slotName = (l: Lease) => `${l.pool}${l.device ? ` ${l.device}` : ""}${l.homeHostId ? ` on ${l.hostId}` : ""}`;
+/** Host the lease's request came from; differs from `hostId` only for a spilled lease. */
+const home = (l: Lease) => l.homeHostId ?? l.hostId;
 /** Slot group of a lease or request: a device name, or undefined for this Mac (pinned with `local` or unpinned). */
 const group = (item: { device?: string }) => item.device === THIS_MAC ? undefined : item.device;
 const same = (item: { hostId: string; pool: PoolName; device?: string }, hostId: string, pool: PoolName, device?: string) =>
   item.hostId === hostId && item.pool === pool && group(item) === device;
 /** A lease serves a call: an unpinned call takes the thread's lease on any device, a pinned one only on its device. */
 const serves = (l: Lease, hostId: string, pool: PoolName, device?: string) =>
-  l.hostId === hostId && l.pool === pool && (device === undefined || l.device === group({ device }));
+  home(l) === hostId && l.pool === pool && (device === undefined || l.device === group({ device }));
 export function deviceList(state: State, hostId: string): DeviceInfo[] {
   return structuredClone(state.hosts[hostId]?.devices ?? []);
 }
@@ -66,6 +68,7 @@ export function gateOpen(gate: GateState, settings: HostSettings): boolean {
 }
 /** The local model runs on the GPU, so its pool checks only free (shared) memory in the latest reading. */
 export function poolGateOpen(gate: GateState, settings: HostSettings, pool: PoolName, manual = false): boolean {
+  if (settings.gated === false) return true;
   if (pool === "local-model") return gate.latest !== null && gate.latest.memFreePct >= settings.memFreeMinPct;
   return Boolean(gate.latest?.passed) && (manual || gateOpen(gate, settings));
 }
@@ -81,13 +84,13 @@ export function logSince(state: State, filter: LogParams = {}): AuditEvent[] {
     (filter.hostId === undefined || e.hostId === filter.hostId));
   return structuredClone(filter.limit === undefined ? events : filter.limit <= 0 ? [] : events.slice(-filter.limit));
 }
-export function statusSnapshot(state: State, ctx: Context, hostId?: string): StatusSnapshot {
-  const hosts = hostId === undefined ? [...new Set([...Object.keys(state.hosts), ...Object.keys(ctx.settings.hosts)])].sort() : [hostId];
+export function statusSnapshot(state: State, ctx: Context, hostId?: string | string[]): StatusSnapshot {
+  const hosts = hostId === undefined ? [...new Set([...Object.keys(state.hosts), ...Object.keys(ctx.settings.hosts)])].sort() : [hostId].flat();
   const queue = sorted(state);
   return structuredClone({
     at: ctx.now,
     // local-model splits per device: this Mac, registered devices, then unregistered ones still in use.
-    pools: hosts.flatMap(host => POOLS.flatMap(pool => [undefined, ...(pool === "heavy" ? [] : [...new Set([...deviceList(state, host).map(d => d.name),
+    pools: hosts.flatMap(host => POOLS.filter(pool => pool === "heavy" || settingsFor(ctx.settings, host).gated !== false).flatMap(pool => [undefined, ...(pool === "heavy" ? [] : [...new Set([...deviceList(state, host).map(d => d.name),
       ...[...state.leases, ...state.requests].filter(x => x.hostId === host && x.pool === pool && group(x) !== undefined).map(x => x.device!).sort()])])].map(device => ({
       hostId: host, pool, ...(device === undefined ? {} : { device }),
       capacity: capacityFor(state, host, pool, ctx.settings, device),
@@ -95,8 +98,8 @@ export function statusSnapshot(state: State, ctx: Context, hostId?: string): Sta
       queue: queue.filter(r => same(r, host, pool, device)),
     })))),
     gates: Object.fromEntries(hosts.map(host => [host, Object.hasOwn(state.hosts, host) ? state.hosts[host].gate : emptyGate()])),
-    ports: state.ports.filter(p => hostId === undefined || p.hostId === hostId),
-    audit: logSince(state, { hostId }).filter(e => e.type !== "gate").sort((a, b) => b.at - a.at || b.seq - a.seq).slice(0, 15),
+    ports: state.ports.filter(p => hosts.includes(p.hostId)),
+    audit: logSince(state, typeof hostId === "string" ? { hostId } : {}).filter(e => e.type !== "gate").sort((a, b) => b.at - a.at || b.seq - a.seq).slice(0, 15),
   });
 }
 
@@ -139,8 +142,11 @@ export function apply(original: State, input: Input, ctx: Context): Transition {
   };
   const heartbeat = (id: string) => state.leases.filter(l => l.holderThreadId === id).forEach(refresh);
   const registered = (hostId: string) => (state.hosts[hostId]?.devices ?? []).map(d => d.name);
-  const candidates = (r: { hostId: string; pool: PoolName; device?: string }): (string | undefined)[] =>
-    r.pool === "local-model" && r.device === undefined ? [...registered(r.hostId), undefined] : [group(r)];
+  /** Where a request may be granted, in preference order: local-model devices, or its own host then, with spill, other connected machines. */
+  const candidates = (r: { hostId: string; pool: PoolName; device?: string; spill?: boolean }): { hostId: string; device?: string }[] =>
+    r.pool === "local-model" ? (r.device === undefined ? [...registered(r.hostId), undefined] : [group(r)]).map(device => ({ hostId: r.hostId, device }))
+      : [r.hostId, ...(r.spill ? Object.keys(ctx.settings.hosts).filter(h => h !== r.hostId && ctx.settings.hosts[h].connected !== false) : [])].map(hostId => ({ hostId }));
+  const gateless = (hostId: string) => settingsFor(ctx.settings, hostId).gated === false;
   const checkDevice = (hostId: string, pool: PoolName, device?: string): string | null => {
     if (device === undefined) return null;
     if (pool !== "local-model") return "A device applies only to the local-model pool; drop --device for heavy work";
@@ -167,12 +173,12 @@ export function apply(original: State, input: Input, ctx: Context): Transition {
   const grant = (requestId: string, manual: boolean): Result<Lease> => {
     const request = state.requests.find(r => r.id === requestId);
     if (!request) return { ok: false, error: { code: "not-found", message: "Request not found" } };
-    const { hostId, pool } = request;
-    const gate = host(hostId).gate;
+    const { pool } = request;
     let failure: SlotsError | null = null;
-    let device: string | undefined, index = 0;
-    // An unpinned local-model request takes the first free registered device, then this Mac.
-    for (device of candidates(request)) {
+    let hostId = request.hostId, device: string | undefined, index = 0;
+    // An unpinned local-model request takes the first free registered device, then this Mac; a spilled heavy one its own host, then other machines.
+    for ({ hostId, device } of candidates(request)) {
+      const gate = host(hostId).gate;
       // This Mac's readings say nothing about another device, so a registered device has no machine check.
       if (device === undefined && !poolGateOpen(gate, settingsFor(ctx.settings, hostId), pool, manual)) {
         failure = { code: "gate-closed", message: "Host gate is closed", ...(gate.latest ? { readings: gate.latest } : {}) }; continue;
@@ -188,13 +194,13 @@ export function apply(original: State, input: Input, ctx: Context): Transition {
     const lease: Lease = { id: `lease-${state.nextId++}`, requestId, hostId, pool, slotIndex: index,
       ownerThreadId: request.threadId, holderThreadId: request.threadId, job: request.job, estMs: request.estMs,
       grantedAt: ctx.now, lastHeartbeatAt: ctx.now, expiresAt: 0, warnedAt: null,
-      uses: request.uses ?? [], autoRelease: request.autoRelease ?? false, graceUntil: request.graceUntil ?? null, ...(device === undefined ? {} : { device }) };
+      uses: request.uses ?? [], autoRelease: request.autoRelease ?? false, graceUntil: request.graceUntil ?? null, ...(device === undefined ? {} : { device }), ...(hostId === request.hostId ? {} : { homeHostId: request.hostId }) };
     refresh(lease);
     state.leases.push(lease);
     state.requests = state.requests.filter(r => r.id !== requestId);
-    if (device === undefined) reset(hostId); // a grant on another device leaves this Mac's streak alone
+    if (device === undefined && !gateless(hostId)) reset(hostId); // a grant on another device or machine leaves this Mac's streak alone
     audit("grant", { ...fields(lease), manual });
-    const message: NotificationMessage = { title: "Slot granted", lines: [{ value: lease.job }, { label: "Lease", value: `\`${lease.id}\` · ${pool}${device === undefined ? "" : ` ${device}`} slot ${index}` }], hint: `Run heavy commands through \`slots-run\` (\`bb slots wrapper\`); release with \`bb slots release ${lease.id}\`.` };
+    const message: NotificationMessage = { title: "Slot granted", lines: [{ value: lease.job }, { label: "Lease", value: `\`${lease.id}\` · ${slotName(lease)} slot ${index}` }], hint: `Run heavy commands through \`slots-run\` (\`bb slots wrapper\`); release with \`bb slots release ${lease.id}\`.` };
     // A live use means a waiter (slots-run, acquire RPC) already sees the grant; a message would only cost a turn.
     if (!lease.uses?.length) notify(lease.holderThreadId, "grant", message);
     observer(hostId, "grant", message, lease.holderThreadId);
@@ -260,7 +266,7 @@ export function apply(original: State, input: Input, ctx: Context): Transition {
         threadId: input.threadId, job: input.job, estMs: input.estMs, priority: input.priority ?? "normal", createdAt: ctx.now, ...(input.device === undefined ? {} : { device: input.device }) };
       state.requests.push(request);
       audit("request", { hostId: request.hostId, pool: request.pool, threadId: request.threadId, requestId: request.id });
-      if (request.pool === "local-model") schedule(request.hostId);
+      if (request.pool === "local-model" || gateless(request.hostId)) schedule(request.hostId);
       const granted = state.leases.find(l => l.requestId === request.id);
       data = granted ? { kind: "leased", lease: granted } : { kind: "queued", request }; break;
     }
@@ -270,6 +276,7 @@ export function apply(original: State, input: Input, ctx: Context): Transition {
           (input.priority !== undefined && !priority(input.priority))) return fail("invalid-input", "Job, positive estimate and valid priority required, e.g. --job \"full test suite\" --est 20m");
       const estCap = settingsFor(ctx.settings, input.hostId).maxEstimateMs;
       if (input.estMs > estCap) return fail("invalid-input", `Estimate ${minutes(input.estMs)} is above the ${minutes(estCap)} ceiling. Pass a realistic estimate with a unit, e.g. --est 45m or --est 2h (a bare --est number means minutes; the tool's estMs is milliseconds). Heartbeats keep a longer job's lease alive.`);
+      if (input.spill && input.pool !== "heavy") return fail("invalid-input", "--spill applies only to heavy work; local-model already picks a device");
       const deviceError = checkDevice(input.hostId, input.pool, input.device);
       if (deviceError) return fail("invalid-input", deviceError);
       const lease = state.leases.find(l => serves(l, input.hostId, input.pool, input.device) && (l.holderThreadId === input.threadId || l.ownerThreadId === input.threadId));
@@ -277,7 +284,7 @@ export function apply(original: State, input: Input, ctx: Context): Transition {
       let request = state.requests.find(r => r.hostId === input.hostId && r.pool === input.pool && r.device === input.device && r.threadId === input.threadId);
       if (!lease && !request) {
         request = { id: `req-${state.nextId++}`, hostId: input.hostId, pool: input.pool, threadId: input.threadId,
-          job: input.job, estMs: input.estMs, priority: input.priority ?? "normal", createdAt: ctx.now, autoRelease: true, ...(input.device === undefined ? {} : { device: input.device }) };
+          job: input.job, estMs: input.estMs, priority: input.priority ?? "normal", createdAt: ctx.now, autoRelease: true, ...(input.device === undefined ? {} : { device: input.device }), ...(input.spill ? { spill: true } : {}) };
         state.requests.push(request);
         audit("request", { hostId: request.hostId, pool: request.pool, threadId: request.threadId, requestId: request.id });
       }
@@ -285,7 +292,7 @@ export function apply(original: State, input: Input, ctx: Context): Transition {
       const use = { id: `use-${state.nextId++}`, threadId: input.threadId, startedAt: ctx.now,
         expiresAt: ctx.now + settingsFor(ctx.settings, input.hostId).heartbeatIntervalMs };
       (target.uses ??= []).push(use); target.graceUntil = null;
-      if (!lease && target.pool === "local-model") {
+      if (!lease && (target.pool === "local-model" || request!.spill || gateless(target.hostId))) {
         schedule(target.hostId);
         const granted = state.leases.find(l => l.requestId === target.id);
         if (granted) { data = { kind: "leased", lease: granted, useId: use.id }; break; }
@@ -367,9 +374,9 @@ export function apply(original: State, input: Input, ctx: Context): Transition {
       if (!input.isChild) return fail("forbidden", "Target must be a child thread you spawned; transfer only to your own children");
       const lease = owned[0];
       if (lease.uses?.length || lease.graceUntil != null) return fail("in-use", "Lease has active uses or grace; transfer after its slots-run or acquire uses finish");
-      if (state.leases.some(l => l.id !== lease.id && l.hostId === lease.hostId && l.pool === lease.pool &&
+      if (state.leases.some(l => l.id !== lease.id && home(l) === home(lease) && l.pool === lease.pool &&
           (l.ownerThreadId === input.toThreadId || l.holderThreadId === input.toThreadId)) ||
-          state.requests.some(r => r.hostId === lease.hostId && r.pool === lease.pool && r.threadId === input.toThreadId)) return fail("invalid-input", "Target already has an open request or lease in this pool; the child can use its own slot instead");
+          state.requests.some(r => r.hostId === home(lease) && r.pool === lease.pool && r.threadId === input.toThreadId)) return fail("invalid-input", "Target already has an open request or lease in this pool; the child can use its own slot instead");
       lease.holderThreadId = input.toThreadId; refresh(lease);
       audit("transfer", { ...fields(lease), reason: `from ${input.threadId}` });
       const message: NotificationMessage = { title: "Slot transferred to you", lines: [{ value: lease.job }, { label: "Lease", value: `\`${lease.id}\` · ${slotName(lease)} slot ${lease.slotIndex}` }], hint: `Run heavy commands through \`slots-run\` (\`bb slots wrapper\`); release with \`bb slots release ${lease.id}\`.` };
@@ -463,8 +470,8 @@ export function apply(original: State, input: Input, ctx: Context): Transition {
         const reasons = [];
         const devices = candidates(request);
         if (group(request) !== undefined && !registered(request.hostId).includes(request.device!)) reasons.push("device not registered");
-        else if (devices.every(d => state.leases.filter(l => same(l, request.hostId, request.pool, d)).length >= capacityFor(state, request.hostId, request.pool, ctx.settings, d))) reasons.push("no free slot");
-        if (devices.includes(undefined) && !poolGateOpen(host(request.hostId).gate, settings, request.pool)) reasons.push("gate not open");
+        else if (devices.every(c => state.leases.filter(l => same(l, c.hostId, request.pool, c.device)).length >= capacityFor(state, c.hostId, request.pool, ctx.settings, c.device))) reasons.push("no free slot");
+        if (devices.some(c => c.hostId === request.hostId && c.device === undefined) && !poolGateOpen(host(request.hostId).gate, settings, request.pool)) reasons.push("gate not open");
         if (settings.grantMode === "manual") reasons.push("manual grant mode");
         const position = sorted(state).filter(r => same(r, request.hostId, request.pool, group(request))).findIndex(r => r.id === request.id) + 1;
         const message = `Request ${request.id} by ${request.threadId} on ${request.hostId}, ${request.pool}: ${request.job}; estimate ${minutes(request.estMs)}, waiting ${minutes(ctx.now - request.createdAt)}, position ${position}: ${reasons.join(" / ")}.`;

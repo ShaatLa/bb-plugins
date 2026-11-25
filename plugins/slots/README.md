@@ -109,6 +109,37 @@ is granted at request time when that passes. When the last use of a
 `acquire` from that thread takes it back without a gate check, otherwise it is
 released quietly as `unclaimed`. Heavy leases free at the last `done`.
 
+**Other machines.** The `remoteHosts` setting lists other bb machines by host id
+with their heavy capacity: `bb slots config set remoteHosts host_example=4`
+(comma-separated; `bb slots capacity --host <id-or-name> --pool heavy N` edits
+one entry). Use host ids, not display names, which can change. A thread whose
+environment runs on a listed machine may use Slots, and its heavy leases take
+that machine's capacity, granted at once: Slots samples only the server Mac, so
+capacity is the only limit elsewhere. Threads on unlisted machines are refused.
+`local-model` always uses the server host, where its devices are registered.
+`status` reports `leaseHosts` (`{hostId: {pools, name}}`, capacity 0 included),
+the read-only check of which machines take leases.
+
+**Spill.** `slots-run --spill` (or `bb slots acquire --spill`) lets heavy work
+from this Mac run on another listed, connected machine when this Mac has no free
+slot or its machine check fails; without it nothing leaves this Mac. The lease
+names the machine (`hostId`, with `homeHostId` for the thread's own host) and
+the acquire line ends with `host <id>`. `slots-run` then copies the worktree
+(tracked and untracked files, not ignored ones such as `.env` or build output)
+with `bb file write`, mirrors it in `~/.bb-slots/work/<hash>` on that machine,
+runs `npm ci` / `bun install --frozen-lockfile` only when a lockfile on the way
+to the working directory changed, and runs the command there with
+`bb terminal run`, stdin closed. A run from an unchanged worktree reuses the
+mirror untouched. Measured overhead: 5–10 s per run for a repository of a
+thousand files (mostly bb's file and terminal round trips), plus any install; mirrors unused for 7 days are pruned. The exit code comes back;
+69 means the copy or the remote start failed (machine offline), 124 a 12 h
+timeout, 130 an interrupt (the remote terminal is closed). Limits: output
+arrives when the command ends (stdout and stderr merged, last 1 MB), files the
+job writes stay there, environment variables are not forwarded, absolute paths
+into this worktree, git submodules, paths with newlines, ports and dev servers
+are not supported, and the job runs as your user on that machine. A lease is
+never transferred to a child on another machine; that child leases its own.
+
 **Inference devices.** The local-models plugin registers each other machine
 that serves models (for example `M1`, the prefix of `M1/owner/Model-GGUF:QUANT`)
 with the `devices` RPC and unregisters it when its server stops answering. Each
