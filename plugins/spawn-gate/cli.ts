@@ -35,7 +35,7 @@ export function registerGateCli(bb: BbPluginApi, { start, report, configGet, con
     config: [
       configUsage,
       "Omitting --project uses the current project. Pass it once. Read or change one field at a time.",
-      "Fields: enabled (true|false), method (script|instruction), script (repository-relative path), instruction (text), ttlMinutes (integer 1–60).",
+      "Fields: enabled (true|false), method (script|instruction), script (repository-relative path), remote (HTTPS or SSH Git remote, empty to use the project remote), instruction (text), ttlMinutes (integer 1–60).",
       "Example: bb agent-spawn-gate config set ttlMinutes 15 --project proj_example",
     ].join("\n"),
   };

@@ -5,6 +5,7 @@ import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import { z } from "zod";
 import type { RecordMetric } from "./metrics";
 import { assessPace, defaultPaceThreshold, paceReport, providerPolicy } from "./pace";
+import { invalidRemote, isBuilderRemote } from "./remote";
 
 const text = z.string().min(1).max(1000);
 const projectId = z.string().regex(/^proj_[a-z0-9]+$/);
@@ -106,7 +107,7 @@ function builderCard(args: string[]) {
   return null;
 }
 
-export function createStart(bb: BbPluginApi, mint: (request: { projectId: string; parentThreadId: string; brief: string }) => Promise<{ prompt: string; token: string }>, policy: (id: string) => { method: string; script: string }, revoke: (token: string) => void, record: RecordMetric, paceThreshold = async () => defaultPaceThreshold) {
+export function createStart(bb: BbPluginApi, mint: (request: { projectId: string; parentThreadId: string; brief: string }) => Promise<{ prompt: string; token: string }>, policy: (id: string) => { method: string; script: string; remote: string }, revoke: (token: string) => void, record: RecordMetric, paceThreshold = async () => defaultPaceThreshold) {
   const controller = new AbortController();
   bb.onDispose(() => controller.abort());
   const queues = new Map<string, Promise<unknown>>();
@@ -126,8 +127,9 @@ export function createStart(bb: BbPluginApi, mint: (request: { projectId: string
       if (rules.method !== "script") throw new Error("start requires Script mode. In Instruction mode, follow the configured instructions and call the spawn-gate mint RPC");
       reason = "checkout_error";
       const project = await bb.sdk.projects.get({ projectId: request.projectId });
-      const remote = project.gitRemoteUrl;
-      if (!remote || remote.startsWith("-")) throw new Error("Configure a Git remote for the selected project before running start");
+      if (!isBuilderRemote(rules.remote)) throw new Error(invalidRemote);
+      const remote = rules.remote || project.gitRemoteUrl;
+      if (!remote || remote.startsWith("-")) throw new Error("Set Spawn Gate remote or configure a Git remote for the selected project before running start");
       const root = join(dirname(bb.storage.database().name), "checkouts", request.projectId);
       await mkdir(root, { recursive: true });
       const git = (args: string[]) => run("git", ["-c", "core.hooksPath=/dev/null", ...args], root, signal, "", { ...process.env, GIT_TERMINAL_PROMPT: "0" });

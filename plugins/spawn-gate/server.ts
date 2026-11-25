@@ -5,17 +5,22 @@ import { registerGateCli } from "./cli";
 import { createMetrics, reportContract } from "./metrics";
 import { migrateLegacyGate } from "./migration";
 import { defaultPaceThreshold } from "./pace";
+import { invalidRemote, isBuilderRemote } from "./remote";
 import { briefInput, createStart, startInput, startOutput } from "./start";
 
 const hash = (text: string) => createHash("sha256").update(text).digest("hex");
 const admission = /^agent-admission v1 token=([a-f0-9]{64})$/;
-const projectValues = z.object({ enabled: z.boolean(), method: z.enum(["script", "instruction"]), instruction: z.string().max(20_000), script: z.string().min(1).max(500), ttlMinutes: z.number().int().min(1).max(60) }).strict();
+const projectValues = z.object({
+  enabled: z.boolean(), method: z.enum(["script", "instruction"]), instruction: z.string().max(20_000),
+  script: z.string().min(1).max(500), remote: z.string().max(2000).refine(isBuilderRemote, invalidRemote),
+  ttlMinutes: z.number().int().min(1).max(60),
+}).strict();
 type ProjectValues = z.infer<typeof projectValues>;
 const configGetInput = z.object({ projectId: z.string(), key: projectValues.keyof().optional() }).strict();
 const fieldInput = <K extends keyof ProjectValues>(key: K) =>
   z.object({ projectId: z.string(), key: z.literal(key), value: projectValues.shape[key] }).strict();
 const configSetInput = z.discriminatedUnion("key", [
-  fieldInput("enabled"), fieldInput("method"), fieldInput("instruction"), fieldInput("script"), fieldInput("ttlMinutes"),
+  fieldInput("enabled"), fieldInput("method"), fieldInput("instruction"), fieldInput("script"), fieldInput("remote"), fieldInput("ttlMinutes"),
 ]);
 export const rpcContract = defineRpcContract({
   "settings.read": { experimental_description: "Legacy settings read for all projects. To read one field, call config.get with projectId and key.", input: z.null(), output: z.object({ projects: z.array(z.object({ id: z.string(), name: z.string(), values: projectValues })) }) },
@@ -46,6 +51,7 @@ export default async function plugin(bb: BbPluginApi) {
     method: (config[`method_${projectId}`] ?? "instruction") === "instruction" ? "instruction" as const : "script" as const,
     instruction: String(config[`instruction_${projectId}`] ?? ""),
     script: String(config[`script_${projectId}`] ?? "spawn.py"),
+    remote: String(config[`remote_${projectId}`] ?? ""),
     ttl: Number(config[`ttl_${projectId}`] ?? 10) * 60_000,
   });
   const view = (projectId: string) => { const { ttl, ...values } = policy(projectId); return { ...values, ttlMinutes: ttl / 60_000 }; };
@@ -53,7 +59,7 @@ export default async function plugin(bb: BbPluginApi) {
   const launchInstructions = (rules: ReturnType<typeof policy>, projectId: string, parentThreadId: string | null) => {
     const parent = parentThreadId ?? "<parent-thread-id>";
     if (rules.method === "script") {
-      return `Use this launch script: ${rules.script}. Run bb agent-spawn-gate start --project ${projectId} --parent-thread ${parent} -- <builder args>. The plugin fetches the remote default branch, runs the builder, and mints and submits the admission. Put --dry-run before -- to validate without minting or starting.`;
+      return `Use this launch script: ${rules.script}. Run bb agent-spawn-gate start --project ${projectId} --parent-thread ${parent} -- <builder args>. The plugin fetches the configured builder remote's default branch, runs the builder, and mints and submits the admission. Put --dry-run before -- to validate without minting or starting.`;
     }
     if (!rules.instruction.trim()) return "Configure nonempty launch instructions in Spawn Gate before minting.";
     return `Follow these launch instructions:

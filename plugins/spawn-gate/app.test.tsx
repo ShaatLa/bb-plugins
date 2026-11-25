@@ -6,7 +6,7 @@ const app = await loadPluginApp(() => import("./app"));
 afterEach(cleanup);
 HTMLElement.prototype.scrollIntoView = vi.fn();
 it("renders one project form and saves only the selected project", async () => {
-  const defaults = { enabled: false, method: "instruction", instruction: "Review the task.", script: "spawn.py", ttlMinutes: 10 };
+  const defaults = { enabled: false, method: "instruction", instruction: "Review the task.", script: "spawn.py", remote: "", ttlMinutes: 10 };
   const projects = [
     { id: "proj_sample", name: "Sample", values: { ...defaults, method: "script", script: "tools/spawn.py" } },
     { id: "proj_other", name: "Other", values: { ...defaults } },
@@ -26,12 +26,19 @@ it("renders one project form and saves only the selected project", async () => {
   expect(slot.queryByRole("button", { name: "Save" })).toBeNull();
   expect(write).not.toHaveBeenCalled();
   expect(slot.getByLabelText("Launch script")).toBeTruthy();
+  const repository = slot.getByLabelText("Builder repository");
+  await act(async () => { fireEvent.change(repository, { target: { value: "../builder" } }); });
+  expect(write).not.toHaveBeenCalled();
+  await act(async () => { fireEvent.change(repository, { target: { value: "git@git.example.test:owner/builders.git" } }); });
+  expect(write).toHaveBeenLastCalledWith({
+    projectId: "proj_sample", values: expect.objectContaining({ remote: "git@git.example.test:owner/builders.git" }),
+  });
   await choose("Other");
   expect(slot.queryByLabelText("Launch script")).toBeNull();
   expect(slot.getByLabelText("Launch method")).toBeTruthy();
   expect(slot.getAllByRole("switch")).toHaveLength(1);
   await act(async () => { fireEvent.click(slot.getByRole("switch")); });
-  expect(write).toHaveBeenCalledTimes(1);
+  expect(write).toHaveBeenCalledTimes(2);
   expect(write).toHaveBeenCalledWith(expect.objectContaining({ projectId: "proj_other", values: expect.objectContaining({ enabled: true }) }));
   await choose("Third");
   expect(slot.getByRole("switch").getAttribute("aria-checked")).toBe("false");
@@ -41,7 +48,7 @@ it("renders one project form and saves only the selected project", async () => {
 });
 
 it("serializes autosaves without replacing controls, losing focus or overwriting newer edits", async () => {
-  const values = { enabled: false, method: "script", instruction: "", script: "spawn.py", ttlMinutes: 10 };
+  const values = { enabled: false, method: "script", instruction: "", script: "spawn.py", remote: "", ttlMinutes: 10 };
   let finish!: (value: typeof values) => void;
   const write = vi.fn(async ({ values }) => values);
   write.mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
@@ -65,7 +72,7 @@ it("serializes autosaves without replacing controls, losing focus or overwriting
 });
 
 it("keeps invalid drafts editable and reports failed autosaves without blocking a retry", async () => {
-  const values = { enabled: false, method: "script", instruction: "", script: "spawn.py", ttlMinutes: 10 };
+  const values = { enabled: false, method: "script", instruction: "", script: "spawn.py", remote: "", ttlMinutes: 10 };
   const write = vi.fn(async ({ values }) => values).mockRejectedValueOnce(new Error("Offline"));
   const slot = renderSlot(app.settingsSections[0], {}, { rpc: { "settings.read": () => ({ projects: [{ id: "proj_sample", name: "Sample", values }] }), "settings.write": write } });
   const input = await slot.findByLabelText("Admission lifetime, minutes") as HTMLInputElement;
@@ -82,7 +89,7 @@ it("keeps invalid drafts editable and reports failed autosaves without blocking 
 });
 
 it("uses the sidebar's project and UTC period for activity and edits that same project's settings", async () => {
-  const defaults = { enabled: false, method: "instruction", instruction: "Review the task.", script: "spawn.py", ttlMinutes: 10 };
+  const defaults = { enabled: false, method: "instruction", instruction: "Review the task.", script: "spawn.py", remote: "", ttlMinutes: 10 };
   const projects = [
     { id: "proj_sample", name: "Sample", values: { ...defaults, method: "script" } },
     { id: "proj_other", name: "Other", values: { ...defaults } },
@@ -140,7 +147,7 @@ it("uses the sidebar's project and UTC period for activity and edits that same p
 
 it("shows the single project without an active selector and links to plugin settings", async () => {
   const projects = [{ id: "proj_sample", name: "Sample", values: {
-    enabled: false, method: "script", instruction: "", script: "spawn.py", ttlMinutes: 10,
+    enabled: false, method: "script", instruction: "", script: "spawn.py", remote: "", ttlMinutes: 10,
   } }];
   const slot = renderSlot(app.navPanels[0]!, { subPath: "" }, {
     rpc: {

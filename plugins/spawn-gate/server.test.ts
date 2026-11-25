@@ -155,6 +155,28 @@ it("reads and writes individual project settings over RPC and CLI with identical
   expect(await rpc("config.get", { projectId: "proj_other", key: "ttlMinutes" })).toEqual({ ttlMinutes: 10 });
 });
 
+it("validates the builder remote and keeps it scoped to the selected project", async () => {
+  const h = await setup();
+  const get = (projectId: string) => h.harness.behavior.callRpc("config.get", { projectId, key: "remote" });
+  const set = (value: string) => h.harness.behavior.callRpc("config.set", { projectId: PROJECT, key: "remote", value });
+  expect(await get(PROJECT)).toEqual({ remote: "" });
+  const remote = "git@git.example.test:owner/builders.git";
+  const saved = await h.harness.behavior.runCli(["config", "set", "remote", remote, "--project", PROJECT]);
+  expect(saved).toMatchObject({ exitCode: 0, stdout: JSON.stringify({ remote }) });
+  for (const value of ["/tmp/repo", "file:///tmp/repo", "ext::helper", "--upload-pack=helper", "https://example.test", "https://user:secret@example.test/repo"]) {
+    await expect(set(value)).rejects.toThrow();
+  }
+  await expect(h.harness.behavior.callRpc("settings.write", {
+    projectId: PROJECT, values: { remote: "../repo" },
+  })).rejects.toThrow();
+  await h.reload();
+  expect(await get(PROJECT)).toEqual({ remote });
+  expect(await get("proj_other")).toEqual({ remote: "" });
+  expect(await set("https://git.example.test/owner/builders.git")).toEqual({ remote: "https://git.example.test/owner/builders.git" });
+  expect(await set("ssh://git@git.example.test:2222/owner/builders.git")).toEqual({ remote: "ssh://git@git.example.test:2222/owner/builders.git" });
+  expect(await set("")).toEqual({ remote: "" });
+});
+
 it("retains aggregated admission refusals across reloads and filters by UTC date and project", async () => {
   vi.useFakeTimers();
   vi.setSystemTime(new Date("2025-01-01T23:59:00Z"));

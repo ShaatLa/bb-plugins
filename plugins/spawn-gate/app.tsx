@@ -9,8 +9,9 @@ import { Switch } from "./components/ui/switch";
 import { Textarea } from "./components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "./components/ui/select";
 import { SettingsSection, SettingsWithControl } from "./components/ui/settings-section";
+import { invalidRemote, isBuilderRemote } from "./remote";
 
-type Values = { enabled: boolean; method: "script" | "instruction"; instruction: string; script: string; ttlMinutes: number };
+type Values = { enabled: boolean; method: "script" | "instruction"; instruction: string; script: string; remote: string; ttlMinutes: number };
 type Project = { id: string; name: string; values: Values };
 
 type LaunchValues = Omit<Values, "enabled">;
@@ -25,7 +26,7 @@ function ProjectForm({ project, onSave }: { project: Project; onSave: (projectId
   useEffect(() => {
     if (lastChange.current === value) return;
     lastChange.current = value;
-    const valid = form.current?.checkValidity() ?? false;
+    const valid = (form.current?.checkValidity() ?? false) && isBuilderRemote(value.remote);
     setInvalid(!valid);
     if (valid) onSave(project.id, value);
   }, [value, project.id, onSave]);
@@ -37,6 +38,9 @@ function ProjectForm({ project, onSave }: { project: Project; onSave: (projectId
         </Select>
       </SettingsWithControl>
       {value.method === "script" ? <>
+        <SettingsWithControl label="Builder repository" description="HTTPS or SSH Git remote. Leave blank to use the project's Git remote." controlPlacement="below">
+          <Input aria-label="Builder repository" value={value.remote} maxLength={2000} onChange={e => update({ remote: e.target.value })} />
+        </SettingsWithControl>
         <SettingsWithControl label="Launch script" description="Repository-relative JSON builder. The plugin runs its latest remote-default-branch version, then admits and starts the session." controlPlacement="below">
           <Input aria-label="Launch script" value={value.script} required maxLength={500} onChange={e => update({ script: e.target.value })} />
         </SettingsWithControl>
@@ -46,7 +50,7 @@ function ProjectForm({ project, onSave }: { project: Project; onSave: (projectId
       <SettingsWithControl label="Admission lifetime, minutes" description="Time to use a newly issued one-use admission before it expires (1–60 minutes).">
         <Input aria-label="Admission lifetime, minutes" className="w-24" type="number" min={1} max={60} required value={Number.isNaN(value.ttlMinutes) ? "" : value.ttlMinutes} onChange={e => update({ ttlMinutes: e.target.valueAsNumber })} />
       </SettingsWithControl>
-      <p role="status" className="min-h-4 text-xs text-muted-foreground">{invalid ? "Enter valid values to save these changes." : "Changes are saved automatically for the selected project."}</p>
+      <p role="status" className="min-h-4 text-xs text-muted-foreground">{!isBuilderRemote(value.remote) ? invalidRemote : invalid ? "Enter valid values to save these changes." : "Changes are saved automatically for the selected project."}</p>
   </form>;
 }
 

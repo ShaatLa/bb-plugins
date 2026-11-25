@@ -21,6 +21,9 @@ the dropdown. Every project offers the same settings:
 - **Enable spawn gate:** require admission for new agent and CLI starts.
   Disabled by default for every project.
 - **Launch method:** Script or Instruction.
+- **Builder repository:** optional HTTPS or SSH Git remote, shown in Script mode.
+  Leave it blank to use the project's Git remote. Use the BB server's existing
+  Git authentication.
 - **Launch script:** repository-relative path, shown in Script mode.
 - **Launch instructions:** steps agents must follow, shown in Instruction mode.
   Nonempty instructions are required to mint admissions in this mode.
@@ -55,7 +58,7 @@ bb plugin rpc call spawn-gate settings.write --input-file settings.json --json
 
 `settings.read` takes null and returns `{projects:[{id,name,values}]}`.
 `settings.write` takes `{projectId,values}`, where values is a partial object
-with `enabled`, `method` (`script|instruction`), `instruction`, `script`, and
+with `enabled`, `method` (`script|instruction`), `instruction`, `script`, `remote`, and
 `ttlMinutes`. It returns the saved project's complete values. Writes are
 serialized to preserve simultaneous project updates.
 
@@ -71,6 +74,7 @@ For one project or field:
 bb agent-spawn-gate config get --project proj_example
 bb agent-spawn-gate config get enabled --project proj_example
 bb agent-spawn-gate config set ttlMinutes 15 --project proj_example
+bb agent-spawn-gate config set remote git@git.example.test:owner/builders.git --project proj_example
 ```
 
 RPC `config.get` takes `{projectId,key?}`. RPC `config.set` takes
@@ -78,6 +82,7 @@ RPC `config.get` takes `{projectId,key?}`. RPC `config.set` takes
 `{"ttlMinutes":15}`. A get without a key returns that project's settings.
 The CLI accepts `true` or `false` for `enabled`, and an integer from 1 to 60
 for `ttlMinutes`. If omitted, `--project` defaults to the CLI context.
+Set `remote` to an empty string (`''` in the shell) to restore the project's Git remote.
 
 ## Start command and RPC
 

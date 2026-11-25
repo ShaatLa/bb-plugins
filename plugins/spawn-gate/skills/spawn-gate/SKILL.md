@@ -63,8 +63,11 @@ bb agent-spawn-gate config set ttlMinutes 15 --project proj_example
 bb agent-spawn-gate report --project proj_example --from 2025-01-01 --to 2025-01-07 --events
 ```
 
-Settings keys are `enabled`, `method`, `script`, `instruction` and `ttlMinutes`
+Settings keys are `enabled`, `method`, `script`, `remote`, `instruction` and `ttlMinutes`
 (1–60, default 10). A new project defaults to disabled. Config defaults to the
 current project if the flag is omitted. Report defaults to all projects and
 seven inclusive UTC days ending at `--to` (today if omitted).
+An empty `remote` uses the project's Git remote. An explicit `remote` must be
+an HTTPS or SSH Git address, for example `git@git.example.test:owner/builders.git`.
+The `script` path is relative to that repository.
 Use `bb plugin rpc inspect spawn-gate` for RPC shapes and descriptions.

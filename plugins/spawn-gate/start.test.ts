@@ -37,7 +37,7 @@ async function fixture() {
   // This fixture uses the real process/git runner with a plugin-owned temporary database location.
   const scoped = Object.create(bb);
   Object.defineProperty(scoped, "storage", { value: { database: () => ({ name: join(root, "data.db") }) } });
-  const policy = { method: "script", script: "builder.py" };
+  const policy = { method: "script", script: "builder.py", remote: "" };
   const revoke = vi.fn();
   const metrics = await createMetrics(bb, bb.storage.database());
   const start = createStart(scoped, mint, () => policy, revoke, metrics.record);
@@ -77,6 +77,38 @@ it("refuses a misplaced dry-run flag or repeated target selectors before launch"
     expect(result.exitCode).toBe(1);
     expect(result.stderr).toContain(message);
   }
+  expect(f.mint).not.toHaveBeenCalled();
+  expect(f.spawn).not.toHaveBeenCalled();
+});
+
+it("fetches an override's own default branch and restores the project remote when cleared", async () => {
+  const f = await fixture();
+  const override = join(f.root, "builder-repo");
+  f.git("clone", f.repo, override);
+  const git = (...args: string[]) => execFileSync("git", ["-C", override, ...args], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
+  git("switch", "-c", "builders");
+  await writeFile(join(override, "builder.py"), `import json, os, sys
+c = json.load(sys.stdin)
+assert os.environ["BB_PROJECT_ID"] == c["projectId"]
+assert os.environ["BB_THREAD_ID"] == c["parentThreadId"]
+print(json.dumps({"version": 1, "brief": "from override", "spawn": {"parentThreadId": c["parentThreadId"]}}))
+`);
+  git("add", "builder.py");
+  git("-c", "user.name=Test", "-c", "user.email=test@example.test", "commit", "-m", "Separate builder");
+  const overrideCommit = git("rev-parse", "HEAD");
+  const remote = "git@git.example.test:owner/builders.git";
+  vi.stubEnv("GIT_CONFIG_COUNT", "1");
+  vi.stubEnv("GIT_CONFIG_KEY_0", `url.${override}.insteadOf`);
+  vi.stubEnv("GIT_CONFIG_VALUE_0", remote);
+
+  const request = { ...f.request, dryRun: true };
+  expect(await f.start(request)).toMatchObject({ sourceCommit: f.first, build: { brief: "first" } });
+  f.policy.remote = remote;
+  expect(await f.start(request)).toMatchObject({ sourceCommit: overrideCommit, build: { brief: "from override" } });
+  await rm(override, { recursive: true });
+  await expect(f.start(f.request)).rejects.toThrow("git exited");
+  f.policy.remote = "";
+  expect(await f.start(request)).toMatchObject({ sourceCommit: f.first, build: { brief: "first" } });
   expect(f.mint).not.toHaveBeenCalled();
   expect(f.spawn).not.toHaveBeenCalled();
 });
