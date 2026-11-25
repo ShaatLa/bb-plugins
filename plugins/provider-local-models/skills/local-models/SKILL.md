@@ -10,7 +10,8 @@ Rules for dispatching a local-models thread:
 - Run at most one local-models thread per GPU at a time. Threads do not take a
   Slots use on their own, so hold a `local-model` lease for the child:
   `bb slots request --pool local-model --device <machine> --job "draft notes" --est 30m --wait`,
-  then spawn, then `bb slots transfer --to thr_example`. `<machine>` is the id's
+  then spawn, then `bb slots transfer --to thr_example`; after the child reports,
+  run `bb slots release <lease>`. `<machine>` is the id's
   machine prefix (`M1` for `M1/owner/Model-GGUF:Q4_K_M`), or `local` for a model
   on this Mac (`splash/...` or a plain id). Without `--device` Slots grants the
   first free machine, which may not be the one the thread's model runs on.
