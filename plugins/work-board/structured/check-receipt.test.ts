@@ -8,7 +8,7 @@ import { createStore, registerTasksApi } from "../api";
 import { registerTasksCli } from "../cli";
 import * as runner from "../checks/runner";
 import type { TaskQuestion } from "../shared/contract";
-import { receiptInScope } from "../shared/check-receipt";
+import { agentReceiptRefusal, receiptInScope } from "../shared/check-receipt";
 import { createStructuredStore } from "./store";
 
 const disposals: (() => Promise<void>)[] = [];
@@ -17,7 +17,7 @@ afterEach(async () => {
   vi.unstubAllEnvs();
   for (const dispose of disposals.splice(0)) await dispose();
 });
-const setting = { validatorId: "preview", hint: "make receipt", timeoutSeconds: 5 };
+const setting = { validatorId: "example", hint: "make receipt", timeoutSeconds: 5 };
 const scoped = { ...setting, linkPathPattern: "^/canvas/", linkWrappers: ["/_frame?src"] };
 const caller = "thr_example";
 function setup(callerHost = "host_other") {
@@ -27,7 +27,7 @@ function setup(callerHost = "host_other") {
   const registryPath = join(dir, ".bb", "work-board-receipt-validators.json");
   const log = join(dir, "envelope.json");
   const register = (mode: string) => writeFileSync(registryPath, JSON.stringify({
-    preview: { cwd: dir, argv: mode === "missing" ? [join(dir, "missing")] : [process.execPath, join(import.meta.dirname, "../checks/fixtures/receipt-validator.mjs"), mode, log] },
+    example: { cwd: dir, argv: mode === "missing" ? [join(dir, "missing")] : [process.execPath, join(import.meta.dirname, "../checks/fixtures/receipt-validator.mjs"), mode, log] },
   }));
   register("accept");
   const host = createFakePluginHost({ pluginId: "work-board", sdk: {
@@ -58,23 +58,51 @@ function setup(callerHost = "host_other") {
 it("restricts project writes and validates project settings and host registrations", async () => {
   const f = setup();
   for (const threadId of [undefined, caller]) {
-    for (const args of [["project", "update", "EXA", "--check-receipt", "null"], ["config", "set", "checkReceipt", "null", "--project", "EXA"]]) {
-      const result = await f.harness.runCli(args, { threadId });
-      expect(result.stderr).toContain("changed by the owner");
-    }
+    const refused = await f.harness.runCli(["project", "update", "EXA", "--check-receipt", "null"], { threadId });
+    expect(refused.exitCode).not.toBe(0);
+    expect(refused.stderr).toContain("config set checkReceipt");
+    const noop = await f.harness.runCli(["config", "set", "checkReceipt", "null", "--project", "EXA"], { threadId });
+    expect(noop.exitCode, noop.stderr).toBe(0);
+    expect(noop.stdout).toContain("checkReceipt=null");
   }
   for (const extra of [{argv:["program"]}, { cwd:"/" }, {validatorId:"missing"}, {hint:""}, {hint:"x".repeat(1001)}, {timeoutSeconds:4}, {timeoutSeconds:301}, {linkPathPattern:"["}, {linkPathPattern:"x".repeat(501)}, {linkWrappers:Array(6).fill("/_frame?src")}, {linkWrappers:["invalid"]}])
     await expect(f.set({...setting,...extra})).rejects.toThrow();
-  await f.set({validatorId:"preview",hint:"make receipt"});
+  await f.set({validatorId:"example",hint:"make receipt"});
   expect(f.harness.logEntries.some(e => e.message.includes("check receipt for EXA") && e.message.includes(process.execPath))).toBe(true);
   expect(await f.harness.callRpc("config.get", {projectId:f.project.id,key:"checkReceipt"})).toMatchObject({ values:{checkReceipt:{...setting,timeoutSeconds:60}}});
   for (const argv of [[], Array(33).fill("x"), [""], ["x".repeat(1001)]]) {
-    writeFileSync(f.registryPath, JSON.stringify({preview:{argv,cwd:"/"}}));
+    writeFileSync(f.registryPath, JSON.stringify({example:{argv,cwd:"/"}}));
     await expect(f.set(setting)).rejects.toThrow();
   }
-  writeFileSync(f.registryPath, JSON.stringify({preview:{argv:["example"],cwd:"relative"}}));
+  writeFileSync(f.registryPath, JSON.stringify({example:{argv:["example"],cwd:"relative"}}));
   await expect(f.set(setting)).rejects.toThrow();
   await f.set(null);
+});
+
+it("refuses to switch an enabled receipt off through the CLI", async () => {
+  const f = setup();
+  const set = (value: string) => f.harness.runCli(["config", "set", "checkReceipt", value, "--project", "EXA"], { threadId: caller });
+  const enabled = await set(JSON.stringify(setting));
+  expect(enabled.exitCode, enabled.stderr).toBe(0);
+  const refused = await set("null");
+  expect(refused.exitCode).not.toBe(0);
+  expect(refused.stderr).toMatch(/off is owner-only.*EXA project settings/);
+});
+
+it("allows activation and only provable tightening of an enabled receipt", () => {
+  expect(agentReceiptRefusal(null, scoped)).toBeNull();
+  expect(agentReceiptRefusal(scoped, scoped)).toBeNull();
+  expect(agentReceiptRefusal(scoped, null)).toMatch(/off/);
+  expect(agentReceiptRefusal(scoped, { ...scoped, validatorId: "other" })).toMatch(/validator/);
+  expect(agentReceiptRefusal(scoped, { ...scoped, timeoutSeconds: 60 })).toMatch(/timeout/);
+  expect(agentReceiptRefusal(scoped, { ...scoped, hint: "other" })).toMatch(/hint/);
+  expect(agentReceiptRefusal(setting, scoped)).toMatch(/pattern/);
+  expect(agentReceiptRefusal(scoped, { ...scoped, linkPathPattern: ".*" })).toMatch(/pattern/);
+  expect(agentReceiptRefusal(scoped, setting)).toBeNull();
+  expect(agentReceiptRefusal({ ...setting, linkWrappers: ["/a?url"] }, setting)).toBeNull();
+  expect(agentReceiptRefusal(scoped, { ...scoped, linkWrappers: [...scoped.linkWrappers, "/a?url"] })).toBeNull();
+  for (const linkWrappers of [[], ["/a?url"]])
+    expect(agentReceiptRefusal(scoped, { ...scoped, linkWrappers })).toMatch(/wrapper/);
 });
 
 it("reads the current host file on each validation and fails closed until it is repaired", async () => {
@@ -90,7 +118,7 @@ it("reads the current host file on each validation and fails closed until it is 
   rmSync(f.registryPath, { recursive: true });
   writeFileSync(f.registryPath, "{");
   await expect(validate()).rejects.toThrow(/invalid JSON in receipt validator registry/i);
-  writeFileSync(f.registryPath, '{"preview":{"argv":[],"cwd":"/"}}');
+  writeFileSync(f.registryPath, '{"example":{"argv":[],"cwd":"/"}}');
   await expect(validate()).rejects.toThrow(/invalid receipt validator registry/i);
   expect(f.comments()).toEqual(before);
   expect(f.structured.listQuestions(f.task.id)).toEqual([]);

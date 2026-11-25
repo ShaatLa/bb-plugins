@@ -1,4 +1,6 @@
-import { checkReceiptSchema, RECEIPT_OWNER_ONLY } from "../shared/check-receipt";
+import { agentReceiptRefusal, checkReceiptSchema } from "../shared/check-receipt";
+import { registeredValidator } from "../checks/receipt-registry";
+import { logReceiptChange } from "../checks/receipt-log";
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import type { z } from "zod";
 import type { TasksApiStore } from "../api";
@@ -73,8 +75,25 @@ export function projectConfigHandlers(bb: BbPluginApi, store: TasksApiStore) {
     async "config.set"({ projectId, key, value, expected }: { projectId: string; key: string; value?: unknown; expected?: unknown }) {
       requireKey(key);
       if (expected !== undefined && !key.startsWith("git.")) throw new Error(`expected applies to git.* keys only, not ${key}`);
+      if (key === "checkReceipt") {
+        const next = checkReceiptSchema.parse(value);
+        const change = store.transaction(() => {
+          const project = requireProject(projectId);
+          const before = project.checkReceipt ?? null;
+          if (JSON.stringify(before) === JSON.stringify(next)) return null;
+          const refusal = agentReceiptRefusal(before, next);
+          if (refusal) throw new Error(`${refusal}. Change it in the ${project.prefix} project settings.`);
+          const registration = next && registeredValidator(next.validatorId);
+          const updated = store.tasks.updateProject(projectId, { checkReceipt: next });
+          return { before, after: updated.checkReceipt ?? null, prefix: updated.prefix, registration };
+        });
+        if (change) {
+          logReceiptChange(bb, change.prefix, change.before, change.after, change.registration);
+          publishProjectsChanged(bb, projectId);
+        }
+        return { projectId, key, value: next };
+      }
       // The owner changes planning in the project settings (updateProject from the app); no setting call proves the caller is the owner.
-      if (key === "checkReceipt") throw new Error(RECEIPT_OWNER_ONLY);
       if (key === "checkReadiness") throw new Error(READINESS_OWNER_ONLY);
       if (key === "doneRequiresReview") throw new Error(DONE_REVIEW_OWNER_ONLY);
       if (key === "planning") throw new Error(PLANNING_OWNER_ONLY);

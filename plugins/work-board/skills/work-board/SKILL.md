@@ -552,4 +552,12 @@ Only the owner sets `doneRequiresReview` in project settings (default off). When
 
 Entering Canceled, panel moves and automatic moves stay free. A visit to review can be followed immediately by Done. Raw RPC without `agentThreadId` has panel access. Archive v26 saves the switch for newly restored projects. Existing projects keep the local switch, the log stays local, and imported approval comments never satisfy the gate.
 
+An agent can enable Check receipt with a host-registered validator. For example,
+
+```sh
+bb work-board config set checkReceipt '{"validatorId":"example","hint":"Generate a receipt","linkPathPattern":"^/example/"}' --project EXA
+```
+
+To tighten the setting, pass the full value. Keep the validator, timeout and hint, and either retain the pattern and all existing wrappers (adding wrappers is allowed), or remove the pattern to cover every check, including checks without links. Without a pattern, any wrapper list is allowed. Each changed value requires a current host registration. Only the owner can disable the setting or make other changes in project settings.
+
 When a check needs a UI receipt, run the project's production hint and pass the resulting UTF-8 file with `question add --receipt <file>` or `question update --receipt <file>`. Include it on supersede, reopen and edits to the prompt or steps. Supply readiness flags too when required. A wrapper may always pass a receipt: the CLI reports when it was unused. A stale validation needs another run, and a used verdict needs fresh evidence. Use reopen to clear a gated answer. Withdraw open scoped checks before moving their card family into a receipt project.

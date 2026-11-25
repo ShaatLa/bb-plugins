@@ -1,4 +1,4 @@
-import { RECEIPT_OWNER_ONLY, RECEIPT_LIMIT } from "../shared/check-receipt";
+import { RECEIPT_PROJECT_UPDATE_REFUSAL, RECEIPT_LIMIT } from "../shared/check-receipt";
 import { isQuestionOpen } from "../shared/questions";
 import { newestOpenQuestion, waitingOnOwner } from "../shared/waiting-on-owner";
 import { createGithubClient, githubToken } from "../git-sync/github";
@@ -2036,7 +2036,7 @@ export function registerTasksCli(
             "auto-archive": { type: "enum", values: ["off", "3", "7", "14", "30"] as const, description: "Project auto-archive interval in days" },
             "stale-idle": { type: "enum", values: ["off", "30", "45", "60", "120"] as const, description: "Project idle warning threshold in minutes" },
             "status-notifications": { type: "enum", values: ["off", "all", "done"] as const, description: "Project status change push notifications" },
-            "check-receipt": { type: "string", description: RECEIPT_OWNER_ONLY },
+            "check-receipt": { type: "string", description: RECEIPT_PROJECT_UPDATE_REFUSAL },
             "check-readiness": { type: "string", description: READINESS_OWNER_ONLY },
             "done-requires-review": { type: "string", description: DONE_REVIEW_OWNER_ONLY },
             planning: { type: "enum", values: ["off", "optional", "required"] as const, description: "Owner only, set in the project settings: the CLI refuses it" },
@@ -2104,7 +2104,7 @@ export function registerTasksCli(
                 try { workflowPolicy = workflowPolicySchema.parse(JSON.parse(text!)); }
                 catch { throw new CliError("Invalid workflow policy file"); }
               }
-              if (input.options["check-receipt"] !== undefined) throw new CliError(RECEIPT_OWNER_ONLY, { code: "owner_only" });
+              if (input.options["check-receipt"] !== undefined) throw new CliError(RECEIPT_PROJECT_UPDATE_REFUSAL, { code: "owner_only" });
               if (input.options["check-readiness"] !== undefined) throw new CliError(READINESS_OWNER_ONLY, { code: "owner_only" });
               if (input.options["done-requires-review"] !== undefined) throw new CliError(DONE_REVIEW_OWNER_ONLY, { code: "owner_only" });
               if (input.options.planning !== undefined) throw new CliError(PLANNING_OWNER_ONLY, { code: "owner_only" });

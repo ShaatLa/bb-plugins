@@ -878,10 +878,18 @@ Archive v26 adds `project.doneRequiresReview`. Restoring a new project uses the 
 On the primary host, save the registry as UTF-8 JSON in `~/.bb/work-board-receipt-validators.json` under the BB server user’s home directory. For example:
 
 ```json
-{"preview":{"argv":["/opt/validation/check"],"cwd":"/opt/validation"}}
+{"example":{"argv":["/opt/validation/check"],"cwd":"/opt/validation"}}
 ```
 
 Work Board reads the file on each validation, so edits take effect without a restart. A missing file means there are no registered validators. An unreadable or invalid file prevents gated writes. Keep the program, its dependencies and its directory under the owner's control. In project settings, enable **Check receipt**, enter the registered ID, timeout (5–300 seconds, default 60), and a hint telling agents how to produce the receipt. Optionally scope checks with a URL path regex such as `^/canvas/` and a wrapper such as `/_frame?src`. A wrapper follows one same-origin parameter value once. Ordinary queries and fragments do not count.
+
+An agent can enable Check receipt with a host-registered validator. For example,
+
+```sh
+bb work-board config set checkReceipt '{"validatorId":"example","hint":"Generate a receipt","linkPathPattern":"^/example/"}' --project EXA
+```
+
+To tighten the setting, pass the full value. Keep the validator, timeout and hint, and either retain the pattern and all existing wrappers (adding wrappers is allowed), or remove the pattern to cover every check, including checks without links. Without a pattern, any wrapper list is allowed. Each changed value requires a current host registration. Only the owner can disable the setting or make other changes in project settings.
 
 An agent supplies `--receipt <file>` on check add, supersede, reopen or changes to prompt or steps. The CLI reads up to 256 KiB of UTF-8 from the caller's machine. With readiness enabled, supply its flags too. A scoped clear uses reopen, and moving cards into a gated project requires withdrawing their open scoped checks first.
 
