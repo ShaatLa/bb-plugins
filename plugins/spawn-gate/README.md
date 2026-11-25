@@ -26,6 +26,8 @@ the dropdown. Every project offers the same settings:
   Git authentication.
 - **Builder branch:** optional Git branch name in the selected repository.
   Leave it blank to use that remote's default branch.
+- **Execution machine:** optional machine ID or name for child sessions.
+  Leave it blank to keep normal placement.
 - **Launch script:** repository-relative path, shown in Script mode.
 - **Launch instructions:** steps agents must follow, shown in Instruction mode.
   Nonempty instructions are required to mint admissions in this mode.
@@ -60,7 +62,8 @@ bb plugin rpc call spawn-gate settings.write --input-file settings.json --json
 
 `settings.read` takes null and returns `{projects:[{id,name,values}]}`.
 `settings.write` takes `{projectId,values}`, where values is a partial object
-with `enabled`, `method` (`script|instruction`), `instruction`, `script`, `remote`, `branch`, and
+with `enabled`, `method` (`script|instruction`), `instruction`, `script`,
+`remote`, `branch`, `machine`, and
 `ttlMinutes`. It returns the saved project's complete values. Writes are
 serialized to preserve simultaneous project updates.
 
@@ -78,6 +81,7 @@ bb agent-spawn-gate config get enabled --project proj_example
 bb agent-spawn-gate config set ttlMinutes 15 --project proj_example
 bb agent-spawn-gate config set remote git@git.example.test:owner/builders.git --project proj_example
 bb agent-spawn-gate config set branch tools/builders --project proj_example
+bb agent-spawn-gate config set machine host_example --project proj_example
 ```
 
 RPC `config.get` takes `{projectId,key?}`. RPC `config.set` takes
@@ -87,6 +91,7 @@ The CLI accepts `true` or `false` for `enabled`, and an integer from 1 to 60
 for `ttlMinutes`. If omitted, `--project` defaults to the CLI context.
 Set `remote` to an empty string (`''` in the shell) to restore the project's Git remote.
 Set `branch` to an empty string to restore the remote's default branch.
+Set `machine` to an empty string to restore normal placement.
 
 ## Start command and RPC
 
@@ -110,7 +115,7 @@ via bb SDK. No stale
 checkout fallback; no automatic spawn retry. This command currently requires
 Script mode. Instruction mode keeps the mint workflow below.
 
-RPC `start` input: `{projectId,parentThreadId,args:string[],dryRun?:boolean}`.
+RPC `start` input: `{projectId,parentThreadId,args:string[],dryRun?,machine?,requiresHeavyLease?}`.
 The CLI and RPC return the same JSON. Dry-run runs the builder without minting
 or spawning. See [START-CONTRACT.md](START-CONTRACT.md) for builder stdin/stdout,
 allowed spawn fields and result shapes. Builders run on the bb server machine;
@@ -124,6 +129,28 @@ and a combined 1 MiB stdout/stderr limit. Starts serialize per project.
 
 The builder is trusted repository code: it must only build the brief and spawn
 parameters. It must not mint or spawn children itself.
+
+### Execution machine
+
+Pass `--machine <id-or-name>` before `--` to select a machine for one
+launch. It takes precedence over the project's `machine` setting. Opted-in
+results include `hostId`, including in dry-run. Capacity and queuing are
+handled by bb on that machine.
+
+For project checkout and managed worktree launches, set up a project source
+checkout on that machine. For reuse, select a ready environment in the same
+project and on the selected machine. An explicit unmanaged path must exist on
+that machine. Install the provider CLI and sign in there, or enable supported
+pooled credentials. The builder must supply `spawn.providerId`.
+
+Declare heavy work with `--requires-heavy-lease` or
+`requiresHeavyLease: true` in the builder output. Spawn Gate refuses an
+opted-in start when Slots cannot provide heavy leases on that machine.
+The child acquires its own lease.
+
+The builder still runs on the bb server, which must be able to read its input
+files. The selected execution host is available to the builder as
+`BB_SPAWN_HOST_ID`.
 
 ## Weekly provider pace
 

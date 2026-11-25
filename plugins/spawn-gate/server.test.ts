@@ -194,6 +194,18 @@ it("validates and saves the builder branch per project", async () => {
   expect(await rpc("config.set", { projectId: PROJECT, key, value: "" })).toEqual({ branch: "" });
 });
 
+it("stores and clears the default execution machine for one project", async () => {
+  const h = await setup();
+  const rpc = (method: string, input: unknown) => h.harness.behavior.callRpc(method, input);
+  const key = "machine";
+  expect(await rpc("config.get", { projectId: PROJECT, key })).toEqual({ machine: "" });
+  expect(await rpc("config.set", { projectId: PROJECT, key, value: " Build Mac " })).toEqual({ machine: "Build Mac" });
+  await h.reload();
+  expect(await rpc("config.get", { projectId: PROJECT, key })).toEqual({ machine: "Build Mac" });
+  expect(await rpc("config.get", { projectId: "proj_other", key })).toEqual({ machine: "" });
+  expect(await rpc("config.set", { projectId: PROJECT, key, value: "" })).toEqual({ machine: "" });
+});
+
 it("retains aggregated admission refusals across reloads and filters by UTC date and project", async () => {
   vi.useFakeTimers();
   vi.setSystemTime(new Date("2025-01-01T23:59:00Z"));

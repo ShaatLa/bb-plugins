@@ -88,6 +88,21 @@ Environment is the bb SDK environment object, not a list of CLI flags:
 - Personal: {type:"host",hostId?:"host_...",workspace:{type:"personal"}}.
 - Existing path: {type:"host",hostId?:"host_...",workspace:{type:"unmanaged",path:"/absolute/path"}}.
 For non-personal host workspaces, an omitted hostId is resolved from the parent session’s environment, then the project’s default source host. If neither exists, start fails before minting. Explicit hostId is preserved. Dry-run returns the resolved hostId. Personal workspaces keep core’s existing default behavior.
+
+An explicit `--machine <id-or-name>` or RPC `machine` overrides the project's
+`machine` setting. With a selected machine, project-default uses its project
+checkout (or a personal workspace for the personal project). A requested
+worktree retains its base branch and needs a Git source on that machine.
+Reuse must refer to a ready environment in the same project on that machine.
+An explicit `hostId` must agree with the selected machine. The builder must
+set `spawn.providerId` so Spawn Gate can check provider readiness there.
+
+The builder still runs on the bb server with the existing JSON v1 input and
+environment, plus `BB_SPAWN_HOST_ID` when a machine was selected. Declare a
+heavy Slots requirement by passing `--requires-heavy-lease`, setting RPC
+`requiresHeavyLease: true`, or emitting optional top-level
+`requiresHeavyLease: true` in builder output. Spawn Gate checks host support
+before minting. The child requests its own lease.
 Paths describe the selected execution host, not the builder checkout. The builder checkout is never used as the child workspace implicitly.
 
 Plugin sequence: validate builder JSON -> mint exact brief for resolved project/parent -> spawn via bb SDK with returned prompt and whitelisted spawn fields. The plugin owns tokens, attribution, project binding and spawn invocation. It does not retry spawn automatically, to avoid duplicate children.
@@ -95,5 +110,6 @@ Plugin sequence: validate builder JSON -> mint exact brief for resolved project/
 start result (CLI always prints this same JSON):
 - Normal: {dryRun:false,threadId:string,projectId:string,parentThreadId:string,sourceBranch:string,sourceCommit:string}.
 - --dry-run: {dryRun:true,projectId:string,parentThreadId:string,sourceBranch:string,sourceCommit:string,build:<validated builder stdout>}. Refreshes checkout and runs the builder without minting or creating a thread. A later launch fetches and runs the builder again.
+- Both results include `hostId` when the request or project setting selected an execution machine.
 Existing mint input/output remains unchanged: {projectId,parentThreadId,brief} -> {token,expiresAt,prompt}.
 Enforcement is not changed by installation or start. Enable each project explicitly after its builder integration is ready.

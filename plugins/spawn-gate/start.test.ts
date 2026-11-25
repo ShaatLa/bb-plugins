@@ -21,10 +21,11 @@ async function fixture() {
   await mkdir(repo);
   const git = (...args: string[]) => execFileSync("git", args, { cwd: repo, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
   git("init", "-b", "main"); git("config", "user.name", "Test"); git("config", "user.email", "test@example.test");
-  const write = async (brief = "first", environment?: Record<string, unknown>, providerPolicy?: Record<string, unknown>) => {
+  const write = async (brief = "first", environment?: Record<string, unknown>, providerPolicy?: Record<string, unknown>, requiresHeavyLease?: boolean) => {
     const extra = environment ? `,"environment":json.loads(${JSON.stringify(JSON.stringify(environment))})` : "";
     const eligibility = providerPolicy ? `,"providerPolicy":json.loads(${JSON.stringify(JSON.stringify(providerPolicy))})` : "";
-    await writeFile(join(repo, "builder.py"), `import json, sys\nc = json.load(sys.stdin)\nprint(json.dumps({"version":1,"brief":${JSON.stringify(brief)},"spawn":{"parentThreadId":c["parentThreadId"],"providerId":"codex","parentNotifications":"stuck"${extra}}${eligibility}}))\n`);
+    const heavy = requiresHeavyLease ? ',"requiresHeavyLease":True' : "";
+    await writeFile(join(repo, "builder.py"), `import json, sys\nc = json.load(sys.stdin)\nprint(json.dumps({"version":1,"brief":${JSON.stringify(brief)},"spawn":{"parentThreadId":c["parentThreadId"],"providerId":"codex","parentNotifications":"stuck"${extra}}${eligibility}${heavy}}))\n`);
     git("add", "."); git("commit", "-m", brief);
     return git("rev-parse", "HEAD");
   };
@@ -37,7 +38,7 @@ async function fixture() {
   // This fixture uses the real process/git runner with a plugin-owned temporary database location.
   const scoped = Object.create(bb);
   Object.defineProperty(scoped, "storage", { value: { database: () => ({ name: join(root, "data.db") }) } });
-  const policy = { method: "script", script: "builder.py", remote: "", branch: "" };
+  const policy = { method: "script", script: "builder.py", remote: "", branch: "", machine: "" };
   const revoke = vi.fn();
   const metrics = await createMetrics(bb, bb.storage.database());
   const start = createStart(scoped, mint, () => policy, revoke, metrics.record);
@@ -79,6 +80,97 @@ it("refuses a misplaced dry-run flag or repeated target selectors before launch"
   }
   expect(f.mint).not.toHaveBeenCalled();
   expect(f.spawn).not.toHaveBeenCalled();
+});
+
+async function machineFixture() {
+  const f = await fixture();
+  const host = { id: "host_example", name: "Build Mac", status: "connected", lifecycle: { phase: "active" } };
+  const path = "/workspace/example";
+  const project = {
+    id: "proj_example", kind: "standard", gitRemoteUrl: f.repo, sources: [{ hostId: host.id, path, isDefault: false }],
+  };
+  const provider = { providerId: "codex", status: "ready" };
+  f.harness.sdk.stub("hosts.list", async () => [host]);
+  f.harness.sdk.stub("projects.get", async () => project);
+  f.harness.sdk.stub("system.providerStates", async ({ hostId }) => {
+    expect(hostId).toBe(host.id);
+    return { providers: [provider] };
+  });
+  const files = vi.fn(async () => ({ entries: [] }));
+  f.harness.sdk.stub("files.list", files);
+  return { ...f, host, project, provider, path, files };
+}
+
+it("opts into an execution machine and overrides a project default for one launch", async () => {
+  const f = await machineFixture();
+  f.policy.machine = "Unknown project default";
+  const selector = ["--project", f.request.projectId, "--parent-thread", f.request.parentThreadId];
+  const repeated = await f.harness.behavior.runCli(["start", ...selector, "--machine", f.host.name, "--machine", f.host.id]);
+  expect(repeated).toMatchObject({ exitCode: 1, stderr: "Pass --machine only once" });
+  // The builder runs in the server checkout with the chosen host as a hint.
+  await writeFile(join(f.repo, "builder.py"), `import json, os, sys
+c = json.load(sys.stdin)
+print(json.dumps({"version":1,"brief":os.environ["BB_SPAWN_HOST_ID"],"spawn":{"parentThreadId":c["parentThreadId"],"providerId":"codex"}}))
+`);
+  f.git("add", "builder.py"); f.git("commit", "-m", "Read builder host hint");
+  const dry = await f.harness.behavior.runCli(["start", ...selector, "--machine", f.host.name, "--dry-run"]);
+  expect(dry.exitCode).toBe(0);
+  const environment = { type: "host", hostId: f.host.id, workspace: { type: "unmanaged", path: f.path } };
+  expect(JSON.parse(dry.stdout!)).toMatchObject({
+    hostId: f.host.id, dryRun: true, build: { brief: f.host.id, spawn: { environment } },
+  });
+  expect(f.mint).not.toHaveBeenCalled();
+  f.policy.machine = f.host.id;
+  expect(await f.start(f.request)).toMatchObject({ hostId: f.host.id, dryRun: false, threadId: "thr_child" });
+  expect(f.files).toHaveBeenCalledWith(expect.objectContaining({ hostId: f.host.id, path: f.path }));
+  expect(f.spawn).toHaveBeenCalledWith(expect.objectContaining({ environment }));
+});
+
+it("refuses unavailable remote launch prerequisites before mint", async () => {
+  const f = await machineFixture();
+  const request = { ...f.request, machine: f.host.id };
+  f.host.status = "disconnected";
+  await expect(f.start(request)).rejects.toThrow("Reconnect it");
+  f.host.status = "connected";
+  const sources = f.project.sources.splice(0);
+  await expect(f.start(request)).rejects.toThrow("Add a project source");
+  f.project.sources.push(...sources);
+  f.files.mockRejectedValueOnce(new Error("Missing directory"));
+  await expect(f.start(request)).rejects.toThrow("Workspace directory is unavailable");
+  f.provider.status = "unauthenticated";
+  await expect(f.start(request)).rejects.toThrow("Install or sign in to the provider");
+  f.provider.status = "ready";
+
+  const baseBranch = { kind: "named", name: "main" };
+  await f.write("Worktree", { type: "host", workspace: { type: "managed-worktree", baseBranch } });
+  f.harness.sdk.stub("projects.branches", async () => ({ checkout: { kind: "unknown" } }));
+  await expect(f.start(request)).rejects.toThrow("needs a Git checkout");
+  f.harness.sdk.stub("projects.branches", async () => ({ checkout: { kind: "branch", headSha: f.first } }));
+  expect(await f.start({ ...request, dryRun: true })).toMatchObject({
+    build: { spawn: { environment: { type: "host", hostId: f.host.id, workspace: { type: "managed-worktree", baseBranch } } } },
+  });
+  await f.write("Reuse", { type: "reuse", environmentId: "env_example" });
+  f.harness.sdk.stub("environments.get", async () => ({
+    hostId: "host_other", projectId: "proj_example", status: "ready", path: f.path,
+  }));
+  await expect(f.start(request)).rejects.toThrow("Use a ready environment in this project");
+  expect(f.mint).not.toHaveBeenCalled();
+  expect(f.spawn).not.toHaveBeenCalled();
+});
+
+it("refuses declared heavy work on a host without Slots support and reads new host support", async () => {
+  const f = await machineFixture();
+  const request = { ...f.request, machine: f.host.id };
+  f.harness.sdk.stub("plugins.callRpc", async () => ({ ok: true, data: { localHostId: "host_server" } }));
+  await expect(f.start({ ...request, requiresHeavyLease: true })).rejects.toThrow("Heavy Slots leases are unavailable");
+  await f.write("Heavy", undefined, undefined, true);
+  await expect(f.start(request)).rejects.toThrow("Heavy Slots leases are unavailable");
+  expect(f.mint).not.toHaveBeenCalled();
+  expect(f.spawn).not.toHaveBeenCalled();
+  f.harness.sdk.stub("plugins.callRpc", async () => ({
+    ok: true, data: { localHostId: "host_server", leaseHosts: { [f.host.id]: { pools: ["heavy"] } } },
+  }));
+  expect(await f.start({ ...request, dryRun: true })).toMatchObject({ hostId: f.host.id, build: { requiresHeavyLease: true } });
 });
 
 it("fetches an orphan builder branch and refuses a tag with the same name as a missing branch", async () => {

@@ -14,7 +14,7 @@ export function registerGateCli(bb: BbPluginApi, { start, report, configGet, con
   configGet: (input: unknown) => Promise<unknown>;
   configSet: (input: unknown) => Promise<unknown>;
 }) {
-  const usage = "bb agent-spawn-gate start [--project <id>] [--parent-thread <id>] [--dry-run] -- <builder args...>";
+  const usage = "bb agent-spawn-gate start [--project <id>] [--parent-thread <id>] [--machine <id-or-name>] [--requires-heavy-lease] [--dry-run] -- <builder args...>";
   const reportUsage = "bb agent-spawn-gate report [--project <id>] [--from YYYY-MM-DD] [--to YYYY-MM-DD] [--events] [--json]";
   const configUsage = [
     "bb agent-spawn-gate config get [<key>] [--project <id>]",
@@ -25,6 +25,7 @@ export function registerGateCli(bb: BbPluginApi, { start, report, configGet, con
       usage,
       "Script mode only. Omitted project and parent use the current thread context. Pass each selector once.",
       "Use --dry-run before -- to run the builder without minting or spawning. Builder args follow --.",
+      "Use --machine to override the project's execution machine. Use --requires-heavy-lease if the child will need a heavy Slots lease.",
       "Example: bb agent-spawn-gate start --project proj_example --parent-thread thr_example --dry-run -- --card EXA-1",
     ].join("\n"),
     report: [
@@ -36,6 +37,7 @@ export function registerGateCli(bb: BbPluginApi, { start, report, configGet, con
       configUsage,
       "Omitting --project uses the current project. Pass it once. Read or change one field at a time.",
       "Fields: enabled (true|false), method (script|instruction), script (repository-relative path), remote (HTTPS or SSH Git remote, empty to use the project remote), branch (Git branch name, empty to use the remote default), instruction (text), ttlMinutes (integer 1–60).",
+      "Field machine accepts an enrolled machine ID or an unambiguous name. Set it to an empty string to restore normal placement.",
       "Example: bb agent-spawn-gate config set ttlMinutes 15 --project proj_example",
     ].join("\n"),
   };
@@ -84,6 +86,8 @@ export function registerGateCli(bb: BbPluginApi, { start, report, configGet, con
         const { values } = parseArgs({ args: options, options: {
           project: { type: "string", multiple: true },
           "parent-thread": { type: "string", multiple: true },
+          machine: { type: "string", multiple: true },
+          "requires-heavy-lease": { type: "boolean" },
           "dry-run": { type: "boolean" },
           json: { type: "boolean" },
         } });
@@ -95,7 +99,10 @@ export function registerGateCli(bb: BbPluginApi, { start, report, configGet, con
         if (args.slice(0, builderSeparator < 0 ? undefined : builderSeparator).includes("--dry-run")) {
           throw new Error("Put --dry-run before the first -- to validate without launching");
         }
-        const result = await start({ projectId, parentThreadId, args, dryRun: values["dry-run"] }, ctx.signal);
+        const result = await start({
+          projectId, parentThreadId, args, dryRun: values["dry-run"],
+          machine: oneSelection("--machine", values.machine), requiresHeavyLease: values["requires-heavy-lease"],
+        }, ctx.signal);
         return { exitCode: 0, stdout: JSON.stringify(result) };
       } catch (error) { return { exitCode: 1, stderr: error instanceof Error ? error.message : String(error) }; }
     },

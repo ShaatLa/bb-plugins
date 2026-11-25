@@ -6,6 +6,7 @@ import { z } from "zod";
 import { invalidBranch, isBuilderBranch } from "./branch";
 import type { RecordMetric } from "./metrics";
 import { assessPace, defaultPaceThreshold, paceReport, providerPolicy } from "./pace";
+import { placeOnMachine, requireHeavySlots, resolveMachine } from "./placement";
 import { invalidRemote, isBuilderRemote } from "./remote";
 
 const text = z.string().min(1).max(1000);
@@ -26,14 +27,20 @@ export const briefInput = z.string().max(1_000_000)
   .refine(brief => !brief.split("\n").some(line => line.startsWith("agent-admission ")),
     "Remove the agent-admission line and supply the plain task brief.");
 export const buildSchema = z.object({
-  version: z.literal(1), brief: briefInput, providerPolicy: providerPolicy.optional(),
+  version: z.literal(1), brief: briefInput, providerPolicy: providerPolicy.optional(), requiresHeavyLease: z.boolean().optional(),
   spawn: z.object({
     parentThreadId, title: text.optional(), providerId: text.optional(), model: text.optional(), reasoningLevel: text.optional(), serviceTier: text.optional(),
     permissionMode: z.enum(["accept-edits", "auto", "full"]).optional(), parentNotifications: z.enum(["auto", "stuck", "off"]).optional(), environment: environment.optional(),
   }).strict(),
 }).strict();
-export const startInput = z.object({ projectId, parentThreadId, args: z.array(z.string().max(100_000)).max(256), dryRun: z.boolean().optional() }).strict();
-const resultFields = { projectId, parentThreadId, sourceBranch: z.string().min(1), sourceCommit: z.string().regex(/^[a-f0-9]{40,64}$/), providerPace: paceReport.optional() };
+export type Build = z.infer<typeof buildSchema>;
+export const machineSetting = z.string().trim().max(200);
+export const startInput = z.object({
+  projectId, parentThreadId, args: z.array(z.string().max(100_000)).max(256), dryRun: z.boolean().optional(),
+  machine: machineSetting.min(1).optional(), requiresHeavyLease: z.boolean().optional(),
+}).strict();
+const resultFields = { projectId, parentThreadId, sourceBranch: z.string().min(1), sourceCommit: z.string().regex(/^[a-f0-9]{40,64}$/),
+  hostId: text.optional(), providerPace: paceReport.optional() };
 export const startOutput = z.discriminatedUnion("dryRun", [
   z.object({ dryRun: z.literal(true), ...resultFields, build: buildSchema }).strict(),
   z.object({ dryRun: z.literal(false), ...resultFields, threadId: text }).strict(),
@@ -108,7 +115,7 @@ function builderCard(args: string[]) {
   return null;
 }
 
-export function createStart(bb: BbPluginApi, mint: (request: { projectId: string; parentThreadId: string; brief: string }) => Promise<{ prompt: string; token: string }>, policy: (id: string) => { method: string; script: string; remote: string; branch: string }, revoke: (token: string) => void, record: RecordMetric, paceThreshold = async () => defaultPaceThreshold) {
+export function createStart(bb: BbPluginApi, mint: (request: { projectId: string; parentThreadId: string; brief: string }) => Promise<{ prompt: string; token: string }>, policy: (id: string) => { method: string; script: string; remote: string; branch: string; machine: string }, revoke: (token: string) => void, record: RecordMetric, paceThreshold = async () => defaultPaceThreshold) {
   const controller = new AbortController();
   bb.onDispose(() => controller.abort());
   const queues = new Map<string, Promise<unknown>>();
@@ -126,6 +133,10 @@ export function createStart(bb: BbPluginApi, mint: (request: { projectId: string
       tracked = true;
       const rules = policy(request.projectId);
       if (rules.method !== "script") throw new Error("start requires Script mode. In Instruction mode, follow the configured instructions and call the spawn-gate mint RPC");
+      const machineTarget = request.machine ?? rules.machine;
+      reason = "host_error";
+      const host = machineTarget ? await resolveMachine(bb.sdk, machineTarget, signal) : undefined;
+      if (host && request.requiresHeavyLease) await requireHeavySlots(bb.sdk, host, signal);
       reason = "checkout_error";
       const project = await bb.sdk.projects.get({ projectId: request.projectId });
       if (!isBuilderRemote(rules.remote)) throw new Error(invalidRemote);
@@ -162,7 +173,10 @@ export function createStart(bb: BbPluginApi, mint: (request: { projectId: string
       const inside = relative(await realpath(root), script);
       if (isAbsolute(rules.script) || inside === ".." || inside.startsWith("../") || isAbsolute(inside)) throw new Error("Set a repository-relative launch script inside the checkout");
       reason = "builder_error";
-      const env = { ...await builderEnvironment(), BB_PROJECT_ID: request.projectId, BB_THREAD_ID: request.parentThreadId };
+      const env = {
+        ...await builderEnvironment(), BB_PROJECT_ID: request.projectId, BB_THREAD_ID: request.parentThreadId,
+        ...(host ? { BB_SPAWN_HOST_ID: host.id } : {}),
+      };
       const python = script.endsWith(".py") ? await executable("python3", env) : undefined;
       bb.log.info(`Builder runtime: BB_CLI=${env.BB_CLI}; python3=${python ?? "not used"}`);
       const stdout = await run(python ?? script, [...(python ? [script] : []), ...request.args], root, signal,
@@ -177,6 +191,11 @@ export function createStart(bb: BbPluginApi, mint: (request: { projectId: string
         reason = "provider_not_allowed";
         throw new Error("Set spawn.providerId to one of the providers eligible for the requested role. A pace reason cannot override role restrictions.");
       }
+      if (host) {
+        reason = "host_error";
+        if (build.requiresHeavyLease && !request.requiresHeavyLease) await requireHeavySlots(bb.sdk, host, signal);
+        await placeOnMachine(bb.sdk, host, project, build.spawn, signal);
+      }
       const target = build.spawn.environment;
       const defaultHost = project.sources?.find(source => source.isDefault)?.hostId;
       if (target?.type === "host" && !target.hostId && target.workspace.type !== "personal") {
@@ -189,12 +208,12 @@ export function createStart(bb: BbPluginApi, mint: (request: { projectId: string
       let providerPace: z.infer<typeof paceReport> | undefined;
       if (build.providerPolicy && selected) {
         reason = "host_error";
-        let hostId: string | null | undefined = defaultHost;
-        if (target?.type === "reuse") {
+        let hostId: string | null | undefined = host?.id ?? defaultHost;
+        if (!host && target?.type === "reuse") {
           hostId = (await bb.sdk.environments.get({ environmentId: target.environmentId })).hostId;
-        } else if (target?.type === "host") {
+        } else if (!host && target?.type === "host") {
           hostId = target.hostId ?? (await bb.sdk.system.config()).primaryHostId;
-        } else if (parent.archivedAt == null) {
+        } else if (!host && parent.archivedAt == null) {
           // BB places project-default children on the active parent's host.
           if (!parent.environmentId) throw new Error("Wait for the parent environment to be ready, or specify an explicit child environment.");
           hostId = (await bb.sdk.environments.get({ environmentId: parent.environmentId })).hostId;
@@ -208,7 +227,7 @@ export function createStart(bb: BbPluginApi, mint: (request: { projectId: string
       }
       signal.throwIfAborted();
       const common = { projectId: request.projectId, parentThreadId: request.parentThreadId, sourceBranch, sourceCommit,
-        ...(providerPace ? { providerPace } : {}) };
+        ...(host ? { hostId: host.id } : {}), ...(providerPace ? { providerPace } : {}) };
       if (request.dryRun) return { dryRun: true as const, ...common, build };
       signal.throwIfAborted();
       reason = "admission_error";

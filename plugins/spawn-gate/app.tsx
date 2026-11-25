@@ -12,7 +12,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from ".
 import { SettingsSection, SettingsWithControl } from "./components/ui/settings-section";
 import { invalidRemote, isBuilderRemote } from "./remote";
 
-type Values = { enabled: boolean; method: "script" | "instruction"; instruction: string; script: string; remote: string; branch: string; ttlMinutes: number };
+type Values = { enabled: boolean; method: "script" | "instruction"; instruction: string; script: string; remote: string; branch: string; machine: string; ttlMinutes: number };
 type Project = { id: string; name: string; values: Values };
 
 type LaunchValues = Omit<Values, "enabled">;
@@ -44,6 +44,9 @@ function ProjectForm({ project, onSave }: { project: Project; onSave: (projectId
         </SettingsWithControl>
         <SettingsWithControl label="Builder branch" description="Git branch name. Leave blank to use the remote default branch." controlPlacement="below">
           <Input aria-label="Builder branch" value={value.branch} maxLength={1024} onChange={e => update({ branch: e.target.value })} />
+        </SettingsWithControl>
+        <SettingsWithControl label="Execution machine" description="Machine ID or name for child sessions. Leave blank to use normal placement." controlPlacement="below">
+          <Input aria-label="Execution machine" value={value.machine} maxLength={200} onChange={e => update({ machine: e.target.value })} />
         </SettingsWithControl>
         <SettingsWithControl label="Launch script" description="Repository-relative JSON builder. The plugin fetches the selected branch before running the script." controlPlacement="below">
           <Input aria-label="Launch script" value={value.script} required maxLength={500} onChange={e => update({ script: e.target.value })} />

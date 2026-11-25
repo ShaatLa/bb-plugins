@@ -7,7 +7,7 @@ import { createMetrics, reportContract } from "./metrics";
 import { migrateLegacyGate } from "./migration";
 import { defaultPaceThreshold } from "./pace";
 import { invalidRemote, isBuilderRemote } from "./remote";
-import { briefInput, createStart, startInput, startOutput } from "./start";
+import { briefInput, createStart, machineSetting, startInput, startOutput } from "./start";
 
 const hash = (text: string) => createHash("sha256").update(text).digest("hex");
 const admission = /^agent-admission v1 token=([a-f0-9]{64})$/;
@@ -15,6 +15,7 @@ const projectValues = z.object({
   enabled: z.boolean(), method: z.enum(["script", "instruction"]), instruction: z.string().max(20_000),
   script: z.string().min(1).max(500), remote: z.string().max(2000).refine(isBuilderRemote, invalidRemote),
   branch: z.string().max(1024).refine(isBuilderBranch, invalidBranch),
+  machine: machineSetting,
   ttlMinutes: z.number().int().min(1).max(60),
 }).strict();
 type ProjectValues = z.infer<typeof projectValues>;
@@ -23,7 +24,7 @@ const fieldInput = <K extends keyof ProjectValues>(key: K) =>
   z.object({ projectId: z.string(), key: z.literal(key), value: projectValues.shape[key] }).strict();
 const configSetInput = z.discriminatedUnion("key", [
   fieldInput("enabled"), fieldInput("method"), fieldInput("instruction"), fieldInput("script"),
-  fieldInput("remote"), fieldInput("branch"), fieldInput("ttlMinutes"),
+  fieldInput("remote"), fieldInput("branch"), fieldInput("machine"), fieldInput("ttlMinutes"),
 ]);
 export const rpcContract = defineRpcContract({
   "settings.read": { experimental_description: "Legacy settings read for all projects. To read one field, call config.get with projectId and key.", input: z.null(), output: z.object({ projects: z.array(z.object({ id: z.string(), name: z.string(), values: projectValues })) }) },
@@ -56,6 +57,7 @@ export default async function plugin(bb: BbPluginApi) {
     script: String(config[`script_${projectId}`] ?? "spawn.py"),
     remote: String(config[`remote_${projectId}`] ?? ""),
     branch: String(config[`branch_${projectId}`] ?? ""),
+    machine: String(config[`machine_${projectId}`] ?? ""),
     ttl: Number(config[`ttl_${projectId}`] ?? 10) * 60_000,
   });
   const view = (projectId: string) => { const { ttl, ...values } = policy(projectId); return { ...values, ttlMinutes: ttl / 60_000 }; };

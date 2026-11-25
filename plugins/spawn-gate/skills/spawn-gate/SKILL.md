@@ -25,6 +25,13 @@ spawn parameters. It must never mint or spawn. Absolute builder input paths
 must be readable on the bb server. See START-CONTRACT.md for builder arguments
 and output, and RPC `start` with `{projectId,parentThreadId,args,dryRun?}`.
 
+For a one-off machine choice, pass `--machine host_example` before `--`.
+This overrides the optional per-project `machine` setting. Check `hostId`
+in the dry-run or start result. The project source or reused workspace and
+the provider must be ready on that machine. The builder and its inputs stay
+on the bb server. Pass `--requires-heavy-lease` for a child that will need a
+heavy Slots lease.
+
 When the builder supplies its role's eligible providers, the admission and
 dry-run show their weekly pace and usage sources. If start refuses an ahead-of-
 pace provider, choose the suggested eligible alternative or give an explicit
@@ -63,7 +70,7 @@ bb agent-spawn-gate config set ttlMinutes 15 --project proj_example
 bb agent-spawn-gate report --project proj_example --from 2025-01-01 --to 2025-01-07 --events
 ```
 
-Settings keys are `enabled`, `method`, `script`, `remote`, `branch`, `instruction` and `ttlMinutes`
+Settings keys are `enabled`, `method`, `script`, `remote`, `branch`, `machine`, `instruction` and `ttlMinutes`
 (1–60, default 10). A new project defaults to disabled. Config defaults to the
 current project if the flag is omitted. Report defaults to all projects and
 seven inclusive UTC days ending at `--to` (today if omitted).
