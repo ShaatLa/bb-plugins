@@ -274,7 +274,7 @@ One question asks one decision or one check: the prompt and all `--step` lines t
 
 When the state of an existing check changes, never add a parallel check (0.76.0). An open check is edited with `question update`; an answered check whose prompt and steps are unchanged is reopened with `--reopen`; any changed prompt link or step replaces it: `bb work-board question add KEY --kind check --supersedes ID --supersedes-revision N --prompt ...`, where `N` is the revision you read. The new check is open; the old one is closed with its answer, remark and history kept, and gets `supersededBy` and `supersededAt` (the new one gets `supersedes`). A superseded check no longer counts as open anywhere (Waiting on me, badges, plan-review pause, auto-archive), refuses answer, clear, update and `--reopen` with a pointer to its successor, and shows dimmed and collapsed under its successor in the card. The add is refused when the target is on another card, is a decision, is already superseded, or has a newer revision or answer than `N`; `--supersedes` with a decision is refused, and so is a check while the card has plan debt. Questions in a supersede chain cannot be deleted. `question add --kind check` without `--supersedes` warns (stderr; `warnings` in JSON) when an open or answered check on the card has the same prompt (trimmed, case-folded, whitespace collapsed), naming its id, revision and state; it still saves the check, since two checks may differ only in their steps. `question list` marks superseded checks on stderr, and imports refuse links that are not reciprocal, cross cards or form a cycle.
 
-Export format **v22** (0.76.0) carries `supersedes`, `supersededBy` and `supersededAt` on questions. Imports of v1–v21 still work, and a v21 or older archive that carries these fields is refused. A Work Board that reads only up to v21 refuses a v22 archive by its version, so export for an older install from an older install.
+Export format **v23** preserves the withdrawal time, author and reason. These fields require v23. Export format **v22** (0.76.0) carries `supersedes`, `supersededBy` and `supersededAt` on questions. Imports of v1–v21 still work, and a v21 or older archive that carries these fields is refused. A Work Board that reads only up to v21 refuses a v22 archive by its version, so export for an older install from an older install.
 
 A plan is not approved through a question: `question add` and `question update` refuse a question that links a task plan, and, on a task that has a plan, one that asks to accept or approve a plan. The agent runs `plan submit KEY --reviewer …` and the reviewer approves or sends notes (0.58.3; reviewer threads 0.59.0). With planning off for the project this guard does not apply.
 
@@ -284,6 +284,7 @@ Each `--step` is one action or one observation in one sentence, shown as its own
 bb work-board question list EXA-8 --json
 bb work-board question answer EXA-8 --question <question-id> --answer <option-id> --revision 1
 bb work-board question answer EXA-8 --question <question-id> --clear --revision 2
+bb work-board question withdraw EXA-1 --question <question-id> --revision 3 --reason "The review was canceled"
 bb work-board question delete EXA-8 --question <question-id> --revision 3
 ```
 

@@ -50,6 +50,7 @@ export const archiveProjectSchema = z
       z.literal(20),
       z.literal(21),
       z.literal(22),
+      z.literal(23),
     ]),
     project: projectSchema,
     gitSync: gitSyncConfigSchema.optional(),
@@ -221,6 +222,8 @@ export function validateArchive(archive: ProjectArchive): void {
     if (manifest.version < 19 && record.planNotes?.length) throw new Error("Plan notes require archive v19");
     if (manifest.version >= 20 && record.planReviews === undefined) throw new Error("Archive v20 requires planReviews");
     if (manifest.version < 20 && record.planReviews?.length) throw new Error("Plan reviews require archive v20");
+    if (manifest.version < 23 && record.questions.some((question) => question.withdrawnAt !== undefined))
+      throw new Error("Withdrawn questions require archive v23");
     if (manifest.version < 22 && record.questions.some((question) => question.supersedes !== undefined || question.supersededBy !== undefined || question.supersededAt !== undefined))
       throw new Error("Question supersede links require archive v22");
     if (record.planReviews?.length) {

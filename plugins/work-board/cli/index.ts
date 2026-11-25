@@ -654,6 +654,10 @@ function projectTable(
   );
 }
 
+function withdrawalLine(q: { id: string; withdrawnBy?: string; withdrawReason?: string }): string {
+  return `Question ${q.id} withdrawn by ${q.withdrawnBy}: ${q.withdrawReason}`;
+}
+
 function taskAuthor(ctx: PluginCliContext): string {
   return ctx.threadId ? `agent (${ctx.threadId})` : "cli";
 }
@@ -1398,7 +1402,8 @@ export function registerTasksCli(
               const result = await domain.listQuestions({ taskId: task.id });
               if (input.options.json) return JSON.stringify(result);
               const superseded = result.questions.filter((question) => question.supersededBy).map((question) => `Question ${question.id} is superseded by ${question.supersededBy}; act on that question.`);
-              return { exitCode: 0, stdout: JSON.stringify(result, null, 2), stderr: superseded.join("\n") };
+              const withdrawn = result.questions.filter(q => q.withdrawnAt).map(withdrawalLine);
+              return { exitCode: 0, stdout: JSON.stringify(result, null, 2), stderr: [...superseded, ...withdrawn].join("\n") };
             });
           },
         }),
@@ -1629,6 +1634,26 @@ export function registerTasksCli(
               return input.options.json
                 ? JSON.stringify({ ...result, warnings })
                 : { exitCode: 0, stdout: `Saved question ${result.question.id} (revision ${result.question.revision})`, stderr: warnings.join("\n") };
+            });
+          },
+        }),
+        "question withdraw": cliCommand({
+          summary: "Close an open question and record why",
+          positionals: [KEY_POSITIONAL],
+          options: {
+            question: { type: "string", required: true, description: "Question ID" },
+            revision: { type: "integer", min: 1, max: Number.MAX_SAFE_INTEGER, required: true, description: "Current question revision" },
+            reason: { type: "string", required: true, description: "Why the question is no longer needed" },
+            json: JSON_OPTION,
+          },
+          run(input, ctx) {
+            return guard(async () => {
+              const task = await resolveTask(domain, input.positionals["key-or-id"]);
+              const result = await domain.withdrawQuestion({
+                taskId: task.id, questionId: input.options.question, revision: input.options.revision,
+                reason: input.options.reason, authorName: taskAuthor(ctx),
+              });
+              return input.options.json ? JSON.stringify(result) : ["Withdrew question", ...planWakeLine(result.planWake)].join("\n");
             });
           },
         }),
@@ -2872,8 +2897,13 @@ export function registerTasksCli(
               const omittedComments = comments.length - shownComments.length;
               const shownQuestions = brief ? questions.map(({ history: _history, ...question }) => !isQuestionOpen(question) ? {
                 id: question.id, prompt: question.prompt, kind: question.kind, askedByThread: question.askedByThread,
-                answer: [...question.options.filter(option => question.selectedOptionIds.includes(option.id)).map(option => option.label), ...(question.answerText ? [question.answerText] : [])].join("; "),
-                answeredBy: question.answeredBy, updatedAt: question.updatedAt,
+                ...(question.withdrawnAt ? {
+                  withdrawnAt: question.withdrawnAt, withdrawnBy: question.withdrawnBy, withdrawReason: question.withdrawReason,
+                } : {
+                  answer: [...question.options.filter(option => question.selectedOptionIds.includes(option.id)).map(option => option.label), ...(question.answerText ? [question.answerText] : [])].join("; "),
+                  answeredBy: question.answeredBy,
+                }),
+                updatedAt: question.updatedAt,
                 ...(question.supersedes ? { supersedes: question.supersedes } : {}),
                 ...(question.supersededBy ? { supersededBy: question.supersededBy, supersededAt: question.supersededAt } : {}),
               } : question) : questions;
@@ -2946,6 +2976,12 @@ export function registerTasksCli(
                   evidenceFlags: evidenceFlags(evidence.records, pullRequests, prLinks),
                 });
               }
+              const questionText = brief ? shownQuestions.map(q => {
+                if ("withdrawnAt" in q && q.withdrawnAt) return `${oneLine(q.prompt)} — ${withdrawalLine(q)}`;
+                if (q.supersededBy) return `superseded by ${q.supersededBy}: ${oneLine(q.prompt).slice(0, 160)}${"answer" in q && q.answer ? ` → ${oneLine(q.answer).slice(0, 160)}` : ""} (${q.id})`;
+                if ("answer" in q) return `✓ ${oneLine(q.prompt).slice(0, 160)} → ${oneLine(q.answer).slice(0, 160)} (${q.id})`;
+                return JSON.stringify(q);
+              }).join("\n") : [JSON.stringify(shownQuestions, null, 2), ...questions.filter(q => q.withdrawnAt).map(withdrawalLine)].join("\n");
               return [
                 ...(prLinks.length ? [`Git/PR links\n${prLinks.map(({link,snapshot,stale}) => `${link.repository}#${link.number} · ${link.role} · ${link.excluded ? "excluded" : snapshot?.state ?? "unchecked"} · CI ${snapshot?.ci ?? "unknown"}${stale ? " · stale" : ""}`).join("\n")}`] : []),
                 detail([
@@ -3030,7 +3066,7 @@ ${activity.diagnostics?.inactiveSessions.map((session) => `@thread:${session.thr
                     ? `\nPR lookup unavailable for: ${unavailableThreadIds.join(", ")}`
                     : ""
                 }`,
-                `Questions\n${brief ? shownQuestions.map(q => q.supersededBy ? `superseded by ${q.supersededBy}: ${oneLine(q.prompt).slice(0, 160)}${"answer" in q && q.answer ? ` → ${oneLine(q.answer).slice(0, 160)}` : ""} (${q.id})` : "answer" in q ? `✓ ${oneLine(q.prompt).slice(0, 160)} → ${oneLine(q.answer).slice(0, 160)} (${q.id})` : JSON.stringify(q)).join("\n") : JSON.stringify(shownQuestions, null, 2)}`,
+                `Questions\n${questionText}`,
                 brief ? `Evidence: ${evidence.records.length} record(s); \`bb work-board evidence ${task.key}\` lists them` : `Evidence\n${evidenceText(evidence)}`,
                 `Comments\nLatest comment: ${latestCommentId ?? "(none)"}\n${commentsTable(shownComments)}${omittedComments ? `\n${omittedComments} of ${comments.length} comment(s) not shown; read them with \`bb work-board comment list ${task.key} --kind user --kind agent --kind system\`` : ""}`,
                 ...Object.entries(more).filter(([part]) => part !== "comments").map(([part, command]) => `${part} omitted; read with \`${command}\``),

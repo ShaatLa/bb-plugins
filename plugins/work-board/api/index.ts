@@ -379,16 +379,13 @@ function assertNoOpenOwnerQuestions(
   if (!agentThreadId || !targetStatus || !project || !isClosedStatus(project, targetStatus) || isClosedStatus(project, task.status)) return;
   const open = bb.storage.database().prepare<[string], { payload: string }>(
     `SELECT q.payload FROM task_questions q WHERE q.task_id = ? AND ${UNANSWERED_QUESTION} ORDER BY q.id`,
-  ).all(task.id).map((row) => JSON.parse(row.payload) as { id: string; revision: number; kind?: string; prompt: string; supersedes?: string });
+  ).all(task.id).map((row) => JSON.parse(row.payload) as { id: string; revision: number; kind?: string; prompt: string });
   if (!open.length) return;
   const list = open.map((q) => `${q.id} rev ${q.revision} (${q.kind ?? "decision"}) "${q.prompt.length > 60 ? `${q.prompt.slice(0, 60)}…` : q.prompt}"`).join("; ");
-  // An open question that replaced a check is part of a supersede chain, which cannot be deleted.
-  const deletable = open.filter((q) => !q.supersedes);
-  const linked = open.filter((q) => q.supersedes);
+  const commands = open.map((q) => `\`bb work-board question withdraw ${task.key} --question ${q.id} --revision ${q.revision} --reason "..."\``);
   throw new Error(
     `${task.key} cannot move to ${statusLabel(targetStatus, project.statuses)}: ${open.length} owner question${open.length > 1 ? "s are" : " is"} still open: ${list}. ` +
-    `Wait for the answers${deletable.length ? `, or withdraw a question that is no longer needed (${deletable.map((q) => `\`bb work-board question delete ${task.key} --question ${q.id} --revision ${q.revision}\``).join("; ")})` : ""}, then move the card.` +
-    (linked.length ? ` ${linked.map((q) => q.id).join(", ")} replace${linked.length > 1 ? "" : "s"} an earlier check and cannot be deleted: wait for the owner's answer.` : ""),
+    `Withdraw any question that is no longer needed (${commands.join("; ")}), then move the card.`,
   );
 }
 

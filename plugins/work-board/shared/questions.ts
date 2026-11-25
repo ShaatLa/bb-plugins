@@ -1,13 +1,14 @@
 import type { TaskQuestion } from "./contract";
 
 /** A superseded check is closed whatever its answer: its successor is the one the owner answers. */
-export function isQuestionOpen(question: Pick<TaskQuestion, "selectedOptionIds"> & { answerText?: string | null; supersededBy?: string }): boolean {
-  return !question.selectedOptionIds.length && !question.answerText && !question.supersededBy;
+export function isQuestionOpen(question: Pick<TaskQuestion, "selectedOptionIds"> & { answerText?: string | null; supersededBy?: string; withdrawnAt?: string }): boolean {
+  return !question.selectedOptionIds.length && !question.answerText && !question.supersededBy && !question.withdrawnAt;
 }
 
 export const OPEN_QUESTION_SQL = `COALESCE(json_array_length(q.payload, '$.selectedOptionIds'), 0) = 0
   AND COALESCE(json_extract(q.payload, '$.answerText'), '') = ''
-  AND json_extract(q.payload, '$.supersededBy') IS NULL`;
+  AND json_extract(q.payload, '$.supersededBy') IS NULL
+  AND json_extract(q.payload, '$.withdrawnAt') IS NULL`;
 
 /** Refusal for any change to a superseded check; stale requests get the same redirect. */
 export function supersededRefusal(question: Pick<TaskQuestion, "id" | "supersededBy">, taskKey: string): string {

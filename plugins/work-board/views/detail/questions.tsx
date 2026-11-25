@@ -469,9 +469,9 @@ export function QuestionsSection({
   useEffect(() => {
     if (!editing || !query.data) return;
     const fresh = query.data.find((question) => question.id === editing.id);
-    if (fresh && !fresh.supersededBy && fresh.revision === editing.revision) return;
+    if (fresh && !fresh.supersededBy && !fresh.withdrawnAt && fresh.revision === editing.revision) return;
     setEditing(null);
-    onError(fresh?.supersededBy ? "This check was replaced by a newer one, so the edit was closed." : "This question changed, so the edit was closed. Open it again to edit the current version.");
+    onError(fresh?.withdrawnAt ? "This question was withdrawn, so the edit was closed." : fresh?.supersededBy ? "This check was replaced by a newer one, so the edit was closed." : "This question changed, so the edit was closed. Open it again to edit the current version.");
   }, [query.data, editing, onError]);
   const all = query.data ?? [];
   const byId = new Map(all.map((question) => [question.id, question]));
@@ -499,7 +499,10 @@ export function QuestionsSection({
     return <div key={question.id} className="space-y-2">
       {question.supersededBy ? renderSuperseded(question) : <>
         {replacement(question)}
-        <QuestionAnswer
+        {question.withdrawnAt ? <div className="space-y-1 rounded-md border border-border p-3">
+          <p className="font-medium">{question.prompt}</p>
+          <p className="text-xs text-muted-foreground">Withdrawn by <ActorLabel name={question.withdrawnBy!} /> · <time dateTime={question.withdrawnAt} title={new Date(question.withdrawnAt).toLocaleString()}>{formatRelativeTime(question.withdrawnAt, now)}</time>: {question.withdrawReason}</p>
+        </div> : <QuestionAnswer
           key={`${question.id}:${question.revision}`}
           question={question}
           onError={onError}
@@ -535,7 +538,7 @@ export function QuestionsSection({
                 "Answer saved, but the agent could not be notified. Notify its thread manually.",
               );
           }}
-        />
+        />}
       </>}
       {chain.length ? (
         <details className="pl-3">

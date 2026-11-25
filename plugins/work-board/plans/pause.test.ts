@@ -109,6 +109,16 @@ describe("review pause on an open owner decision", () => {
     expect(task.id).toBeTruthy();
   });
 
+  it("resumes review after the last open decision is withdrawn", async () => {
+    const { inReview, ask, paused, call, task } = setup();
+    await inReview();
+    const { question } = await ask();
+    expect(await paused()).toBe(true);
+    const result = await call<WakeResult>("withdrawQuestion", { taskId: task.id, questionId: question.id, revision: question.revision, reason: "Review canceled" });
+    expect(result.planWake).toMatchObject({ event: "resumed", delivered: "sent" });
+    expect(await paused()).toBe(false);
+  });
+
   it("sends one wake per transition: two decisions opened and settled, then a third on the same version", async () => {
     const { inReview, ask, answer, sentTo } = setup();
     await inReview();

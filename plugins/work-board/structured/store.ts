@@ -127,8 +127,13 @@ export function createStructuredStore(bb: BbPluginApi, store: TasksApiStore) {
     return question;
   };
   const taskKey = (taskId: string) => store.tasks.getTask(taskId)!.key;
+  const assertNotWithdrawn = (question: TaskQuestion) => {
+    if (question.withdrawnAt)
+      throw new Error(`Question ${question.id} was withdrawn: ${question.withdrawReason}. Ask a new question if it is needed again.`);
+  };
   /** Any change to a superseded check is redirected to its successor, before revision checks and no-op returns. */
-  const assertNotSuperseded = (question: TaskQuestion) => {
+  const assertQuestionCurrent = (question: TaskQuestion) => {
+    assertNotWithdrawn(question);
     if (question.supersededBy) throw new Error(supersededRefusal(question, taskKey(question.taskId)));
   };
   const answerOf = (state: Pick<TaskQuestion, "options" | "selectedOptionIds" | "answerText">) => [
@@ -240,6 +245,7 @@ export function createStructuredStore(bb: BbPluginApi, store: TasksApiStore) {
     | "createQuestion"
     | "answerQuestion"
     | "updateQuestion"
+    | "withdrawQuestion"
     | "deleteQuestion"
     | "listTemplates"
     | "setTemplate"
@@ -293,8 +299,6 @@ export function createStructuredStore(bb: BbPluginApi, store: TasksApiStore) {
       assertNoSecretsInValue(question, "question");
       const warnings: string[] = [];
       const wake = store.transaction(() => {
-        // Read inside the write, so a plan save cannot open the debt between this check and the insert.
-        if (question.kind === "check") assertNoCheckDuringPlanDebt(question.taskId);
         const before = openDecisionIds(db, question.taskId).length;
         const key = taskKey(question.taskId);
         if (input.supersedes) {
@@ -303,6 +307,7 @@ export function createStructuredStore(bb: BbPluginApi, store: TasksApiStore) {
           const target = findQuestion(questionId);
           if (!target || target.taskId !== question.taskId)
             throw new Error(`Question ${questionId} is not on ${key}; --supersedes names a check on the same card (see \`bb work-board question list ${key}\`).`);
+          assertNotWithdrawn(target);
           if (target.kind !== "check")
             throw new Error(`Question ${questionId} is a decision; --supersedes replaces only a check. Change a decision with \`bb work-board question update ${key} --question ${questionId} --revision ${target.revision}\`.`);
           if (target.supersededBy)
@@ -315,9 +320,11 @@ export function createStructuredStore(bb: BbPluginApi, store: TasksApiStore) {
           // Two checks may share a prompt and differ in their step targets, so a duplicate is saved and only warned about.
           const prompt = normalizedPrompt(question.prompt);
           for (const existing of listQuestions(question.taskId))
-            if (existing.kind === "check" && !existing.supersededBy && normalizedPrompt(existing.prompt) === prompt)
+            if (existing.kind === "check" && !existing.supersededBy && !existing.withdrawnAt && normalizedPrompt(existing.prompt) === prompt)
               warnings.push(`Check ${existing.id} (revision ${existing.revision}, ${stateOf(existing)}) on ${key} has the same prompt; both are saved. ${checkGuidance(key, existing, question)} Then delete this new one with \`bb work-board question delete ${key} --question ${question.id} --revision 1\` unless both are needed.`);
         }
+        // Check in the same transaction as both the supersede link and the insert.
+        if (question.kind === "check") assertNoCheckDuringPlanDebt(question.taskId);
         db.prepare<[string, string, string]>(
           "INSERT INTO task_questions (id, task_id, payload) VALUES (?, ?, ?)",
         ).run(question.id, question.taskId, JSON.stringify(question));
@@ -336,7 +343,7 @@ export function createStructuredStore(bb: BbPluginApi, store: TasksApiStore) {
       let wake: Wake = null;
       const question = store.transaction(() => {
         const current = getQuestion(input.questionId);
-        assertNotSuperseded(current);
+        assertQuestionCurrent(current);
         const before = openDecisionIds(db, current.taskId).length;
         const attachmentIds = input.attachmentIds ?? [];
         if (new Set(attachmentIds).size !== attachmentIds.length) throw new Error("Duplicate attachment IDs");
@@ -440,7 +447,7 @@ export function createStructuredStore(bb: BbPluginApi, store: TasksApiStore) {
       let wake: Wake = null;
       const question = store.transaction(() => {
         const current = getQuestion(input.questionId);
-        assertNotSuperseded(current);
+        assertQuestionCurrent(current);
         const before = openDecisionIds(db, current.taskId).length;
         if (current.revision !== input.revision)
           throw new Error("Question changed; reload it before editing");
@@ -512,11 +519,39 @@ export function createStructuredStore(bb: BbPluginApi, store: TasksApiStore) {
       const planWake = await announce(wake);
       return { question, ...(planWake ? { planWake } : {}) };
     },
+    async withdrawQuestion(input) {
+      let wake: Wake = null;
+      const question = store.transaction(() => {
+        const current = getQuestion(input.questionId);
+        if (current.taskId !== input.taskId) throw new Error("Question does not belong to this task");
+        assertQuestionCurrent(current);
+        if (current.revision !== input.revision) throw new Error("Question changed; reload it before withdrawing");
+        if (!isQuestionOpen(current)) throw new Error("An answered question cannot be withdrawn");
+        const next = questionSchema.parse({
+          ...current, withdrawnAt: new Date().toISOString(), withdrawnBy: input.authorName, withdrawReason: input.reason,
+        });
+        assertNoSecretsInValue(next, "question");
+        const before = openDecisionIds(db, current.taskId).length;
+        db.prepare<[string, string]>("UPDATE task_questions SET payload = ? WHERE id = ?").run(JSON.stringify(next), next.id);
+        syncDecisionLabel(next.taskId);
+        wake = decisionTransition(next.taskId, before);
+        store.tasks.createComment({
+          taskId: next.taskId, kind: "system", authorName: input.authorName,
+          body: `Question withdrawn by ${next.withdrawnBy}: ${next.prompt} — Reason: ${next.withdrawReason}`,
+        });
+        return next;
+      });
+      changed(question.taskId);
+      bb.realtime.publish("comments:changed", { taskId: question.taskId });
+      const planWake = await announce(wake);
+      return { question, ...(planWake ? { planWake } : {}) };
+    },
     async deleteQuestion(input) {
       let wake: Wake = null;
       let question!: TaskQuestion;
       const deleted = store.transaction(() => {
         question = getQuestion(input.questionId);
+        assertNotWithdrawn(question);
         if (question.revision !== input.revision)
           throw new Error("Question changed; reload it before deleting");
         // A supersede chain is the record of how a check's state changed; removing one link would strand the other end.

@@ -265,10 +265,18 @@ export const questionSchema = questionStateSchema
     supersedes: idSchema.optional(),
     supersededBy: idSchema.optional(),
     supersededAt: z.iso.datetime().optional(),
+    withdrawnAt: z.iso.datetime().optional(),
+    withdrawnBy: nonBlankStringSchema.optional(),
+    withdrawReason: nonBlankStringSchema.max(500).optional(),
   })
   .superRefine((value, ctx) => {
     if ((value.supersededBy === undefined) !== (value.supersededAt === undefined))
       ctx.addIssue({ code: "custom", message: "supersededBy and supersededAt go together" });
+    const withdrawn = value.withdrawnAt !== undefined;
+    if (withdrawn !== (value.withdrawnBy !== undefined) || withdrawn !== (value.withdrawReason !== undefined))
+      ctx.addIssue({ code: "custom", message: "withdrawnAt, withdrawnBy and withdrawReason go together" });
+    if (withdrawn && (value.answeredBy || value.supersededBy))
+      ctx.addIssue({ code: "custom", message: "An answered or superseded question cannot be withdrawn" });
     let previous = 0;
     for (const entry of value.history) {
       if (entry.revision <= previous || entry.revision >= value.revision)
@@ -1131,6 +1139,13 @@ export const tasksRpcContract = {
         authorName: nonBlankStringSchema.default("You"),
       })
       .strict(),
+    output: z.object({ question: questionSchema, planWake: planWakeSchema.optional() }).strict(),
+  },
+  withdrawQuestion: {
+    input: z.object({
+      taskId: idSchema, questionId: idSchema, revision: z.number().int().positive(),
+      reason: nonBlankStringSchema.max(500), authorName: nonBlankStringSchema.default("You"),
+    }).strict(),
     output: z.object({ question: questionSchema, planWake: planWakeSchema.optional() }).strict(),
   },
   deleteQuestion: {

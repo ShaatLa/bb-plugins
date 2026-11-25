@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { createFakePluginHost } from "@get-bb/plugin-sdk/testing";
 import { createStore, registerTasksApi } from ".";
+import { navigationBadgeCounts } from "./badge";
 import { registerTasksCli } from "../cli";
 import { createStructuredStore } from "../structured/store";
 import { DEFAULT_TASK_STATUSES } from "../shared/statuses.js";
@@ -25,13 +26,13 @@ function setup() {
 }
 
 describe("an agent cannot close a card while an owner question is open", () => {
-  it.each(["done", "canceled"])("updateTask to %s throws with the question, its revision and the delete hint", async (target) => {
+  it.each(["done", "canceled"])("updateTask to %s throws with the question, its revision and the withdraw command", async (target) => {
     const f = setup();
     const question = await f.ask("decision");
     const refusal = f.harness.callRpc("updateTask", { ...f.agent, status: target });
     await expect(refusal).rejects.toThrow(`${f.task.key} cannot move to`);
     await expect(refusal).rejects.toThrow(`1 owner question is still open: ${question.id} rev ${question.revision} (decision) "Proceed?"`);
-    await expect(refusal).rejects.toThrow(`question delete ${f.task.key} --question ${question.id} --revision ${question.revision}`);
+    await expect(refusal).rejects.toThrow(`question withdraw ${f.task.key} --question ${question.id} --revision ${question.revision} --reason "..."`);
     expect(f.status()).toBe("in_progress");
   });
 
@@ -56,6 +57,16 @@ describe("an agent cannot close a card while an owner question is open", () => {
     expect(f.status()).toBe("done");
   });
 
+  it("clears Waiting on me and the needs-answer badge after a decision is withdrawn", async () => {
+    const f = setup();
+    const decision = await f.ask("decision");
+    const badges = () => navigationBadgeCounts(f.bb, f.store, ["needs_answer", "waiting_on_owner"], Date.now()).counts;
+    expect(badges()).toEqual({ needs_answer: 1, waiting_on_owner: 1 });
+    await f.structured.handlers.withdrawQuestion({ taskId: f.task.id, questionId: decision.id, revision: 1, reason: "Review canceled", authorName: "Agent" });
+    expect(badges()).toEqual({ needs_answer: 0, waiting_on_owner: 0 });
+    expect(await f.structured.handlers.questionCounts({ taskIds: [f.task.id] })).toMatchObject({ counts: [{ unanswered: 0, decisions: 0, waitingOnOwner: false }] });
+  });
+
   it("does not refuse a move between closed statuses", async () => {
     const f = setup();
     f.store.tasks.updateTask(f.task.id, { status: "done", authorName: "Owner" });
@@ -72,7 +83,7 @@ describe("an agent cannot close a card while an owner question is open", () => {
     const refusal = f.harness.callRpc("boardMove", { ...f.agent, status: "done" });
     await expect(refusal).rejects.toThrow("2 owner questions are still open");
     await expect(refusal).rejects.toThrow(`${decision.id} rev ${decision.revision} (decision) "Which database?"; ${check.id} rev ${check.revision} (check) "Does Retry reload the list?"`);
-    for (const q of [decision, check]) await expect(refusal).rejects.toThrow(`question delete ${f.task.key} --question ${q.id} --revision ${q.revision}`);
+    for (const q of [decision, check]) await expect(refusal).rejects.toThrow(`question withdraw ${f.task.key} --question ${q.id} --revision ${q.revision} --reason "..."`);
     expect(f.status()).toBe("in_progress");
     expect(f.store.tasks.getTask(f.task.id)!.position).toBe(positionBefore);
     expect(f.store.tasks.listComments(f.task.id).filter((c) => c.kind === "system")).toEqual([]);

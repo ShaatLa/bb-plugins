@@ -586,6 +586,26 @@ it("orders open questions oldest first and moves a check under Earlier after ans
   expect(currentGroups[2]?.closest("details")?.open).toBe(false);
 });
 
+it("closes the edit form and keeps a withdrawn chain head and its predecessor in Earlier", async () => {
+  const { task, rpc, structured } = setup();
+  const input = { kind: "check" as const, askedByThread: null, taskId: task.id, mode: "single" as const, options: [] };
+  const { question: old } = await structured.handlers.createQuestion({ ...input, prompt: "Does the list load?" });
+  const { question: head } = await structured.handlers.createQuestion({ ...input, prompt: "Does the new list load?", supersedes: { questionId: old.id, revision: 1 } });
+  const slot = renderSlot(app.navPanels[0]!, { subPath: `task/${task.key}` }, { rpc });
+  const group = await slot.findByRole("group", { name: head.prompt });
+  fireEvent.click(within(group).getByRole("button", { name: "Edit question" }));
+  expect(slot.getByRole("textbox", { name: "Question" })).toBeTruthy();
+  const { question } = await structured.handlers.withdrawQuestion({ taskId: task.id, questionId: head.id, revision: 1, reason: "Review canceled", authorName: "Agent" });
+  await slot.behavior.emitRealtime("tasks:changed", { taskId: task.id, projectId: task.projectId });
+  await slot.findByText("This question was withdrawn, so the edit was closed.");
+  expect(slot.queryByRole("textbox", { name: "Question" })).toBeNull();
+  const earlier = slot.getByText("Earlier (1)").closest("details")!;
+  expect(earlier.textContent).toContain("Withdrawn by Agent");
+  expect(earlier.textContent).toContain("Review canceled");
+  expect(earlier.querySelector("time")?.dateTime).toBe(question.withdrawnAt);
+  expect(within(earlier).getByText("Replaces an earlier check")).toBeTruthy();
+});
+
 it("closes an open edit form when the check is superseded and shows it dimmed under its successor without controls", async () => {
   const { task, rpc, structured } = setup();
   const { question: old } = await structured.handlers.createQuestion({ kind: "check", askedByThread: null, taskId: task.id, prompt: "Does the old list render?", mode: "single", options: [] });

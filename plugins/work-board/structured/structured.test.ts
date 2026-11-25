@@ -11,6 +11,7 @@ import { registerTasksCli } from "../cli";
 import {
   tasksRpcContract,
   evidenceSchema,
+  questionSchema,
   type Evidence,
   type Comment,
 } from "../shared/contract";
@@ -1266,6 +1267,43 @@ describe("superseding an owner check", () => {
     }
   });
 
+  it("withdraws only an open question on the named card and preserves its supersede chain", async () => {
+    const { structured, task, store, project, harness } = setup();
+    const h = structured.handlers;
+    const { question: old } = await h.createQuestion(checkInput(task.id, "Does the list load?"));
+    const answered = (await confirm(structured, old)).question;
+    const input = { questionId: old.id, taskId: task.id, revision: answered.revision, reason: "Review canceled", authorName: "Agent" };
+    await expect(h.withdrawQuestion(input)).rejects.toThrow(/answered/);
+    const { question: head } = await h.createQuestion(checkInput(task.id, "Does the new list load?", [], { questionId: old.id, revision: answered.revision }));
+    await expect(h.withdrawQuestion(input)).rejects.toThrow(`superseded by ${head.id}`);
+    const request = { ...input, questionId: head.id, revision: head.revision };
+    const other = store.tasks.createTask({ projectId: project.id, title: "Other" });
+    await expect(h.withdrawQuestion({ ...request, taskId: other.id })).rejects.toThrow(/does not belong/);
+    const wrongCard = await harness.runCli(["question", "withdraw", other.key, "--question", head.id, "--revision", "1", "--reason", input.reason]);
+    expect(wrongCard.stderr).toContain("does not belong");
+    await expect(h.withdrawQuestion({ ...request, revision: 2 })).rejects.toThrow(/reload/);
+    for (const reason of [" ", "a".repeat(501), "ghp_" + "a".repeat(36)]) await expect(h.withdrawQuestion({ ...request, reason })).rejects.toThrow();
+    expect(structured.listQuestions(task.id)[1]).toEqual(head);
+    const { question } = await h.withdrawQuestion(request);
+    expect(isQuestionOpen(question)).toBe(false);
+    expect(question).toEqual({ ...head, withdrawnAt: expect.any(String), withdrawnBy: "Agent", withdrawReason: input.reason });
+    expect(structured.listQuestions(task.id)[0]?.supersededBy).toBe(head.id);
+    expect(store.tasks.listComments(task.id).filter(c => c.body.startsWith("Question withdrawn"))).toMatchObject([
+      { kind: "system", authorName: "Agent", body: `Question withdrawn by Agent: ${head.prompt} — Reason: Review canceled` },
+    ]);
+    const refusal = `Question ${head.id} was withdrawn: Review canceled. Ask a new question if it is needed again.`;
+    await expect(h.withdrawQuestion(request)).rejects.toThrow(refusal);
+    await expect(h.answerQuestion({ ...request, selectedOptionIds: [] })).rejects.toThrow(refusal);
+    for (const reopen of [true, false])
+      await expect(h.updateQuestion({ ...request, prompt: head.prompt, mode: head.mode, options: head.options, reopen })).rejects.toThrow(refusal);
+    await expect(h.deleteQuestion(request)).rejects.toThrow(refusal);
+    await expect(h.createQuestion(checkInput(task.id, head.prompt, [], request))).rejects.toThrow(refusal);
+    expect((await h.createQuestion(checkInput(task.id, head.prompt))).warnings).toBeUndefined();
+    for (const fields of [{ answeredBy: "Owner", answerText: "Yes" }, { supersededBy: old.id, supersededAt: question.withdrawnAt },
+      { withdrawnBy: undefined }, { withdrawReason: undefined }, { withdrawnAt: undefined }])
+      expect(questionSchema.safeParse({ ...question, ...fields }).success).toBe(false);
+  });
+
   it("lets only one of two replacements win and refuses a replacement of a revision the owner already answered", async () => {
     const { structured, task } = setup();
     const { question: old } = await structured.handlers.createQuestion(checkInput(task.id, "Does the export finish?"));
@@ -1416,7 +1454,7 @@ describe("superseding an owner check", () => {
     await expect(structured.handlers.updateQuestion({ questionId: question.id, revision: answered.revision, prompt: "Which [layout](https://example.com/a)?", mode: "single", options: answered.options, reopen: true, authorName: "Agent" })).rejects.not.toThrow(/--supersedes/);
   });
 
-  it("marks superseded rows in show --brief and keeps delete commands out of the close refusal for a linked successor", async () => {
+  it("shows the superseded check and lets an agent cancel after withdrawing each open question", async () => {
     const { harness, structured, task } = setup();
     const { question: old } = await structured.handlers.createQuestion(checkInput(task.id, "Does the table sort?"));
     await confirm(structured, old, "Problem found: wrong order");
@@ -1428,8 +1466,20 @@ describe("superseding an owner check", () => {
     const close = await harness.runCli(["update", task.key, "--status", "done"], { threadId: "thr_example" });
     expect(close.exitCode).not.toBe(0);
     expect(close.stderr).toContain(`--question ${plain.id} --revision 1`);
-    expect(close.stderr).not.toContain(`--question ${next.id}`);
-    expect(close.stderr).toContain(`${next.id} replaces an earlier check and cannot be deleted: wait for the owner's answer.`);
+    for (const q of [plain, next]) {
+      expect(close.stderr).toContain(`question withdraw ${task.key} --question ${q.id} --revision 1 --reason "..."`);
+      const result = await harness.runCli(["question", "withdraw", task.key, "--question", q.id, "--revision", "1", "--reason", " Review canceled ", "--json"]);
+      expect(JSON.parse(result.stdout).question).toMatchObject({ withdrawnBy: "cli", withdrawReason: "Review canceled", revision: 1 });
+    }
+    const message = "withdrawn by cli: Review canceled";
+    expect((await harness.runCli(["question", "list", task.key])).stderr).toContain(message);
+    for (const flags of [[], ["--brief"]])
+      expect((await harness.runCli(["show", task.key, ...flags])).stdout).toContain(message);
+    const json = JSON.parse((await harness.runCli(["show", task.key, "--brief", "--json"])).stdout);
+    const row = json.questions.find((q: { id: string }) => q.id === next.id);
+    expect(row).toMatchObject({ withdrawnBy: "cli", withdrawnAt: expect.any(String), withdrawReason: "Review canceled", supersedes: old.id });
+    expect(row).not.toHaveProperty("answer");
+    expect((await harness.runCli(["update", task.key, "--status", "canceled"], { threadId: "thr_example" })).exitCode).toBe(0);
   });
 
   it("tells a withdrawal's recipient to read supersededBy instead of treating the question as open", async () => {

@@ -72,7 +72,7 @@ export function captureProject(
     const taskIdSet = new Set(tasks.map(task => task.id));
     const manifest = archiveProjectSchema.parse({
       format: "bb-work-board",
-      version: 22,
+      version: 23,
       gitSync: createGitSyncStore(bb.storage.database()).config(projectId),
       project,
       folders,
