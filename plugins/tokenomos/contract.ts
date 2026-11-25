@@ -139,8 +139,6 @@ export const limitsSchema = z.object({
   accounts: z.array(z.object({
     providerId: z.string(), label: z.string(), plan: z.string().nullable(), planId: z.string().nullable().optional(), multiplier: nullableNum.optional(), status: z.string(), message: z.string().nullable(),
     observedAt: nullableNum, windows: z.array(limitWindowSchema), stale: z.boolean().optional(),
-    /** Another machine this account is reported from; null for this machine's and shared accounts. */
-    machine: z.string().nullable().optional(),
   })),
 });
 
