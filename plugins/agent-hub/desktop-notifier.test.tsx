@@ -17,7 +17,12 @@ function setup(locked = true, page = false) {
 it.each([true,false])('shows notifications only with the notifier lock: %s', async locked => {
  const slot=setup(locked); await slot.behavior.emitRealtime('agent-hub:notifications',{id:'example',title:'Agent Hub',body:'Question',threadId:'thr_example'});
  expect(notifications).toHaveLength(locked?1:0);
- if(locked) { expect(notifications[0].options.tag).toBe('agent-hub-thr_example'); act(()=>notifications[0].onclick()); expect(location.pathname+location.search).toBe('/plugins/agent-hub/agent-hub?thread=thr_example'); }
+ if(locked) { expect(notifications[0].options.tag).toBeUndefined(); act(()=>notifications[0].onclick()); expect(location.pathname+location.search).toBe('/plugins/agent-hub/agent-hub?thread=thr_example'); }
+});
+it('closes the thread\'s previous notification before showing the next', async()=>{
+ const slot=setup(),event={id:'example',title:'Agent Hub',body:'Question',threadId:'thr_example'};
+ await slot.behavior.emitRealtime('agent-hub:notifications',event);await slot.behavior.emitRealtime('agent-hub:notifications',{...event,id:'example2'});
+ expect(notifications).toHaveLength(2);expect(notifications[0].close).toHaveBeenCalled();expect(notifications[1].close).not.toHaveBeenCalled();
 });
 it('opens the page for a summary', async()=>{
  const slot=setup();await slot.behavior.emitRealtime('agent-hub:notifications',{id:'example',title:'Agent Hub',body:'Summary'});act(()=>notifications[0].onclick());expect(location.pathname+location.search).toBe('/plugins/agent-hub/agent-hub');

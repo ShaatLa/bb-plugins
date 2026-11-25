@@ -29,15 +29,18 @@ export function DesktopNotifier() {
     if (!holder.current || !event.success || typeof Notification === 'undefined' || Notification.permission !== 'granted') return;
     const { id, title, body, threadId } = event.data;
     if (threadId && document.hasFocus() && isChatOpen(threadId)) return;
-    const tag = `agent-hub-${threadId ?? id}`, notification = new Notification(title, { body, tag });
-    shown.set(tag, notification);
-    notification.onclose = () => { if (shown.get(tag) === notification) shown.delete(tag); };
+    // No tag: Electron on macOS can drop the click of a notification that reuses an earlier tag, so the thread's previous one is closed here instead.
+    const key = `agent-hub-${threadId ?? id}`;
+    shown.get(key)?.close();
+    const notification = new Notification(title, { body });
+    shown.set(key, notification);
+    notification.onclose = () => { if (shown.get(key) === notification) shown.delete(key); };
     notification.onclick = () => {
       window.focus();
       (window as Window & {bbDesktop?:{focusWindow:()=>void}}).bbDesktop?.focusWindow();
       const selected = threadId ? selectContact(threadId) : false;
       openAppRoute(`/plugins/agent-hub/agent-hub${threadId && !selected ? `?thread=${encodeURIComponent(threadId)}` : ''}`);
-      notification.close(); shown.delete(tag);
+      notification.close(); shown.delete(key);
     };
   });
   useEffect(() => {
