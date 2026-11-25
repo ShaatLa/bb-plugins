@@ -618,9 +618,9 @@ function AgentHubPanelContent({ threadId }: { threadId?: string }) {
   const { rows: pendingRows, settle: settlePending } = usePendingInteractionRows(threadId ? [] : threads);
   // The Questions section is page-only, so a thread tab never reads the global list.
   const forMe = useQuery({ contract: rpcContract, method: 'list', input: { view: 'for_me', limit: 50 }, enabled: !threadId });
-  // Reports other plugins sent, with or without a thread: bb's own chat does not show them, so they are listed here until handled.
+  // Reports other plugins could not deliver: one with a chat waits there as unread, since a report is no question; only one without a chat has nowhere else to show.
   const noticeList = useQuery({ contract: rpcContract, method: 'list', input: { view: 'unread', notices: true, limit: 50 }, enabled: !threadId });
-  const notices = noticeList.data?.items.filter(item => item.notice) ?? [];
+  const notices = noticeList.data?.items.filter(item => item.notice && item.threadId === NOTICE_THREAD) ?? [];
   const questionCount = Object.values(pendingRows).reduce((sum, rows) => sum + rows.length, 0) + (forMe.data?.items.filter(item => item.declinedAt === null).length ?? 0) + notices.length;
   const [error, setError] = useState('');
   const undo = useReadUndo(), [saved, setSaved] = useTransientText();

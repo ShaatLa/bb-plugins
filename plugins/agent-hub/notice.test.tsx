@@ -15,7 +15,7 @@ const notice = (over: Partial<Item> = {}): Item => itemSchema.parse({
   trigger: { kind: 'plugin', sourceId: 'example-plugin', sourceTitle: null }, notice: { source: 'example-plugin', managerThreadId: 'thr_manager', bytes: 90000, truncated: true }, ...over,
 });
 
-async function stack(items: Item[]) {
+async function stack(items: Item[], listed = true) {
   localStorage.setItem('bb-plugin-answers:page:questions', 'true');
   const app = await loadPluginApp(() => import('./app'));
   const noticeBody = vi.fn(() => ({ markdown: 'The FULL report' })), markRead = vi.fn(() => ({ ok: true }));
@@ -23,7 +23,7 @@ async function stack(items: Item[]) {
     recipients: () => ({ recipients: [] }), noticeBody, markRead, counts: () => ({ unread: items.length, waiting: 0, forMe: 0, inbox: items.length }),
     list: (input: any) => ({ items: input.notices ? items : [], nextCursor: null }),
   } });
-  await waitFor(() => expect(slot.container.querySelector('section[aria-label="Check report"]')).toBeTruthy());
+  if (listed) await waitFor(() => expect(slot.container.querySelector('section[aria-label="Check report"]')).toBeTruthy());
   return { slot, noticeBody, markRead };
 }
 
@@ -38,10 +38,11 @@ describe('notices in the Questions section', () => {
     expect(slot.getByRole('button', { name: /^Questions/ }).textContent).toContain('1');
   });
 
-  it('lists a threaded notice with a link to its thread', async () => {
-    const { slot } = await stack([notice({ threadId: 'thr_manager' })]);
-    expect(slot.getByRole('link', { name: 'Open thread' })).toBeTruthy();
-    expect(slot.queryByRole('link', { name: 'Intended manager' })).toBeNull();
+  it('leaves a notice that has a chat out of Questions', async () => {
+    const { slot } = await stack([notice({ threadId: 'thr_manager' })], false);
+    await waitFor(() => expect(slot.getByText(/No questions for you/)).toBeTruthy());
+    expect(slot.queryByText('Check report')).toBeNull();
+    expect(slot.getByRole('button', { name: /^Questions/ }).textContent).not.toContain('1');
   });
 
   it('loads the full report only when asked, and copies it then', async () => {
