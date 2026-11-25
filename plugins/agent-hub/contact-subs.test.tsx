@@ -165,17 +165,32 @@ it('collapses a nested sub-session from its own chevron at any depth, without op
     cleanup(); localStorage.clear();
   }
 });
-it('shows the unread answers and questions of hidden sub-sessions on the collapsed row', async () => {
-  localStorage.setItem(closedKey, JSON.stringify([child]));
-  const { slot } = setup(true, false, parent, [deep], {}, { [child]: 1, [nested]: 1, [deep]: 2 }, deeper);
-  const row = within((await slot.findByText('Child')).closest('li')!);
-  expect(row.getByLabelText('4 unread')).toBeTruthy(); expect(row.getByRole('img', { name: 'Asking you' })).toBeTruthy();
+it('keeps an unread or asking sub-session listed under a collapsed row, with its own badge and the path to it', async () => {
+  const quiet = { ...idle, id: 'thr_example_leaf', title: 'Leaf', parentThreadId: child };
+  for (const sidebar of [false, true]) {
+    localStorage.setItem(closedKey, JSON.stringify([child]));
+    const unread = setup(true, sidebar, parent, [], {}, { [child]: 1, [deep]: 2 }, [...deeper, quiet]);
+    await unread.slot.findByText('Deep');
+    expect(shown(unread.slot)).toEqual(['Child1', 'Nested', 'Deep2', 'Quiet']);
+    expect(chevronOf(unread.slot, 'Child')!.getAttribute('aria-expanded')).toBe('false');
+    cleanup(); localStorage.setItem(closedKey, JSON.stringify([child]));
+    const asking = setup(true, sidebar, parent, [deep], {}, {}, [...deeper, quiet]);
+    const deepRow = within((await asking.slot.findByText('Deep')).closest('li')!);
+    expect(deepRow.getByRole('img', { name: 'Asking you' })).toBeTruthy(); expect(asking.slot.queryByText('Leaf')).toBeNull();
+    cleanup(); localStorage.clear();
+  }
 });
-it('surfaces a collapsed sub-session, not its hidden child, under a collapsed contact', async () => {
+it('shows the work of a hidden sub-session on its collapsed row', async () => {
+  localStorage.setItem(closedKey, JSON.stringify([child]));
+  const { slot } = setup(true, false, parent, [], {}, {}, [{ ...deeper[0], status: 'active', runtimeStatus: 'active', indicator: 'runtime' }]);
+  const row = within((await slot.findByText('Child')).closest('li')!);
+  expect(slot.queryByText('Nested')).toBeNull(); expect(row.getByRole('img', { name: 'Working' })).toBeTruthy();
+});
+it('lists an unread grandchild with the path to it under a collapsed contact and a collapsed row', async () => {
   localStorage.setItem(closedKey, JSON.stringify([nested]));
   const { slot } = setup(false, false, parent, [], {}, { [deep]: 2 }, deeper);
-  await slot.findByText('Nested');
-  expect(shown(slot)).toEqual(['Child', 'Nested2']);
+  await slot.findByText('Deep');
+  expect(shown(slot)).toEqual(['Child', 'Nested', 'Deep2']);
 });
 it('does not select the contact while bb shows a sub-session hidden in a collapsed row', async () => {
   localStorage.setItem(closedKey, JSON.stringify([child])); selectContact(parent);
