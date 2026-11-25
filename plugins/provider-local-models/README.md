@@ -112,13 +112,19 @@ A supported family can also run on Splash without Llama.app. `splash-setup` with
 an upstream `owner/Repo-GGUF:VARIANT` id pulls that single-file GGUF into
 `~/models/splash/<owner>/<repo>/`, resuming a partial file and checking its size
 and LFS SHA-256 before the file appears, then downloads the family's draft.
+When the repository has a top-level vision projector (`mmproj-*.gguf`), it is
+pulled beside the model the same way (BF16 first, then F32, F16, Q8_0) and Splash
+starts with `--mmproj`, so the model accepts images; without one it serves text
+only. Run `splash-setup` again to add a projector to a model pulled before.
+Llama.app models stay text only on Splash.
 Such a model is listed as `splash/<id>`, and Splash picks its context window.
 `splash-models` and the settings section **Splash models outside Llama.app** list
 every pulled model, including interrupted downloads, with sizes, drafts and paths.
 `splash-delete` (or **Delete**) removes the GGUF and, when no other model of the
-family uses it, the draft; a running model is refused. The Splash CLI has no model
+family uses it, the draft; the projector goes with the repository's last
+variant; a running model is refused. The Splash CLI has no model
 management of its own; the plugin starts Splash only on local files
-(`--model-dir`, `--draft-model`).
+(`--model-dir`, `--draft-model`, `--mmproj`).
 
 ## Usage journal
 

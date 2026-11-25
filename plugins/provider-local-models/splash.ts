@@ -30,6 +30,13 @@ export async function managedModels(modelsDir: string, suffix = '.gguf') {
   }
   return found;
 }
+// Splash's own preference among a GGUF repository's vision projectors; only top-level files.
+const projectorRank = (name: string) => /^mmproj[\w.-]*\.gguf$/i.test(name) ? ['BF16', 'F32', 'F16', 'Q8_0'].findIndex(kind => new RegExp('[-_.]' + kind + '\\.gguf$', 'i').test(name)) : -1;
+export const pickProjector = (names: string[]) => names.filter(name => projectorRank(name) >= 0).sort((a, b) => projectorRank(a) - projectorRank(b))[0];
+export async function projectorFor(model: string) {
+  const name = pickProjector(await readdir(dirname(model)).catch(() => [] as string[]));
+  return name ? join(dirname(model), name) : undefined;
+}
 export function splashFamily(id: string) {
   const name = id.replace(/^splash\//, '').split('/').at(-1)!.split(':')[0].replace(/-GGUF$/i, '');
   return families.find(family => name.toLowerCase() === family.toLowerCase());
@@ -76,8 +83,9 @@ export async function draftMetadata(id: string, signal: AbortSignal, fetcher = f
 async function exists(file: string) { return stat(file).then(value => value.isFile(), () => false); }
 export async function splashModels(modelsIni = MODELS_INI, draftsDir = DRAFTS_DIR, userIni = USER_INI, modelsDir = modelsDirFor(draftsDir)) {
   const llama = await llamaModels(modelsIni, userIni), ids = new Set(llama.map(model => model.id));
-  const managed = (await managedModels(modelsDir)).filter(model => !ids.has(model.id)).map(model => ({ ...model, context_length: undefined as number | undefined, contextSource: 'Splash default' }));
-  const entries = await Promise.all([...llama, ...managed].map(async model => {
+  const managed = await Promise.all((await managedModels(modelsDir)).filter(model => !ids.has(model.id)).map(async model => ({ ...model, context_length: undefined as number | undefined, contextSource: 'Splash default', mmproj: await projectorFor(model.model) })));
+  // Llama.app models keep serving text only: their projectors are not verified with Splash.
+  const entries = await Promise.all([...llama.map(model => ({ ...model, mmproj: undefined as string | undefined })), ...managed].map(async model => {
     const family = splashFamily(model.id), draft = family ? join(draftsDir, family + '-DFlash2') : '';
     if (!family || !isAbsolute(model.model) || !await exists(model.model) || !await verifiedDraft(draft)) return [];
     return [{ ...model, id: 'splash/' + model.id, draft }];
@@ -128,7 +136,7 @@ export async function startSplash(options: SplashOptions) {
     if (((await stat(logFile).catch(() => null))?.size ?? 0) > 5e6) await rename(logFile, logFile + '.1');
     const log = openSync(logFile, 'a', 0o600);
     let child: ChildProcess;
-    try { child = spawn(options.binary, ['serve', '--model', model.id.slice(7), '--model-dir', model.model, '--draft-model', model.draft, '--language-only', '--port', String(options.port), ...(context ? ['--max-context', String(context)] : [])], { detached: false, stdio: ['ignore', log, log] }); }
+    try { child = spawn(options.binary, ['serve', '--model', model.id.slice(7), '--model-dir', model.model, '--draft-model', model.draft, ...(model.mmproj ? ['--mmproj', model.mmproj] : ['--language-only']), '--port', String(options.port), ...(context ? ['--max-context', String(context)] : [])], { detached: false, stdio: ['ignore', log, log] }); }
     finally { closeSync(log); }
     let spawnError: Error | undefined;
     const running = { id: model.id, child, ready: false, context: undefined as number | undefined, closed: new Promise<void>(resolve => child.once('close', () => resolve())) };
@@ -310,15 +318,21 @@ export async function pullModel(id: string, print: (line: string) => void, signa
   const response = await fetcher('https://huggingface.co/api/models/' + source.owner + '/' + source.repo + '?blobs=true', { signal });
   if (!response.ok) throw Error('Cannot read model metadata: HTTP ' + response.status);
   const info = await response.json() as { sha?: string; siblings?: { rfilename: string; lfs?: { sha256?: string; oid?: string; size: number } }[] };
-  const entry = info.siblings?.find(item => item.rfilename === source.file), sha256 = entry?.lfs?.sha256 ?? entry?.lfs?.oid ?? '';
   // shortcut: split GGUFs (-00001-of-0000N) are not pulled; add multi-file support when a supported quant needs it.
-  if (!entry) throw Error('No single-file ' + source.file + ' in ' + source.owner + '/' + source.repo + '.');
-  if (!entry.lfs || !/^[a-f0-9]{64}$/i.test(sha256) || !Number.isSafeInteger(entry.lfs.size) || entry.lfs.size <= 0 || !/^[a-f0-9]{40}$/i.test(info.sha ?? '')) throw Error('Model metadata lacks a revision or verified weights.');
-  const expected = { sha256: sha256.toLowerCase(), size: entry.lfs.size };
-  if (await exists(file)) { progress(expected.size, expected.size); return file; }
-  await mkdir(dirname(file), { recursive: true, mode: 0o700 });
-  const url = 'https://huggingface.co/' + source.owner + '/' + source.repo + '/resolve/' + info.sha + '/' + source.file;
-  print('Downloading ' + url + ' -> ' + file);
-  await transfer(url, file, 'Model', signal, fetcher, expected, progress);
+  if (!info.siblings?.some(item => item.rfilename === source.file)) throw Error('No single-file ' + source.file + ' in ' + source.owner + '/' + source.repo + '.');
+  if (!/^[a-f0-9]{40}$/i.test(info.sha ?? '')) throw Error('Model metadata lacks a revision or verified weights.');
+  // The vision projector is shared by the repository's variants and kept beside them.
+  // shortcut: two variants of one repository pulled at once race on the projector's .part; serialize per repository if that happens.
+  const projector = pickProjector(info.siblings.map(item => item.rfilename));
+  for (const name of projector ? [source.file, projector] : [source.file]) {
+    const entry = info.siblings.find(item => item.rfilename === name)!, sha256 = entry.lfs?.sha256 ?? entry.lfs?.oid ?? '';
+    if (!entry.lfs || !/^[a-f0-9]{64}$/i.test(sha256) || !Number.isSafeInteger(entry.lfs.size) || entry.lfs.size <= 0) throw Error('Model metadata lacks a revision or verified weights.');
+    const expected = { sha256: sha256.toLowerCase(), size: entry.lfs.size }, target = join(dirname(file), name);
+    if (await exists(target)) { progress(expected.size, expected.size); continue; }
+    await mkdir(dirname(file), { recursive: true, mode: 0o700 });
+    const url = 'https://huggingface.co/' + source.owner + '/' + source.repo + '/resolve/' + info.sha + '/' + name;
+    print('Downloading ' + url + ' -> ' + target);
+    await transfer(url, target, name === source.file ? 'Model' : 'Projector', signal, fetcher, expected, progress);
+  }
   return file;
 }

@@ -97,9 +97,9 @@ export function SplashSettings() {
       {!data.managed.length ? <p>No models pulled outside Llama.app.</p> : <div className="lm-table"><table><thead><tr><th>Model</th><th>Files</th><th>Actions</th></tr></thead><tbody>{data.managed.map(model => {
         const busy = pending.some(value => value.startsWith(model.id + ':')), downloading = model.gguf.state === 'downloading' || model.draft?.state === 'downloading';
         return <tr key={model.id}><th scope="row" title={model.path}>{name(model.id)}<br /><small>{model.id}</small></th>
-          <td>GGUF: {transfer(model.gguf)}<br />Draft: {transfer(model.draft)}<br /><small>{model.path}</small></td>
+          <td>GGUF: {transfer(model.gguf)}<br />Draft: {transfer(model.draft)}<br />Images: {model.vision ? 'projector ready' : 'text only'}<br /><small>{model.path}</small></td>
           <td><div className="lm-actions">{downloading ? <button disabled={busy} onClick={() => { void action(model.id + ':cancel', () => call('splashCancel', {model:model.id})); }}>{pending.includes(model.id + ':cancel') ? 'Cancelling…' : 'Cancel'}</button>
-            : <button disabled={busy || !requirements?.supported || model.gguf.state === 'ready' && model.draft?.state === 'ready'} onClick={() => { void action(model.id + ':download', () => call('splashDownload', {model:model.id})); }}>Download</button>}
+            : <button disabled={busy || !requirements?.supported || model.gguf.state === 'ready' && model.draft?.state === 'ready' && model.vision} onClick={() => { void action(model.id + ':download', () => call('splashDownload', {model:model.id})); }}>Download</button>}
             <button disabled={busy || downloading || data.process.model === 'splash/' + model.id} onClick={() => setRemoving(model.id)}>{pending.includes(model.id + ':delete') ? 'Deleting…' : 'Delete'}</button></div></td></tr>;
       })}</tbody></table></div>}
     </section>}

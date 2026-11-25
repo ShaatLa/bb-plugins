@@ -138,7 +138,7 @@ Select **Local models** in BB's provider picker. Models come from the local serv
 - Streaming, resume, cancellation, file and shell tools, MCP and BB agent tools; strict chat templates keep their user/assistant alternation.
 - Context window indicator under the composer. Local models have no quota, so the provider is not listed in Provider usage.
 - `local_models_ask` agent tool and `bb local-models ask` for one-shot prompts from other threads; they queue behind Machine Slots `local-model` work.
-- Optional Splash engine: a settings section checks requirements, installs or updates Splash with Homebrew after confirmation, and adds `splash/<id>` model variants; models outside Llama.app can be pulled, listed and deleted for Splash.
+- Optional Splash engine: a settings section checks requirements, installs or updates Splash with Homebrew after confirmation, and adds `splash/<id>` model variants; models outside Llama.app can be pulled, listed and deleted for Splash, with image input when the repository ships a vision projector.
 - A token-only usage journal that Tokenomos reads; no prompt or reply text is stored.
 - Settings for server URLs, default model and Splash.
 

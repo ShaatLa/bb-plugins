@@ -149,7 +149,7 @@ export function createPlugin(bb: BbPluginApi, testing: Pick<Parameters<typeof sp
     }}),
     'splash-models':cliCommand({summary:'List models pulled for Splash outside Llama.app, with sizes and drafts',options:{json},async run({options}){
       const {managed,modelsDir}=await controls.status(),gb=(bytes:number|null)=>bytes===null?'?':(bytes/1e9).toFixed(2)+' GB';
-      return {exitCode:0,stdout:(options.json?JSON.stringify({modelsDir,models:managed}):[modelsDir,...managed.map(m=>m.id+' · '+m.gguf.state+' '+gb(m.gguf.done)+(m.gguf.error?' ('+m.gguf.error+')':'')+' · draft '+(m.draft?.state??'none')+' · '+m.path)].join('\n'))+'\n'};
+      return {exitCode:0,stdout:(options.json?JSON.stringify({modelsDir,models:managed}):[modelsDir,...managed.map(m=>m.id+' · '+m.gguf.state+' '+gb(m.gguf.done)+(m.gguf.error?' ('+m.gguf.error+')':'')+' · draft '+(m.draft?.state??'none')+' · '+(m.vision?'vision':'text only')+' · '+m.path)].join('\n'))+'\n'};
     }}),
     'splash-delete':cliCommand({summary:'Delete a pulled Splash model (and its draft when unused), or a Llama.app model\'s Splash draft',positionals:[{name:'model',description:'Model id from splash-models or the Splash settings table',required:true}],async run({positionals}){
       await controls.remove(positionals.model).catch(error=>{throw new PluginCliError(String(error),{code:'splash_delete_failed',hint:'Stop Splash with `bb local-models unload splash/<id>` first if the model is running.'});});

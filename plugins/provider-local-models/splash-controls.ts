@@ -1,6 +1,6 @@
-import { rm, rmdir, stat } from 'node:fs/promises';
+import { readdir, rm, rmdir, stat } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
-import { DRAFTS_DIR, draftMetadata, managedModels, modelsDirFor, parseUpstream, pullModel, setupSplash, splashFamily, verifiedDraft } from './splash.ts';
+import { DRAFTS_DIR, draftMetadata, managedModels, modelsDirFor, parseUpstream, projectorFor, pullModel, setupSplash, splashFamily, verifiedDraft } from './splash.ts';
 import { ggufInfo, llamaModels, memoryWarning, MODELS_INI, setContext, USER_INI } from './llama-config.ts';
 import { doctor, runCommand, SPLASH_INSTALL, SPLASH_UPDATE, type DoctorOptions, type DoctorReport, type RunCommand } from './requirements.ts';
 
@@ -27,7 +27,7 @@ export function splashControls(options: {
       const source = parseUpstream(id)!, path = join(modelsDir, source.owner, source.repo, source.file), job = pulls.get(id);
       const size = await stat(path).then(value => value.size, () => null), partial = await stat(path + '.part').then(value => value.size, () => 0);
       const gguf: DraftState = job && job.progress.state !== 'ready' ? { ...job.progress } : { state: size === null ? 'missing' : 'ready', done: size ?? partial, total: size, error: null };
-      return { id, path, gguf, draft: splashFamily(id) ? await inspectDraft(id) : null };
+      return { id, path, gguf, vision: !!await projectorFor(path), draft: splashFamily(id) ? await inspectDraft(id) : null };
     }));
   }
   function source(id: string) {
@@ -113,6 +113,9 @@ export function splashControls(options: {
       await cancel(id);
       const file = join(modelsDir, source.owner, source.repo, source.file);
       await rm(file, { force: true }); await rm(file + '.part', { force: true }); pulls.delete(id);
+      // The shared vision projector goes with the repository's last variant.
+      const rest = await readdir(dirname(file)).catch(() => [] as string[]);
+      if (rest.every(name => /^mmproj/i.test(name))) for (const name of rest) await rm(join(dirname(file), name), { force: true });
       for (const dir of [dirname(file), dirname(dirname(file))]) await rmdir(dir).catch(() => {});
       options.log('Deleted Splash model ' + id + ' (' + file + ')');
       // The draft goes too unless another model of the family still uses it, so no orphan stays behind unlisted.

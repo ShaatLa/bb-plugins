@@ -5,7 +5,7 @@ import { mkdir, mkdtemp, readFile, writeFile, rm, stat } from 'node:fs/promises'
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { splashControls } from './splash-controls.ts';
-import { splashModels } from './splash.ts';
+import { pickProjector, splashModels } from './splash.ts';
 import { fakeGguf } from './test/gguf.ts';
 import type { RunCommand } from './requirements.ts';
 
@@ -78,13 +78,14 @@ test('detection shares in-flight and cached results, while force reruns',async()
 });
 
 test('models outside Llama.app are pulled with their draft, listed with partials, served by Splash and deleted with their unused draft',async()=>{
-  const dir=await mkdtemp(join(tmpdir(),'splash-managed-')),draftsDir=join(dir,'drafts'),modelsDir=join(dir,'splash'),gguf=fakeGguf(),weights=Buffer.from('draft'),logs:string[]=[];
+  const dir=await mkdtemp(join(tmpdir(),'splash-managed-')),draftsDir=join(dir,'drafts'),modelsDir=join(dir,'splash'),gguf=fakeGguf(),weights=Buffer.from('draft'),projector=Buffer.from('projector'),logs:string[]=[];
   const lfs=(data:Buffer)=>({sha256:createHash('sha256').update(data).digest('hex'),size:data.length}),pulled='org/Inkling-2-Mini-GGUF:Q4',partial='org/Inkling-2-Mini-GGUF:Q8';
   const fetcher:typeof fetch=async input=>{
     const url=String(input);
-    if(url.includes('/api/models/org/'))return Response.json({sha:'b'.repeat(40),siblings:[{rfilename:'Inkling-2-Mini-Q4.gguf',lfs:lfs(gguf)}]});
+    if(url.includes('/api/models/org/'))return Response.json({sha:'b'.repeat(40),siblings:[{rfilename:'Inkling-2-Mini-Q4.gguf',lfs:lfs(gguf)},{rfilename:'mmproj-F16.gguf',lfs:lfs(Buffer.from('f16'))},{rfilename:'mmproj-BF16.gguf',lfs:lfs(projector)},{rfilename:'old/mmproj-BF16.gguf',lfs:lfs(projector)}]});
     if(url.includes('/api/models/incoai/'))return Response.json({sha:'a'.repeat(40),siblings:[{rfilename:'model.safetensors',lfs:lfs(weights)},{rfilename:'config.json'}]});
     if(url.endsWith('/Inkling-2-Mini-Q4.gguf'))return new Response(gguf);
+    if(url.endsWith('/'+'b'.repeat(40)+'/mmproj-BF16.gguf'))return new Response(projector);
     return new Response(url.endsWith('/model.safetensors')?weights:'{}');
   };
   const process={model:null as string|null,pid:null,port:8010,ready:false,idleLeftMs:0,error:null};
@@ -94,11 +95,13 @@ test('models outside Llama.app are pulled with their draft, listed with partials
     await assert.rejects(()=>controls.validate('org/Gemma-GGUF:Q4'),/Unsupported Splash family/);
     const file=await controls.download(pulled);assert.equal(file,join(modelsDir,'org/Inkling-2-Mini-GGUF/Inkling-2-Mini-Q4.gguf'));
     await mkdir(join(modelsDir,'org/Inkling-2-Mini-GGUF'),{recursive:true});await writeFile(join(modelsDir,'org/Inkling-2-Mini-GGUF/Inkling-2-Mini-Q8.gguf.part'),'12345');
+    const mmproj=join(modelsDir,'org/Inkling-2-Mini-GGUF/mmproj-BF16.gguf');assert.deepEqual(await readFile(mmproj),projector);
     let status=await controls.status();
-    assert.deepEqual(status.managed.map(model=>[model.id,model.gguf.state,model.gguf.done,model.draft?.state]),[[pulled,'ready',gguf.length,'ready'],[partial,'missing',5,'ready']]);
-    assert.deepEqual((await splashModels(join(dir,'models.ini'),draftsDir,join(dir,'user.ini'))).map(model=>[model.id,model.model]),[['splash/'+pulled,file]]);
+    assert.deepEqual(status.managed.map(model=>[model.id,model.gguf.state,model.gguf.done,model.vision,model.draft?.state]),[[pulled,'ready',gguf.length,true,'ready'],[partial,'missing',5,true,'ready']]);
+    assert.deepEqual((await splashModels(join(dir,'models.ini'),draftsDir,join(dir,'user.ini'))).map(model=>[model.id,model.model,model.mmproj]),[['splash/'+pulled,file,mmproj]]);
+    assert.equal(pickProjector(['mmproj-Q8_0.gguf','mmproj-F32.gguf','mmproj-F16.gguf','Model-BF16.gguf']),'mmproj-F32.gguf');
     process.model='splash/'+pulled;await assert.rejects(()=>controls.remove(pulled),/running model/);process.model=null;
-    await controls.remove(pulled);status=await controls.status();
+    await controls.remove(pulled);status=await controls.status();await stat(mmproj);
     assert.deepEqual(status.managed.map(model=>[model.id,model.draft?.state]),[[partial,'missing']]);
     await controls.remove(partial);assert.deepEqual((await controls.status()).managed,[]);
     await assert.rejects(()=>stat(join(modelsDir,'org')),/ENOENT/);
