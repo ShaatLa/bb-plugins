@@ -1768,6 +1768,17 @@ it('shows Jump to unread for a chat reopened at its remembered place with unread
   } finally { layout.restore(); }
 });
 
+it('offers Jump to unread for an unread message older than the loaded history, and opens the history there', async () => {
+  const old = chatItem(0, null), page = Array.from({ length:3 }, (_, n) => chatItem(n + 1, 1)).reverse();
+  const { slot, recipients, list } = setup({ list: input => input.view === 'unread' ? { items:[old], nextCursor:null } : input.anchor ? { items:[old], nextCursor:null, newerCursor:'1|ans_0' } : input.cursor ? { items:[], nextCursor:null } : { items:page, nextCursor:'1|ans_1' } });
+  fireEvent.click(await recipients.findByRole('option')); await slot.findByRole('list', { name:'History' });
+  await waitFor(() => expect(jumpButton().className).not.toContain('invisible'));
+  expect(jumpButton().textContent).toBe('1 unread');
+  fireEvent.click(jumpButton());
+  await waitFor(() => expect(list).toHaveBeenCalledWith(expect.objectContaining({ anchor:'ans_0' })));
+  expect(await slot.findByText('Question 0')).toBeTruthy();
+});
+
 // A chat kept by Activity is display:none while another is open: a browser reads its scroll offset as 0 and ignores writes then.
 // Moving an attached element in the DOM (React does it to a keyed child that changes place) resets the offsets inside it to 0.
 // jsdom has no layout: each History row is 300 high and the New divider 40, stacked in DOM order inside a 500 high view.
