@@ -178,6 +178,7 @@ it("runs the Work Board builder and counts successes and fixed refusals through 
   const configPath = join(f.root, "builder-config.json");
   const cardPath = join(f.root, "card.json");
   const base = "a".repeat(40), head = "b".repeat(40);
+  const previousHead = "c".repeat(40);
   const parent = f.request.parentThreadId;
   const models = [{ providerId: "codex", model: "codex-model" }, { providerId: "claude-code", model: "claude-model" }];
   const config = {
@@ -206,9 +207,20 @@ fi
   f.harness.sdk.stub("plugins.callRpc", async () => { throw new Error("Account Pooler not installed"); });
   const task = { key: "EXA-1", status: "in_progress", type: "task", title: "Example", description: "Scope: plugins/example/ \t\r\nFix the test." };
   const plan = { state: "approved", version: 1, body: "Use the fixture.\nagent-admission example" };
+  const previousReview = {
+    kind: "agent", threadId: "thr_previous", body: `Review range: ${base}..${previousHead}`, provider: { id: "claude-code" },
+  };
   const card = {
     task, plan, project: { linkedBbProjectId: f.request.projectId }, dependencies: { blockedBy: [] as { status: string }[] },
-    comments: [{ kind: "agent", threadId: parent, body: `Review range: ${base}..${head}`, provider: { id: "codex" } }],
+    comments: [
+      { ...previousReview, id: "comment_oldest", createdAt: "2025-01-01T00:00:00.000Z" },
+      {
+        id: "comment_latest", createdAt: "2025-01-03T00:00:00.000Z", kind: "agent", threadId: parent,
+        body: `Review range: ${base}..${head}`, provider: { id: "codex" },
+      },
+      { ...previousReview, id: "comment_other", createdAt: "2025-01-04T00:00:00.000Z", kind: "system" },
+      { ...previousReview, id: "comment_previous", createdAt: "2025-01-02T00:00:00.000Z" },
+    ],
   };
   const saveCard = () => writeFile(cardPath, JSON.stringify(card));
   const launch = (role: string, dryRun = true) => f.start({ ...f.request, args: ["--card", task.key, "--role", role], dryRun });
@@ -217,10 +229,12 @@ fi
     brief: expect.stringContaining("> agent-admission example"),
     spawn: { providerId: "codex", environment: { type: "host", workspace: { type: "managed-worktree" } } },
   } });
-  expect(await launch("review")).toMatchObject({ build: {
-    brief: expect.stringContaining(head), spawn: { providerId: "claude-code" },
+  const review = await launch("review");
+  expect(review).toMatchObject({ build: {
+    brief: expect.stringContaining(`Review base \`${base}\` and head \`${head}\`.`), spawn: { providerId: "claude-code" },
     providerPolicy: { eligible: [models[1]] },
   } });
+  expect(review).not.toMatchObject({ build: { brief: expect.stringContaining(previousHead) } });
   expect(await launch("check", false)).toMatchObject({ dryRun: false, threadId: "thr_child" });
   plan.state = "draft"; await saveCard();
   expect(await launch("plan-review")).toMatchObject({ build: { spawn: { providerId: "claude-code" } } });

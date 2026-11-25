@@ -121,7 +121,8 @@ def assemble(card, config, request, role):
     scope, owner = plugin_scope(task.get("description") or "", config, parent)
     excluded, review = None, ""
     if role == "review":
-        for comment in reversed(card["comments"]):
+        comments = sorted(card["comments"], key=lambda comment: (comment["createdAt"], comment["id"]), reverse=True)
+        for comment in comments:
             match = REVIEW_RANGE.fullmatch(comment["body"].strip())
             provider = (comment.get("provider") or {}).get("id")
             if match and comment.get("kind") == "agent" and comment.get("threadId") and provider:
