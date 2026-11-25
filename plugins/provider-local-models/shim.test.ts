@@ -9,7 +9,7 @@ import type {AddressInfo} from 'node:net';
 import {createInterface} from 'node:readline';
 import {fileURLToPath} from 'node:url';
 import {shimSource} from './shim.ts';
-import {startModelsServer} from './test/models-server.ts';
+import {routerModels,startModelsServer} from './test/models-server.ts';
 
 function startShim(file:string,env:Record<string,string>,mode='accept-edits'){
   const child=spawn(process.execPath,[file,'--bb-permission-mode='+mode],{env:{...process.env,...env},stdio:['pipe','pipe','pipe']});
@@ -264,5 +264,80 @@ test('an MCP tools/call that never answers times out into an error result',{time
     const session=await shim.request('session/new',{cwd:dir,mcpServers});
     assert.deepEqual(await promptOf(shim,session.sessionId),{stopReason:'end_turn'});
     assert.match(toolResults(server)[0],/^Error: MCP server hang did not answer tools\/call\.$/);
+  }finally{shim.child.kill();await server.close();await rm(dir,{recursive:true,force:true});}
+});
+
+test('each turn holds a Machine Slots local-model use on its model device', {timeout:30000},async()=>{
+  const dir=await mkdtemp(path.join(tmpdir(),'local-models-slots-test-'));
+  const server=await startModelsServer({data:[{...routerModels.data[0],id:'box2/owner/Model-GGUF:Q4_K_M'}]});
+  const bb=path.join(dir,'bb');
+  await writeFile(bb,'#!/bin/sh\nexec "'+process.execPath+'" "'+fileURLToPath(new URL('./test/fake-bb.mjs',import.meta.url))+'" "$@"\n',{mode:0o755});
+  const file=path.join(dir,'shim.mjs');await writeFile(file,shimSource);
+  const run=async(mode:string,text:string,extra:Record<string,string>={},cancelAfter?:(log:()=>Promise<any[]>)=>Promise<void>)=>{
+    const log=path.join(dir,mode+'-'+Math.random()+'.jsonl');await writeFile(log,'');
+    const read=async()=>(await readFile(log,'utf8')).trim().split('\n').filter(Boolean).map(line=>JSON.parse(line));
+    const shim=startShim(file,{LM_BB_DATA_DIR:dir,LM_BASE_URL:server.baseUrl,BB_CLI:bb,FAKE_SLOTS:mode,FAKE_SLOTS_LOG:log,LM_THREAD_ID:'thr_example',LM_WAIT_ROW_MS:'800',...extra},'full');
+    try{
+      const {sessionId}=await shim.request('session/new',{cwd:dir,mcpServers:[]});
+      const chats=server.chats.length,reply=shim.request('session/prompt',{sessionId,prompt:[{type:'text',text}]});
+      if(cancelAfter){await cancelAfter(read);shim.notify('session/cancel',{sessionId});}
+      const result=await reply;
+      return {result,calls:await read(),chats:server.chats.length-chats,updates:shim.updates,read};
+    }finally{shim.child.kill();}
+  };
+  const until=async(check:()=>Promise<boolean>)=>{for(let i=0;i<200&&!await check();i++)await new Promise(r=>setTimeout(r,20));};
+  try{
+    // Lease around the turn, on the model's machine, for this BB thread.
+    let r=await run('lease','hello');
+    assert.deepEqual(r.result,{stopReason:'end_turn'});assert.equal(r.chats,1);
+    assert.deepEqual(r.calls.map(c=>c.command),['acquire','done']);
+    const acquire=r.calls[0].args;
+    assert.equal(acquire[acquire.indexOf('--device')+1],'box2');assert.equal(acquire[acquire.indexOf('--thread')+1],'thr_example');assert.equal(acquire[acquire.indexOf('--pool')+1],'local-model');
+    assert.equal(r.calls[1].args[0],'use-1');
+    assert.ok(!r.updates.some(u=>/Slots/.test(u.title??'')),'a quick grant shows no waiting row');
+
+    // A slow grant shows the waiting row, which completes on the grant.
+    r=await run('slow','hello');
+    const row=r.updates.find(u=>u.sessionUpdate==='tool_call'&&u.title==='Waiting for a Slots local-model lease on box2');
+    assert.ok(row);assert.ok(r.updates.some(u=>u.sessionUpdate==='tool_call_update'&&u.toolCallId===row.toolCallId&&u.status==='completed'));
+
+    // Slots unavailable: the turn runs unleased and finishes nothing.
+    r=await run('down','hello');
+    assert.deepEqual(r.result,{stopReason:'end_turn'});assert.equal(r.chats,1);assert.deepEqual(r.calls.map(c=>c.command),['acquire']);
+    r=await run('lease','hello',{BB_CLI:path.join(dir,'missing-bb')});
+    assert.deepEqual(r.result,{stopReason:'end_turn'});assert.equal(r.chats,1);assert.deepEqual(r.calls,[]);
+
+    // A queue timeout is not a failure: ask again until the grant, then run.
+    r=await run('timeout','hello');
+    assert.deepEqual(r.calls.map(c=>c.command),['acquire','acquire','acquire','done']);assert.equal(r.chats,1);
+
+    // Cancel while queued: SIGTERM lets the CLI drop its request; no model request, nothing to finish.
+    r=await run('hang','hello',{},async read=>until(async()=>(await read()).length>0));
+    assert.deepEqual(r.result,{stopReason:'cancelled'});assert.equal(r.chats,0);assert.deepEqual(r.calls.map(c=>c.command),['acquire','sigterm']);
+
+    // A grant that races the cancel is finished at once.
+    r=await run('race','hello',{},async read=>until(async()=>(await read()).length>0));
+    assert.deepEqual(r.result,{stopReason:'cancelled'});assert.equal(r.chats,0);assert.deepEqual(r.calls.map(c=>c.command),['acquire','sigterm','done']);
+
+    // Cancel after the grant: heartbeats while running, done at the end, no heartbeat after it.
+    r=await run('lease','wait-for-cancel',{LM_SLOTS_HEARTBEAT_MS:'30'},async read=>until(async()=>(await read()).some(c=>c.command==='heartbeat')));
+    assert.deepEqual(r.result,{stopReason:'cancelled'});
+    await new Promise(resolve=>setTimeout(resolve,150));
+    const commands=(await r.read()).map(c=>c.command);
+    assert.equal(commands.at(-1),'done');assert.ok(commands.includes('heartbeat'));
+    assert.deepEqual((await r.read()).find(c=>c.command==='heartbeat').args,['--use','use-1','--json','--thread','thr_example']);
+  }finally{await server.close();await rm(dir,{recursive:true,force:true});}
+});
+
+test('without LM_THREAD_ID the shim never calls Machine Slots',{timeout:15000},async()=>{
+  const dir=await mkdtemp(path.join(tmpdir(),'local-models-noslots-test-'));const server=await startModelsServer();
+  const log=path.join(dir,'calls.jsonl');await writeFile(log,'');
+  const bb=path.join(dir,'bb');await writeFile(bb,'#!/bin/sh\nexec "'+process.execPath+'" "'+fileURLToPath(new URL('./test/fake-bb.mjs',import.meta.url))+'" "$@"\n',{mode:0o755});
+  const file=path.join(dir,'shim.mjs');await writeFile(file,shimSource);
+  const shim=startShim(file,{LM_BB_DATA_DIR:dir,LM_BASE_URL:server.baseUrl,BB_CLI:bb,FAKE_SLOTS:'lease',FAKE_SLOTS_LOG:log,LM_THREAD_ID:''},'full');
+  try{
+    const {sessionId}=await shim.request('session/new',{cwd:dir,mcpServers:[]});
+    assert.deepEqual(await shim.request('session/prompt',{sessionId,prompt:[{type:'text',text:'hello'}]}),{stopReason:'end_turn'});
+    assert.equal(await readFile(log,'utf8'),'');
   }finally{shim.child.kill();await server.close();await rm(dir,{recursive:true,force:true});}
 });

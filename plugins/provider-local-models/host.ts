@@ -91,7 +91,9 @@ async function dispatch(request: { id: string | number; method: string; params?:
       const key = JSON.stringify(options);
       if (key !== launchKey) { launch = undefined; launchKey = key; }
       launch ??= launchSpec(options).catch(error => { launch = undefined; throw error; });
-      parent.providerOptions = { ...parent.providerOptions, acpLaunchSpec: await launch, acpDialect: "generic" };
+      const spec = await launch;
+      // Each thread gets its own shim; the BB thread id lets it hold a Slots use for its turns.
+      parent.providerOptions = { ...parent.providerOptions, acpLaunchSpec: { ...spec, env: { ...spec.env, LM_THREAD_ID: request.params.threadId } }, acpDialect: "generic" };
       return acp.handleLine(JSON.stringify(request));
     }
     acp.handleLine(line);

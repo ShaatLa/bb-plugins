@@ -50,8 +50,13 @@ bb plugin config local-models set defaultModel 'ggml-org/gpt-oss-20b-GGUF:MXFP4'
   approval inside the shim.
 - A thread spawned by an agent must use `--permission-mode full`: BB denies
   approval requests in agent-sent turns, so accept-edits shell calls fail. Run
-  at most one local-models thread per GPU; threads take no Slots use themselves,
-  so the parent holds a `local-model` lease and transfers it to the child.
+  at most one local-models thread per GPU. Each turn takes a Machine Slots
+  `local-model` use on its model's machine (`<device>` for a `<device>/...` id, `local`
+  otherwise), heartbeats it while the turn runs and finishes it at the end; the
+  90 s grace keeps the lease between quick turns. While no lease is free, the
+  turn waits in the queue and the thread shows a waiting row; without Slots it
+  runs unleased. A parent may still hold a lease and transfer it to the child:
+  the child's turns then add their uses to that lease.
 - With a second machine in `baseUrl` (model ids `<machine>/owner/Model-GGUF:QUANT`),
   the plugin registers each answering machine with Machine Slots every minute, so
   each has its own `local-model` slot. A model with a machine prefix leases that

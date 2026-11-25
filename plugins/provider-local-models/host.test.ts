@@ -7,6 +7,7 @@ import { experimental_providerBridge as bridge, launchSpec } from './host.ts';
 import { shimSource } from './shim.ts';
 import { startModelsServer } from './test/models-server.ts';
 import { experimental_captureBridgeJsonRpcOutput as capture } from '@get-bb/plugin-sdk/provider-bridge/testing';
+import { experimental_acpProviderBridge as acp } from '@get-bb/plugin-sdk/provider-bridge/acp';
 
 const DAY = 24 * 60 * 60 * 1000;
 
@@ -54,6 +55,24 @@ test('provider/usage answers unsupported', async () => {
   } finally {
     output.restore();
     await server.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('turn requests hand the BB thread id to the shim env', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'local-models-thread-env-'));
+  const forwarded: string[] = [], original = acp.handleLine;
+  acp.handleLine = (line: string) => { forwarded.push(line); };
+  try {
+    bridge.start?.({ pluginId: 'local-models', dataDir: root, tempDir: root });
+    bridge.handleLine(JSON.stringify({ jsonrpc: '2.0', id: 8, method: 'turn/start', params: { threadId: 'thr_example', providerThreadId: 'p1', input: [], clientRequestId: 'creq_abcdefghij',
+      options: { permissionMode: 'full', permissionScope: 'full', approvalReviewer: null, permissionEscalation: null, providerOptions: { baseUrl: 'http://127.0.0.1:9/v1' } } } }));
+    for (let attempt = 0; attempt < 100 && !forwarded.length; attempt++) await new Promise(resolve => setTimeout(resolve, 20));
+    const spec = JSON.parse(forwarded[0]).params.options.providerOptions.acpLaunchSpec;
+    assert.equal(spec.env.LM_THREAD_ID, 'thr_example');
+    assert.equal(spec.env.LM_BASE_URL, 'http://127.0.0.1:9/v1');
+  } finally {
+    acp.handleLine = original;
     await rm(root, { recursive: true, force: true });
   }
 });

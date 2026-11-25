@@ -10,8 +10,10 @@ When the owner set model guidance in the plugin settings, it is in your
 instructions: pick models by it.
 
 Rules for dispatching a local-models thread:
-- Run at most one local-models thread per GPU at a time. Threads do not take a
-  Slots use on their own, so hold a `local-model` lease for the child:
+- Run at most one local-models thread per GPU at a time. Each turn of the
+  thread takes a `local-model` use on its model's machine by itself and waits in
+  the Slots queue while that machine is busy. To keep the machine for the child
+  between turns, hold a lease and give it to the child:
   `bb slots request --pool local-model --device <machine> --job "draft notes" --est 30m --wait`,
   then spawn, then `bb slots transfer --to thr_example`; after the child reports,
   run `bb slots release <lease>`. `<machine>` is the id's

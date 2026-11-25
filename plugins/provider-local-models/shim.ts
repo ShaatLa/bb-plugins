@@ -191,6 +191,42 @@ function takeInstructions(session,content){
   return content.slice(end+22).trimStart();
 }
 const sleep=(ms,signal)=>new Promise(done=>{const abort=()=>{clearTimeout(timer);done();},timer=setTimeout(()=>{signal.removeEventListener('abort',abort);done();},ms);signal.addEventListener('abort',abort,{once:true});});
+// Machine Slots: each turn holds a local-model use on its model's device, so heavy work there yields to it. LM_THREAD_ID
+// comes from the bridge; without it, or when Slots is unavailable, the turn runs unleased. A busy queue is never a failure.
+const SLOTS_THREAD=process.env.LM_THREAD_ID||'',HEARTBEAT_MS=env('LM_SLOTS_HEARTBEAT_MS',60000);
+const deviceOf=id=>{const parts=id.split('/');return parts.length>2&&parts[0]!=='splash'?parts[0]:'local';};
+// On abort SIGTERM lets the CLI call done itself; SIGKILL only if it hangs (the queued use then expires on its TTL).
+function slotsCli(args,signal){
+  return new Promise(done=>{
+    let out='',killer=0,child;
+    const abort=()=>{child.kill('SIGTERM');killer=setTimeout(()=>child.kill('SIGKILL'),env('LM_SLOTS_KILL_MS',5000));};
+    const finish=result=>{clearTimeout(killer);signal?.removeEventListener('abort',abort);done(result);};
+    try{child=spawn(process.env.BB_CLI||'bb',['slots',...args,'--json','--thread',SLOTS_THREAD],{stdio:['ignore','pipe','ignore']});}
+    catch(error){return done({code:-1,json:null,error});}
+    child.stdout.on('data',part=>out+=part);
+    child.on('error',error=>finish({code:-1,json:null,error}));
+    child.on('close',code=>{let json=null;try{json=JSON.parse(out.trim().split('\n').at(-1));}catch{}finish({code,json});});
+    if(signal){if(signal.aborted)abort();else signal.addEventListener('abort',abort,{once:true});}
+  });
+}
+const finishUse=useId=>slotsCli(['done',useId],AbortSignal.timeout(15000));
+async function takeLease(session,signal){
+  if(!SLOTS_THREAD)return null;
+  const device=deviceOf(session.selected),rowId='lm-'+randomUUID();let shown=false;
+  const timer=setTimeout(()=>{shown=true;update(session.id,{sessionUpdate:'tool_call',toolCallId:rowId,kind:'other',status:'in_progress',title:'Waiting for a Slots local-model lease on '+device});},env('LM_WAIT_ROW_MS',3000));
+  const finish=(status,useId=null)=>{clearTimeout(timer);if(shown)update(session.id,{sessionUpdate:'tool_call_update',toolCallId:rowId,status});return useId;};
+  for(;;){
+    const result=await slotsCli(['acquire','--pool','local-model','--device',device,'--job','local-models thread · '+label(session.selected),'--est','10m','--timeout','60m'],signal);
+    const useId=result.json?.ok&&result.json.data?.kind==='leased'?result.json.data.useId:null;
+    // A grant that raced the cancel still holds the device: finish it here.
+    if(signal.aborted){if(useId)await finishUse(useId);return finish('failed');}
+    if(useId)return finish('completed',useId);
+    // Exit 75: the queue wait timed out; Slots keeps the place for one heartbeat interval, so ask again.
+    if(result.code===75)continue;
+    process.stderr.write('local-models: Machine Slots unavailable, the turn runs without a lease: '+(result.json?.error?.message||result.error?.message||'exit '+result.code)+'\n');
+    return finish('completed');
+  }
+}
 const reasonOf=error=>String(error?.cause?.code||error?.cause?.message||error?.message||error);
 // One streamed chat completion. Every failure mode ends in a thrown Error with a readable reason.
 async function streamCompletion(body,signal,onChunk,deadline){
@@ -409,8 +445,14 @@ function runPrompt(id,session,prompt){
   session.messages.push({role:'user',content});
   (async()=>{
     let stopReason,failure=null;
-    try{stopReason=await runTurn(session,controller.signal,progress);}
+    let useId=null,beat=0;
+    try{
+      useId=await takeLease(session,controller.signal);
+      if(useId)beat=setInterval(()=>void slotsCli(['heartbeat','--use',useId],AbortSignal.timeout(15000)),HEARTBEAT_MS);
+      stopReason=controller.signal.aborted?'cancelled':await runTurn(session,controller.signal,progress);
+    }
     catch(error){failure=error;}
+    clearInterval(beat);if(useId)await finishUse(useId);
     // Keep user/assistant alternation for strict chat templates when a reply was cut short.
     if(session.messages.at(-1)?.role==='user')session.messages.push({role:'assistant',content:progress.reply?.content||'(interrupted)'});
     for(const child of session.children)stopChild(child,'SIGKILL');
