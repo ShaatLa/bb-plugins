@@ -359,6 +359,28 @@ describe("Slots deterministic engine", () => {
     expect((off.send({ type: "acquire", threadId: "x", hostId: "h", pool: "heavy", job: "suite", estMs: minute, spill: true } as Input).result as { data: { kind: string } }).data.kind).toBe("queued");
   });
 
+  it("tells the thread and the observer once when a queued request is dropped because its use expired", () => {
+    const h = harness({ observerThreadId: "obs", observerEvents: ["expire", "release"] });
+    const notices = (t: Transition) => t.effects.flatMap(e => e.type === "notify" ? [`${e.reason}:${e.threadId}${e.queue ? ":queued" : ""}`] : []);
+    const queue = (threadId: string, pool: "heavy" | "local-model") => (h.send({ type: "acquire", threadId, hostId: "h", pool, job: "suite", estMs: minute }).result as { data: { kind: string; useId: string } }).data;
+    h.sample(5, 99); // memory too low: both pools queue
+    expect(queue("a", "heavy").kind).toBe("queued"); expect(queue("m", "local-model").kind).toBe("queued");
+    h.now += 600_000;
+    const tick = h.send({ type: "tick" });
+    expect(notices(tick).sort()).toEqual(["expire:a", "expire:obs:queued", "expire:obs:queued"]);
+    expect(tick.effects.find(e => e.type === "notify" && e.threadId === "a")).toMatchObject({ title: "Queued request dropped" });
+    expect(tick.effects.filter(e => e.type === "audit").map(e => e.type === "audit" && e.event.type)).toEqual(["use-expired", "release", "use-expired", "release"]);
+    expect(h.state.requests).toEqual([]);
+    // A detached request whose grace ends sends no thread notice.
+    const use = queue("d", "heavy");
+    h.send({ type: "detach", threadId: "d", useId: use.useId }); h.now += 600_000;
+    expect(notices(h.send({ type: "tick" })).filter(n => n.includes(":d"))).toEqual([]);
+    // An observer that follows only `release` still gets exactly one notice.
+    const r = harness({ observerThreadId: "obs", observerEvents: ["release"] }); r.sample(5, 99);
+    r.send({ type: "acquire", threadId: "a", hostId: "h", pool: "heavy", job: "suite", estMs: minute }); r.now += 600_000;
+    expect(notices(r.send({ type: "tick" })).sort()).toEqual(["expire:a", "release:obs:queued"]);
+  });
+
   it("restore retains leases and ports but requires fresh samples", () => {
     const h = harness(); h.request("a"); h.open(); h.open();
     h.send({ type: "portLease", hostId: "h", threadId: "a", port: 41000 });

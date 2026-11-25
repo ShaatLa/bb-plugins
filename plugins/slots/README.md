@@ -171,7 +171,11 @@ grandchildren that outlive it are not covered. PID and start-time checks are
 approximate and do not exclude PID reuse. A stuck renewal supervisor can leave
 an in-flight heartbeat running until it returns. The wrapper supports macOS and
 Linux. Acquire timeout exits 75 and keeps the queue position for one use TTL;
-retry within that grace period. A holder may reuse its lease for nested, sequential or concurrent wrapper runs without re-gating. Each use must be renewed independently.
+retry within that grace period. A queued request whose use expires (its waiter
+stopped renewing) is dropped with one urgent "Queued request dropped" notice to
+the thread and one observer notice (on `expire`, or on `release` when the observer
+follows only that); a `local-model`
+request notifies only the observer. A holder may reuse its lease for nested, sequential or concurrent wrapper runs without re-gating. Each use must be renewed independently.
 
 A thread has one request or lease per pool (per device for `local-model`). Release without an ID works only
 when the thread has exactly one lease or request; with several it is refused and

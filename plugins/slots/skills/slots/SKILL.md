@@ -37,7 +37,8 @@ process group to cancel. `bb slots request --wait` timeout exits 75 and keeps
 the request queued until canceled or the thread ends; rerun the same command
 to keep waiting. `acquire` / `slots-run` timeout exits 75 and keeps its queue
 position for one heartbeat interval (10 minutes by default); rerun within that
-time.
+time. If a queued use stops being renewed (its waiter ended), the request is
+dropped and you get a "Queued request dropped" notice: queue again.
 For scripts, `bb slots acquire` returns a use ID; renew with `bb slots heartbeat
 --use <id>` and finish with `bb slots done <id>`. Manual request, heartbeat and
 release remain available.

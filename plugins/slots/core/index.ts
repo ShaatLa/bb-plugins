@@ -214,7 +214,7 @@ export function apply(original: State, input: Input, ctx: Context): Transition {
       if ((onlyHost === undefined || request.hostId === onlyHost) && settingsFor(ctx.settings, request.hostId).grantMode === "auto") grant(request.id, false);
     }
   };
-  const release = (threadId: string, leaseId?: string, reason = "released", ended = false) => {
+  const release = (threadId: string, leaseId?: string, reason = "released", ended = false, quiet = false) => {
     const result = { released: [] as string[], returned: [] as string[], canceled: [] as string[] };
     for (const l of [...state.leases]) {
       if (leaseId !== undefined && l.id !== leaseId) continue;
@@ -234,7 +234,7 @@ export function apply(original: State, input: Input, ctx: Context): Transition {
       if (r.threadId !== threadId || (leaseId !== undefined && r.id !== leaseId)) return true;
       result.canceled.push(r.id);
       audit("release", { hostId: r.hostId, pool: r.pool, threadId, requestId: r.id, reason });
-      observer(r.hostId, "release", { title: "Slot released", lines: [{ value: r.job }, { label: "Request", value: `\`${r.id}\` · ${r.pool}` }, { label: "Thread", value: `\`${threadId}\`` }, ...(reason === "released" ? [] : [{ label: "Reason", value: `\`${reason}\`` }])] });
+      if (!quiet) observer(r.hostId, "release", { title: "Slot released", lines: [{ value: r.job }, { label: "Request", value: `\`${r.id}\` · ${r.pool}` }, { label: "Thread", value: `\`${threadId}\`` }, ...(reason === "released" ? [] : [{ label: "Reason", value: `\`${reason}\`` }])] });
       return false;
     });
     return result;
@@ -455,7 +455,16 @@ export function apply(original: State, input: Input, ctx: Context): Transition {
           if (!expired.length) audit("unclaimed", { hostId: target.hostId, pool: target.pool, reason: target.id });
           // An unclaimed local-model lease is the idle grace ending; its thread is not waiting, so no message.
           if ("holderThreadId" in target) free(target, "release", expired.length ? "use expired" : "unclaimed", !expired.length && target.pool === "local-model" ? target.holderThreadId : null);
-          else release(target.threadId, target.id, expired.length ? "use expired" : "unclaimed");
+          else if (!expired.length) release(target.threadId, target.id, "unclaimed");
+          else {
+            // The waiter stopped renewing (its process ended or the thread went idle): tell the thread it is no longer queued.
+            release(target.threadId, target.id, "use expired", false, true);
+            const message: NotificationMessage = { title: "Queued request dropped", lines: [{ value: target.job }, { label: "Request", value: `\`${target.id}\` · ${target.pool}` }, { label: "Reason", value: "use expired while queued; you are no longer in the queue" }],
+              hint: `Queue again with \`sh -c "$(bb slots wrapper)" slots-run …\` or \`bb slots request --wait\`, and keep that waiter running until it is granted.` };
+            if (target.pool !== "local-model") notify(target.threadId, "expire", message); // a local-models thread's withSlot sees its use vanish; a message would cost it a model turn
+            // One observer notice: on `expire` when the observer follows it, else on `release` as before.
+            observer(target.hostId, settingsFor(ctx.settings, target.hostId).observerEvents.includes("expire") ? "expire" : "release", message, ...(target.pool !== "local-model" ? [target.threadId] : []));
+          }
         }
       }
       for (const lease of [...state.leases]) {
