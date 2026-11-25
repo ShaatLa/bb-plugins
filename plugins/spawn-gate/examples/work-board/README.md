@@ -49,10 +49,10 @@ directory. Only the mapped owner or manager can launch for that scope. An open
 epic returns `unsupported_card_type`; use a task key from the epic.
 
 - `impl` implements the approved plan.
-- `review` reviews code. The implementation agent must post
-  `Review range: <full BASE SHA>..<full HEAD SHA>` as its own comment. The
-  newest matching agent comment by creation time supplies the review range and
-  the author's provider to exclude.
+- `review` reviews code. The implementation agent must begin its comment with
+  `Review range: <full BASE SHA>..<full HEAD SHA>`. Optional notes can follow
+  after whitespace. The newest matching agent comment by creation time
+  supplies the only range to review and the author's provider to exclude.
 - `check` runs the checks or captures in the approved plan.
 - `plan-review` starts a reviewer on a different provider from the caller.
   Save the draft, launch the reviewer, and submit the plan to its thread ID.

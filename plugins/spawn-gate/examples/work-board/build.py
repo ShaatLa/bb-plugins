@@ -18,7 +18,7 @@ ROLE_RULES = {
 }
 TASK_KEY = re.compile(r"[A-Z][A-Z0-9]{0,9}-[0-9]{1,12}")
 SCOPE = re.compile(r"Scope: plugins/([a-z0-9][a-z0-9_-]*)/?")
-REVIEW_RANGE = re.compile(r"Review range: ([0-9a-f]{40})\.\.([0-9a-f]{40})")
+REVIEW_RANGE = re.compile(r"Review range: ([0-9a-f]{40})\.\.([0-9a-f]{40})(?=\s|$)")
 
 
 class Refusal(Exception):
@@ -123,11 +123,14 @@ def assemble(card, config, request, role):
     if role == "review":
         comments = sorted(card["comments"], key=lambda comment: (comment["createdAt"], comment["id"]), reverse=True)
         for comment in comments:
-            match = REVIEW_RANGE.fullmatch(comment["body"].strip())
+            match = REVIEW_RANGE.match(comment["body"].lstrip())
             provider = (comment.get("provider") or {}).get("id")
             if match and comment.get("kind") == "agent" and comment.get("threadId") and provider:
                 excluded = provider
-                review = f"Review base `{match[1]}` and head `{match[2]}`.\n"
+                review = (
+                    f"Review only the Git diff for `{match[1]}..{match[2]}`.\n"
+                    "Use earlier ranges and findings on the card only as historical context.\n"
+                )
                 break
         if not review:
             raise Refusal("missing_review_range", "Have the implementation agent post: Review range: <full BASE SHA>..<full HEAD SHA>.")

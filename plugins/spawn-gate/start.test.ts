@@ -216,7 +216,7 @@ fi
       { ...previousReview, id: "comment_oldest", createdAt: "2025-01-01T00:00:00.000Z" },
       {
         id: "comment_latest", createdAt: "2025-01-03T00:00:00.000Z", kind: "agent", threadId: parent,
-        body: `Review range: ${base}..${head}`, provider: { id: "codex" },
+        body: `Review range: ${base}..${head} (follow-up fix). Branch example-review.`, provider: { id: "codex" },
       },
       { ...previousReview, id: "comment_other", createdAt: "2025-01-04T00:00:00.000Z", kind: "system" },
       { ...previousReview, id: "comment_previous", createdAt: "2025-01-02T00:00:00.000Z" },
@@ -231,10 +231,15 @@ fi
   } });
   const review = await launch("review");
   expect(review).toMatchObject({ build: {
-    brief: expect.stringContaining(`Review base \`${base}\` and head \`${head}\`.`), spawn: { providerId: "claude-code" },
+    brief: expect.stringContaining(
+      `Review only the Git diff for \`${base}..${head}\`.\n` +
+      "Use earlier ranges and findings on the card only as historical context.",
+    ),
+    spawn: { providerId: "claude-code" },
     providerPolicy: { eligible: [models[1]] },
   } });
   expect(review).not.toMatchObject({ build: { brief: expect.stringContaining(previousHead) } });
+  expect(review).not.toMatchObject({ build: { brief: expect.stringContaining("Branch example-review.") } });
   expect(await launch("check", false)).toMatchObject({ dryRun: false, threadId: "thr_child" });
   plan.state = "draft"; await saveCard();
   expect(await launch("plan-review")).toMatchObject({ build: { spawn: { providerId: "claude-code" } } });
