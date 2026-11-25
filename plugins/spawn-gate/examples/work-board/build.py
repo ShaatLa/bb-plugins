@@ -61,6 +61,8 @@ def read_config(project_id):
         isinstance(data.get(field), dict) for field in ("owners", "roles")
     ):
         raise Refusal("invalid_config", "Configure managerThreadId, owners and roles in the server-local file.")
+    if data.get("environment", "managed-worktree") not in ("managed-worktree", "reuse-parent"):
+        raise Refusal("invalid_config", "Set environment to managed-worktree or reuse-parent.")
     return data
 
 
@@ -128,8 +130,12 @@ def assemble(card, config, request, role):
                 break
         if not review:
             raise Refusal("missing_review_range", "Have the implementation agent post: Review range: <full BASE SHA>..<full HEAD SHA>.")
-    elif role == "plan-review":
-        excluded = bb("thread", "show", parent)["thread"]["providerId"]
+    reuse_parent = config.get("environment") == "reuse-parent"
+    parent_thread = bb("thread", "show", parent)["thread"] if reuse_parent or role == "plan-review" else {}
+    if role == "plan-review":
+        excluded = parent_thread["providerId"]
+    if reuse_parent and not parent_thread.get("environmentId"):
+        raise Refusal("missing_parent_environment", "Launch from a parent thread with an attached BB environment.")
     execution, policy = role_route(config, role, excluded)
     key, title = task["key"], " ".join(task["title"].split())
     brief = (
@@ -143,7 +149,9 @@ def assemble(card, config, request, role):
         **execution, "parentThreadId": parent, "title": f"{key} {role}: {title}"[:120],
         "parentNotifications": "stuck",
     }
-    if role in {"impl", "review"}:
+    if reuse_parent:
+        spawn["environment"] = {"type": "reuse", "environmentId": parent_thread["environmentId"]}
+    elif role in {"impl", "review"}:
         spawn["environment"] = {"type": "host", "workspace": {"type": "managed-worktree", "baseBranch": {"kind": "default"}}}
     return {"version": 1, "brief": brief, "spawn": spawn, "providerPolicy": policy}
 

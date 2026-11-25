@@ -187,9 +187,10 @@ it("runs the Work Board builder and counts successes and fixed refusals through 
   await writeFile(configPath, JSON.stringify(config));
   vi.stubEnv("BB_SPAWN_GATE_WORK_BOARD_CONFIG", configPath);
   vi.stubEnv("EXAMPLE_CARD_JSON", cardPath);
+  vi.stubEnv("EXAMPLE_PARENT_JSON", '{"thread":{"providerId":"codex","environmentId":"env_example"}}');
   await writeFile(join(f.root, "bin", "bb"), `#!/bin/sh
 if [ "$1" = thread ]; then
-  printf '%s\\n' '{"thread":{"providerId":"codex"}}'
+  printf '%s\\n' "$EXAMPLE_PARENT_JSON"
 else
   cat "$EXAMPLE_CARD_JSON"
 fi
@@ -212,7 +213,10 @@ fi
   const saveCard = () => writeFile(cardPath, JSON.stringify(card));
   const launch = (role: string, dryRun = true) => f.start({ ...f.request, args: ["--card", task.key, "--role", role], dryRun });
   await saveCard();
-  expect(await launch("impl")).toMatchObject({ build: { brief: expect.stringContaining("> agent-admission example"), spawn: { providerId: "codex" } } });
+  expect(await launch("impl")).toMatchObject({ build: {
+    brief: expect.stringContaining("> agent-admission example"),
+    spawn: { providerId: "codex", environment: { type: "host", workspace: { type: "managed-worktree" } } },
+  } });
   expect(await launch("review")).toMatchObject({ build: {
     brief: expect.stringContaining(head), spawn: { providerId: "claude-code" },
     providerPolicy: { eligible: [models[1]] },
@@ -248,7 +252,22 @@ fi
     "builder:open_dependency", "builder:scope_not_allowed", "builder:unknown_role", "builder:unsupported_card_type",
     "builder:wrong_project",
   ]);
-});
+
+  task.description = "Scope: plugins/example/"; await saveCard();
+  const reused = { type: "reuse", environmentId: "env_example" };
+  await writeFile(configPath, JSON.stringify({ ...config, environment: "reuse-parent" }));
+  for (const role of ["impl", "review", "check", "plan-review"]) {
+    expect(await launch(role)).toMatchObject({ build: { spawn: { environment: reused } } });
+  }
+  expect(f.mint).toHaveBeenCalledTimes(1);
+  expect(f.spawn).toHaveBeenCalledTimes(1);
+  expect(await launch("review", false)).toMatchObject({ dryRun: false, threadId: "thr_child" });
+  expect(f.spawn).toHaveBeenLastCalledWith(expect.objectContaining({ environment: reused }));
+  vi.stubEnv("EXAMPLE_PARENT_JSON", '{"thread":{"providerId":"codex","environmentId":null}}');
+  await expect(launch("review")).rejects.toThrow('{"reasonCode": "missing_parent_environment"}');
+  await writeFile(configPath, JSON.stringify({ ...config, environment: "other" }));
+  await expect(launch("review")).rejects.toThrow('{"reasonCode": "invalid_config"}');
+}, 15_000);
 
 it("fetches an orphan builder branch and refuses a tag with the same name as a missing branch", async () => {
   const f = await fixture();
