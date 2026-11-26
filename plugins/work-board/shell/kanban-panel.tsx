@@ -49,7 +49,7 @@ function KanbanPanelContent({ subPath }: PluginNavPanelProps) {
   }
   return (
     <section aria-label="Project kanban" className="flex h-full min-h-0 flex-col">
-      <header className="flex shrink-0 items-center gap-2 border-b border-border-hairline px-4 py-2 text-sm font-medium"><span className="min-w-0 truncate">{project.name}</span><ManagerQuickSet projectId={project.id} className="ml-6" /><span className="flex-1" /><LockChips projectId={project.id} /></header>
+      <header className="flex shrink-0 items-center gap-2 border-b border-border-hairline px-4 py-2 text-sm font-medium"><span className="min-w-0 truncate">{project.name}</span><ManagerQuickSet projectId={project.id} className="ml-6" /><span aria-hidden className="ml-auto" /><LockChips projectId={project.id} /></header>
       <div className="min-h-0 flex-1"><BoardView key={project.id} projectId={project.id} /></div>
     </section>
   );

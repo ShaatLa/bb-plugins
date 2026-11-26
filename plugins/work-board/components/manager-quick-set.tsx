@@ -51,10 +51,10 @@ export function ManagerQuickSet({ projectId, className }: { projectId: string; c
   };
   return (
     <>
-      {/* Shrinks with a truncated name rather than being clipped when the header is narrow, and much faster than the
-          project name beside it, so the project name stays readable. The class stays a plain string literal: Tailwind does
-          not pick up a class that a template placeholder follows. */}
-      <span className={cn("flex min-w-0 shrink-[20]", className)} title={linked ? name || undefined : UNLINKED}>
+      {/* Takes only the room the project name leaves (flex basis 0, growing up to its own width), so the name is never
+          cut for it; at least its chevron stays visible. Class strings stay plain literals: Tailwind does not pick up a
+          class that a template placeholder follows. */}
+      <span className={cn("flex min-w-6 grow basis-0 max-w-max", className)} title={linked ? name || undefined : UNLINKED}>
         <Button type="button" size="sm" variant="ghost" className="h-6 min-w-0 max-w-56 gap-1 px-1.5 text-xs font-normal text-muted-foreground"
           disabled={busy || !linked} aria-label={current ? `Manager: ${name}` : "Set manager"} onClick={() => setChoosing(true)}>
           <span className="truncate">{current ? `Manager: ${name}` : "Set manager"}</span>

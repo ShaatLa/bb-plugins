@@ -429,7 +429,7 @@ function ThreadBoardContent({ threadId, target = null }: { threadId: string; tar
               {project?.name ?? "Project board"}
             </div>
             {project ? <ManagerQuickSet projectId={project.id} className="ml-6" /> : null}
-            <span className="flex-1" />
+            <span aria-hidden className="ml-auto" />
             {project ? <LockChips projectId={project.id} /> : null}
             <OpenInTasksButton
               label="Open board in Tasks"
