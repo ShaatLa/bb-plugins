@@ -1633,6 +1633,9 @@ test("only the interval still running is marked, from the range and the real buc
   const today = resolveRange({ days: 1 }, now);
   const slots = Array.from({ length: 6 }, (_, index) => new Date(Date.parse(today.since) + (index + 1) * today.bucketMs).toISOString());
   expect(inProgressIndex(today, slots, now.getTime())).toBe(2);
+  // A background refresh keeps the previous series: its last bucket ends before the new `until`, and is still the running one.
+  const stale = dates(week).map((date, index, all) => index === all.length - 1 ? new Date(Date.parse(week.until) - 5 * 60_000).toISOString() : date);
+  expect(inProgressIndex(week, stale, now.getTime())).toBe(stale.length - 1);
 });
 
 test("chart bars carry a scale and a hover card instead of value labels, mark the running interval and thin dense labels", async () => {

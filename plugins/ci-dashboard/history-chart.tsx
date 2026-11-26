@@ -71,7 +71,8 @@ export function inProgressIndex(range: DateRange, dates: string[], now = Date.no
   const live = range.label === "today" || range.label.startsWith("last ") || (end !== undefined && end >= new Date(now).toISOString().slice(0, 10));
   if (!live) return -1;
   const until = Date.parse(range.until);
-  return dates.findIndex((date, index) => Date.parse(index === 0 ? range.since : dates[index - 1]!) <= until && until <= Date.parse(date));
+  // The last bucket started by `until`; not matched against bucket ends, which lag `until` while a refresh shows the previous series.
+  return dates.reduce((found, _date, index) => Date.parse(index === 0 ? range.since : dates[index - 1]!) <= until ? index : found, -1);
 }
 
 const STORAGE_KEY = "ci-dashboard:history-charts";
