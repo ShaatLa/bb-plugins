@@ -4,6 +4,7 @@ import { DisclosureSummary } from "../../components/disclosure";
 import { ActorLabel } from "../../components/thread-chip";
 import { useEffect, useId, useMemo, useState, useRef, type ReactNode } from "react";
 import { experimental_ImageLightbox as ImageLightbox } from "@get-bb/plugin-sdk/app";
+import { cn } from "@/lib/utils";
 import { Icon } from "@/components/ui/icon";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -234,6 +235,32 @@ function SupersededQuestion({ question, successor, targetId, replacement }: {
       </p>
       {question.answerCommentId ? <AnswerAttachments commentId={question.answerCommentId} /> : null}
       <QuestionHistory question={question} />
+    </div>
+  );
+}
+
+/**
+ * A check that is no longer waiting for the owner: a failed one in the live list, or a confirmed, answered one in Earlier.
+ * It reads the verdict and the comment; "Change answer" opens the usual answer form under it.
+ */
+function CompactCheck({ question, heading, tone, form, changeable }: {
+  question: TaskQuestion; heading: string; tone: "problem" | "quiet"; form: ReactNode; changeable: boolean;
+}) {
+  const [changing, setChanging] = useState(false);
+  const labels = question.options.filter((option) => question.selectedOptionIds.includes(option.id)).map((option) => option.label);
+  // Confirmed and Problem found are already in the heading; any other chosen option is the verdict itself.
+  const chosen = labels.filter((label) => label !== "Confirmed" && label !== "Problem found");
+  return (
+    <div className="space-y-2">
+      <div className="space-y-1 rounded-md border border-border p-3 text-sm">
+        <p className={cn("text-xs font-semibold", tone === "problem" ? "text-warning" : "text-muted-foreground")}>{heading}</p>
+        <p className="break-words"><LinkedText text={question.prompt} /></p>
+        {chosen.length ? <p className="break-words text-xs text-muted-foreground">{chosen.join("; ")}</p> : null}
+        {question.answerText ? <p className="whitespace-pre-wrap break-words text-xs"><LinkedText text={question.answerText} /></p> : null}
+        {question.answerCommentId ? <AnswerAttachments commentId={question.answerCommentId} /> : null}
+        {changeable ? <Button size="sm" variant="ghost" className="h-6 px-1 text-xs" onClick={() => setChanging(!changing)}>{changing ? "Keep answer" : "Change answer"}</Button> : null}
+      </div>
+      {changing ? form : null}
     </div>
   );
 }
@@ -521,10 +548,10 @@ export function QuestionsSection({
     <SupersededQuestion key={question.id} question={question} successor={byId.get(question.supersededBy!)}
       targetId={targetId(question.id)} replacement={replacement(question)} />
   );
-  const renderQuestion = (question: TaskQuestion) => {
+  /** `compact` shows a check as a read-only card; `form` is the usual answer form it opens on "Change answer". */
+  const renderQuestion = (question: TaskQuestion, compact?: (form: ReactNode) => ReactNode) => {
     const chain = predecessors(question);
-    return <div key={question.id} className="space-y-2">
-      {question.supersededBy ? renderSuperseded(question) : <>
+    const body = question.supersededBy ? renderSuperseded(question) : <>
         {question.withdrawnAt ? <div className="space-y-1 rounded-md border border-border p-3">
           {replacement(question)}
           <p className="font-medium break-words"><LinkedText text={question.prompt} /></p>
@@ -569,7 +596,9 @@ export function QuestionsSection({
               );
           }}
         />}
-      </>}
+      </>;
+    return <div key={question.id} className="space-y-2">
+      {compact && !question.supersededBy && !question.withdrawnAt ? compact(body) : body}
       {chain.length ? (
         <details className="pl-3">
           <DisclosureSummary className="text-xs text-muted-foreground">
@@ -586,20 +615,25 @@ export function QuestionsSection({
   const decisions = all.filter((question) => question.kind !== "check").sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id));
   const openDecisions = decisions.filter(isQuestionOpen);
   const heads = (chain: CheckChain) => byId.get(chain.headId)!;
-  // Each round that is not finished, and the last one, is a numbered list in the order the checks were asked.
-  const shownRounds = flow.rounds.filter((round) => round.visible).map((round) => ({ ...round, chains: round.chains.filter((chain) => chain.number !== null) }))
+  // The live list holds the checks that wait for the owner or for a fix: open, held and failed ones, in the visible rounds.
+  // Numbers are never recounted, so the list shows gaps where checks moved to Earlier.
+  const isLive = (chain: CheckChain) => chain.state === "open" || chain.state === "held" || chain.state === "problem";
+  const shownRounds = flow.rounds.filter((round) => round.visible).map((round) => ({ ...round, chains: round.chains.filter(isLive) }))
     .filter((round) => round.chains.length);
   const shown = new Set(shownRounds.flatMap((round) => round.chains.map((chain) => chain.headId)));
-  const earlier = [
-    ...decisions.filter((question) => !isQuestionOpen(question) && !nested(question)),
-    ...flow.chains.filter((chain) => !shown.has(chain.headId)).map(heads),
-  ];
+  const earlierChains = flow.chains.filter((chain) => !shown.has(chain.headId));
+  const earlierDecisions = decisions.filter((question) => !isQuestionOpen(question) && !nested(question));
+  const earlierCount = earlierChains.length + earlierDecisions.length;
   const stateLabel = (chain: CheckChain) =>
-    chain.state === "confirmed" ? "Confirmed" : chain.state === "problem" ? "Problem found" : chain.state === "answered" ? "Answered" : chain.state === "held" ? `On hold until check ${chain.heldBy!.number} is fixed` : "Waiting";
+    chain.state === "confirmed" ? "Confirmed" : chain.state === "problem" ? "Problem found" : chain.state === "answered" ? "Answered" : chain.state === "held" ? `On hold until check ${chain.heldBy!.number} is fixed` : chain.state === "withdrawn" ? "Withdrawn" : "Waiting";
   const renderCheck = (chain: CheckChain) => {
     const head = heads(chain);
+    if (chain.state === "problem") {
+      return <div key={head.id}>{renderQuestion(head, (form) =>
+        <CompactCheck key={`${head.id}:${head.revision}`} question={head} tone="problem" heading={`${chain.number}. Problem found — waiting for the fix`} form={form} changeable />)}</div>;
+    }
     return <div key={head.id} className="space-y-1">
-      <p className={`flex items-center gap-2 text-xs ${chain.state === "held" ? "text-muted-foreground" : chain.state === "problem" ? "text-warning" : "text-muted-foreground"}`}>
+      <p className="flex items-center gap-2 text-xs text-muted-foreground">
         <span className="font-semibold">{chain.number}.</span><span>{stateLabel(chain)}</span>
       </p>
       {chain.state === "held" ? (
@@ -608,6 +642,16 @@ export function QuestionsSection({
           <div className="mt-2">{renderQuestion(head)}</div>
         </details>
       ) : renderQuestion(head)}
+    </div>;
+  };
+  // Earlier lists checks by round and number, then decisions in the order they were asked.
+  const renderEarlierCheck = (chain: CheckChain) => {
+    const head = heads(chain);
+    const heading = `${flow.rounds.length > 1 ? `Round ${chain.round} · ` : ""}Check ${chain.number} · ${stateLabel(chain)}`;
+    return <div key={head.id} className="space-y-1">
+      {chain.state === "withdrawn" ? <p className="text-xs font-semibold text-muted-foreground">{heading}</p> : null}
+      {renderQuestion(head, chain.state === "withdrawn" ? undefined : (form) =>
+        <CompactCheck key={`${head.id}:${head.revision}`} question={head} tone="quiet" heading={heading} form={form} changeable />)}
     </div>;
   };
   if (!adding && !editing && !query.error && !query.data?.length) return null;
@@ -634,19 +678,22 @@ export function QuestionsSection({
           </Button>
         </div>
       ) : null}
-      {openDecisions.map(renderQuestion)}
+      {openDecisions.map((question) => renderQuestion(question))}
       {shownRounds.map((round) => (
         <div key={round.round} role="group" aria-label={shownRounds.length > 1 ? `Round ${round.round}` : "Checks"} className="space-y-3">
           {shownRounds.length > 1 ? <h3 className="text-xs font-semibold text-muted-foreground">Round {round.round}</h3> : null}
           {round.chains.map(renderCheck)}
         </div>
       ))}
-      {earlier.length ? (
+      {earlierCount ? (
         <details>
           <DisclosureSummary className="text-sm text-muted-foreground">
-            Earlier ({earlier.length})
+            Earlier ({earlierCount})
           </DisclosureSummary>
-          <div className="mt-3 space-y-3">{earlier.map(renderQuestion)}</div>
+          <div className="mt-3 space-y-3">
+            {earlierChains.map(renderEarlierCheck)}
+            {earlierDecisions.map((question) => renderQuestion(question))}
+          </div>
         </details>
       ) : null}
       {adding || editing ? (

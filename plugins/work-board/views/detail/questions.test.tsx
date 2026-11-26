@@ -59,6 +59,12 @@ function setup() {
   };
 }
 
+/** Opens Earlier and the answer form of its only confirmed or answered check. */
+async function changeAnswer(slot: ReturnType<typeof renderSlot>) {
+  fireEvent.click(await slot.findByText(/^Earlier \(/));
+  fireEvent.click(await slot.findByRole("button", { name: "Change answer" }));
+}
+
 describe("question and evidence UI", () => {
   it.each([false, true])("uploads selected/pasted/dropped files before answering and cleans up on failure=%s", async fails => {
     const { task, rpc, structured, store } = setup();
@@ -294,6 +300,7 @@ describe("question and evidence UI", () => {
     const revised = (await structured.handlers.updateQuestion({ questionId: question.id, revision: question.revision, prompt: "Second wording?", mode: "single", options: question.options, authorName: "Agent" })).question;
     await structured.handlers.answerQuestion({ questionId: question.id, revision: revised.revision, selectedOptionIds: [revised.options[0]!.id], authorName: "You" });
     const slot = renderSlot(app.navPanels[0]!, { subPath: `task/${task.key}` }, { rpc });
+    await changeAnswer(slot);
     const history = await slot.findByText("History · 1");
     const entries = history.closest("details")!.querySelectorAll("ol > li");
     expect(entries).toHaveLength(1);
@@ -307,6 +314,7 @@ describe("question and evidence UI", () => {
     await structured.handlers.answerQuestion({ questionId: question.id, revision: question.revision, selectedOptionIds: [question.options[0]!.id], authorName: "You" });
     const slot = renderSlot(app.navPanels[0]!, { subPath: `task/${task.key}` }, { rpc });
     store.tasks.updateProject(task.projectId, { checkReadiness: "on" });
+    await changeAnswer(slot);
     fireEvent.click(await slot.findByRole("button", { name: "Withdraw answer" }));
     fireEvent.click(slot.getByRole("button", { name: "Confirm: withdraw and notify the agent" }));
     await waitFor(() => expect(structured.listQuestions(task.id)[0]?.answeredBy).toBeNull());
@@ -560,7 +568,7 @@ it("omits the redundant waiting banner", async () => {
   expect(slot.queryByRole("button", { name: /Waiting on you/ })).toBeNull();
 });
 
-it("orders open questions oldest first and keeps an answered check in its numbered place", async () => {
+it("orders open questions oldest first and moves an answered check to Earlier with its number", async () => {
   const { task, rpc, structured, bb } = setup();
   const add = async (prompt: string, kind: "decision" | "check", createdAt: string) => {
     const { question } = await structured.handlers.createQuestion({ taskId: task.id, kind, askedByThread: null, prompt, options: ["Proceed"], mode: "single" });
@@ -581,11 +589,12 @@ it("orders open questions oldest first and keeps an answered check in its number
   expect(within(newestGroup).getByRole("textbox", { name: "Comment (optional)" })).toBeTruthy();
   fireEvent.click(within(newestGroup).getByLabelText("Proceed"));
   fireEvent.click(within(newestGroup).getByRole("button", { name: "Save answer" }));
-  await waitFor(() => expect(slot.getByText("Answered")).toBeTruthy());
-  const currentGroups = [...section.querySelectorAll("fieldset")];
-  expect(currentGroups.map(group => group.getAttribute("aria-label"))).toEqual(["Older open", "Newest check", "Old answer"]);
-  expect(currentGroups[1]?.closest("details")).toBeNull();
-  expect(slot.getByText("Earlier (1)")).toBeTruthy();
+  // An answered check leaves the live list for Earlier, where it keeps its number and shows the verdict read-only.
+  await waitFor(() => expect(slot.getByText("Earlier (2)")).toBeTruthy());
+  expect([...section.querySelectorAll("fieldset")].map(group => group.getAttribute("aria-label"))).toEqual(["Older open", "Old answer"]);
+  const earlierList = slot.getByText("Earlier (2)").closest("details")!;
+  expect(earlierList.textContent).toContain("Check 1 · Answered");
+  expect(earlierList.textContent).toContain("Proceed");
 });
 
 it("closes the edit form and keeps a withdrawn chain head and its predecessor in Earlier", async () => {
@@ -616,6 +625,7 @@ it("closes an open edit form when the check is superseded and shows it dimmed un
   const { question: old } = await structured.handlers.createQuestion({ kind: "check", askedByThread: null, taskId: task.id, prompt: "Does the old list render?", mode: "single", options: [] });
   await structured.handlers.answerQuestion({ questionId: old.id, revision: 1, selectedOptionIds: [], answerText: "Problem found: rows overlap", authorName: "Owner" });
   const slot = renderSlot(app.navPanels[0]!, { subPath: `task/${task.key}` }, { rpc });
+  fireEvent.click(await slot.findByRole("button", { name: "Change answer" }));
   const group = await slot.findByRole("group", { name: old.prompt });
   fireEvent.click(within(group).getByRole("button", { name: "Edit question" }));
   expect(slot.getByRole("textbox", { name: "Question" })).toBeTruthy();
@@ -718,7 +728,7 @@ it.each([
 
 it("follows each direct predecessor from Earlier through a chain with identical prompts", async () => {
   const { first, second, render } = await exampleChain();
-  const third = { ...second, id: "example-003", supersedes: second.id, answerText: "Done", answeredBy: "Owner" };
+  const third = { ...second, id: "example-003", supersedes: second.id };
   const slot = render(first, { ...second, supersededBy: third.id }, third);
   await slot.findByRole("group", { name: third.prompt });
   const link = slot.getAllByRole("link", { name: "Replaces an earlier check" }).find((candidate) => !candidate.closest("details[open] [tabindex]") && !candidate.closest("[tabindex='-1']"))!;
@@ -823,7 +833,7 @@ it("collects readiness for a check on add, edit and reopen", async () => {
   fireEvent.click(within(group).getByLabelText("Confirmed"));
   fireEvent.click(within(group).getByRole("button", { name: "Save answer" }));
   await waitFor(() => expect(structured.listQuestions(task.id)[0]?.answeredBy).toBe("You"));
-  await slot.findByText("1.");
+  await changeAnswer(slot);
   fireEvent.click(await slot.findByRole("button", { name: "Edit question" }));
   fireEvent.click(slot.getByLabelText("Clear the saved answer and request a new decision"));
   await submit("Save question", "Extra label revised");
@@ -857,26 +867,94 @@ async function threeChecks() {
   return { ...host, ask, checks: [await ask("Check one?", 1), await ask("Check two?", 2), await ask("Check three?", 3)] };
 }
 
-it("holds the later checks after a text-only answer, and the replacement takes number 1 back", async () => {
+const liveOrder = (slot: ReturnType<typeof renderSlot>) => [...slot.container.querySelectorAll("section[aria-label='Questions'] fieldset")]
+  .filter((group) => !group.closest("details")).map((group) => group.getAttribute("aria-label"));
+const liveNumbers = (slot: ReturnType<typeof renderSlot>) => [...slot.container.querySelectorAll("section[aria-label='Questions'] p.text-xs span.font-semibold")].map((node) => node.textContent);
+const answerCheck = (structured: ReturnType<typeof setup>["structured"], taskId: string, id: string, selected: string[], text: string | null = null) => {
+  const current = structured.listQuestions(taskId).find((question) => question.id === id)!;
+  return structured.handlers.answerQuestion({ questionId: id, revision: current.revision, selectedOptionIds: selected, answerText: text, authorName: "You" });
+};
+const refresh = (slot: ReturnType<typeof renderSlot>, task: { id: string; projectId: string }) => slot.behavior.emitRealtime("tasks:changed", { taskId: task.id, projectId: task.projectId });
+
+it("moves a confirmed check to Earlier, shows a failed one as a compact card and puts the replacement in its place", async () => {
   const { task, rpc, structured, ask, checks } = await threeChecks();
   const slot = renderSlot(app.navPanels[0]!, { subPath: `task/${task.key}` }, { rpc });
   const first = await slot.findByRole("group", { name: "Check one?" });
-  fireEvent.change(within(first).getByRole("textbox", { name: "Comment (optional)" }), { target: { value: "The button is cut off" } });
+  fireEvent.click(within(first).getByLabelText("Confirmed"));
+  fireEvent.change(within(first).getByRole("textbox", { name: "Comment (optional)" }), { target: { value: "Looks right" } });
   fireEvent.click(within(first).getByRole("button", { name: "Save answer" }));
-  await waitFor(() => expect(slot.getAllByText("On hold until check 1 is fixed")).toHaveLength(2));
-  expect(slot.getByText("1.").nextSibling?.textContent).toBe("Problem found");
-  // Held checks keep their form behind "Answer anyway", and the answered check stays in place.
-  expect(slot.getAllByText("Answer anyway")).toHaveLength(2);
-  expect(slot.queryByText(/Earlier/)).toBeNull();
-  const order = () => [...slot.container.querySelectorAll("section[aria-label='Questions'] fieldset")].map((group) => group.getAttribute("aria-label"));
-  expect(order()).toEqual(["Check one?", "Check two?", "Check three?"]);
+  await waitFor(() => expect(slot.getByText("Earlier (1)")).toBeTruthy());
+  // The live list starts at check 2: numbers never move.
+  expect(liveOrder(slot)).toEqual(["Check two?", "Check three?"]);
+  expect(liveNumbers(slot)).toEqual(["2.", "3."]);
+  const earlier = slot.getByText("Earlier (1)").closest("details")!;
+  expect(earlier.textContent).toContain("Check 1 · Confirmed");
+  expect(earlier.textContent).toContain("Looks right");
+  expect(within(earlier).queryByRole("group")).toBeNull();
 
-  const current = structured.listQuestions(task.id).find((question) => question.id === checks[0]!.id)!;
-  await ask("Check one again?", 4, { questionId: current.id, revision: current.revision });
-  await slot.behavior.emitRealtime("tasks:changed", { taskId: task.id, projectId: task.projectId });
+  // Text alone on check 2: a compact card without a form, and check 3 is held.
+  await answerCheck(structured, task.id, checks[1]!.id, [], "The button is cut off");
+  await refresh(slot, task);
+  await slot.findByText("2. Problem found — waiting for the fix");
+  // No form for check 2, and check 3's form is behind "Answer anyway".
+  expect(liveOrder(slot)).toEqual([]);
+  expect(slot.getByText("The button is cut off")).toBeTruthy();
+  expect(slot.getAllByText("On hold until check 2 is fixed")).toHaveLength(1);
+  // One link on the compact card, one on check 1 in Earlier.
+  expect(slot.getAllByRole("button", { name: "Change answer" })).toHaveLength(2);
+
+  // Replacing check 2 puts an open check 2 in its place, check 3 is open again, and the failed one is in its history.
+  const current = structured.listQuestions(task.id).find((question) => question.id === checks[1]!.id)!;
+  await ask("Check two again?", 4, { questionId: current.id, revision: current.revision });
+  await refresh(slot, task);
   await waitFor(() => expect(slot.queryByText(/On hold until/)).toBeNull());
-  expect(order()).toEqual(["Check one again?", "Check two?", "Check three?"]);
-  expect([...slot.container.querySelectorAll("section[aria-label='Questions'] p.text-xs span.font-semibold")].map((node) => node.textContent)).toEqual(["1.", "2.", "3."]);
+  expect(liveOrder(slot)).toEqual(["Check two again?", "Check three?"]);
+  expect(liveNumbers(slot)).toEqual(["2.", "3."]);
+  expect(slot.queryByText(/waiting for the fix/)).toBeNull();
+  expect(slot.getByText("Superseded checks · 1")).toBeTruthy();
+});
+
+it("changes an answer from the compact failed card back to Confirmed, which moves it to Earlier and releases the held checks", async () => {
+  const { task, rpc, structured, checks } = await threeChecks();
+  await answerCheck(structured, task.id, checks[0]!.id, [], "Broken");
+  const slot = renderSlot(app.navPanels[0]!, { subPath: `task/${task.key}` }, { rpc });
+  await slot.findByText("1. Problem found — waiting for the fix");
+  expect(slot.getAllByText("On hold until check 1 is fixed")).toHaveLength(2);
+  fireEvent.click(slot.getByRole("button", { name: "Change answer" }));
+  const group = await slot.findByRole("group", { name: "Check one?" });
+  fireEvent.click(within(group).getByLabelText("Confirmed"));
+  fireEvent.click(within(group).getByRole("button", { name: "Save answer" }));
+  await waitFor(() => expect(slot.getByText("Earlier (1)")).toBeTruthy());
+  expect(slot.queryByText(/On hold until/)).toBeNull();
+  expect(slot.queryByText(/waiting for the fix/)).toBeNull();
+  expect(liveOrder(slot)).toEqual(["Check two?", "Check three?"]);
+});
+
+it("changes an answer from Earlier to Problem found: the check returns as a compact card and holds the later open checks", async () => {
+  const { task, rpc, structured, checks } = await threeChecks();
+  await answerCheck(structured, task.id, checks[0]!.id, [checks[0]!.options[0]!.id]);
+  const slot = renderSlot(app.navPanels[0]!, { subPath: `task/${task.key}` }, { rpc });
+  await changeAnswer(slot);
+  const group = await slot.findByRole("group", { name: "Check one?" });
+  fireEvent.click(within(group).getByLabelText("Problem found"));
+  fireEvent.click(within(group).getByRole("button", { name: "Save answer" }));
+  await slot.findByText("1. Problem found — waiting for the fix");
+  expect(slot.queryByText(/^Earlier/)).toBeNull();
+  expect(slot.getAllByText("On hold until check 1 is fixed")).toHaveLength(2);
+});
+
+it("shows a withdrawn check in Earlier with its number and reason, keeps the later numbers and gives it no answer controls", async () => {
+  const { task, rpc, structured, checks } = await threeChecks();
+  await structured.handlers.withdrawQuestion({ taskId: task.id, questionId: checks[1]!.id, revision: 1, reason: "Not needed", authorName: "Agent" });
+  const slot = renderSlot(app.navPanels[0]!, { subPath: `task/${task.key}` }, { rpc });
+  await slot.findByRole("group", { name: "Check one?" });
+  expect(liveOrder(slot)).toEqual(["Check one?", "Check three?"]);
+  expect(liveNumbers(slot)).toEqual(["1.", "3."]);
+  const earlier = slot.getByText("Earlier (1)").closest("details")!;
+  expect(earlier.textContent).toContain("Check 2 · Withdrawn");
+  expect(earlier.textContent).toContain("Not needed");
+  expect(within(earlier).queryByRole("button", { name: "Change answer" })).toBeNull();
+  expect(within(earlier).queryByRole("group")).toBeNull();
 });
 
 it("keeps a verdict and its comment together while typing and choosing", async () => {
@@ -893,7 +971,8 @@ it("keeps a verdict and its comment together while typing and choosing", async (
   await waitFor(() => expect(structured.listQuestions(task.id).find((question) => question.id === checks[0]!.id)).toMatchObject({
     selectedOptionIds: [checks[0]!.options[0]!.id], answerText: "Looks off",
   }));
-  await waitFor(() => expect(slot.getByText("1.").nextSibling?.textContent).toBe("Confirmed"));
+  await waitFor(() => expect(slot.getByText("Earlier (1)").closest("details")!.textContent).toContain("Check 1 · Confirmed"));
+  expect(slot.getByText("Earlier (1)").closest("details")!.textContent).toContain("Looks off");
   expect(slot.queryByText(/On hold until/)).toBeNull();
 });
 
@@ -916,5 +995,7 @@ it("keeps only finished rounds, withdrawn checks and answered decisions under Ea
   expect(slot.getByText(/^Earlier \(/).textContent).toBe("Earlier (5)");
   for (const prompt of ["Check one?", "Check two?", "Check three?", "Which one?", "Not needed?"]) expect(earlier.textContent).toContain(prompt);
   expect(earlier.textContent).not.toContain("Round two check?");
-  expect(slot.queryByText(/^Round \d/)).toBeNull();
+  // Earlier names the round once the card has more than one; the live list shows round two alone, with no round heading.
+  for (const label of ["Round 1 · Check 1 · Confirmed", "Round 1 · Check 3 · Confirmed", "Round 2 · Check 2 · Withdrawn"]) expect(earlier.textContent).toContain(label);
+  expect(slot.queryByRole("heading", { name: /^Round \d/ })).toBeNull();
 });

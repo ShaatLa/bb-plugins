@@ -29,8 +29,8 @@ export interface CheckChain {
   rootId: string;
   headId: string;
   round: number;
-  /** 1, 2, 3 … within the round, over chains that are not withdrawn; null for a withdrawn chain. */
-  number: number | null;
+  /** 1, 2, 3 … within the round, in chain order; a withdrawn chain keeps its number so later ones never renumber. */
+  number: number;
   verdict: CheckVerdict;
   state: CheckState;
   /** The failed chain that holds this one, when state is `held`. */
@@ -105,7 +105,7 @@ export function checkFlow(questions: readonly TaskQuestion[]): CheckFlow {
   const chains: CheckChain[] = members.map((chain, index) => {
     const head = chain.at(-1)!;
     const verdict = verdictOf(head, Boolean(head.withdrawnAt));
-    return { ids: chain.map((question) => question.id), rootId: chain[0]!.id, headId: head.id, round: roundOf[index]!, number: null, verdict, state: verdict, heldBy: null };
+    return { ids: chain.map((question) => question.id), rootId: chain[0]!.id, headId: head.id, round: roundOf[index]!, number: 0, verdict, state: verdict, heldBy: null };
   });
 
   // Round numbers stay as decided: a round whose checks were all withdrawn keeps its number, so later rounds never renumber.
@@ -113,17 +113,15 @@ export function checkFlow(questions: readonly TaskQuestion[]): CheckFlow {
   const rounds: CheckRound[] = [];
   const held = new Map<string, string>();
   for (const chain of chains) {
-    if (chain.verdict !== "withdrawn") {
-      chain.number = (counters.get(chain.round) ?? 0) + 1;
-      counters.set(chain.round, chain.number);
-    }
+    chain.number = (counters.get(chain.round) ?? 0) + 1;
+    counters.set(chain.round, chain.number);
     let round = rounds.find((entry) => entry.round === chain.round);
     if (!round) rounds.push((round = { round: chain.round, chains: [], finished: true, visible: false }));
     // The first failed check before this one in the same round holds it; replacing or reopening that check lifts the hold.
     const failed = round.chains.find((other) => other.verdict === "problem");
     if (chain.verdict === "open" && failed) {
       chain.state = "held";
-      chain.heldBy = { id: failed.headId, number: failed.number! };
+      chain.heldBy = { id: failed.headId, number: failed.number };
       held.set(chain.headId, failed.headId);
     }
     round.chains.push(chain);
@@ -145,7 +143,7 @@ export function stateOfQuestion(flow: CheckFlow, id: string): CheckState | undef
 
 export interface CheckPlace {
   /** Position in the card's flow; the same for every question of one chain. */
-  number: number | null;
+  number: number;
   state: CheckState;
   round: number;
   heldBy?: { id: string; number: number };

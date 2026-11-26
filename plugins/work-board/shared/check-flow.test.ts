@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { checkFlow, stateOfQuestion, verdictOf } from "./check-flow";
+import { checkFlow, placeChecks, stateOfQuestion, verdictOf } from "./check-flow";
 import type { TaskQuestion } from "./contract";
 
 const OPTIONS = [{ id: "ok", label: "Confirmed" }, { id: "bad", label: "Problem found" }, { id: "meh", label: "Needs a look" }];
@@ -44,9 +44,12 @@ describe("checkFlow order and numbers", () => {
     const [first, replacement] = replace(answered(check("c1", 1), 5, [], "wrong"), check("c4", 6), 6);
     expect(summary([first, check("c2", 2), check("c3", 3), replacement])).toEqual(["1:c4:open:r1", "2:c2:open:r1", "3:c3:open:r1"]);
   });
-  it("skips withdrawn checks in the numbering", () => {
-    const withdrawn = check("c1", 1, { withdrawnAt: at(4), withdrawnBy: "agent", withdrawReason: "obsolete" });
-    expect(summary([withdrawn, check("c2", 2), check("c3", 3)])).toEqual(["null:c1:withdrawn:r1", "1:c2:open:r1", "2:c3:open:r1"]);
+  it("a withdrawn check keeps its number, so later checks keep theirs", () => {
+    const withdrawn = check("c2", 2, { withdrawnAt: at(4), withdrawnBy: "agent", withdrawReason: "obsolete" });
+    expect(summary([check("c1", 1), withdrawn, check("c3", 3)])).toEqual(["1:c1:open:r1", "2:c2:withdrawn:r1", "3:c3:open:r1"]);
+    const held = checkFlow([answered(check("c1", 1), 5, [], "broken"), withdrawn, check("c3", 3)]);
+    expect(held.chains[2]!.heldBy).toEqual({ id: "c1", number: 1 });
+    expect(placeChecks([check("c1", 1), withdrawn, check("c3", 3)]).map((question) => question.number)).toEqual([1, 2, 3]);
   });
   it("breaks equal creation times by id", () => {
     expect(summary([check("b", 1), check("a", 1)])).toEqual(["1:a:open:r1", "2:b:open:r1"]);
@@ -124,13 +127,13 @@ describe("checkFlow rounds", () => {
   });
   it("keeps round numbers when every check of an earlier round is withdrawn", () => {
     const withdrawnFirst = check("c1", 1, { withdrawnAt: at(2), withdrawnBy: "agent", withdrawReason: "obsolete" });
-    expect(summary([withdrawnFirst, check("c2", 3)])).toEqual(["null:c1:withdrawn:r1", "1:c2:open:r2"]);
+    expect(summary([withdrawnFirst, check("c2", 3)])).toEqual(["1:c1:withdrawn:r1", "1:c2:open:r2"]);
     // Withdrawing the last live check of round one later does not renumber round two.
     const confirmed = answered(check("c1", 1), 2, ["ok"]);
     const before = summary([confirmed, check("c2", 3)]);
     const after = summary([{ ...confirmed, withdrawnAt: at(4), withdrawnBy: "agent", withdrawReason: "obsolete" } as TaskQuestion, check("c2", 3)]);
     expect(before).toEqual(["1:c1:confirmed:r1", "1:c2:open:r2"]);
-    expect(after).toEqual(["null:c1:withdrawn:r1", "1:c2:open:r2"]);
+    expect(after).toEqual(["1:c1:withdrawn:r1", "1:c2:open:r2"]);
   });
   it("a problem in round one never holds round two", () => {
     const flow = checkFlow([answered(check("c1", 1), 5, ["ok"]), check("c2", 10), answered(check("c1", 1), 5, ["ok"])].slice(0, 2).map((question, index) => (index ? question : answered(question, 20, ["bad"]))));
