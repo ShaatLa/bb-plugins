@@ -10,7 +10,7 @@ import { useThreadCommands, commandMention } from './thread-commands';
 import { AgentHubContacts } from './contacts';
 import { CONTACT_SELECTED, ContactPageProvider, requestJump, threadLink, useContactPage, useContactSelection, useSidebarContacts } from './open-chat';
 import { defaultAnswer } from './contract';
-import { InfoTab, DiffTab, WorkBoardTab } from './chat-tabs';
+import { InfoTab, DiffTab, WorkBoardTab, requestWorkBoardTask, workBoardTask } from './chat-tabs';
 import { taskKeyRegex } from './task-links';
 import { Component, Fragment, createContext, useContext, useEffect, useLayoutEffect, useRef, useState, type ErrorInfo, type MouseEvent as ReactMouseEvent, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
@@ -741,9 +741,23 @@ export class CrashGuard extends Component<{ where: string; children: ReactNode }
 }
 const guarded = <P extends object>(where: string, View: (props: P) => ReactNode) => (props: P) => <CrashGuard where={where}><View {...props} /></CrashGuard>;
 
+// bb runs Work Board's task-link interceptor only on its own thread screen, so on this page a plain click on a task link opens it in the page's Work Board tab.
+export function usePageTaskLinks() {
+  const panel = experimental_useAppPanel();
+  return (event: ReactMouseEvent) => {
+    const anchor = (event.target as Element).closest?.('a[href]');
+    if (!anchor || event.defaultPrevented || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+    const task = workBoardTask(anchor.getAttribute('href') ?? '');
+    // Without room for the panel (a phone), bb's full Work Board view is the better place.
+    if (!task || !(window.matchMedia?.('(min-width: 1024px)').matches ?? true)) return;
+    if (!panel.openTab({ tab: { id: 'work-board', context: { kind: 'nav-panel', panelId: 'agent-hub' }, availability: 'fixed' } })) return;
+    event.preventDefault();
+    requestWorkBoardTask(task);
+  };
+}
 function AgentHubPage() {
   useRememberedPagePanel();
-  return <AgentHubPanel />;
+  return <div className="contents" onClickCapture={usePageTaskLinks()}><AgentHubPanel /></div>;
 }
 
 export default definePluginApp(app => {

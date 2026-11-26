@@ -2,7 +2,7 @@
 import { afterEach, expect, it, vi } from 'vitest';
 import { act, cleanup, fireEvent, waitFor } from '@testing-library/react';
 import { renderSlot } from '@get-bb/plugin-sdk/testing/app';
-import { InfoTab, DiffTab, WorkBoardTab } from './chat-tabs';
+import { InfoTab, DiffTab, WorkBoardTab, requestWorkBoardTask, workBoardTask } from './chat-tabs';
 import { setOpenChat } from './open-chat';
 
 const environment = { id: 'env', name: 'Checkout', path: '/repo', isWorktree: true };
@@ -122,4 +122,27 @@ it('does not mark a file Viewed when the save fails', async () => {
 it('removes the host while the tab is hidden', () => {
   const { slot } = setup(WorkBoardTab, {}, { tabVisible: false });
   expect(slot.container.querySelector('[data-work-board-host]')).toBeNull();
+});
+it('hands a requested task to the Work Board host, also one asked for while the tab was hidden, and spends it once shown', async () => {
+  const hidden = setup(WorkBoardTab, {}, { tabVisible: false });
+  act(() => requestWorkBoardTask({ key: 'EXA-1', plan: true }));
+  hidden.slot.unmount();
+  const { slot } = setup(WorkBoardTab);
+  const host = () => slot.container.querySelector<HTMLElement>('[data-work-board-host]')!;
+  expect(host().dataset.taskKey).toBe('EXA-1'); expect(host().dataset.taskView).toBe('plan');
+  const first = host().dataset.taskRequest;
+  act(() => requestWorkBoardTask({ key: 'EXA-1', plan: false }));
+  expect(host().dataset.taskKey).toBe('EXA-1'); expect(host().dataset.taskView).toBeUndefined(); expect(host().dataset.taskRequest).not.toBe(first);
+  act(() => setOpenChat('thr_two', false));
+  await waitFor(() => expect(host().dataset.taskKey).toBeUndefined());
+  act(() => requestWorkBoardTask({ key: 'EXA-2', plan: false }));
+  slot.unmount();
+  const again = setup(WorkBoardTab);
+  expect(again.slot.container.querySelector<HTMLElement>('[data-work-board-host]')!.dataset.taskKey).toBeUndefined();
+});
+it('reads tasks only from same-origin Work Board task and plan links', () => {
+  expect(workBoardTask('/plugins/work-board/work-board/task/EXA-1')).toEqual({ key: 'EXA-1', plan: false });
+  expect(workBoardTask('/plugins/work-board/work-board/task/EXA-1/plan')).toEqual({ key: 'EXA-1', plan: true });
+  expect(workBoardTask(`${window.location.origin}/plugins/work-board/work-board/task/EXA-1?x=1`)).toEqual({ key: 'EXA-1', plan: false });
+  for (const href of ['https://example.com/plugins/work-board/work-board/task/EXA-1', '/plugins/work-board/work-board', '/plugins/work-board/work-board/task/EXA-1/comments', '/plugins/work-board/work-board/task/%E0']) expect(workBoardTask(href)).toBeNull();
 });

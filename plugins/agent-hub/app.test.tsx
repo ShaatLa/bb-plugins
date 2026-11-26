@@ -118,6 +118,27 @@ describe('Answers app', () => {
     expect(selectTab).toHaveBeenCalledTimes(calls); expect(localStorage.getItem('bb-plugin-answers:page-panel-tab')).toBe('tab-1');
     slot.unmount(); vi.unstubAllGlobals();
   });
+  it.each([
+    ['a plain click on a task link', '/plugins/work-board/work-board/task/EXA-1', {}, true, true, true],
+    ['a plain click on a plan link', '/plugins/work-board/work-board/task/EXA-1/plan', {}, true, true, true],
+    ['a Cmd-click', '/plugins/work-board/work-board/task/EXA-1', { metaKey: true }, true, true, false],
+    ['a click on a phone', '/plugins/work-board/work-board/task/EXA-1', {}, false, true, false],
+    ['a click when the panel declines', '/plugins/work-board/work-board/task/EXA-1', {}, true, false, false],
+    ['a click on another link', '/plugins/work-board/work-board', {}, true, true, false],
+  ])('opens the page Work Board tab on %s only when bb navigation cannot do better', async (_, href, keys, wide, accepted, opened) => {
+    vi.stubGlobal('matchMedia', (query: string) => ({ matches: wide, media: query, addEventListener: () => {}, removeEventListener: () => {} }));
+    const app = await loadPluginApp(() => import('./app'));
+    const openTab = vi.fn(() => accepted);
+    const slot = renderSlot(app.navPanels[0]!, { subPath: '' }, { rpc: { list: () => ({ items: [], nextCursor: null }), counts: () => ({ unread: 0, waiting: 0, forMe: 0 }) }, experimental_panel: { openTab, selectTab: () => true } });
+    const link = document.createElement('a'); link.href = href; link.textContent = 'EXA-1';
+    (await slot.findByRole('button', { name: 'Questions' })).closest('section')!.append(link);
+    const event = new MouseEvent('click', { bubbles: true, cancelable: true, button: 0, ...keys });
+    link.dispatchEvent(event);
+    expect(event.defaultPrevented).toBe(opened);
+    if (opened || !accepted) expect(openTab).toHaveBeenCalledWith(expect.objectContaining({ tab: { id: 'work-board', context: { kind: 'nav-panel', panelId: 'agent-hub' }, availability: 'fixed' } }));
+    else expect(openTab).not.toHaveBeenCalled();
+    slot.unmount(); vi.unstubAllGlobals();
+  });
   it('closes a side panel bb restored on a narrow screen', async () => {
     vi.stubGlobal('matchMedia', (query: string) => ({ matches: false, media: query }));
     const app = await loadPluginApp(() => import('./app'));

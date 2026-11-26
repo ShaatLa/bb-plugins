@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { useEffect, useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
 import { useBbNavigate, useSdk, experimental_useTabVisible as useTabVisible, experimental_useRpcQuery as useQuery, experimental_useRpcMutation as useMutation, experimental_InfoSection as InfoSection, experimental_InfoList as InfoList, experimental_InfoListRow as InfoListRow, experimental_DetailRow as DetailRow, experimental_Icon as Icon, experimental_Diff as Diff, experimental_FileLink as FileLink } from '@get-bb/plugin-sdk/app';
 import { useOpenChat } from './open-chat';
 import { gitContract, unavailable, type GitFile, type GitTarget } from './tab-contracts';
@@ -121,9 +121,30 @@ function DiffFile({ file, input, initial, viewed, visible, refreshViewed }: { fi
     {!viewed && (patch ? <><Diff path={file.path} patch={patch.patch} />{patch.truncated && <p className="p-3 text-xs text-muted-foreground">Diff truncated</p>}</> : file.binary ? <div className="flex flex-wrap items-center gap-x-2 gap-y-1 px-3 py-3 text-xs text-muted-foreground">Binary file.</div> : file.loadMode === 'too_large' ? <div className="flex flex-wrap items-center gap-x-2 gap-y-1 px-3 py-3 text-xs text-muted-foreground">Too large to display ({file.additions + file.deletions} changed lines).</div> : patches.error ? <Empty>{patches.error.message}</Empty> : result && result.outcome !== 'available' ? <Empty>{unavailable(result)}</Empty> : !load ? <button type="button" onClick={() => setLoad(true)} className="p-3 text-xs text-muted-foreground">Load diff</button> : <Empty>Loading…</Empty>)}
   </section>;
 }
+// Work Board's task route; the hosted board shows a plan itself, since Work Board's Plan tab cannot open in this panel.
+const TASK_PATH = /^\/plugins\/work-board\/work-board\/task\/([^/]+)(\/plan)?\/?$/;
+export type WorkBoardTask = { key: string; plan: boolean };
+export function workBoardTask(href: string): WorkBoardTask | null {
+  let url: URL; try { url = new URL(href, window.location.origin); } catch { return null; }
+  const match = url.origin === window.location.origin ? TASK_PATH.exec(url.pathname) : null;
+  try { return match ? { key: decodeURIComponent(match[1]!), plan: !!match[2] } : null; } catch { return null; }
+}
+// A task link clicked on the page waits here for the tab's host, which may not exist yet; n tells Work Board a repeat click from a stale one.
+let taskRequest: WorkBoardTask & { n: number } | undefined, taskRequests = 0;
+const taskListeners = new Set<() => void>();
+const subscribeTask = (listener: () => void) => { taskListeners.add(listener); return () => { taskListeners.delete(listener); }; };
+export function requestWorkBoardTask(task: WorkBoardTask) { taskRequest = { ...task, n: ++taskRequests }; taskListeners.forEach(listener => listener()); }
+function dropTaskRequest(n: number) { if (taskRequest?.n !== n) return; taskRequest = undefined; taskListeners.forEach(listener => listener()); }
 export function WorkBoardTab() {
   const chat = useOpenChat(), visible = useTabVisible(), host = useRef<HTMLDivElement>(null), navigate = useRef(useBbNavigate());
   navigate.current = useBbNavigate();
+  const task = useSyncExternalStore(subscribeTask, () => taskRequest, () => taskRequest), shown = useRef<{ n: number; threadId?: string } | undefined>(undefined);
+  // Once a host has shown the task, hiding the tab, leaving the tab or switching chats spends it, so a later host shows the board.
+  useEffect(() => {
+    if (shown.current && (!visible || shown.current.threadId !== chat.threadId)) { dropTaskRequest(shown.current.n); shown.current = undefined; }
+    else if (visible && task) shown.current = { n: task.n, threadId: chat.threadId };
+  }, [visible, chat.threadId, task]);
+  useEffect(() => () => { if (shown.current) dropTaskRequest(shown.current.n); }, []);
   const [state, setState] = useState<'loading' | 'ready' | 'unavailable'>('loading');
   // Work Board portals its own board into the host node and marks it ready; nothing of its UI is bundled here.
   useEffect(() => {
@@ -144,6 +165,6 @@ export function WorkBoardTab() {
   if (!visible) return <></>;
   return <div className="relative h-full min-h-0">
     {state !== 'ready' && <div className="absolute inset-x-0 top-0"><Empty>{state === 'loading' ? 'Loading…' : 'Work Board unavailable'}</Empty></div>}
-    <div ref={host} data-work-board-host="board" data-thread-id={chat.threadId} className="h-full min-h-0" />
+    <div ref={host} data-work-board-host="board" data-thread-id={chat.threadId} data-task-key={task?.key} data-task-request={task?.n} data-task-view={task?.plan ? 'plan' : undefined} className="h-full min-h-0" />
   </div>;
 }
