@@ -24,13 +24,15 @@ async function questionsSetup(overrides: Record<string, (...args: any[]) => any>
   await waitFor(() => expect(slot.container.querySelector('[data-pending-title="Choose?"]')).toBeTruthy());
   return slot;
 }
-it('shows Won’t reply as a quiet state on an open question, keeps its choices, and offers the button no more', async () => {
-  const reply = vi.fn(() => ({ delivery: 'sent' }));
-  const slot = await questionsSetup({ reply }, { options: ['Yes', 'No'], declinedAt: Date.now() });
+it('shows a Won’t reply question in Questions read-only: its state, no choices and no Won’t reply button', async () => {
+  const slot = await questionsSetup({}, { options: ['Yes', 'No'], declinedAt: Date.now() });
   expect(slot.getByText('Won’t reply')).toBeTruthy();
   expect(slot.queryByRole('button', { name: 'Won’t reply' })).toBeNull();
-  fireEvent.click(slot.getByRole('button', { name: 'Yes' }));
-  await waitFor(() => expect(reply).toHaveBeenCalledWith({ id: 'ans_ask', text: 'Yes' }));
+  expect(slot.queryByRole('button', { name: 'Yes' })).toBeNull();
+});
+it('shows a withdrawn question in the chat history read-only', async () => {
+  const slot = await questionsSetup({}, { options: ['Yes', 'No'], declinedAt: 4, dismissedAt: 5, answerSource: 'agent', note: 'Found it' });
+  expect(slot.getByText('Withdrawn')).toBeTruthy(); expect(slot.queryByRole('button', { name: 'Yes' })).toBeNull();
 });
 it('does not count a declined open question as unread', async () => {
   const { isUnread } = await import('./app');
@@ -50,12 +52,25 @@ it('shows only Withdrawn on a question that was declined and then withdrawn', as
   expect(slot.getByText('Withdrawn')).toBeTruthy(); expect(slot.queryByText('Won’t reply')).toBeNull();
 });
 describe('thread composer banner', () => {
-  it('counts only the questions still waiting, and still lists the declined card', async () => {
-    const { ComposerQuestions } = await import('./app');
-    const ask = { ...item, id: 'ans_a', kind: 'for_me' as const, status: 'open' as const, question: 'Choose?', answer: null, options: ['A', 'B'] };
-    const items = [ask, { ...ask, id: 'ans_b', question: 'Later?', declinedAt: 1 }];
-    const slot = renderSlot({ component: ComposerQuestions }, {}, { composer: { text: '', scope: { kind: 'thread', threadId: 'thr_one' } }, rpc: { list: () => ({ items, nextCursor: null }) } } as any);
+  const ask = { ...item, id: 'ans_a', kind: 'for_me' as const, status: 'open' as const, question: 'Choose?', answer: null, options: ['A', 'B'] };
+  const banner = async (list: () => { items: Item[]; nextCursor: null }) => { const { ComposerQuestions } = await import('./app'); return renderSlot({ component: ComposerQuestions }, {}, { composer: { text: '', scope: { kind: 'thread', threadId: 'thr_one' } }, rpc: { list } } as any); };
+  it('lists and counts only the questions still waiting, leaving out a declined one', async () => {
+    const slot = await banner(() => ({ items: [ask, { ...ask, id: 'ans_b', question: 'Later?', declinedAt: 1 }], nextCursor: null }));
     const card = await slot.findByRole('region', { name: 'Questions for you' });
-    expect(within(card).getByText('Question for you')).toBeTruthy(); expect(within(card).getByText('1')).toBeTruthy(); expect(within(card).getByText('Later?')).toBeTruthy();
+    expect(within(card).getByText('Question for you')).toBeTruthy(); expect(within(card).getByText('1')).toBeTruthy(); expect(within(card).queryByText('Later?')).toBeNull();
+  });
+  it('draws no stack when the only question is declined', async () => {
+    const slot = await banner(() => ({ items: [{ ...ask, declinedAt: 1 }], nextCursor: null }));
+    await new Promise(resolve => setTimeout(resolve, 50));
+    expect(slot.queryByRole('region', { name: 'Questions for you' })).toBeNull();
+  });
+  // The server's for_me query drops a question once it is answered (from any client) or withdrawn.
+  it('drops a question answered elsewhere or withdrawn on the next list read after the server invalidates', async () => {
+    let items: Item[] = [ask];
+    const slot = await banner(() => ({ items, nextCursor: null }));
+    await slot.findByRole('region', { name: 'Questions for you' });
+    items = [];
+    await act(async () => { await slot.behavior.experimental_invalidateRpc(['answers:items']); });
+    await waitFor(() => expect(slot.queryByRole('region', { name: 'Questions for you' })).toBeNull());
   });
 });

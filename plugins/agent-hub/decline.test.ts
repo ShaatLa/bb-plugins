@@ -63,6 +63,21 @@ describe('Won’t reply', () => {
     await callRpc('setDismissed', { id, dismissed: true });
     expect(((await callRpc('recipients', {})) as { asking: string[] }).asking).toEqual([]);
   });
+  it('keeps a declined question in the owner’s Questions list, and drops answered and withdrawn ones', async () => {
+    const { ask, ownerList, callRpc, callAgentTool } = setup();
+    const open = ask('ans_open'), declined = ask('ans_declined'), answered = ask('ans_answered'), withdrawn = ask('ans_withdrawn');
+    await callRpc('setDismissed', { id: declined, dismissed: true });
+    await callRpc('reply', { id: answered, text: 'Yes' });
+    await callAgentTool('agent_hub_withdraw', { id: withdrawn, reason: 'Found it' }, { threadId: 't' });
+    expect((await ownerList()).map(i => i.id).sort()).toEqual([declined, open]);
+    expect(await callRpc('counts', {})).toMatchObject({ forMe: 1 });
+  });
+  it('lists only answerable questions when asked, so declined ones cannot fill the page', async () => {
+    const { db, ask, callRpc } = setup(); const old = ask('ans_old');
+    for (let i = 0; i < 60; i++) { const id = ask(`ans_d${i}`); db.prepare('UPDATE items SET declined_at=1,created_at=? WHERE id=?').run(100 + i, id); }
+    const page = (await callRpc('list', { view: 'for_me', threadId: 't', limit: 50, answerable: true })) as { items: { id: string }[] };
+    expect(page.items.map(i => i.id)).toEqual([old]);
+  });
   it('lets the agent withdraw a declined question', async () => {
     const { db, ask, agentList, callRpc, callAgentTool } = setup(); const id = ask(); await callRpc('setDismissed', { id, dismissed: true });
     expect(await callAgentTool('agent_hub_withdraw', { id, reason: 'Found it' }, { threadId: 't' })).toBe('Withdrawn.');

@@ -191,6 +191,8 @@ function start(bb: BbPluginApi, migrationError: string | null) {
     const where = [views[p.view]], args: (string | number)[] = [];
     if (!p.threadId) where.push(OWNER_ITEM_SQL);
     if (p.notices) where.push('id IN (SELECT id FROM notices)');
+    // Only questions the owner can still answer, so Won't reply ones cannot crowd them out of a page.
+    if (p.answerable) where.push('declined_at IS NULL');
     if (!['all','pinned','saved'].includes(p.view)) where.push('dismissed_at IS NULL',ACTIVE_THREAD_SQL);
     for (const [key,value] of [['thread_id',p.threadId],['project_id',p.projectId]] as const) {
       if (value !== undefined) {where.push(`${key}=?`); args.push(value);}

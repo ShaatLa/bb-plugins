@@ -362,8 +362,8 @@ export function ItemCard({ item, members, late, live = true, chat = false, marka
     : item.kind === 'for_me' && item.status === 'open' ? [item.chatAsked ? 'Not a question' : 'Won’t reply', 'X']
     : item.kind === 'saved' ? ['Remove from Saved', 'Trash2'] : null;
   // Closing an open question without an answer sits with its choices, quiet, so it is not mistaken for one of them.
-  const declinedOpen = item.status === 'open' && item.dismissedAt === null && item.declinedAt !== null;
-  const decline = item.kind === 'for_me' && item.status === 'open' && dismiss && <Button size="sm" variant="ghost" className="h-auto min-h-8 py-1 text-muted-foreground" disabled={pending} onClick={() => void act(async () => { for (const member of group) await rpc.call('setDismissed', { id: member.id, dismissed: true }); })}>{dismiss[0]}</Button>;
+  const declinedOpen = item.status === 'open' && item.dismissedAt === null && item.declinedAt !== null, askable = answerable(item);
+  const decline = askable && dismiss && <Button size="sm" variant="ghost" className="h-auto min-h-8 py-1 text-muted-foreground" disabled={pending} onClick={() => void act(async () => { for (const member of group) await rpc.call('setDismissed', { id: member.id, dismissed: true }); })}>{dismiss[0]}</Button>;
   // In the chat the robot stands for a pending answer (waiting, or deferred with an interim) and carries Stop waiting.
   // Only the chat's last card carries a robot (live = false further up); a pending card above keeps Stop waiting in More.
   const interimShown = part !== 'answer' && !!item.interim, answeredHere = interimShown && part !== 'question' && !!item.answer;
@@ -428,9 +428,9 @@ export function ItemCard({ item, members, late, live = true, chat = false, marka
     {/* While the answer is owed, the robot walks where it will appear, above the actions (raw statuses told the owner nothing). */}
     {/* While the message is still on its way (see sendingItem in inbox.tsx) the robot's place is kept but left empty. */}{robot && part !== 'question' && item.status === 'waiting' && <div className={`${item.id.startsWith('ans_sending') ? 'invisible ' : ''}px-2 text-muted-foreground opacity-60 transition-opacity hover:opacity-100 has-[[aria-expanded=true]]:opacity-100`}><WorkLog threadId={item.threadId} turnId={item.turnId} sourceSeqStart={item.questionSeq} startedAt={item.createdAt} live><button {...robotProps} title="Waiting for the answer"><RobotLoader className="h-8" label="Waiting for the answer" /></button></WorkLog></div>}
     {/* An open question's choices come before its action row, which closes the card. */}
-    {part !== 'question' && item.kind === 'for_me' && item.status === 'open' && !item.questions && <div className="flex flex-wrap gap-1 px-2">{(item.options ?? defaultChoices(item.question)).map(option => <Button key={option} size="sm" variant={option === item.recommended ? 'default' : 'outline'} className="h-auto min-h-8 whitespace-normal py-1 text-left" disabled={pending} onClick={() => void reply(undefined, option)}>{option}{option === item.recommended && <>{' '}<span className="sr-only">(recommended)</span></>}</Button>)}{decline}
+    {part !== 'question' && askable && !item.questions && <div className="flex flex-wrap gap-1 px-2">{(item.options ?? defaultChoices(item.question)).map(option => <Button key={option} size="sm" variant={option === item.recommended ? 'default' : 'outline'} className="h-auto min-h-8 whitespace-normal py-1 text-left" disabled={pending} onClick={() => void reply(undefined, option)}>{option}{option === item.recommended && <>{' '}<span className="sr-only">(recommended)</span></>}</Button>)}{decline}
       {item.recommendReason && <p className="w-full pt-1 text-xs text-muted-foreground">{item.recommendReason}</p>}</div>}
-    {part !== 'question' && item.kind === 'for_me' && item.status === 'open' && item.questions && <div className="px-2"><QuestionForm threadId={item.threadId} requireAny questions={item.questions} hidePrompt={item.questions.length === 1} onSubmit={answers => reply(undefined, answerText(item.questions!, answers))} {...(decline && dismiss ? { onCancel: () => act(async () => { for (const member of group) await rpc.call('setDismissed', { id: member.id, dismissed: true }); }), cancelLabel: dismiss[0] } : {})} />
+    {part !== 'question' && askable && item.questions && <div className="px-2"><QuestionForm threadId={item.threadId} requireAny questions={item.questions} hidePrompt={item.questions.length === 1} onSubmit={answers => reply(undefined, answerText(item.questions!, answers))} {...(decline && dismiss ? { onCancel: () => act(async () => { for (const member of group) await rpc.call('setDismissed', { id: member.id, dismissed: true }); }), cancelLabel: dismiss[0] } : {})} />
       {item.recommendReason && <p className="pt-1 text-xs text-muted-foreground">{item.recommendReason}</p>}</div>}
     {part !== 'question' && <>{/* One action row for all agent text. An incoming message with no reply of its own has none: its own row has expand and its link. */}{!bare && <div className="flex items-center gap-2">{chat && item.kind === 'for_me' && <span className="pl-2">{time}</span>}<div className={`flex items-center gap-0.5 px-1 ${rowFade} has-[[role=menu]]:opacity-100`}>
       {item.kind === 'for_me' && replyButton}
@@ -679,15 +679,17 @@ function QuestionsSection({ threads, projects, rows, settle, items, loading, onO
 // A thread's open agent questions, oldest first, in bb's collapsible card for the stack above a composer (bb's thread chat
 // and the Inbox conversation). Same items as the Questions section, so an answer anywhere closes them everywhere.
 // shell: the Inbox stack's card chrome; bb's composer banner draws the card bare.
+// An agent question the owner can still answer: not answered, declined (Won't reply) or withdrawn.
+export const answerable = (item: Item) => item.kind === 'for_me' && item.status === 'open' && item.dismissedAt === null && item.declinedAt === null;
 export const answersThreadHref = (threadId: string) => `/plugins/agent-hub/agent-hub?thread=${encodeURIComponent(threadId)}`;
 export function ThreadQuestions({ threadId, shell }: { threadId: string; shell?: string }) {
   const sharedStack = useQuestionStack(), [collapsed, setCollapsed] = useState(false);
   const stack = sharedStack ?? { collapsed, toggle: () => setCollapsed(!collapsed) };
-  const { data } = useQuery({ contract: rpcContract, method: 'list', input: { view: 'for_me', threadId, limit: 50 } });
+  const { data } = useQuery({ contract: rpcContract, method: 'list', input: { view: 'for_me', threadId, limit: 50, answerable: true } });
   const answering = useContext(AnsweringContext);
-  const items = (data?.items ?? []).filter(item => item.kind === 'for_me' && item.status === 'open' && !answering?.answered.has(item.id)).sort((a, b) => Number(b.urgency === 'blocking') - Number(a.urgency === 'blocking') || a.createdAt - b.createdAt);
+  const items = (data?.items ?? []).filter(item => answerable(item) && !answering?.answered.has(item.id)).sort((a, b) => Number(b.urgency === 'blocking') - Number(a.urgency === 'blocking') || a.createdAt - b.createdAt);
   if (!items.length) return null;
-  const waiting = items.filter(item => item.declinedAt === null).length;
+  const waiting = items.length;
   const card = <section aria-label="Questions for you"><button type="button" aria-expanded={!stack?.collapsed} onClick={stack?.toggle} className="answers-hit flex min-h-9 w-full text-left items-center gap-2 px-3 py-1.5 text-xs text-muted-foreground"><Icon name="MessageQuestion" aria-hidden className="size-3.5 shrink-0" /><span className="min-w-0 flex-1 truncate font-medium text-foreground">{waiting === 1 ? 'Question for you' : 'Questions for you'}</span><span className="rounded-full bg-surface-recessed px-1.5 text-2xs">{waiting}</span><Icon name={stack?.collapsed ? 'ChevronRight' : 'ChevronDown'} aria-hidden className="size-3.5" /></button><ul hidden={stack?.collapsed} aria-label="Questions for you" className="max-h-[min(32rem,50dvh)] divide-y divide-border-seam overflow-y-auto overscroll-contain border-t border-border-hairline px-2">{items.map(item => <ItemCard key={item.id} item={item} chat compact open={shell ? undefined : { href: answersThreadHref(threadId), label: 'Open in Agent Hub' }} />)}</ul></section>;
   return shell ? <div data-promptbox-shell className={shell}>{card}</div> : card;
 }
