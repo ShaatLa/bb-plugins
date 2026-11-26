@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { act, cleanup, fireEvent, render } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
-import { LinkedText, withoutLinkTargets } from "./linked-text";
+import { BLOCK_CODE_MIN, LinkedText, withoutLinkTargets } from "./linked-text";
 
 const copy = vi.hoisted(() => vi.fn(async (_input: { text: string }) => true));
 vi.mock("@get-bb/plugin-sdk/app", async (actual) => ({ ...await actual<object>(), useBbNavigate: () => ({ openUrl: () => false }), experimental_copyToClipboard: copy }));
@@ -43,14 +43,16 @@ it("drops only recognised link targets for comparison", () => {
 it("renders inline code without backticks and copies its exact value in one click", async () => {
   const pattern = "^(?:/$|/(?:[0-9a-f]{64}/)?_frame$|/(?:work|review)(?:/|$)) \\d+ a|b".padEnd(500, "x");
   const { container, getByRole, getByText } = render(<LinkedText text={`Set the pattern to \`${pattern}\` and save.`} />);
-  expect(container.querySelector("code")?.textContent).toBe(pattern);
+  expect(container.querySelector("[data-code-block] code")?.textContent).toBe(pattern);
+  expect(container.textContent).toMatch(/^Set the pattern to Copy.*and save\.$/);
   expect(container.textContent).not.toContain("`");
   fireEvent.click(getByRole("button", { name: "Copy code" }));
   await vi.waitFor(() => expect(getByRole("status").textContent).toBe("Copied"));
   expect(copy).toHaveBeenLastCalledWith({ text: pattern });
   copy.mockResolvedValueOnce(false);
   fireEvent.click(getByRole("button", { name: "Copy code" }));
-  await vi.waitFor(() => expect(getByText("Copy failed")).toBeTruthy());
+  await vi.waitFor(() => expect(getByRole("status").textContent).toBe("Copy failed"));
+  expect(getByText("Copy failed", { selector: "button span" })).toBeTruthy();
   copy.mockRejectedValueOnce(new Error("denied"));
   await act(async () => { fireEvent.click(getByRole("button", { name: "Copy code" })); });
   expect(getByRole("status").textContent).toBe("Copy failed");
@@ -81,4 +83,17 @@ it("keeps the copy feedback for 2 s after each attempt, including a repeated res
     await act(async () => { vi.advanceTimersByTime(600); });
     expect(getByRole("status").textContent).toBe("");
   } finally { vi.useRealTimers(); }
+});
+
+it("renders a value from 61 characters as a block with a labeled Copy button and a shorter one inline", () => {
+  const short = "a".repeat(BLOCK_CODE_MIN - 1), long = "b".repeat(BLOCK_CODE_MIN);
+  const { container, getAllByRole } = render(<LinkedText text={`Host \`${short}\` then \`${long}\``} />);
+  const blocks = [...container.querySelectorAll("[data-code-block]")];
+  expect(blocks.map(block => block.querySelector("code")?.textContent)).toEqual([long]);
+  expect(blocks[0]!.querySelector("button")?.textContent).toBe("Copy");
+  expect(container.querySelector(":not([data-code-block] *) > code")?.textContent).toBe(short);
+  expect(getAllByRole("button", { name: "Copy code" })).toHaveLength(2);
+  const preview = render(<LinkedText text={`\`${long}\``} copy={false} />).container;
+  expect(preview.querySelector("[data-code-block]")).toBeNull();
+  expect(preview.querySelector("button")).toBeNull();
 });

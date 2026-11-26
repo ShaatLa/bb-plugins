@@ -52,7 +52,10 @@ export function withoutLinkTargets(text: string): string {
   return spans(text).map((span) => span.kind !== "link" ? span.text : span.markdown ? `[${span.label}]()` : "").join("");
 }
 
-function CopyCode({ code }: { code: string }) {
+// A longer inline code value renders as its own block with a labeled Copy button: a small icon is easy to miss there.
+export const BLOCK_CODE_MIN = 61;
+
+function CopyCode({ code, labeled = false }: { code: string; labeled?: boolean }) {
   // A fresh object per attempt restarts the 2 s feedback even when the result repeats.
   const [result, setResult] = useState<{ state: "idle" | "copied" | "failed" }>({ state: "idle" });
   const { state } = result;
@@ -65,21 +68,30 @@ function CopyCode({ code }: { code: string }) {
   const label = state === "copied" ? "Copied" : state === "failed" ? "Copy failed" : "Copy code";
   return <>
     <button type="button" aria-label="Copy code" title={label}
-      className="ml-0.5 inline-flex size-5 items-center justify-center rounded align-text-bottom text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+      className={labeled
+        ? "inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-xs text-muted-foreground hover:bg-background hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+        : "ml-0.5 inline-flex size-5 items-center justify-center rounded align-text-bottom text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"}
       onClick={async () => {
         // The copied text is the source value, never the DOM, so wrapping adds nothing.
         try { setState(await experimental_copyToClipboard({ text: code }) ? "copied" : "failed"); }
         catch { setState("failed"); }
       }}>
       <Icon name={state === "copied" ? "Check" : state === "failed" ? "X" : "Copy"} className="size-3" />
+      {labeled && <span aria-hidden="true">{state === "idle" ? "Copy" : label}</span>}
     </button>
     <span role="status" className="sr-only">{state === "idle" ? "" : label}</span>
   </>;
 }
 
-/** Plain text with Markdown links and bare http(s) URLs rendered as links bb opens itself, and inline code with a copy button. */
+/** Plain text with Markdown links and bare http(s) URLs rendered as links bb opens itself, and inline code with a copy button (a long value as its own block). */
 export function LinkedText({ text, copy = true }: { text: string; copy?: boolean }) {
-  return <>{spans(text).map((span, index) => span.kind === "code"
+  return <>{spans(text).map((span, index) => span.kind === "code" && copy && span.code.length >= BLOCK_CODE_MIN
+    // Spans only: the callers render this inside <p>, <legend> and <li>, where <div> and <pre> are invalid.
+    ? <span key={index} data-code-block="" className="my-1 block w-full overflow-hidden rounded-md border border-border bg-muted text-left">
+        <span className="flex justify-end border-b border-border px-1 py-0.5"><CopyCode code={span.code} labeled /></span>
+        <code className="block px-2 py-1.5 font-mono text-xs whitespace-pre-wrap [overflow-wrap:anywhere]">{span.code}</code>
+      </span>
+    : span.kind === "code"
     ? <Fragment key={index}>
         <code className="rounded bg-muted px-1 font-mono text-[0.9em] whitespace-pre-wrap [overflow-wrap:anywhere]">{span.code}</code>
         {copy && <CopyCode code={span.code} />}

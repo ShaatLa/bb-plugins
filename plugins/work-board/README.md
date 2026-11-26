@@ -839,7 +839,7 @@ Agent tasks in `in_progress` with complete activity diagnostics and no live atta
 
 Label and preset management is available from the top panel: **gear icon → Manage labels and presets → Labels**. The **Plugin settings** item in the same menu opens Work Board settings.
 
-Inline code in a question prompt or step (`` `value` ``) shows as code with a copy button that copies exactly that value. The card header includes a **Copy task link** button next to the key, which copies a Markdown link for pasting into the agent chat; the card does not have a separate duplicate Share button.
+Inline code in a question prompt or step (`` `value` ``) shows as code with a copy button that copies exactly that value. A value of 61 characters or more shows as its own block with a labeled **Copy** button; a shorter one stays inline with the icon. The card header includes a **Copy task link** button next to the key, which copies a Markdown link for pasting into the agent chat; the card does not have a separate duplicate Share button.
 
 ### Reports to the parent thread (0.40.0)
 

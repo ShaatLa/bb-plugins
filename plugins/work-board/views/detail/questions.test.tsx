@@ -775,6 +775,20 @@ it("offers a copy button for inline code in steps, but not in a successor previe
   expect(within(superseded).queryByRole("button", { name: "Copy code" })).toBeNull();
 });
 
+it("shows a long code value in a step as a block and a short one inline, also in history", async () => {
+  const { task, rpc, structured } = setup();
+  const long = `^/(?:${"[0-9a-f]".repeat(8)})/_frame$`;
+  const { question } = await structured.handlers.createQuestion({ kind: "check", askedByThread: null, taskId: task.id, prompt: "Does `example.com` save?", mode: "single", options: [], steps: [`Set \`${long}\``] });
+  await structured.handlers.updateQuestion({ questionId: question.id, revision: question.revision, prompt: "Does `example.com` still save?", steps: [`Set \`${long}\` again`], mode: "single", options: question.options, authorName: "Agent" });
+  const slot = renderSlot(app.navPanels[0]!, { subPath: `task/${task.key}` }, { rpc });
+  const current = await slot.findByRole("group", { name: "Does `example.com` still save?" });
+  const blocks = (root: Element) => [...root.querySelectorAll("[data-code-block] code")].map(code => code.textContent);
+  expect(blocks(within(current).getByRole("list", { name: "How to check" }))).toEqual([long]);
+  expect(current.querySelector("legend [data-code-block]")).toBeNull();
+  expect(current.querySelector("legend code")?.textContent).toBe("example.com");
+  expect(blocks(within(current).getByText("History · 1").closest("details")!)).toEqual([long]);
+});
+
 it("collects readiness for a check on add, edit and reopen", async () => {
   const { store, project, task, structured, rpc } = setup();
   store.tasks.updateProject(project.id, { checkReadiness: "on" });
