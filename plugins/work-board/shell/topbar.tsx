@@ -312,13 +312,11 @@ export function TasksTopbar({
   return (
     <header className="flex h-11 shrink-0 items-center gap-2.5 border-b border-border-hairline bg-background px-3.5 text-sm max-md:pointer-coarse:h-12 max-md:pl-12 max-md:pointer-coarse:pl-14">
       {/* Room on the left so hover backgrounds pulled out with negative margins are not clipped. */}
-      <div className="-ml-2 min-w-0 flex-1 overflow-hidden pl-2">{breadcrumb}</div>
-      {route.kind === "project" && project ? (
-        <>
-          <ManagerQuickSet projectId={project.id} />
-          <LockChips projectId={project.id} />
-        </>
-      ) : null}
+      <div className="-ml-2 flex min-w-0 flex-1 items-center overflow-hidden pl-2">
+        {breadcrumb}
+        {route.kind === "project" && project ? <ManagerQuickSet projectId={project.id} className="ml-10" /> : null}
+      </div>
+      {route.kind === "project" && project ? <LockChips projectId={project.id} /> : null}
       {route.kind === "task" &&
       (pagerScope !== null || projects !== undefined) ? (
         <TaskPager

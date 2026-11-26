@@ -10,7 +10,8 @@ import { useThreadNames } from "./thread-names.js";
 const UNLINKED = "Link this project to a BB project to choose a manager thread.";
 
 /** The project's manager next to its name: one click to set it, with the Manager card's confirmation and write safeguards. */
-export function ManagerQuickSet({ projectId }: { projectId: string }) {
+/** Sits right after the project name; `className` sets its gap from the name (four times the header's own gap). */
+export function ManagerQuickSet({ projectId, className }: { projectId: string; className?: string }) {
   const rpc = useTasksRpc();
   const stamp = useOrderClock();
   const query = useTasksQuery((client) => { const readAt = stamp(); return client.call("getAttentionSettings", { projectId }).then((data) => ({ ...data, readAt })); }, ["projects:changed", "settings:changed"], [projectId]);
@@ -49,8 +50,9 @@ export function ManagerQuickSet({ projectId }: { projectId: string }) {
   };
   return (
     <>
-      <span className="flex min-w-0 shrink-0" title={linked ? name || undefined : UNLINKED}>
-        <Button type="button" size="sm" variant="ghost" className="h-6 max-w-56 gap-1 px-1.5 text-xs font-normal text-muted-foreground"
+      {/* Shrinks with a truncated name rather than being clipped when the header is narrow. */}
+      <span className={`flex min-w-0${className ? ` ${className}` : ""}`} title={linked ? name || undefined : UNLINKED}>
+        <Button type="button" size="sm" variant="ghost" className="h-6 min-w-0 max-w-56 gap-1 px-1.5 text-xs font-normal text-muted-foreground"
           disabled={busy || !linked} aria-label={current ? `Manager: ${name}` : "Set manager"} onClick={() => setChoosing(true)}>
           <span className="truncate">{current ? `Manager: ${name}` : "Set manager"}</span>
           <Icon name="ChevronDown" className="size-3 shrink-0 opacity-50" />

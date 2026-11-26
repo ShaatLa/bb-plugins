@@ -425,10 +425,12 @@ function ThreadBoardContent({ threadId, target = null }: { threadId: string; tar
       >
         {taskKey === null && route.kind !== "plan" ? (
           <header className="flex h-10 shrink-0 items-center gap-2 border-b border-border px-3">
-            <div className="min-w-0 flex-1 truncate text-sm font-medium">
+            <div className="min-w-0 truncate text-sm font-medium">
               {project?.name ?? "Project board"}
             </div>
-            {project ? <><ManagerQuickSet projectId={project.id} /><LockChips projectId={project.id} /></> : null}
+            {project ? <ManagerQuickSet projectId={project.id} className="ml-6" /> : null}
+            <span className="flex-1" />
+            {project ? <LockChips projectId={project.id} /> : null}
             <OpenInTasksButton
               label="Open board in Tasks"
               subPath={boardRoute ? tasksRouteToSubPath(boardRoute) : undefined}
