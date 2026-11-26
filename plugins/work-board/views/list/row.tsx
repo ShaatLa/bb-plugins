@@ -1,3 +1,4 @@
+import { QueueChip } from "../../components/queue-chip";
 import { shownPauses } from "../../shared/pause.js";
 import { waitingOnOwner } from "../../shared/waiting-on-owner";
 import { TaskAdvisories } from "../../components/task-advisories";
@@ -188,6 +189,7 @@ export const TaskRow = memo(function TaskRow({
           ) : null}
           <TaskActivityIndicator activity={meta?.activity} pauses={shownPauses(meta?.pauses, meta?.blockedBy)} failureMarker={!!meta?.threadHealth.failed.length} />
           <PausedChip activity={meta?.activity} pauses={shownPauses(meta?.pauses, meta?.blockedBy)} />
+          <QueueChip queue={meta?.queue} />
           <DependencyWarning blockedBy={meta?.blockedBy} />
           <TaskAdvisories items={meta?.advisories} compact />
           <ThreadHealthMarkers health={meta?.threadHealth} />

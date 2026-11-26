@@ -155,7 +155,7 @@ describe("holds after a failed check", () => {
     rebuildCheckFlow(db);
     expect(held()).toEqual(expected);
     db.exec("DROP TABLE task_question_holds");
-    db.prepare("DELETE FROM schema_version WHERE version = ?").run(MIGRATIONS.length);
+    db.prepare("DELETE FROM schema_version WHERE version = ?").run(MIGRATIONS.findIndex((step) => typeof step === "function" && step.toString().includes("CREATE_HOLDS_TABLE")) + 1);
     initializeTasksSchema(db);
     expect(held()).toEqual(expected);
     expect(structured.listQuestions(task.id)).toHaveLength(2);

@@ -9,6 +9,7 @@ import { z } from "zod";
 import { createStore, publishProjectsChanged, registerTasksApi } from "./api";
 import { registerAttachments } from "./attachments";
 import { registerAttention } from "./attention/rpc";
+import { registerQueue } from "./queue";
 import { registerDispatchGate } from "./attention/dispatch-gate";
 import { registerChecks } from "./checks/rpc";
 import { registerTasksCli } from "./cli";
@@ -48,6 +49,7 @@ export default async function plugin(bb: BbPluginApi) {
   registerTasksApi(bb, store);
   registerAttention(bb);
   registerDispatchGate(bb);
+  registerQueue(bb, store);
   registerChecks(bb);
   registerAttachments(bb, store.tasks);
   registerTasksCli(bb, store, statusPayload());

@@ -79,6 +79,7 @@ import { taskMarkdownLink } from "../shared/task-link";
 import { ACTIVITY_LABELS } from "../shared/task-activity.js";
 import { threadHealthJson } from "../shared/thread-health";
 import { checksCliCommands } from "../checks/cli";
+import { queueCliCommands } from "../queue/cli";
 import { LITERAL_TEXT_FIELDS } from "../checks/config";
 import { planCommands } from "./plan";
 import { planAdvisory } from "../shared/plan";
@@ -1042,6 +1043,7 @@ export function registerTasksCli(
             ].join("\n");
           }); },
         }),
+        ...queueCliCommands({ domain, group: groupCommand, guard, task: (address) => resolveTask(domain, address), project: (address) => resolveProject(domain, address), fail: (message) => new CliError(message) }),
         ...checksCliCommands(bb, { group: groupCommand, guard, project: (ctx, address) => requiredProject(domain, ctx, address) }),
         storage: groupCommand("storage", "Inspect and maintain plugin-owned storage", [["status", "Show disk usage and unreachable files"], ["clean", "Remove orphan files older than 24h and unreachable cache rows"], ["optimize", "Also share identical blobs and compact SQLite (may take time)"]]),
         ...Object.fromEntries((["status", "clean", "optimize"] as const).map(action => [`storage ${action}`, cliCommand({
@@ -3033,6 +3035,7 @@ export function registerTasksCli(
                   pauses,
                   automaticPause: automatic,
                   task: { ...task, waitingOnOwner: waiting },
+                  ...(cardMeta.queue ? { queue: cardMeta.queue } : {}),
                   link: taskMarkdownLink(task.key),
                   startHint: hint,
                   planning,
@@ -3087,6 +3090,7 @@ export function registerTasksCli(
                   ["Project", `${project.prefix} — ${project.name}`],
                   ["Status", task.status],
                   ["Automatic pause", automatic],
+                  ...(cardMeta.queue ? [["Queue", cardMeta.queue.position === 1 ? `Current for ${cardMeta.queue.threadId}` : `Queued #${cardMeta.queue.position} for ${cardMeta.queue.threadId}`] as const] : []),
                   ...pauses.map(pause => ["Paused", `${pause.reason}${pause.until ? `, until ${pause.until}` : ""}`] as const),
                   ["Blocked by", dependencies.blockedBy.map(blocker => `${blocker.key} (${blocker.status}${blocker.status === "done" ? "; satisfied" : "; waiting for Done"})`).join(", ") || "-"],
                   ["Blocks", dependencies.blocks.map(dependent => `${dependent.key} (${dependent.status})`).join(", ") || "-"],

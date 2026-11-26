@@ -912,6 +912,12 @@ const planReviewResultSchema = z.discriminatedUnion("ok", [
   z.object({ ok: z.literal(false), error: planNoteErrorSchema }).strict(),
 ]);
 
+const queueEntrySchema = z.object({ taskId: idSchema, key: z.string(), title: z.string(), status: z.string(), position: z.number().int().positive(), addedBy: z.string(), addedAt: z.string() }).strict();
+const queueSchema = z.object({ projectId: idSchema, threadId: z.string(), entries: z.array(queueEntrySchema) }).strict();
+const queueResultSchema = z.object({ changeId: z.string(), taskId: idSchema, threadId: z.string(), projectId: idSchema, position: z.number().int().positive() }).strict();
+/** Where a card stands in an executor's work queue; 1 is the current card. */
+export const cardQueueSchema = z.object({ threadId: z.string(), position: z.number().int().positive() }).strict();
+
 export const tasksRpcContract = {
   pauseReport: {
     input: z.object({ projectId: idSchema, since: z.string().datetime().optional(), until: z.string().datetime().optional() }).strict(),
@@ -920,6 +926,31 @@ export const tasksRpcContract = {
   updatePauseMode: {
     input: z.object({ projectId: idSchema, mode: z.enum(["off", "ab", "on"]) }).strict(),
     output: z.object({ mode: z.enum(["off", "ab", "on"]) }).strict(),
+  },
+  // The manual work queue of an executor thread: an ordered list of cards; the first is current.
+  queueList: {
+    input: z.object({ threadId: z.string().startsWith("thr_"), projectId: idSchema.optional() }).strict(),
+    output: z.object({ queues: z.array(queueSchema) }).strict(),
+  },
+  queueAdd: {
+    input: z.object({ taskId: idSchema, threadId: z.string().startsWith("thr_"), position: z.number().int().min(1).optional(), actor: z.string().min(1) }).strict(),
+    output: queueResultSchema,
+  },
+  queueMove: {
+    input: z.object({ taskId: idSchema, position: z.number().int().min(1), actor: z.string().min(1) }).strict(),
+    output: queueResultSchema,
+  },
+  queueRemove: {
+    input: z.object({ taskId: idSchema, actor: z.string().min(1) }).strict(),
+    output: queueResultSchema,
+  },
+  queueReport: {
+    input: z.object({ projectId: idSchema, since: z.string().datetime().optional() }).strict(),
+    output: z.record(z.string(), z.unknown()),
+  },
+  updateQueueMode: {
+    input: z.object({ projectId: idSchema, mode: z.enum(["off", "trial", "on"]) }).strict(),
+    output: z.object({ mode: z.enum(["off", "trial", "on"]) }).strict(),
   },
   pauseTask: {
     input: z.object({ taskId: idSchema, reason: z.string().trim().min(1).max(300), durationMs: z.number().int().min(60000).max(28800000), actor: z.string().min(1) }).strict(),
@@ -1485,6 +1516,7 @@ export const tasksRpcContract = {
       advisories: z.array(taskAdvisorySchema).optional(),
       threadHealth: threadHealthSchema,
       staleStatusFlags: z.array(z.string()).default([]),
+      queue: cardQueueSchema.optional(),
     }).strict()) }).strict(),
   },
   listTaskPullRequests: {
@@ -1637,6 +1669,7 @@ export type TasksRpcContract = typeof tasksRpcContract;
 export type Folder = z.infer<typeof folderSchema>;
 export type Project = z.infer<typeof projectSchema>;
 export type Task = z.infer<typeof taskSchema>;
+export type CardQueue = z.infer<typeof cardQueueSchema>;
 export type TaskStatus = z.infer<typeof taskStatusSchema>;
 export type TaskPriority = (typeof TASK_PRIORITIES)[number];
 export type Label = z.infer<typeof labelSchema>;

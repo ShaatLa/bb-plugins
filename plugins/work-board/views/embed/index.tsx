@@ -26,6 +26,7 @@ import {
   type TasksNavigation,
   type TasksRoute,
 } from "../../shell/routes.js";
+import { QueuePanel } from "../../components/queue-panel.js";
 import { LockChips } from "../../components/lock-chips.js";
 import { ManagerQuickSet } from "../../components/manager-quick-set.js";
 import { BoardView } from "../board/index.js";
@@ -437,6 +438,7 @@ function ThreadBoardContent({ threadId, target = null }: { threadId: string; tar
             />
           </header>
         ) : null}
+        {taskKey === null && route.kind !== "plan" ? <QueuePanel threadId={threadId} /> : null}
         {content}
       </section>
     </TasksNavigationContext.Provider>

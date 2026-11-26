@@ -11,6 +11,7 @@ import { createGitSyncStore } from "../git-sync/store";
 import { STALE_GIT_CONFIG, gitSyncConfigSchema, overlapEnabled } from "../shared/git-sync";
 import { ATTENTION_OWNER_ONLY } from "../shared/attention";
 import { setPauseMode } from "../pause/store";
+import { queueMode } from "../queue/store";
 import { kindState } from "../attention/modes";
 import { CHECK_FIELDS, CHECKS_CONFIG_KEYS, CHECKS_ENABLED_OWNER_ONLY, CHECKS_PREFIX, type CheckField } from "../checks/config";
 import { checksService } from "../checks/service";
@@ -32,7 +33,7 @@ const PROJECT_KEYS = {
 type ProjectKey = keyof typeof PROJECT_KEYS;
 const GIT_KEYS = Object.keys(gitSyncConfigSchema.shape) as (keyof z.infer<typeof gitSyncConfigSchema>)[];
 // Stale-status notices (`attentionMode`: off or live) and the manager are the owner's to change in the project settings; the keys are readable here and refused by `config.set`.
-const ATTENTION_KEYS = ["attentionMode", "manager", "autoPause"];
+const ATTENTION_KEYS = ["attentionMode", "manager", "autoPause", "queueMode"];
 export const PROJECT_CONFIG_KEYS = [...Object.keys(PROJECT_KEYS), ...ATTENTION_KEYS, ...Object.keys(PR_EVENT_KEYS), ...GIT_KEYS.map((key) => `git.${key}`), ...CHECKS_CONFIG_KEYS];
 
 /** JSON with object keys sorted, so two values compare equal regardless of key order; array order is kept. */
@@ -59,6 +60,7 @@ export function projectConfigHandlers(bb: BbPluginApi, store: TasksApiStore) {
       ...checksService(bb).configValues(projectId),
       attentionMode: kindState(bb.storage.database(), projectId).effective.mode,
       autoPause: bb.storage.database().prepare<[string], { mode: string }>("SELECT mode FROM pause_modes WHERE project_id=?").get(projectId)?.mode ?? "off",
+      queueMode: queueMode(bb.storage.database(), projectId),
       prEvents: prEventSettings(bb.storage.database(), projectId).events,
       prEventsManager: prEventSettings(bb.storage.database(), projectId).manager,
       manager: bb.storage.database().prepare<[string], { manager: string | null }>("SELECT manager FROM attention_manager WHERE tracker_id=?").get(projectId)?.manager ?? null,
@@ -105,6 +107,7 @@ export function projectConfigHandlers(bb: BbPluginApi, store: TasksApiStore) {
         publishProjectsChanged(bb, projectId);
         return { projectId, key, value: "off" };
       }
+      if (key === "queueMode") throw new Error("the work queue mode (off, trial, on) is changed by the owner in the project settings");
       if (ATTENTION_KEYS.includes(key)) throw new Error(ATTENTION_OWNER_ONLY);
       requireProject(projectId);
       if (key in PR_EVENT_KEYS)

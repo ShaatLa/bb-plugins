@@ -183,7 +183,7 @@ it("backfills project PR history when upgrading an existing database", async () 
   const task = store.tasks.createTask({ projectId: project.id, title: "Linked", status: "todo" });
   const db = bb.storage.database();
   db.exec("DROP TRIGGER project_pr_history_insert; DROP TRIGGER project_pr_history_move; DROP TABLE project_pr_history");
-  db.prepare("DELETE FROM schema_version WHERE version=?").run(MIGRATIONS.length - 2);
+  db.prepare("DELETE FROM schema_version WHERE version=?").run(MIGRATIONS.findIndex((sql) => typeof sql === "string" && sql.includes("CREATE TABLE project_pr_history")) + 1);
   db.prepare("INSERT INTO task_pr_links(task_id,identity,payload) VALUES (?, ?, ?)").run(task.id, "example/one#1", JSON.stringify({ createdAt: "2026-01-01T00:00:00.000Z" }));
   initializeTasksSchema(db);
   expect(db.prepare("SELECT first_linked_at FROM project_pr_history WHERE project_id=?").get(project.id)).toEqual({ first_linked_at: "2026-01-01T00:00:00.000Z" });

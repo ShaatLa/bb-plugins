@@ -86,6 +86,17 @@ A plan needs an approval before work starts. The author names the approver when 
 - **Where it shows.** A `plan-debt` advisory (`Plan debt since …: plan v2 is draft. Submit it for review: bb work-board plan submit KEY --reviewer …`) in `show`, `list --json` and the card, and `planDebt` in `show --json` (`since`, `planVersion`, `planState`, and the reminders still owed with their state). `bb work-board list --plan-debt` lists the cards with debt (the same `planDebt` filter on the `listTasks` RPC).
 - **Reminders.** The card's active executors get one message each when an owner decision is answered on the card, when a PR link is confirmed (the `pr link` result also carries a `note`) and after 24 h in debt; after 24 h the manager (`manager` setting) is told too. Each reminder is a durable outbox row with its own receipt: a definite failure is retried on the next 10-minute scan, an unknown outcome is searched for and never resent blindly, and the rows stop when the debt ends. A new episode reminds again.
 
+## Work queue per executor thread
+
+An executor thread has one ordered queue of cards per project. The first card is current; the others read "Queued #N". Nothing orders it by itself: the executor (its own queue), the project's manager (any queue of that project) and the owner (the app) do.
+
+- CLI: `bb work-board queue list [--thread thr_…] [--project P] [--json]`, `queue add KEY --thread thr_… [--position N]`, `queue move KEY --position N`, `queue remove KEY`, `queue report --project P`.
+- A queued card stays in its pre-work status (Backlog, Todo or the planning status) and is not flagged by stale-status. Only the current card may be in work, so moving a waiting card into work is refused with its place; an automatic move (PR automation, review gate) takes it out of the queue instead.
+- When the current card is closed or reaches the review status, the next card is promoted in the same write and the executor gets one message naming it. Nothing is started, moved or dispatched. The message is sent at most once per promotion; a send that fails outright is retried up to three times, and an interrupted one is not resent.
+- Every queue change and mode change is logged (who, which card, old and new position).
+- `show --json` and the card metadata carry an optional `queue: { threadId, position }`. The queue is not part of an archive export.
+- `queueMode` (`off`, `trial`, `on`; default `trial`) is the owner's, in the project settings. In a trial a stable half of the executor threads has queues (auto) and the rest does not (control); `queue report` compares stale-status flags and ordering workarounds per covered unit-day, with the limitations it cannot remove.
+
 ## Manager attention: stale-status notices
 
 Work Board can send the manager thread one batched message about cards whose status looks stale. It is **off** for every project until the owner turns it on in the **Manager** section of the project settings (**Stale-status notices**).

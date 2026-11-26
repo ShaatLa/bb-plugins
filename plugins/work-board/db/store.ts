@@ -5,7 +5,8 @@ import { effectiveInProgressStatus, ensurePlanningStatus, getWorkflowPolicy, inW
 import { recordPlanDebtEvent, syncPlanDebt, syncProjectPlanDebt } from "../plan-debt/store";
 import { prIdentity, prLinkSchema } from "../shared/git-sync";
 import { createClosureStore } from "../closure/store";
-import { prSettled, projectPolicies, staleRows, staleStatusObservations as observeStaleStatus } from "../attention/observe";
+import { leaveQueue, onStatusChange as queueStatusChange } from "../queue/store";
+import { prSettled, projectPolicies, queuedWaiting, staleRows, staleStatusObservations as observeStaleStatus } from "../attention/observe";
 import { closeTaskOccurrences, markTrackerDirty, touchAttention } from "../attention/ledger";
 import { endPauses } from "../pause/store";
 import { recordPrAuthors } from "../review-gate/authors";
@@ -1171,12 +1172,14 @@ export function createTasksStore(db: PluginDatabase, log: (message: string) => v
   function staleStatusFlags(taskIds?: readonly string[], projectId?: string, nowMs = Date.now()): Map<string, string[]> {
     const policies = projectPolicies(db);
     const rows = staleRows(db, taskIds, projectId, nowMs);
+    const waiting = queuedWaiting(db, rows);
     const result = new Map<string, string[]>();
     // The planning status is read from the live project, so a settings edit that made it invalid counts at once.
     const planning = new Map(listProjects().map((project) => [project.id, planningStatusOf(project)]));
     for (const row of rows) {
       const policy = policies.get(row.project_id);
       if (!policy) continue;
+      if (waiting.has(row.id)) continue;
       const flags: string[] = [];
       // A card held behind an unfinished predecessor, or waiting on an open owner question, is waiting, not abandoned. Planning is active work like In progress.
       if (!row.paused && (row.status === policy.inProgressStatus || (planning.get(row.project_id) ?? null) === row.status) && !row.active && !row.held && !row.waiting_owner) flags.push("no_active_thread");
@@ -1588,6 +1591,12 @@ export function createTasksStore(db: PluginDatabase, log: (message: string) => v
     const label = statusLabel(status, requireProject(task.projectId).statuses);
     lastStatusComment = createComment({ taskId: task.id, kind: "system", authorName: by, body: `Status changed to ${label} by ${by}${cause ? ` (${cause})` : ""}` });
   }
+  /** A queued card changing status, in the write's own transaction; the writes that carry no actor name are automatic. */
+  function queueStatusGate(task: Task, status: string, log: StatusLog | undefined): void {
+    if (status === task.status) return;
+    const automatic = log === undefined || log.by === "Work Board";
+    queueStatusChange(db, task.id, status, { automatic, by: log?.by ?? "Work Board", ...(log?.cause ? { cause: log.cause } : {}), label: statusLabel(status, requireProject(task.projectId).statuses) });
+  }
   const updateTaskTransaction = db.transaction(
     (id: string, input: UpdateTaskInput): Task => {
       const current = requireTask(id);
@@ -1624,6 +1633,7 @@ export function createTasksStore(db: PluginDatabase, log: (message: string) => v
         const linked = actor === "owner" || Boolean(getTaskThreadByThreadId(id, actor)) || Boolean(db.prepare<[string, string]>("SELECT 1 FROM task_pauses WHERE task_id=? AND thread_id=? AND signal='manual'").get(id, actor));
         endPauses(db, id, linked ? "status_change" : "takeover", actor);
       }
+      queueStatusGate(current, status, input.statusLog);
       trackClosure(current, status, input.closerThreadId);
       db.prepare<
         [
@@ -1774,6 +1784,7 @@ export function createTasksStore(db: PluginDatabase, log: (message: string) => v
       const updatedAt = nowIso();
       const moved = moving.map((task, index) => {
         endPauses(db, task.id, agentThreadId && !getTaskThreadByThreadId(task.id, agentThreadId) ? "takeover" : "status_change", agentThreadId ?? "owner");
+        leaveQueue(db, task.id, { cause: "moved", actor: agentThreadId ?? "owner", left: "moved to another project" });
         const number = target.nextTaskNumber + index;
         const sourceLabels = listLabelsForTask(task.id);
         recordAlias.run(source.prefix, task.number, task.id);
@@ -1905,6 +1916,7 @@ export function createTasksStore(db: PluginDatabase, log: (message: string) => v
         const linked = actor === "owner" || Boolean(getTaskThreadByThreadId(id, actor)) || Boolean(db.prepare<[string, string]>("SELECT 1 FROM task_pauses WHERE task_id=? AND thread_id=? AND signal='manual'").get(id, actor));
         endPauses(db, id, linked ? "status_change" : "takeover", actor);
       }
+      queueStatusGate(task, input.status, input.statusLog);
       trackClosure(task, input.status, input.closerThreadId);
       db.prepare<[Task["status"], number, string, string]>(
         `
@@ -1941,7 +1953,7 @@ export function createTasksStore(db: PluginDatabase, log: (message: string) => v
     const timestamp = nowIso();
     const changed = family.filter(task => archived ? !task.archivedAt : Boolean(task.archivedAt));
     const update = db.prepare<[string | null, string, string]>("UPDATE tasks SET archived_at = ?, updated_at = ? WHERE id = ?");
-    for (const task of changed) { update.run(archived ? timestamp : null, timestamp, task.id); syncPlanDebt(db, task.id); }
+    for (const task of changed) { update.run(archived ? timestamp : null, timestamp, task.id); if (archived) leaveQueue(db, task.id, { cause: "archived", actor: "Work Board", left: "archived" }); syncPlanDebt(db, task.id); }
     return changed.map(task => requireTask(task.id));
   });
 
@@ -1973,9 +1985,10 @@ export function createTasksStore(db: PluginDatabase, log: (message: string) => v
   function deleteTask(id: string): boolean {
     if (scheduleTemplate.get(id))
       throw new Error("This card was a schedule template and keeps its schedule history. Archive it instead; a card that is not finished needs Done or Canceled first.");
-    return (
-      db.prepare<[string]>("DELETE FROM tasks WHERE id = ?").run(id).changes > 0
-    );
+    return db.transaction(() => {
+      leaveQueue(db, id, { cause: "deleted", actor: "Work Board", left: "deleted" });
+      return db.prepare<[string]>("DELETE FROM tasks WHERE id = ?").run(id).changes > 0;
+    })();
   }
 
   function getLabel(id: string): Label | undefined {

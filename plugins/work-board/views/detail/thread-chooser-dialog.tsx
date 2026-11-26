@@ -27,6 +27,7 @@ const MODES = {
  */
 export function ThreadChooserDialog(props: { onClose: () => void } & (
   | { kind: "task"; taskId: string; projectId: string }
+  | { kind: "queue"; taskId: string; projectId: string }
   | { kind: "manager"; bbProjectId: string; current: string; onPick: (id: string, title: string) => void }
 )) {
   const { onClose } = props;
@@ -34,7 +35,7 @@ export function ThreadChooserDialog(props: { onClose: () => void } & (
   const rpc = useRpc<DelegationRpcContract>();
   const tasksRpc = useTasksRpc();
   const isManager = props.kind === "manager";
-  const trackerProjectId = props.kind === "task" ? props.projectId : null;
+  const trackerProjectId = props.kind === "task" || props.kind === "queue" ? props.projectId : null;
   const listProjectId = props.kind === "manager" ? props.bbProjectId : undefined;
   const [threads, setThreads] = useState<Thread[]>([]);
   const [offset, setOffset] = useState(0);
@@ -109,6 +110,11 @@ export function ThreadChooserDialog(props: { onClose: () => void } & (
     setSending(true);
     setError(null);
     try {
+      if (props.kind === "queue") {
+        await tasksRpc.call("queueAdd", { taskId: props.taskId, threadId, actor: "owner" });
+        onClose();
+        return;
+      }
       await rpc.call(assignOnly ? "taskThreadsAttach" : "delegateToThread", { taskId: props.taskId, threadId });
       if (!assignOnly) storeDefaultThread(props.projectId, remember ? { id: threadId, title } : null);
       onClose();
@@ -126,7 +132,9 @@ export function ThreadChooserDialog(props: { onClose: () => void } & (
   const rows = [...(pinned ? [pinned] : []), ...matching, ...(idMatch && !matching.some(({ id }) => id === idMatch.id) && idMatch.id !== pinned?.id ? [idMatch] : [])];
   const text = props.kind === "manager"
     ? { title: "Choose the manager thread", description: "Stale-status notices and copied PR messages go to the manager thread." }
-    : MODES[mode];
+    : props.kind === "queue"
+      ? { title: "Add to a work queue", description: "The card waits in this thread's queue behind its current card. Nothing is sent or started." }
+      : MODES[mode];
 
   return (
     <Dialog open onOpenChange={(open) => { if (!open && !sending) onClose(); }}>
@@ -167,7 +175,7 @@ export function ThreadChooserDialog(props: { onClose: () => void } & (
         </div>
         {hasMore ? <Button variant="outline" disabled={loading || sending} onClick={() => setOffset(threads.length)}>Load more threads</Button> : null}
         {/* A pasted id whose row is already listed has that row as its one control. */}
-        {props.kind === "task" && THREAD_ID.test(exactId) && !rows.some(({ id }) => id === exactId) ? <Button disabled={sending} onClick={() => void dispatch(exactId, threads.find(({ id }) => id === exactId)?.title ?? "Existing thread")}>{assignOnly ? "Assign to" : "Send to"} {exactId}</Button> : null}
+        {props.kind !== "manager" && THREAD_ID.test(exactId) && !rows.some(({ id }) => id === exactId) ? <Button disabled={sending} onClick={() => void dispatch(exactId, threads.find(({ id }) => id === exactId)?.title ?? "Existing thread")}>{props.kind === "queue" ? "Queue for" : assignOnly ? "Assign to" : "Send to"} {exactId}</Button> : null}
       </DialogContent>
     </Dialog>
   );

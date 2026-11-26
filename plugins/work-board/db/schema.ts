@@ -1082,6 +1082,72 @@ export const MIGRATIONS = [
     db.exec(CREATE_HOLDS_TABLE);
     rebuildCheckFlow(db);
   },
+  // The manual work queue of an executor thread, its change log, the next-card notices, and the queue trial's coverage and samples.
+  `CREATE TABLE task_queue (
+     task_id TEXT PRIMARY KEY REFERENCES tasks(id) ON DELETE CASCADE,
+     project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+     thread_id TEXT NOT NULL,
+     position INTEGER NOT NULL CHECK(position >= 1),
+     added_by TEXT NOT NULL,
+     added_at TEXT NOT NULL
+   );
+   CREATE INDEX idx_task_queue_thread ON task_queue(project_id, thread_id, position);
+   CREATE TABLE task_queue_log (
+     id INTEGER PRIMARY KEY AUTOINCREMENT,
+     change_id TEXT NOT NULL,
+     at TEXT NOT NULL,
+     project_id TEXT NOT NULL,
+     thread_id TEXT,
+     task_id TEXT,
+     action TEXT NOT NULL CHECK(action IN ('add','move','remove','advance','mode')),
+     actor TEXT NOT NULL,
+     cause TEXT,
+     old_position INTEGER,
+     new_position INTEGER
+   );
+   CREATE INDEX idx_task_queue_log_project ON task_queue_log(project_id, at);
+   CREATE TABLE task_queue_notices (
+     id TEXT PRIMARY KEY,
+     project_id TEXT NOT NULL,
+     thread_id TEXT NOT NULL,
+     from_task TEXT NOT NULL,
+     to_task TEXT NOT NULL,
+     created_at TEXT NOT NULL,
+     state TEXT NOT NULL CHECK(state IN ('pending','sending','sent','failed','unknown')),
+     attempts INTEGER NOT NULL DEFAULT 0,
+     from_key TEXT NOT NULL,
+     reason TEXT NOT NULL
+   );
+   CREATE TABLE queue_modes (
+     project_id TEXT PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
+     mode TEXT NOT NULL CHECK(mode IN ('off','trial','on')),
+     changed_at TEXT NOT NULL
+   );
+   CREATE TABLE queue_trial_coverage (
+     at TEXT NOT NULL,
+     project_id TEXT NOT NULL,
+     thread_id TEXT NOT NULL,
+     mode TEXT NOT NULL,
+     arm TEXT NOT NULL,
+     interval_ms INTEGER NOT NULL,
+     PRIMARY KEY(project_id, thread_id, at)
+   );
+   CREATE TABLE queue_trial_samples (
+     at TEXT NOT NULL,
+     project_id TEXT NOT NULL,
+     thread_id TEXT NOT NULL,
+     task_id TEXT NOT NULL,
+     status TEXT NOT NULL,
+     linked INTEGER NOT NULL,
+     queue_position INTEGER,
+     PRIMARY KEY(project_id, thread_id, task_id, at)
+   );
+   CREATE INDEX idx_queue_trial_samples_task ON queue_trial_samples(task_id, at);
+   ALTER TABLE task_dependencies ADD COLUMN created_at TEXT;
+   -- When the queue shipped: the trial window and its pre-release baseline are anchored here (a later project starts at its creation).
+   CREATE TABLE queue_rollout (id INTEGER PRIMARY KEY CHECK(id=1), at TEXT NOT NULL);
+   INSERT INTO queue_rollout(id, at) VALUES (1, strftime('%Y-%m-%dT%H:%M:%fZ','now'));
+   CREATE TABLE queue_trial_scans (project_id TEXT PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE, at TEXT NOT NULL);`,
 ] as const;
 
 /** Approval rows written before the comment id existed: the N-th row is the N-th approving review comment, only where the counts agree. */

@@ -50,6 +50,7 @@ import {
 } from "../list/list-preference.js";
 import { useLabels } from "../list/data";
 import { matchesFilters } from "../list/optimistic.js";
+import { QueueChip } from "../../components/queue-chip";
 import { Button } from "@/components/ui/button";
 import { DelayedLoading } from "@/components/ui/delayed-loading";
 import { Icon } from "@/components/ui/icon";
@@ -198,6 +199,7 @@ function TaskCard({
             <TaskActivityIndicator activity={meta.activity} pauses={shownPauses(meta.pauses, meta.blockedBy)} failureMarker={!!meta.threadHealth?.failed.length} />
             <DependencyWarning blockedBy={meta.blockedBy} />
             <PausedChip activity={meta.activity} pauses={shownPauses(meta.pauses, meta.blockedBy)} />
+            <QueueChip queue={meta.queue} />
             <TaskAdvisories items={meta.advisories} compact />
             <ThreadHealthMarkers health={meta.threadHealth} />
           </div>
@@ -377,7 +379,7 @@ export function BoardView({ projectId, highlightKeys }: BoardViewProps) {
     const map = new Map(board.data?.metaByTaskId);
     if (metadata.data) for (const [id, value] of map) map.set(id, { ...value, activity: undefined });
     for (const row of metadata.data ?? []) map.set(row.taskId, {
-      ...(map.get(row.taskId) ?? EMPTY_META), workingThreads: row.taskThreads, activity: row.activity, blockedBy: row.blockedBy, pauses: row.pauses, advisories: row.advisories, threadHealth: row.threadHealth, attachmentCount: row.attachmentCount,
+      ...(map.get(row.taskId) ?? EMPTY_META), workingThreads: row.taskThreads, activity: row.activity, blockedBy: row.blockedBy, pauses: row.pauses, queue: row.queue, advisories: row.advisories, threadHealth: row.threadHealth, attachmentCount: row.attachmentCount,
     });
     return map;
   }, [board.data?.metaByTaskId, metadata.data]);

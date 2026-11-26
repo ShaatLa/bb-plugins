@@ -13,9 +13,11 @@ import { isActiveThread } from "../detail/meta.js";
 
 import type { TaskActivity } from "../../shared/task-activity.js";
 import type { CardPause } from "../../shared/pause.js";
+import type { CardQueue } from "../../shared/contract.js";
 
 export interface BoardCardMeta {
   pauses?: CardPause[];
+  queue?: CardQueue;
   blockedBy?: DependencyTask[];
   advisories?: TaskAdvisory[];
   activity?: TaskActivity;
@@ -170,6 +172,7 @@ async function cardMetadata(rpc: TasksRpc, taskIds: string[]) {
     activity: entry.activity,
     blockedBy: entry.blockedBy,
     pauses: entry.pauses,
+    queue: entry.queue,
     advisories: entry.advisories,
     attachmentCount: entry.attachmentCount,
   });

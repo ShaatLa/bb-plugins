@@ -1,6 +1,6 @@
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import { UNANSWERED_QUESTION } from "../db/waiting-on-owner";
-import { getWorkflowPolicy, type WorkflowPolicy } from "../shared/workflow-policy";
+import { getWorkflowPolicy, startsFromStatus, type WorkflowPolicy } from "../shared/workflow-policy";
 
 type Database = ReturnType<BbPluginApi["storage"]["database"]>;
 
@@ -34,6 +34,8 @@ export interface StaleRow {
   /** Open/closed as of a refresh that succeeded; a failed refresh keeps the old payload, which is no longer a known answer. The flags and the ledger both use these. */
   open_known: number;
   closed_known: number;
+  /** The place in an executor's work queue (1 is current), or null when the card is not queued. */
+  queue_position: number | null;
   /** JSON array of the `mergedAt` values of the card's merged, non-excluded PRs, as the snapshots hold them (unvalidated). */
   merged_at: string;
 }
@@ -79,6 +81,7 @@ export function staleRows(db: Database, taskIds?: readonly string[], projectId?:
           WHERE l.task_id=t.id AND COALESCE(json_extract(l.payload,'$.excluded'),0)=0 AND s.error IS NULL AND json_extract(s.payload,'$.state') IN ('open','draft')) AS open_known
         , EXISTS(SELECT 1 FROM task_pr_links l JOIN git_pr_snapshots s ON s.project_id=t.project_id AND s.identity=l.identity
           WHERE l.task_id=t.id AND COALESCE(json_extract(l.payload,'$.excluded'),0)=0 AND s.error IS NULL AND json_extract(s.payload,'$.state')='closed') AS closed_known
+        , (SELECT q.position FROM task_queue q WHERE q.task_id=t.id) AS queue_position
         , (SELECT json_group_array(json_extract(s.payload,'$.mergedAt')) FROM task_pr_links l JOIN git_pr_snapshots s ON s.project_id=t.project_id AND s.identity=l.identity
           WHERE l.task_id=t.id AND COALESCE(json_extract(l.payload,'$.excluded'),0)=0 AND json_extract(s.payload,'$.state')='merged') AS merged_at
       FROM tasks t JOIN projects p ON p.id=t.project_id
@@ -90,6 +93,18 @@ export function staleRows(db: Database, taskIds?: readonly string[], projectId?:
 export function projectPolicies(db: Database): Map<string, WorkflowPolicy> {
   const rows = db.prepare<[], { id: string; workflow_policy: string | null }>("SELECT id, workflow_policy FROM projects").all();
   return new Map(rows.map((row) => [row.id, getWorkflowPolicy({ workflowPolicy: row.workflow_policy == null ? null : JSON.parse(row.workflow_policy) })]));
+}
+
+/**
+ * The cards waiting their turn in an executor's work queue: position 2 or later and still in a pre-work status, so the
+ * stale flags leave them out. A waiting card already in work (data that breaks the queue's rule) is flagged as usual.
+ */
+export function queuedWaiting(db: Database, rows: readonly StaleRow[]): Set<string> {
+  const waiting = rows.filter((row) => (row.queue_position ?? 0) >= 2);
+  if (!waiting.length) return new Set();
+  const zones = new Map(db.prepare<[], { id: string; statuses: string | null; workflow_policy: string | null }>("SELECT id, statuses, workflow_policy FROM projects").all()
+    .map((row) => [row.id, { statuses: row.statuses ? JSON.parse(row.statuses) : null, workflowPolicy: row.workflow_policy ? JSON.parse(row.workflow_policy) : null }] as const));
+  return new Set(waiting.filter((row) => zones.has(row.project_id) && startsFromStatus(zones.get(row.project_id)!, row.status)).map((row) => row.id));
 }
 
 export interface CardObservation {
@@ -112,9 +127,12 @@ export interface CardObservation {
 export function staleStatusObservations(db: Database, taskIds?: readonly string[], projectId?: string, nowMs = Date.now()): CardObservation[] {
   const policies = projectPolicies(db);
   const result: CardObservation[] = [];
-  for (const row of staleRows(db, taskIds, projectId, nowMs)) {
+  const rows = staleRows(db, taskIds, projectId, nowMs);
+  const waiting = queuedWaiting(db, rows);
+  for (const row of rows) {
     const policy = policies.get(row.project_id);
     if (!policy) continue;
+    const queuedWaiting = waiting.has(row.id);
     const valid = (present: boolean) => ({ present, validity: "valid" as const });
     const reviewOrTesting = row.status === policy.reviewStatus || row.status === policy.testingStatus;
     const prUnresolved = reviewOrTesting && !prSettled(row, policy, nowMs);
@@ -123,8 +141,8 @@ export function staleStatusObservations(db: Database, taskIds?: readonly string[
       taskId: row.id,
       trackerId: row.project_id,
       key: row.key,
-      inScope: !row.archived && PILOT_STATUSES.includes(row.status) && !row.held && !row.ongoing,
-      scopeReason: row.archived ? "archived" : row.ongoing ? "ongoing" : row.held ? "blocked" : "status_changed",
+      inScope: !row.archived && PILOT_STATUSES.includes(row.status) && !row.held && !row.ongoing && !queuedWaiting,
+      scopeReason: row.archived ? "archived" : row.ongoing ? "ongoing" : row.held ? "blocked" : queuedWaiting ? "queued" : "status_changed",
       doneScope: !row.archived && row.status === policy.doneStatus && !row.ongoing,
       signals: {
         no_active_thread: valid(!row.paused && row.status === policy.inProgressStatus && !row.active && !row.held && !row.waiting_owner),

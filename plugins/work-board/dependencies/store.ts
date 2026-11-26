@@ -81,8 +81,8 @@ export function createDependencyStore(db: Database, tasks: TasksStore) {
     if (cycle) throw new Error("Dependency would create a cycle");
     // The dependent's hold changes, and so may its stale-status flags; the ledger follows in the same transaction.
     return db.transaction(() => {
-      const added = db.prepare<[string, string]>("INSERT OR IGNORE INTO task_dependencies(task_id, blocking_task_id) VALUES (?, ?)")
-        .run(taskId, blockingTaskId).changes > 0;
+      const added = db.prepare<[string, string, string]>("INSERT OR IGNORE INTO task_dependencies(task_id, blocking_task_id, created_at) VALUES (?, ?, ?)")
+        .run(taskId, blockingTaskId, new Date().toISOString()).changes > 0;
       touchAttention(db, [taskId, blockingTaskId]);
       return added;
     })();
