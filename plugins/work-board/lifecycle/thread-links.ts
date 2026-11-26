@@ -3,6 +3,7 @@ import type { TasksStore, TaskThread, TaskThreadLiveStatus } from "../db";
 import { isSideChatShapedThread } from "../shared/side-chat";
 import { errorMessage } from "../shared/errors";
 import { isClosedStatus } from "../shared/workflow-policy";
+import { reviewRoleOf } from "../shared/thread-role";
 
 type SdkThread = Awaited<ReturnType<BbPluginApi["sdk"]["threads"]["get"]>>;
 /**
@@ -95,10 +96,20 @@ async function reconcile(
       const thread = snapshots.get(link.threadId);
       return !thread || threadUnavailable(thread);
     });
+    // A review child that attached by its title never takes the card over, so it must not replace the owner's parent link.
+    const key = store.getTask(taskId)?.key;
+    const discovered = new Set(
+      bb.storage
+        .database()
+        .prepare<[string], { id: string }>("SELECT id FROM task_threads WHERE task_id = ? AND link_origin = 'discovery'")
+        .all(taskId)
+        .map((row) => row.id),
+    );
     const hasWorker = links.some((link) => {
       const thread = snapshots.get(link.threadId);
       return (
         !inherited.has(link.threadId) &&
+        !(key && discovered.has(link.id) && reviewRoleOf(thread?.title ?? link.title, key)) &&
         thread &&
         !threadUnavailable(thread) &&
         thread.status !== "stopping"

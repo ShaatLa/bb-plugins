@@ -302,6 +302,62 @@ it("releases a fallback parent when a replacement worker takes over", async () =
   );
 });
 
+// A parent-fallback link on the card, then one more linked thread with the given title and origin.
+async function withParentAndChild(title: string, linkOrigin: "discovery" | "manual", cardKey?: string) {
+  const f = setup();
+  f.add("thr_old", true);
+  await reconcileTaskThreads(f.bb, f.store.tasks, f.task.id);
+  const task = cardKey ? f.store.tasks.createTask({ projectId: f.project.id, title: "Other card" }) : f.task;
+  if (cardKey) {
+    // the fallback link above belongs to the first card; build the same state on the second one
+    f.store.tasks.upsertTaskThread({ taskId: task.id, threadId: "thr_parent", presetName: "Parent thread", title: "Parent", liveStatus: "idle", linkOrigin: "parent" });
+    f.store.tasks.createComment({ taskId: task.id, threadId: "thr_parent", kind: "system", authorName: "Work Board", body: "Thread attached (parent fallback): @thread:thr_parent" });
+  }
+  f.threads.set("thr_child", makeThreadResponse({ id: "thr_child", title, status: "active", parentThreadId: "thr_parent" }));
+  f.store.tasks.upsertTaskThread({ taskId: task.id, threadId: "thr_child", presetName: "Auto attached", title, liveStatus: "working", linkOrigin });
+  const links = await reconcileTaskThreads(f.bb, f.store.tasks, task.id);
+  const replaced = f.store.tasks.listComments(task.id).some((c) => c.body.includes("Thread detached (replaced)"));
+  return { f, task, ids: links.map((link) => link.threadId).sort(), replaced };
+}
+
+it.each(["review", "plan-review", "code-review", "check"])("keeps the parent link when a title-attached %s child joins", async (role) => {
+  const probe = setup();
+  const { ids, replaced } = await withParentAndChild(`${probe.task.key} ${role}: Reroute work`, "discovery");
+  expect(ids).toEqual(["thr_child", "thr_parent"]);
+  expect(replaced).toBe(false);
+});
+
+it("keeps the parent link on every card of an EXA-1+2 style review title", async () => {
+  const probe = setup();
+  const [prefix] = probe.task.key.split("-");
+  const first = await withParentAndChild(`${prefix}-1+2 review: Both`, "discovery");
+  expect(first.task.key).toBe(`${prefix}-1`);
+  expect(first.ids).toEqual(["thr_child", "thr_parent"]);
+  const second = await withParentAndChild(`${prefix}-1+2 review: Both`, "discovery", "second");
+  expect(second.task.key).toBe(`${prefix}-2`);
+  expect(second.ids).toEqual(["thr_child", "thr_parent"]);
+});
+
+it("still replaces the parent link for a title-attached implementation child", async () => {
+  const probe = setup();
+  const { ids, replaced } = await withParentAndChild(`${probe.task.key} impl: Reroute work`, "discovery");
+  expect(ids).toEqual(["thr_child"]);
+  expect(replaced).toBe(true);
+});
+
+it("counts an explicitly linked thread as a worker whatever its title", async () => {
+  const probe = setup();
+  const { ids, replaced } = await withParentAndChild(`${probe.task.key} review: Reroute work`, "manual");
+  expect(ids).toEqual(["thr_child"]);
+  expect(replaced).toBe(true);
+});
+
+it("does not treat a review of another card as a reviewer of this one", async () => {
+  const { ids, replaced } = await withParentAndChild("EXA-3 review: Elsewhere", "discovery");
+  expect(ids).toEqual(["thr_child"]);
+  expect(replaced).toBe(true);
+});
+
 it("preserves assignment history through an archive v6 round-trip", async () => {
   const f = setup();
   f.add("thr_old", true);

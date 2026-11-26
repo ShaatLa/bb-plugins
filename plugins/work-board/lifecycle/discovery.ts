@@ -3,14 +3,15 @@ import type { TasksApiStore } from "../api";
 import { errorMessage } from "../shared/errors";
 import { recordThreadLink, threadLiveStatus, threadUnavailable } from "./thread-links";
 import { isClosedStatus } from "../shared/workflow-policy";
+import { KEY_GROUP_SOURCE, expandKeyGroup } from "../shared/thread-role";
 
 type Thread = Pick<Awaited<ReturnType<BbPluginApi["sdk"]["threads"]["get"]>>,
   "id" | "title" | "projectId" | "status" | "runtime" | "archivedAt" | "deletedAt" | "originKind" | "originPluginId" | "visibility">;
 
 function titleTaskKeys(title: string): string[] {
   const keys = new Set<string>();
-  for (const match of title.matchAll(/\b([A-Z][A-Z0-9]{0,9})-([1-9][0-9]*(?:\s*\+\s*[1-9][0-9]*)*)\b/gi)) {
-    for (const number of match[2]!.split(/\s*\+\s*/)) keys.add(`${match[1]!.toUpperCase()}-${number}`);
+  for (const match of title.matchAll(new RegExp(`\\b${KEY_GROUP_SOURCE}\\b`, "gi"))) {
+    for (const key of expandKeyGroup(match[1]!, match[2]!)) keys.add(key);
   }
   return [...keys];
 }
