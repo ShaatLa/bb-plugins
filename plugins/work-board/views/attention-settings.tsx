@@ -5,7 +5,7 @@ import { Command, CommandEmpty, CommandInput, CommandItem, CommandList } from "@
 import { Icon } from "@/components/ui/icon";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Switch } from "@/components/ui/switch";
-import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { ManagerChangeDialog, NO_MANAGER } from "../components/manager-change-dialog.js";
 import { DisclosureSummary } from "../components/disclosure.js";
 import { formatRelativeTime } from "./activity/time.js";
 import { useThreadNames } from "../components/thread-names.js";
@@ -34,7 +34,7 @@ const STATE_TEXT = {
 
 type ManagerThread = Awaited<ReturnType<ReturnType<typeof useSdk>["threads"]["list"]>>[number];
 const threadTitle = (thread: ManagerThread) => thread.title || thread.titleFallback || "Untitled thread";
-const noManager = "No manager";
+const noManager = NO_MANAGER;
 const selectable = (thread: ManagerThread) => thread.archivedAt == null && thread.deletedAt == null
   && thread.visibility !== "hidden" && thread.status !== "stopping";
 
@@ -243,22 +243,8 @@ export function AttentionSettings({ projectId }: { projectId: string }) {
             </div>
           </div>
           <p className="text-xs text-muted-foreground">Changes follow an owner-only convention and are logged.</p>
-          <Dialog open={confirming !== null} onOpenChange={(open) => { if (!open) setConfirming(null); }}>
-            <DialogContent>
-              <DialogHeader>
-                <DialogTitle>{confirming?.id ? "Replace the manager thread?" : "Remove the manager thread?"}</DialogTitle>
-                <DialogDescription>
-                  From {currentNames.get(current) ?? current} to {confirming?.title ?? noManager}. Stale-status notices and copied PR messages go to the new manager.
-                </DialogDescription>
-              </DialogHeader>
-              <DialogFooter>
-                <Button type="button" variant="outline" onClick={() => setConfirming(null)}>Cancel</Button>
-                <Button type="button" onClick={() => { const next = confirming!.id; setConfirming(null); void saveManager(next); }}>
-                  {confirming?.id ? "Replace manager" : "Remove manager"}
-                </Button>
-              </DialogFooter>
-            </DialogContent>
-          </Dialog>
+          <ManagerChangeDialog change={confirming} from={currentNames.get(current) ?? current} onCancel={() => setConfirming(null)}
+            onConfirm={(next) => { setConfirming(null); void saveManager(next); }} />
           <PrMessages projectId={projectId} save={saving} />
           {/* The switch sits on the summary row but outside the summary, so it never toggles the disclosure and is not
               nested in the summary's button. */}

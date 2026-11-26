@@ -31,7 +31,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Icon } from "@/components/ui/icon";
 import { cn } from "@/lib/utils";
-import { ExistingThreadDialog } from "./existing-thread-dialog";
+import { ThreadChooserDialog } from "./thread-chooser-dialog";
 import { useDefaultThread } from "./thread-preference";
 import { useOpenThread } from "../../components/open-thread";
 
@@ -290,9 +290,9 @@ function PresetDispatchControl({
 export function DispatchControl(props: DispatchControlProps) {
   const [choosingThread, setChoosingThread] = useState(false);
   const [sending, setSending] = useState(false);
-  const [assigning, setAssigning] = useState(false);
   const defaultThread = useDefaultThread(props.projectId);
   const attachedThread = props.threads[0];
+  const hasShortcut = Boolean(attachedThread || defaultThread);
   const openThread = useOpenThread();
   const rpc = useRpc<DelegationRpcContract>();
   const dispatch = async () => {
@@ -310,16 +310,16 @@ export function DispatchControl(props: DispatchControlProps) {
     <div className={cn("grid w-full min-w-0 gap-1.5", props.className)}>
       <div className="flex items-center justify-between gap-2 text-xs">
         <span className="text-muted-foreground">{props.threads.length ? "Assigned to" : "Unassigned"}</span>
-        <Button size="sm" variant="ghost" className="h-6 px-1" onClick={() => setAssigning(true)}>Assign thread</Button>
       </div>
+      {/* The chevron is a second door only when the main button does something else than open the chooser. */}
       <div className="flex min-w-0">
-        <Button size="sm" variant="outline" disabled={sending} className="h-7 min-w-0 flex-1 rounded-r-none" aria-label={attachedThread ? "Go to thread" : defaultThread ? `Send task to ${defaultThread.title}` : "Existing thread…"} onClick={() => void dispatch()}>
+        <Button size="sm" variant="outline" disabled={sending} className={cn("h-7 min-w-0 flex-1", hasShortcut && "rounded-r-none")} aria-label={attachedThread ? "Go to thread" : defaultThread ? `Send task to ${defaultThread.title}` : "Send to thread…"} onClick={() => void dispatch()}>
           {attachedThread ? <Icon name="ArrowUpRight" className="size-3.5" /> : null}
-          <span className="truncate" title={attachedThread?.title}>{attachedThread ? `Go to ${attachedThread.title}` : sending ? "Dispatching…" : defaultThread?.title ?? "Existing thread…"}</span>
+          <span className="truncate" title={attachedThread?.title}>{attachedThread ? `Go to ${attachedThread.title}` : sending ? "Dispatching…" : defaultThread?.title ?? "Send to thread…"}</span>
         </Button>
-        <Button size="sm" variant="outline" disabled={sending} className="h-7 shrink-0 rounded-l-none border-l-0 px-1" aria-label="Choose existing thread" onClick={() => setChoosingThread(true)}>
+        {hasShortcut ? <Button size="sm" variant="outline" disabled={sending} className="h-7 shrink-0 rounded-l-none border-l-0 px-1" aria-label="Choose another thread" onClick={() => setChoosingThread(true)}>
           <Icon name="ChevronDown" className="size-3.5" />
-        </Button>
+        </Button> : null}
       </div>
       {attachedThread ? <Button size="sm" variant="ghost" className="h-6 justify-start px-1 text-muted-foreground" disabled={sending} aria-label={`Unassign ${attachedThread.title}`} onClick={async () => {
         setSending(true);
@@ -328,8 +328,7 @@ export function DispatchControl(props: DispatchControlProps) {
         finally { setSending(false); }
       }}>Unassign</Button> : null}
       {!attachedThread ? <PresetDispatchControl {...props} className="w-full" /> : null}
-      {assigning ? <ExistingThreadDialog taskId={props.taskId} projectId={props.projectId} assignOnly onClose={() => setAssigning(false)} /> : null}
-      {choosingThread ? <ExistingThreadDialog taskId={props.taskId} projectId={props.projectId} onClose={() => setChoosingThread(false)} /> : null}
+      {choosingThread ? <ThreadChooserDialog kind="task" taskId={props.taskId} projectId={props.projectId} onClose={() => setChoosingThread(false)} /> : null}
     </div>
   );
 }

@@ -27,6 +27,7 @@ import {
   type TasksRoute,
 } from "../../shell/routes.js";
 import { LockChips } from "../../components/lock-chips.js";
+import { ManagerQuickSet } from "../../components/manager-quick-set.js";
 import { BoardView } from "../board/index.js";
 import { DetailView } from "../detail/index.js";
 import { PlanView } from "../plan/plan-view.js";
@@ -427,7 +428,7 @@ function ThreadBoardContent({ threadId, target = null }: { threadId: string; tar
             <div className="min-w-0 flex-1 truncate text-sm font-medium">
               {project?.name ?? "Project board"}
             </div>
-            {project ? <LockChips projectId={project.id} /> : null}
+            {project ? <><ManagerQuickSet projectId={project.id} /><LockChips projectId={project.id} /></> : null}
             <OpenInTasksButton
               label="Open board in Tasks"
               subPath={boardRoute ? tasksRouteToSubPath(boardRoute) : undefined}

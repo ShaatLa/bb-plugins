@@ -76,7 +76,7 @@ it("archives from a task card and exposes the restore action", async () => {
   expect(
     await slot.findByRole("button", { name: "Restore task" }),
   ).toBeTruthy();
-  expect(slot.queryByRole("button", { name: "Existing thread…" })).toBeNull();
+  expect(slot.queryByRole("button", { name: "Send to thread…" })).toBeNull();
 });
 
 it("provides a separate searchable archive with project bulk archive and restore", async () => {

@@ -19,6 +19,7 @@ import {
 } from "@/components/ui/tooltip";
 import { useTasksRefresh } from "./refresh.js";
 import { LockChips } from "../components/lock-chips.js";
+import { ManagerQuickSet } from "../components/manager-quick-set.js";
 
 const REFRESH_TASKS_LABEL = "Refresh tasks";
 
@@ -313,7 +314,10 @@ export function TasksTopbar({
       {/* Room on the left so hover backgrounds pulled out with negative margins are not clipped. */}
       <div className="-ml-2 min-w-0 flex-1 overflow-hidden pl-2">{breadcrumb}</div>
       {route.kind === "project" && project ? (
-        <LockChips projectId={project.id} />
+        <>
+          <ManagerQuickSet projectId={project.id} />
+          <LockChips projectId={project.id} />
+        </>
       ) : null}
       {route.kind === "task" &&
       (pagerScope !== null || projects !== undefined) ? (
