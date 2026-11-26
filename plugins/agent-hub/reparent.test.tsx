@@ -109,3 +109,40 @@ it('lists a contact whose live parent is set only under that parent', async () =
   expect(slot.getAllByText('kid')).toHaveLength(1);
   expect(slot.getAllByRole('option')).toHaveLength(1);
 });
+it('shows a ghost with the session and what the drop will do, only while the drag runs', async () => {
+  const { slot } = setup({ rows: [{ id: 'thr_parent' }, { id: 'thr_kid', fields: { parentThreadId: 'thr_parent' } }, { id: 'thr_other' }], contacts: ['thr_parent', 'thr_other'] });
+  const kid = await row(slot, 'kid'), other = await row(slot, 'other'), parent = await row(slot, 'parent');
+  const ghost = () => slot.queryByRole('status', { name: 'Dragged session' });
+  const at = (el: HTMLElement | null, rel = 0.5) => {
+    Object.defineProperty(document, 'elementFromPoint', { configurable: true, value: () => el });
+    if (el) el.getBoundingClientRect = () => ({ top: 0, height: 100, bottom: 100, left: 0, right: 0, width: 0, x: 0, y: 0, toJSON: () => ({}) });
+    fireEvent.pointerMove(window, { clientX: 0, clientY: rel * 100 });
+  };
+  at(other);
+  fireEvent.pointerDown(kid, { button: 0, pointerType: 'mouse', clientX: 0, clientY: 0 });
+  expect(ghost()).toBeNull();
+  at(other);
+  await waitFor(() => expect(ghost()?.textContent).toBe('kidNest under other'));
+  at(parent);
+  await waitFor(() => expect(ghost()?.textContent).toBe("kidCan't drop here"));
+  at(other, 0.9);
+  await waitFor(() => expect(ghost()?.textContent).toBe('kidMove to top level'));
+  at(null);
+  await waitFor(() => expect(ghost()?.textContent).toBe('kidDrop on a session or the top level'));
+  expect(document.body.style.cursor).toBe('grabbing');
+  // Near the window's bottom the ghost flips above the pointer; a narrow window keeps it inside sideways.
+  const width = window.innerWidth; Object.defineProperty(window, 'innerWidth', { configurable: true, value: 200 });
+  fireEvent.pointerMove(window, { clientX: 0, clientY: window.innerHeight - 2 });
+  await waitFor(() => expect(ghost()!.style.transform).toBe('translateY(-100%)'));
+  expect(ghost()!.style.top).toBe(`${window.innerHeight - 10}px`); expect(ghost()!.style.left).toBe('4px');
+  Object.defineProperty(window, 'innerWidth', { configurable: true, value: width });
+  fireEvent.keyDown(window, { key: 'Escape' });
+  await waitFor(() => expect(ghost()).toBeNull());
+  expect(document.body.style.cursor).toBe('');
+  drag(kid, other, 0.5, false);
+  await waitFor(() => expect(ghost()).not.toBeNull());
+  split.start?.();
+  await waitFor(() => expect(ghost()).toBeNull());
+  drag(kid, other);
+  await waitFor(() => expect(ghost()).toBeNull());
+});

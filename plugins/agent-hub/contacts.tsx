@@ -11,6 +11,7 @@ import { useSteadyError } from './app';
 import { EmptyState } from './empty';
 import { beginContactDrag, mountSidebarContacts, selectContact, useSelectedContact } from './open-chat';
 import { useReparent } from './reparent';
+import { createPortal } from 'react-dom';
 const errorText = (e: unknown) => e instanceof Error ? e.message : String(e);
 // bb refetches plugin queries on focus only while its realtime socket is down, so the list polls itself; one clock per key is shared by all mounts.
 const POLL_MS = 3000, HUNG_MS = 15000, readClock = new Map<string, { settledAt: number; startedAt: number | null; mounts: number }>();
@@ -102,6 +103,11 @@ export function ContactsList({ model, selected, activeThreadId, onSelect, onBulk
   const rpc = useRpc<AgentHubRpcContract>(), navigate = useBbNavigate();
   const { sidebarThreads, providers, recipients, recipientsError, statusOf, ownWorking, subTally, subTree, descendants, openSubs, setOpenSubs, closedSubs, setClosedSubs, groups, byProject, order, drag, setDrag, moveProject, error, setError } = model;
   const reparent = useReparent(sidebarThreads, byProject, setError), draggedProject = reparent.dragged && model.sidebar.projects.find(p => p.id === reparent.dragged!.projectId)?.name;
+  // What the drop under the pointer would do, shown on the drag ghost.
+  const { over } = reparent, dropText = !over?.drop ? 'Drop on a session or the top level' : !over.drop.ok ? "Can't drop here" : over.target.kind === 'nest' ? `Nest under ${(id => sidebarThreads.find(t => t.id === id)?.title ?? 'Untitled thread')(over.target.threadId)}` : byProject ? `Move to top level in ${draggedProject ?? 'its project'}` : 'Move to top level';
+  // Near the bottom (where the move-up row sits) the ghost goes above the pointer, and it never leaves the window sideways.
+  const ghostPlace = ({ x, y }: { x: number; y: number }) => { const up = y > window.innerHeight - 72; return { left: Math.max(4, Math.min(x + 12, window.innerWidth - 264)), top: up ? y - 8 : y + 8, transform: up ? 'translateY(-100%)' : undefined, zIndex: 2147483647 }; };
+  const ghostProvider = reparent.dragged?.providerId ? providers.find(p => p.id === reparent.dragged!.providerId) ?? { id: reparent.dragged.providerId } : null;
   const list = useRef<HTMLDivElement>(null); useFlip(list);
   // A sub-session asking the owner (an Agent Hub question or bb's own question or approval) stays visible under a collapsed parent.
   // Unread replies to the owner in sub-sessions: each on its own row, and all of a contact's under it on the contact's badge.
@@ -149,6 +155,11 @@ export function ContactsList({ model, selected, activeThreadId, onSelect, onBulk
           </ThreadActionsContextMenu>{nested && <button type="button" aria-label={closed ? 'Show nested sub-sessions' : 'Hide nested sub-sessions'} aria-expanded={!closed} className="absolute top-1/2 right-[5px] flex size-5 -translate-y-1/2 items-center justify-center rounded text-muted-foreground hover:bg-state-hover" onClick={() => { const kept = closedSubs.filter(id => id !== sub.id && sidebarThreads.some(t => t.id === id)); setClosedSubs(closed ? kept : [...kept, sub.id]); }}><Icon name={closed ? 'ChevronRight' : 'ChevronDown'} className="size-3.5" /></button>}</li>; })}</ul>}</Fragment>; })}</div>; })}
       {/* The session's own project group may be gone (its last contact nested elsewhere), so the top level always has this target. */}
       {reparent.dragged?.parentThreadId && <div data-reparent-key="end" data-reparent-top={byProject ? reparent.dragged.projectId ?? '' : ''} className={`mt-2 rounded-md border border-dashed border-border px-2 py-1.5 text-xs text-muted-foreground ${reparent.mark('end')}`}>{byProject ? `Move to top level in ${draggedProject ?? 'its project'}` : 'Move to top level'}</div>}
+      {/* Inline z-index: a z-[…] class came out as auto in bb, and the sidebar covered the ghost. */}
+      {reparent.dragged && reparent.pointer && createPortal(<div role="status" aria-label="Dragged session" className="pointer-events-none fixed max-w-64 rounded-md border border-border bg-background px-2 py-1.5 text-xs shadow-lift" style={ghostPlace(reparent.pointer)}>
+        <span className="flex items-center gap-2 text-sm text-foreground">{ghostProvider && <ProviderIcon providerKind="agent" provider={ghostProvider} className="size-3.5 shrink-0" />}<span className="min-w-0 truncate">{reparent.dragged.title ?? 'Untitled thread'}</span></span>
+        <span className={`mt-0.5 block truncate ${over?.drop && !over.drop.ok ? 'text-destructive' : 'text-muted-foreground'}`}>{dropText}</span>
+      </div>, document.body)}
     </div> );
 }
 export function AgentHubContacts({ activeThreadId, onNavigate }: PluginThreadListProps) {

@@ -38,7 +38,7 @@ export type Reparent = ReturnType<typeof useReparent>;
 // A vertical pointer drag inside the list; bb's split drag engages only past the row's right edge, and when it does this drag ends.
 export function useReparent(threads: readonly PluginSidebarThread[], grouped: boolean, setError: (message: string) => void) {
   const sdk = useSdk();
-  const [state, setState] = useState<{ id: string; over: Over | null } | null>(null);
+  const [state, setState] = useState<{ id: string; over: Over | null; x: number; y: number } | null>(null);
   const live = useRef({ threads, grouped }); live.current = { threads, grouped };
   const press = useRef<{ id: string; x: number; y: number; right: number; active: boolean } | null>(null);
   const stop = useRef<() => void>(() => {});
@@ -56,14 +56,14 @@ export function useReparent(threads: readonly PluginSidebarThread[], grouped: bo
     stop.current();
     const list = event.currentTarget.closest('[role=listbox]');
     press.current = { id, x: event.clientX, y: event.clientY, right: (list ?? event.currentTarget).getBoundingClientRect().right, active: false };
-    const end = () => { window.removeEventListener('pointermove', move); window.removeEventListener('pointerup', up); window.removeEventListener('pointercancel', end); window.removeEventListener('keydown', key); press.current = null; setState(null); stop.current = () => {}; };
+    const end = () => { window.removeEventListener('pointermove', move); window.removeEventListener('pointerup', up); window.removeEventListener('pointercancel', end); window.removeEventListener('keydown', key); press.current = null; setState(null); document.body.style.removeProperty('cursor'); stop.current = () => {}; };
     const move = (e: PointerEvent) => {
       const p = press.current; if (!p) return;
       if (e.clientX > p.right) { end(); return; }
       const dy = Math.abs(e.clientY - p.y);
-      if (!p.active) { if (dy < 4 || dy < Math.abs(e.clientX - p.x)) return; p.active = true; }
+      if (!p.active) { if (dy < 4 || dy < Math.abs(e.clientX - p.x)) return; p.active = true; document.body.style.cursor = 'grabbing'; }
       const at = targetAt(e.clientX, e.clientY);
-      setState({ id: p.id, over: at && { ...at, drop: decideDrop(live.current.threads, p.id, at.target, live.current.grouped) } });
+      setState({ id: p.id, x: e.clientX, y: e.clientY, over: at && { ...at, drop: decideDrop(live.current.threads, p.id, at.target, live.current.grouped) } });
     };
     const up = (e: PointerEvent) => {
       const p = press.current; end();
@@ -82,5 +82,5 @@ export function useReparent(threads: readonly PluginSidebarThread[], grouped: bo
   const over = state?.over ?? null;
   // Classes for a drop target: a ring to nest, a line for a top-level edge, dimmed where bb would refuse the drop.
   const mark = (key: string) => over?.key !== key || !over.drop ? '' : !over.drop.ok ? 'cursor-not-allowed opacity-40' : over.edge === 'before' ? 'shadow-[0_-2px_0_0_var(--color-ring,currentColor)]' : over.edge === 'after' ? 'shadow-[0_2px_0_0_var(--color-ring,currentColor)]' : 'bg-state-hover ring-1 ring-inset ring-ring';
-  return { dragging, dragged, over, mark, onPointerDown, cancel: () => stop.current() };
+  return { dragging, dragged, over, mark, pointer: state && { x: state.x, y: state.y }, onPointerDown, cancel: () => stop.current() };
 }
