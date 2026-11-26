@@ -74,7 +74,15 @@ it("lists targets on the card meta, none on a manual pause, and reads Paused unt
   await sweepPauseSignals(bb);
   const read = async () => ((await harness.callRpc("listTaskCardMeta", { taskIds: [card.id, other.task.id] })) as { metadata: { taskId: string; pauses?: unknown[]; activity?: { state: string | null } }[] }).metadata;
   const meta = await read();
-  expect(meta.find((entry) => entry.taskId === card.id)).toMatchObject({ pauses: [{ signal: "held", targets: [{ kind: "task", taskKey: "EXA-2" }] }], activity: { state: "paused" } });
+  // A wait on a predecessor keeps its targets in the metadata, but Blocked is its own state: the card is not Paused.
+  const held = meta.find((entry) => entry.taskId === card.id)!;
+  expect(held).toMatchObject({ pauses: [{ signal: "held", targets: [{ kind: "task", taskKey: "EXA-2" }] }] });
+  expect(held.activity?.state ?? null).not.toBe("paused");
+  // A blocked card with a manual pause is not Paused either; once the block lifts it is.
+  startManualPause(db, card.id, "Waiting on the owner", 60_000, "owner");
+  expect((await read()).find((entry) => entry.taskId === card.id)?.activity?.state ?? null).not.toBe("paused");
+  db.prepare("DELETE FROM task_dependencies WHERE task_id=?").run(card.id);
+  expect((await read()).find((entry) => entry.taskId === card.id)?.activity?.state).toBe("paused");
   const manual = meta.find((entry) => entry.taskId === other.task.id)!;
   expect(manual.pauses).toEqual([{ signal: "manual", reason: "Waiting for a reply from [the docs](https://example.com/docs)", until: expect.any(String) }]);
   expect(manual.activity?.state).toBe("paused");

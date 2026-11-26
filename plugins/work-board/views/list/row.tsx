@@ -1,3 +1,4 @@
+import { shownPauses } from "../../shared/pause.js";
 import { waitingOnOwner } from "../../shared/waiting-on-owner";
 import { TaskAdvisories } from "../../components/task-advisories";
 import { PausedChip, TaskActivityIndicator } from "../../components/task-activity";
@@ -185,8 +186,8 @@ export const TaskRow = memo(function TaskRow({
               Epic
             </span>
           ) : null}
-          <TaskActivityIndicator activity={meta?.activity} pauses={meta?.pauses} failureMarker={!!meta?.threadHealth.failed.length} />
-          <PausedChip activity={meta?.activity} pauses={meta?.pauses} />
+          <TaskActivityIndicator activity={meta?.activity} pauses={shownPauses(meta?.pauses, meta?.blockedBy)} failureMarker={!!meta?.threadHealth.failed.length} />
+          <PausedChip activity={meta?.activity} pauses={shownPauses(meta?.pauses, meta?.blockedBy)} />
           <DependencyWarning blockedBy={meta?.blockedBy} />
           <TaskAdvisories items={meta?.advisories} compact />
           <ThreadHealthMarkers health={meta?.threadHealth} />

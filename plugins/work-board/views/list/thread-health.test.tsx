@@ -76,7 +76,7 @@ it("renders activity on a list row", async () => {
 it("shows a pause on a list row: its reasons on the Paused state, and a Paused chip when another state wins", async () => {
   const paused = makeTask({ id: "01HZT5", projectId: PROJECT_ID, number: 5, key: "TSK-5", title: "Paused task", position: 1 });
   const working = makeTask({ id: "01HZT6", projectId: PROJECT_ID, number: 6, key: "TSK-6", title: "Working task", position: 2 });
-  const pauses = [{ signal: "held", reason: "waiting on EXA-9", until: null, targets: [{ kind: "task", taskKey: "EXA-2" }] }];
+  const pauses = [{ signal: "manual", reason: "Waiting on EXA-2", until: null }];
   const activity = (state: string, workingCount: number) => ({ state, workingCount, attachedCount: workingCount, sessions: workingCount ? [{ threadId: "t", title: "Worker", role: "worker", state: "working" }] : [], terminalWarning: false, hasFailure: false });
   const slot = renderSlot(app.navPanels[0]!, { subPath: PROJECT_ID }, { rpc: {
     listProjects: () => ({ projects: [project] }), listFolders: () => ({ folders: [] }),

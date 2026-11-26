@@ -39,3 +39,9 @@ export function formatUntil(iso: string, nowMs: number): string {
 
 /** One pause for a tooltip or a CLI line. */
 export const pauseLineText = (pause: CardPause): string => `${pauseReasonText(pause)}${pause.until ? `, until ${new Date(pause.until).toLocaleString()}` : ""}`;
+
+/** The pauses a card shows as Paused: none while it is blocked (Blocked is its own state), and never a wait on a predecessor. */
+export function shownPauses(pauses: readonly CardPause[] | undefined, blockedBy: readonly unknown[] | undefined): CardPause[] {
+  if (blockedBy?.length) return [];
+  return (pauses ?? []).filter((pause) => pause.signal !== "held");
+}

@@ -150,9 +150,12 @@ export function activityService(bb: BbPluginApi, store: TasksApiStore) {
       // Agent comments are work evidence, not assignment; only a confirmed lost link permits Abandoned.
       const lost = new Set(db.prepare<string[], { task_id: string }>(`SELECT DISTINCT task_id FROM comments WHERE task_id IN (${placeholders}) AND kind='system' AND (body LIKE 'Thread detached (archived):%' OR body LIKE 'Thread detached (deleted):%' OR body LIKE 'Thread detached (missing):%' OR body LIKE 'Thread detached (manual):%' OR body LIKE 'Thread detached (private):%')`).all(...ids).map(row => row.task_id));
       const taskData = store.tasks.listTaskActivity(ids);
-      // The pauses a card shows: applied and not run out. The first reason explains the Paused state.
+      // The pauses that make a card Paused: applied, not run out, not a wait on a predecessor, and only on a card with no
+      // open predecessor (the Blocked marker's rule): Blocked is its own state. The first reason explains the Paused state.
       const pauseReasons = new Map<string, string>();
-      for (const row of db.prepare<(string | number)[], { task_id: string; reason: string }>(`SELECT task_id, reason FROM task_pauses WHERE task_id IN (${placeholders}) AND applied=1 AND (until IS NULL OR until>?) ORDER BY started_at DESC`).all(...ids, new Date().toISOString())) pauseReasons.set(row.task_id, row.reason);
+      for (const row of db.prepare<(string | number)[], { task_id: string; reason: string }>(`SELECT p.task_id, p.reason FROM task_pauses p WHERE p.task_id IN (${placeholders}) AND p.applied=1 AND (p.until IS NULL OR p.until>?) AND p.signal<>'held'
+        AND NOT EXISTS (SELECT 1 FROM task_dependencies d JOIN tasks b ON b.id=d.blocking_task_id WHERE d.task_id=p.task_id AND b.status<>'done')
+        ORDER BY p.started_at DESC`).all(...ids, new Date().toISOString())) pauseReasons.set(row.task_id, row.reason);
       const focusedKeys = new Map<string, string | null>();
       const focusedKey = (taskId: string | null) => {
         if (!taskId) return null;

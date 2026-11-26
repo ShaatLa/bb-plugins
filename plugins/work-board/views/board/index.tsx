@@ -1,3 +1,4 @@
+import { shownPauses } from "../../shared/pause.js";
 import { sortTasks } from "../../shared/sort";
 import { waitingOnOwner, waitingOrder } from "../../shared/waiting-on-owner";
 import { TaskAdvisories } from "../../components/task-advisories";
@@ -194,9 +195,9 @@ function TaskCard({
                 Epic
               </span>
             ) : null}
-            <TaskActivityIndicator activity={meta.activity} pauses={meta.pauses} failureMarker={!!meta.threadHealth?.failed.length} />
+            <TaskActivityIndicator activity={meta.activity} pauses={shownPauses(meta.pauses, meta.blockedBy)} failureMarker={!!meta.threadHealth?.failed.length} />
             <DependencyWarning blockedBy={meta.blockedBy} />
-            <PausedChip activity={meta.activity} pauses={meta.pauses} />
+            <PausedChip activity={meta.activity} pauses={shownPauses(meta.pauses, meta.blockedBy)} />
             <TaskAdvisories items={meta.advisories} compact />
             <ThreadHealthMarkers health={meta.threadHealth} />
           </div>

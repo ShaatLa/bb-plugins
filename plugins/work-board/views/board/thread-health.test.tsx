@@ -91,7 +91,7 @@ it("shows a paused card as Paused with its reasons in the tooltip, and no Paused
     const result = await original(input) as { metadata: Array<{ taskId: string }> };
     return { metadata: result.metadata.map((row) => row.taskId === idleTask.id ? { ...row,
       activity: { state: "paused", workingCount: 0, attachedCount: 0, sessions: [], terminalWarning: false, hasFailure: false },
-      pauses: [{ signal: "held", reason: "waiting on EXA-9", until: null, targets: [{ kind: "task", taskKey: "EXA-2" }] }] } : row) };
+      pauses: [{ signal: "manual", reason: "Waiting on EXA-2", until: null }] } : row) };
   };
   const slot = renderSlot(app.navPanels[0]!, { subPath: `${project.id}?view=board` }, { rpc, sdk });
   const label = await slot.findByText("Paused");
