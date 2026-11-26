@@ -4,8 +4,8 @@ import { fileURLToPath } from "node:url";
 import { cliCommand, defineCli, defineRpcContract, type BbPluginApi } from "@get-bb/plugin-sdk";
 import { z } from "zod";
 import {
-  CONFIG_KEYS, DEFAULT_SKILLS_DIR, DOC_SKILL, GRACE_MS, ROOT_CAP, SOURCE_STATES, STATUS_TTL_MS, computeStatus, configKey, evaluateSkills, parseConfigValue, realProbes, scanSkill, skillNames, skillsRootOf, sourceGet, sourceOf, syncLinks,
-  type ProjectConfig, type Probes, type Source, type Status,
+  CONFIG_KEYS, DEFAULT_SKILLS_DIR, DOC_SKILL, GRACE_MS, ROOT_CAP, SOURCE_STATES, STATUS_TTL_MS, computeStatus, configKey, evaluateSkills, newSyncState, parseConfigValue, realProbes, scanSkill, skillNames, skillsRootOf, sourceGet, sourceOf, syncLinks,
+  type Limits, type ProjectConfig, type Probes, type Source, type Status,
 } from "./core";
 
 const projectId = z.string().min(1).max(200);
@@ -18,12 +18,14 @@ export const sourceResult = z.object({
   projectId: z.string(), configured: z.boolean(), enabled: z.boolean(),
   clonePath: nullable, branch: nullable, head: nullable, originHead: nullable,
   state: z.enum(SOURCE_STATES), reason: nullable, fetchedAt: z.number().nullable(),
+  synced: z.object({ from: z.string(), to: z.string() }).strict().nullable(),
 }).strict();
+const sourceInput = z.object({ projectId, sync: z.boolean().optional() }).strict();
 export const rpcContract = defineRpcContract({
   "config.get": { input: configGet, output: z.unknown() },
   "config.set": { input: configSet, output: z.unknown() },
   check: { input: checkInput, output: z.unknown() },
-  "source.get": { input: checkInput, output: sourceResult },
+  "source.get": { input: sourceInput, output: sourceResult },
 });
 
 /** The plugin's own directory (the one with its package.json), whether this runs from source or from dist/. */
@@ -34,7 +36,7 @@ function pluginDir() {
   }
 }
 
-type Env = { now?: () => number; linkedDir?: string; graceMs?: number; probes?: Probes };
+type Env = { now?: () => number; linkedDir?: string; graceMs?: number; probes?: Probes; limits?: Partial<Limits> };
 const MAX_SKIPPED = 50;
 
 export default async function plugin(bb: BbPluginApi, env: Env = {}) {
@@ -68,7 +70,7 @@ export default async function plugin(bb: BbPluginApi, env: Env = {}) {
     if (lastReason.get(id) !== reason) { lastReason.set(id, reason); if (reason) bb.log.warn(`Project ${id}: process root not injected: ${reason}`); }
     return status;
   };
-  const effective = (c: ProjectConfig) => ({ clonePath: c.clonePath ?? null, branch: c.branch ?? null, rootFile: c.rootFile ?? null, skillsDir: c.skillsDir ?? DEFAULT_SKILLS_DIR, enabled: c.enabled ?? false });
+  const effective = (c: ProjectConfig) => ({ clonePath: c.clonePath ?? null, branch: c.branch ?? null, rootFile: c.rootFile ?? null, skillsDir: c.skillsDir ?? DEFAULT_SKILLS_DIR, enabled: c.enabled ?? false, allowSync: c.allowSync ?? false });
 
   bb.agents.contributeInstructions(({ projectId: id }) => {
     const c = configs.get(id);
@@ -123,22 +125,23 @@ export default async function plugin(bb: BbPluginApi, env: Env = {}) {
     };
   };
   const checkText = (r: ReturnType<typeof check>) => [
-    `Project ${r.projectId}: ${r.enabled ? "enabled" : "not enabled"}`,
+    `Project ${r.projectId}: ${r.enabled ? "enabled" : "not enabled"}, allowSync ${r.config.allowSync}`,
     r.source.ok ? `Root: ${r.source.rootPath} (${r.source.rootLength} of ${r.source.cap} characters, branch ${r.source.branch})` : `Root NOT injected: ${r.source.reason}`,
     ...(r.skills ? [`Skills selectable now: ${r.skills.selectable.join(", ") || "none"}`, ...r.skills.skipped.map(s => `  skipped ${s.name}: ${s.reason}`), ...(r.skills.moreSkipped ? [`  +${r.skills.moreSkipped} more`] : [])] : ["Skills: source not configured"]),
     ...(r.note ? [r.note] : []),
   ].join("\n");
 
-  const source = async ({ projectId: id }: z.infer<typeof checkInput>) => {
-    const r = await sourceGet(id, configs.get(id) ?? {}, env.probes ?? realProbes);
+  const syncState = newSyncState();
+  const source = async ({ projectId: id, sync }: z.infer<typeof sourceInput>) => {
+    const r = await sourceGet(id, configs.get(id) ?? {}, env.probes ?? realProbes, { sync, state: syncState, limits: env.limits, log: line => bb.log.info(line) });
     if (r.state !== "not_configured" && r.state !== "disabled") bb.log.info(`source.get ${id}: probed, state ${r.state}`);
     return r;
   };
-  bb.rpc.register(rpcContract, { "config.get": i => getConfig(configGet.parse(i)), "config.set": i => setConfig(configSet.parse(i)), check: i => check(checkInput.parse(i)), "source.get": i => source(checkInput.parse(i)) });
+  bb.rpc.register(rpcContract, { "config.get": i => getConfig(configGet.parse(i)), "config.set": i => setConfig(configSet.parse(i)), check: i => check(checkInput.parse(i)), "source.get": i => source(sourceInput.parse(i)) });
 
   const project = { type: "string", description: "Project id" } as const, json = { type: "boolean", description: "Return JSON" } as const;
   bb.cli.register(defineCli({ name: "project-instructions", summary: "Inject a project's process root and skills from one local git clone", commands: {
-    config: cliCommand({ summary: "Read or change one setting of a project", positionals: [{ name: "action", description: "get or set", required: true }, { name: "key", description: "clonePath, branch, rootFile, skillsDir or enabled", required: false }, { name: "value", description: "New value", required: false }], options: { project, json }, async run(i) {
+    config: cliCommand({ summary: "Read or change one setting of a project", positionals: [{ name: "action", description: "get or set", required: true }, { name: "key", description: "clonePath, branch, rootFile, skillsDir, enabled or allowSync", required: false }, { name: "value", description: "New value", required: false }], options: { project, json }, async run(i) {
       const { action, key, value } = i.positionals, id = i.options.project;
       if (!id) throw new Error("--project is required");
       if (action !== "get" && action !== "set") throw new Error("Use config get [<key>] or config set <key> <value>");
@@ -152,10 +155,10 @@ export default async function plugin(bb: BbPluginApi, env: Env = {}) {
       const r = check({ projectId: i.options.project });
       return { exitCode: 0, stdout: i.options.json ? JSON.stringify(r) : checkText(r) };
     } }),
-    source: cliCommand({ summary: "Show the resolved launch source other plugins get from source.get: clone, branch, verified origin tip and state", options: { project, json }, async run(i) {
+    source: cliCommand({ summary: "Show the resolved launch source other plugins get from source.get: clone, branch, verified origin tip and state; --sync fast-forwards a clean clone that is behind (needs allowSync)", options: { project, json, sync: { type: "boolean", description: "Fetch and fast-forward a clean, strictly-behind clone first (needs allowSync true)" } }, async run(i) {
       if (!i.options.project) throw new Error("--project is required");
-      const r = await source({ projectId: i.options.project });
-      return { exitCode: 0, stdout: i.options.json ? JSON.stringify(r) : [`Project ${r.projectId}: ${r.state}${r.reason ? ` (${r.reason})` : ""}`, `Clone: ${r.clonePath ?? "-"} on ${r.branch ?? "-"}`, `HEAD: ${r.head ?? "-"}`, `Origin tip: ${r.originHead ?? "-"}`].join("\n") };
+      const r = await source({ projectId: i.options.project, sync: i.options.sync === true });
+      return { exitCode: 0, stdout: i.options.json ? JSON.stringify(r) : [`Project ${r.projectId}: ${r.state}${r.reason ? ` (${r.reason})` : ""}`, `Clone: ${r.clonePath ?? "-"} on ${r.branch ?? "-"}`, `HEAD: ${r.head ?? "-"}`, `Origin tip: ${r.originHead ?? "-"}`, ...(r.synced ? [`Synced: ${r.synced.from} -> ${r.synced.to}`] : [])].join("\n") };
     } }),
   } }));
 

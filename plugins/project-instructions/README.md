@@ -25,6 +25,7 @@ bb project-instructions config get [<key>] --project proj_example
 | `rootFile` | The root file, relative to the clone, no `..`. |
 | `skillsDir` | Directory of the process skills, relative to the clone. Default `.bb/skills`. |
 | `enabled` | Default `false`: configure and `check` first, enable afterwards. |
+| `allowSync` | Default `false`. Lets `source.get` with `sync: true` fast-forward the clone. Set it only after every other updater of the clone is stopped: the plugin must be its only writer. |
 
 The same operations are RPC methods `config.get {projectId, key?}`, `config.set {projectId, key, value}` and `check {projectId}`. `check` prints the source status, the skills selectable now and every skipped skill with its reason (invalid, clash, changed within the grace period); `--json` returns the same data.
 
@@ -77,6 +78,14 @@ The first failing check sets `state`:
 | `error` | Anything unexpected; `reason` has its first line. |
 
 This is stricter than root injection: `fresh` needs the live origin tip, so between a push to the branch and the clone's next checkout the state is `stale`. `reason` is null only for `fresh`; `originHead` is set only when `ls-remote` succeeded; `fetchedAt` (mtime of `FETCH_HEAD`) is diagnostic only. The root file plays no part. Nothing here fetches or writes to the clone. Each call that probes logs `source.get <id>: probed, state <state>`, and every `config set` logs the change.
+
+### Sync on demand
+
+`source.get {projectId, sync: true}` (CLI `source --sync`) brings the clone up to the live origin tip first, when the project has `allowSync` true. It moves only a clean clone on its branch that is strictly behind: it fetches the branch, checks that origin did not move in between, re-checks HEAD, branch and cleanliness, then moves with `checkout --detach <tip>` or `merge --ff-only <tip>`, keeping the clone's form. A dirty clone, another branch, diverged history, a moved origin or any git failure leaves the clone where it is, and the answer is `stale` with the reason (`sync skipped: ...`, `sync aborted: ...`, `sync failed: ...`). `synced: {from, to}` is set when the call moved the clone, else null.
+
+Bounds: one sync at a time per clone, at most one fetch per 10 s per clone, and one 50 s deadline per call that includes waiting for another sync. Every git process runs in its own process group; on timeout the whole group (git and any ssh, credential or remote helper it started) is killed, and a helper that keeps git's pipes open gets at most 1 s before they are dropped. Each step's timeout leaves room for that cleanup, so a call ends within its 50 s, cleanup included; a caller should allow at least 60 s. Every sync attempt logs one line with the old and new commit, or why it was skipped or failed.
+
+Single writer: git's locks cover single operations, not the check-and-move sequence, so another process moving the same clone could race a sync. Stop any other updater before setting `allowSync` true.
 
 ## Limits
 

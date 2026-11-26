@@ -12,12 +12,12 @@ Per project (one field at a time):
 - `bb project-instructions config get [<key>] --project <id>`
 - `bb project-instructions config set <key> <value> --project <id>`
 
-Keys: `clonePath` (absolute path of a local git clone), `branch`, `rootFile` (relative to the clone), `skillsDir` (relative, default `.bb/skills`), `enabled` (default `false`).
+Keys: `clonePath` (absolute path of a local git clone), `branch`, `rootFile` (relative to the clone), `skillsDir` (relative, default `.bb/skills`), `enabled` (default `false`), `allowSync` (default `false`).
 
 `bb project-instructions check --project <id> [--json]` shows the source status (branch, root size against the 4,096-character cap), the skills selectable now and each skipped skill with its reason. Run it before `config set enabled true`.
 
 The root is injected only when the clone is on `<branch>` (a detached clone at or behind `origin/<branch>` also counts) and the root file is at most 4,096 characters; otherwise the thread gets one line naming the reason and no skill of the project is offered. Nothing is ever cut. A skill that changed in the last 10 seconds waits for a later thread. A skill name present in two enabled projects is offered to neither.
 
-`bb project-instructions source --project <id> [--json]` (RPC `source.get`) shows the launch source other plugins read: clone, branch, HEAD, the origin tip read live with `git ls-remote`, and a state (`fresh` only when HEAD is exactly that tip; otherwise `not_configured`, `disabled`, `missing`, `wrong_branch`, `dirty`, `unreachable`, `stale` or `error`, with a reason).
+`bb project-instructions source --project <id> [--json]` (RPC `source.get`) shows the launch source other plugins read: clone, branch, HEAD, the origin tip read live with `git ls-remote`, and a state (`fresh` only when HEAD is exactly that tip; otherwise `not_configured`, `disabled`, `missing`, `wrong_branch`, `dirty`, `unreachable`, `stale` or `error`, with a reason). With `--sync` (RPC `sync: true`) and the project's `allowSync` true, a clean clone on its branch that is strictly behind is fetched and fast-forwarded first; set `allowSync` only after every other updater of the clone is stopped.
 
 The plugin never updates the clone; something else must keep it current.

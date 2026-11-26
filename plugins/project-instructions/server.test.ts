@@ -3,10 +3,10 @@ import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSyn
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import matter from "gray-matter";
-import { afterEach, expect, it } from "vitest";
+import { afterEach, expect, it, vi } from "vitest";
 import { createFakePluginHost } from "@get-bb/plugin-sdk/testing";
 import plugin from "./server.js";
-import { DOC_SKILL, GRACE_MS, ROOT_CAP, realProbes, scanSkill, type Probes } from "./core.js";
+import { DOC_SKILL, GRACE_MS, ROOT_CAP, realProbes, runGit, scanSkill, type Limits, type Probes } from "./core.js";
 
 const dirs: string[] = [], cleanups: (() => Promise<void>)[] = [];
 afterEach(async () => { for (const c of cleanups.splice(0)) await c(); for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true }); });
@@ -29,11 +29,11 @@ function makeClone(root = "Root marker A. See [more](docs/more.md).\n", skills: 
   return clone;
 }
 
-async function setup(probes?: Probes) {
+async function setup(probes?: Probes, limits?: Partial<Limits>) {
   const linkedDir = join(tmp(), "linked-skills");
   let clock = Date.now();
   const host = createFakePluginHost({ pluginId: "project-instructions" });
-  await plugin(host.bb, { now: () => clock, linkedDir, probes });
+  await plugin(host.bb, { now: () => clock, linkedDir, probes, limits });
   cleanups.push(() => host.harness.lifecycle.dispose());
   const reg = host.harness.registrations;
   const rpc = (method: string, input: unknown) => host.harness.behavior.callRpc(method, input) as Promise<any>;
@@ -252,13 +252,13 @@ const probedLines = (h: Awaited<ReturnType<typeof setup>>) => h.host.harness.log
 it("answers not_configured and disabled without any filesystem or git probe", async () => {
   let calls = 0;
   const count = <T,>(f: T) => ((...a: unknown[]) => { calls++; return (f as (...x: unknown[]) => unknown)(...a); }) as T;
-  const h = await setup({ realpath: count(realProbes.realpath), git: count(realProbes.git), gitAsync: count(realProbes.gitAsync), mtime: count(realProbes.mtime) });
+  const h = await setup({ realpath: count(realProbes.realpath), run: count(realProbes.run), mtime: count(realProbes.mtime), now: count(realProbes.now) });
   const { clone } = makeOrigin();
   await h.set("proj_half", "clonePath", clone);
   await h.configure("proj_off", { clonePath: clone, enabled: false });
   expect(await source(h, "proj_none")).toMatchObject({ state: "not_configured", configured: false, enabled: false, clonePath: null, branch: null, head: null });
   expect(await source(h, "proj_half")).toMatchObject({ state: "not_configured", configured: false, clonePath: clone, branch: null });
-  expect(await source(h, "proj_off")).toEqual({ projectId: "proj_off", configured: true, enabled: false, clonePath: clone, branch: "main", head: null, originHead: null, state: "disabled", reason: "Project Instructions is not enabled for this project", fetchedAt: null });
+  expect(await source(h, "proj_off")).toEqual({ projectId: "proj_off", configured: true, enabled: false, clonePath: clone, branch: "main", head: null, originHead: null, state: "disabled", reason: "Project Instructions is not enabled for this project", fetchedAt: null, synced: null });
   expect(calls).toBe(0);
   expect(probedLines(h)).toEqual([]);
 });
@@ -319,16 +319,16 @@ it("is stale after a push until the clone is at the new tip, and says why", asyn
 });
 
 it("turns an unexpected probe failure into an error result", async () => {
-  const h = await setup({ ...realProbes, git: () => { throw new Error("probe exploded\nsecond line"); } });
+  const h = await setup({ ...realProbes, run: () => { throw new Error("probe exploded\nsecond line"); } });
   const { clone } = makeOrigin();
   await h.configure("proj_example", { clonePath: clone });
-  expect(await source(h)).toEqual({ projectId: "proj_example", configured: true, enabled: true, clonePath: clone, branch: "main", head: null, originHead: null, state: "error", reason: "probe exploded", fetchedAt: null });
+  expect(await source(h)).toEqual({ projectId: "proj_example", configured: true, enabled: true, clonePath: clone, branch: "main", head: null, originHead: null, state: "error", reason: "probe exploded", fetchedAt: null, synced: null });
 });
 
 it("reports a failing stale probe as an error, not as a stale diagnosis", async () => {
   for (const [failing, fetch] of [["rev-parse", false], ["merge-base", true]] as const) {
-    const h = await setup({ ...realProbes, git: (clone, args) => (failing === "rev-parse" ? args.includes("--verify") : args[0] === "merge-base" && args[3] !== "refs/remotes/origin/main")
-      ? { code: 128, out: "", err: "fatal: broken" } : realProbes.git(clone, args) });
+    const h = await setup({ ...realProbes, run: (clone, args, t, c) => (failing === "rev-parse" ? args.includes("--verify") : args[0] === "merge-base" && args[3] !== "refs/remotes/origin/main")
+      ? Promise.resolve({ code: 128, out: "", err: "fatal: broken" }) : realProbes.run(clone, args, t, c) });
     const o = makeOrigin();
     await h.configure("proj_example", { clonePath: o.clone });
     o.push("2\n");
@@ -341,4 +341,256 @@ it("logs every config change", async () => {
   const h = await setup();
   await h.set("proj_example", "branch", "main");
   expect(h.host.harness.logEntries.map(e => e.message)).toContain('Project proj_example: branch set to "main"');
+});
+
+// ---- sync (opt-in fast-forward) ----
+
+/** Probes that record every git call and can run a hook after a matching one. */
+function recording(hook?: { when: (args: string[]) => boolean; run: () => void | Promise<void> }, base: Probes = realProbes) {
+  const calls: { args: string[]; timeoutMs: number; at: number }[] = [];
+  let hooked = false;
+  const probes: Probes = { ...base, run: async (clone, args, timeoutMs, cleanupMs) => {
+    calls.push({ args, timeoutMs, at: base.now() });
+    const res = await base.run(clone, args, timeoutMs, cleanupMs);
+    if (hook && !hooked && hook.when(args)) { hooked = true; await hook.run(); }
+    return res;
+  } };
+  return { probes, calls, fetches: () => calls.filter(c => c.args[0] === "fetch").length };
+}
+async function syncSetup(probes?: Probes, limits?: Partial<Limits>, allowSync = true) {
+  const h = await setup(probes, limits), o = makeOrigin();
+  await h.configure("proj_example", { clonePath: o.clone });
+  if (allowSync) await h.set("proj_example", "allowSync", true);
+  const sync = () => h.rpc("source.get", { projectId: "proj_example", sync: true });
+  return { h, o, sync, head: () => git(o.clone, "rev-parse", "HEAD"), form: () => git(o.clone, "rev-parse", "--symbolic-full-name", "HEAD"), tip: () => git(o.origin, "rev-parse", "main") };
+}
+const syncLines = (h: Awaited<ReturnType<typeof setup>>) => h.host.harness.logEntries.map(e => e.message).filter(m => m.includes(": sync") || m.includes(": synced"));
+const isTipStep = (args: string[]) => args[0] === "merge-base" && args[3] !== undefined && args[3] !== "refs/remotes/origin/main";
+
+it("sync fast-forwards a detached clone that is behind, keeps it detached and logs both commits", async () => {
+  const rec = recording(), s = await syncSetup(rec.probes), old = s.head();
+  s.o.push("2\n");
+  const r = await s.sync();
+  expect(r).toMatchObject({ state: "fresh", reason: null, head: s.tip(), originHead: s.tip(), synced: { from: old, to: s.tip() } });
+  expect(s.form()).toBe("HEAD");
+  expect(rec.fetches()).toBe(1);
+  expect(syncLines(s.h)).toEqual([`source.get proj_example: synced ${old} -> ${s.tip()}`]);
+});
+
+it("sync fast-forwards an attached clone and keeps it on its branch", async () => {
+  const s = await syncSetup();
+  git(s.o.clone, "checkout", "-q", "-B", "main", "origin/main");
+  s.o.push("2\n");
+  expect(await s.sync()).toMatchObject({ state: "fresh", head: s.tip() });
+  expect(s.form()).toBe("refs/heads/main");
+});
+
+it("sync never touches a dirty clone or another branch, and never runs without sync or allowSync", async () => {
+  const rec = recording(), s = await syncSetup(rec.probes), old = s.head(), trackingRef = () => git(s.o.clone, "rev-parse", "refs/remotes/origin/main");
+  s.o.push("2\n");
+  const tracking = trackingRef();
+  writeFileSync(join(s.o.clone, "a.txt"), "dirty\n");
+  expect((await s.sync()).state).toBe("dirty");
+  git(s.o.clone, "checkout", "-q", "--", "a.txt");
+  git(s.o.clone, "checkout", "-q", "-b", "other");
+  expect((await s.sync()).state).toBe("wrong_branch");
+  git(s.o.clone, "checkout", "-q", "--detach", old);
+  expect(await source(s.h)).toMatchObject({ state: "stale", synced: null });
+  await s.h.set("proj_example", "allowSync", false);
+  expect(await s.sync()).toMatchObject({ state: "stale", reason: expect.stringContaining("sync not allowed for this project (allowSync is false)"), synced: null });
+  expect(rec.fetches()).toBe(0);
+  expect(s.head()).toBe(old);
+  expect(trackingRef()).toBe(tracking);
+  expect(syncLines(s.h)).toEqual([]);
+});
+
+it("sync fetches a diverged clone but never moves it", async () => {
+  const rec = recording(), s = await syncSetup(rec.probes);
+  git(s.o.clone, "checkout", "-q", "-B", "main", "origin/main");
+  writeFileSync(join(s.o.clone, "a.txt"), "local\n"); git(s.o.clone, "commit", "-qam", "local");
+  const local = s.head();
+  s.o.push("2\n");
+  expect(await s.sync()).toMatchObject({ state: "stale", reason: expect.stringContaining("diverged"), synced: null });
+  expect(rec.fetches()).toBe(1);
+  expect(s.head()).toBe(local);
+});
+
+it("sync fetches at most once per interval per clone", async () => {
+  let clock = Date.now();
+  const rec = recording(undefined, { ...realProbes, now: () => clock }), s = await syncSetup(rec.probes);
+  s.o.push("2\n");
+  expect((await s.sync()).state).toBe("fresh");
+  s.o.push("3\n");
+  clock += 5000;
+  expect(await s.sync()).toMatchObject({ state: "stale", reason: "sync skipped: last fetch 5 s ago" });
+  clock += 6000;
+  expect(await s.sync()).toMatchObject({ state: "fresh", head: s.tip() });
+  expect(rec.fetches()).toBe(2);
+});
+
+it("runs one sync at a time per clone, and a call queued past its deadline touches nothing", async () => {
+  const rec = recording(), s = await syncSetup(rec.probes);
+  s.o.push("2\n");
+  const both = await Promise.all([s.sync(), s.sync()]);
+  expect(both.map(r => r.state)).toEqual(["fresh", "fresh"]);
+  expect(rec.fetches()).toBe(1);
+
+  let unblock!: () => void;
+  const hang: Probes = { ...realProbes, run: (clone, args, t, c) => args[0] === "fetch" ? new Promise(r => { unblock = () => r({ code: -1, out: "", err: "git timed out" }); }) : realProbes.run(clone, args, t, c) };
+  const rec2 = recording(undefined, hang), q = await syncSetup(rec2.probes, { deadline: 3000 });
+  q.o.push("2\n");
+  const first = q.sync();
+  await vi.waitFor(() => expect(rec2.fetches()).toBe(1));
+  const before = rec2.calls.length;
+  expect(await q.sync()).toMatchObject({ state: "stale", reason: "sync skipped: deadline reached while another sync was running" });
+  expect(rec2.calls.length).toBe(before);
+  unblock();
+  expect(await first).toMatchObject({ state: "stale", reason: "sync failed: git timed out" });
+});
+
+it("gives every git call at most the time left of the call's deadline", async () => {
+  const rec = recording(), s = await syncSetup(rec.probes), start = Date.now();
+  s.o.push("2\n");
+  expect((await s.sync()).state).toBe("fresh");
+  for (const c of rec.calls.filter(c => c.at >= start)) {
+    expect(c.timeoutMs).toBeGreaterThan(0);
+    expect(c.timeoutMs).toBeLessThanOrEqual(50_000 - 1000 - (c.at - start) + 50);
+    expect(c.timeoutMs).toBeLessThanOrEqual(c.args[0] === "fetch" || c.args[0] === "checkout" || c.args[0] === "merge" ? 20_000 : c.args[0] === "ls-remote" ? 10_000 : 2000);
+  }
+});
+
+it("reports a failed fetch or a refused move as sync failed and leaves HEAD alone", async () => {
+  const timeout: Probes = { ...realProbes, run: (clone, args, t, c) => args[0] === "fetch" ? Promise.resolve({ code: -1, out: "", err: "git timed out" }) : realProbes.run(clone, args, t, c) };
+  const a = await syncSetup(timeout), oldA = a.head();
+  a.o.push("2\n");
+  expect(await a.sync()).toMatchObject({ state: "stale", reason: "sync failed: git timed out" });
+  expect(a.head()).toBe(oldA);
+  const b = await syncSetup(), oldB = b.head();
+  writeFileSync(join(b.o.work, "b.txt"), "tracked\n"); git(b.o.work, "add", "b.txt"); git(b.o.work, "commit", "-qm", "b"); git(b.o.work, "push", "-q", b.o.origin, "main");
+  writeFileSync(join(b.o.clone, "b.txt"), "untracked in the way\n");
+  expect(await b.sync()).toMatchObject({ state: "stale", reason: expect.stringMatching(/^sync failed: /), synced: null });
+  expect(b.head()).toBe(oldB);
+  expect(syncLines(b.h)).toEqual([expect.stringMatching(/^source.get proj_example: sync failed: /)]);
+});
+
+it("fails closed when origin moves or is force-pushed between ls-remote and fetch", async () => {
+  for (const force of [false, true]) {
+    let clock = Date.now(), o!: ReturnType<typeof makeOrigin>;
+    const rec = recording({ when: args => args[0] === "ls-remote", run: () => {
+      if (!force) return o.push("3\n");
+      git(o.work, "reset", "-q", "--hard", "HEAD~1"); writeFileSync(join(o.work, "a.txt"), "rewritten\n"); git(o.work, "commit", "-qam", "rewritten"); git(o.work, "push", "-q", "-f", o.origin, "main");
+    } }, { ...realProbes, now: () => clock });
+    const s = await syncSetup(rec.probes); o = s.o;
+    const old = s.head();
+    s.o.push("2\n");
+    expect(await s.sync()).toMatchObject({ state: "stale", reason: expect.stringContaining("origin moved during sync"), synced: null });
+    expect(s.head()).toBe(old);
+    clock += 11_000;
+    expect(await s.sync()).toMatchObject({ state: "fresh", head: s.tip() });
+  }
+});
+
+it("aborts without moving backward when HEAD or a tracked file changes before the move", async () => {
+  let s!: Awaited<ReturnType<typeof syncSetup>>, ahead = "";
+  const advance = recording({ when: isTipStep, run: () => { s.o.push("3\n"); git(s.o.clone, "fetch", "-q"); git(s.o.clone, "checkout", "-q", "--detach", "origin/main"); ahead = git(s.o.clone, "rev-parse", "HEAD"); } });
+  s = await syncSetup(advance.probes);
+  s.o.push("2\n");
+  expect(await s.sync()).toMatchObject({ state: "stale", reason: "sync aborted: HEAD moved", synced: null });
+  expect(s.head()).toBe(ahead);
+  let t!: Awaited<ReturnType<typeof syncSetup>>;
+  const edit = recording({ when: isTipStep, run: () => writeFileSync(join(t.o.clone, "a.txt"), "edited\n") });
+  t = await syncSetup(edit.probes);
+  const old = t.head();
+  t.o.push("2\n");
+  expect(await t.sync()).toMatchObject({ state: "stale", reason: "sync aborted: tracked files changed" });
+  expect(t.head()).toBe(old);
+});
+
+it("kills git's whole process group on timeout, including a helper that holds its pipes", async () => {
+  const base = tmp(), repo = join(base, "repo"), alive = (pid: number) => { try { process.kill(pid, 0); return true; } catch { return false; } };
+  git(base, "init", "-q", repo);
+  git(repo, "config", "protocol.ext.allow", "always");
+  // "hangs": the helper keeps a sleep on git's pipes and hangs; "exits": it leaves a sleep holding git's stderr (our pipe) and exits, so git exits too.
+  for (const [name, script] of [["hangs", "sleep 300 & echo $! > PIDFILE; sleep 300"], ["exits", "(sleep 300 >/dev/null </dev/null & echo $! > PIDFILE); exit 1"]] as const) {
+    const pidFile = join(base, name + ".pid");
+    const url = "ext::sh -c " + script.replace("PIDFILE", pidFile).replaceAll("%", "%%").replaceAll(" ", "% ");
+    git(repo, "config", "remote.origin.url", url);
+    const started = Date.now(), r = await runGit(repo, ["ls-remote", "origin"], name === "hangs" ? 500 : 5000, 300);
+    expect(Date.now() - started).toBeLessThan(2000);
+    expect(r.code).not.toBe(0);
+    if (name === "hangs") expect(r.err).toBe("git timed out");
+    const pid = Number(readFileSync(pidFile, "utf8").trim());
+    await vi.waitFor(() => expect(alive(pid)).toBe(false), { timeout: 1000 });
+  }
+}, 20_000);
+
+it("sync fetches into the tracking ref even when remote.origin.fetch leaves the branch out", async () => {
+  const s = await syncSetup();
+  git(s.o.clone, "config", "remote.origin.fetch", "+refs/heads/other:refs/remotes/origin/other");
+  s.o.push("2\n");
+  expect(await s.sync()).toMatchObject({ state: "fresh", head: s.tip() });
+});
+
+it("keeps time to read and log the move, and logs a move whose result cannot be read", async () => {
+  let clock = Date.now();
+  // The clock jumps when the re-validation starts, so less than the local slot is left for the move.
+  // 3.5 s left: enough for the re-validation (2 s + 1 s cleanup), not for the move plus its reserved read slot.
+  const late = recording({ when: isTipStep, run: () => { clock += 46_500; } }, { ...realProbes, now: () => clock });
+  const a = await syncSetup(late.probes), oldA = a.head();
+  a.o.push("2\n");
+  expect(await a.sync()).toMatchObject({ state: "stale", reason: "sync skipped: not enough time left to move" });
+  expect(a.head()).toBe(oldA);
+
+  let moved = false;
+  const blind: Probes = { ...realProbes, run: (clone, args, t, c) => {
+    if (args[0] === "checkout") moved = true;
+    else if (moved && args[0] === "rev-parse" && args[1] === "HEAD") return Promise.resolve({ code: -1, out: "", err: "git timed out" });
+    return realProbes.run(clone, args, t, c);
+  } };
+  const b = await syncSetup(blind), oldB = b.head();
+  b.o.push("2\n");
+  expect(await b.sync()).toMatchObject({ state: "error", reason: "the move ran but HEAD could not be read: git timed out", head: null });
+  expect(b.head()).toBe(b.tip());
+  expect(syncLines(b.h)).toEqual([`source.get proj_example: sync failed: the move ran but HEAD could not be read: git timed out (from ${oldB}, target ${b.tip()})`]);
+});
+
+it("keeps the whole sync inside its deadline when the move and the read both use their full cleanup", async () => {
+  const sleep = (ms: number) => new Promise(r => setTimeout(r, Math.max(0, ms)));
+  // Worst case for the move and the read: each runs to its timeout and then spends its whole cleanup.
+  const worst: Probes = { ...realProbes, run: async (clone, args, t, c) => {
+    if (args[0] !== "checkout" && !(args[0] === "rev-parse" && args[1] === "HEAD")) return realProbes.run(clone, args, t, c);
+    if (t <= 0) return { code: -1, out: "", err: "git timed out" };
+    const res = await realProbes.run(clone, args, t, c);
+    await sleep(t + c);
+    return res;
+  } };
+  const limits = { deadline: 3000, move: 1000, local: 400, cleanup: 300 };
+  const s = await syncSetup(worst, limits);
+  s.o.push("2\n");
+  const started = Date.now(), r = await s.sync();
+  expect(Date.now() - started).toBeLessThanOrEqual(limits.deadline + 100);
+  expect(r.state).toBe("fresh");
+});
+
+it("kills a hook's leftover process after a real move and still answers inside the deadline", async () => {
+  const s = await syncSetup(undefined, { deadline: 6000 }), pidFile = join(tmp(), "hook.pid");
+  // A post-checkout hook leaves a sleep holding git's stderr after git exits.
+  writeFileSync(join(s.o.clone, ".git/hooks/post-checkout"), `#!/bin/sh\n(sleep 300 >/dev/null </dev/null & echo $! > ${pidFile})\nexit 0\n`, { mode: 0o755 });
+  s.o.push("2\n");
+  const started = Date.now(), r = await s.sync();
+  expect(Date.now() - started).toBeLessThanOrEqual(6000);
+  expect(r).toMatchObject({ state: "fresh", head: s.tip() });
+  const pid = Number(readFileSync(pidFile, "utf8").trim());
+  await vi.waitFor(() => expect(() => process.kill(pid, 0)).toThrow(), { timeout: 1000 });
+}, 20_000);
+
+it("updates the tracking ref when the tip is already local, so the synced clone stays valid", async () => {
+  const rec = recording(), s = await syncSetup(rec.probes);
+  s.o.push("2\n");
+  git(s.o.clone, "fetch", "-q", s.o.origin, "main:refs/other/main"); // by URL: the tip object arrives through another ref, the tracking ref stays
+  expect(git(s.o.clone, "rev-parse", "refs/remotes/origin/main")).not.toBe(s.tip());
+  expect(await s.sync()).toMatchObject({ state: "fresh", head: s.tip() });
+  expect(rec.fetches()).toBe(1);
+  expect(git(s.o.clone, "rev-parse", "refs/remotes/origin/main")).toBe(s.tip());
+  expect(await source(s.h)).toMatchObject({ state: "fresh", head: s.tip() });
 });
