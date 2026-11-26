@@ -22,7 +22,7 @@ import { CSS as DndCSS } from '@dnd-kit/utilities';
 import { ContextRing, type ContextUsage } from './context-ring';
 import { ThreadCostLabel, useThreadCost } from './cost';
 import { CompactButton } from './compact-button';
-import { unlabel, echoLine, UserText, EditSentContext, SentEditorContext, RefreshContext, AnsweringContext, type Answering, WorkBoardContext, useWorkBoardQuery, ItemCard, ThreadQuestions, UpdateGroup, InlineCommentText, isUnread, quoteSegments, usePluginBrands, useSteadyError, EarlierLoader } from './app';
+import { answerable, unlabel, echoLine, UserText, EditSentContext, SentEditorContext, RefreshContext, AnsweringContext, type Answering, WorkBoardContext, useWorkBoardQuery, ItemCard, ThreadQuestions, UpdateGroup, InlineCommentText, isUnread, quoteSegments, usePluginBrands, useSteadyError, EarlierLoader } from './app';
 import { ActivityContext, ActivityLabelContext, RobotLoader } from './robot-loader';
 import { WorkLog, ThreadPlan } from './work-log';
 import { useAgentActivity } from './activity';
@@ -989,7 +989,7 @@ function InboxChat({ onBulkRead, bbChat = false, search: searchProp, onSearch, t
   const landedRows = landings.rows;
   const shownQueue = [...queue.filter(row => !sentNow.includes(row.id)), ...leaving.filter(entry => !queue.some(row => row.id === entry.row.id)).map(entry => entry.row)].filter(row => !landedRows.has(row.id));
   const held = leaving.filter(entry => entry.row.threadId === selected).map(leavingText);
-  const items = useMemo(() => { const seen = new Set<string>(); return shown.flatMap(page => page.items).map(item => item.kind === 'for_me' && item.status === 'open' && answered.has(item.id) ? { ...item, status: 'replied' as const, answer: answered.get(item.id)!, answerSource: 'user' as const, updatedAt: Date.now() } : item).filter(item => (item.kind !== 'for_me' || item.status !== 'open') && !(item.kind === 'mine' && item.questionSeq === null && held.includes(item.question.trim())) && !seen.has(item.id) && !!seen.add(item.id)).reverse(); }, [pages, loadedPages, depth, held.join('\n'), answered]);
+  const items = useMemo(() => { const seen = new Set<string>(); return shown.flatMap(page => page.items).map(item => item.kind === 'for_me' && item.status === 'open' && answered.has(item.id) ? { ...item, status: 'replied' as const, answer: answered.get(item.id)!, answerSource: 'user' as const, updatedAt: Date.now() } : item).filter(item => (item.kind !== 'for_me' || !answerable(item)) && !(item.kind === 'mine' && item.questionSeq === null && held.includes(item.question.trim())) && !seen.has(item.id) && !!seen.add(item.id)).reverse(); }, [pages, loadedPages, depth, held.join('\n'), answered]);
   // A steer joins the running turn's card once ingested; placing it there at once keeps the bubble from jumping up later.
   const steerHost = [...items].reverse().find(item => item.kind === 'mine' && item.threadId === selected && item.turnId && item.status === 'waiting' && item.dismissedAt === null);
   const joined = optimistic.filter(b => b.steer && b.threadId === selected && steerHost);

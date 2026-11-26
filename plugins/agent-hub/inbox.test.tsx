@@ -272,6 +272,13 @@ it('offers Copy and Save under the owner\'s own message, like bb', async () => {
   fireEvent.click(slot.getByRole('button', { name:'Save to Agent Hub' }));
   await waitFor(() => expect(save).toHaveBeenCalledWith(expect.objectContaining({ threadId:'thr_one', seq:7, role:'user', text:'Question one' })));
 });
+it('keeps a Won\'t reply question in the chat, read-only, while an open one stays only in the stack', async () => {
+  const ask = { ...base, id:'ans_ask', kind:'for_me' as const, status:'open' as const, question:'Pick one?', answer:null, answerSeq:null, options:['Yes', 'No'], questionSeq:4 };
+  const { slot, recipients } = setup({ list: (input: { view: string }) => ({ items: input.view === 'for_me' ? [] : [{ ...ask, declinedAt:Date.now() }, { ...ask, id:'ans_open', question:'Still open?', questionSeq:5 }, base], nextCursor:null }) }); fireEvent.click(await recipients.findByRole('option'));
+  await slot.findByText('Pick one?');
+  expect(slot.queryByText('Still open?')).toBeNull();
+  expect(slot.getByText('Won’t reply')).toBeTruthy(); expect(slot.queryByRole('button', { name:'Yes' })).toBeNull();
+});
 describe('editing a sent message in its bubble', () => {
   const pic = { type:'localImage' as const, path:'/pic.png', name:'pic.png' }, doc = { type:'localFile' as const, path:'/draft.txt', name:'draft.txt' };
   const editSetup = (editMessage = vi.fn(async () => ({ ok:true, operationId:'op', requestSequence:9 }))) => {
