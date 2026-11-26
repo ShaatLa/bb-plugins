@@ -157,3 +157,24 @@ it("records and clears predecessor and owner-question waits", async () => {
   expect(db.prepare("SELECT count(*) AS n FROM task_pauses WHERE task_id=?").get(task.id)).toEqual({ n: 0 });
   await harness.dispose();
 });
+
+it("ignores a held check when it records owner-question waits", async () => {
+  const { bb, harness } = createFakePluginHost({ pluginId: "work-board" });
+  const { registerTasksApi } = await import("../api");
+  const store = createStore(bb);
+  registerTasksApi(bb, store);
+  const project = store.tasks.createProject({ name: "Example", prefix: "EXA", color: "blue" });
+  const task = store.tasks.createTask({ projectId: project.id, title: "Example", status: "in_progress" });
+  const db = bb.storage.database();
+  const ask = async (prompt: string) => ((await harness.callRpc("createQuestion", { taskId: task.id, kind: "check", prompt })) as { question: { id: string; options: { id: string }[] } }).question;
+  const first = await ask("First?");
+  await ask("Second?");
+  setPauseMode(db, project.id, "on");
+  await sweepPauseSignals(bb);
+  expect(db.prepare("SELECT signal FROM task_pauses WHERE task_id=?").all(task.id)).toEqual([{ signal: "owner_question" }]);
+  // The first check fails: the second is held, and nobody waits on the owner any more.
+  await harness.callRpc("answerQuestion", { questionId: first.id, revision: 1, selectedOptionIds: [], answerText: "broken", authorName: "Owner" });
+  await sweepPauseSignals(bb);
+  expect(db.prepare("SELECT count(*) AS n FROM task_pauses WHERE task_id=?").get(task.id)).toEqual({ n: 0 });
+  await harness.dispose();
+});

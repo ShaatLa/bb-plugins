@@ -11,6 +11,7 @@ import { loadPluginApp, renderSlot } from "@get-bb/plugin-sdk/testing/app";
 import { createStore, registerTasksApi } from "../../api";
 import { tasksRpcContract, type TaskQuestion } from "../../shared/contract";
 import { createStructuredStore } from "../../structured/store";
+import { refreshCheckFlow } from "../../db/check-flow";
 import { taskTab } from "../../test-fixtures.js";
 
 window.ResizeObserver ??= class {
@@ -293,7 +294,6 @@ describe("question and evidence UI", () => {
     const revised = (await structured.handlers.updateQuestion({ questionId: question.id, revision: question.revision, prompt: "Second wording?", mode: "single", options: question.options, authorName: "Agent" })).question;
     await structured.handlers.answerQuestion({ questionId: question.id, revision: revised.revision, selectedOptionIds: [revised.options[0]!.id], authorName: "You" });
     const slot = renderSlot(app.navPanels[0]!, { subPath: `task/${task.key}` }, { rpc });
-    fireEvent.click(await slot.findByText("Earlier (1)"));
     const history = await slot.findByText("History · 1");
     const entries = history.closest("details")!.querySelectorAll("ol > li");
     expect(entries).toHaveLength(1);
@@ -306,7 +306,6 @@ describe("question and evidence UI", () => {
     const { question } = await structured.handlers.createQuestion({ kind: "check", askedByThread: null, taskId: task.id, prompt: "Accept?", mode: "single", options: [] });
     await structured.handlers.answerQuestion({ questionId: question.id, revision: question.revision, selectedOptionIds: [question.options[0]!.id], authorName: "You" });
     const slot = renderSlot(app.navPanels[0]!, { subPath: `task/${task.key}` }, { rpc });
-    fireEvent.click(await slot.findByText("Earlier (1)"));
     store.tasks.updateProject(task.projectId, { checkReadiness: "on" });
     fireEvent.click(await slot.findByRole("button", { name: "Withdraw answer" }));
     fireEvent.click(slot.getByRole("button", { name: "Confirm: withdraw and notify the agent" }));
@@ -561,7 +560,7 @@ it("omits the redundant waiting banner", async () => {
   expect(slot.queryByRole("button", { name: /Waiting on you/ })).toBeNull();
 });
 
-it("orders open questions oldest first and moves a check under Earlier after answering", async () => {
+it("orders open questions oldest first and keeps an answered check in its numbered place", async () => {
   const { task, rpc, structured, bb } = setup();
   const add = async (prompt: string, kind: "decision" | "check", createdAt: string) => {
     const { question } = await structured.handlers.createQuestion({ taskId: task.id, kind, askedByThread: null, prompt, options: ["Proceed"], mode: "single" });
@@ -579,13 +578,14 @@ it("orders open questions oldest first and moves a check under Earlier after ans
   expect(groups.map(group => group.getAttribute("aria-label"))).toEqual(["Older open", "Newest check", "Old answer"]);
   expect(slot.getByText("Earlier (1)").closest("details")?.open).toBe(false);
   expect(within(newestGroup).getByText("Check")).toBeTruthy();
-  expect(within(newestGroup).getByRole("textbox", { name: "Your answer" })).toBeTruthy();
+  expect(within(newestGroup).getByRole("textbox", { name: "Comment (optional)" })).toBeTruthy();
   fireEvent.click(within(newestGroup).getByLabelText("Proceed"));
   fireEvent.click(within(newestGroup).getByRole("button", { name: "Save answer" }));
-  await slot.findByText("Earlier (2)");
+  await waitFor(() => expect(slot.getByText("Answered")).toBeTruthy());
   const currentGroups = [...section.querySelectorAll("fieldset")];
-  expect(currentGroups.map(group => group.getAttribute("aria-label"))).toEqual(["Older open", "Old answer", "Newest check"]);
-  expect(currentGroups[2]?.closest("details")?.open).toBe(false);
+  expect(currentGroups.map(group => group.getAttribute("aria-label"))).toEqual(["Older open", "Newest check", "Old answer"]);
+  expect(currentGroups[1]?.closest("details")).toBeNull();
+  expect(slot.getByText("Earlier (1)")).toBeTruthy();
 });
 
 it("closes the edit form and keeps a withdrawn chain head and its predecessor in Earlier", async () => {
@@ -720,7 +720,7 @@ it("follows each direct predecessor from Earlier through a chain with identical 
   const { first, second, render } = await exampleChain();
   const third = { ...second, id: "example-003", supersedes: second.id, answerText: "Done", answeredBy: "Owner" };
   const slot = render(first, { ...second, supersededBy: third.id }, third);
-  fireEvent.click(await slot.findByText("Earlier (1)"));
+  await slot.findByRole("group", { name: third.prompt });
   const link = slot.getAllByRole("link", { name: "Replaces an earlier check" }).find((candidate) => !candidate.closest("details[open] [tabindex]") && !candidate.closest("[tabindex='-1']"))!;
   const group = slot.getByRole("group", { name: third.prompt });
   expect(link.compareDocumentPosition(group) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
@@ -822,7 +822,8 @@ it("collects readiness for a check on add, edit and reopen", async () => {
   const group = slot.getByRole("group", { name: /Does Save work/ });
   fireEvent.click(within(group).getByLabelText("Confirmed"));
   fireEvent.click(within(group).getByRole("button", { name: "Save answer" }));
-  fireEvent.click(await slot.findByText("Earlier (1)"));
+  await waitFor(() => expect(structured.listQuestions(task.id)[0]?.answeredBy).toBe("You"));
+  await slot.findByText("1.");
   fireEvent.click(await slot.findByRole("button", { name: "Edit question" }));
   fireEvent.click(slot.getByLabelText("Clear the saved answer and request a new decision"));
   await submit("Save question", "Extra label revised");
@@ -841,4 +842,79 @@ it("shows a steps-only history revision and omits readiness inputs in an ungated
   fireEvent.click(slot.getByRole("button", { name: "Edit question" }));
   expect(slot.queryByLabelText("Smoke test")).toBeNull();
   expect(slot.queryByLabelText("Beyond the design")).toBeNull();
+});
+
+async function threeChecks() {
+  const host = setup();
+  const { task, structured, bb } = host;
+  const db = bb.storage.database();
+  const ask = async (prompt: string, second: number, supersedes?: { questionId: string; revision: number }) => {
+    const { question } = await structured.handlers.createQuestion({ kind: "check", askedByThread: null, taskId: task.id, prompt, mode: "single", options: [], ...(supersedes ? { supersedes } : {}) });
+    db.prepare("UPDATE task_questions SET payload=json_set(payload, '$.createdAt', ?) WHERE id=?").run(new Date(Date.UTC(2026, 0, 1, 0, 0, second)).toISOString(), question.id);
+    refreshCheckFlow(db, task.id);
+    return question;
+  };
+  return { ...host, ask, checks: [await ask("Check one?", 1), await ask("Check two?", 2), await ask("Check three?", 3)] };
+}
+
+it("holds the later checks after a text-only answer, and the replacement takes number 1 back", async () => {
+  const { task, rpc, structured, ask, checks } = await threeChecks();
+  const slot = renderSlot(app.navPanels[0]!, { subPath: `task/${task.key}` }, { rpc });
+  const first = await slot.findByRole("group", { name: "Check one?" });
+  fireEvent.change(within(first).getByRole("textbox", { name: "Comment (optional)" }), { target: { value: "The button is cut off" } });
+  fireEvent.click(within(first).getByRole("button", { name: "Save answer" }));
+  await waitFor(() => expect(slot.getAllByText("On hold until check 1 is fixed")).toHaveLength(2));
+  expect(slot.getByText("1.").nextSibling?.textContent).toBe("Problem found");
+  // Held checks keep their form behind "Answer anyway", and the answered check stays in place.
+  expect(slot.getAllByText("Answer anyway")).toHaveLength(2);
+  expect(slot.queryByText(/Earlier/)).toBeNull();
+  const order = () => [...slot.container.querySelectorAll("section[aria-label='Questions'] fieldset")].map((group) => group.getAttribute("aria-label"));
+  expect(order()).toEqual(["Check one?", "Check two?", "Check three?"]);
+
+  const current = structured.listQuestions(task.id).find((question) => question.id === checks[0]!.id)!;
+  await ask("Check one again?", 4, { questionId: current.id, revision: current.revision });
+  await slot.behavior.emitRealtime("tasks:changed", { taskId: task.id, projectId: task.projectId });
+  await waitFor(() => expect(slot.queryByText(/On hold until/)).toBeNull());
+  expect(order()).toEqual(["Check one again?", "Check two?", "Check three?"]);
+  expect([...slot.container.querySelectorAll("section[aria-label='Questions'] p.text-xs span.font-semibold")].map((node) => node.textContent)).toEqual(["1.", "2.", "3."]);
+});
+
+it("keeps a verdict and its comment together while typing and choosing", async () => {
+  const { task, rpc, structured, checks } = await threeChecks();
+  const slot = renderSlot(app.navPanels[0]!, { subPath: `task/${task.key}` }, { rpc });
+  const group = await slot.findByRole("group", { name: "Check one?" });
+  const comment = within(group).getByRole("textbox", { name: "Comment (optional)" });
+  fireEvent.click(within(group).getByLabelText("Problem found"));
+  fireEvent.change(comment, { target: { value: "Looks off" } });
+  expect((within(group).getByLabelText("Problem found") as HTMLInputElement).checked).toBe(true);
+  fireEvent.click(within(group).getByLabelText("Confirmed"));
+  expect(comment).toHaveProperty("value", "Looks off");
+  fireEvent.click(within(group).getByRole("button", { name: "Save answer" }));
+  await waitFor(() => expect(structured.listQuestions(task.id).find((question) => question.id === checks[0]!.id)).toMatchObject({
+    selectedOptionIds: [checks[0]!.options[0]!.id], answerText: "Looks off",
+  }));
+  await waitFor(() => expect(slot.getByText("1.").nextSibling?.textContent).toBe("Confirmed"));
+  expect(slot.queryByText(/On hold until/)).toBeNull();
+});
+
+it("keeps only finished rounds, withdrawn checks and answered decisions under Earlier", async () => {
+  const { task, rpc, structured, ask, bb, checks } = await threeChecks();
+  const confirm = (question: { id: string; options: { id: string }[] }) => structured.handlers.answerQuestion({ questionId: question.id, revision: 1, selectedOptionIds: [question.options[0]!.id], authorName: "You" });
+  // Round one is finished before round two is asked.
+  for (const check of checks) await confirm(check);
+  const laterAnswers = bb.storage.database();
+  laterAnswers.prepare("UPDATE task_questions SET payload=json_set(payload, '$.updatedAt', ?) WHERE task_id=?").run("2026-01-01T00:00:10.000Z", task.id);
+  laterAnswers.prepare("UPDATE task_questions SET payload=json_set(payload, '$.history[0].updatedAt', ?) WHERE task_id=?").run("2026-01-01T00:00:00.000Z", task.id);
+  await ask("Round two check?", 20);
+  const { question: decision } = await structured.handlers.createQuestion({ kind: "decision", askedByThread: null, taskId: task.id, prompt: "Which one?", mode: "single", options: ["A"] });
+  await structured.handlers.answerQuestion({ questionId: decision.id, revision: 1, selectedOptionIds: [decision.options[0]!.id], authorName: "You" });
+  const withdrawn = await ask("Not needed?", 21);
+  await structured.handlers.withdrawQuestion({ taskId: task.id, questionId: withdrawn.id, revision: 1, reason: "Obsolete", authorName: "Agent" });
+  const slot = renderSlot(app.navPanels[0]!, { subPath: `task/${task.key}` }, { rpc });
+  await slot.findByRole("group", { name: "Round two check?" });
+  const earlier = slot.getByText(/^Earlier \(/).closest("details")!;
+  expect(slot.getByText(/^Earlier \(/).textContent).toBe("Earlier (5)");
+  for (const prompt of ["Check one?", "Check two?", "Check three?", "Which one?", "Not needed?"]) expect(earlier.textContent).toContain(prompt);
+  expect(earlier.textContent).not.toContain("Round two check?");
+  expect(slot.queryByText(/^Round \d/)).toBeNull();
 });

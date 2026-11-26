@@ -10,6 +10,17 @@ export const OPEN_QUESTION_SQL = `COALESCE(json_array_length(q.payload, '$.selec
   AND json_extract(q.payload, '$.supersededBy') IS NULL
   AND json_extract(q.payload, '$.withdrawnAt') IS NULL`;
 
+/**
+ * Open and not held back by an earlier failed check of the card (`task_question_holds`, derived from shared/check-flow.ts):
+ * the questions somebody is waiting on the owner for. `OPEN_QUESTION_SQL` still decides what can be answered.
+ */
+export const WAITING_ON_OWNER_SQL = `${OPEN_QUESTION_SQL}
+  AND NOT EXISTS (SELECT 1 FROM task_question_holds h WHERE h.question_id = q.id)`;
+
+/** Open, and not in `held` (the ids from `checkFlow(...).held`). */
+export const isWaitingOnOwner = (question: Parameters<typeof isQuestionOpen>[0] & { id: string }, held: ReadonlyMap<string, string>): boolean =>
+  isQuestionOpen(question) && !held.has(question.id);
+
 /** Refusal for any change to a superseded check; stale requests get the same redirect. */
 export function supersededRefusal(question: Pick<TaskQuestion, "id" | "supersededBy">, taskKey: string): string {
   return `Question ${question.id} is superseded by ${question.supersededBy}; act on that question (\`bb work-board question list ${taskKey}\` shows its revision).`;

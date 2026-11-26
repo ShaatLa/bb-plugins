@@ -1,6 +1,6 @@
 import { checkReceiptSchema, receiptInScope } from "../shared/check-receipt";
 import { OPEN_QUESTION_SQL } from "../shared/questions";
-import { WAITING_ON_OWNER, NEWEST_UNANSWERED, UNANSWERED_QUESTION } from "./waiting-on-owner";
+import { WAITING_ON_OWNER, NEWEST_UNANSWERED } from "./waiting-on-owner";
 import { effectiveInProgressStatus, ensurePlanningStatus, getWorkflowPolicy, inWorkZone, isClosedStatus, planningStatusOf, settlePlanFlags, usableStartTarget, withPlanningStatus, workflowPolicySchema } from "../shared/workflow-policy.js";
 import { recordPlanDebtEvent, syncPlanDebt, syncProjectPlanDebt } from "../plan-debt/store";
 import { prIdentity, prLinkSchema } from "../shared/git-sync";
@@ -1349,7 +1349,7 @@ export function createTasksStore(db: PluginDatabase, log: (message: string) => v
     const waitingOrder = filters.waitingOnOwner && (!filters.sort || filters.sort === "manual");
     const sort = waitingOrder ? "newest" : filters.sort ?? "manual";
     // Question edits can change waiting order without changing the task-list revision.
-    const questionRevision = filters.waitingOnOwner ? JSON.stringify(db.prepare("SELECT id, json_extract(payload, '$.revision') AS revision FROM task_questions ORDER BY id").all()) : "";
+    const questionRevision = filters.waitingOnOwner ? JSON.stringify([db.prepare("SELECT id, json_extract(payload, '$.revision') AS revision FROM task_questions ORDER BY id").all(), db.prepare("SELECT question_id FROM task_question_holds ORDER BY question_id").all()]) : "";
     const fingerprint = taskQueryFingerprint(filters, sort);
     const baseQuery = filters.waitingOnOwner ? createHash("sha256").update(fingerprint).update(questionRevision).digest("base64url") : fingerprint;
     const query = filters.staleStatus ? createHash("sha256").update(baseQuery).update(String(parameters.staleIds)).digest("base64url") : baseQuery;
@@ -1960,7 +1960,7 @@ export function createTasksStore(db: PluginDatabase, log: (message: string) => v
             OR EXISTS (SELECT 1 FROM attachments a LEFT JOIN comments c ON c.id = a.comment_id
               WHERE (a.task_id = @taskId OR c.task_id = @taskId) AND a.created_at > @cutoff)
             OR EXISTS (SELECT 1 FROM task_questions q WHERE q.task_id = @taskId AND
-              ((${UNANSWERED_QUESTION}) OR json_extract(q.payload, '$.updatedAt') > @cutoff))
+              ((${OPEN_QUESTION_SQL}) OR json_extract(q.payload, '$.updatedAt') > @cutoff))
             OR EXISTS (SELECT 1 FROM task_threads WHERE task_id = @taskId AND live_status IN ('starting', 'working'))
         `).get({ taskId: member.id, cutoff: inactiveBefore })
       ))) continue;

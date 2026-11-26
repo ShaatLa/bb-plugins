@@ -30,6 +30,7 @@ import { legacyBoard, scheduleHistory } from "../db/legacy-schedule-fixture";
 import { restoreProject } from "./storage";
 import { DEFAULT_TASK_STATUSES, type TaskStatusDefinition } from "../shared/statuses";
 import { createStructuredStore } from "../structured/store";
+import { checkFlow } from "../shared/check-flow";
 import { createPlanStore } from "../plans/store";
 import { createPlanNoteStore } from "../plans/notes";
 import { createGitSyncStore } from "../git-sync/store";
@@ -301,6 +302,38 @@ describe("project archives", () => {
     expect(source.store.tasks.getTask(source.task.id)!.status).toBe(imported);
     expect(entries()).toEqual([["Work Board", expect.stringMatching(/^Status changed to .+ by Work Board \(archive import\)$/)]]);
   });
+  it("round-trips a check's verdict with its comment and rebuilds the held checks and rounds on import", async () => {
+    const source = await seed();
+    const structured = createStructuredStore(source.bb, source.store);
+    const db = source.bb.storage.database();
+    const ask = async (prompt: string, second: number) => {
+      const { question } = await structured.handlers.createQuestion({ kind: "check", askedByThread: null, taskId: source.task.id, prompt, mode: "single", options: [] });
+      db.prepare("UPDATE task_questions SET payload=json_set(payload, '$.createdAt', ?) WHERE id=?").run(new Date(Date.UTC(2026, 0, 1, 0, 0, second)).toISOString(), question.id);
+      return question;
+    };
+    const [first, second, third] = [await ask("Does one work?", 1), await ask("Does two work?", 2), await ask("Does three work?", 3)];
+    await structured.handlers.answerQuestion({ questionId: first.id, revision: 1, selectedOptionIds: [first.options[1]!.id], answerText: "The button is cut off", authorName: "Owner" });
+    await structured.handlers.answerQuestion({ questionId: second.id, revision: 1, selectedOptionIds: [second.options[0]!.id], answerText: "Fine", authorName: "Owner" });
+    const flowOf = (store: ReturnType<typeof createStructuredStore>) => checkFlow(store.listQuestions(source.task.id)).chains.map((chain) => [chain.number, chain.headId, chain.round, chain.state]);
+    const expected = [[1, first.id, 1, "problem"], [2, second.id, 1, "confirmed"], [3, third.id, 1, "held"]];
+    expect(flowOf(structured)).toEqual(expected);
+    const out = join(await directory(), "snapshot");
+    await exportProject(source.bb, source.store, source.project.id, out);
+    // The derived table is not part of the archive.
+    expect(Object.keys(await fileTree(out)).join("\n")).not.toContain("task_question_holds");
+    expect(JSON.stringify(Object.values(await fileTree(out)).map((content) => Buffer.from(content, "base64").toString()))).not.toContain("held_by");
+    const target = setup();
+    await importProject(target.bb, target.store, out, false);
+    const restored = createStructuredStore(target.bb, target.store);
+    expect(restored.listQuestions(source.task.id).find((question) => question.id === first.id)).toMatchObject({ selectedOptionIds: [first.options[1]!.id], answerText: "The button is cut off" });
+    expect(restored.listQuestions(source.task.id).find((question) => question.id === second.id)).toMatchObject({ selectedOptionIds: [second.options[0]!.id], answerText: "Fine" });
+    expect(flowOf(restored)).toEqual(expected);
+    expect(target.bb.storage.database().prepare("SELECT question_id, held_by FROM task_question_holds").all()).toEqual([{ question_id: third.id, held_by: first.id }]);
+    // Importing again over the same card keeps the derived rows in step.
+    await importProject(target.bb, target.store, out, true);
+    expect(target.bb.storage.database().prepare("SELECT count(*) AS n FROM task_question_holds").get()).toEqual({ n: 1 });
+  });
+
   it("round-trips questions, stable choice IDs, answers, evidence and templates, preserving conflicts", async () => {
     const source = await seed();
     const structured = createStructuredStore(source.bb, source.store);

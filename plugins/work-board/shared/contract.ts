@@ -246,8 +246,9 @@ const questionStateSchema = z
       new Set(value.selectedOptionIds).size !==
         value.selectedOptionIds.length ||
       value.selectedOptionIds.some((id) => !ids.includes(id)) ||
+      // A check answer is a verdict plus an optional comment; a single-choice decision is one option or text.
       (value.mode === "single" &&
-        value.selectedOptionIds.length + Number(value.answerText !== null) > 1)
+        (value.kind === "check" ? value.selectedOptionIds.length > 1 : value.selectedOptionIds.length + Number(value.answerText !== null) > 1))
     )
       ctx.addIssue({ code: "custom", message: "Invalid question answer" });
     if (

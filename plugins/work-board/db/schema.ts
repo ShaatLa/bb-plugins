@@ -3,6 +3,7 @@ import { DEFAULT_TASK_STATUSES, taskStatusesSchema } from "../shared/statuses.js
 import { ensurePlanningStatus, withPlanningStatus, workflowPolicySchema } from "../shared/workflow-policy.js";
 import type { PlanState } from "../shared/plan";
 import { hasPlanDebt } from "../shared/plan-debt";
+import { CREATE_HOLDS_TABLE, rebuildCheckFlow } from "./check-flow";
 
 type PluginDatabase = ReturnType<BbPluginApi["storage"]["database"]>;
 type Log = (message: string) => void;
@@ -1075,6 +1076,11 @@ export const MIGRATIONS = [
       END;
     `);
     backfillApprovalComments(db);
+  },
+  // Derived: the open checks held back by an earlier failed check of their card (shared/check-flow.ts), so SQL readers can skip them.
+  (db: PluginDatabase) => {
+    db.exec(CREATE_HOLDS_TABLE);
+    rebuildCheckFlow(db);
   },
 ] as const;
 

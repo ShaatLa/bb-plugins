@@ -1,4 +1,5 @@
 import { isQuestionOpen } from "../../shared/questions";
+import { checkFlow, type CheckChain } from "../../shared/check-flow";
 import { DisclosureSummary } from "../../components/disclosure";
 import { ActorLabel } from "../../components/thread-chip";
 import { useEffect, useId, useMemo, useState, useRef, type ReactNode } from "react";
@@ -307,9 +308,11 @@ function QuestionAnswer({
       ) : null}
       <BeyondDesign line={question.beyondDesign} />
       <p className="text-xs text-muted-foreground">
-        {question.mode === "single"
-          ? "Choose one answer"
-          : "Choose one or more answers"}
+        {question.kind === "check"
+          ? "Choose a verdict; a comment is optional. A comment alone counts as a problem."
+          : question.mode === "single"
+            ? "Choose one answer"
+            : "Choose one or more answers"}
       </p>
       {question.options.map((option) => (
         <label
@@ -322,7 +325,8 @@ function QuestionAnswer({
             name={question.id}
             checked={selected.includes(option.id)}
             onChange={(event) => {
-              if (question.mode === "single") { setOther(false); setText(""); }
+              // A check keeps its comment next to the verdict; a single-choice decision is an option or text, not both.
+              if (question.mode === "single" && question.kind !== "check") { setOther(false); setText(""); }
               setSelected(
                 question.mode === "single"
                   ? [option.id]
@@ -349,14 +353,14 @@ function QuestionAnswer({
             const pasted = Array.from(event.clipboardData.files);
             if (pasted.length) { event.preventDefault(); addFiles(pasted); }
           }}
-          aria-label="Your answer"
-          placeholder="Your answer (optional)"
+          aria-label={question.kind === "check" ? "Comment (optional)" : "Your answer"}
+          placeholder={question.kind === "check" ? "Comment (optional)" : "Your answer (optional)"}
           value={text}
           maxLength={10_000}
           onChange={(event) => {
             setText(event.target.value);
             setOther(Boolean(event.target.value.trim()));
-            if (question.mode === "single") setSelected([]);
+            if (question.mode === "single" && question.kind !== "check") setSelected([]);
           }}
         />
         <div className="flex px-1.5 pb-1.5">
@@ -578,11 +582,34 @@ export function QuestionsSection({
       ) : null}
     </div>;
   };
-  // Open questions read in the order they were asked, like the Earlier list below.
-  const open = all.filter(isQuestionOpen)
-    .sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id));
-  const earlier = all.filter(question => !isQuestionOpen(question) && !nested(question))
-    .sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id));
+  const flow = checkFlow(all);
+  const decisions = all.filter((question) => question.kind !== "check").sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id));
+  const openDecisions = decisions.filter(isQuestionOpen);
+  const heads = (chain: CheckChain) => byId.get(chain.headId)!;
+  // Each round that is not finished, and the last one, is a numbered list in the order the checks were asked.
+  const shownRounds = flow.rounds.filter((round) => round.visible).map((round) => ({ ...round, chains: round.chains.filter((chain) => chain.number !== null) }))
+    .filter((round) => round.chains.length);
+  const shown = new Set(shownRounds.flatMap((round) => round.chains.map((chain) => chain.headId)));
+  const earlier = [
+    ...decisions.filter((question) => !isQuestionOpen(question) && !nested(question)),
+    ...flow.chains.filter((chain) => !shown.has(chain.headId)).map(heads),
+  ];
+  const stateLabel = (chain: CheckChain) =>
+    chain.state === "confirmed" ? "Confirmed" : chain.state === "problem" ? "Problem found" : chain.state === "answered" ? "Answered" : chain.state === "held" ? `On hold until check ${chain.heldBy!.number} is fixed` : "Waiting";
+  const renderCheck = (chain: CheckChain) => {
+    const head = heads(chain);
+    return <div key={head.id} className="space-y-1">
+      <p className={`flex items-center gap-2 text-xs ${chain.state === "held" ? "text-muted-foreground" : chain.state === "problem" ? "text-warning" : "text-muted-foreground"}`}>
+        <span className="font-semibold">{chain.number}.</span><span>{stateLabel(chain)}</span>
+      </p>
+      {chain.state === "held" ? (
+        <details className="opacity-80">
+          <DisclosureSummary className="text-xs text-muted-foreground">Answer anyway</DisclosureSummary>
+          <div className="mt-2">{renderQuestion(head)}</div>
+        </details>
+      ) : renderQuestion(head)}
+    </div>;
+  };
   if (!adding && !editing && !query.error && !query.data?.length) return null;
   return (
     <section aria-label="Questions" className="mt-5 space-y-3 border-t border-border pt-4">
@@ -607,7 +634,13 @@ export function QuestionsSection({
           </Button>
         </div>
       ) : null}
-      {open.map(renderQuestion)}
+      {openDecisions.map(renderQuestion)}
+      {shownRounds.map((round) => (
+        <div key={round.round} role="group" aria-label={shownRounds.length > 1 ? `Round ${round.round}` : "Checks"} className="space-y-3">
+          {shownRounds.length > 1 ? <h3 className="text-xs font-semibold text-muted-foreground">Round {round.round}</h3> : null}
+          {round.chains.map(renderCheck)}
+        </div>
+      ))}
       {earlier.length ? (
         <details>
           <DisclosureSummary className="text-sm text-muted-foreground">

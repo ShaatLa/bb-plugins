@@ -1,6 +1,7 @@
 import { RECEIPT_PROJECT_UPDATE_REFUSAL, RECEIPT_LIMIT } from "../shared/check-receipt";
 import { isQuestionOpen } from "../shared/questions";
 import { newestOpenQuestion, waitingOnOwner } from "../shared/waiting-on-owner";
+import { heldLine, placeChecks } from "../shared/check-flow";
 import { createGithubClient, githubToken } from "../git-sync/github";
 import { waitForPrCi } from "../git-sync/ci-wait";
 import { gitSyncConfigSchema } from "../shared/git-sync";
@@ -1463,10 +1464,13 @@ export function registerTasksCli(
                 input.positionals["key-or-id"],
               );
               const result = await domain.listQuestions({ taskId: task.id });
-              if (input.options.json) return JSON.stringify(result);
+              // Checks come in flow order with their number, state and the failed check that holds them.
+              const placed = { questions: placeChecks(tasksRpcContract.listQuestions.output.parse(result).questions) };
+              if (input.options.json) return JSON.stringify(placed);
+              const held = placed.questions.filter((question) => question.heldBy).map(heldLine);
               const superseded = result.questions.filter((question) => question.supersededBy).map((question) => `Question ${question.id} is superseded by ${question.supersededBy}; act on that question.`);
               const withdrawn = result.questions.filter(q => q.withdrawnAt).map(withdrawalLine);
-              return { exitCode: 0, stdout: JSON.stringify(result, null, 2), stderr: [...superseded, ...withdrawn].join("\n") };
+              return { exitCode: 0, stdout: JSON.stringify(placed, null, 2), stderr: [...held, ...superseded, ...withdrawn].join("\n") };
             });
           },
         }),
@@ -2957,10 +2961,11 @@ export function registerTasksCli(
                   }),
                 ),
               ).comments;
-              const { questions } = await domain.listQuestions({
+              const { questions: stored } = await domain.listQuestions({
                 taskId: task.id,
               });
-              const newestQuestion = newestOpenQuestion(tasksRpcContract.listQuestions.output.parse({ questions }).questions);
+              const questions = placeChecks(tasksRpcContract.listQuestions.output.parse({ questions: stored }).questions);
+              const newestQuestion = newestOpenQuestion(questions, new Map(questions.filter((question) => question.heldBy).map((question) => [question.id, question.heldBy!.id])));
               const waiting = waitingOnOwner(task, newestQuestion ? 1 : 0);
               const evidence = evidenceIndex(comments);
               const attachments = await listTaskAttachments(
@@ -2982,6 +2987,7 @@ export function registerTasksCli(
                   answeredBy: question.answeredBy,
                 }),
                 updatedAt: question.updatedAt,
+                ...(question.number !== undefined ? { number: question.number, state: question.state, round: question.round } : {}),
                 ...(question.supersedes ? { supersedes: question.supersedes } : {}),
                 ...(question.supersededBy ? { supersededBy: question.supersededBy, supersededAt: question.supersededAt } : {}),
               } : question) : questions;
@@ -3061,8 +3067,9 @@ export function registerTasksCli(
                 const design = q.beyondDesign ? `\nBeyond the design: ${q.beyondDesign}` : "";
                 if ("withdrawnAt" in q && q.withdrawnAt) return `${oneLine(q.prompt)} — ${withdrawalLine(q)}${design}`;
                 if (q.supersededBy) return `superseded by ${q.supersededBy}: ${oneLine(q.prompt).slice(0, 160)}${"answer" in q && q.answer ? ` → ${oneLine(q.answer).slice(0, 160)}` : ""} (${q.id})${design}`;
-                if ("answer" in q) return `✓ ${oneLine(q.prompt).slice(0, 160)} → ${oneLine(q.answer).slice(0, 160)} (${q.id})${design}`;
-                return JSON.stringify(q);
+                const place = "number" in q && q.number != null ? `check ${q.number} (${q.state}) ` : "";
+                if ("answer" in q) return `✓ ${place}${oneLine(q.prompt).slice(0, 160)} → ${oneLine(q.answer).slice(0, 160)} (${q.id})${design}`;
+                return `${"heldBy" in q && q.heldBy ? `${heldLine(q)}\n` : ""}${JSON.stringify(q)}`;
               }).join("\n") : [JSON.stringify(shownQuestions, null, 2), ...questions.filter(q => q.withdrawnAt).map(withdrawalLine)].join("\n");
               return [
                 ...(prLinks.length ? [`Git/PR links\n${prLinks.map(({link,snapshot,stale}) => `${link.repository}#${link.number} · ${link.role} · ${link.excluded ? "excluded" : snapshot?.state ?? "unchecked"} · CI ${snapshot?.ci ?? "unknown"}${stale ? " · stale" : ""}`).join("\n")}`] : []),

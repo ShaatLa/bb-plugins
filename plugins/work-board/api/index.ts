@@ -5,6 +5,7 @@ import { assertNoSecrets } from "../shared/secret-guard";
 import { registeredValidator } from "../checks/receipt-registry";
 import { createHash } from "node:crypto";
 import { UNANSWERED_QUESTION } from "../db/waiting-on-owner";
+import { OPEN_QUESTION_SQL } from "../shared/questions";
 import { getWorkflowPolicy, isClosedStatus } from "../shared/workflow-policy";
 import { observeStatusNotifications } from "../status-notifications";
 import { taskAdvisories } from "../advisories";
@@ -438,7 +439,7 @@ function assertNoOpenOwnerQuestions(
   const project = store.tasks.getProject(task.projectId);
   if (!agentThreadId || !targetStatus || !project || !isClosedStatus(project, targetStatus) || isClosedStatus(project, task.status)) return;
   const open = bb.storage.database().prepare<[string], { payload: string }>(
-    `SELECT q.payload FROM task_questions q WHERE q.task_id = ? AND ${UNANSWERED_QUESTION} ORDER BY q.id`,
+    `SELECT q.payload FROM task_questions q WHERE q.task_id = ? AND ${OPEN_QUESTION_SQL} ORDER BY q.id`,
   ).all(task.id).map((row) => JSON.parse(row.payload) as { id: string; revision: number; kind?: string; prompt: string });
   if (!open.length) return;
   const list = open.map((q) => `${q.id} rev ${q.revision} (${q.kind ?? "decision"}) "${q.prompt.length > 60 ? `${q.prompt.slice(0, 60)}…` : q.prompt}"`).join("; ");

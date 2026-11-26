@@ -1,7 +1,9 @@
 import { receiptGate } from "./check-receipt";
 import { receiptInScope } from "../shared/check-receipt";
-import { assertNotPlanApproval, assertQuestionShape, assertReopenKeepsScope, assertStepsAtomic, assertStepsSingleAction, checkGuidance, isQuestionOpen, normalizedPrompt, supersededRefusal } from "../shared/questions";
+import { assertNotPlanApproval, assertQuestionShape, assertReopenKeepsScope, assertStepsAtomic, assertStepsSingleAction, checkGuidance, isQuestionOpen, isWaitingOnOwner, normalizedPrompt, supersededRefusal } from "../shared/questions";
 import { UNANSWERED_QUESTION, WAITING_ON_OWNER, NEWEST_UNANSWERED } from "../db/waiting-on-owner";
+import { refreshCheckFlow } from "../db/check-flow";
+import { checkFlow } from "../shared/check-flow";
 import type { BbPluginApi, PluginRpcHandlers } from "@get-bb/plugin-sdk";
 import type { TasksApiStore } from "../api";
 import { createUlid } from "../db/store";
@@ -201,12 +203,16 @@ export function createStructuredStore(bb: BbPluginApi, store: TasksApiStore) {
   ).get(question.taskId, `%\nQuestion ID: ${question.id}; revision: %`)?.id ?? null : null;
   // Called by every question write, inside its transaction, after the question state is saved.
   const syncDecisionLabel = (taskId: string) => {
+    // The held checks come first: the attention ledger and the label below read them.
+    refreshCheckFlow(db, taskId);
     // An open owner question changes the stale-status observation (no_active_thread), so the ledger is updated in this write.
     touchAttention(db, [taskId]);
     const task = store.tasks.getTask(taskId)!;
     const name = getWorkflowPolicy(store.tasks.getProject(task.projectId)!).ownerDecisionLabel;
     if (!name) return;
-    const open = listQuestions(taskId).some(isQuestionOpen);
+    const questions = listQuestions(taskId);
+    const { held } = checkFlow(questions);
+    const open = questions.some((question) => isWaitingOnOwner(question, held));
     let label = store.tasks.listLabels(task.projectId).find((item) => item.name === name);
     if (open) {
       label ??= store.tasks.createLabel({ projectId: task.projectId, name, color: "blue" });

@@ -30,6 +30,7 @@ import {
 } from "./contract";
 import { planReviewSchema, questionSchema } from "../shared/contract";
 import { assertSupersessionLinks } from "../shared/questions";
+import { refreshCheckFlow } from "../db/check-flow";
 
 // Imported history is never operational: server-local thread/queue/request IDs must not be resumed on another BB.
 type SqlValue = string | number | null;
@@ -587,6 +588,8 @@ export function restoreProject(
     for (const record of records)
       assertSupersessionLinks(db.prepare<[string], { payload: string }>("SELECT payload FROM task_questions WHERE task_id = ?").all(record.task.id)
         .map((row) => questionSchema.parse(JSON.parse(row.payload))));
+    // The held checks are derived data, so they are rebuilt from what the import leaves behind rather than exported.
+    for (const record of records) refreshCheckFlow(db, record.task.id);
     for (const record of records)
       if (record.activityHistory)
         db.prepare<[string]>("INSERT OR IGNORE INTO task_activity_history(task_id) VALUES (?)").run(record.task.id);
