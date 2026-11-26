@@ -1,16 +1,40 @@
 import { useEffect, useRef, useState } from 'react';
 import { useSdk, type PluginSidebarThread } from '@get-bb/plugin-sdk/app';
 
-// Drop rules of bb's own sidebar (its thread-list plugin): a row's middle band nests, the top level takes only the session's own project.
-export type ReparentTarget = { kind: 'nest'; threadId: string } | { kind: 'top'; projectId: string | null };
-export type ReparentDrop = { ok: false } | { ok: true; parentThreadId: string | null; sectionId?: string | null; unpin: boolean };
+// bb's pin order (its thread-list plugin): manual keys first when both have one, then the newest pin, the newest thread, the id.
+const byPin = (a: PluginSidebarThread, b: PluginSidebarThread) => (a.pinSortKey !== null && b.pinSortKey !== null && a.pinSortKey !== b.pinSortKey ? (a.pinSortKey < b.pinSortKey ? -1 : 1) : 0)
+  || (b.pinnedAt ?? 0) - (a.pinnedAt ?? 0) || b.createdAt - a.createdAt || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+// bb's Pinned group: pinned threads with all their descendants; a member whose parent is outside the group is one of its roots.
+export function pinnedTree(threads: readonly PluginSidebarThread[]) {
+  const live = threads.filter(t => !t.isHidden && t.archivedAt === null), kids = new Map<string, PluginSidebarThread[]>();
+  for (const t of live) if (t.parentThreadId) kids.set(t.parentThreadId, [...(kids.get(t.parentThreadId) ?? []), t]);
+  const members = new Set<string>(), add = (t: PluginSidebarThread) => { if (members.has(t.id)) return; members.add(t.id); for (const k of kids.get(t.id) ?? []) add(k); };
+  for (const t of live) if (t.isPinned) add(t);
+  const roots = live.filter(t => members.has(t.id) && !(t.parentThreadId && members.has(t.parentThreadId))).sort(byPin);
+  return { members, roots };
+}
+
+// Drop rules of bb's own sidebar (its thread-list plugin): a row's middle band nests, the top level takes only the session's own project,
+// a pinned root's edges reorder the Pinned group, and a pinned thread moved to the top level is unpinned.
+export type ReparentTarget = { kind: 'nest'; threadId: string } | { kind: 'top'; projectId: string | null } | { kind: 'pin'; threadId: string; edge: 'before' | 'after' };
+export type ReparentDrop = { ok: false } | { ok: true; parentThreadId?: string | null; sectionId?: string | null; unpin: boolean; reorder?: { previousThreadId: string | null; nextThreadId: string | null } };
 export function decideDrop(threads: readonly PluginSidebarThread[], dragId: string, target: ReparentTarget, grouped: boolean): ReparentDrop | null {
   const byId = new Map(threads.map(t => [t.id, t])), drag = byId.get(dragId);
   if (!drag) return null;
+  if (target.kind === 'pin') {
+    const roots = pinnedTree(threads).roots.map(t => t.id);
+    if (!roots.includes(dragId)) return { ok: false };
+    const rest = roots.filter(id => id !== dragId), at = rest.indexOf(target.threadId) + (target.edge === 'after' ? 1 : 0);
+    if (at < 0 || !rest.includes(target.threadId)) return null;
+    const next = [...rest.slice(0, at), dragId, ...rest.slice(at)];
+    if (next.every((id, i) => id === roots[i])) return null;
+    return { ok: true, unpin: false, reorder: { previousThreadId: next[at - 1] ?? null, nextThreadId: next[at + 1] ?? null } };
+  }
   if (target.kind === 'top') {
-    if (!drag.parentThreadId || (grouped && target.projectId !== drag.projectId)) return null;
+    if ((!drag.parentThreadId && !drag.isPinned) || (grouped && target.projectId !== drag.projectId)) return null;
+    if (!drag.parentThreadId) return { ok: true, unpin: true };
     const parent = byId.get(drag.parentThreadId);
-    return { ok: true, parentThreadId: null, sectionId: parent?.projectId === drag.projectId ? parent.sectionId : null, unpin: false };
+    return { ok: true, parentThreadId: null, sectionId: parent?.projectId === drag.projectId ? parent.sectionId : null, unpin: drag.isPinned };
   }
   const parent = byId.get(target.threadId);
   if (!parent) return null;
@@ -31,7 +55,9 @@ function targetAt(x: number, y: number): Omit<Over, 'drop'> | null {
   if (!id) return up && { key, target: up };
   const r = el.getBoundingClientRect(), rel = r.height ? (y - r.top) / r.height : 0.5;
   if (rel >= 0.25 && rel <= 0.75) return { key, target: { kind: 'nest', threadId: id } };
-  return up && { key, target: up, edge: rel < 0.25 ? 'before' : 'after' };
+  const edge = rel < 0.25 ? 'before' as const : 'after' as const;
+  if (el.dataset.reparentPin !== undefined) return { key, target: { kind: 'pin', threadId: id, edge }, edge };
+  return up && { key, target: up, edge };
 }
 
 export type Reparent = ReturnType<typeof useReparent>;
@@ -45,9 +71,13 @@ export function useReparent(threads: readonly PluginSidebarThread[], grouped: bo
   useEffect(() => () => stop.current(), []);
   function apply(id: string, drop: ReparentDrop) {
     if (!drop.ok) return;
-    const { ok: _, unpin, ...update } = drop;
+    const { ok: _, unpin, reorder, ...update } = drop;
     void (async () => {
-      try { if (unpin) await sdk.threads.unpin({ threadId: id }); await sdk.threads.update({ threadId: id, ...update }); }
+      try {
+        if (unpin) await sdk.threads.unpin({ threadId: id });
+        if (reorder) await sdk.threads.reorderPinned({ threadId: id, ...reorder });
+        if ('parentThreadId' in update) await sdk.threads.update({ threadId: id, ...update });
+      }
       catch (e) { setError(e instanceof Error ? e.message : String(e)); }
     })();
   }

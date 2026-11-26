@@ -110,10 +110,16 @@ function start(bb: BbPluginApi, migrationError: string | null) {
     if (!projectCache || projectCache.expires<=Date.now()) projectCache={rows:await bb.sdk.projects.list(),expires:Date.now()+60000};
     return projectCache.rows;
   }
+  // bb returns at most 200 threads per call, and the pinned contacts have no such cap.
+  async function listThreads(ids:string[]) {
+    const out:Awaited<ReturnType<typeof bb.sdk.threads.list>>=[];
+    for (let i=0;i<ids.length;i+=200) out.push(...await bb.sdk.threads.list({threadIds:ids.slice(i,i+200),includeHidden:true,limit:200}));
+    return out;
+  }
   async function displayThreads(ids:string[]) {
     const missing=[...new Set(ids)].filter(id=>!threadCache.has(id) || threadCache.get(id)!.expires<=Date.now());
     if (missing.length) {
-      const rows=await bb.sdk.threads.list({threadIds:missing,includeHidden:true,limit:200}), expires=Date.now()+30000;
+      const rows=await listThreads(missing), expires=Date.now()+30000;
       for (const id of missing) {const t=rows.find(t=>t.id===id); threadCache.set(id,{expires,thread:t ? {id:t.id,title:t.title,projectId:t.projectId} : undefined});}
     }
     return ids.flatMap(id=>{const t=threadCache.get(id)?.thread; return t ? [t] : [];});
@@ -169,7 +175,7 @@ function start(bb: BbPluginApi, migrationError: string | null) {
     if (!ids.length) return;
     try {
       let n = 0;
-      for (const t of await bb.sdk.threads.list({threadIds:ids,includeHidden:true,limit:200})) if (t.lastReadAt) n += await applyBbRead(t.id,t.lastReadAt);
+      for (const t of await listThreads(ids)) if (t.lastReadAt) n += await applyBbRead(t.id,t.lastReadAt);
       if (n) invalidate();
     } catch (e) { bb.log.warn(`Agent Hub read sync: ${String(e)}`); }
   }
@@ -395,14 +401,11 @@ function start(bb: BbPluginApi, migrationError: string | null) {
       // A contact counts its own open agent questions too; explicit sub-agent asks live only in Questions.
       const contactAttention = ATTENTION_SQL;
       const chosenAttention=contactAttention.replaceAll('thread_id NOT IN','chosen.thread_id NOT IN');
-      // shortcut: show at most 200 conversations; paginate when larger inboxes need it.
-      const rows=db.prepare(`WITH grouped AS (
+      // One conversation row per thread: counts, the time, and the item its preview shows; `where` and `tail` pick the threads.
+      const contactRows=(where:string,tail:string,...params:string[])=>db.prepare(`WITH grouped AS (
         SELECT thread_id,sum(CASE WHEN ${contactAttention} THEN 1 ELSE 0 END) AS unread,sum(CASE WHEN ${contactAttention} AND kind='for_me' THEN 1 ELSE 0 END) AS questions,max(updated_at) AS last_at
-        FROM items WHERE thread_deleted=0 AND thread_id<>'${NOTICE_THREAD}' AND ${ACTIVE_THREAD_SQL} AND thread_id NOT IN (SELECT thread_id FROM sub_threads)
-        GROUP BY thread_id
-        -- A thread with only agent questions lives in Questions; an open top-level chat stays listed.
-        HAVING sum(kind<>'for_me')>0 OR thread_id=?
-        ORDER BY (thread_id=?) DESC,(unread>0) DESC,last_at DESC,thread_id LIMIT 200
+        FROM items WHERE thread_deleted=0 AND thread_id<>'${NOTICE_THREAD}' AND ${ACTIVE_THREAD_SQL} AND ${where}
+        GROUP BY thread_id ${tail}
       ) SELECT grouped.*,chosen.project_id,chosen.trigger_kind,chosen.trigger_source,
         CASE WHEN ${chosenAttention} AND chosen.kind IN ('mine','update') AND chosen.status='answered' THEN chosen.answer
              WHEN ${chosenAttention} AND chosen.kind='mine' THEN 'Turn failed: '||chosen.question
@@ -410,27 +413,37 @@ function start(bb: BbPluginApi, migrationError: string | null) {
         FROM grouped JOIN items chosen ON chosen.id=(
           SELECT id FROM items WHERE items.thread_id=grouped.thread_id AND thread_deleted=0
           ORDER BY CASE WHEN ${contactAttention.replaceAll('thread_id NOT IN','items.thread_id NOT IN')} THEN 0 ELSE 1 END,updated_at DESC,id DESC LIMIT 1
-        )`).all(p.selected ?? '',p.selected ?? '') as Row[];
+        )`).all(...params) as Row[];
+      // shortcut: show at most 200 conversations; paginate when larger inboxes need it.
+      // A thread with only agent questions lives in Questions; an open top-level chat stays listed.
+      const rows=contactRows('thread_id NOT IN (SELECT thread_id FROM sub_threads)',"HAVING sum(kind<>'for_me')>0 OR thread_id=? ORDER BY (thread_id=?) DESC,(unread>0) DESC,last_at DESC,thread_id LIMIT 200",p.selected ?? '',p.selected ?? '');
+      // Pinned contacts, sub-sessions included, each with its own count however many there are; a pinned thread without items still gets a row.
+      const pinnedIds=[...new Set(p.pinned ?? [])], pinnedRows=pinnedIds.length ? contactRows('thread_id IN (SELECT value FROM json_each(?))','',JSON.stringify(pinnedIds)) : [];
+      const gone=new Set(pinnedIds.length ? (db.prepare(`SELECT thread_id FROM archived_threads WHERE thread_id IN (SELECT value FROM json_each(?)) UNION SELECT thread_id FROM items WHERE thread_deleted=1 AND thread_id IN (SELECT value FROM json_each(?))`).all(JSON.stringify(pinnedIds),JSON.stringify(pinnedIds)) as Row[]).map(r=>r.thread_id) : []);
+      for (const id of pinnedIds) if (!gone.has(id) && !pinnedRows.some(r=>r.thread_id===id)) pinnedRows.push({thread_id:id,unread:0,questions:0,last_at:0,preview:''});
       // A top-level thread waiting for its first events (e.g. queued behind bb's concurrency limit) is listed, as bb's sidebar lists it.
       for (const r of db.prepare(`SELECT thread_id,updated_at FROM threads_state s WHERE thread_id<>'${NOTICE_THREAD}' AND ${ACTIVE_THREAD_SQL} AND thread_id NOT IN (SELECT thread_id FROM sub_threads) AND NOT EXISTS (SELECT 1 FROM items WHERE items.thread_id=s.thread_id)`).all() as Row[]) if (rows.length<200 && !rows.some(x=>x.thread_id===r.thread_id)) rows.push({thread_id:r.thread_id,unread:0,last_at:r.updated_at,preview:''});
       // The open chat stays listed even without items yet, unless it was archived or deleted.
       if (p.selected && !rows.some(r=>r.thread_id===p.selected) && !db.prepare('SELECT 1 FROM archived_threads WHERE thread_id=? UNION ALL SELECT 1 FROM items WHERE thread_id=? AND thread_deleted=1 UNION ALL SELECT 1 FROM sub_threads WHERE thread_id=?').get(p.selected,p.selected,p.selected)) {if(rows.length===200) rows.pop(); rows.push({thread_id:p.selected,unread:0,last_at:0,preview:''});}
       rows.sort((a,b)=>Number(b.unread>0)-Number(a.unread>0) || b.last_at-a.last_at || a.thread_id.localeCompare(b.thread_id));
-      const threads=rows.length ? await displayThreads(rows.map(r=>r.thread_id)) : [];
-      const projects=rows.length ? await displayProjects() : [];
+      const threads=rows.length || pinnedRows.length ? await displayThreads([...rows,...pinnedRows].map(r=>r.thread_id)) : [];
+      const projects=rows.length || pinnedRows.length ? await displayProjects() : [];
       const threadMap=new Map(threads.map(t=>[t.id,t]));
       // Reading a thread in bb counts as reading it here: what arrived before bb's lastReadAt was seen there.
       // Unread replies to the owner in sub-sessions: they badge the sub-session row and its contact, not a contact of their own.
       const subRows=db.prepare(`SELECT thread_id,count(*) AS unread FROM items WHERE thread_id IN (SELECT thread_id FROM sub_threads) AND kind='mine' AND spawned=0 AND answers_ask=0 AND thread_deleted=0 AND ${ATTENTION_SQL} GROUP BY thread_id LIMIT 200`).all() as {thread_id:string;unread:number}[];
       const unreadIds=[...rows.filter(r=>r.unread>0).map(r=>r.thread_id as string),...subRows.map(r=>r.thread_id)].slice(0,200);
-      const fresh=unreadIds.length ? await bb.sdk.threads.list({threadIds:unreadIds,includeHidden:true,limit:200}) : [];
+      const pinnedUnread=pinnedRows.filter(r=>r.unread>0 && !unreadIds.includes(r.thread_id)).map(r=>r.thread_id as string);
+      const fresh=unreadIds.length || pinnedUnread.length ? await listThreads([...unreadIds,...pinnedUnread]) : [];
       const readTimes=new Map(fresh.map(t=>[t.id,t.lastReadAt]));
       let seen=0;
-      for (const r of [...rows,...subRows]) { const readAt=readTimes.get(r.thread_id); if (r.unread>0 && readAt) { const n=await applyBbRead(r.thread_id,readAt).catch(()=>0); r.unread-=n; seen+=n; } }
+      // A pinned thread may also be a main or sub-session row: the read is applied once and lowers both.
+      const applied=new Map<string,number>();
+      for (const r of [...rows,...subRows,...pinnedRows]) { const readAt=readTimes.get(r.thread_id); if (r.unread>0 && readAt) { let n=applied.get(r.thread_id); if (n===undefined) { n=await applyBbRead(r.thread_id,readAt).catch(()=>0); applied.set(r.thread_id,n); seen+=n; } r.unread=Math.max(0,r.unread-n); } }
       const subUnread=Object.fromEntries(subRows.filter(r=>r.unread>0).map(r=>[r.thread_id,r.unread]));
       if (seen) invalidate();
       const projectMap=new Map(projects.map(p=>[p.id,p]));
-      const mentioned=[...new Set(rows.flatMap(r=>[...((r.preview ?? '') as string).matchAll(/(?:@thread:|^\[bb message from thread:)(thr_[A-Za-z0-9_-]+)/g)].map(m=>m[1]!)))].filter(id=>!threadMap.has(id)).slice(0,200);
+      const mentioned=[...new Set([...rows,...pinnedRows].flatMap(r=>[...((r.preview ?? '') as string).matchAll(/(?:@thread:|^\[bb message from thread:)(thr_[A-Za-z0-9_-]+)/g)].map(m=>m[1]!)))].filter(id=>!threadMap.has(id)).slice(0,200);
       if (mentioned.length) threads.push(...await displayThreads(mentioned));
       for(const t of threads) threadMap.set(t.id,t);
       // A quote reply previews as its note (the quote is context, as in a messenger); a bare quote as its text without '>'.
@@ -448,7 +461,8 @@ function start(bb: BbPluginApi, migrationError: string | null) {
       const plain=(text:string)=>unquote(text.replace(/^\[bb message from thread:(thr_[A-Za-z0-9_-]+)\]\s*/,(_,id:string)=>threadMap.get(id)?.title ? `${threadMap.get(id)!.title}: ` : '').replace(/^\[bb (?:message from plugin:([\w.-]+)|automation\b[^\]\n]*)\]\s*(?:\[(?![A-Z][A-Z0-9]*-\d)[^\]\n]{2,40}\](?![(:])\s+)?/,(_,id:string|undefined)=>`${names.get(id ?? 'automations') ?? id ?? 'Automations'}: `)).replace(/^\s*(?:#{1,6}|[-*+]|\d+[.)])\s+/gm,'').replace(/@thread:(thr_[A-Za-z0-9_-]+)(?:#msg=\d+)?/g,(_,id:string)=>'@'+(threadMap.get(id)?.title ?? 'thread')).replace(/\[([^\]]+)\]\([^)\s]+\)/g,'$1').replace(/\*\*|`/g,'').replace(/\s+/g,' ').trim();
       // Threads with an open question to the owner, so contacts can surface a sub-session that asks under its collapsed parent.
       const asking=(db.prepare(`SELECT DISTINCT thread_id FROM items WHERE kind='for_me' AND status='open' AND dismissed_at IS NULL AND declined_at IS NULL AND thread_deleted=0 AND ${ACTIVE_THREAD_SQL} AND ${OWNER_ITEM_SQL}`).all() as {thread_id:string}[]).map(r=>r.thread_id);
-      return {asking,subUnread,recipients:rows.map(r=>{const t=threadMap.get(r.thread_id),projectId=t?.projectId ?? r.project_id ?? null; return {threadId:r.thread_id,threadTitle:t?.title ?? null,projectId,projectName:projectMap.get(projectId)?.name ?? null,unread:r.unread,questions:r.questions,lastAt:r.last_at,preview:plain(inlineCommentPreview(previewFor(r).replace(/<!--[\s\S]*?-->\s*/g,''))).slice(0,160)};})};
+      const recipient=(r:Row)=>{const t=threadMap.get(r.thread_id),projectId=t?.projectId ?? r.project_id ?? null; return {threadId:r.thread_id,threadTitle:t?.title ?? null,projectId,projectName:projectMap.get(projectId)?.name ?? null,unread:r.unread,questions:r.questions,lastAt:r.last_at,preview:plain(inlineCommentPreview(previewFor(r).replace(/<!--[\s\S]*?-->\s*/g,''))).slice(0,160)};};
+      return {asking,subUnread,recipients:rows.map(recipient),pinned:pinnedRows.map(recipient)};
     },
     // A UI crash caught by the app's CrashGuard, so its stack reaches `bb plugin logs agent-hub`.
     logClientError(raw:z.infer<typeof inputs.logClientError>) {const p=inputs.logClientError.parse(raw); bb.log.error(`Agent Hub UI crash (${p.where}): ${p.message}${p.stack ? `\n${p.stack}` : ''}`); return {ok:true as const};},

@@ -1,9 +1,9 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, waitFor, within } from '@testing-library/react';
 import { renderSlot } from '@get-bb/plugin-sdk/testing/app';
 import { ContactsList, useContacts } from './contacts';
-import { decideDrop } from './reparent';
+import { decideDrop, pinnedTree } from './reparent';
 const split = vi.hoisted(() => ({ start: undefined as undefined | (() => void) }));
 vi.mock('./open-chat', async original => ({ ...await original<typeof import('./open-chat')>(), beginContactDrag: vi.fn() }));
 vi.mock('@get-bb/plugin-sdk/app', async importOriginal => ({ ...await importOriginal<typeof import('@get-bb/plugin-sdk/app')>(), useBbNavigate: () => ({ toThread: vi.fn(), toPluginPanel: vi.fn(), toCompose: vi.fn() }), experimental_useSidebarNavigation: () => ({ items: [{ id: 'agent-hub/agent-hub', action: { kind: 'open-plugin-panel', pluginId: 'agent-hub', panelId: 'agent-hub' } }] }), experimental_useSidebarNavigationSplit: (_id: string, options?: { onDragStart?: () => void }) => { split.start = options?.onDragStart; return { isAvailable: true, splitProps: {} }; }, experimental_useSidebarThreadSplit: () => ({ splitProps: {} }) }));
@@ -23,24 +23,62 @@ describe('decideDrop', () => {
   it.each(['thr_kid', 'thr_grandkid', 'thr_root'])('refuses to nest under itself, its descendant or its current parent (%s)', target => {
     expect(decideDrop(threads, 'thr_kid', { kind: 'nest', threadId: target }, true)).toEqual({ ok: false });
   });
-  it('moves a sub-session to the top level only in its own project when grouped, with the old parent\'s section', () => {
-    expect(decideDrop(threads, 'thr_kid', { kind: 'top', projectId: 'proj_a' }, true)).toEqual({ ok: true, parentThreadId: null, sectionId: 'sec_a', unpin: false });
+  it('moves a sub-session to the top level only in its own project when grouped, with the old parent\'s section, unpinning a pinned one', () => {
+    expect(decideDrop(threads, 'thr_kid', { kind: 'top', projectId: 'proj_a' }, true)).toEqual({ ok: true, parentThreadId: null, sectionId: 'sec_a', unpin: true });
     expect(decideDrop(threads, 'thr_kid', { kind: 'top', projectId: 'proj_b' }, true)).toBeNull();
-    expect(decideDrop(threads, 'thr_kid', { kind: 'top', projectId: null }, false)).toEqual({ ok: true, parentThreadId: null, sectionId: 'sec_a', unpin: false });
+    expect(decideDrop(threads, 'thr_kid', { kind: 'top', projectId: null }, false)).toEqual({ ok: true, parentThreadId: null, sectionId: 'sec_a', unpin: true });
+    expect(decideDrop(threads, 'thr_grandkid', { kind: 'top', projectId: null }, false)).toEqual({ ok: true, parentThreadId: null, sectionId: null, unpin: false });
     expect(decideDrop(threads, 'thr_root', { kind: 'top', projectId: 'proj_a' }, true)).toBeNull();
+  });
+  it('only unpins a pinned top-level session dropped on the top level', () => {
+    expect(decideDrop([...threads, thread('thr_top', { isPinned: true })], 'thr_top', { kind: 'top', projectId: 'proj_a' }, true)).toEqual({ ok: true, unpin: true });
   });
   it('gives no section when the old parent is in another project', () => {
     expect(decideDrop([...threads, thread('thr_moved', { parentThreadId: 'thr_far' })], 'thr_moved', { kind: 'top', projectId: 'proj_a' }, true)).toEqual({ ok: true, parentThreadId: null, sectionId: null, unpin: false });
   });
 });
 
+describe('pinnedTree', () => {
+  it('orders roots as bb does and keeps a pinned root\'s descendants under it', () => {
+    const roots = pinnedTree([
+      thread('thr_late', { isPinned: true, pinnedAt: 30, pinSortKey: null, createdAt: 1 }),
+      thread('thr_b', { isPinned: true, pinnedAt: 10, pinSortKey: 'b', createdAt: 1 }),
+      thread('thr_a', { isPinned: true, pinnedAt: 5, pinSortKey: 'a', createdAt: 1 }),
+      thread('thr_early', { isPinned: true, pinnedAt: 20, pinSortKey: null, createdAt: 1 }),
+      thread('thr_parent'), thread('thr_sub', { parentThreadId: 'thr_parent', isPinned: true, pinnedAt: 1, pinSortKey: null, createdAt: 1 }), thread('thr_subkid', { parentThreadId: 'thr_sub' }),
+      thread('thr_gone', { isPinned: true, pinnedAt: 40, archivedAt: 1 }), thread('thr_hidden', { isPinned: true, pinnedAt: 40, isHidden: true }),
+    ]);
+    // bb compares manual keys only between two keyed pins, so each kind is checked on its own.
+    expect(roots.roots.map(t => t.id).filter(id => id === 'thr_a' || id === 'thr_b')).toEqual(['thr_a', 'thr_b']);
+    expect(roots.roots.map(t => t.id).filter(id => id !== 'thr_a' && id !== 'thr_b')).toEqual(['thr_late', 'thr_early', 'thr_sub']);
+    expect([...roots.members].sort()).toEqual(['thr_a', 'thr_b', 'thr_early', 'thr_late', 'thr_sub', 'thr_subkid']);
+  });
+});
+describe('decideDrop on Pinned', () => {
+  const pins = ['thr_p1', 'thr_p2', 'thr_p3'].map((id, i) => thread(id, { isPinned: true, pinnedAt: 30 - i, pinSortKey: null, createdAt: 1 }));
+  const all = [...pins, thread('thr_free')];
+  it.each([
+    ['thr_p1', 'thr_p3', 'after', { previousThreadId: 'thr_p3', nextThreadId: null }],
+    ['thr_p3', 'thr_p1', 'before', { previousThreadId: null, nextThreadId: 'thr_p1' }],
+    ['thr_p1', 'thr_p3', 'before', { previousThreadId: 'thr_p2', nextThreadId: 'thr_p3' }],
+  ] as const)('reorders %s to %s %s', (drag, target, edge, reorder) => {
+    expect(decideDrop(all, drag, { kind: 'pin', threadId: target, edge }, false)).toEqual({ ok: true, unpin: false, reorder });
+  });
+  it('leaves an unchanged order alone and refuses a session that is not a pinned root', () => {
+    expect(decideDrop(all, 'thr_p1', { kind: 'pin', threadId: 'thr_p2', edge: 'before' }, false)).toBeNull();
+    expect(decideDrop(all, 'thr_p1', { kind: 'pin', threadId: 'thr_p1', edge: 'after' }, false)).toBeNull();
+    expect(decideDrop(all, 'thr_free', { kind: 'pin', threadId: 'thr_p1', edge: 'after' }, false)).toEqual({ ok: false });
+  });
+});
+
 type Row = { id: string; fields?: object };
-function setup({ rows, contacts, grouped = false, update = vi.fn(async () => ({})), unpin = vi.fn(async () => ({})) }: { rows: Row[]; contacts: string[]; grouped?: boolean; update?: ReturnType<typeof vi.fn>; unpin?: ReturnType<typeof vi.fn> }) {
+function setup({ rows, contacts, grouped = false, update = vi.fn(async () => ({})), unpin = vi.fn(async () => ({})), reorderPinned = vi.fn(async () => ({})), unreadOf = {} }: { rows: Row[]; contacts: string[]; grouped?: boolean; update?: ReturnType<typeof vi.fn>; unpin?: ReturnType<typeof vi.fn>; reorderPinned?: ReturnType<typeof vi.fn>; unreadOf?: Record<string, number> }) {
   localStorage.setItem('bb-plugin-answers:page:open-subs', JSON.stringify(contacts));
   const threads = rows.map(r => thread(r.id, r.fields)), onSelect = vi.fn();
   function Contacts() { return <ContactsList model={useContacts(undefined)} onSelect={onSelect} />; }
-  const slot = renderSlot({ component: Contacts }, {}, { sdk: { threads: { update, unpin } }, rpc: { getPreferences: () => ({ groupByProject: grouped }), recipients: () => ({ recipients: contacts.map(id => { const t = threads.find(t => t.id === id)!; return { threadId: id, threadTitle: t.title, projectId: t.projectId, projectName: t.projectId === 'proj_a' ? 'Alpha' : 'Beta', unread: 0, lastAt: 1, preview: '' }; }) }) }, sidebarThreads: { threads, projects: [{ id: 'proj_a', name: 'Alpha', isPersonal: false }, { id: 'proj_b', name: 'Beta', isPersonal: false }] } } as any);
-  return { slot, update, unpin, onSelect };
+  const asked: unknown[] = [], recipient = (id: string) => { const t = threads.find(t => t.id === id)!; return { threadId: id, threadTitle: t.title, projectId: t.projectId, projectName: t.projectId === 'proj_a' ? 'Alpha' : 'Beta', unread: unreadOf[id] ?? 0, lastAt: 1, preview: '' }; };
+  const slot = renderSlot({ component: Contacts }, {}, { sdk: { threads: { update, unpin, reorderPinned } }, rpc: { getPreferences: () => ({ groupByProject: grouped }), recipients: (input: { pinned?: string[] }) => { asked.push(input); return { recipients: contacts.map(recipient), pinned: (input?.pinned ?? []).map(recipient) }; } }, sidebarThreads: { threads, projects: [{ id: 'proj_a', name: 'Alpha', isPersonal: false }, { id: 'proj_b', name: 'Beta', isPersonal: false }] } } as any);
+  return { slot, update, unpin, reorderPinned, onSelect, asked };
 }
 // jsdom has no layout: the element under the pointer is the one a test names, at the given height within it.
 function drag(from: HTMLElement, to: HTMLElement, rel = 0.5, done = true) {
@@ -145,4 +183,46 @@ it('shows a ghost with the session and what the drop will do, only while the dra
   await waitFor(() => expect(ghost()).toBeNull());
   drag(kid, other);
   await waitFor(() => expect(ghost()).toBeNull());
+});
+
+describe('Pinned group', () => {
+  const pin = (at: number, fields: object = {}) => ({ isPinned: true, pinnedAt: at, pinSortKey: null, createdAt: 1, ...fields });
+  it('lists pinned sessions first, in bb\'s order, with the server\'s unread count, and asks for them sorted', async () => {
+    const { slot, asked } = setup({ rows: [{ id: 'thr_old', fields: pin(10) }, { id: 'thr_new', fields: pin(20) }, { id: 'thr_plain' }], contacts: ['thr_plain'], unreadOf: { thr_old: 2 } });
+    const group = await slot.findByRole('group', { name: 'Pinned' });
+    await waitFor(() => expect(within(group).getByLabelText('2 unread')).toBeTruthy());
+    expect(within(group).getAllByRole('option').map(o => o.textContent)).toEqual([expect.stringContaining('new'), expect.stringContaining('old')]);
+    expect(slot.getAllByRole('option')[0]!.textContent).toContain('new');
+    expect(asked).toContainEqual({ pinned: ['thr_new', 'thr_old'] });
+  });
+  it('lists a pinned session once, even when the server also lists it as a contact', async () => {
+    const { slot } = setup({ rows: [{ id: 'thr_both', fields: pin(10) }, { id: 'thr_plain' }], contacts: ['thr_both', 'thr_plain'] });
+    await slot.findByRole('group', { name: 'Pinned' });
+    expect(slot.getAllByText('both')).toHaveLength(1);
+  });
+  it('moves a pinned sub-session out of its parent\'s tree into Pinned', async () => {
+    const { slot } = setup({ rows: [{ id: 'thr_parent' }, { id: 'thr_kid', fields: { parentThreadId: 'thr_parent', ...pin(10) } }], contacts: ['thr_parent'] });
+    const group = await slot.findByRole('group', { name: 'Pinned' });
+    expect(within(group).getByText('kid')).toBeTruthy();
+    expect(slot.getAllByText('kid')).toHaveLength(1);
+    expect(slot.queryByRole('list', { name: 'Sub-sessions of parent' })).toBeNull();
+  });
+  it('shows a pinned session instead of the empty state', async () => {
+    const { slot } = setup({ rows: [{ id: 'thr_only', fields: pin(10) }], contacts: [] });
+    await slot.findByRole('group', { name: 'Pinned' });
+    expect(slot.queryByText('All caught up')).toBeNull();
+  });
+  it('reorders Pinned from a pinned row\'s edge', async () => {
+    const { slot, reorderPinned, update } = setup({ rows: [{ id: 'thr_one', fields: pin(30) }, { id: 'thr_two', fields: pin(20) }, { id: 'thr_three', fields: pin(10) }], contacts: [] });
+    drag(await row(slot, 'one'), await row(slot, 'three'), 0.9);
+    await waitFor(() => expect(reorderPinned).toHaveBeenCalledExactlyOnceWith({ threadId: 'thr_one', previousThreadId: 'thr_three', nextThreadId: null }));
+    expect(update).not.toHaveBeenCalled();
+  });
+  it('unpins a pinned session dropped on its project\'s header', async () => {
+    const { slot, unpin, update } = setup({ grouped: true, rows: [{ id: 'thr_pinned', fields: pin(10) }, { id: 'thr_plain' }], contacts: ['thr_plain'] });
+    const header = (await slot.findByRole('group', { name: 'Alpha' })).querySelector<HTMLElement>('[data-reparent-key="group:proj_a"]')!;
+    drag(await row(slot, 'pinned'), header);
+    await waitFor(() => expect(unpin).toHaveBeenCalledExactlyOnceWith({ threadId: 'thr_pinned' }));
+    expect(update).not.toHaveBeenCalled();
+  });
 });
