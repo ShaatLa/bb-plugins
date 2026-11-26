@@ -12,11 +12,15 @@ The same start implementation serves CLI and RPC. The plugin validates the paren
 
 Builder execution:
 
-- When Project Instructions is enabled, its `source.get` RPC verifies the
-  local clone and origin branch tip. Spawn Gate fetches the reported commit
-  from that clone into its private checkout. The configured `script` resolves
-  inside the pinned checkout. The separate Spawn Gate remote and branch apply
-  to projects without an enabled shared source.
+- Start and mint call Project Instructions `source.get` with `sync: true` and
+  a 60-second deadline. Project Instructions can fast-forward a clean, behind
+  clone only if its project setting `allowSync` is enabled. The `instructions`
+  command calls the read-only RPC path. A start dry-run may update the shared
+  clone when sync is enabled. It still creates no admission or child thread.
+- With a fresh shared source, Spawn Gate fetches the reported commit from the
+  local clone into its private checkout. The configured `script` resolves inside
+  that pinned checkout. The separate Spawn Gate remote and branch apply to
+  projects without an enabled shared source.
 - On every start, fetch `branch` from the configured builder `remote` at depth 1. A blank `remote` uses the project's Git remote. A blank `branch` uses the selected remote's default branch. Run the repository-relative `script` in a clean plugin-owned checkout at that commit. Fetch, authentication and checkout failures abort. `sourceBranch` and `sourceCommit` identify the fetched builder branch and commit.
 - The configured script is repository-relative, must stay within that checkout, and runs with cwd at the checkout root. .py scripts use python3; other scripts must be executable with an appropriate shebang.
 - stdin: one JSON object {version:1,projectId,parentThreadId}. The plugin resolves the server-installed bb CLI, adds its directory to builder PATH, sets BB_CLI to its absolute path, and resolves/logs the actual python3 executable for .py builders. It also sets BB_PROJECT_ID and BB_THREAD_ID to these resolved IDs for builder bb read commands. No caller cwd is required.

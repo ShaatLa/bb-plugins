@@ -60,11 +60,16 @@ bb agent-spawn-gate config set instructionFile docs/launch.md --project proj_exa
 bb agent-spawn-gate instructions --project proj_example
 ```
 
-Spawn Gate uses the exact commit verified by Project Instructions. Update the
-existing process checkout after a push to its branch. Until the checkout reaches
-the new tip, the gate refuses to start or mint. A missing, wrong-branch, dirty
-or unverifiable enabled clone also refuses. A disabled or unconfigured project
-continues using its existing `remote` and `branch` or its typed `instruction`.
+Spawn Gate uses the exact commit verified by Project Instructions. Start
+(including dry-run) and mint request on-demand sync. With Project Instructions
+`allowSync` enabled, it can fast-forward a clean clone that is behind origin.
+Stop the clone's external updater before enabling `allowSync`. While it is off,
+keep the existing updater running. The gate refuses stale, missing, wrong-branch,
+dirty or unverifiable enabled clones. The `instructions` command reads only. To
+refresh a stale Instruction source on demand when `allowSync` is enabled, run
+`bb project-instructions source --project proj_example --sync` before reading it.
+A disabled or unconfigured project continues using its existing `remote` and
+`branch` or its typed `instruction`.
 
 ## Settings RPC
 

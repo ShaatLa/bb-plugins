@@ -97,17 +97,17 @@ Use the configured workflow. Changing gate settings to get a child started chang
     remember.run(thread);
     return true;
   });
-  const mint = async ({ projectId, parentThreadId, brief }: { projectId: string; parentThreadId: string; brief: string }) => {
-      const rules = policy(projectId);
-      const parent = await bb.sdk.threads.get({ threadId: parentThreadId });
-      if (parent.projectId !== projectId) throw new Error("Use a parent thread in the requested project, or change projectId to match the parent");
-      const token = randomBytes(32).toString("hex"), expiresAt = Date.now() + rules.ttl;
-      db.prepare("DELETE FROM tokens WHERE expires <= ?").run(Date.now());
-      db.prepare("INSERT INTO tokens VALUES (?, ?, ?, ?, ?)").run(hash(token), projectId, parentThreadId, hash(brief), expiresAt);
-      const lines = brief.split("\n");
-      lines.splice(1, 0, `agent-admission v1 token=${token}`);
-      return { token, expiresAt, prompt: lines.join("\n") };
-    };
+  const mint = async ({ projectId, parentThreadId, brief }: { projectId: string; parentThreadId: string; brief: string }, verifySource?: () => Promise<void>) => {
+    const parent = await bb.sdk.threads.get({ threadId: parentThreadId });
+    if (parent.projectId !== projectId) throw new Error("Use a parent thread in the requested project, or change projectId to match the parent");
+    if (verifySource) await verifySource();
+    const token = randomBytes(32).toString("hex"), expiresAt = Date.now() + policy(projectId).ttl;
+    db.prepare("DELETE FROM tokens WHERE expires <= ?").run(Date.now());
+    db.prepare("INSERT INTO tokens VALUES (?, ?, ?, ?, ?)").run(hash(token), projectId, parentThreadId, hash(brief), expiresAt);
+    const lines = brief.split("\n");
+    lines.splice(1, 0, `agent-admission v1 token=${token}`);
+    return { token, expiresAt, prompt: lines.join("\n") };
+  };
   const requireProject = async (projectId: string) => {
     if (!(await bb.sdk.projects.list()).some(project => project.id === projectId)) throw new Error("Unknown project. Run bb project list and pass an existing project ID");
   };
@@ -120,7 +120,7 @@ Use the configured workflow. Changing gate settings to get a child started chang
     await requireProject(projectId);
     const rules = policy(projectId);
     if (rules.method !== "instruction") throw new Error("Use bb agent-spawn-gate start for projects in Script mode.");
-    const source = await resolveSource(projectId, signal);
+    const source = await resolveSource(projectId, { signal });
     return {
       instruction: await instructionText(rules, source, signal),
       ...(source ? { sourceBranch: source.branch, sourceCommit: source.commit } : {}),
@@ -160,12 +160,11 @@ Use the configured workflow. Changing gate settings to get a child started chang
     "settings.write": ({ projectId, values }) => writeProject(projectId, values),
     "config.get": configGet,
     "config.set": configSet,
-    async mint(input, context) {
+    mint: (input, context) => mint(input, async () => {
       const rules = policy(input.projectId);
-      const source = await resolveSource(input.projectId, context.experimental_signal);
+      const source = await resolveSource(input.projectId, { signal: context.experimental_signal, sync: true });
       if (rules.method === "instruction") await instructionText(rules, source, context.experimental_signal);
-      return mint(input);
-    },
+    }),
     start: (input, context) => start(input, context.experimental_signal),
     report: metrics.report,
   }, { experimental_discoverable: true });

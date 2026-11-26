@@ -157,7 +157,7 @@ export function createStart(bb: BbPluginApi, mint: (request: { projectId: string
       if (host && request.requiresHeavyLease) await requireHeavySlots(bb.sdk, host, signal);
       reason = "checkout_error";
       const project = await bb.sdk.projects.get({ projectId: request.projectId });
-      const source = await resolveSource(request.projectId, signal);
+      const source = await resolveSource(request.projectId, { signal, sync: true });
       if (source && !isProcessPath(rules.script)) throw new Error("Set script to a file relative to the Project Instructions clone.");
       if (!source && !isBuilderRemote(rules.remote)) throw new Error(invalidRemote);
       if (!source && !isBuilderBranch(rules.branch)) throw new Error(invalidBranch);

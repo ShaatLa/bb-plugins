@@ -47,8 +47,11 @@ bb agent-spawn-gate instructions --project proj_example
 ```
 
 When Project Instructions is enabled, `script` and `instructionFile` resolve
-from the project's verified process clone. If that clone is stale or broken,
-wait for its update or ask the project owner to repair it before launching.
+from the project's verified process clone. Start and mint request a
+fast-forward if Project Instructions `allowSync` is enabled. Reading
+`instructions` is read-only. For a stale clone with `allowSync` enabled, run
+`bb project-instructions source --project proj_example --sync` before reading.
+Otherwise wait for the updater or ask the project owner to repair the clone.
 Save the mint request as `request.json`, using a parent in the target project
 and a nonempty task brief without any `agent-admission ` line.
 

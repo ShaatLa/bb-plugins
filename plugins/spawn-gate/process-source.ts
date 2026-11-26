@@ -13,10 +13,11 @@ const sourceResult = z.object({
   state: z.enum(["not_configured", "disabled", "missing", "wrong_branch", "dirty", "unreachable", "stale", "fresh", "error"]),
   reason: z.string().min(1).max(2000).nullable(),
   fetchedAt: z.number().nullable(),
+  synced: z.object({ from: sha, to: sha }).nullable().optional(),
 });
 
 export type ProcessSource = { clonePath: string; branch: string; commit: string };
-export type ResolveProcessSource = (projectId: string, signal?: AbortSignal) => Promise<ProcessSource | null>;
+export type ResolveProcessSource = (projectId: string, options?: { signal?: AbortSignal; sync?: boolean }) => Promise<ProcessSource | null>;
 
 export function isProcessPath(path: string) {
   return path.trim().length > 0 && !isAbsolute(path) && !/[\\\u0000]/.test(path) &&
@@ -36,13 +37,14 @@ export function createProcessSourceResolver(bb: BbPluginApi): ResolveProcessSour
     log(projectId, `Project Instructions refused (${state})`, true);
     throw new Error(message);
   };
-  return async (projectId, signal) => {
-    const deadline = AbortSignal.timeout(12_000);
+  return async (projectId, { signal, sync = false } = {}) => {
+    // Leave room for the 50-second sync budget and Git process cleanup.
+    const deadline = AbortSignal.timeout(sync ? 60_000 : 12_000);
     const probe = signal ? AbortSignal.any([signal, deadline]) : deadline;
     let source: z.infer<typeof sourceResult>;
     try {
       source = await bb.sdk.plugins.callRpc({
-        pluginId: provider, method: "source.get", input: { projectId }, outputSchema: sourceResult, signal: probe,
+        pluginId: provider, method: "source.get", input: { projectId, ...(sync ? { sync } : {}) }, outputSchema: sourceResult, signal: probe,
       });
     } catch {
       signal?.throwIfAborted();

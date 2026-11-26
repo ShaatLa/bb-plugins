@@ -51,16 +51,19 @@ async function fixture(resolveSource: ResolveProcessSource = async () => null) {
 it("loads the verified commit from a real process clone even after its checkout moves", async () => {
   let source: ProcessSource | null = null;
   let refusal: string | undefined;
-  const f = await fixture(async () => {
+  const resolve = vi.fn<ResolveProcessSource>(async () => {
     if (refusal) throw new Error(refusal);
     return source;
   });
+  const f = await fixture(resolve);
   const second = await f.write("second");
   f.policy.remote = "https://git.example.test/legacy.git";
   f.policy.branch = "legacy";
   source = { clonePath: f.repo, branch: "main", commit: f.first };
   const dryRun = () => f.start({ ...f.request, dryRun: true });
   expect(await dryRun()).toMatchObject({ sourceBranch: "main", sourceCommit: f.first, build: { brief: "first" } });
+  expect(resolve).toHaveBeenCalledOnce();
+  expect(resolve).toHaveBeenCalledWith(f.request.projectId, { signal: expect.any(AbortSignal), sync: true });
   source.commit = second;
   expect(await dryRun()).toMatchObject({ sourceBranch: "main", sourceCommit: second, build: { brief: "second" } });
   source.commit = "0".repeat(40);

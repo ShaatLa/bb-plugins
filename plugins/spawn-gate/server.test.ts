@@ -203,7 +203,10 @@ it("reads instruction files from the exact shared commit and refuses broken sour
     projectId: PROJECT, configured: true, enabled: true, clonePath, branch: "main",
     head, originHead: head, state: "fresh", reason: null as string | null, fetchedAt: null,
   };
-  const callSource = vi.fn(async ({ outputSchema }: { outputSchema: { parse(value: unknown): unknown } }) => outputSchema.parse(source));
+  let synced: { from: string; to: string } | undefined;
+  const callSource = vi.fn(async ({ outputSchema }: { outputSchema: { parse(value: unknown): unknown } }) => outputSchema.parse({ ...source, synced }));
+  const timeout = vi.spyOn(AbortSignal, "timeout");
+  cleanups.push(async () => { timeout.mockRestore(); });
   h.harness.sdk.stub("plugins.callRpc", callSource);
   h.harness.sdk.stub("plugins.list", async () => ({ plugins: [{ id: "project-instructions" }] }));
   const read = () => h.harness.behavior.runCli(["instructions"], { projectId: PROJECT });
@@ -212,10 +215,17 @@ it("reads instruction files from the exact shared commit and refuses broken sour
   const setFile = (value: string) => h.harness.behavior.callRpc("config.set", { projectId: PROJECT, key: "instructionFile", value });
   await expect(setFile("../launch.md")).rejects.toThrow("rpc input validation failed");
   await setFile("launch.md");
+  timeout.mockClear();
   expect((await read()).stdout).toBe("First guide.\n");
+  expect(callSource).toHaveBeenLastCalledWith(expect.objectContaining({ input: { projectId: PROJECT } }));
+  expect(timeout).toHaveBeenCalledWith(12_000);
   source.head = source.originHead = next;
   expect((await read()).stdout).toBe("Current guide.\n");
+  synced = { from: head, to: next };
+  timeout.mockClear();
   await expect(h.mint()).resolves.toMatchObject({ token: expect.any(String) });
+  expect(callSource).toHaveBeenLastCalledWith(expect.objectContaining({ input: { projectId: PROJECT, sync: true } }));
+  expect(timeout).toHaveBeenCalledWith(60_000);
   await setFile("absent.md");
   await expect(h.mint()).rejects.toThrow("Publish instructionFile");
   await setFile("launch.md");
@@ -233,6 +243,10 @@ it("reads instruction files from the exact shared commit and refuses broken sour
   expect((await read()).stdout).toBe("Legacy text.");
   callSource.mockRejectedValueOnce(new Error("Source RPC unavailable"));
   await expect(h.mint()).rejects.toThrow("Project Instructions launch source is unavailable");
+  callSource.mockClear();
+  h.harness.sdk.stub("threads.get", async () => makeThreadResponse({ projectId: "proj_other" }));
+  await expect(h.mint()).rejects.toThrow("Use a parent thread in the requested project");
+  expect(callSource).not.toHaveBeenCalled();
 });
 it("admits plain text in another project's script mode without requiring Work Board", async () => {
   const h = await setup(false);
