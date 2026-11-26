@@ -593,6 +593,89 @@ describe("Board hosts in other plugins' UI", () => {
   });
 });
 
+describe("Task requests from a board host", () => {
+  const overlay = () => app.appOverlays.find((registration) => registration.id === "board-hosts")!;
+  function mount(attributes: Record<string, string>, rpc: Record<string, unknown> = {}) {
+    sessionStorage.clear();
+    const host = document.createElement("div");
+    host.setAttribute("data-work-board-host", "board");
+    for (const [name, value] of Object.entries(attributes)) host.setAttribute(name, value);
+    document.body.appendChild(host);
+    const view = renderSlot(overlay(), {}, {
+      sdk: { threads: { get: async () => makeThreadResponse({ id: "thr_1", projectId: "proj_thread" }) } },
+      rpc: { ...boardRpc(), threadTasks: () => ({ tasks: [] }), listTaskPlanVersions: () => ({ plan: null, versions: [] }), ...rpc },
+    });
+    const set = (next: Record<string, string | null>) => {
+      for (const [name, value] of Object.entries(next)) value === null ? host.removeAttribute(name) : host.setAttribute(name, value);
+    };
+    return { host, view, set, cleanup: () => { view.unmount(); host.remove(); } };
+  }
+  const showsTask = (host: HTMLElement) => !!host.querySelector('[aria-label="Back to project board"]');
+  const showsPlan = (host: HTMLElement) => [...host.querySelectorAll("button")].some((button) => button.textContent === `Back to ${task.key}`);
+  const showsBoard = (host: HTMLElement) => !showsTask(host) && !showsPlan(host) && host.textContent!.includes("Linked project board");
+
+  it("opens a requested task or plan at mount and on every changed request, and ignores removal and thread changes", async () => {
+    const { host, set, cleanup } = mount({ "data-thread-id": "thr_1", "data-task-key": task.key, "data-task-request": "1" });
+    try {
+      await waitFor(() => expect(showsTask(host)).toBe(true));
+      fireEvent.click(host.querySelector('[aria-label="Back to project board"]')!);
+      await waitFor(() => expect(showsBoard(host)).toBe(true));
+      set({ "data-task-request": "2" });
+      await waitFor(() => expect(showsTask(host)).toBe(true));
+      set({ "data-task-request": "3", "data-task-view": "plan" });
+      await waitFor(() => expect(showsPlan(host)).toBe(true));
+      set({ "data-task-request": "4", "data-task-view": null });
+      await waitFor(() => expect(showsTask(host)).toBe(true));
+      // Removing the request is no navigation: the task stays.
+      set({ "data-task-key": null, "data-task-request": null });
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(showsTask(host)).toBe(true);
+      // A chat change remounts on the new chat's own route; the old request is not replayed.
+      set({ "data-thread-id": "thr_2" });
+      await waitFor(() => expect(showsBoard(host)).toBe(true));
+    } finally { cleanup(); }
+  });
+
+  it("returns from the plan view to the task and ignores an invalid key", async () => {
+    const first = mount({ "data-thread-id": "thr_1", "data-task-key": task.key, "data-task-request": "1", "data-task-view": "plan" });
+    try {
+      await waitFor(() => expect(showsPlan(first.host)).toBe(true));
+      fireEvent.click([...first.host.querySelectorAll("button")].find((button) => button.textContent === `Back to ${task.key}`)!);
+      await waitFor(() => expect(showsTask(first.host)).toBe(true));
+    } finally { first.cleanup(); }
+    const second = mount({ "data-thread-id": "thr_1", "data-task-key": "not a key", "data-task-request": "1" });
+    try {
+      await waitFor(() => expect(showsBoard(second.host)).toBe(true));
+    } finally { second.cleanup(); }
+  });
+
+  it("opens task and plan links clicked inside the board in place, and the Plan card's plan too", async () => {
+    const { host, cleanup } = mount({ "data-thread-id": "thr_1" }, {
+      listProjects: () => ({ projects: boardRpc().listProjects().projects.map((project) => ({ ...project, planning: "required" })) }),
+    });
+    try {
+      await waitFor(() => expect(showsBoard(host)).toBe(true));
+      const root = host.querySelector<HTMLElement>('[data-bb-plugin="work-board"]')!;
+      const link = (href: string) => root.appendChild(Object.assign(document.createElement("a"), { href, textContent: "link" }));
+      expect(fireEvent.click(link(`/plugins/work-board/work-board/task/${task.key}`), { metaKey: true })).toBe(true);
+      expect(showsTask(host)).toBe(false);
+      expect(fireEvent.click(link(`/plugins/work-board/work-board/task/${task.key}`))).toBe(false);
+      await waitFor(() => expect(showsTask(host)).toBe(true));
+      const write = await waitFor(() => {
+        const button = [...host.querySelectorAll("button")].find((candidate) => candidate.textContent === "Write plan");
+        expect(button).toBeDefined();
+        return button!;
+      });
+      fireEvent.click(write);
+      await waitFor(() => expect(showsPlan(host)).toBe(true));
+      fireEvent.click([...host.querySelectorAll("button")].find((button) => button.textContent === `Back to ${task.key}`)!);
+      await waitFor(() => expect(showsTask(host)).toBe(true));
+      expect(fireEvent.click(link(`/plugins/work-board/work-board/task/${task.key}/plan`))).toBe(false);
+      await waitFor(() => expect(showsPlan(host)).toBe(true));
+    } finally { cleanup(); }
+  });
+});
+
 function boardRpc() {
   const project = {
     id: PROJECT_ID, name: "Linked project board", prefix: "TSK", nextTaskNumber: 5,

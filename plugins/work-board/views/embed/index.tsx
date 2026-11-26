@@ -29,6 +29,7 @@ import {
 import { LockChips } from "../../components/lock-chips.js";
 import { BoardView } from "../board/index.js";
 import { DetailView } from "../detail/index.js";
+import { PlanView } from "../plan/plan-view.js";
 import { PRIORITY_LABELS } from "../list/lib.js";
 import { StatusIcon } from "../list/icons.js";
 
@@ -44,8 +45,8 @@ function loadPanelRoute(threadId: string): TasksRoute | null {
     const value: unknown = JSON.parse(sessionStorage.getItem(PANEL_ROUTE_KEY(threadId)) ?? "null");
     if (!isRecord(value)) return null;
     if (value.kind === "all") return { kind: "all" };
-    if (value.kind === "task" && typeof value.taskKey === "string" && TASK_KEY_PATTERN.test(value.taskKey))
-      return { kind: "task", taskKey: value.taskKey };
+    if ((value.kind === "task" || value.kind === "plan") && typeof value.taskKey === "string" && TASK_KEY_PATTERN.test(value.taskKey))
+      return { kind: value.kind, taskKey: value.taskKey };
     if (value.kind === "project" && typeof value.projectId === "string")
       return { kind: "project", projectId: value.projectId, view: (typeof value.view === "string" ? value.view : null) as Extract<TasksRoute, { kind: "project" }>["view"] };
   } catch {}
@@ -315,7 +316,10 @@ function TaskDirectiveCardContent({ attributes }: PluginMessageDirectiveProps) {
   );
 }
 
-type OpenTaskRequest = { target: TaskTabTarget; sequence: number; clear: () => void } | null;
+/** A one-shot request to show a task, or its plan where the Plan tab cannot open (a host in another plugin's panel). */
+export type OpenTaskRequest = { target: TaskTabTarget; view?: "plan"; sequence: number; clear: () => void } | null;
+const requestedRoute = (request: NonNullable<OpenTaskRequest>): TasksRoute =>
+  ({ kind: request.view === "plan" ? "plan" : "task", taskKey: request.target.taskKey });
 
 function ThreadBoardContent({ threadId, target = null }: { threadId: string; target?: OpenTaskRequest }) {
   const sdk = useSdk();
@@ -327,13 +331,13 @@ function ThreadBoardContent({ threadId, target = null }: { threadId: string; tar
     [threadId],
   );
   const [route, setRoute] = useState<TasksRoute>(() =>
-    target ? { kind: "task", taskKey: target.target.taskKey } : (loadPanelRoute(threadId) ?? { kind: "all" }),
+    target ? requestedRoute(target) : (loadPanelRoute(threadId) ?? { kind: "all" }),
   );
   // A target is a one-shot "open this task" request: bb keeps it for the whole session until cleared,
   // so consume it, or every remount of the panel would reopen that task.
   useEffect(() => {
     if (!target) return;
-    setRoute({ kind: "task", taskKey: target.target.taskKey });
+    setRoute(requestedRoute(target));
     target.clear();
   }, [target?.sequence]);
   useEffect(() => savePanelRoute(threadId, route), [threadId, route]);
@@ -350,7 +354,8 @@ function ThreadBoardContent({ threadId, target = null }: { threadId: string; tar
   );
   const navigation = useMemo<TasksNavigation>(() => ({
     go: (next, options) => {
-      if (next.kind === "task" || next.kind === "project") setRoute(next);
+      // A plan reaches here only where the Plan tab cannot open, so it is shown in place.
+      if (next.kind === "task" || next.kind === "project" || next.kind === "plan") setRoute(next);
       else navigate.toPluginPanel(PANEL_PATH, {
         subPath: tasksRouteToSubPath(next),
         ...(options?.replace ? { replace: true } : {}),
@@ -363,7 +368,19 @@ function ThreadBoardContent({ threadId, target = null }: { threadId: string; tar
     : null;
 
   let content;
-  if (taskKey !== null) {
+  if (route.kind === "plan") {
+    const planKey = route.taskKey;
+    content = (
+      <div className="flex min-h-0 flex-1 flex-col">
+        <header className="flex h-10 shrink-0 items-center gap-2 border-b border-border px-3">
+          <Button variant="ghost" size="sm" className="h-7 gap-1 px-2" onClick={() => setRoute({ kind: "task", taskKey: planKey })}>
+            <Icon name="ArrowLeft" className="size-3.5" />Back to {planKey}
+          </Button>
+        </header>
+        <div className="min-h-0 flex-1"><PlanView key={planKey} taskKey={planKey} surface="panel" /></div>
+      </div>
+    );
+  } else if (taskKey !== null) {
     content = (
       <div className="min-h-0 flex-1 overflow-y-auto">
         <DetailView
@@ -405,7 +422,7 @@ function ThreadBoardContent({ threadId, target = null }: { threadId: string; tar
         aria-label="Thread tasks"
         className="flex h-full min-h-0 flex-col"
       >
-        {taskKey === null ? (
+        {taskKey === null && route.kind !== "plan" ? (
           <header className="flex h-10 shrink-0 items-center gap-2 border-b border-border px-3">
             <div className="min-w-0 flex-1 truncate text-sm font-medium">
               {project?.name ?? "Project board"}

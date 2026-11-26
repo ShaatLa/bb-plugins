@@ -6,7 +6,7 @@ import {
 import { TASK_TAB } from "../views/embed/index.js";
 import { openPlanTab } from "../views/plan/open.js";
 
-const TASK_LINK = /^\/plugins\/work-board\/work-board\/task\/([^/?#]+)(\/plan(?![^/?#]))?/;
+export const TASK_LINK = /^\/plugins\/work-board\/work-board\/task\/([^/?#]+)(\/plan(?![^/?#]))?/;
 
 /**
  * Opens chat links to Work Board tasks (and their plans) in the thread's side-panel tabs
