@@ -562,12 +562,12 @@ export function PropertiesRail({
     <aside
       aria-label="Task details"
       className={cn(
-        "w-full min-w-0 shrink-0 px-7 pb-8 @[45rem]:w-64 @[45rem]:px-4 @[45rem]:py-10 @5xl:w-80",
+        "w-56 min-w-0 shrink-0 px-4 py-10 @[45rem]:w-64 @5xl:w-80",
         className,
       )}
     >
       {activityStatus}
-      <div className="hidden @[45rem]:block">
+      <div>
         <h2 className="mb-1.5 text-xs font-semibold text-muted-foreground">
           Properties
         </h2>
@@ -655,6 +655,63 @@ export function PropertiesRail({
       </div>
       {children}
     </aside>
+  );
+}
+
+const DETAILS_COLLAPSED_KEY = "bb-work-board:detail-details-collapsed";
+
+/** The rail's sections for a narrow task view, shown right after the inline properties. */
+export function DetailsSection({
+  project,
+  archived,
+  onError,
+  children,
+}: {
+  project: Project | undefined;
+  archived: boolean;
+  onError: (message: string) => void;
+  children?: ReactNode;
+}) {
+  const [open, setOpen] = useState(() => {
+    try { return window.localStorage.getItem(DETAILS_COLLAPSED_KEY) !== "1"; }
+    catch { return true; }
+  });
+  const toggle = () => {
+    setOpen(!open);
+    try { window.localStorage.setItem(DETAILS_COLLAPSED_KEY, open ? "1" : "0"); }
+    catch { /* The choice only stays for this view when storage is unavailable. */ }
+  };
+  return (
+    <section aria-label="Details" className="mb-4">
+      <button
+        type="button"
+        aria-expanded={open}
+        className="mb-1.5 flex items-center gap-1 text-xs font-semibold text-muted-foreground hover:text-foreground"
+        onClick={toggle}
+      >
+        <Icon name={open ? "ChevronDown" : "ChevronRight"} className="size-3" />
+        Details
+      </button>
+      <div className={cn(!open && "hidden")}>
+        {!archived ? (
+          <>
+            <div className="mb-1 text-2xs font-semibold text-muted-foreground">
+              Dispatch target
+            </div>
+            {project !== undefined ? (
+              <DispatchTargetMenu
+                project={project}
+                onError={onError}
+                triggerClassName={RAIL_ROW_CLASS}
+              />
+            ) : (
+              <div className="py-0.5 text-sm text-muted-foreground">…</div>
+            )}
+          </>
+        ) : null}
+        {children}
+      </div>
+    </section>
   );
 }
 

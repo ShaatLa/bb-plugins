@@ -335,13 +335,11 @@ function QuestionAnswer({
         </ol>
       ) : null}
       <BeyondDesign line={question.beyondDesign} />
-      <p className="text-xs text-muted-foreground">
-        {question.kind === "check"
-          ? "Choose a verdict; a comment is optional. A comment alone counts as a problem."
-          : question.mode === "single"
-            ? "Choose one answer"
-            : "Choose one or more answers"}
-      </p>
+      {question.kind === "check" ? null : (
+        <p className="text-xs text-muted-foreground">
+          {question.mode === "single" ? "Choose one answer" : "Choose one or more answers"}
+        </p>
+      )}
       {question.options.map((option) => (
         <label
           key={option.id}

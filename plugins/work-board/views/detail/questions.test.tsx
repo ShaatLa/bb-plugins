@@ -13,6 +13,7 @@ import { tasksRpcContract, type TaskQuestion } from "../../shared/contract";
 import { createStructuredStore } from "../../structured/store";
 import { refreshCheckFlow } from "../../db/check-flow";
 import { taskTab } from "../../test-fixtures.js";
+import { stubDetailWidth } from "./test-width.js";
 
 window.ResizeObserver ??= class {
   observe() {}
@@ -21,6 +22,7 @@ window.ResizeObserver ??= class {
 };
 const app = await loadPluginApp(() => import("../../app"));
 const harnesses: FakePluginHarness[] = [];
+const setDetailWidth = stubDetailWidth(1000);
 afterEach(async () => {
   cleanup();
   vi.unstubAllGlobals();
@@ -429,6 +431,8 @@ describe("question and evidence UI", () => {
     "creates a %s question centrally, saves the selection and restores it in the side panel",
     async (mode) => {
       const { task, rpc, structured } = setup();
+      // The narrow layout has the inline properties' button; the wide one has the rail's.
+      if (mode === "multiple") setDetailWidth(480);
       const slot = renderSlot(
         app.navPanels[0]!,
         { subPath: `task/${task.key}` },

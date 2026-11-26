@@ -6,6 +6,7 @@ import { makeThreadResponse } from "@get-bb/plugin-sdk/testing";
 import { makeTask, rpcInput, taskTab } from "../../test-fixtures.js";
 import { storeDefaultThread } from "./thread-preference.js";
 import { PR_FOCUS_STALE_MS } from "./index.js";
+import { stubDetailWidth } from "./test-width.js";
 
 if (!window.matchMedia) {
   window.matchMedia = (query: string) => ({
@@ -22,6 +23,7 @@ if (!window.matchMedia) {
 
 const app = await loadPluginApp(() => import("../../app"));
 
+stubDetailWidth(1000);
 afterEach(cleanup);
 
 const PROJECT_ID = "01HZZZZZZZZZZZZZZZZZZZZZP1";
@@ -57,7 +59,7 @@ describe("existing thread dispatch", () => {
     await waitFor(() => expect(slot.rpcCalls).toContainEqual({ method: "delegateToThread", input: { taskId: TASK_ID, threadId: "thr_running" } }));
     await waitFor(() => expect(slot.queryByRole("dialog")).toBeNull());
     const savedButtons = await slot.findAllByRole("button", { name: "Send task to Current work" });
-    expect(savedButtons).toHaveLength(2);
+    expect(savedButtons).toHaveLength(1);
     fireEvent.click(savedButtons[0]!);
     await waitFor(() => expect(slot.rpcCalls.filter(({ method }) => method === "delegateToThread")).toHaveLength(2));
     expect(slot.queryByRole("dialog")).toBeNull();
@@ -87,13 +89,13 @@ describe("existing thread dispatch", () => {
     expect(other.queryByRole("button", { name: "Send task to Project worker" })).toBeNull();
     other.lifecycle.unmount();
     const reopened = renderSlot(app.navPanels[0]!, { subPath: "task/TSK-5" }, { rpc: detailRpc({ listTaskThreads: () => ({ taskThreads: [] }) }), sdk: { threads: { list: async () => [] } } });
-    expect(await reopened.findAllByRole("button", { name: "Send task to Project worker" })).toHaveLength(2);
+    expect(await reopened.findAllByRole("button", { name: "Send task to Project worker" })).toHaveLength(1);
     fireEvent.click(reopened.getAllByRole("button", { name: "Choose another thread" })[0]!);
     await reopened.findByRole("dialog");
     fireEvent.click(reopened.getByRole("button", { name: "Clear default thread" }));
     expect(reopened.getByRole("checkbox", { name: "Use this thread by default" }).getAttribute("aria-checked")).toBe("false");
     fireEvent.click(reopened.getByRole("button", { name: "Close" }));
-    expect(reopened.getAllByRole("button", { name: "Send to thread…" })).toHaveLength(2);
+    expect(reopened.getAllByRole("button", { name: "Send to thread…" })).toHaveLength(1);
     expect(reopened.rpcCalls.filter(({ method }) => method === "delegateToThread")).toHaveLength(0);
   });
 });
@@ -108,7 +110,7 @@ it.each(["working", "idle", "failed"])("opens an attached %s thread and hides ne
     }),
   });
   const buttons = await slot.findAllByRole("button", { name: "Go to thread" });
-  expect(buttons).toHaveLength(2);
+  expect(buttons).toHaveLength(1);
   expect(slot.queryByRole("button", { name: "New worker" })).toBeNull();
   expect(slot.queryByRole("button", { name: "Choose dispatch preset" })).toBeNull();
   fireEvent.click(buttons[0]!);
@@ -118,8 +120,8 @@ it.each(["working", "idle", "failed"])("opens an attached %s thread and hides ne
   await slot.behavior.emitRealtime("threads:changed", { taskId: TASK_ID });
   await slot.findAllByRole("button", { name: "Send task to Other default" });
   expect(slot.queryByRole("button", { name: "Go to thread" })).toBeNull();
-  expect(await slot.findAllByRole("button", { name: "New worker" })).toHaveLength(2);
-  expect(slot.getAllByRole("button", { name: "Choose dispatch preset" })).toHaveLength(2);
+  expect(await slot.findAllByRole("button", { name: "New worker" })).toHaveLength(1);
+  expect(slot.getAllByRole("button", { name: "Choose dispatch preset" })).toHaveLength(1);
   attached = true;
   await slot.behavior.emitRealtime("threads:changed", { taskId: TASK_ID });
   await slot.findAllByRole("button", { name: "Go to thread" });
@@ -782,12 +784,10 @@ it.each(["central", "thread"])("groups status, linked sessions and dispatch in t
     ? renderSlot(app.navPanels[0]!, { subPath: "task/TSK-5" }, options)
     : renderSlot(taskTab(app), { threadId: "thr_context", environment: null }, { ...options, experimental_fixedTabTarget: { tabId: "task", target: { taskKey: "TSK-5" } } });
   const regions = await slot.findAllByRole("region", { name: "Task activity status" });
-  expect(regions).toHaveLength(2);
-  const region = regions.find((item) => item.closest('aside[aria-label="Task details"]'))!;
-  expect(region).toBeTruthy();
-  expect(region.parentElement?.className).toContain("hidden @[45rem]:block");
-  expect(regions.find((item) => item !== region)?.parentElement?.className).toContain("@[45rem]:hidden");
-  expect(slot.getAllByRole("button", { name: "Change task status" })).toHaveLength(2);
+  expect(regions).toHaveLength(1);
+  const region = regions[0]!;
+  expect(region.closest('aside[aria-label="Task details"]')).toBeTruthy();
+  expect(slot.getAllByRole("button", { name: "Change task status" })).toHaveLength(1);
   expect(slot.queryByRole("button", { name: "Backlog" })).toBeNull();
   expect(within(region).getByText("Status")).toBeTruthy();
   expect(within(region).getByText("Activity")).toBeTruthy();
@@ -829,7 +829,7 @@ it("has one chooser button and no chevron without a linked or default thread, an
     sdk: { threads: { list: async () => [] } },
   });
   const buttons = await slot.findAllByRole("button", { name: "Send to thread…" });
-  expect(buttons).toHaveLength(2);
+  expect(buttons).toHaveLength(1);
   expect(slot.queryByRole("button", { name: "Choose another thread" })).toBeNull();
   expect(slot.queryByRole("button", { name: "Assign thread" })).toBeNull();
   fireEvent.click(buttons[0]!);
@@ -852,8 +852,8 @@ it("offers a chevron to another thread when a default is remembered, and opens t
 
 it("shows Go to thread with a chevron when a thread is linked", async () => {
   const slot = renderSlot(app.navPanels[0]!, { subPath: "task/TSK-5" }, { rpc: detailRpc(), sdk: { threads: { list: async () => [] } } });
-  expect(await slot.findAllByRole("button", { name: "Go to thread" })).toHaveLength(2);
-  expect(slot.getAllByRole("button", { name: "Choose another thread" })).toHaveLength(2);
+  expect(await slot.findAllByRole("button", { name: "Go to thread" })).toHaveLength(1);
+  expect(slot.getAllByRole("button", { name: "Choose another thread" })).toHaveLength(1);
 });
 
 it("assigns responsibility from the chooser without sending a turn or changing task status", async () => {

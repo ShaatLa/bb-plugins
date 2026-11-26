@@ -9,6 +9,7 @@ import { createGitSyncStore } from "./store";
 import { gitSyncConfigSchema, prSnapshotSchema } from "../shared/git-sync";
 import { tasksRpcContract } from "../shared/contract";
 import { taskTab } from "../test-fixtures.js";
+import { stubDetailWidth } from "../views/detail/test-width.js";
 
 window.matchMedia ??= (media) => ({
   matches: false,
@@ -27,6 +28,7 @@ window.ResizeObserver ??= class {
 };
 Element.prototype.scrollIntoView ??= () => {};
 const app = await loadPluginApp(() => import("../app"));
+stubDetailWidth(1000);
 const hosts: ReturnType<typeof createFakePluginHost>[] = [];
 afterEach(async () => {
   cleanup();

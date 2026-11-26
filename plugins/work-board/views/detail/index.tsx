@@ -49,9 +49,11 @@ import { StatusIcon } from "./meta.js";
 import {
   InlineProperties,
   PropertiesRail,
+  DetailsSection,
   type TaskPropertyUpdate,
 } from "./rail.js";
 import { DispatchControl, ThreadsSection } from "./threads.js";
+import { useWideDetail } from "./use-wide-detail.js";
 import { DetailToasts, useDetailToasts } from "./toast.js";
 import { DelayedLoading } from "@/components/ui/delayed-loading";
 import { Icon } from "@/components/ui/icon";
@@ -315,6 +317,7 @@ function TaskDetail({
   header: (copyAction?: ReactNode) => ReactNode;
 }) {
   const rpc = useTasksRpc();
+  const { ref: layoutRef, wide } = useWideDetail();
   const questionsRef = useRef<HTMLDivElement>(null);
   const questions = useTasksQuery(async client => (await client.call("listQuestions", { taskId: task.id })).questions, ["tasks:changed"], [task.id], { relevantTaskIds: [task.id] });
   const delegationRpc = useRpc<DelegationRpcContract>();
@@ -590,11 +593,18 @@ function TaskDetail({
     </div> : null}
   </>;
 
+  // Mounted once, in the rail beside the content or in the Details section above it.
+  const railSections = <>
+    <TaskCostSection key={`cost-${task.id}`} taskId={task.id} epic={task.type === "epic"} />
+    <ClaimsLine key={`claims-${task.id}`} taskId={task.id} />
+    <PullRequestsSection key={task.id} taskId={task.id} projectId={task.projectId} />
+  </>;
+
   return (
     <PrLinksProvider taskId={task.id}>
-    <div className="@container flex min-h-full flex-col bg-surface-recessed-solid p-3">
-      <div className="flex flex-1 flex-col items-stretch rounded-lg border border-border bg-card shadow-2xs @[45rem]:flex-row">
-        <div className="mx-auto w-full min-w-0 max-w-[72rem] flex-1 px-7 pb-16 pt-8 @3xl:pl-13 @3xl:pr-8 @3xl:pt-11">
+    <div ref={layoutRef} className="@container flex min-h-full flex-col bg-surface-recessed-solid p-3">
+      <div data-wide={String(wide === true)} className="group flex flex-1 flex-col items-stretch rounded-lg border border-border bg-card shadow-2xs data-[wide=true]:flex-row">
+        <div className="mx-auto w-full min-w-0 max-w-[72rem] flex-1 px-7 pb-16 pt-8 group-data-[wide=true]:px-4 group-data-[wide=true]:@[45rem]:px-7 @3xl:pl-13 @3xl:pr-8 @3xl:pt-11">
           {header(
             <CopyTaskLink key={task.id} taskKey={task.key} onError={push} />,
           )}
@@ -658,18 +668,24 @@ function TaskDetail({
             onSave={(title) => void updateTask({ title })}
           />
 
-          <div className="@[45rem]:hidden">{activityStatus}</div>
-
-          <InlineProperties
-            task={task}
-            project={project}
-            projects={projects.data}
-            labels={labels.data}
-            onUpdate={(update) => void updateTask(update)}
-            onMoveToProject={(projectId) => void moveToProject(projectId)}
-            onAddQuestion={() => setAddingQuestion(task.id)}
-            className="mb-4 @[45rem]:hidden"
-          />
+          {wide === false ? (
+            <>
+              {activityStatus}
+              <InlineProperties
+                task={task}
+                project={project}
+                projects={projects.data}
+                labels={labels.data}
+                onUpdate={(update) => void updateTask(update)}
+                onMoveToProject={(projectId) => void moveToProject(projectId)}
+                onAddQuestion={() => setAddingQuestion(task.id)}
+                className="mb-4"
+              />
+              <DetailsSection project={project} archived={Boolean(task.archivedAt)} onError={(message) => push(message)}>
+                {railSections}
+              </DetailsSection>
+            </>
+          ) : null}
 
           <TasksEditor
             value={descriptionValue}
@@ -783,8 +799,8 @@ function TaskDetail({
           </div>
         </div>
 
-        <PropertiesRail
-          activityStatus={<div className="hidden @[45rem]:block">{activityStatus}</div>}
+        {wide === true ? <PropertiesRail
+          activityStatus={activityStatus}
           task={task}
           project={project}
           projects={projects.data}
@@ -794,10 +810,8 @@ function TaskDetail({
           onError={(message) => push(message)}
           onAddQuestion={() => setAddingQuestion(task.id)}
         >
-          <TaskCostSection key={`cost-${task.id}`} taskId={task.id} epic={task.type === "epic"} />
-          <ClaimsLine key={`claims-${task.id}`} taskId={task.id} />
-          <PullRequestsSection key={task.id} taskId={task.id} projectId={task.projectId} />
-        </PropertiesRail>
+          {railSections}
+        </PropertiesRail> : null}
       </div>
       <DetailToasts toasts={toasts} onDismiss={dismiss} />
     </div>
