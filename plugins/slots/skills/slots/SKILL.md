@@ -72,13 +72,13 @@ not, and ask the manager instead. The tools do not check the caller in v1.
 Anyone may inspect `status` and `log --since 2h --limit 100`. V1 supports only
 the BB server host.
 
-On start, a manager session runs `bb slots observer --self`.
+On start, a manager session runs `bb slots observer --self`. The manager (observer) session alone gets the admin tools (`slots_setCapacity`, `slots_grant`, `slots_revoke`, `slots_prioritize`, `slots_observer`, `slots_config`); after becoming observer, start a new turn, and if they are still missing, restart the session. The `bb slots` CLI works meanwhile.
 
 Configuration: read and change one key at a time. `bb slots config get <key>`
 returns that key only; `bb slots config set <key> <value>` and
 `bb slots config unset <key>` (reset to the current machine default) return only
 the changed key. `bb slots config` without a key lists every value. Every operation
-supports `--json`. The `slots_config` tool accepts `operation` (`get`, `set`,
+supports `--json`. Other sessions read settings with `slots_configGet` (optional `key`) or `bb slots config get`. The manager's `slots_config` tool accepts `operation` (`get`, `set`,
 `unset`, or `show` to list all), plus `key` and `value`; with a key it returns
 `{key, value, default, max?, set}`.
 Configuration is plugin-owned; `bb plugin config slots` no longer applies.

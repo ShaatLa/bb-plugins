@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { createFakePluginHost, makeHostResponse, makeThreadResponse, experimental_scanPublicSdkOnly } from "@get-bb/plugin-sdk/testing";
+import { createFakePluginHost, makeHostResponse, makeThreadResponse, makePluginAgentConfigurationContext, experimental_scanPublicSdkOnly } from "@get-bb/plugin-sdk/testing";
 import { mkdtemp, rm, readFile, writeFile, mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -908,4 +908,37 @@ it("round-trips the away settings one field at a time", async () => {
   expect((await h.view()).hostSettings.host_example).toMatchObject({ capacities: { heavy: 2 }, heavyAway: 3, loadMax: 6, loadMaxAway: 9 });
   expect((await h.view()).hostSettings.local).toMatchObject({ heavyAway: 6 });
   expect(await h.invoke("config", { operation: "unset", key: "heavyCapacityAway" })).toMatchObject({ ok: true, data: { value: 4, set: false } });
+});
+
+describe("admin tools only for the observer", () => {
+  const ADMIN = ["slots_setCapacity", "slots_grant", "slots_revoke", "slots_prioritize", "slots_observer", "slots_config"];
+  const tools = async (h: Awaited<ReturnType<typeof setup>>, id: string) => (await h.harness.behavior.resolveAgentConfiguration(
+    makePluginAgentConfigurationContext({ project: { id: "proj_example" }, thread: { id } }))).tools.map(t => t.name);
+  it("gives a non-observer thread the worker tools and slots_configGet, no admin tools", async () => {
+    const h = await setup();
+    const names = await tools(h, "a");
+    for (const name of ADMIN) expect(names).not.toContain(name);
+    expect(names).toEqual(expect.arrayContaining(["slots_request", "slots_release", "slots_status", "slots_heartbeat", "slots_configGet"]));
+  });
+  it("gives the observer every tool once, including after a cold start", async () => {
+    const h = await setup(undefined, undefined, { observerThreadId: "a" });
+    const names = await tools(h, "a");
+    expect(names).toEqual(expect.arrayContaining([...ADMIN, "slots_request"]));
+    expect(new Set(names).size).toBe(names.length);
+    expect(await tools(h, "b")).not.toContain("slots_config");
+  });
+  it("follows observer --self from another thread", async () => {
+    const h = await setup();
+    expect(await tools(h, "b")).not.toContain("slots_setCapacity");
+    expect((await h.invoke("observer", { threadId: "b", self: true })).ok).toBe(true);
+    expect(await tools(h, "b")).toContain("slots_setCapacity");
+    expect(await tools(h, "a")).not.toContain("slots_setCapacity");
+  });
+  it("slots_configGet returns what config get and show return", async () => {
+    const h = await setup();
+    const tool = h.harness.inspection.registrations.agentTools.find(t => t.name === "slots_configGet")!;
+    const run = async (params: object) => JSON.parse(String(await tool.execute(params as never, { threadId: "a" } as never)));
+    expect(await run({ key: "loadMax" })).toEqual(await h.invoke("config", { operation: "get", key: "loadMax" }));
+    expect(await run({})).toEqual(await h.invoke("config", { operation: "show" }));
+  });
 });

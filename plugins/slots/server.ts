@@ -471,7 +471,15 @@ export async function register(bb: BbPluginApi, overrides: Partial<Runtime> = {}
     });
   }
   registerCli(bb, invoke, projectGet, projectSet);
-  bb.agents.configure(() => ({ tools: agentMethods.map(m => `slots_${m}`), skills: ["slots"] }));
+  bb.agents.registerTool({ name: "slots_configGet", description: "Read one Slots setting, or all without key; changing settings is for the manager.",
+    parameters: z.object({ key: z.enum(SETTING_KEYS).optional() }),
+    async execute(params) { const key = (params as { key?: SettingKey }).key; return JSON.stringify(await invoke("config", { operation: key ? "get" : "show", ...(key ? { key } : {}) }, false)); } });
+  // Admin tools go only to the observer (the manager); explicit is loaded before this runs, so a cold start already knows it.
+  const ADMIN_TOOLS = new Set<string>(["setCapacity", "grant", "revoke", "prioritize", "observer", "config"]);
+  bb.agents.configure(context => {
+    const admin = readValues().observerThreadId.trim() === context.thread.id && context.thread.id !== "";
+    return { tools: admin ? agentMethods.map(m => `slots_${m}`) : [...agentMethods.filter(m => !ADMIN_TOOLS.has(m)).map(m => `slots_${m}`), "slots_configGet"], skills: ["slots"] };
+  });
   for (const event of ["thread.archived", "thread.deleted"] as const) bb.events.on(event, ({ thread }) => serial(async () => {
     await initialize();
     if (settings.observerThreadId === thread.id) await changeObserver(null, settings.observerEvents.join(","), true);
