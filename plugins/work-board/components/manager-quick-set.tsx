@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Icon } from "@/components/ui/icon";
+import { cn } from "@/lib/utils";
 import { errorMessage } from "../shared/errors.js";
 import { useOrderClock, useTasksQuery, useTasksRpc } from "../shell/data.js";
 import { ThreadChooserDialog } from "../views/detail/thread-chooser-dialog.js";
@@ -51,8 +52,9 @@ export function ManagerQuickSet({ projectId, className }: { projectId: string; c
   return (
     <>
       {/* Shrinks with a truncated name rather than being clipped when the header is narrow, and much faster than the
-          project name beside it, so the project name stays readable. */}
-      <span className={`flex min-w-0 shrink-[20]${className ? ` ${className}` : ""}`} title={linked ? name || undefined : UNLINKED}>
+          project name beside it, so the project name stays readable. The class stays a plain string literal: Tailwind does
+          not pick up a class that a template placeholder follows. */}
+      <span className={cn("flex min-w-0 shrink-[20]", className)} title={linked ? name || undefined : UNLINKED}>
         <Button type="button" size="sm" variant="ghost" className="h-6 min-w-0 max-w-56 gap-1 px-1.5 text-xs font-normal text-muted-foreground"
           disabled={busy || !linked} aria-label={current ? `Manager: ${name}` : "Set manager"} onClick={() => setChoosing(true)}>
           <span className="truncate">{current ? `Manager: ${name}` : "Set manager"}</span>
