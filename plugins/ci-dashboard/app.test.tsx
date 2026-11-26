@@ -7,12 +7,16 @@ import type { Metrics } from "./metrics";
 import { summarizeCi } from "./ci-insights";
 import { duration, when } from "./ci-cards";
 import { minimumDate, resolveRange } from "./date-range";
+import { inProgressIndex, niceTicks } from "./history-chart";
 import { loadPluginApp, renderSlot as renderSdkSlot } from "@get-bb/plugin-sdk/testing/app";
 
 const renderSlot: typeof renderSdkSlot = (registration, props, options) => renderSdkSlot(registration, props, {
   ...options, rpc: { signals: () => ({ repositories: [], actors: { owner_sre: "SRE", pr_author: "Author", lead: "Lead", manager: "Manager" } }), navigationBadge: () => ({ count: 0, critical: 0 }), ...options?.rpc },
 });
 
+/** Trend workflows (the shared filter reads them) matching the workflows of a CI summary. */
+const trendsFor = (insights: ReturnType<typeof summarizeCi>) => ({ workflows: insights.workflows.map((row) => ({ id: row.id, name: row.name, total: row.total, successMs: row.timing.totalMs,
+  events: (row.events ?? []).map(({ event, total }) => ({ event, total })) })) });
 const app = await loadPluginApp(() => import("./app"));
 const metric = { value: 12, detail: "Fixture metric", error: null, seriesError: null,
   series: Array.from({ length: 7 }, (_, index) => ({ date: `2026-10-${14 + index}T12:00:00.000Z`, value: index + 1 })),
@@ -63,7 +67,7 @@ test("timing summary separates CI from frequent short automation without refetch
     head_branch: "main", event: "push", conclusion: "success", created_at: started, run_started_at: started,
     updated_at: new Date(Date.parse(started) + seconds * 1000).toISOString(),
   })), "main");
-  const metrics = vi.fn(() => ({ ...data, repositories: [{ ...repo, ciInsights, ciOutcomes: { success: 5 } }] }));
+  const metrics = vi.fn(() => ({ ...data, repositories: [{ ...repo, ciInsights, trends: trendsFor(ciInsights), ciOutcomes: { success: 5 } }] }));
   const slot = renderSlot(app.navPanels[0], { subPath: "" }, { rpc: { snapshot: () => null, metrics }, settings: {} });
   try {
     const card = await slot.findByRole("region", { name: "CI run timings" });
@@ -269,7 +273,7 @@ test("today shows six four-hour bars, clips current details and disables future 
   const slot = renderSlot(isolated.navPanels[0], { subPath: "" }, { rpc: { snapshot: () => null, metrics: () => today, interval }, settings: {} });
   try {
     await act(async () => {});
-    fireEvent.change(slot.getByRole("combobox", { name: "Date range" }), { target: { value: "1" } });
+    pickRange(slot, "1d");
     await act(async () => {});
     expect(slot.getByText("Today")).toBeTruthy();
     expect(slot.getByRole("region", { name: "Repository activity today" })).toBeTruthy();
@@ -279,7 +283,7 @@ test("today shows six four-hour bars, clips current details and disables future 
       bars.forEach((bar, index) => {
         expect(bar.getAttribute("aria-label")).toContain(`${String(index * 4).padStart(2, "0")}:00`);
         expect(bar.hasAttribute("disabled")).toBe(index >= 3);
-        if (index >= 3) expect(bar.textContent).toBe("—");
+        if (index >= 3) expect(bar.getAttribute("aria-label")).toContain("· — ·");
       });
     }
     fireEvent.click(slot.getByRole("button", { name: /Deployment throughput · 08:00/ }));
@@ -303,7 +307,7 @@ test("a fresh snapshot from yesterday refreshes after UTC midnight", async () =>
   const slot = renderSlot(isolated.navPanels[0], { subPath: "" }, { rpc: { snapshot, metrics }, settings: { refreshSeconds: 300 } });
   try {
     await act(async () => {});
-    fireEvent.change(slot.getByRole("combobox", { name: "Date range" }), { target: { value: "1" } });
+    pickRange(slot, "1d");
     await act(async () => {});
     expect(metrics).toHaveBeenLastCalledWith({ days: 1 });
     expect(metrics).toHaveBeenCalledTimes(2);
@@ -349,6 +353,7 @@ const two = { ...data, repositories: [repo, other] };
 // Each selector test gets fresh module state: the known repository order lives at module level.
 const freshApp = async () => { vi.resetModules(); return loadPluginApp(() => import("./app")); };
 // Radix tabs activate on a primary-button mouse down.
+const pickRange = (slot: ReturnType<typeof renderSlot>, name: string) => { fireEvent.mouseDown(slot.getByRole("tab", { name }), { button: 0 }); };
 const pickRepository = async (slot: ReturnType<typeof renderSlot>, name: string) => { fireEvent.mouseDown(slot.getByRole("tab", { name }), { button: 0 }); };
 const repositoryTabs = (slot: ReturnType<typeof renderSlot>) => within(slot.getByRole("tablist", { name: "Repository" })).getAllByRole("tab");
 const selectedTab = (slot: ReturnType<typeof renderSlot>) => repositoryTabs(slot).find((tab) => tab.getAttribute("aria-selected") === "true")?.textContent;
@@ -369,13 +374,13 @@ test("shows one repository at a time and switches with the repository selector",
     expect(slot.getAllByText("Last 7 days")).toHaveLength(1);
     expect(selectedTab(slot)).toBe("Widgets");
     expect(repositoryTabs(slot).map((tab) => tab.textContent)).toEqual(["Widgets", "Release platform"]);
-    const range = slot.getByRole("combobox", { name: "Date range" }) as HTMLSelectElement;
-    fireEvent.change(range, { target: { value: "30" } });
+    const range = () => within(slot.getByRole("tablist", { name: "Date range" })).getByRole("tab", { selected: true }).textContent;
+    pickRange(slot, "1m");
     await pickRepository(slot, "Release platform");
     expect(await slot.findByRole("region", { name: "acme/other" })).toBeTruthy();
     expect(slot.queryByRole("region", { name: "acme/widgets" })).toBeNull();
     expect(slot.getByRole("heading", { name: "Release platform" })).toBeTruthy();
-    expect(range.value).toBe("30");
+    expect(range()).toBe("1m");
     expect(localStorage.getItem("ci-dashboard:repository")).toBe("acme/other");
   } finally { slot.lifecycle.unmount(); }
 });
@@ -432,7 +437,7 @@ test("registers only a sidebar page and renders accessible charts from real seri
   try {
     expect(await slot.findByRole("figure", { name: "Deployment throughput" })).toBeTruthy();
     expect(slot.getByRole("figure", { name: "CI pass rate over time" })).toBeTruthy();
-    expect(slot.getByRole("group", { name: /Deployment throughput:.*Oct 13: 1/ })).toBeTruthy();
+    expect(slot.getByRole("group", { name: /Deployment throughput:.*13 Oct: 1/ })).toBeTruthy();
   } finally { slot.lifecycle.unmount(); }
 });
 
@@ -573,7 +578,7 @@ test("presets show the loading state instead of the previous range while updatin
     expect(metrics).toHaveBeenLastCalledWith({ days: 7 });
     expect(slot.getByRole("region", { name: "Repository activity in the last 7 days" })).toBeTruthy();
     metrics.mockImplementationOnce(() => new Promise((resolve) => { finishDay = resolve; }));
-    fireEvent.change(slot.getByRole("combobox", { name: "Date range" }), { target: { value: "1" } });
+    pickRange(slot, "1d");
     await act(async () => {});
     expect(metrics).toHaveBeenLastCalledWith({ days: 1 });
     expect(slot.queryByRole("region", { name: "Repository activity in the last 7 days" })).toBeNull();
@@ -581,20 +586,20 @@ test("presets show the loading state instead of the previous range while updatin
     expect(slot.getByRole("button", { name: "Refresh" }).getAttribute("aria-busy")).toBe("true");
     const threeDays = { ...data, repositories: [{ ...repo, range: resolveRange({ days: 3 }) }] };
     metrics.mockResolvedValue(threeDays);
-    fireEvent.change(slot.getByRole("combobox", { name: "Date range" }), { target: { value: "3" } });
+    pickRange(slot, "3d");
     await act(async () => {});
     expect(metrics).toHaveBeenLastCalledWith({ days: 3 });
     expect(slot.getByRole("region", { name: "Repository activity in the last 3 days" })).toBeTruthy();
     await act(async () => { finishDay({ ...data, repositories: [{ ...repo, range: resolveRange({ days: 1 }) }] }); });
     expect(slot.queryByRole("region", { name: "Repository activity today" })).toBeNull();
     metrics.mockImplementation(() => new Promise(() => {}));
-    fireEvent.change(slot.getByRole("combobox", { name: "Date range" }), { target: { value: "1" } });
+    pickRange(slot, "1d");
     expect(slot.getByRole("region", { name: "Repository activity today" })).toBeTruthy();
-    fireEvent.change(slot.getByRole("combobox", { name: "Date range" }), { target: { value: "3" } });
+    pickRange(slot, "3d");
     expect(slot.getByRole("region", { name: "Repository activity in the last 3 days" })).toBeTruthy();
     slot.lifecycle.unmount();
     const reopened = renderSlot(isolated.navPanels[0], { subPath: "" }, { rpc: { snapshot: () => null, metrics }, settings: {} });
-    try { expect((reopened.getByRole("combobox", { name: "Date range" }) as HTMLSelectElement).value).toBe("3"); }
+    try { expect(within(reopened.getByRole("tablist", { name: "Date range" })).getByRole("tab", { selected: true }).textContent).toBe("3d"); }
     finally { await act(async () => {}); reopened.lifecycle.unmount(); }
   } finally { slot.lifecycle.unmount(); }
 });
@@ -606,7 +611,7 @@ test("custom dates apply explicitly and invalid dates keep the current results",
   const slot = renderSlot(isolated.navPanels[0], { subPath: "" }, { rpc: { snapshot: () => null, metrics }, settings: {} });
   try {
     await act(async () => {});
-    fireEvent.change(slot.getByRole("combobox", { name: "Date range" }), { target: { value: "custom" } });
+    pickRange(slot, "Custom");
     expect(slot.getByLabelText("From date").getAttribute("min")).toBe(minimumDate());
     fireEvent.change(slot.getByLabelText("From date"), { target: { value: "2024-10-20" } });
     fireEvent.click(slot.getByRole("button", { name: "Apply dates" }));
@@ -850,7 +855,7 @@ test("an older persisted snapshot cannot restore a removed CI limit error over f
   try {
     await act(async () => {});
     expect(reopened.queryAllByText(legacyMessage)).toHaveLength(0);
-    expect(reopened.getByRole("group", { name: /CI pass rate over time:.*Oct 14/ })).toBeTruthy();
+    expect(reopened.getByRole("group", { name: /CI pass rate over time:.*14 Oct/ })).toBeTruthy();
     await act(async () => { finish(data); });
   } finally { reopened.lifecycle.unmount(); }
 });
@@ -864,14 +869,14 @@ test("switching back to a loaded range renders immediately without a snapshot RP
   const slot = renderSlot(isolated.navPanels[0], { subPath: "" }, { rpc: { snapshot, metrics }, settings: {} });
   try {
     await slot.findByRole("region", { name: "Repository activity in the last 7 days" });
-    fireEvent.change(slot.getByRole("combobox", { name: "Date range" }), { target: { value: "30" } });
+    pickRange(slot, "1m");
     await slot.findByRole("region", { name: "Repository activity in the last 30 days" });
     expect(snapshot).toHaveBeenCalledTimes(2);
-    fireEvent.change(slot.getByRole("combobox", { name: "Date range" }), { target: { value: "7" } });
+    pickRange(slot, "1w");
     expect(slot.getByRole("region", { name: "Repository activity in the last 7 days" })).toBeTruthy();
     expect(slot.getByText("12.0%")).toBeTruthy();
     await act(async () => {});
-    fireEvent.change(slot.getByRole("combobox", { name: "Date range" }), { target: { value: "30" } });
+    pickRange(slot, "1m");
     expect(slot.getByRole("region", { name: "Repository activity in the last 30 days" })).toBeTruthy();
     expect(slot.getByText("75.0%")).toBeTruthy();
     await act(async () => {});
@@ -892,11 +897,11 @@ test("fresh range snapshots skip GitHub collection until expiry while Refresh fo
   try {
     await act(async () => {});
     expect(metrics).toHaveBeenCalledTimes(1);
-    fireEvent.change(slot.getByRole("combobox", { name: "Date range" }), { target: { value: "30" } });
+    pickRange(slot, "1m");
     await act(async () => {});
     expect(slot.getByText("75.0%")).toBeTruthy();
     expect(metrics).toHaveBeenCalledTimes(1);
-    fireEvent.change(slot.getByRole("combobox", { name: "Date range" }), { target: { value: "7" } });
+    pickRange(slot, "1w");
     expect(slot.getByText("12.0%")).toBeTruthy();
     await act(async () => {});
     expect(snapshot).toHaveBeenCalledTimes(2);
@@ -1220,7 +1225,7 @@ test("Details keeps only the overview open; every other section is a closed <det
     expect(text("Resolved incidents")).not.toContain("what old");
     expect(text("Top failing workflows")).toContain("Unit tests — 3 failed · 0% passed");
     const mass = within(card).getByRole("region", { name: "Mass runner losses" });
-    expect(mass.textContent).toMatch(/Oct 19, \d\d:\d\d–\d\d:\d\d · 3 runners · 2 runs/);
+    expect(mass.textContent).toMatch(/19 Oct, \d\d:\d\d–\d\d:\d\d · 3 runners · 2 runs/);
     expect(mass.textContent).not.toContain("r1");
     expect(mass.querySelector("p")?.getAttribute("title")).toBe("Runners: r1, r2, r3");
   } finally { slot.lifecycle.unmount(); }
@@ -1243,7 +1248,7 @@ test("duration and time helpers", () => {
   expect([0, 45000, 32 * 60000, 65 * 60000, 120 * 60000].map(duration)).toEqual(["0 s", "45 s", "32 min", "1 h 5 min", "2 h"]);
   const now = new Date(2026, 10, 5, 12, 0).getTime();
   expect([new Date(2026, 10, 5, 8, 5), new Date(2026, 10, 4, 18, 16), new Date(2026, 10, 3, 14, 5)].map((date) => when(date.toISOString(), now)))
-    .toEqual(["today 08:05", "yesterday 18:16", "Nov 3, 14:05"]);
+    .toEqual(["today 08:05", "yesterday 18:16", "3 Nov, 14:05"]);
 });
 
 test("empty secondary blocks are not rendered and the zero causes stay in plain style", async () => {
@@ -1308,7 +1313,7 @@ test("switching to a range without a snapshot does not show the previous range's
   try {
     await act(async () => {});
     expect(slot.getByText("12.0%")).toBeTruthy();
-    fireEvent.change(slot.getByRole("combobox", { name: "Date range" }), { target: { value: "14" } });
+    pickRange(slot, "2w");
     await act(async () => {});
     expect(slot.queryByText("12.0%")).toBeNull();
     expect(slot.getByRole("status", { name: "Loading GitHub metrics…" })).toBeTruthy();
@@ -1359,15 +1364,19 @@ test("history chart cards are switchable, never duplicate a chart and remember t
     const lines = slot.getByRole("figure", { name: "Lines changed" });
     const bars = within(lines).getAllByRole("button", { name: /^Lines changed ·/ });
     const latest = bars.at(-1)!;
-    expect(latest.textContent).toContain("+1.2K −840");
+    expect(latest.hasAttribute("title")).toBe(false);
+    // The hover card lives in the bar: label, exact value; the newest interval is still running.
+    expect(latest.textContent).toContain("(so far)");
+    expect(latest.textContent).toContain("1,234 added, 840 deleted");
     expect(latest.getAttribute("aria-label")).toContain("1,234 added, 840 deleted");
-    // Grouped bars share the largest single part as scale: additions 1234 → 100%, deletions 840 → 68%.
+    // Grouped bars share the largest single part as scale: the scale tops at 1,500, additions 1234 → 82%, deletions 840 → 56%.
     const [added, deleted] = ["bg-diff-added", "bg-diff-removed"].map((name) => latest.querySelector<HTMLElement>(`.${name}`)!);
     expect(added.compareDocumentPosition(deleted) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(added.parentElement).toBe(deleted.parentElement);
-    expect(added.style.height).toBe("100%");
-    expect(parseFloat(deleted.style.height)).toBeCloseTo(840 / 1234 * 100, 1);
-    expect(bars[0]!.textContent).toBe("0");
+    expect(parseFloat(added.style.height)).toBeCloseTo(1234 / 1500 * 100, 1);
+    expect(parseFloat(deleted.style.height)).toBeCloseTo(840 / 1500 * 100, 1);
+    expect(bars[0]!.textContent).toContain("0 added, 0 deleted");
+    expect(lines.textContent).not.toContain("+1.2K");
     expect(slot.getByText("added")).toBeTruthy();
   } finally { slot.lifecycle.unmount(); }
   const remounted = render();
@@ -1421,14 +1430,14 @@ test("run-based charts default to the heaviest workflow, can pool all workflows 
     expect(((await remounted.findByRole("combobox", { name: "First chart workflow" })) as HTMLSelectElement).value).toBe("8");
   } finally { remounted.lifecycle.unmount(); }
   // A stored workflow that is no longer in the data falls back to the default one.
-  localStorage.setItem("ci-dashboard:history-charts", JSON.stringify([{ chart: "durationMedian", workflow: 404 }, { chart: "commits" }]));
+  localStorage.setItem("ci-dashboard:ci-filter", JSON.stringify({ "acme/widgets": { workflow: 404 } }));
   const stale = render();
   try {
     expect(((await stale.findByRole("combobox", { name: "First chart workflow" })) as HTMLSelectElement).value).toBe("5");
   } finally { stale.lifecycle.unmount(); }
 });
 
-test("sample-based charts default to the workflow's main event, show their sample size and can pool all events", async () => {
+test("sample-based charts default to the workflow's main event, share one Workflow/Event choice and can pool all events", async () => {
   vi.resetModules();
   const isolated = await loadPluginApp(() => import("./app"));
   const dates = metric.series.map((point) => point.date);
@@ -1444,30 +1453,87 @@ test("sample-based charts default to the workflow's main event, show their sampl
   localStorage.setItem("ci-dashboard:history-charts", JSON.stringify([{ chart: "durationMedian" }, { chart: "runs" }]));
   const slot = renderSlot(isolated.navPanels[0], { subPath: "" }, { rpc: { snapshot: () => null, metrics: () => ({ ...data, repositories: [{ ...repo, trends }] }) }, settings: {} });
   const latest = (title: string) => slot.getAllByRole("button", { name: new RegExp(`^${title} ·`) }).at(-1)!;
+  const value = (name: string) => (slot.getByRole("combobox", { name }) as HTMLSelectElement).value;
   try {
     const event = await slot.findByRole("combobox", { name: "First chart event" }) as HTMLSelectElement;
     expect(event.value).toBe("merge_group");
     expect(within(event).getAllByRole("option").map((option) => option.textContent)).toEqual(["All events", "merge_group · 49 runs", "pull_request · 300 runs"]);
     const figure = slot.getByRole("figure", { name: "Median CI run duration" });
-    expect(figure.textContent).toContain("successful runs · merge_group");
+    // The note no longer repeats the event the picker shows.
+    expect(figure.textContent).toContain("successful runs");
+    expect(figure.textContent).not.toContain("successful runs · merge_group");
     expect(latest("Median CI run duration").getAttribute("aria-label")).toContain("30m 0s · median of 49 successful merge_group runs; failed, cancelled and skipped runs excluded");
-    expect(latest("Median CI run duration").textContent).toContain("30m 0sn 49");
-    // The runs chart counts runs, so it pools by default.
-    expect((slot.getByRole("combobox", { name: "Second chart event" }) as HTMLSelectElement).value).toBe("all");
-    expect(latest("CI runs").getAttribute("aria-label")).toContain("· 70 ·");
-    fireEvent.change(slot.getByRole("combobox", { name: "Second chart event" }), { target: { value: "merge_group" } });
+    // One choice for every picker: the count chart follows the shared event too.
+    expect(value("Second chart event")).toBe("merge_group");
+    expect(value("Timing event")).toBe("merge_group");
     expect(latest("CI runs").getAttribute("aria-label")).toContain("· 20 ·");
-    fireEvent.change(event, { target: { value: "all" } });
-    expect(figure.textContent).toContain("successful runs · all events");
+    fireEvent.change(slot.getByRole("combobox", { name: "Second chart event" }), { target: { value: "all" } });
+    expect(value("First chart event")).toBe("all");
+    expect(value("Timing event")).toBe("all");
+    expect(latest("CI runs").getAttribute("aria-label")).toContain("· 70 ·");
     expect(latest("Median CI run duration").getAttribute("aria-label")).toContain("8m 0s · median of 349 successful runs;");
-    expect(latest("Median CI run duration").textContent).toContain("n 349");
     fireEvent.change(event, { target: { value: "pull_request" } });
     expect(latest("Median CI run duration").getAttribute("aria-label")).toContain("7m 0s");
-    // A single-event workflow has nothing to split; the sample size stays.
+    expect(value("Second chart event")).toBe("pull_request");
+    // A single-event workflow has nothing to split; the stored event does not survive the switch.
     fireEvent.change(slot.getByRole("combobox", { name: "First chart workflow" }), { target: { value: "8" } });
     expect(slot.queryByRole("combobox", { name: "First chart event" })).toBeNull();
-    expect(latest("Median CI run duration").textContent).toContain("n 2");
-    expect(JSON.parse(localStorage.getItem("ci-dashboard:history-charts")!)[0]).toEqual({ chart: "durationMedian", workflow: 8 });
+    expect(value("Second chart workflow")).toBe("8");
+    expect(value("Timing workflow")).toBe("8");
+    expect(JSON.parse(localStorage.getItem("ci-dashboard:ci-filter")!)).toEqual({ "acme/widgets": { workflow: 8 } });
+    // Switching back keeps the default event of the busiest workflow.
+    fireEvent.change(slot.getByRole("combobox", { name: "First chart workflow" }), { target: { value: "5" } });
+    expect(value("First chart event")).toBe("merge_group");
+  } finally { slot.lifecycle.unmount(); }
+});
+
+test("each repository keeps its own Workflow/Event choice across tab switches and a remount", async () => {
+  vi.resetModules();
+  const isolated = await loadPluginApp(() => import("./app"));
+  const dates = metric.series.map((point) => point.date);
+  const flat = (value: number) => dates.map((date) => ({ date, value }));
+  const row = (id: number, name: string, successMs: number) => ({ id, name, total: 3, successMs, durationMedian: flat(1000), durationP90: flat(1000), runs: flat(3), failedRuns: flat(0), startDelay: flat(1000) });
+  const repoOf = (repository: string, ids: [number, number]) => ({ ...repo, repository, trends: { workflows: [row(ids[0], "Pipeline", 9e6), row(ids[1], "Docs", 1e3)] } });
+  const metrics = () => ({ ...data, repositories: [repoOf("acme/widgets", [5, 8]), repoOf("acme/other", [5, 9])] });
+  localStorage.setItem("ci-dashboard:history-charts", JSON.stringify([{ chart: "durationMedian" }, { chart: "runs" }]));
+  const render = () => renderSlot(isolated.navPanels[0], { subPath: "" }, { rpc: { snapshot: () => null, metrics }, settings: {} });
+  const workflow = (slot: ReturnType<typeof render>) => (slot.getByRole("combobox", { name: "First chart workflow" }) as HTMLSelectElement).value;
+  const slot = render();
+  try {
+    await slot.findByRole("combobox", { name: "First chart workflow" });
+    fireEvent.change(slot.getByRole("combobox", { name: "First chart workflow" }), { target: { value: "8" } });
+    await pickRepository(slot, "Other");
+    await slot.findByRole("region", { name: "acme/other" });
+    expect(workflow(slot)).toBe("5");
+    fireEvent.change(slot.getByRole("combobox", { name: "First chart workflow" }), { target: { value: "all" } });
+    await pickRepository(slot, "Widgets");
+    await slot.findByRole("region", { name: "acme/widgets" });
+    expect(workflow(slot)).toBe("8");
+  } finally { slot.lifecycle.unmount(); }
+  expect(JSON.parse(localStorage.getItem("ci-dashboard:ci-filter")!)).toEqual({ "acme/widgets": { workflow: 8 }, "acme/other": { workflow: "all" } });
+  const remounted = render();
+  try {
+    await remounted.findByRole("region", { name: "acme/widgets" });
+    expect(workflow(remounted)).toBe("8");
+  } finally { remounted.lifecycle.unmount(); }
+});
+
+test("the old per-chart workflow and event migrate once to the repository that has that workflow", async () => {
+  vi.resetModules();
+  const isolated = await loadPluginApp(() => import("./app"));
+  const dates = metric.series.map((point) => point.date);
+  const flat = (value: number) => dates.map((date) => ({ date, value }));
+  const row = (id: number, successMs: number) => ({ id, name: `Workflow ${id}`, total: 3, successMs, durationMedian: flat(1000), durationP90: flat(1000), runs: flat(3), failedRuns: flat(0), startDelay: flat(1000) });
+  const trends = { workflows: [row(5, 9e6), row(8, 1e3)] };
+  // The first slot names a workflow this repository does not have; the second one does.
+  localStorage.setItem("ci-dashboard:history-charts", JSON.stringify([{ chart: "durationMedian", workflow: 404, event: "push" }, { chart: "runs", workflow: 8, event: "push" }]));
+  const slot = renderSlot(isolated.navPanels[0], { subPath: "" }, { rpc: { snapshot: () => null, metrics: () => ({ ...data, repositories: [{ ...repo, trends }] }) }, settings: {} });
+  try {
+    const select = await slot.findByRole("combobox", { name: "First chart workflow" }) as HTMLSelectElement;
+    await vi.waitFor(() => expect(select.value).toBe("8"));
+    expect(JSON.parse(localStorage.getItem("ci-dashboard:ci-filter")!)).toEqual({ "acme/widgets": { workflow: 8, event: "push" } });
+    // Slots keep only the chart for what was migrated; the other repository's old id stays for its own migration.
+    expect(JSON.parse(localStorage.getItem("ci-dashboard:history-charts")!)).toEqual([{ chart: "durationMedian", workflow: 404, event: "push" }, { chart: "runs" }]);
   } finally { slot.lifecycle.unmount(); }
 });
 
@@ -1476,14 +1542,14 @@ test("CI run timings default to the workflow's main event and list every event's
   const row = (id: number, event: string, minutes: number) => ({ id, workflow_id: 1, name: "CI", head_branch: "main", event, conclusion: "success", created_at: started, run_started_at: started,
     updated_at: new Date(Date.parse(started) + minutes * 60_000).toISOString() });
   const ciInsights = summarizeCi([...[30, 30, 30].map((minutes, index) => row(index + 1, "merge_group", minutes)), ...[6, 8, 10, 12, 14].map((minutes, index) => row(index + 10, "pull_request", minutes))], "main");
-  const slot = renderSlot(app.navPanels[0], { subPath: "" }, { rpc: { snapshot: () => null, metrics: () => ({ ...data, repositories: [{ ...repo, ciInsights, ciOutcomes: { success: 8 } }] }) }, settings: {} });
+  const slot = renderSlot(app.navPanels[0], { subPath: "" }, { rpc: { snapshot: () => null, metrics: () => ({ ...data, repositories: [{ ...repo, ciInsights, trends: trendsFor(ciInsights), ciOutcomes: { success: 8 } }] }) }, settings: {} });
   try {
     const card = await slot.findByRole("region", { name: "CI run timings" });
     const median = () => within(card).getByText("Median", { selector: "dt" }).nextElementSibling?.textContent;
     const event = within(card).getByRole("combobox", { name: "Timing event" }) as HTMLSelectElement;
     expect(event.value).toBe("merge_group");
     expect(median()).toBe("30m 0s");
-    expect(card.textContent).toContain("successful runs only · merge_group");
+    expect(card.textContent).toContain("successful runs only");
     fireEvent.change(event, { target: { value: "pull_request" } });
     expect(median()).toBe("10m 0s");
     fireEvent.change(event, { target: { value: "all" } });
@@ -1531,11 +1597,129 @@ test("range changes keep open problems but hide old failure counts", async () =>
   const slot = renderSlot((await freshPanels())[0], { subPath: "" }, { rpc: { snapshot: (selection: unknown) => (selection as { days: number }).days === 30 ? month : null, metrics: (selection: unknown) => (selection as { days: number }).days === 30 ? month : ({ ...data, repositories: [{ ...repo, ciInsights: failingMain() }] }), signals }, settings: {} });
   try {
     await slot.findByText("Title range");
-    fireEvent.change(slot.getByRole("combobox", { name: "Date range" }), { target: { value: "30" } });
+    pickRange(slot, "1m");
     await slot.findByText("Last 30 days");
     await vi.waitFor(() => expect(signals.mock.calls.length).toBeGreaterThanOrEqual(2));
     expect(slot.getByText("Title range")).toBeTruthy();
     fireEvent.click(slot.getByText("Details"));
     expect(slot.getByLabelText("Loading failure causes")).toBeTruthy();
   } finally { slot.lifecycle.unmount(); }
+});
+
+test("niceTicks steps durations in s, m and h and counts in 1/2/5 × 10ⁿ", () => {
+  expect(niceTicks(252_000, "duration")).toEqual({ top: 360_000, ticks: [0, 120_000, 240_000, 360_000] });
+  expect(niceTicks(5 * 3_600_000, "duration")).toEqual({ top: 6 * 3_600_000, ticks: [0, 2, 4, 6].map((h) => h * 3_600_000) });
+  expect(niceTicks(40 * 3_600_000, "duration").top).toBe(48 * 3_600_000);
+  expect(niceTicks(1234, "count")).toEqual({ top: 1500, ticks: [0, 500, 1000, 1500] });
+  expect(niceTicks(7, "count")).toEqual({ top: 10, ticks: [0, 5, 10] });
+  expect(niceTicks(1, "count")).toEqual({ top: 1, ticks: [0, 1] });
+});
+
+test("only the interval still running is marked, from the range and the real bucket bounds", () => {
+  const now = new Date("2026-10-20T09:00:00Z");
+  const dates = (range: ReturnType<typeof resolveRange>) => {
+    const count = Math.ceil((Date.parse(range.until) - Date.parse(range.since)) / range.bucketMs);
+    return Array.from({ length: count }, (_, index) => new Date(Math.min(Date.parse(range.until), Date.parse(range.since) + (index + 1) * range.bucketMs)).toISOString());
+  };
+  // A past custom range whose length is not a multiple of the bucket: nothing is running.
+  const past = resolveRange({ start: "2026-10-01", end: "2026-10-10" }, now);
+  expect(inProgressIndex(past, dates(past), now.getTime())).toBe(-1);
+  // Through today, and a preset: the last bucket.
+  const through = resolveRange({ start: "2026-10-01", end: "2026-10-20" }, now);
+  expect(inProgressIndex(through, dates(through), now.getTime())).toBe(dates(through).length - 1);
+  const week = resolveRange({ days: 7 }, now);
+  expect(inProgressIndex(week, dates(week), now.getTime())).toBe(dates(week).length - 1);
+  // Today in 4-hour slots: only the slot holding "now" (08:00–12:00), not the upcoming ones.
+  const today = resolveRange({ days: 1 }, now);
+  const slots = Array.from({ length: 6 }, (_, index) => new Date(Date.parse(today.since) + (index + 1) * today.bucketMs).toISOString());
+  expect(inProgressIndex(today, slots, now.getTime())).toBe(2);
+});
+
+test("chart bars carry a scale and a hover card instead of value labels, mark the running interval and thin dense labels", async () => {
+  vi.resetModules();
+  const isolated = await loadPluginApp(() => import("./app"));
+  const render = (repository: object) => renderSlot(isolated.navPanels[0], { subPath: "" }, { rpc: { snapshot: () => null, metrics: () => ({ ...data, repositories: [repository] }) }, settings: {} });
+  const slot = render(repo);
+  try {
+    const figure = await slot.findByRole("figure", { name: "Deployment throughput" });
+    const bars = within(figure).getAllByRole("button", { name: /^Deployment throughput ·/ });
+    expect(bars).toHaveLength(7);
+    // Values 1..7: the scale tops at 10 in steps of 5, with dashed grid lines and no sideways scroll.
+    expect(Array.from(figure.querySelectorAll("[aria-hidden=true].text-right > span")).map((tick) => tick.textContent)).toEqual(["0", "5", "10"]);
+    expect(figure.querySelectorAll(".border-dashed")).toHaveLength(2);
+    expect(figure.querySelector(".overflow-x-auto")).toBeNull();
+    expect(figure.innerHTML).not.toContain("minmax(38px");
+    // No value or "n" line above a bar: the exact value is in its hover card, which replaces the native title.
+    bars.forEach((bar) => expect(bar.hasAttribute("title")).toBe(false));
+    bars[0].focus();
+    expect(document.activeElement).toBe(bars[0]);
+    expect(bars[0].textContent).toBe("13 Oct1");
+    // Only the last bucket of a live range is hatched, and it reads "so far" in the label and the card.
+    expect(bars.map((bar) => bar.getAttribute("aria-label")!.includes("(so far)"))).toEqual([false, false, false, false, false, false, true]);
+    expect(bars.at(-1)!.textContent).toContain("(so far)");
+    expect(bars.map((bar) => !!bar.querySelector(".outline-dashed"))).toEqual([false, false, false, false, false, false, true]);
+  } finally { slot.lifecycle.unmount(); }
+  // A past custom range has no running interval; 14 bars show every second date label, ending with the last.
+  const range = resolveRange({ start: "2026-10-01", end: "2026-10-14" }, new Date("2026-10-20T12:00:00Z"));
+  const dense = { ...metric, series: Array.from({ length: 14 }, (_, index) => ({ date: new Date(Date.parse(range.since) + (index + 1) * 86_400_000).toISOString(), value: index })) };
+  const past = render({ ...repo, range, deployments: dense });
+  try {
+    const figure = await past.findByRole("figure", { name: "Deployment throughput" });
+    expect(figure.innerHTML).not.toContain("so far");
+    const labels = Array.from(figure.querySelectorAll(".mt-2.grid > span")).map((label) => label.textContent);
+    expect(labels).toHaveLength(14);
+    expect(labels.filter(Boolean)).toHaveLength(7);
+    expect(labels.at(-1)).toBe("14 Oct");
+  } finally { past.lifecycle.unmount(); }
+});
+
+test("the date range is a set of segments with custom dates, KPI tiles follow the section width and the detail cards share a height", async () => {
+  vi.resetModules();
+  const isolated = await loadPluginApp(() => import("./app"));
+  const slot = renderSlot(isolated.navPanels[0], { subPath: "" }, { rpc: { snapshot: () => null, metrics: () => data }, settings: {} });
+  try {
+    await act(async () => {});
+    const tabs = within(slot.getByRole("tablist", { name: "Date range" })).getAllByRole("tab");
+    expect(tabs.map((tab) => tab.textContent)).toEqual(["1d", "3d", "1w", "2w", "1m", "3m", "Custom"]);
+    expect(slot.queryByLabelText("From date")).toBeNull();
+    pickRange(slot, "Custom");
+    expect(slot.getByLabelText("From date")).toBeTruthy();
+    const tile = slot.getByRole("heading", { name: "CI pass rate", level: 4 }).closest("div")!;
+    expect(tile.className).not.toContain("bg-primary");
+    expect(tile.parentElement!.className).toContain("@min-[40rem]:grid-cols-3");
+    expect(tile.parentElement!.className).not.toContain("sm:grid-cols-3");
+    expect(tile.querySelector("p.text-2xl")!.className).toContain("whitespace-nowrap");
+    for (const name of ["PRs awaiting review", "Latest production deployment"]) expect(slot.getByRole("region", { name }).className).toContain("h-full");
+    // One date style for points in time, with the full timestamp on hover.
+    expect(slot.getByText(/^Last checked /).textContent).toMatch(/Last checked \d{1,2} \w{3}, \d\d:\d\d$/);
+    expect(slot.getByText(/^Last checked /).getAttribute("title")).toBeTruthy();
+  } finally { slot.lifecycle.unmount(); }
+});
+
+test("the running interval's label reads \"so far\" under its date, survives thinning and shows for an empty bucket", async () => {
+  vi.resetModules();
+  const isolated = await loadPluginApp(() => import("./app"));
+  const now = new Date("2026-10-20T12:00:00Z");
+  const render = (repository: object) => renderSlot(isolated.navPanels[0], { subPath: "" }, { rpc: { snapshot: () => null, metrics: () => ({ ...data, repositories: [repository] }) }, settings: {} });
+  const labelRow = (figure: HTMLElement) => Array.from(figure.querySelectorAll(".mt-2.grid > span"));
+  // 14 daily bars: the running (last) bucket is empty, so the label is its only visible sign.
+  const range = resolveRange({ days: 14 }, now);
+  const dense = { ...metric, series: Array.from({ length: 14 }, (_, index) => ({ date: new Date(Date.parse(range.since) + (index + 1) * 86_400_000).toISOString(), value: index === 13 ? 0 : index + 1 })) };
+  const slot = render({ ...repo, range, deployments: dense });
+  try {
+    const figure = await slot.findByRole("figure", { name: "Deployment throughput" });
+    const labels = labelRow(figure);
+    expect(labels.filter((label) => label.textContent?.endsWith("so far"))).toHaveLength(1);
+    expect(labels.at(-1)!.querySelector(".text-\\[10px\\]")!.textContent).toBe("so far");
+    expect(labels.at(-1)!.textContent).toMatch(/^\d{1,2} \w{3}so far$/);
+  } finally { slot.lifecycle.unmount(); }
+  // Today in 4-hour slots with upcoming ones: the running slot is not the last, yet it keeps its label.
+  const today = resolveRange({ days: 1 }, new Date("2026-10-20T09:00:00Z"));
+  const series = Array.from({ length: 6 }, (_, index) => ({ date: new Date(Date.parse(today.since) + (index + 1) * today.bucketMs).toISOString(), value: index < 3 ? index + 1 : null }));
+  const day = render({ ...repo, range: today, updatedAt: today.until, deployments: { ...metric, series } });
+  try {
+    const figure = await day.findByRole("figure", { name: "Deployment throughput" });
+    const labels = labelRow(figure);
+    expect(labels.map((label) => label.textContent)).toEqual(["00:00", "04:00", "08:00so far", "12:00", "16:00", "20:00"]);
+  } finally { day.lifecycle.unmount(); }
 });

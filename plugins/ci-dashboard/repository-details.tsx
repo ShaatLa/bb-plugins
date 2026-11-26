@@ -7,7 +7,7 @@ import type { Metrics } from "./metrics";
 import { Card } from "./components/ui/card";
 import { Summary } from "./components/ui/summary";
 import { LoadingSkeleton, Skeleton } from "./components/ui/skeleton";
-import { CiJobCauses, CiRunNotes, Disclosure, percent } from "./ci-cards";
+import { CiJobCauses, CiRunNotes, Disclosure, percent, when } from "./ci-cards";
 import { CiProblems, ProblemsBadge } from "./ci-problems-view";
 import { useRepositorySignals, type JobSignals } from "./signals-panel";
 import { CardDetailsView } from "./card-details-view";
@@ -28,8 +28,8 @@ export function RepositoryDetails({ repo }: { repo: Metrics }) {
   const { reviewQueue, production } = repo;
   const deployment = production.deployment;
   const target = productionTargetFrom(useSettings().values);
-  return <div className="grid grid-cols-1 items-start gap-3 lg:grid-cols-2">
-    <Card role="region" aria-label="PRs awaiting review" className="space-y-3 p-4">
+  return <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
+    <Card role="region" aria-label="PRs awaiting review" className="h-full space-y-3 p-4">
       <div className="flex flex-wrap items-baseline justify-between gap-2">
         <h4 className="text-sm font-medium">PRs awaiting review</h4>
         {reviewQueue.total !== null && <span className="text-xs text-muted-foreground">{reviewQueue.total} total</span>}
@@ -43,14 +43,14 @@ export function RepositoryDetails({ repo }: { repo: Metrics }) {
         </li>)}</ul>}
       <UrlLink href={`https://github.com/${repo.repository}/pulls?q=${encodeURIComponent("is:pr is:open draft:false review:none")}`} className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:underline">View review queue<Icon name="ExternalLink" aria-hidden className="size-3 shrink-0" /></UrlLink>
     </Card>
-    <Card role="region" aria-label="Latest production deployment" className="space-y-3 p-4">
+    <Card role="region" aria-label="Latest production deployment" className="h-full space-y-3 p-4">
       <h4 className="text-sm font-medium">Latest production deployment</h4>
       {repo.pending?.includes("production") && !deployment ? <LoadingSkeleton label="Loading production deployment…" /> : production.error ? <p role="alert" className="text-sm text-destructive-text">{production.error}</p>
         : deployment ? <>
           <span className={`inline-block rounded-md border px-2 py-1 text-xs ${deployment.state === "success" ? "border-success/30 bg-success/10 text-diff-added" : ["failure", "error"].includes(deployment.state) ? "border-destructive/30 text-destructive-text" : "border-border text-muted-foreground"}`}>{deployment.state.replaceAll("_", " ")}</span>
           <p className="break-all text-sm">{deployment.environment} · {deployment.ref}</p>
           <p className="text-xs text-muted-foreground" title={new Date(deployment.createdAt).toLocaleString()}>Created {ageLabel(deployment.createdAt, repo.updatedAt)} ago</p>
-          <p className="text-xs text-muted-foreground">Updated {new Date(deployment.updatedAt).toLocaleString()}</p>
+          <p className="text-xs text-muted-foreground" title={new Date(deployment.updatedAt).toLocaleString()}>Updated {when(deployment.updatedAt, Date.now())}</p>
           <UrlLink href={deployment.url} className="inline-flex items-center gap-1 text-sm hover:underline">View deployment<Icon name="ExternalLink" aria-hidden className="size-3.5 shrink-0" /></UrlLink>
           <CardDetailsView key={`${repo.repository}:${deployment.environment}`} input={{ kind: "production", repository: repo.repository, environment: deployment.environment }} />
         </> : <p className="text-sm text-muted-foreground">No production deployment found.</p>}

@@ -1,5 +1,4 @@
 import { mountDraftSettingsDisclosure } from "./settings-disclosure";
-import { chevronClass } from "./components/ui/summary";
 import { useEffect, useRef, useState } from "react";
 import { minimumDate, presets, resolveRange, type RangeInput } from "./date-range";
 import { definePluginApp, experimental_Icon as Icon, UrlLink, useRealtime, useRpc, useSettings } from "@get-bb/plugin-sdk/app";
@@ -10,7 +9,8 @@ import { LoadingSkeleton } from "./components/ui/skeleton";
 import { DashboardSkeleton } from "./dashboard-skeleton";
 import { IntervalDialog, type IntervalSelection } from "./interval-dialog";
 import { HistoryCharts, trendKeysBySource } from "./history-chart";
-import { CiTiming } from "./ci-cards";
+import { CiTiming, when } from "./ci-cards";
+import { useCiFilter } from "./ci-filter";
 import { RepositoryActivity, RepositoryDetails, CiOutcomes } from "./repository-details";
 import { Tabs, TabsList, TabsTrigger } from "./components/ui/tabs";
 import { metricsProgressSchema } from "./metrics";
@@ -219,18 +219,16 @@ export function Dashboard() {
             {order.map((repository) => <TabsTrigger key={repository} value={repository}>{repositoryTitle(repository, projectNames.get(repository))}</TabsTrigger>)}
           </TabsList>
         </Tabs>}
-        <span className="relative inline-block">
-          <select aria-label="Date range" value={mode} className="h-9 appearance-none rounded-md border border-input bg-background pl-3 pr-9 text-sm text-foreground" onChange={(event) => {
-            const value = event.target.value;
-            setMode(value);
-            setRangeError(null);
-            if (value !== "custom") applyRange({ days: Number(value) as typeof presets[number] });
-          }}>
-            {presets.map((days, index) => <option key={days} value={days}>{["1 day", "3 days", "1 week", "2 weeks", "1 month", "3 months"][index]}</option>)}
-            <option value="custom">Custom dates</option>
-          </select>
-          <Icon name="ChevronDown" aria-hidden className={`pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 ${chevronClass}`} />
-        </span>
+        <Tabs value={mode} activationMode="manual" onValueChange={(value) => {
+          setMode(value);
+          setRangeError(null);
+          if (value !== "custom") applyRange({ days: Number(value) as typeof presets[number] });
+        }}>
+          <TabsList aria-label="Date range" className="h-auto flex-wrap">
+            {presets.map((days, index) => <TabsTrigger key={days} value={String(days)} title={["1 day", "3 days", "1 week", "2 weeks", "1 month", "3 months"][index]}>{["1d", "3d", "1w", "2w", "1m", "3m"][index]}</TabsTrigger>)}
+            <TabsTrigger value="custom" title="Custom dates">Custom</TabsTrigger>
+          </TabsList>
+        </Tabs>
         <Button variant="ghost" size="icon" className="shrink-0" disabled={busy} aria-label="Refresh" aria-busy={busy} onClick={() => setRefresh((n) => n + 1)}>
           <Icon name="ArrowReloadHorizontal" aria-hidden className={`size-4${busy ? " animate-spin motion-reduce:animate-none" : ""}`} />
         </Button>
@@ -247,52 +245,58 @@ export function Dashboard() {
       {current?.repositories.length === 0 && <p className="text-sm text-muted-foreground">No GitHub repositories found. Add a BB project with a GitHub remote or list repositories in Settings → Plugins → CI Dashboard.</p>}
       {/* The selected repository is still loading while others have arrived: wait for it rather than show another. */}
       {current && loaded.length > 0 && !shown.length && <DashboardSkeleton />}
-      {shown.map((repo) => {
-        const cards = [
-          { title: "CI pass rate", pending: "ci", metric: repo.ci, format: (n: number) => `${n.toFixed(1)}%` },
-          { title: "Deploy frequency", pending: "deployments", metric: repo.deployments, format: (n: number) => `${n.toFixed(1)} / day` },
-          { title: "Open pull requests", pending: "pullRequests", metric: repo.pullRequests, format: (n: number) => n.toLocaleString() },
-        ];
-        const projectTitle = repositoryTitle(repo.repository, repo.projectName);
-        const rangeTitle = repo.range.label === "today" ? "Today" : repo.range.label.startsWith("last ") ? `L${repo.range.label.slice(1)}` : "Custom range";
-        const dates = new Intl.DateTimeFormat("en-GB", { day: "numeric", month: "short", year: "numeric", timeZone: "UTC" })
-          .formatRange(new Date(repo.range.since), new Date(repo.range.until));
-        return <section key={repo.repository} aria-label={repo.repository} className="space-y-3">
-          <h3 className="break-words text-base font-semibold">
-            <UrlLink href={`https://github.com/${repo.repository}`} title={`Open ${repo.repository} on GitHub`} className="inline-flex items-center gap-1.5 rounded-sm hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
-              {projectTitle}<Icon name="ExternalLink" aria-hidden className="size-3.5 shrink-0 text-muted-foreground" />
-            </UrlLink>
-          </h3>
-          <p className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground" title={`${new Date(repo.range.since).toUTCString()} – ${new Date(repo.range.until).toUTCString()}`}>
-            <span className="font-medium text-foreground">{rangeTitle}</span><span aria-hidden="true">·</span><span>{dates}</span><span className="rounded border border-border px-1.5 py-0.5 text-[10px]">UTC</span>
-          </p>
-          {/* Background refreshes keep cached values on screen; only an empty CI card needs the explanation. */}
-          {repo.pending?.includes("ci") && repo.ci.value === null && repo.loading ? <p role="status" className="text-xs text-muted-foreground">
-            Loading CI history from GitHub · {repo.loading.runs.toLocaleString()} runs so far{repo.loading.total > 0 ? ` · ${Math.floor(repo.loading.done / repo.loading.total * 100)}%` : ""} · first load of a longer range can take a few minutes
-          </p> : null}
-          <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-            {cards.map(({ title, pending, metric, format }) => (
-              <Card key={title} className={`space-y-2 p-4 ${title === "CI pass rate" ? "border-primary/30 bg-primary/5" : ""}`}>
-                <h4 className="text-sm text-muted-foreground">{title}</h4>
-                {metric.value === null && repo.pending?.includes(pending) ? <LoadingSkeleton label={`Loading ${title}`} /> : <>
-                  <p className="text-2xl font-semibold tabular-nums">{metric.value == null ? "—" : format(metric.value)}</p>
-                  <p className="text-xs text-muted-foreground">{metric.detail}</p>
-                </>}
-                {metric.error && <p role="alert" className="text-xs text-destructive-text">{metric.error}</p>}
-              </Card>
-            ))}
-          </div>
-          <CiTiming repo={repo} />
-          <CiOutcomes repo={repo} showDetails />
-          <RepositoryActivity repo={repo} />
-          <HistoryCharts repo={repo} onSelect={(since, until) => setInterval({ repository: repo.repository, since, until })} />
-          <RepositoryDetails repo={repo} />
-          <p className="text-xs text-muted-foreground">Last checked {new Date(repo.updatedAt).toLocaleString()}</p>
-        </section>;
-      })}
+      {shown.map((repo) => <RepositorySection key={repo.repository} repo={repo} onSelect={(since, until) => setInterval({ repository: repo.repository, since, until })} />)}
       {interval && <IntervalDialog key={JSON.stringify(interval)} selection={interval} onClose={() => setInterval(null)} />}
     </section>
   );
+}
+
+type Repo = DashboardData["repositories"][number];
+function RepositorySection({ repo, onSelect }: { repo: Repo; onSelect: (since: string, until: string) => void }) {
+  // One Workflow/Event choice for the whole repository: both charts and the CI run timings read it.
+  const filter = useCiFilter(repo.repository, repo.trends?.workflows ?? []);
+  const cards = [
+    { title: "CI pass rate", pending: "ci", metric: repo.ci, format: (n: number) => `${n.toFixed(1)}%` },
+    { title: "Deploy frequency", pending: "deployments", metric: repo.deployments, format: (n: number) => `${n.toFixed(1)} / day` },
+    { title: "Open pull requests", pending: "pullRequests", metric: repo.pullRequests, format: (n: number) => n.toLocaleString() },
+  ];
+  const projectTitle = repositoryTitle(repo.repository, repo.projectName);
+  const rangeTitle = repo.range.label === "today" ? "Today" : repo.range.label.startsWith("last ") ? `L${repo.range.label.slice(1)}` : "Custom range";
+  const dates = new Intl.DateTimeFormat("en-GB", { day: "numeric", month: "short", year: "numeric", timeZone: "UTC" })
+    .formatRange(new Date(repo.range.since), new Date(repo.range.until));
+  // Layout follows the width of this section (it sits beside the bb sidebar), not the window.
+  return <section aria-label={repo.repository} className="@container space-y-3">
+    <h3 className="break-words text-base font-semibold">
+      <UrlLink href={`https://github.com/${repo.repository}`} title={`Open ${repo.repository} on GitHub`} className="inline-flex items-center gap-1.5 rounded-sm hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+        {projectTitle}<Icon name="ExternalLink" aria-hidden className="size-3.5 shrink-0 text-muted-foreground" />
+      </UrlLink>
+    </h3>
+    <p className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground" title={`${new Date(repo.range.since).toUTCString()} – ${new Date(repo.range.until).toUTCString()}`}>
+      <span className="font-medium text-foreground">{rangeTitle}</span><span aria-hidden="true">·</span><span>{dates}</span><span className="rounded border border-border px-1.5 py-0.5 text-[10px]">UTC</span>
+    </p>
+    {/* Background refreshes keep cached values on screen; only an empty CI card needs the explanation. */}
+    {repo.pending?.includes("ci") && repo.ci.value === null && repo.loading ? <p role="status" className="text-xs text-muted-foreground">
+      Loading CI history from GitHub · {repo.loading.runs.toLocaleString()} runs so far{repo.loading.total > 0 ? ` · ${Math.floor(repo.loading.done / repo.loading.total * 100)}%` : ""} · first load of a longer range can take a few minutes
+    </p> : null}
+    <div className="grid grid-cols-1 gap-3 @min-[40rem]:grid-cols-3">
+      {cards.map(({ title, pending, metric, format }) => (
+        <Card key={title} className="space-y-2 p-4">
+          <h4 className="text-sm text-muted-foreground">{title}</h4>
+          {metric.value === null && repo.pending?.includes(pending) ? <LoadingSkeleton label={`Loading ${title}`} /> : <>
+            <p className="whitespace-nowrap text-2xl font-semibold tabular-nums">{metric.value == null ? "—" : format(metric.value)}</p>
+            <p className="text-xs text-muted-foreground">{metric.detail}</p>
+          </>}
+          {metric.error && <p role="alert" className="text-xs text-destructive-text">{metric.error}</p>}
+        </Card>
+      ))}
+    </div>
+    <CiTiming repo={repo} filter={filter} />
+    <CiOutcomes repo={repo} showDetails />
+    <RepositoryActivity repo={repo} />
+    <HistoryCharts repo={repo} filter={filter} onSelect={onSelect} />
+    <RepositoryDetails repo={repo} />
+    <p className="text-xs text-muted-foreground" title={new Date(repo.updatedAt).toLocaleString()}>Last checked {when(repo.updatedAt, Date.now())}</p>
+  </section>;
 }
 
 function DashboardPage() {

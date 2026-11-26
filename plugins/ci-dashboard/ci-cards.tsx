@@ -1,6 +1,5 @@
-import { useState, type ReactNode } from "react";
-import { chevronClass } from "./components/ui/summary";
-import { experimental_Icon as Icon, UrlLink } from "@get-bb/plugin-sdk/app";
+import type { ReactNode } from "react";
+import { UrlLink } from "@get-bb/plugin-sdk/app";
 import type { Metrics } from "./metrics";
 import { Card } from "./components/ui/card";
 import { LoadingSkeleton, Skeleton } from "./components/ui/skeleton";
@@ -8,6 +7,8 @@ import { Button } from "./components/ui/button";
 import { Summary } from "./components/ui/summary";
 import type { JobSignals } from "./signals-panel";
 import { signalTitle } from "./ci-problems";
+import type { CiFilter } from "./ci-filter";
+import { FilterMeta } from "./ci-filter-meta";
 
 export function elapsed(ms: number | null) {
   if (ms === null) return "—";
@@ -37,10 +38,10 @@ export function duration(ms: number) {
 }
 const clock = (date: Date) => date.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
 const dayDiff = (date: Date, now: number) => Math.round((new Date(now).setHours(0, 0, 0, 0) - new Date(date).setHours(0, 0, 0, 0)) / 86400000);
-/** Local time as "today 08:05", "yesterday 18:16" or "Nov 3, 14:05". */
+/** Local time as "today 08:05", "yesterday 18:16" or "3 Nov, 14:05". */
 export function when(value: string, now: number) {
   const date = new Date(value), days = dayDiff(date, now);
-  return days === 0 ? `today ${clock(date)}` : days === 1 ? `yesterday ${clock(date)}` : `${date.toLocaleDateString("en-US", { month: "short", day: "numeric" })}, ${clock(date)}`;
+  return days === 0 ? `today ${clock(date)}` : days === 1 ? `yesterday ${clock(date)}` : `${date.toLocaleDateString("en-GB", { day: "numeric", month: "short" })}, ${clock(date)}`;
 }
 const plural = (count: number, one: string, many = `${one}s`) => `${count.toLocaleString()} ${count === 1 ? one : many}`;
 export const percent = (counts: { passed: number; eligible: number }) => counts.eligible ? `${Math.round(100 * counts.passed / counts.eligible)}%` : "—";
@@ -128,54 +129,29 @@ export function CiJobCauses({ repo, signals, part }: { repo: Metrics; signals: J
   </>;
 }
 
-export function CiTiming({ repo }: { repo: Metrics }) {
+export function CiTiming({ repo, filter }: { repo: Metrics; filter: CiFilter }) {
   const data = repo.ciInsights;
-  const [selectedWorkflow, setSelectedWorkflow] = useState<string | null>(null);
-  const defaultWorkflow = data?.workflows.find((workflow) => workflow.name.trim().toLowerCase() === "ci");
-  const selection = selectedWorkflow ?? (defaultWorkflow ? String(defaultWorkflow.id) : "all");
-  const workflow = data?.workflows.find((row) => String(row.id) === selection);
-  const [selectedEvent, setSelectedEvent] = useState<string | null>(null);
-  // Events are split only when there are several: pooled they would mix e.g. a light PR preflight with the full merge-queue check.
-  const events = workflow?.events && workflow.events.length >= 2 ? workflow.events : [];
-  const eventName = selectedEvent === "all" || events.some((row) => row.event === selectedEvent) ? selectedEvent : events[0]?.event;
-  const event = events.find((row) => row.event === eventName);
-  const timing = event?.timing ?? workflow?.timing ?? data?.timing;
+  // The shared choice names a workflow of this repository; if its timing is not in the summary there is nothing to show for it, never another workflow's numbers.
+  const workflow = filter.workflow ? data?.workflows.find((row) => row.id === filter.workflow!.id) : undefined;
+  const event = filter.events.length > 0 && filter.event !== "all" ? workflow?.events?.find((row) => row.event === filter.event) : undefined;
+  const timing = filter.workflow ? event?.timing ?? workflow?.timing : data?.timing;
   const successful = event?.passed ?? workflow?.passed ?? repo.ciOutcomes?.success ?? 0;
   return <Card role="region" aria-label="CI run timings" className="space-y-4 border-border p-4 sm:p-5">
-    <div className="flex flex-wrap items-start justify-between gap-3">
-      <div><h4 className="text-sm font-medium">CI run timings</h4><p className="mt-1 text-xs text-muted-foreground">successful runs only{events.length > 0 && ` · ${event?.event ?? "all events"}`}</p></div>
-      <div className="flex flex-wrap items-center gap-3">
-      {data && <label className="flex items-center gap-2 text-xs text-muted-foreground">Summary workflow
-        <span className="relative inline-block">
-          <select aria-label="Timing workflow" value={workflow ? String(workflow.id) : "all"} onChange={(event) => setSelectedWorkflow(event.target.value)} className="h-9 max-w-64 appearance-none rounded-md border border-input bg-background pl-3 pr-9 text-sm text-foreground">
-            <option value="all">All workflows</option>
-            {data.workflows.map((row) => <option key={row.id} value={row.id}>{row.name}</option>)}
-          </select>
-          <Icon name="ChevronDown" aria-hidden className={`pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 ${chevronClass}`} />
-        </span>
-      </label>}
-      {events.length > 0 && <label className="flex items-center gap-2 text-xs text-muted-foreground">Event
-        <span className="relative inline-block">
-          <select aria-label="Timing event" value={event?.event ?? "all"} onChange={(e) => setSelectedEvent(e.target.value)} className="h-9 max-w-64 appearance-none rounded-md border border-input bg-background pl-3 pr-9 text-sm text-foreground">
-            <option value="all">All events</option>
-            {events.map((row) => <option key={row.event} value={row.event}>{row.event} · {plural(row.total, "run")}</option>)}
-          </select>
-          <Icon name="ChevronDown" aria-hidden className={`pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 ${chevronClass}`} />
-        </span>
-      </label>}
-      </div>
+    <div className="space-y-1">
+      <h4 className="text-sm font-medium">CI run timings</h4>
+      <FilterMeta filter={filter} label="Timing" pickers notes={[<span key="note">successful runs only</span>]} />
     </div>
     {!data || !timing ? repo.pending?.includes("ci") ? <LoadingSkeleton label="Loading CI timings" className="space-y-4">
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">{[0, 1, 2].map((key) => <div key={key} className="space-y-2"><Skeleton className="h-3 w-20" /><Skeleton className="h-8 w-24 max-w-full" /></div>)}</div>
-      <Skeleton className="h-3 w-3/4" /><div className="grid grid-cols-1 gap-4 md:grid-cols-2"><Skeleton className="h-5 w-40" /><Skeleton className="h-5 w-40" /></div>
-    </LoadingSkeleton> : <p className="text-sm text-muted-foreground">{unavailable(repo)}</p> : <>
-      <dl className="grid grid-cols-1 gap-4 sm:grid-cols-3 sm:gap-6">{([
+      <div className="grid grid-cols-1 gap-4 @min-[40rem]:grid-cols-3">{[0, 1, 2].map((key) => <div key={key} className="space-y-2"><Skeleton className="h-3 w-20" /><Skeleton className="h-8 w-24 max-w-full" /></div>)}</div>
+      <Skeleton className="h-3 w-3/4" /><div className="grid grid-cols-1 gap-4 @min-[40rem]:grid-cols-2"><Skeleton className="h-5 w-40" /><Skeleton className="h-5 w-40" /></div>
+    </LoadingSkeleton> : <p className="text-sm text-muted-foreground">{data && filter.workflow ? "No timing for this workflow in the range." : unavailable(repo)}</p> : <>
+      <dl className="grid grid-cols-1 gap-4 @min-[40rem]:grid-cols-3 @min-[40rem]:gap-6">{([
         ["Median", timing.medianMs], ["Average", timing.averageMs], ["P95", timing.p95Ms],
       ] as const).map(([label, value]) => <div key={label} className="min-w-0"><dt className="text-xs text-muted-foreground" title={label === "P95" ? "95% of measured successful runs finish within this time or faster; about 5% take longer." : undefined}>{label}</dt><dd className="mt-1 break-words text-2xl font-semibold tracking-tight tabular-nums">{elapsed(value)}</dd></div>)}</dl>
       {!workflow && <p className="text-xs text-muted-foreground">Short automation runs can dominate the combined median.</p>}
       <p className="text-xs text-muted-foreground">Total elapsed: {elapsed(timing.count ? timing.totalMs : null)}</p>
       {timing.count < successful && <p className="text-xs text-muted-foreground">Timing available for {timing.count} of {successful} successful runs</p>}
-      <div className="grid grid-cols-1 items-start gap-4 md:grid-cols-2">
+      <div className="grid grid-cols-1 items-start gap-4 @min-[40rem]:grid-cols-2">
       {data.workflows.length > 0 && <details className="border-t border-border pt-3">
         <Summary className="text-sm">By workflow · {data.workflows.length}</Summary>
         <div className="mt-3 flex items-center justify-between gap-3 text-xs text-muted-foreground"><span>Slowest averages first</span><span>Average</span></div>
