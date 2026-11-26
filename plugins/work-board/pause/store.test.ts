@@ -56,9 +56,9 @@ it("ends a pause on a new linked executor or an agent takeover, but not on an ow
   store.tasks.upsertTaskThread({ taskId: task.id, threadId: "thr_other", title: "Worker", presetName: "Agent", liveStatus: "idle" });
   expect(db.prepare("SELECT end_reason FROM pause_log WHERE event='end'").get()).toEqual({ end_reason: "takeover" });
   startManualPause(db, task.id, "Waiting", 60_000, "thr_example");
+  // A turn start alone ends nothing: only real input admitted by the dispatch gate does.
   store.tasks.updateTaskThreadStatus(store.tasks.listTaskThreads(task.id)[0]!.id, "working");
-  expect(db.prepare("SELECT end_reason FROM pause_log WHERE event='end' ORDER BY id DESC").get()).toEqual({ end_reason: "turn_started" });
-  startManualPause(db, task.id, "Waiting", 60_000, "thr_example");
+  expect(db.prepare("SELECT count(*) AS n FROM task_pauses").get()).toEqual({ n: 1 });
   store.tasks.createComment({ taskId: task.id, kind: "agent", authorName: "Agent", threadId: "thr_new", body: "Taking over" });
   expect(db.prepare("SELECT end_reason FROM pause_log WHERE event='end' ORDER BY id DESC").get()).toEqual({ end_reason: "takeover" });
   startManualPause(db, task.id, "Waiting", 60_000, "thr_example");

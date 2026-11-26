@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
-import { deliverWithReceipt, searchAttentionMarker, type HistoryCursor, type Receipt } from "../steer";
+import { deliverWithReceipt, executorMarker, searchAttentionMarker, type HistoryCursor, type Receipt } from "../steer";
 import { errorMessage } from "../shared/errors";
 import { managerProblemText, type ManagerLookup } from "../shared/attention";
 import { publishProjectsChanged, publishSettingsChanged } from "../api";
@@ -339,9 +339,9 @@ function createService(bb: BbPluginApi) {
         const executors = threads.filter(thread => !thread.archivedAt && !thread.deletedAt);
         if (!executors.length) outcome = "none";
         const fixes: Record<string, string> = { no_active_thread: "continue the work", no_open_pr: "open or link the PR", pr_state_unavailable: "check that the linked PR is reachable", closed_unmerged_pr: "reopen, replace or exclude the closed PR" };
-        const text = `${group[0]!.task_key} is flagged by Work Board: ${group.map(row => SIGNAL_TEXT[row.signal] ?? row.signal).join("; ")}. Within 10 minutes: ${group.map(row => fixes[row.signal]).join("; ")}; or, if you wait for something, \`bb work-board pause ${group[0]!.task_key} --reason \"<why>\" --for <duration>\`; or, if you are not working on it, \`bb work-board update ${group[0]!.task_key} --status todo\`. Otherwise the project manager is told.`;
+        const text = `${group[0]!.task_key} is flagged by Work Board: ${group.map(row => SIGNAL_TEXT[row.signal] ?? row.signal).join("; ")}. Within 10 minutes: ${group.map(row => fixes[row.signal]).join("; ")}; or, if you wait for something, \`bb work-board pause ${group[0]!.task_key} --reason \"<why>\" --for <duration>\`; or, if you are not working on it, \`bb work-board update ${group[0]!.task_key} --status todo\`. If the card is already paused, nothing is needed. Otherwise the project manager is told.`;
         for (const thread of executors) {
-          const receipt = await deliverWithReceipt(bb, thread.id, text, `<!-- work-board-executor:${group[0]!.id} -->`);
+          const receipt = await deliverWithReceipt(bb, thread.id, text, executorMarker(group[0]!.id), { fresh: true });
           if (receipt.outcome === "appended" || receipt.outcome === "queued" || receipt.outcome === "inline") outcome = "sent";
           else if (receipt.outcome !== "failed" && outcome !== "sent") outcome = "unknown";
           else if (receipt.outcome === "failed") bb.log.warn(`Executor notice failed for ${thread.id}: ${receipt.error}`);

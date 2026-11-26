@@ -46,6 +46,11 @@ export function defaultTaskThreadId(store: TasksStore, taskId: string, excludeCo
 
 export const QUEUED_NOTICE_SEPARATOR = "\n\n---\n\n";
 
+/** An executor reminder carries one of these markers; its queue row is never merged into or extended, so it stays one marker for one card. */
+export const EXECUTOR_MARKER_PREFIX = "<!-- work-board-executor:";
+export const executorMarker = (occurrenceId: string) => `${EXECUTOR_MARKER_PREFIX}${occurrenceId} -->`;
+export const isExecutorReminderText = (text: string) => text.includes(EXECUTOR_MARKER_PREFIX);
+
 /** bb's origin line, so the receiving agent reads a Work Board message as the plugin's, not the owner's words. */
 export const withPluginHeader = (pluginId: string, text: string) => `[bb message from plugin:${pluginId}]\n\n${text}`;
 
@@ -66,6 +71,7 @@ async function appendToQueuedNotice(
         !last ||
         !part ||
         part.type !== "text" ||
+        isExecutorReminderText(part.text) ||
         last.originPluginId !== bb.pluginId ||
         // bb marks a row held for a busy thread `waiting`; both states are still unsent.
         (last.state !== "queued" && last.state !== "waiting") ||
@@ -508,7 +514,7 @@ async function appendMarked(bb: BbPluginApi, threadId: string, text: string, mar
       return { kind: "done", receipt: { outcome: "failed", error: `Queue unreadable: ${errorMessage(error)}` } };
     }
     const part = last?.content.length === 1 ? last.content[0] : undefined;
-    if (!last || !part || part.type !== "text" || last.originPluginId !== bb.pluginId || (last.state !== "queued" && last.state !== "waiting") || !last.editable) return { kind: "none" };
+    if (!last || !part || part.type !== "text" || isExecutorReminderText(part.text) || last.originPluginId !== bb.pluginId || (last.state !== "queued" && last.state !== "waiting") || !last.editable) return { kind: "none" };
     try {
       await bb.sdk.threads.queuedMessages.update({ threadId, queuedMessageId: last.id, expectedUpdatedAt: last.updatedAt, input: [{ ...part, text: part.text + QUEUED_NOTICE_SEPARATOR + text }] });
       return { kind: "done", receipt: { outcome: "appended", queuedMessageId: last.id } };

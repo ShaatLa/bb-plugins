@@ -1,6 +1,7 @@
-import { createFakePluginHost, makeThreadResponse } from "@get-bb/plugin-sdk/testing";
+import { createFakePluginHost, makeMessageDispatchHookContext, makeThreadResponse } from "@get-bb/plugin-sdk/testing";
 import { expect, it } from "vitest";
 import { createStore } from "../api";
+import { registerDispatchGate } from "../attention/dispatch-gate";
 import { setPauseMode } from "./store";
 import { sweepPauseSignals } from "./signals";
 
@@ -82,6 +83,8 @@ it("holds a turn-start latch until a real idle event and a mode change clears it
   setPauseMode(db, project.id, "on");
   harness.sdk.stub("threads.list", async () => [{ ...makeThreadResponse({ id: "thr_example", status: "idle" }), activity: { activeBackgroundAgentCount: 0, activeBackgroundCommandCount: 1, activePlanModeCount: 0, activeWorkflowCount: 0 } }]);
   await sweepPauseSignals(bb);
+  registerDispatchGate(bb);
+  await harness.registrations.hooks["message.dispatch"]!(makeMessageDispatchHookContext({ thread: { id: "thr_example" }, attempt: "start-turn", input: { text: "continue" } }));
   store.tasks.updateTaskThreadStatus(link.id, "working");
   store.tasks.updateTaskThreadStatus(link.id, "idle");
   await sweepPauseSignals(bb);

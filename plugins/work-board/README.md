@@ -916,7 +916,7 @@ The normal CLI enforces this workflow. BB cannot authenticate panel actions sepa
 
 ### Pausing work
 
-When an unfinished card is waiting, use `bb work-board pause EXA-1 --reason "waiting for a release" --for 2h` (1 minute to 8 hours). `bb work-board resume EXA-1` ends the pause; `bb work-board pause log EXA-1 --json` shows its history. Work or a status change also ends it. Pauses suppress stale-status pilot notices while they last.
+When an unfinished card is waiting, use `bb work-board pause EXA-1 --reason "waiting for a release" --for 2h` (1 minute to 8 hours). `bb work-board resume EXA-1` ends the pause; `bb work-board pause log EXA-1 --json` shows its history. A message that starts a turn on the linked thread, or a status change, also ends it; a Work Board reminder never does, and one that went stale while queued is deleted instead of delivered. Pauses suppress stale-status pilot notices while they last.
 
 In projects with automatic pause enabled, an idle linked thread's background commands, agents and workflows pause its card until the work ends or eight hours pass. Held and owner-question waits are recorded as well. Automatic pause can be Off, A/B test, or On in Manager settings; `show` identifies the card's arm. In the treatment arm, the executor receives a notice first and has ten minutes to act before the manager is told. `bb work-board pause report --project EXA` compares both arms and reports sampling gaps and the proposed keep rule. The owner decides whether to keep it.
 

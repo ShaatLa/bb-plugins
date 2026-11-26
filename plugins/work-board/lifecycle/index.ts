@@ -3,7 +3,6 @@ import { publishCommentsChanged, type TasksApiStore } from "../api";
 import type { TaskThread, TaskThreadLiveStatus } from "../db";
 import { createSystemComment, publishThreadsChanged } from "../delegate";
 import { errorMessage } from "../shared/errors";
-import { endPauses } from "../pause/store";
 import { reconcileTaskThreads, recordThreadLink } from "./thread-links";
 import { isClosedStatus } from "../shared/workflow-policy";
 import { attachNamedTaskThread } from "./discovery";
@@ -128,7 +127,6 @@ function transitionTrackedThread(
     const db = bb.storage.database();
     const at = new Date().toISOString();
     for (const link of links) {
-      if (link.hasPause) endPauses(db, link.taskId, "turn_started", threadId);
       if (link.sampling) db.prepare<[string, string]>("UPDATE task_threads SET last_working_at=? WHERE id=?").run(at, link.id);
     }
   });

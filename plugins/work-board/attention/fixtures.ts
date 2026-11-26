@@ -18,6 +18,9 @@ export function createFakeThreads() {
     rows: [] as Row[],
     sends: 0,
     updates: 0,
+    deletes: 0,
+    /** Queued-row deletes reject. */
+    deleteFail: false,
     requests: [] as { threadId: string; seq: number; requestId: string; text: string; at: number; extra?: Record<string, unknown>; grouped?: boolean }[],
     listCalls: 0,
     acceptedCalls: 0,
@@ -82,6 +85,13 @@ export function createFakeThreads() {
           if (state.queueHang || state.queueCalls === state.queueHangOnCall) await new Promise((_, reject) => signal?.addEventListener("abort", () => reject(fault("queue timed out"))));
           if (state.listGateOnce) { const gate = state.listGateOnce; state.listGateOnce = undefined; await gate; return []; }
           return state.rows.filter((row) => row.threadId === threadId);
+        },
+        delete: async ({ queuedMessageId }: { threadId: string; queuedMessageId: string }) => {
+          state.deletes++;
+          if (state.deleteFail) throw fault("delete failed");
+          const row = state.rows.find((candidate) => candidate.id === queuedMessageId);
+          if (row) state.rows.splice(state.rows.indexOf(row), 1);
+          return { ok: true };
         },
         update: async ({ queuedMessageId, input, expectedUpdatedAt }: { queuedMessageId: string; input: { text: string }[]; expectedUpdatedAt: string }) => {
           state.updates++;

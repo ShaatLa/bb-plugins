@@ -2384,13 +2384,12 @@ export function createTasksStore(db: PluginDatabase, log: (message: string) => v
   }
 
   function listLifecycleTaskThreads(threadId: string) {
-    return db.prepare<[string], TaskThreadRow & { has_pause: number; has_latch: number; sampling: number }>(`
+    return db.prepare<[string], TaskThreadRow & { has_latch: number; sampling: number }>(`
       SELECT task_threads.*,
-        EXISTS(SELECT 1 FROM task_pauses p WHERE p.task_id=task_threads.task_id AND p.signal IN ('manual','background')) AS has_pause,
         EXISTS(SELECT 1 FROM pause_latches l WHERE l.task_id=task_threads.task_id AND l.thread_id=task_threads.thread_id AND l.release_on='idle') AS has_latch,
         EXISTS(SELECT 1 FROM tasks t JOIN pause_modes m ON m.project_id=t.project_id WHERE t.id=task_threads.task_id AND m.mode IN ('ab','on')) AS sampling
       FROM task_threads WHERE thread_id = ? ORDER BY task_id, id
-    `).all(threadId).map(row => ({ ...taskThreadFromRow(row), hasPause: !!row.has_pause, hasLatch: !!row.has_latch, sampling: !!row.sampling }));
+    `).all(threadId).map(row => ({ ...taskThreadFromRow(row), hasLatch: !!row.has_latch, sampling: !!row.sampling }));
   }
 
   function requireTaskThread(id: string): TaskThread {
@@ -2498,12 +2497,8 @@ export function createTasksStore(db: PluginDatabase, log: (message: string) => v
     id: string,
     liveStatus: TaskThreadLiveStatus,
   ): TaskThread {
-    const row = db.prepare<[string], TaskThreadRow & { has_pause: number }>("SELECT task_threads.*, EXISTS(SELECT 1 FROM task_pauses p WHERE p.task_id=task_threads.task_id AND p.signal IN ('manual','background')) AS has_pause FROM task_threads WHERE id = ?").get(id);
-    if (!row) throw new Error(`Task thread not found: ${id}`);
-    const previous = taskThreadFromRow(row);
+    if (!db.prepare<[string]>("SELECT 1 FROM task_threads WHERE id = ?").get(id)) throw new Error(`Task thread not found: ${id}`);
     const at = nowIso();
-    if (row.has_pause && (liveStatus === "starting" || liveStatus === "working") && previous.liveStatus !== liveStatus)
-      endPauses(db, previous.taskId, "turn_started", previous.threadId);
     db.prepare<[TaskThreadLiveStatus, string, TaskThreadLiveStatus, TaskThreadLiveStatus, string, string]>(
       "UPDATE task_threads SET live_status = ?, updated_at = ?, last_working_at = CASE WHEN ? IN ('starting','working') AND live_status <> ? THEN ? ELSE last_working_at END WHERE id = ?",
     ).run(liveStatus, at, liveStatus, liveStatus, at, id);
