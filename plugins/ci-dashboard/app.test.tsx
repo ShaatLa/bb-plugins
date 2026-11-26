@@ -1370,7 +1370,7 @@ test("history chart cards are switchable, never duplicate a chart and remember t
     expect(latest.textContent).toContain("1,234 added, 840 deleted");
     expect(latest.getAttribute("aria-label")).toContain("1,234 added, 840 deleted");
     // Grouped bars share the largest single part as scale: the scale tops at 1,500, additions 1234 → 82%, deletions 840 → 56%.
-    const [added, deleted] = ["bg-diff-added", "bg-diff-removed"].map((name) => latest.querySelector<HTMLElement>(`.${name}`)!);
+    const [added, deleted] = ["bg-diff-added/60", "bg-diff-removed/60"].map((name) => latest.querySelector<HTMLElement>(`[class~="${name}"]`)!);
     expect(added.compareDocumentPosition(deleted) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(added.parentElement).toBe(deleted.parentElement);
     expect(parseFloat(added.style.height)).toBeCloseTo(1234 / 1500 * 100, 1);

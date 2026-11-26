@@ -28,7 +28,7 @@ type ChartSpec = {
 };
 const count = (value: number) => value.toLocaleString();
 const compact = new Intl.NumberFormat(undefined, { notation: "compact", maximumFractionDigits: 1 });
-const DEFAULT_PART = { tone: "bg-diff-added" };
+const DEFAULT_PART = { tone: "bg-diff-added/60" };
 export const CHARTS: Record<ChartKey, ChartSpec> = {
   passRate: { title: "CI pass rate over time", unit: "percent", format: (value) => `${value.toLocaleString(undefined, { maximumFractionDigits: 1 })}%`, fixedMax: 100 },
   deployments: { title: "Deployment throughput", unit: "count", format: count },
@@ -42,8 +42,8 @@ export const CHARTS: Record<ChartKey, ChartSpec> = {
     sample: (n, runs) => `median of ${n} first-attempt ${runs}` },
   commits: { title: "Commits to default branch", unit: "count", format: count, source: "commitActivity" },
   lines: { title: "Lines changed", unit: "count", format: count, source: "commitActivity", parts: [
-    { key: "additions", sign: "+", word: "added", tone: "bg-diff-added" },
-    { key: "deletions", sign: "−", word: "deleted", tone: "bg-diff-removed" },
+    { key: "additions", sign: "+", word: "added", tone: "bg-diff-added/60" },
+    { key: "deletions", sign: "−", word: "deleted", tone: "bg-diff-removed/60" },
   ] },
 };
 export const CHART_KEYS = Object.keys(CHARTS) as ChartKey[];
@@ -175,7 +175,7 @@ export function HistoryChart({ chart, filter, options, selectLabel, onChange, re
           <ChevronSelect id={headingId} label={selectLabel} value={chart} onChange={(value) => onChange(value as ChartKey)} className="text-sm font-medium text-foreground hover:text-foreground/80">
             {options.map((key) => <option key={key} value={key}>{CHARTS[key].title}</option>)}
           </ChevronSelect>
-          <Button type="button" variant="ghost" size="icon" className={`shrink-0 ${expanded ? "" : "hidden xl:inline-flex"}`} aria-label={`${expanded ? "Restore" : "Expand"} ${title}`} aria-expanded={expanded} aria-controls={`${headingId}-chart`} onClick={(event) => { event.currentTarget.focus(); onToggle(); }}>
+          <Button type="button" variant="ghost" size="icon" className={`-my-1.5 shrink-0 ${expanded ? "" : "hidden xl:inline-flex"}`} aria-label={`${expanded ? "Restore" : "Expand"} ${title}`} aria-expanded={expanded} aria-controls={`${headingId}-chart`} onClick={(event) => { event.currentTarget.focus(); onToggle(); }}>
             <Icon name={expanded ? "Minimize2" : "Maximize2"} aria-hidden className="size-4" />
           </Button>
         </div>
@@ -186,10 +186,10 @@ export function HistoryChart({ chart, filter, options, selectLabel, onChange, re
           {ticks.map((tick) => <span key={tick} className="absolute right-0 translate-y-1/2" style={{ bottom: `${tick / top * 100}%` }}>{tickLabel(tick, unit)}</span>)}
         </div>
         <div className="min-w-0 flex-1">
-          {/* The positioned ancestor of the hover cards: they stay inside the plot whatever the bar. */}
+          {/* The bars grid below is the hover cards' positioned ancestor (the plot's box) and, being positioned, paints over the gridlines. */}
           <div className="relative h-32 border-b border-border">
             {ticks.filter((tick) => tick > 0).map((tick) => <span key={tick} aria-hidden="true" className="pointer-events-none absolute inset-x-0 border-t border-dashed border-border" style={{ bottom: `${tick / top * 100}%` }} />)}
-            <div className="grid h-full" style={{ gridTemplateColumns: columns, columnGap: gap }}>
+            <div className="relative grid h-full" style={{ gridTemplateColumns: columns, columnGap: gap }}>
               {series.map((point, index) => {
                 const since = index === 0 ? range.since : series[index - 1].date;
                 // Adjacent buckets share a boundary; include it only in the later bucket.

@@ -142,10 +142,10 @@ export function CiTiming({ repo, filter }: { repo: Metrics; filter: CiFilter }) 
       <FilterMeta filter={filter} label="Timing" pickers notes={[<span key="note">successful runs only</span>]} />
     </div>
     {!data || !timing ? repo.pending?.includes("ci") ? <LoadingSkeleton label="Loading CI timings" className="space-y-4">
-      <div className="grid grid-cols-1 gap-4 @min-[40rem]:grid-cols-3">{[0, 1, 2].map((key) => <div key={key} className="space-y-2"><Skeleton className="h-3 w-20" /><Skeleton className="h-8 w-24 max-w-full" /></div>)}</div>
+      <div className="grid grid-cols-1 gap-4 @min-[20rem]:grid-cols-3">{[0, 1, 2].map((key) => <div key={key} className="space-y-2"><Skeleton className="h-3 w-20" /><Skeleton className="h-8 w-24 max-w-full" /></div>)}</div>
       <Skeleton className="h-3 w-3/4" /><div className="grid grid-cols-1 gap-4 @min-[40rem]:grid-cols-2"><Skeleton className="h-5 w-40" /><Skeleton className="h-5 w-40" /></div>
     </LoadingSkeleton> : <p className="text-sm text-muted-foreground">{data && filter.workflow ? "No timing for this workflow in the range." : unavailable(repo)}</p> : <>
-      <dl className="grid grid-cols-1 gap-4 @min-[40rem]:grid-cols-3 @min-[40rem]:gap-6">{([
+      <dl className="grid grid-cols-1 gap-4 @min-[20rem]:grid-cols-3 @min-[40rem]:gap-6">{([
         ["Median", timing.medianMs], ["Average", timing.averageMs], ["P95", timing.p95Ms],
       ] as const).map(([label, value]) => <div key={label} className="min-w-0"><dt className="text-xs text-muted-foreground" title={label === "P95" ? "95% of measured successful runs finish within this time or faster; about 5% take longer." : undefined}>{label}</dt><dd className="mt-1 break-words text-2xl font-semibold tracking-tight tabular-nums">{elapsed(value)}</dd></div>)}</dl>
       {!workflow && <p className="text-xs text-muted-foreground">Short automation runs can dominate the combined median.</p>}

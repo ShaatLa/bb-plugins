@@ -18,6 +18,7 @@ export function FilterMeta({ filter, label, pickers, notes }: { filter: CiFilter
     </ChevronSelect></span>);
   items.push(...notes);
   return items.length > 0 ? <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
-    {items.flatMap((node, index) => index ? [<span key={`dot${index}`} aria-hidden="true">·</span>, node] : [node])}
+    {/* The separator wraps with the item after it, so no line ends on a lone dot. */}
+    {items.map((node, index) => index ? <span key={index} className="inline-flex items-center gap-x-2"><span aria-hidden="true">·</span>{node}</span> : node)}
   </div> : null;
 }
