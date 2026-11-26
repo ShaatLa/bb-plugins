@@ -52,6 +52,12 @@ describe('recipients: pinned rows', () => {
     expect(db.prepare('SELECT count(*) AS n FROM items WHERE read_at IS NULL').get()).toEqual({ n: 0 });
   });
 
+  it('takes a bb read of a pinned sub-session', async () => {
+    const { harness, db } = setup({ s: 5000 });
+    db.prepare("INSERT INTO sub_threads VALUES ('s')").run(); reply(db, 's', 1000);
+    expect((await recipients(harness, ['s'])).pinned).toMatchObject([{ threadId: 's', unread: 0 }]);
+  });
+
   it('leaves out an archived or deleted pinned thread', async () => {
     const { harness, db } = setup();
     reply(db, 'arch', 1); db.prepare("INSERT INTO archived_threads VALUES ('arch')").run();

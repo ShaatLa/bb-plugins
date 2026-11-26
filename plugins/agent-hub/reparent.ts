@@ -2,28 +2,30 @@ import { useEffect, useRef, useState } from 'react';
 import { useSdk, type PluginSidebarThread } from '@get-bb/plugin-sdk/app';
 
 // bb's pin order (its thread-list plugin): manual keys first when both have one, then the newest pin, the newest thread, the id.
-const byPin = (a: PluginSidebarThread, b: PluginSidebarThread) => (a.pinSortKey !== null && b.pinSortKey !== null && a.pinSortKey !== b.pinSortKey ? (a.pinSortKey < b.pinSortKey ? -1 : 1) : 0)
+export const byPin = (a: PluginSidebarThread, b: PluginSidebarThread) => (a.pinSortKey !== null && b.pinSortKey !== null && a.pinSortKey !== b.pinSortKey ? (a.pinSortKey < b.pinSortKey ? -1 : 1) : 0)
   || (b.pinnedAt ?? 0) - (a.pinnedAt ?? 0) || b.createdAt - a.createdAt || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
-// bb's Pinned group: pinned threads with all their descendants; a member whose parent is outside the group is one of its roots.
+// The Pinned group: top-level pinned threads with all their descendants. Unlike bb's sidebar, a pinned nested thread stays under its parent.
 export function pinnedTree(threads: readonly PluginSidebarThread[]) {
   const live = threads.filter(t => !t.isHidden && t.archivedAt === null), kids = new Map<string, PluginSidebarThread[]>();
   for (const t of live) if (t.parentThreadId) kids.set(t.parentThreadId, [...(kids.get(t.parentThreadId) ?? []), t]);
   const members = new Set<string>(), add = (t: PluginSidebarThread) => { if (members.has(t.id)) return; members.add(t.id); for (const k of kids.get(t.id) ?? []) add(k); };
-  for (const t of live) if (t.isPinned) add(t);
-  const roots = live.filter(t => members.has(t.id) && !(t.parentThreadId && members.has(t.parentThreadId))).sort(byPin);
+  const roots = live.filter(t => t.isPinned && !t.parentThreadId).sort(byPin);
+  roots.forEach(add);
   return { members, roots };
 }
 
 // Drop rules of bb's own sidebar (its thread-list plugin): a row's middle band nests, the top level takes only the session's own project,
-// a pinned root's edges reorder the Pinned group, and a pinned thread moved to the top level is unpinned.
+// and a pinned thread moved to the top level is unpinned. A pinned row's edges reorder the pinned rows of its own parent (or the top level),
+// which bb's reorderPinned accepts only while that parent is not pinned itself.
 export type ReparentTarget = { kind: 'nest'; threadId: string } | { kind: 'top'; projectId: string | null } | { kind: 'pin'; threadId: string; edge: 'before' | 'after' };
 export type ReparentDrop = { ok: false } | { ok: true; parentThreadId?: string | null; sectionId?: string | null; unpin: boolean; reorder?: { previousThreadId: string | null; nextThreadId: string | null } };
 export function decideDrop(threads: readonly PluginSidebarThread[], dragId: string, target: ReparentTarget, grouped: boolean): ReparentDrop | null {
   const byId = new Map(threads.map(t => [t.id, t])), drag = byId.get(dragId);
   if (!drag) return null;
   if (target.kind === 'pin') {
-    const roots = pinnedTree(threads).roots.map(t => t.id);
-    if (!roots.includes(dragId)) return { ok: false };
+    const parentId = byId.get(target.threadId)?.parentThreadId ?? null;
+    if (!drag.isPinned || drag.parentThreadId !== parentId || (parentId && byId.get(parentId)?.isPinned)) return { ok: false };
+    const roots = threads.filter(t => t.isPinned && !t.isHidden && t.archivedAt === null && t.parentThreadId === parentId).sort(byPin).map(t => t.id);
     const rest = roots.filter(id => id !== dragId), at = rest.indexOf(target.threadId) + (target.edge === 'after' ? 1 : 0);
     if (at < 0 || !rest.includes(target.threadId)) return null;
     const next = [...rest.slice(0, at), dragId, ...rest.slice(at)];
@@ -41,8 +43,8 @@ export function decideDrop(threads: readonly PluginSidebarThread[], dragId: stri
   // Walking up from the target finds the dragged session when the target is the session itself or one of its descendants.
   for (let t: PluginSidebarThread | undefined = parent, steps = 0; t && steps < 64; t = t.parentThreadId ? byId.get(t.parentThreadId) : undefined, steps++) if (t.id === dragId) return { ok: false };
   if (drag.parentThreadId === parent.id) return { ok: false };
-  // A section belongs to one project, so a nest across projects keeps the session's own section.
-  return { ok: true, parentThreadId: parent.id, ...(parent.projectId === drag.projectId ? { sectionId: parent.sectionId } : {}), unpin: drag.isPinned };
+  // A section belongs to one project, so a nest across projects keeps the session's own section. A pinned session keeps its pin under its new parent.
+  return { ok: true, parentThreadId: parent.id, ...(parent.projectId === drag.projectId ? { sectionId: parent.sectionId } : {}), unpin: false };
 }
 
 type Over = { key: string; target: ReparentTarget; edge?: 'before' | 'after'; drop: ReparentDrop | null };

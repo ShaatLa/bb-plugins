@@ -14,8 +14,8 @@ const thread = (id: string, fields: object = {}) => ({ ...idle, id, title: id.sl
 
 describe('decideDrop', () => {
   const threads = [thread('thr_root', { sectionId: 'sec_a' }), thread('thr_kid', { parentThreadId: 'thr_root', isPinned: true }), thread('thr_grandkid', { parentThreadId: 'thr_kid' }), thread('thr_other', { sectionId: 'sec_o' }), thread('thr_far', { projectId: 'proj_b', sectionId: 'sec_b' })];
-  it('nests under another session with its section, and unpins a pinned one', () => {
-    expect(decideDrop(threads, 'thr_kid', { kind: 'nest', threadId: 'thr_other' }, true)).toEqual({ ok: true, parentThreadId: 'thr_other', sectionId: 'sec_o', unpin: true });
+  it('nests under another session with its section, keeping a pinned one pinned', () => {
+    expect(decideDrop(threads, 'thr_kid', { kind: 'nest', threadId: 'thr_other' }, true)).toEqual({ ok: true, parentThreadId: 'thr_other', sectionId: 'sec_o', unpin: false });
   });
   it('keeps the session\'s own section when it nests under another project', () => {
     expect(decideDrop(threads, 'thr_other', { kind: 'nest', threadId: 'thr_far' }, true)).toEqual({ ok: true, parentThreadId: 'thr_far', unpin: false });
@@ -39,7 +39,7 @@ describe('decideDrop', () => {
 });
 
 describe('pinnedTree', () => {
-  it('orders roots as bb does and keeps a pinned root\'s descendants under it', () => {
+  it('orders top-level pins as bb does, with their descendants and without nested pins', () => {
     const roots = pinnedTree([
       thread('thr_late', { isPinned: true, pinnedAt: 30, pinSortKey: null, createdAt: 1 }),
       thread('thr_b', { isPinned: true, pinnedAt: 10, pinSortKey: 'b', createdAt: 1 }),
@@ -50,8 +50,9 @@ describe('pinnedTree', () => {
     ]);
     // bb compares manual keys only between two keyed pins, so each kind is checked on its own.
     expect(roots.roots.map(t => t.id).filter(id => id === 'thr_a' || id === 'thr_b')).toEqual(['thr_a', 'thr_b']);
-    expect(roots.roots.map(t => t.id).filter(id => id !== 'thr_a' && id !== 'thr_b')).toEqual(['thr_late', 'thr_early', 'thr_sub']);
-    expect([...roots.members].sort()).toEqual(['thr_a', 'thr_b', 'thr_early', 'thr_late', 'thr_sub', 'thr_subkid']);
+    expect(roots.roots.map(t => t.id).filter(id => id !== 'thr_a' && id !== 'thr_b')).toEqual(['thr_late', 'thr_early']);
+    // A pinned nested session stays under its parent, outside the group.
+    expect([...roots.members].sort()).toEqual(['thr_a', 'thr_b', 'thr_early', 'thr_late']);
   });
 });
 describe('decideDrop on Pinned', () => {
@@ -64,6 +65,13 @@ describe('decideDrop on Pinned', () => {
   ] as const)('reorders %s to %s %s', (drag, target, edge, reorder) => {
     expect(decideDrop(all, drag, { kind: 'pin', threadId: target, edge }, false)).toEqual({ ok: true, unpin: false, reorder });
   });
+  it('reorders pinned siblings under an unpinned parent, and refuses under a pinned parent or from another parent', () => {
+    const kids = [thread('thr_mom'), thread('thr_pinmom', { isPinned: true, pinnedAt: 1 }), ...['thr_k1', 'thr_k2'].map((id, i) => thread(id, { parentThreadId: 'thr_mom', isPinned: true, pinnedAt: 9 - i, pinSortKey: null, createdAt: 1 })),
+      ...['thr_q1', 'thr_q2'].map((id, i) => thread(id, { parentThreadId: 'thr_pinmom', isPinned: true, pinnedAt: 9 - i, pinSortKey: null, createdAt: 1 }))];
+    expect(decideDrop(kids, 'thr_k2', { kind: 'pin', threadId: 'thr_k1', edge: 'before' }, false)).toEqual({ ok: true, unpin: false, reorder: { previousThreadId: null, nextThreadId: 'thr_k1' } });
+    expect(decideDrop(kids, 'thr_q2', { kind: 'pin', threadId: 'thr_q1', edge: 'before' }, false)).toEqual({ ok: false });
+    expect(decideDrop(kids, 'thr_q1', { kind: 'pin', threadId: 'thr_k1', edge: 'before' }, false)).toEqual({ ok: false });
+  });
   it('leaves an unchanged order alone and refuses a session that is not a pinned root', () => {
     expect(decideDrop(all, 'thr_p1', { kind: 'pin', threadId: 'thr_p2', edge: 'before' }, false)).toBeNull();
     expect(decideDrop(all, 'thr_p1', { kind: 'pin', threadId: 'thr_p1', edge: 'after' }, false)).toBeNull();
@@ -72,12 +80,13 @@ describe('decideDrop on Pinned', () => {
 });
 
 type Row = { id: string; fields?: object };
-function setup({ rows, contacts, grouped = false, update = vi.fn(async () => ({})), unpin = vi.fn(async () => ({})), reorderPinned = vi.fn(async () => ({})), unreadOf = {} }: { rows: Row[]; contacts: string[]; grouped?: boolean; update?: ReturnType<typeof vi.fn>; unpin?: ReturnType<typeof vi.fn>; reorderPinned?: ReturnType<typeof vi.fn>; unreadOf?: Record<string, number> }) {
+function setup({ sidebar = false, rows, contacts, grouped = false, update = vi.fn(async () => ({})), unpin = vi.fn(async () => ({})), reorderPinned = vi.fn(async () => ({})), unreadOf = {}, subUnread = {} }: { rows: Row[]; contacts: string[]; grouped?: boolean; update?: ReturnType<typeof vi.fn>; unpin?: ReturnType<typeof vi.fn>; reorderPinned?: ReturnType<typeof vi.fn>; unreadOf?: Record<string, number>; subUnread?: Record<string, number>; sidebar?: boolean }) {
   localStorage.setItem('bb-plugin-answers:page:open-subs', JSON.stringify(contacts));
   const threads = rows.map(r => thread(r.id, r.fields)), onSelect = vi.fn();
-  function Contacts() { return <ContactsList model={useContacts(undefined)} onSelect={onSelect} />; }
+  // The sidebar list is the same component with bb's active thread and a navigate callback.
+  function Contacts() { return sidebar ? <ContactsList model={useContacts(undefined)} onSelect={onSelect} activeThreadId={null} onNavigate={() => {}} /> : <ContactsList model={useContacts(undefined)} onSelect={onSelect} />; }
   const asked: unknown[] = [], recipient = (id: string) => { const t = threads.find(t => t.id === id)!; return { threadId: id, threadTitle: t.title, projectId: t.projectId, projectName: t.projectId === 'proj_a' ? 'Alpha' : 'Beta', unread: unreadOf[id] ?? 0, lastAt: 1, preview: '' }; };
-  const slot = renderSlot({ component: Contacts }, {}, { sdk: { threads: { update, unpin, reorderPinned } }, rpc: { getPreferences: () => ({ groupByProject: grouped }), recipients: (input: { pinned?: string[] }) => { asked.push(input); return { recipients: contacts.map(recipient), pinned: (input?.pinned ?? []).map(recipient) }; } }, sidebarThreads: { threads, projects: [{ id: 'proj_a', name: 'Alpha', isPersonal: false }, { id: 'proj_b', name: 'Beta', isPersonal: false }] } } as any);
+  const slot = renderSlot({ component: Contacts }, {}, { sdk: { threads: { update, unpin, reorderPinned } }, rpc: { getPreferences: () => ({ groupByProject: grouped }), recipients: (input: { pinned?: string[] }) => { asked.push(input); return { recipients: contacts.map(recipient), subUnread, pinned: (input?.pinned ?? []).map(recipient) }; } }, sidebarThreads: { threads, projects: [{ id: 'proj_a', name: 'Alpha', isPersonal: false }, { id: 'proj_b', name: 'Beta', isPersonal: false }] } } as any);
   return { slot, update, unpin, reorderPinned, onSelect, asked };
 }
 // jsdom has no layout: the element under the pointer is the one a test names, at the given height within it.
@@ -96,11 +105,11 @@ it('nests a sub-session under another contact by dropping it on the row, without
   await waitFor(() => expect(update).toHaveBeenCalledExactlyOnceWith({ threadId: 'thr_kid', parentThreadId: 'thr_other', sectionId: 'sec_o' }));
   expect(onSelect).not.toHaveBeenCalled();
 });
-it('unpins a pinned session before nesting it, as bb does', async () => {
+it('keeps a pinned session pinned when nesting it', async () => {
   const calls: string[] = [];
   const { slot } = setup({ rows: [{ id: 'thr_parent' }, { id: 'thr_kid', fields: { parentThreadId: 'thr_parent', isPinned: true } }, { id: 'thr_other' }], contacts: ['thr_parent', 'thr_other'], update: vi.fn(async () => { calls.push('update'); }), unpin: vi.fn(async () => { calls.push('unpin'); }) });
   drag(await row(slot, 'kid'), await row(slot, 'other'));
-  await waitFor(() => expect(calls).toEqual(['unpin', 'update']));
+  await waitFor(() => expect(calls).toEqual(['update']));
 });
 it('moves a sub-session to the top level from the edge of a contact row', async () => {
   const { slot, update } = setup({ rows: [{ id: 'thr_parent', fields: { sectionId: 'sec_p' } }, { id: 'thr_kid', fields: { parentThreadId: 'thr_parent' } }, { id: 'thr_other' }], contacts: ['thr_parent', 'thr_other'] });
@@ -200,12 +209,42 @@ describe('Pinned group', () => {
     await slot.findByRole('group', { name: 'Pinned' });
     expect(slot.getAllByText('both')).toHaveLength(1);
   });
-  it('moves a pinned sub-session out of its parent\'s tree into Pinned', async () => {
-    const { slot } = setup({ rows: [{ id: 'thr_parent' }, { id: 'thr_kid', fields: { parentThreadId: 'thr_parent', ...pin(10) } }], contacts: ['thr_parent'] });
-    const group = await slot.findByRole('group', { name: 'Pinned' });
-    expect(within(group).getByText('kid')).toBeTruthy();
-    expect(slot.getAllByText('kid')).toHaveLength(1);
-    expect(slot.queryByRole('list', { name: 'Sub-sessions of parent' })).toBeNull();
+  it('keeps a pinned sub-session under its parent, first among its siblings, and listed while collapsed', async () => {
+    const { slot } = setup({ rows: [{ id: 'thr_parent' }, { id: 'thr_plain', fields: { parentThreadId: 'thr_parent' } }, { id: 'thr_kid', fields: { parentThreadId: 'thr_parent', ...pin(10) } }], contacts: ['thr_parent'] });
+    const subs = await slot.findByRole('list', { name: 'Sub-sessions of parent' });
+    expect(slot.queryByRole('group', { name: 'Pinned' })).toBeNull();
+    expect(within(subs).getAllByRole('button').map(b => b.textContent)).toEqual([expect.stringContaining('kid'), expect.stringContaining('plain')]);
+    fireEvent.click(slot.getByRole('button', { name: 'Hide sub-sessions' }));
+    await waitFor(() => expect(within(slot.getByRole('list', { name: 'Sub-sessions of parent' })).getAllByRole('button').map(b => b.textContent)).toEqual([expect.stringContaining('kid')]));
+  });
+  it.each([false, true])('lists the top-level parent of a nested pin even without a conversation, and asks for rows for both (sidebar: %s)', async sidebar => {
+    const { slot, asked } = setup({ sidebar, rows: [{ id: 'thr_quiet' }, { id: 'thr_kid', fields: { parentThreadId: 'thr_quiet', ...pin(10) } }, { id: 'thr_plain' }], contacts: ['thr_plain'] });
+    const subs = await slot.findByRole('list', { name: 'Sub-sessions of quiet' });
+    expect(within(subs).getByText('kid')).toBeTruthy();
+    expect(asked).toContainEqual({ pinned: ['thr_kid', 'thr_quiet'] });
+  });
+  it('asks for a row for a nested pin inside a pinned root too, and badges it from that row', async () => {
+    const { slot, asked } = setup({ rows: [{ id: 'thr_top', fields: pin(20) }, { id: 'thr_kid', fields: { parentThreadId: 'thr_top', ...pin(10) } }], contacts: [], unreadOf: { thr_kid: 4 } });
+    const subs = await slot.findByRole('list', { name: 'Sub-sessions of top' });
+    await waitFor(() => expect(within(subs).getByLabelText('4 unread')).toBeTruthy());
+    expect(asked).toContainEqual({ pinned: ['thr_kid', 'thr_top'] });
+  });
+  it('badges a nested pin from its own row, not from subUnread', async () => {
+    const { slot } = setup({ rows: [{ id: 'thr_parent' }, { id: 'thr_kid', fields: { parentThreadId: 'thr_parent', ...pin(10) } }, { id: 'thr_read', fields: { parentThreadId: 'thr_parent', ...pin(5) } }], contacts: ['thr_parent'], unreadOf: { thr_kid: 2, thr_read: 0 }, subUnread: { thr_read: 3 } });
+    const subs = await slot.findByRole('list', { name: 'Sub-sessions of parent' });
+    await waitFor(() => expect(within(subs).getByLabelText('2 unread')).toBeTruthy());
+    expect(within(subs).queryByLabelText('3 unread')).toBeNull();
+  });
+  it('reorders pinned sub-sessions of one parent from a sibling\'s edge, and refuses an unpinned one there', async () => {
+    const { slot, reorderPinned } = setup({ rows: [{ id: 'thr_parent' }, { id: 'thr_k1', fields: { parentThreadId: 'thr_parent', ...pin(20) } }, { id: 'thr_k2', fields: { parentThreadId: 'thr_parent', ...pin(10) } }, { id: 'thr_free', fields: { parentThreadId: 'thr_parent' } }], contacts: ['thr_parent'] });
+    const ghost = () => slot.queryByRole('status', { name: 'Dragged session' });
+    drag(await row(slot, 'free'), await row(slot, 'k1'), 0.1, false);
+    await waitFor(() => expect(ghost()?.textContent).toBe("freeCan't drop here"));
+    fireEvent.keyDown(window, { key: 'Escape' });
+    drag(await row(slot, 'k2'), await row(slot, 'k1'), 0.1, false);
+    await waitFor(() => expect(ghost()?.textContent).toBe('k2Move among pinned sub-sessions'));
+    fireEvent.pointerUp(window, { clientX: 0, clientY: 10 });
+    await waitFor(() => expect(reorderPinned).toHaveBeenCalledExactlyOnceWith({ threadId: 'thr_k2', previousThreadId: null, nextThreadId: 'thr_k1' }));
   });
   it('shows a pinned session instead of the empty state', async () => {
     const { slot } = setup({ rows: [{ id: 'thr_only', fields: pin(10) }], contacts: [] });

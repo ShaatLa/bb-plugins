@@ -10,7 +10,7 @@ import { Avatar, ago } from './inbox';
 import { useSteadyError } from './app';
 import { EmptyState } from './empty';
 import { beginContactDrag, mountSidebarContacts, selectContact, useSelectedContact } from './open-chat';
-import { pinnedTree, useReparent } from './reparent';
+import { byPin, pinnedTree, useReparent } from './reparent';
 import { createPortal } from 'react-dom';
 const errorText = (e: unknown) => e instanceof Error ? e.message : String(e);
 // bb refetches plugin queries on focus only while its realtime socket is down, so the list polls itself; one clock per key is shared by all mounts.
@@ -21,9 +21,10 @@ export function useContacts(selected: string | undefined) {
   const bbReadKey = sidebarThreads.filter(t => !t.isUnread).map(t => t.id).join(' '), firstBbRead = useRef(true);
   const [error, setError] = useState('');
   // Like a collapsed row in bb's sidebar, a contact counts its sub-threads' work, so a manager shows busy while its leads run.
-  // A pinned root sits in the Pinned group, so it leaves its unpinned parent's tree, as in bb.
   const pins = pinnedTree(sidebarThreads), pinRoots = new Set(pins.roots.map(t => t.id)), children = new Map<string, typeof sidebarThreads[number][]>();
-  for (const t of sidebarThreads) if (t.parentThreadId && !pinRoots.has(t.id)) children.set(t.parentThreadId, [...(children.get(t.parentThreadId) ?? []), t]);
+  for (const t of sidebarThreads) if (t.parentThreadId) children.set(t.parentThreadId, [...(children.get(t.parentThreadId) ?? []), t]);
+  // Pinned sub-sessions come first among their siblings, in bb's pin order; the rest keep their order.
+  for (const kids of children.values()) kids.sort((a, b) => a.isPinned !== b.isPinned ? (a.isPinned ? -1 : 1) : a.isPinned ? byPin(a, b) : 0);
   const descendants = (id: string): typeof sidebarThreads[number][] => (children.get(id) ?? []).flatMap(t => [t, ...descendants(t.id)]);
   const drafts = useDraftThreads();
   const statusOf = (thread: typeof sidebarThreads[number]) => resolveThreadStatus({ thread, hiddenThreads: descendants(thread.id), hasUnsubmittedDraft: drafts.has(thread.id) || descendants(thread.id).some(sub => drafts.has(sub.id)), rowStatus: null });
@@ -42,8 +43,12 @@ export function useContacts(selected: string | undefined) {
   const [closedSubs, setClosedSubs] = useStoredState<string[]>('bb-plugin-answers:page:closed-subs', []);
   const subTree = (id: string, keep: ((t: SidebarThread) => boolean) | undefined, surface: (t: SidebarThread) => boolean, depth = 1, rails: boolean[] = []): [SidebarThread, number, boolean[]][] => { const kids = (children.get(id) ?? []).filter(t => !keep || keep(t) || descendants(t.id).some(keep)); return kids.flatMap((t, i) => { const own = [...rails, i < kids.length - 1]; return [[t, depth, own] as [SidebarThread, number, boolean[]], ...subTree(t.id, closedSubs.includes(t.id) ? surface : keep, surface, depth + 1, own)]; }); };
   const [openSubs, setOpenSubs] = useStoredState<string[]>('bb-plugin-answers:page:open-subs', []);
-  // Sorted, so a reorder of the pins reuses the read; a pin or an unpin starts a new one.
-  const pinnedIds = [...pinRoots].sort();
+  // A nested pin stays under its parent, so its top-level ancestor must be listed even without a conversation of its own.
+  const byId = new Map(sidebarThreads.map(t => [t.id, t])), topOf = (t: SidebarThread) => { for (let i = 0; t.parentThreadId && byId.has(t.parentThreadId) && i < 64; i++) t = byId.get(t.parentThreadId)!; return t; };
+  const nestedPins = sidebarThreads.filter(t => t.isPinned && t.parentThreadId && !t.isHidden && t.archivedAt === null);
+  const pinAncestors = [...new Map(nestedPins.map(topOf).filter(t => !t.parentThreadId && !t.isHidden && t.archivedAt === null && !pins.members.has(t.id)).map(t => [t.id, t])).values()];
+  // Rows with their own counts for every pin and those ancestors; sorted, so a reorder of the pins reuses the read.
+  const pinnedIds = [...new Set([...pinRoots, ...nestedPins.map(t => t.id), ...pinAncestors.map(t => t.id)])].sort();
   const result = useQuery({ contract: rpcContract, method: 'recipients', input: { ...(selected ? { selected } : {}), ...(pinnedIds.length ? { pinned: pinnedIds } : {}) } }), recipientsError = useSteadyError(result.error);
   // A thread read in bb drops its unread mark there; refetching recipients lets the server mark the same answers read here,
   // and the server's invalidation refreshes the rest when that changed something.
@@ -71,7 +76,13 @@ export function useContacts(selected: string | undefined) {
   const liveTitles = new Map(sidebarThreads.flatMap(t => t.title ? [[t.id, t.title] as const] : []));
   // A contact moved under a parent stays in the server's list until its parent change is ingested; the live tree already nests it.
   const parented = new Set(sidebarThreads.filter(t => t.parentThreadId).map(t => t.id));
-  const recipients = settledRecipients && { ...settledRecipients, recipients: settledRecipients.recipients.filter(r => !parented.has(r.threadId) && !pins.members.has(r.threadId)).map(r => ({ ...r, threadTitle: liveTitles.get(r.threadId) ?? r.threadTitle })) };
+  // Until the server's row arrives (just after a pin) a pinned root's or an ancestor's row is built from the live thread.
+  const serverPinned = new Map((settledRecipients?.pinned ?? []).map(r => [r.threadId, r]));
+  const pinRow = (t: SidebarThread) => ({ ...(serverPinned.get(t.id) ?? { threadId: t.id, projectId: t.projectId, projectName: sidebar.projects.find(p => p.id === t.projectId)?.name ?? null, unread: 0, questions: 0, lastAt: 0, preview: '' }), threadTitle: t.title ?? serverPinned.get(t.id)?.threadTitle ?? null });
+  const listed = settledRecipients?.recipients.filter(r => !parented.has(r.threadId) && !pins.members.has(r.threadId)).map(r => ({ ...r, threadTitle: liveTitles.get(r.threadId) ?? r.threadTitle }));
+  // A nested pin's badge comes from its own row (subUnread stops at 200); its questions show as the asking glyph instead.
+  const pinUnread = Object.fromEntries(nestedPins.flatMap(t => { const r = serverPinned.get(t.id); return r ? [[t.id, Math.max(0, r.unread - (r.questions ?? 0))]] : []; }));
+  const recipients = settledRecipients && listed && { ...settledRecipients, subUnread: { ...settledRecipients.subUnread, ...pinUnread }, recipients: [...listed, ...pinAncestors.filter(t => !listed.some(r => r.threadId === t.id)).map(pinRow)] };
   // Optional project headers. bb's sidebar keeps its own (client-local) project order in Custom mode and offers no way
   // to read it, so Agent Hub keeps its order in plugin settings; projects missing from it follow in bb's project order.
   const prefs = usePreferences().data, byProject = prefs?.groupByProject === true, grouped = new Map<string | null, NonNullable<typeof recipients>['recipients']>();
@@ -81,9 +92,7 @@ export function useContacts(selected: string | undefined) {
   const known = sidebar.projects.filter(p => !p.isPersonal).map(p => p.id), stored = saved.split(',').filter(id => known.includes(id));
   const order = projectOrder ?? [...stored, ...known.filter(id => !stored.includes(id))];
   const rank = (key: string | null) => { const i = key ? order.indexOf(key) : -1; return i < 0 ? Infinity : i; };
-  // Pinned roots in bb's order; until the server's row arrives (just after a pin) a row is built from the live thread.
-  const serverPinned = new Map((settledRecipients?.pinned ?? []).map(r => [r.threadId, r]));
-  const pinned = pins.roots.map(t => ({ ...(serverPinned.get(t.id) ?? { threadId: t.id, projectId: t.projectId, projectName: sidebar.projects.find(p => p.id === t.projectId)?.name ?? null, unread: 0, questions: 0, lastAt: 0, preview: '' }), threadTitle: t.title ?? serverPinned.get(t.id)?.threadTitle ?? null }));
+  const pinned = pins.roots.map(pinRow);
   const groups = [...(pinned.length ? [[PINNED, pinned] as [string, typeof pinned]] : []), ...[...grouped].sort((a, b) => rank(a[0]) - rank(b[0]))];
   const [drag, setDrag] = useState<{ id: string; over?: string; after?: boolean } | null>(null);
   function moveProject(id: string, target: string, after: boolean) {
@@ -113,7 +122,7 @@ export function ContactsList({ model, selected, activeThreadId, onSelect, onBulk
   const reparent = useReparent(sidebarThreads, byProject, setError), draggedProject = reparent.dragged && model.sidebar.projects.find(p => p.id === reparent.dragged!.projectId)?.name;
   const topText = (unpin: boolean) => `${unpin ? 'Unpin and move' : 'Move'} to top level${byProject ? ` in ${draggedProject ?? 'its project'}` : ''}`;
   // What the drop under the pointer would do, shown on the drag ghost.
-  const { over } = reparent, dropText = !over?.drop ? 'Drop on a session or the top level' : !over.drop.ok ? "Can't drop here" : over.drop.reorder ? 'Move within Pinned' : over.target.kind === 'nest' ? `Nest under ${(id => sidebarThreads.find(t => t.id === id)?.title ?? 'Untitled thread')(over.target.threadId)}` : topText(over.drop.unpin);
+  const { over } = reparent, dropText = !over?.drop ? 'Drop on a session or the top level' : !over.drop.ok ? "Can't drop here" : over.drop.reorder ? (over.target.kind === 'pin' && sidebarThreads.find(t => t.id === (over.target as { threadId: string }).threadId)?.parentThreadId ? 'Move among pinned sub-sessions' : 'Move within Pinned') : over.target.kind === 'nest' ? `Nest under ${(id => sidebarThreads.find(t => t.id === id)?.title ?? 'Untitled thread')(over.target.threadId)}` : topText(over.drop.unpin);
   // Near the bottom (where the move-up row sits) the ghost goes above the pointer, and it never leaves the window sideways.
   const ghostPlace = ({ x, y }: { x: number; y: number }) => { const up = y > window.innerHeight - 72; return { left: Math.max(4, Math.min(x + 12, window.innerWidth - 264)), top: up ? y - 8 : y + 8, transform: up ? 'translateY(-100%)' : undefined, zIndex: 2147483647 }; };
   const ghostProvider = reparent.dragged?.providerId ? providers.find(p => p.id === reparent.dragged!.providerId) ?? { id: reparent.dragged.providerId } : null;
@@ -144,13 +153,13 @@ export function ContactsList({ model, selected, activeThreadId, onSelect, onBulk
         if (!tally) return <div key={recipient.threadId} data-flip={recipient.threadId}>{menu}</div>;
         const name = recipient.threadTitle ?? 'Untitled thread';
         // bb's sidebar child rows: 8px plus 24px a level, the provider icon, the title, the status glyph only while working.
-        const attention = (sub: typeof sidebarThreads[number]) => asks(sub) || unreadOf(sub.id) > 0, shownSubs = subTree(recipient.threadId, openSubs.includes(recipient.threadId) ? undefined : attention, attention), listed = new Set(shownSubs.map(([sub]) => sub.id));
+        const attention = (sub: typeof sidebarThreads[number]) => asks(sub) || unreadOf(sub.id) > 0 || sub.isPinned, shownSubs = subTree(recipient.threadId, openSubs.includes(recipient.threadId) ? undefined : attention, attention), listed = new Set(shownSubs.map(([sub]) => sub.id));
         return <Fragment key={recipient.threadId}><div data-flip={recipient.threadId} className="relative">{menu}<button type="button" aria-label={openSubs.includes(recipient.threadId) ? 'Hide sub-sessions' : 'Show sub-sessions'} aria-expanded={openSubs.includes(recipient.threadId)} className="absolute bottom-1.5 right-[5px] flex size-5 items-center justify-center rounded text-muted-foreground hover:bg-state-hover" onClick={() => setOpenSubs(openSubs.includes(recipient.threadId) ? openSubs.filter(id => id !== recipient.threadId) : [...openSubs, recipient.threadId])}><Icon name={openSubs.includes(recipient.threadId) ? 'ChevronDown' : 'ChevronRight'} className="size-3.5" /></button></div>{shownSubs.length > 0 && <ul data-flip={`${recipient.threadId}:subs`} aria-label={`Sub-sessions of ${name}`} className="pb-1">{shownSubs.map(([sub, depth, rails]) => { const nested = descendants(sub.id).length > 0, closed = nested && closedSubs.includes(sub.id), hidden = closed ? descendants(sub.id).filter(t => !listed.has(t.id)) : [], own = resolveThreadStatus({ thread: sub, hiddenThreads: hidden, hasUnsubmittedDraft: false, rowStatus: null }), asking = asks(sub) || hidden.some(asks), unread = unreadOf(sub.id) + hidden.reduce((n, t) => n + unreadOf(t.id), 0), info = providers.find(p => p.id === sub.providerId), provider = sub.providerId ? info ?? { id: sub.providerId } : null, providerName = info?.displayName ?? sub.providerId;
           // bb's sidebar marks a sub-session that lives in another project than its parent.
           const parentThread = sidebarThreads.find(t => t.id === sub.parentThreadId), projectName = model.sidebar.projects.find(p => p.id === sub.projectId)?.name;
           const crossProject = parentThread && parentThread.projectId !== sub.projectId ? projectName ? `In project ${projectName}` : 'In another project' : null;
           return <li key={sub.id} className="relative"><ThreadActionsContextMenu thread={threadTarget(sub)} inline={[{ key: 'answers-copy-id', group: THREAD_ACTION_GROUPS.open, action: { label: 'Copy ID', icon: 'Copy', run: () => void copyToClipboard({ text: sub.id }) } }]}>
-            <ContactRow split threadId={sub.id} onSplitDrag={reparent.cancel} onPointerDown={event => reparent.onPointerDown(sub.id, event)} data-reparent-key={sub.id} data-reparent-id={sub.id} type="button" aria-current={(selected === sub.id || activeThreadId === sub.id) ? 'page' : undefined} onClick={() => { onSelect(sub.id); onNavigate?.(); }} className={`relative flex h-[var(--bb-sidebar-row-height,28px)] w-full items-center gap-2 rounded-md pr-2 text-left text-sm text-sidebar-foreground ${(selected === sub.id || activeThreadId === sub.id) ? 'bg-state-active' : 'hover:bg-state-hover'} has-[[data-state=open]]:bg-sidebar-accent data-[state=open]:bg-sidebar-accent transition-opacity duration-300 ${nested ? 'pr-8' : ''} ${reparent.dragging === sub.id ? 'opacity-40' : asking || sub.status === 'error' || unread > 0 ? '' : own.isWorking ? 'opacity-80' : 'opacity-50'} ${reparent.mark(sub.id)}`} style={{ paddingLeft: 8 + depth * 24 }}>
+            <ContactRow split threadId={sub.id} onSplitDrag={reparent.cancel} onPointerDown={event => reparent.onPointerDown(sub.id, event)} data-reparent-key={sub.id} data-reparent-id={sub.id} data-reparent-pin={sub.isPinned ? '' : undefined} type="button" aria-current={(selected === sub.id || activeThreadId === sub.id) ? 'page' : undefined} onClick={() => { onSelect(sub.id); onNavigate?.(); }} className={`relative flex h-[var(--bb-sidebar-row-height,28px)] w-full items-center gap-2 rounded-md pr-2 text-left text-sm text-sidebar-foreground ${(selected === sub.id || activeThreadId === sub.id) ? 'bg-state-active' : 'hover:bg-state-hover'} has-[[data-state=open]]:bg-sidebar-accent data-[state=open]:bg-sidebar-accent transition-opacity duration-300 ${nested ? 'pr-8' : ''} ${reparent.dragging === sub.id ? 'opacity-40' : asking || sub.status === 'error' || unread > 0 ? '' : own.isWorking ? 'opacity-80' : 'opacity-50'} ${reparent.mark(sub.id)}`} style={{ paddingLeft: 8 + depth * 24 }}>
               {/* bb's hairline guides, unbroken: each level's line runs under its parent's icon (the contact's avatar for the first)
                   down to its last child, ending at that row's middle. */}
               {rails.map((more, k) => (more || k === depth - 1) && <span key={k} data-guide={k + 1} aria-hidden className={`pointer-events-none absolute top-0 w-px bg-border-hairline opacity-70 ${more ? 'bottom-0' : 'h-1/2'}`} style={{ left: k ? 16 + k * 24 : 24 }} />)}
