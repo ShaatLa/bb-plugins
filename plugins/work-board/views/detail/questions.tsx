@@ -223,7 +223,7 @@ function SupersededQuestion({ question, successor, targetId, replacement }: {
       <p className="break-words"><LinkedText text={question.prompt} /> <span className="text-xs text-muted-foreground">Check</span></p>
       <BeyondDesign line={question.beyondDesign} />
       <p className="text-xs text-muted-foreground">
-        Replaced by a later check{successor && <>: <span className="inline-block max-w-[40ch] truncate align-bottom" title={successor.prompt}><LinkedText text={successor.prompt} /></span></>}
+        Replaced by a later check{successor && <>: <span className="inline-block max-w-[40ch] truncate align-bottom" title={successor.prompt}><LinkedText text={successor.prompt} copy={false} /></span></>}
         {question.supersededAt ? ` · ${new Date(question.supersededAt).toLocaleString()}` : ""}
       </p>
       <p className="whitespace-pre-wrap break-words text-xs">

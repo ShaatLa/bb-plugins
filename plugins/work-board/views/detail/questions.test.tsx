@@ -743,6 +743,7 @@ it("follows each direct predecessor from Earlier through a chain with identical 
 it.each([
   ["Old prompt", "New prompt", ["Open"], ["Inspect"], ["the prompt", "− Open", "+ Inspect"]],
   ["Visit https://example.org/old.", "Visit https://example.org/new.", ["Open"], ["Open"], ["a link in the prompt"]],
+  ["Check `https://example.org/old`", "Check `https://example.org/new`", ["Open"], ["Open"], ["the prompt"]],
   ["Check", "Check", ["Open", "See https://example.org/a"], ["Open", "See https://example.org/b"], ["a link in step 2"]],
   ["Check", "Check", ["Open", "Inspect"], ["Inspect", "Open"], ["− Open", "+ Open"]],
   ["Check", "Check", [], ["a", "b", "c", "d", "e", "f", "g"], ["+ a", "+ b", "+ c", "+ d", "+ e", "and 2 more"]],
@@ -758,6 +759,20 @@ it.each([
   const slot = renderSlot(app.navPanels[0]!, { subPath: `task/${task.key}` }, { rpc });
   const line = await slot.findByText("Changed from the replaced check:");
   expect([...line.querySelectorAll("span")].map(span => span.textContent)).toEqual(expected);
+});
+
+it("offers a copy button for inline code in steps, but not in a successor preview", async () => {
+  const { task, rpc, structured } = setup();
+  const check = { taskId: task.id, kind: "check", mode: "single", askedByThread: null } as const;
+  const { question: first } = await structured.handlers.createQuestion({ ...check, options: [], prompt: "Does it save?", steps: ["Set `^/a$`"] });
+  await structured.handlers.createQuestion({ ...check, options: [], prompt: "Does `^/b$` save?", steps: ["Set `^/b$`"],
+    supersedes: { questionId: first.id, revision: first.revision } });
+  const slot = renderSlot(app.navPanels[0]!, { subPath: `task/${task.key}` }, { rpc });
+  const current = await slot.findByRole("group", { name: "Does `^/b$` save?" });
+  expect(within(current).getAllByRole("button", { name: "Copy code" })).toHaveLength(2);
+  const superseded = slot.getByLabelText("Superseded check: Does it save?");
+  expect(within(superseded).getByText(/Replaced by a later check/).querySelector("code")?.textContent).toBe("^/b$");
+  expect(within(superseded).queryByRole("button", { name: "Copy code" })).toBeNull();
 });
 
 it("collects readiness for a check on add, edit and reopen", async () => {

@@ -1,9 +1,12 @@
+import { experimental_copyToClipboard } from "@get-bb/plugin-sdk/app";
 import { BbLink } from "./bb-link";
-import { Fragment } from "react";
+import { Fragment, useEffect, useState } from "react";
+import { Icon } from "@/components/ui/icon";
 
 const TRAILING = /[.,;:!?)\]»”]+$/;
-// `[label](target)` with one level of nested brackets in the label and of parentheses in the target, or a bare web URL.
-const LINK_PATTERN = /\[((?:[^[\]\n]|\[[^[\]\n]*\])+)\]\(\s*<?((?:[^()\s<>]|\([^()\s<>]*\))+)>?(?:\s+"[^"]*")?\s*\)|https?:\/\/[^\s<>"'`]+/g;
+// `[label](target)` with one level of nested brackets in the label and of parentheses in the target, a bare web URL,
+// or inline code: one backtick, a value without backticks or line breaks, one backtick. The leftmost match wins.
+const LINK_PATTERN = /\[((?:[^[\]\n]|\[[^[\]\n]*\])+)\]\(\s*<?((?:[^()\s<>]|\([^()\s<>]*\))+)>?(?:\s+"[^"]*")?\s*\)|https?:\/\/[^\s<>"'`]+|`([^`\n]+)`/g;
 const WEB_TARGET = /^https?:\/\/[^\s\\]+$/;
 // An in-app path: one leading slash, never `//` or a backslash, which browsers may read as another host.
 const APP_PATH = /^\/(?![/\\])[^\s\\]*$/;
@@ -13,16 +16,20 @@ type Span =
   | { kind: "text"; text: string }
   | { kind: "link"; label: string; href: string; app: boolean; markdown: boolean }
   // A Markdown link with a target we do not open: shown as written, its URL text not linked.
-  | { kind: "plain"; text: string; label: string };
+  | { kind: "plain"; text: string; label: string }
+  // Inline code: `text` keeps the backticks as written, `code` is the value shown and copied.
+  | { kind: "code"; text: string; code: string };
 
 function spans(text: string): Span[] {
   const out: Span[] = [];
   let last = 0;
   for (const match of text.matchAll(LINK_PATTERN)) {
-    const [whole, label, target] = match;
+    const [whole, label, target, code] = match;
     let end = match.index + whole.length;
     let span: Span;
-    if (label !== undefined) {
+    if (code !== undefined) {
+      span = { kind: "code", text: whole, code };
+    } else if (label !== undefined) {
       span = WEB_TARGET.test(target!) || APP_PATH.test(target!)
         ? { kind: "link", label, href: target!, app: target!.startsWith("/"), markdown: true }
         : { kind: "plain", text: whole, label };
@@ -45,9 +52,39 @@ export function withoutLinkTargets(text: string): string {
   return spans(text).map((span) => span.kind !== "link" ? span.text : span.markdown ? `[${span.label}]()` : "").join("");
 }
 
-/** Plain text with Markdown links and bare http(s) URLs rendered as links bb opens itself. */
-export function LinkedText({ text }: { text: string }) {
-  return <>{spans(text).map((span, index) => span.kind !== "link" ? <Fragment key={index}>{span.text}</Fragment>
+function CopyCode({ code }: { code: string }) {
+  // A fresh object per attempt restarts the 2 s feedback even when the result repeats.
+  const [result, setResult] = useState<{ state: "idle" | "copied" | "failed" }>({ state: "idle" });
+  const { state } = result;
+  const setState = (next: "copied" | "failed") => setResult({ state: next });
+  useEffect(() => {
+    if (result.state === "idle") return;
+    const timer = window.setTimeout(() => setResult({ state: "idle" }), 2000);
+    return () => window.clearTimeout(timer);
+  }, [result]);
+  const label = state === "copied" ? "Copied" : state === "failed" ? "Copy failed" : "Copy code";
+  return <>
+    <button type="button" aria-label="Copy code" title={label}
+      className="ml-0.5 inline-flex size-5 items-center justify-center rounded align-text-bottom text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+      onClick={async () => {
+        // The copied text is the source value, never the DOM, so wrapping adds nothing.
+        try { setState(await experimental_copyToClipboard({ text: code }) ? "copied" : "failed"); }
+        catch { setState("failed"); }
+      }}>
+      <Icon name={state === "copied" ? "Check" : state === "failed" ? "X" : "Copy"} className="size-3" />
+    </button>
+    <span role="status" className="sr-only">{state === "idle" ? "" : label}</span>
+  </>;
+}
+
+/** Plain text with Markdown links and bare http(s) URLs rendered as links bb opens itself, and inline code with a copy button. */
+export function LinkedText({ text, copy = true }: { text: string; copy?: boolean }) {
+  return <>{spans(text).map((span, index) => span.kind === "code"
+    ? <Fragment key={index}>
+        <code className="rounded bg-muted px-1 font-mono text-[0.9em] whitespace-pre-wrap [overflow-wrap:anywhere]">{span.code}</code>
+        {copy && <CopyCode code={span.code} />}
+      </Fragment>
+    : span.kind !== "link" ? <Fragment key={index}>{span.text}</Fragment>
     // An in-app path stays a plain anchor, so the task-link interceptor opens it in bb.
     : span.app ? <a key={index} href={span.href} className={LINK_CLASS}>{span.label}</a>
     : <BbLink key={index} href={span.href} className={LINK_CLASS}>{span.label}</BbLink>)}</>;
