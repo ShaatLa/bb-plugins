@@ -50,6 +50,9 @@
     ]
    },
    {
+    "added": "One question asks one decision or one check in one or two short plain sentences, with at most one link. Put what the owner has to do in `--step` (repeat it; the steps show as a numbered list under the question), not in a comment. Split a multi-part acceptance into several `--kind check` questions, each answerable on its own with its own link. Evidence, tables, quotes of earlier remarks, inventories and history go into a task comment, not the question. Acceptance material is a link to a local design server or the product, never screenshots. When an existing check's state changes, never add a parallel check: edit an open one with `question update`, `--reopen` an answered one whose prompt and steps are unchanged, and replace it after any changed link or step with `bb work-board question add KEY --kind check --supersedes ID --supersedes-revision N`. Start the new prompt with what changed since the previous check.\n\n"
+   },
+   {
     "added": "## Topics\n\nOpen the reference when the task involves its topic; each file starts with what it covers.\n\n- `references/questions.md`: question types and recommendations, evidence and templates, answer attachments; replace or reopen a failed check, the check flow (numbers, rounds, held checks), a withdrawn answer, `question update`, examples.\n- `references/plans.md`: `plan show|set|edit|submit|reply`, plan debt, and the review loop (as the author or as the reviewer).\n- `references/pr-ci.md`: `pr link`, `pr wait`, `sync`, linked-PR messages, review, QA and merge evidence, the Done-after-review rule, Check receipt, pausing an unfinished card.\n- `references/threads.md`: attached sessions and worker recovery, `dispatch` to an existing thread, thread health, sharing task context, UI screens.\n- `references/hierarchy.md`: epics, sub-agent hierarchy and provider limits, dependencies, sequence claims, locks, activity, recurring cards.\n- `references/project.md`: project workflows and statuses, status push notifications, manager attention, repository checks, secret guard.\n- `references/storage.md`: Git snapshots (export, import), task archive, archive queries, storage maintenance.\n- `references/attachments.md`: files and images on tasks, comments and answers.\n- `references/delegation.md`: dispatch and execution presets.\n"
    }
   ],
@@ -80,9 +83,6 @@
      336,
      358
     ]
-   },
-   {
-    "added": "One question asks one decision or one check in one or two short plain sentences, with at most one link. Put what the owner has to do in `--step` (repeat it; the steps show as a numbered list under the question), not in a comment. Split a multi-part acceptance into several `--kind check` questions, each answerable on its own with its own link. Evidence, tables, quotes of earlier remarks, inventories and history go into a task comment, not the question. Acceptance material is a link to a local design server or the product, never screenshots. When an existing check's state changes, never add a parallel check: edit an open one with `question update`, `--reopen` an answered one whose prompt and steps are unchanged, and replace it after any changed link or step with `bb work-board question add KEY --kind check --supersedes ID --supersedes-revision N`. Start the new prompt with what changed since the previous check.\n"
    }
   ],
   "references/plans.md": [
