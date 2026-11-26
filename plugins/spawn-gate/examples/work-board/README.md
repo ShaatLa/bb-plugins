@@ -32,7 +32,8 @@ builder tests, set `BB_SPAWN_GATE_WORK_BOARD_CONFIG` to a private fixture path.
 }
 ```
 
-BB exposes the native `spawn_gate_owner` tool in projects with a builder config.
+BB offers the native `spawn_gate_owner` tool only to the project's configured
+manager thread.
 The configured manager can set or replace an owner from its session with
 `{"operation":"set","plugin":"example","ownerThreadId":"thr_owner"}`.
 Remove the entry with `{"operation":"remove","plugin":"example"}`. The plugin

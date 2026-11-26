@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join } from "node:path";
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
@@ -96,9 +96,18 @@ export function registerWorkBoardOwnerTool(bb: BbPluginApi) {
       }
     },
   });
-  bb.agents.configure(({ project }) => {
+  bb.agents.configure(({ project, thread }) => {
+    const tools: string[] = [];
+    const selection = { skills: ["spawn-gate"], tools };
     const id = projectId.safeParse(project.id);
-    const path = id.success ? configPath(id.data) : "";
-    return { skills: ["spawn-gate"], tools: isAbsolute(path) && existsSync(path) ? [toolName] : [] };
+    if (!id.success) return selection;
+    const path = configPath(id.data);
+    if (!isAbsolute(path)) return selection;
+    try {
+      if (readConfig(path).managerThreadId === thread.id) tools.push(toolName);
+    } catch {
+      // Builder configuration is optional for projects.
+    }
+    return selection;
   });
 }

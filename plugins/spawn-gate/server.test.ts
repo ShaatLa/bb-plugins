@@ -56,18 +56,20 @@ it("lets only the Work Board manager change owners and records each effective ch
   const agentConfig = (id: string) => h.harness.behavior.resolveAgentConfiguration(
     makePluginAgentConfigurationContext({ project: { id: PROJECT }, thread: { id } }),
   );
-  expect(await agentConfig("thr_other")).toMatchObject({ skills: ["spawn-gate"], tools: [] });
+  const withoutTool = { skills: ["spawn-gate"], tools: [] };
+  expect(await agentConfig("thr_manager")).toMatchObject(withoutTool);
+  await writeFile(path, "{}", { mode: 0o600 });
+  expect(await agentConfig("thr_manager")).toMatchObject(withoutTool);
   const config = {
     managerThreadId: "thr_manager", owners: { retained: "thr_retained" },
     roles: { impl: [{ providerId: "codex", model: "example" }] }, environment: "reuse-parent",
   };
   const original = JSON.stringify(config);
   await writeFile(path, original, { mode: 0o600 });
-  for (const caller of ["thr_manager", "thr_other"]) {
-    expect(await agentConfig(caller)).toMatchObject({
-      skills: ["spawn-gate"], tools: [{ name: "spawn_gate_owner" }],
-    });
-  }
+  expect(await agentConfig("thr_manager")).toMatchObject({
+    skills: ["spawn-gate"], tools: [{ name: "spawn_gate_owner" }],
+  });
+  expect(await agentConfig("thr_other")).toMatchObject(withoutTool);
   const checkTarget = vi.fn(async ({ threadId }: { threadId: string }) => {
     if (threadId === "thr_missing") throw new Error("Not found");
     return makeThreadResponse({
