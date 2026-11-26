@@ -180,13 +180,9 @@ describe('server',()=>{
   expect(String(await call('agent_hub_list',{}))).not.toContain(id);
   await expect(call('agent_hub_withdraw',{id,reason:'again'})).rejects.toThrow('already answered or withdrawn');
  });
- it('registers agent_hub_* tools and keeps answers_* as deprecated aliases with the same behaviour',async()=>{
-  const {harness,db}=setup(); seed(db,'ans_q','mine','t');
-  const tools=harness.inspection.registrations.agentTools, names=tools.map(t=>t.name);
-  for (const m of ['ask','report','defer','list','resolve','withdraw']) { expect(names).toContain('agent_hub_'+m); expect(tools.find(t=>t.name==='answers_'+m)?.description).toMatch(new RegExp('^Deprecated alias of agent_hub_'+m)); }
-  expect(tools.find(t=>t.name==='agent_hub_list')?.description).not.toMatch(/Deprecated/);
-  const call=(name:string)=>harness.behavior.callAgentTool(name,{},{threadId:'t',projectId:'p'});
-  expect(await call('answers_list')).toEqual(await call('agent_hub_list'));
+ it('registers only the agent_hub_* tools',()=>{
+  const {harness}=setup(), names=harness.inspection.registrations.agentTools.map(t=>t.name);
+  expect(names.filter(n=>/^(agent_hub|answers)_/.test(n)).sort()).toEqual(['ask','defer','list','report','resolve','withdraw'].map(m=>'agent_hub_'+m));
  });
  it('defers and resolves the owner messages of one turn together, so its reply is not an answer to one and an interim to another',async()=>{
   const {harness,db}=setup(); seed(db,'ans_q','mine','t'); seed(db,'ans_steer','mine','t'); seed(db,'ans_other','mine','t');

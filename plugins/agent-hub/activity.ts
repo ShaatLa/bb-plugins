@@ -19,6 +19,7 @@ export function sceneOf(item: NonNullable<NonNullable<Row['data']>['item']>): Ac
     case 'fileRead': case 'imageView': case 'webFetch': return 'read';
     case 'webSearch': case 'listFiles': case 'search': return 'search';
     case 'delegation': case 'backgroundTask': return 'wait';
+    case 'contextCompaction': return 'compact';
     // A shell command acts out the same kind of work its words name (commandLabel), so the two never disagree.
     case 'commandExecution': return COMMAND_SCENE[commandLabel(item.command ?? '')] ?? 'terminal';
     case 'toolCall': case 'mcpToolCall': { const tool = `${item.server ?? ''} ${item.tool ?? ''}`; return SEARCH.test(tool) ? 'search' : READ.test(tool) ? 'read' : 'terminal'; }

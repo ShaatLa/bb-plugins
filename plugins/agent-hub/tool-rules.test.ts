@@ -86,11 +86,10 @@ it('keeps the injected instructions short, with must-rules and one neutral tag e
  expect(INSTRUCTIONS).toContain('Put JSON objects in fenced json blocks. Leave blank lines between paragraphs and around code blocks.');
  expect(INSTRUCTIONS).not.toMatch(/\bshould\b/);
 });
-it('deprecated answers_* aliases carry the agent_hub_* description unchanged, behind a pointer', () => {
- const {harness} = setup(); const tools = harness.inspection.registrations.agentTools;
- for (const m of ['ask', 'report', 'defer', 'list', 'resolve', 'withdraw']) {
-  const main = tools.find(t => t.name === 'agent_hub_' + m)!.description, alias = tools.find(t => t.name === 'answers_' + m)!.description;
-  expect(alias).toBe(`Deprecated alias of agent_hub_${m}; call agent_hub_${m} instead. ${main}`);
-  expect(main).not.toMatch(/\bshould\b/);
- }
+it('keeps the tool descriptions short, with the must-rules and the report and reply details', () => {
+ const {harness} = setup(), tools = harness.inspection.registrations.agentTools, text = (m: string) => tools.find(t => t.name === 'agent_hub_' + m)!.description;
+ for (const m of ['ask', 'report', 'defer', 'list', 'resolve', 'withdraw']) { expect(text(m).length).toBeLessThan(600); expect(text(m)).not.toMatch(/\bshould\b/); }
+ expect(text('ask')).toContain('You must use this instead of asking in your reply; then end the turn');
+ expect(text('ask')).toContain('quoting the question');
+ expect(text('report')).toContain('as a report, not a background update');
 });

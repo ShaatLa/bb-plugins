@@ -51,6 +51,7 @@ describe('scene and words agree', () => {
     [{ type: 'commandExecution', command: 'sed -i s/a/b/ f' }, 'fix', 'Editing files'],
     [{ type: 'commandExecution', command: 'sleep 30' }, 'wait', 'Waiting'],
     [{ type: 'commandExecution', command: 'npm test' }, 'terminal', 'Running tests'],
+    [{ type: 'contextCompaction', presentation: { label: { pending: 'Compacting context' } } }, 'compact', 'Compacting context'],
   ])('%o', (item, scene, label) => {
     expect(sceneOf(item as never)).toBe(scene); expect(labelOf(item as never)).toBe(label);
   });

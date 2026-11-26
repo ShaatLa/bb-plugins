@@ -7,9 +7,10 @@ import { createContext, useContext, useEffect, useRef, useState, type AnimationE
 // think — walks, stops facing front with a thought bubble (the default); write — sits at a desktop computer, typing;
 // terminal — back to us at a screen of scrolling lines; fix — hammers a nail or turns a wrench on a bolt; search — looks
 // around through a magnifier; read — faces us over an open book, turning its pages; wait — walks to and fro, kicking a pebble;
-// rest — the turn is over but background work runs: lies on a couch, breathing, Zzz rising.
+// rest — the turn is over but background work runs: lies on a couch, breathing, Zzz rising; compact — the context is
+// being compacted: carries a stack of sheets into a press and squeezes it.
 // Reduced motion and disabled animation use a still frame.
-export type Activity = 'think' | 'write' | 'terminal' | 'fix' | 'search' | 'read' | 'wait' | 'rest';
+export type Activity = 'think' | 'write' | 'terminal' | 'fix' | 'search' | 'read' | 'wait' | 'rest' | 'compact';
 
 // What the open chat's agent is doing now (see useAgentActivity); robots without their own activity follow it.
 export const ActivityContext = createContext<Activity>('think');
@@ -205,6 +206,84 @@ function SearchScene() {
   </g>;
 }
 
+// Compacting, one 8 s lap, standing well clear of the press: the robot, facing left, bends to a stack of sheets and
+// lifts it; turns through a front view to face right; sets the stack on the press bed and shoves it, so it slides on
+// under the plate; takes the long lever, one hand on top of its grip and one below, and pulls the plate down, leaning in
+// with its eyes on the press, while the sheets squeeze into a thin block; the plate rises, the block fades, a new stack
+// appears behind it, and it turns back through a rear view to take it. Poses are solved once (arms by two-segment IK from
+// the leaning shoulder) and sampled into SMIL keyframes on one clock, so the arms, body, stack and plate never drift apart.
+type Key = number[];
+const track = (keys: Key[]) => (t: number) => {
+  let i = 0; while (i < keys.length - 2 && t >= keys[i + 1]![0]!) i++;
+  const k0 = keys[i]!, k1 = keys[i + 1]!, u = Math.min(1, Math.max(0, (t - k0[0]!) / (k1[0]! - k0[0]! || 1))), e = u * u * (3 - 2 * u);
+  return k0.slice(1).map((v, j) => v + (k1[j + 1]! - v) * e);
+};
+type View = 'L' | 'F' | 'R' | 'B';
+// The front and rear views are a single 0.03 s in-between frame of each turn.
+const VIEWS: [number, View][] = [[0, 'L'], [.18, 'F'], [.18375, 'R'], [.87, 'B'], [.87375, 'L']];
+const SHEET = 4.5, GRIP = 2.4, L1 = 2.7, L2 = 3.5, PLATE_Y = 12.8, LEVER_X = 18.2;
+let compactKeys: ReturnType<typeof solveCompact> | undefined;
+function solveCompact() {
+  const view = (t: number) => VIEWS.filter(([at]) => t >= at).at(-1)![1];
+  const lean = track([[0, 35], [.07, 35], [.16, 0], [.2, 0], [.27, 12], [.33, 12], [.4, 0], [.45, 8], [.5, 14], [.6, 28], [.66, 28], [.74, 4], [.78, 0], [.89, 0], [1, 35]]);
+  const eye = track([[0, .6], [.07, .6], [.16, 0], [.2, 0], [.27, .6], [.33, .4], [.4, 0], [.45, 0], [.6, .7], [.66, .7], [.74, 0], [.89, 0], [1, .6]]);
+  const plate = track([[0, 0], [.45, 0], [.5, 1.5], [.6, 4.05], [.66, 4.05], [.74, 0], [1, 0]]), slide = track([[.33, 16.9], [.4, 21]]);
+  const squeeze = track([[0, 0], [.5, 0], [.6, 1], [.78, 1], [.8, 0], [1, 0]]), shown = track([[0, 1], [.72, 1], [.78, 0], [.82, 0], [.9, 1], [1, 1]]);
+  // The near hand as if facing right (mirrored when facing left).
+  const reach = track([[0, 18.2, 18.6], [.07, 18.2, 18.6], [.16, 16.2, 16.2], [.2, 16.2, 16.2], [.27, 15.6, 17.3], [.33, 16.9, 17.3], [.4, 12.6, 19.1], [.45, LEVER_X, PLATE_Y - .1], [.74, LEVER_X, PLATE_Y - .1], [.78, 12.6, 19.1], [.89, 12.6, 19.1], [1, 18.2, 18.6]]);
+  // The far hand holds the stack beside the near one, and the lever grip below it.
+  const farOffset = track([[0, -.5, .35], [.4, -.5, .35], [.45, 0, 1.1], [.74, 0, 1.1], [.78, -.5, .35], [1, -.5, .35]]);
+  const times = [...new Set([...Array.from({ length: 81 }, (_, i) => i / 80), ...VIEWS.slice(1).flatMap(([at]) => [at - 1e-4, at])].map(t => +t.toFixed(4)))].sort((a, b) => a - b);
+  const ik = (sx: number, sy: number, hx: number, hy: number, out: number) => {
+    const dx = hx - sx, dy = hy - sy, d0 = Math.hypot(dx, dy) || 1, d = Math.min(L1 + L2 - .01, Math.max(Math.abs(L1 - L2) + .01, d0)), ux = dx / d0, uy = dy / d0;
+    const a = (L1 * L1 - L2 * L2 + d * d) / (2 * d), h = Math.sqrt(Math.max(0, L1 * L1 - a * a)), px = sx + a * ux, py = sy + a * uy;
+    const e1 = [px - h * uy, py + h * ux], e2 = [px + h * uy, py - h * ux];
+    // Profile elbows hang down; front and rear elbows bend outward (out = -1 left, 1 right).
+    const [ex, ey] = out ? (Math.sign(e1[0]! - sx) === out ? e1 : e2) : e1[1]! > e2[1]! ? e1 : e2;
+    return { sx, sy, ex: ex!, ey: ey!, hx: sx + ux * d, hy: sy + uy * d };
+  };
+  const rows = times.map(t => {
+    const v = view(t), th = lean(t)[0]! * Math.PI / 180, side = v === 'L' ? -1 : 1;
+    const x = (local: number) => v === 'L' ? 24 - local : local;
+    const lever = t >= .45 && t <= .74, [lx, ly] = lever ? [LEVER_X, PLATE_Y - .1 + plate(t)[0]!] : reach(t), [ox, oy] = farOffset(t);
+    const sxl = 12.2 - .2 * Math.cos(th) + 5 * Math.sin(th), sy = 18 - .2 * Math.sin(th) - 5 * Math.cos(th);
+    let near, far, stack: number[];
+    if (v === 'F' || v === 'B') {
+      // Facing us it holds the stack in front; from behind, empty-handed, its arms hang straight at its sides as in the other scenes.
+      const hang = (x: number) => ({ sx: x, sy: 13, ex: x, ey: 14.75, hx: x, hy: 16.5 });
+      near = v === 'F' ? ik(17, 13, 14.25, 16.2, 1) : hang(17.5); far = v === 'F' ? ik(7, 13, 9.75, 16.2, -1) : hang(6.5);
+      stack = v === 'F' ? [9.75, 18.6] : [1.3, 21];
+    } else {
+      near = ik(x(sxl), sy, x(lx!), ly!, 0); far = ik(x(sxl), sy, near.hx + ox! * side, near.hy + oy!, 0);
+      stack = t < .33 ? [side > 0 ? near.hx : near.hx - SHEET, near.hy + GRIP] : t < .8 ? [slide(t)[0]!, 19.7] : [1.3, 21];
+    }
+    return { near, far, stack, th: th * 180 / Math.PI, eye: eye(t)[0]!, plate: plate(t)[0]!, squeeze: squeeze(t)[0]!, shown: shown(t)[0]! };
+  });
+  type Row = typeof rows[number];
+  const list = (f: (r: Row) => number | string) => rows.map(r => { const v = f(r); return typeof v === 'number' ? v.toFixed(2) : v; }).join(';');
+  const arm = (which: 'near' | 'far') => (['sx', 'sy', 'ex', 'ey', 'hx', 'hy'] as const).reduce((o, k) => ({ ...o, [k]: list(r => r[which][k]) }), {} as Record<'sx' | 'sy' | 'ex' | 'ey' | 'hx' | 'hy', string>);
+  return { times: times.join(';'), near: arm('near'), far: arm('far'), lean: list(r => `${r.th.toFixed(1)} 12.2 18`), eye: list(r => 7.5 + r.eye),
+    stack: list(r => `${r.stack[0]!.toFixed(2)} ${r.stack[1]!.toFixed(2)}`), plate: list(r => `0 ${r.plate.toFixed(2)}`), shown: list(r => r.shown),
+    sheets: [1, 2, 3].map(i => list(r => `0 ${(r.squeeze * i * .85).toFixed(2)}`)) };
+}
+function CompactScene() {
+  const k = compactKeys ??= solveCompact(), clock = { keyTimes: k.times, dur: '8s', repeatCount: 'indefinite' } as const;
+  const anim = (attributeName: string, values: string) => <animate attributeName={attributeName} values={values} {...clock} />;
+  const move = (type: 'translate' | 'rotate', values: string) => <animateTransform attributeName="transform" type={type} values={values} {...clock} />;
+  const arm = (a: typeof k.near) => <><line>{anim('x1', a.sx)}{anim('y1', a.sy)}{anim('x2', a.ex)}{anim('y2', a.ey)}</line><line>{anim('x1', a.ex)}{anim('y1', a.ey)}{anim('x2', a.hx)}{anim('y2', a.hy)}</line></>;
+  const profile = <>{standingLegs}<g>{move('rotate', k.lean)}{antenna}<rect className="ar-solid" x="8" y="4" width="8" height="7" rx="2" /><circle cx="14" cy="7.5" r=".9">{anim('cy', k.eye)}</circle><rect className="ar-solid" x="9.5" y="12" width="5" height="6" rx="1" /></g></>;
+  const square = (face: boolean) => <>{antenna}<rect className="ar-solid" x="7" y="4" width="10" height="7" rx="2" />{face && eyes}<rect className="ar-solid" x="8.5" y="12" width="7" height="6" rx="1" /><line x1="10.5" y1="18" x2="10.5" y2="21.5" /><line x1="13.5" y1="18" x2="13.5" y2="21.5" /></>;
+  const shown = (view: View, body: ReactNode) => <g><animate attributeName="opacity" keyTimes={VIEWS.map(([at]) => at).join(';')} values={VIEWS.map(([, v]) => v === view ? 1 : 0).join(';')} calcMode="discrete" dur="8s" repeatCount="indefinite" />{body}</g>;
+  return <>
+    <rect x="15.2" y="20.4" width="12.7" height="1.1" rx=".3" /><line x1="27.2" y1="20.4" x2="27.2" y2="10.5" />
+    <g>{move('translate', k.plate)}<rect className="ar-solid" x="20.4" y={PLATE_Y} width="5.8" height=".9" rx=".2" /><line x1="26.2" y1={PLATE_Y + .45} x2="27.2" y2={PLATE_Y + .45} /><path d={`M20.4 ${PLATE_Y + .45} H${LEVER_X} M${LEVER_X} ${PLATE_Y - .45} V${PLATE_Y + 1.35}`} /></g>
+    {arm(k.far)}
+    {shown('R', profile)}{shown('L', <g transform="translate(24 0) scale(-1 1)">{profile}</g>)}{shown('F', square(true))}{shown('B', square(false))}
+    <g>{anim('opacity', k.shown)}{move('translate', k.stack)}{[0, 1, 2, 3].map(i => <line key={i} x1="0" y1={-i * 1.2} x2={SHEET - (i % 2) * .4} y2={-i * 1.2}>{i > 0 && move('translate', k.sheets[i - 1]!)}</line>)}</g>
+    {arm(k.near)}
+  </>;
+}
+
 function Scene({ activity, fix }: { activity: Activity; fix: 'hammer' | 'wrench' }) {
   switch (activity) {
     case 'write': return <g transform="translate(-6 0)">
@@ -256,6 +335,7 @@ function Scene({ activity, fix }: { activity: Activity; fix: 'hammer' | 'wrench'
         <line x1="15.5" y1="13" x2="17.6" y2="14.4"><animate attributeName="x2" values="17.6;17.6;6.4;6.4" {...turn} /></line></>;
     }
     case 'wait': return <WaitScene />;
+    case 'compact': return <CompactScene />;
     case 'rest': return <>
       {/* On its back on a couch, eyes shut, still; Zzz drift up toward the middle. */}
       <rect x="1" y="10.6" width="24" height="5.4" rx="1.2" /><line x1="2" y1="18" x2="2" y2="21" /><line x1="24" y1="18" x2="24" y2="21" />

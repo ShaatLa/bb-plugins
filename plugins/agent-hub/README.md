@@ -1,6 +1,6 @@
 # Agent Hub
 
-Plugin id `agent-hub` (formerly named Answers); its agent tools are `agent_hub_*`; the old `answers_*` names stay as deprecated aliases for sessions started before the rename.
+Plugin id `agent-hub` (formerly named Answers); its agent tools are `agent_hub_*` (the old `answers_*` aliases were removed).
 
 Open Full transcript from the conversation toolbar or an expanded work step. It embeds bb’s ThreadChat for the selected thread; Back to Agent Hub restores the mounted feed and its scroll position. Transcript sends inherit the thread’s permission mode.
 
