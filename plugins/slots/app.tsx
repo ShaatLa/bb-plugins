@@ -91,10 +91,16 @@ export function eventSentence(event: AuditEvent, view: StatusView) {
 
 function StatusContent({ view, now }: { view: StatusView; now: number }) {
   const settings = view.hostSettings[view.localHostId], latest = view.gates[view.localHostId]?.latest;
-  const heavy = view.pools.find(pool => pool.hostId === view.localHostId && pool.pool === "heavy");
   const locals = view.pools.filter(pool => pool.hostId === view.localHostId && pool.pool === "local-model");
   const local = locals.length ? { leases: locals.flatMap(pool => pool.leases), capacity: locals.reduce((sum, pool) => sum + pool.capacity, 0) } : undefined;
   const hostName = (hostId: string) => view.leaseHosts?.[hostId]?.name ?? hostId;
+  // Heavy tile: every machine that can take work now; an offline machine's pool is left out, but its queued requests still wait.
+  const heavies = view.pools.filter(pool => pool.pool === "heavy");
+  const counted = heavies.filter(pool => pool.hostId === view.localHostId || view.hostSettings[pool.hostId]?.connected !== false);
+  const heavyUsed = counted.reduce((sum, pool) => sum + pool.leases.length, 0), heavyCapacity = counted.reduce((sum, pool) => sum + pool.capacity, 0);
+  const heavyWaiting = heavies.reduce((sum, pool) => sum + pool.queue.length, 0);
+  const perMachine = counted.length > 1 ? [...counted].sort((a, b) => Number(b.hostId === view.localHostId) - Number(a.hostId === view.localHostId)).map(pool => `${pool.hostId === view.localHostId ? "This Mac" : hostName(pool.hostId)} ${pool.leases.length}/${pool.capacity}`).join(" · ") : "";
+  const localValue = !local ? "—" : local.capacity === 0 && !local.leases.length ? "No slots configured" : !local.leases.length ? "Free" : local.capacity > 1 ? `${local.leases.length} of ${local.capacity} in use` : "In use";
   const hostOrder = Object.keys(view.leaseHosts ?? {});
   // This Mac, then local-model devices (snapshot keeps registration order), then other hosts in leaseHosts order.
   const deviceHost = ({ device }: PoolSnapshot) => device ? view.deviceHosts?.[device] : undefined;
@@ -118,8 +124,8 @@ function StatusContent({ view, now }: { view: StatusView; now: number }) {
         </>}
         <p>{latest ? `Checked ${duration(now - latest.at)} ago` : "Waiting for the first machine reading."}</p>
       </Tile>
-      <Tile label="Heavy slots" value={heavy ? heavy.capacity === 0 && !heavy.leases.length ? "No slots configured" : <span className="whitespace-nowrap">{heavy.leases.length} of {heavy.capacity} in use</span> : "—"}>{heavy?.queue.length ?? 0} waiting</Tile>
-      <Tile label="Local model" value={local ? local.leases.length ? "In use" : local.capacity === 0 ? "No slots configured" : "Free" : "—"}>{local?.leases.length ? local.leases.map(lease => view.titles[lease.holderThreadId] || "thread").join(", ") : "No active jobs"}</Tile>
+      <Tile label="Heavy slots" value={!counted.length ? "—" : heavyCapacity === 0 && !heavyUsed ? "No slots configured" : <span className="whitespace-nowrap">{heavyUsed} of {heavyCapacity} in use</span>}>{heavyWaiting} waiting{perMachine && <p>{perMachine}</p>}</Tile>
+      <Tile label="Local model" value={localValue}>{local?.leases.length ? local.leases.map(lease => `${view.titles[lease.holderThreadId] || "thread"}${lease.device ? ` · ${lease.device}` : ""}`).join(", ") : "No active jobs"}</Tile>
     </div>
     {[...sections].map(([name, pools]) => <section key={name} className="space-y-2">
       <h2 className="pt-2 text-sm font-medium text-muted-foreground">{name}</h2>

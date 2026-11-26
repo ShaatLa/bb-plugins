@@ -596,3 +596,22 @@ test("each machine's heavy section shows whether the owner is away and why", asy
   expect(within(remote).getByText("Away 23 min: +2 heavy")).toBeTruthy();
   expect(within(slot.getByText("This Mac").closest("section")!).getByText("Present: media playing (audio)")).toBeTruthy();
 });
+
+test("summary tiles add up every machine that can take work and every model device", async () => {
+  const view = machines(true, 2);
+  const lease = { ...fixture.pools[0].leases[0], id: "m1", pool: "local-model", device: "GPU-1" } as const;
+  const data: StatusView = { ...view, pools: view.pools.map(p => p.device === "GPU-1" ? { ...p, leases: [lease] } : p) };
+  const slot = render(() => ({ ok: true, data }));
+  await slot.findByText("Build box");
+  expect(slot.getByRole("region", { name: "Heavy slots" }).textContent).toBe("Heavy slots3 of 6 in use2 waitingThis Mac 1/4 · Build box 2/2");
+  expect(slot.getByRole("region", { name: "Local model" }).textContent).toBe("Local model1 of 2 in useQA checks · GPU-1");
+});
+
+test("an offline machine is not counted in the heavy tile, but its queued request still waits", async () => {
+  const view = machines(false, 2);
+  const queued = { id: "request-r", hostId: "remote", pool: "heavy", threadId: "normal", job: "Build package", estMs: 60_000, priority: "normal", createdAt: at - 90_000 } as const;
+  const data: StatusView = { ...view, pools: view.pools.map(p => p.hostId === "remote" ? { ...p, queue: [queued] } : p) };
+  const slot = render(() => ({ ok: true, data }));
+  await slot.findByText("Build box · offline");
+  expect(slot.getByRole("region", { name: "Heavy slots" }).textContent).toBe("Heavy slots1 of 4 in use3 waiting");
+});
