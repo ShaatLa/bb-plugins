@@ -32,6 +32,21 @@ builder tests, set `BB_SPAWN_GATE_WORK_BOARD_CONFIG` to a private fixture path.
 }
 ```
 
+BB exposes the native `spawn_gate_owner` tool in projects with a builder config.
+The configured manager can set or replace an owner from its session with
+`{"operation":"set","plugin":"example","ownerThreadId":"thr_owner"}`.
+Remove the entry with `{"operation":"remove","plugin":"example"}`. The plugin
+name is the directory basename, and the target thread must be unarchived in
+the same project.
+
+Each change appends the UTC time, project, actor, plugin and old and new
+owners to `ownerAudit` in the config and appears in `bb plugin logs spawn-gate`.
+The command leaves the configured manager and roles intact. The audit grows
+with each change and has no retention limit. Finish any direct edits before
+calling the tool, since a concurrent edit can be overwritten.
+Authorization uses BB's native tool context from the trusted host daemon.
+Direct filesystem access remains subject to the server's permissions.
+
 Set `method` to `script` and `script` to
 `plugins/spawn-gate/examples/work-board/build.py`. Leave `branch` blank when
 using the remote default branch. Keep `enabled` false to try this workflow

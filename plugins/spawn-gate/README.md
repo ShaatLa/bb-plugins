@@ -118,7 +118,9 @@ Script mode. Instruction mode keeps the mint workflow below.
 RPC `start` input: `{projectId,parentThreadId,args:string[],dryRun?,machine?,requiresHeavyLease?}`.
 The CLI and RPC return the same JSON. Dry-run runs the builder without minting
 or spawning. See [START-CONTRACT.md](START-CONTRACT.md) for builder stdin/stdout,
-allowed spawn fields and result shapes. Builders run on the bb server machine;
+allowed spawn fields and result shapes. The [Work Board builder example](examples/work-board/README.md)
+includes the manager's `spawn_gate_owner` tool for audited owner assignments.
+Builders run on the bb server machine;
 absolute path arguments must be accessible there. The plugin puts the server's
 bb CLI on builder PATH and sets its absolute BB_CLI. Python builders use the
 server PATH's python3; both resolved paths are recorded in plugin logs. Child environment paths

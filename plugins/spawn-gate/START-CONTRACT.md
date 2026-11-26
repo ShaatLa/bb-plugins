@@ -19,6 +19,10 @@ Builder execution:
 - For the refusal journal, the first stderr line may use the same bounded JSON format, even when the builder exits zero. The journal stores only that structured diagnostic. It saves a card reference only when builder arguments contain a valid task key in `--card EXA-1` or `--card=EXA-1`. It discards raw stderr, arguments, stdout and briefs.
 - No mint or bb thread spawn inside the builder.
 
+The [Work Board builder example](examples/work-board/README.md) documents the
+native `spawn_gate_owner` tool. It updates the example's server-local owner
+assignments outside the builder's stdin/stdout contract.
+
 Builder stdout (strict object; omit optional fields, do not emit null):
 {
   "version": 1,

@@ -8,6 +8,7 @@ import { migrateLegacyGate } from "./migration";
 import { defaultPaceThreshold } from "./pace";
 import { invalidRemote, isBuilderRemote } from "./remote";
 import { briefInput, createStart, machineSetting, startInput, startOutput } from "./start";
+import { registerWorkBoardOwnerTool } from "./work-board-owners";
 
 const hash = (text: string) => createHash("sha256").update(text).digest("hex");
 const admission = /^agent-admission v1 token=([a-f0-9]{64})$/;
@@ -42,6 +43,7 @@ export const rpcContract = defineRpcContract({
 
 export default async function plugin(bb: BbPluginApi) {
   await migrateLegacyGate(bb);
+  registerWorkBoardOwnerTool(bb);
   const settings = bb.settings.define({
     paceThreshold: {
       type: "number", label: "Weekly provider pace threshold", default: defaultPaceThreshold,

@@ -7,6 +7,7 @@ import { createFakePluginHost, makeThreadResponse } from "@get-bb/plugin-sdk/tes
 import { registerGateCli } from "./cli";
 import { createMetrics } from "./metrics";
 import { builderEnvironment, createStart } from "./start";
+import { registerWorkBoardOwnerTool } from "./work-board-owners";
 
 const cleanups: (() => Promise<unknown>)[] = [];
 afterEach(async () => { vi.unstubAllEnvs(); for (const cleanup of cleanups.splice(0).reverse()) await cleanup(); });
@@ -44,7 +45,7 @@ async function fixture() {
   const start = createStart(scoped, mint, () => policy, revoke, metrics.record);
   registerGateCli(scoped, { start, report: metrics.report, configGet: vi.fn(), configSet: vi.fn() });
   const request = { projectId: "proj_example", parentThreadId: "thr_parent", args: [] };
-  return { root, repo, git, write, first, start, request, mint, spawn, revoke, policy, harness, report: metrics.report };
+  return { root, repo, git, write, first, start, request, mint, spawn, revoke, policy, bb, harness, report: metrics.report };
 }
 it("dry-runs fresh remote main without minting, then starts the exact brief with resolved spawn fields", async () => {
   const f = await fixture();
@@ -185,7 +186,7 @@ it("runs the Work Board builder and counts successes and fixed refusals through 
     managerThreadId: "thr_manager", owners: { example: parent, other: "thr_other" },
     roles: { impl: models, review: models, check: models, "plan-review": models },
   };
-  await writeFile(configPath, JSON.stringify(config));
+  await writeFile(configPath, JSON.stringify({ ...config, owners: { other: "thr_other" } }));
   vi.stubEnv("BB_SPAWN_GATE_WORK_BOARD_CONFIG", configPath);
   vi.stubEnv("EXAMPLE_CARD_JSON", cardPath);
   vi.stubEnv("EXAMPLE_PARENT_JSON", '{"thread":{"providerId":"codex","environmentId":"env_example"}}');
@@ -225,6 +226,12 @@ fi
   const saveCard = () => writeFile(cardPath, JSON.stringify(card));
   const launch = (role: string, dryRun = true) => f.start({ ...f.request, args: ["--card", task.key, "--role", role], dryRun });
   await saveCard();
+  await expect(launch("impl")).rejects.toThrow('{"reasonCode": "scope_not_allowed"}');
+  registerWorkBoardOwnerTool(f.bb);
+  const registration = await f.harness.behavior.callAgentTool("spawn_gate_owner", {
+    operation: "set", plugin: "example", ownerThreadId: parent,
+  }, { threadId: config.managerThreadId, projectId: f.request.projectId });
+  expect(JSON.parse(registration as string)).toMatchObject({ changed: true, oldOwner: null, newOwner: parent });
   expect(await launch("impl")).toMatchObject({ build: {
     brief: expect.stringContaining("> agent-admission example"),
     spawn: { providerId: "codex", environment: { type: "host", workspace: { type: "managed-worktree" } } },
@@ -268,7 +275,7 @@ fi
   expect(report.projects[0]).toMatchObject({ starts: 1, dryRuns: 3, blockedStarts: 0 });
   expect(report.events?.map(event => event.reason).sort()).toEqual([
     "builder:card_closed", "builder:missing_review_range", "builder:no_approved_plan", "builder:no_eligible_provider",
-    "builder:open_dependency", "builder:scope_not_allowed", "builder:unknown_role", "builder:unsupported_card_type",
+    "builder:open_dependency", "builder:scope_not_allowed", "builder:scope_not_allowed", "builder:unknown_role", "builder:unsupported_card_type",
     "builder:wrong_project",
   ]);
 

@@ -1,14 +1,17 @@
+import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
-import { createFakePluginHost, makeMessageDispatchHookContext, makeThreadResponse } from "@get-bb/plugin-sdk/testing";
+import { createFakePluginHost, makeMessageDispatchHookContext, makePluginAgentConfigurationContext, makeThreadResponse } from "@get-bb/plugin-sdk/testing";
 import plugin from "./server";
 const PROJECT = "proj_sample";
 const TTL = 600_000;
 
 const cleanups: (() => Promise<void>)[] = [];
-afterEach(async () => { vi.useRealTimers(); for (const cleanup of cleanups.splice(0)) await cleanup(); });
+afterEach(async () => { vi.useRealTimers(); vi.unstubAllEnvs(); for (const cleanup of cleanups.splice(0)) await cleanup(); });
 const brief = "Review the task.\nReply only OK.";
 async function setup(enabled = true, existing = false) {
-  let { bb, harness } = createFakePluginHost({ pluginId: "spawn-gate", sdk: { projects: { list: async () => [{ id: PROJECT, name: "Sample" }, { id: "proj_other", name: "Other" }] }, threads: {
+  let { bb, harness } = createFakePluginHost({ pluginId: "spawn-gate", agentSkillIds: ["spawn-gate"], sdk: { projects: { list: async () => [{ id: PROJECT, name: "Sample" }, { id: "proj_other", name: "Other" }] }, threads: {
     get: async () => makeThreadResponse({ projectId: PROJECT }),
     events: { list: async () => existing ? [{ type: "thread/started" }] : [] },
   } } });
@@ -38,6 +41,67 @@ it("defaults off and reacts to the enforcement switch", async () => {
   await h.setSettings({ enabled: true });
   expect((await h.check()).action).toBe("reject");
   expect(instructions()).toContain("Use this launch script");
+});
+it("lets only the Work Board manager change owners and records each effective change", async () => {
+  const h = await setup(false);
+  const directory = await mkdtemp(join(tmpdir(), "spawn-owners-"));
+  cleanups.push(() => rm(directory, { recursive: true, force: true }));
+  const path = join(directory, "config.json");
+  vi.stubEnv("BB_SPAWN_GATE_WORK_BOARD_CONFIG", path);
+  const agentConfig = (id: string) => h.harness.behavior.resolveAgentConfiguration(
+    makePluginAgentConfigurationContext({ project: { id: PROJECT }, thread: { id } }),
+  );
+  expect(await agentConfig("thr_other")).toMatchObject({ skills: ["spawn-gate"], tools: [] });
+  const config = {
+    managerThreadId: "thr_manager", owners: { retained: "thr_retained" },
+    roles: { impl: [{ providerId: "codex", model: "example" }] }, environment: "reuse-parent",
+  };
+  const original = JSON.stringify(config);
+  await writeFile(path, original, { mode: 0o600 });
+  for (const caller of ["thr_manager", "thr_other"]) {
+    expect(await agentConfig(caller)).toMatchObject({
+      skills: ["spawn-gate"], tools: [{ name: "spawn_gate_owner" }],
+    });
+  }
+  const checkTarget = vi.fn(async ({ threadId }: { threadId: string }) => {
+    if (threadId === "thr_missing") throw new Error("Not found");
+    return makeThreadResponse({
+      id: threadId, projectId: threadId === "thr_foreign" ? "proj_other" : PROJECT,
+      archivedAt: threadId === "thr_archived" ? Date.now() : null,
+    });
+  });
+  h.harness.sdk.stub("threads.get", checkTarget);
+  const options = { operation: "set", plugin: "example", ownerThreadId: "thr_first" };
+  const call = (input: unknown, threadId = "thr_manager") =>
+    h.harness.behavior.callAgentTool("spawn_gate_owner", input, { threadId, projectId: PROJECT });
+  const ineligible = { isError: true, content: [{ type: "text", text: expect.stringContaining("existing, unarchived") }] };
+  expect(await call(options, "thr_other")).toMatchObject({ isError: true, content: [{ type: "text", text: expect.stringContaining("Only the configured manager thread") }] });
+  expect(await call(options, "")).toMatchObject({ isError: true });
+  await expect(call({ ...options, plugin: "../example" })).rejects.toThrow("directory name");
+  await expect(call({ ...options, managerThreadId: "thr_other" })).rejects.toThrow("Unrecognized key");
+  expect(checkTarget).not.toHaveBeenCalled();
+  for (const ownerThreadId of ["thr_missing", "thr_archived", "thr_foreign"]) {
+    expect(await call({ ...options, ownerThreadId })).toMatchObject(ineligible);
+  }
+  expect(await readFile(path, "utf8")).toBe(original);
+  const run = async (input: unknown) => JSON.parse(await call(input) as string);
+  expect(await run(options)).toMatchObject({ changed: true, oldOwner: null, newOwner: "thr_first" });
+  expect(await run(options)).toMatchObject({ changed: false });
+  expect(await run({ ...options, ownerThreadId: "thr_second" })).toMatchObject({ changed: true, oldOwner: "thr_first", newOwner: "thr_second" });
+  const remove = { operation: "remove", plugin: "example" };
+  expect(await run(remove)).toMatchObject({ changed: true, oldOwner: "thr_second", newOwner: null });
+  expect(await run(remove)).toMatchObject({ changed: false });
+  expect(JSON.parse(await readFile(path, "utf8"))).toEqual({
+    ...config,
+    ownerAudit: [[null, "thr_first"], ["thr_first", "thr_second"], ["thr_second", null]].map(([oldOwner, newOwner]) => ({
+      time: expect.stringMatching(/^\d{4}-\d{2}-\d{2}T.*Z$/), projectId: PROJECT,
+      actorThreadId: "thr_manager", plugin: "example", oldOwner, newOwner,
+    })),
+  });
+  expect((await stat(path)).mode & 0o777).toBe(0o600);
+  const log = h.harness.inspection.logEntries.map(entry => entry.message);
+  expect(log.filter(message => message.startsWith("Work Board owner changed "))).toHaveLength(3);
+  expect(log).toContain(`Work Board owner change refused in ${PROJECT} for thr_other`);
 });
 it.each(["claude-code", "codex", "antigravity"])("rejects direct %s starts, including parentless agents", async providerId => {
   const h = await setup();
