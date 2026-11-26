@@ -1365,9 +1365,12 @@ test("history chart cards are switchable, never duplicate a chart and remember t
     const bars = within(lines).getAllByRole("button", { name: /^Lines changed ·/ });
     const latest = bars.at(-1)!;
     expect(latest.hasAttribute("title")).toBe(false);
-    // The hover card lives in the bar: label, exact value; the newest interval is still running.
-    expect(latest.textContent).toContain("(so far)");
-    expect(latest.textContent).toContain("1,234 added, 840 deleted");
+    // Hovering a bar shows one card at the cursor: label, exact value; the newest interval is still running. Leaving hides it.
+    fireEvent.mouseMove(latest, { clientX: 40, clientY: 30 });
+    expect(slot.getByRole("tooltip").textContent).toContain("(so far)");
+    expect(slot.getByRole("tooltip").textContent).toContain("1,234 added, 840 deleted");
+    fireEvent.mouseLeave(latest);
+    expect(slot.queryByRole("tooltip")).toBeNull();
     expect(latest.getAttribute("aria-label")).toContain("1,234 added, 840 deleted");
     // Grouped bars share the largest single part as scale: the scale tops at 1,500, additions 1234 → 82%, deletions 840 → 56%.
     const [added, deleted] = ["bg-diff-added/60", "bg-diff-removed/60"].map((name) => latest.querySelector<HTMLElement>(`[class~="${name}"]`)!);
@@ -1375,7 +1378,9 @@ test("history chart cards are switchable, never duplicate a chart and remember t
     expect(added.parentElement).toBe(deleted.parentElement);
     expect(parseFloat(added.style.height)).toBeCloseTo(1234 / 1500 * 100, 1);
     expect(parseFloat(deleted.style.height)).toBeCloseTo(840 / 1500 * 100, 1);
-    expect(bars[0]!.textContent).toContain("0 added, 0 deleted");
+    fireEvent.mouseMove(bars[0]!, { clientX: 10, clientY: 30 });
+    expect(slot.getByRole("tooltip").textContent).toContain("0 added, 0 deleted");
+    fireEvent.mouseLeave(bars[0]!);
     expect(lines.textContent).not.toContain("+1.2K");
     expect(slot.getByText("added")).toBeTruthy();
   } finally { slot.lifecycle.unmount(); }
@@ -1654,12 +1659,18 @@ test("chart bars carry a scale and a hover card instead of value labels, mark th
     expect(figure.innerHTML).not.toContain("minmax(38px");
     // No value or "n" line above a bar: the exact value is in its hover card, which replaces the native title.
     bars.forEach((bar) => expect(bar.hasAttribute("title")).toBe(false));
-    bars[0].focus();
-    expect(document.activeElement).toBe(bars[0]);
-    expect(bars[0].textContent).toBe("13 Oct1");
+    // The card is not inside the bar: one card for the group, outside the slots that clip for the expand animation.
+    expect(bars[0].textContent).toBe("");
+    fireEvent.mouseMove(bars[0], { clientX: 10, clientY: 10 });
+    const card = slot.getByRole("tooltip");
+    expect(card.textContent).toBe("13 Oct1");
+    expect(card.parentElement!.getAttribute("aria-label")).toBe("History charts");
+    fireEvent.blur(bars[0]);
+    expect(slot.queryByRole("tooltip")).toBeNull();
     // Only the last bucket of a live range is hatched, and it reads "so far" in the label and the card.
     expect(bars.map((bar) => bar.getAttribute("aria-label")!.includes("(so far)"))).toEqual([false, false, false, false, false, false, true]);
-    expect(bars.at(-1)!.textContent).toContain("(so far)");
+    fireEvent.mouseMove(bars.at(-1)!, { clientX: 10, clientY: 10 });
+    expect(slot.getByRole("tooltip").textContent).toContain("(so far)");
     expect(bars.map((bar) => !!bar.querySelector(".outline-dashed"))).toEqual([false, false, false, false, false, false, true]);
   } finally { slot.lifecycle.unmount(); }
   // A past custom range has no running interval; 14 bars show every second date label, ending with the last.

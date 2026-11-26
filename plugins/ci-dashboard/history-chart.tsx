@@ -1,4 +1,4 @@
-import { useId, useState } from "react";
+import { useId, useRef, useState, type ReactNode } from "react";
 import { experimental_Icon as Icon } from "@get-bb/plugin-sdk/app";
 import type { Metrics } from "./metrics";
 import type { DateRange } from "./date-range";
@@ -105,10 +105,19 @@ export function HistoryCharts({ repo, filter, onSelect }: {
 }) {
   const [slots, setSlots] = useState(readSlots);
   const [expanded, setExpanded] = useState<0 | 1 | null>(null);
+  const group = useRef<HTMLDivElement>(null);
+  const [tip, setTip] = useState<{ content: ReactNode; x: number; y: number; flipX: boolean; flipY: boolean } | null>(null);
+  // Client point → group coordinates; the card flips to the other side past the group's middle so it stays on screen.
+  const showTip: ShowTip = (content, point) => {
+    const box = group.current?.getBoundingClientRect();
+    if (!content || !point || !box) return setTip(null);
+    const x = point.x - box.left, y = point.y - box.top;
+    setTip({ content, x, y, flipX: x > box.width / 2, flipY: y > box.height / 2 });
+  };
   const columns = expanded === 0 ? "xl:grid-cols-[minmax(0,1fr)_minmax(0,0fr)] gap-0"
     : expanded === 1 ? "xl:grid-cols-[minmax(0,0fr)_minmax(0,1fr)] gap-0"
       : "xl:grid-cols-[minmax(0,1fr)_minmax(0,1fr)] gap-3";
-  return <div role="group" aria-label="History charts" style={{ containerType: "inline-size" }} className={`grid min-w-0 grid-cols-1 transition-[grid-template-columns,gap] duration-300 ease-in-out motion-reduce:transition-none ${columns}`}>
+  return <div ref={group} role="group" aria-label="History charts" style={{ containerType: "inline-size" }} className={`relative grid min-w-0 grid-cols-1 transition-[grid-template-columns,gap] duration-300 ease-in-out motion-reduce:transition-none ${columns}`}>
     {([0, 1] as const).map((slot) => {
       const hidden = expanded !== null && expanded !== slot;
       return <div key={slot} aria-hidden={hidden || undefined} inert={hidden} className={`min-w-0 overflow-hidden transition-opacity duration-300 ease-in-out motion-reduce:transition-none ${hidden ? "hidden opacity-0 xl:block" : "opacity-100"}`}>
@@ -116,10 +125,13 @@ export function HistoryCharts({ repo, filter, onSelect }: {
         <div className="h-full xl:min-w-[calc((100cqw_-_0.75rem)/2)]">
           <HistoryChart chart={slots[slot].chart} filter={filter} options={CHART_KEYS.filter((key) => key !== slots[1 - slot].chart)} selectLabel={slot === 0 ? "First chart" : "Second chart"}
             onChange={(chart) => { const next = slots.map((current, index) => index === slot ? { chart } : current) as [Slot, Slot]; setSlots(next); saveSlots(next); }}
-            repo={repo} onSelect={onSelect} expanded={expanded === slot} onToggle={() => setExpanded((current) => current === slot ? null : slot)} />
+            repo={repo} onSelect={onSelect} expanded={expanded === slot} onToggle={() => setExpanded((current) => current === slot ? null : slot)} onTip={showTip} />
         </div>
       </div>;
     })}
+    {/* A child of the group, not of a slot: the slots clip their overflow for the expand animation, the card may leave its chart. */}
+    {tip && <div role="tooltip" style={{ left: tip.x, top: tip.y, transform: `translate(${tip.flipX ? "calc(-100% - 14px)" : "14px"}, ${tip.flipY ? "calc(-100% - 14px)" : "14px"})` }}
+      className="pointer-events-none absolute z-20 flex w-max min-w-32 max-w-64 flex-col gap-0.5 rounded-md border border-border bg-popover p-2 text-xs text-popover-foreground shadow-md">{tip.content}</div>}
   </div>;
 }
 
@@ -140,9 +152,11 @@ function resolve(chart: ChartKey, repo: Metrics, filter: CiFilter): { series: Tr
   return { series, loading: !series && !!repo.pending?.includes(spec.source!), message: error || "History is unavailable.", events, event };
 }
 
-export function HistoryChart({ chart, filter, options, selectLabel, onChange, repo, onSelect, expanded, onToggle }: {
+type ShowTip = (content: ReactNode | null, point?: { x: number; y: number }) => void;
+
+export function HistoryChart({ chart, filter, options, selectLabel, onChange, repo, onSelect, expanded, onToggle, onTip = () => {} }: {
   chart: ChartKey; filter: CiFilter; options: ChartKey[]; selectLabel: string; onChange: (chart: ChartKey) => void;
-  repo: Metrics; onSelect: (since: string, until: string) => void; expanded: boolean; onToggle: () => void;
+  repo: Metrics; onSelect: (since: string, until: string) => void; expanded: boolean; onToggle: () => void; onTip?: ShowTip;
 }) {
   const headingId = useId();
   const { title, format: formatValue, note, fixedMax, unit, parts, sample } = CHARTS[chart];
@@ -187,7 +201,7 @@ export function HistoryChart({ chart, filter, options, selectLabel, onChange, re
           {ticks.map((tick) => <span key={tick} className="absolute right-0 translate-y-1/2" style={{ bottom: `${tick / top * 100}%` }}>{tickLabel(tick, unit)}</span>)}
         </div>
         <div className="min-w-0 flex-1">
-          {/* The bars grid below is the hover cards' positioned ancestor (the plot's box) and, being positioned, paints over the gridlines. */}
+          {/* The bars grid below is positioned, so it paints over the gridlines. */}
           <div className="relative h-32 border-b border-border">
             {ticks.filter((tick) => tick > 0).map((tick) => <span key={tick} aria-hidden="true" className="pointer-events-none absolute inset-x-0 border-t border-dashed border-border" style={{ bottom: `${tick / top * 100}%` }} />)}
             <div className="relative grid h-full" style={{ gridTemplateColumns: columns, columnGap: gap }}>
@@ -197,9 +211,13 @@ export function HistoryChart({ chart, filter, options, selectLabel, onChange, re
                 const until = new Date(Math.min(Date.parse(range.until), Date.parse(point.date) - (index === series.length - 1 ? 0 : 1))).toISOString();
                 const upcoming = Date.parse(since) > Date.parse(range.until);
                 const sentence = describe(point);
+                // Keyboard focus anchors the card to the bar's top; mouse focus leaves it at the cursor.
+                const content = upcoming ? null : <><span className="font-medium">{label(point.date, index)}</span><span className="tabular-nums">{format(point)}</span>{sentence && <span className="text-muted-foreground">{sentence}</span>}</>;
                 return <button key={point.date} type="button" aria-haspopup="dialog" disabled={upcoming}
                   aria-label={`${title} · ${label(point.date, index)} · ${format(point)} · ${sentence ? `${sentence} · ` : ""}${upcoming ? "Upcoming interval" : "Show statistics"}`}
                   onClick={(event) => { event.currentTarget.focus(); onSelect(since, until); }}
+                  onMouseMove={(event) => onTip(content, { x: event.clientX, y: event.clientY })} onMouseLeave={() => onTip(null)}
+                  onFocus={(event) => { if (event.currentTarget.matches(":focus-visible")) { const box = event.currentTarget.getBoundingClientRect(); onTip(content, { x: box.left + box.width / 2, y: box.top }); } }} onBlur={() => onTip(null)}
                   className="group flex h-full min-w-0 cursor-pointer items-end rounded-t-md hover:bg-state-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-default disabled:opacity-50">
                   {/* Parts are bars side by side from the axis; a plain series is a single green part. */}
                   <span className="flex h-full w-full items-end gap-0.5">
@@ -207,12 +225,6 @@ export function HistoryChart({ chart, filter, options, selectLabel, onChange, re
                       className={`min-w-0 flex-1 rounded-t-md transition-opacity group-hover:opacity-80 group-focus-visible:opacity-80 ${part.tone} ${index === running ? "outline outline-1 -outline-offset-1 outline-dashed outline-foreground/60" : ""}`}
                       style={{ height: `${value / top * 100}%`, ...(index === running ? { backgroundImage: "repeating-linear-gradient(135deg, transparent 0 3px, rgb(255 255 255 / 0.45) 3px 5px)" } : {}) }} />)}
                   </span>
-                  {!upcoming && <span aria-hidden="true" style={{ left: `clamp(0px, calc(${(index + 0.5) / bars * 100}% - 6rem), calc(100% - 12rem))` }}
-                    className="pointer-events-none absolute top-0 z-10 hidden w-48 max-w-full flex-col gap-0.5 rounded-md border border-border bg-popover p-2 text-left text-xs text-popover-foreground shadow-md group-hover:flex group-focus-visible:flex">
-                    <span className="font-medium">{label(point.date, index)}</span>
-                    <span className="tabular-nums">{format(point)}</span>
-                    {sentence && <span className="text-muted-foreground">{sentence}</span>}
-                  </span>}
                 </button>;
               })}
             </div>
