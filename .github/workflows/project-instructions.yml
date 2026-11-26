@@ -1,0 +1,31 @@
+name: Project Instructions CI
+
+on:
+  push:
+    paths:
+      - "plugins/project-instructions/**"
+      - ".github/workflows/project-instructions.yml"
+  pull_request:
+    paths:
+      - "plugins/project-instructions/**"
+      - ".github/workflows/project-instructions.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  project-instructions:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: plugins/project-instructions
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.19
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm install --global bb-app@0.49.0
+      - run: npm run build

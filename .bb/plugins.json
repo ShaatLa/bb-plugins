@@ -46,6 +46,10 @@
     {
       "name": "agent-spawn-gate",
       "source": "./plugins/spawn-gate"
+    },
+    {
+      "name": "project-instructions",
+      "source": "./plugins/project-instructions"
     }
   ]
 }

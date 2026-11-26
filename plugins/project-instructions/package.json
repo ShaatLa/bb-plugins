@@ -1,0 +1,46 @@
+{
+  "name": "bb-plugin-project-instructions",
+  "version": "0.1.0",
+  "type": "module",
+  "license": "MIT",
+  "engines": {
+    "bb": ">=0.50.2",
+    "bbPluginSdk": ">=0.6.132"
+  },
+  "bb": {
+    "name": "Project Instructions",
+    "description": "Injects one project's process root file and its process skills, read from a local git clone, into every thread of that project, with no per-worktree copy.",
+    "branding": {
+      "icon": "FileText"
+    },
+    "server": "./server.ts",
+    "skills": [
+      "skills",
+      "linked-skills"
+    ]
+  },
+  "keywords": [
+    "bb-plugin"
+  ],
+  "scripts": {
+    "build": "bb plugin build",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "gray-matter": "^4.0.3",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@get-bb/plugin-sdk": "0.6.132",
+    "@types/better-sqlite3": "^7.6.12",
+    "@types/node": "^22.0.0",
+    "@types/react": "^19.3.3",
+    "better-sqlite3": "^13.0.3",
+    "cron-parser": "^5.10.6",
+    "hono": "^4.11.9",
+    "react": "^19.3.1",
+    "typescript": "^5.7.0",
+    "vitest": "^5.0.5"
+  }
+}
