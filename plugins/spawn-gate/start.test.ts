@@ -6,12 +6,13 @@ import { afterEach, expect, it, vi } from "vitest";
 import { createFakePluginHost, makeThreadResponse } from "@get-bb/plugin-sdk/testing";
 import { registerGateCli } from "./cli";
 import { createMetrics } from "./metrics";
+import { type ProcessSource, type ResolveProcessSource } from "./process-source";
 import { builderEnvironment, createStart } from "./start";
 import { registerWorkBoardOwnerTool } from "./work-board-owners";
 
 const cleanups: (() => Promise<unknown>)[] = [];
 afterEach(async () => { vi.unstubAllEnvs(); for (const cleanup of cleanups.splice(0).reverse()) await cleanup(); });
-async function fixture() {
+async function fixture(resolveSource: ResolveProcessSource = async () => null) {
   const root = await mkdtemp(join(tmpdir(), "spawn-start-"));
   cleanups.push(() => rm(root, { recursive: true, force: true }));
   const cli = join(root, "bin", "bb");
@@ -42,11 +43,36 @@ async function fixture() {
   const policy = { method: "script", script: "builder.py", remote: "", branch: "", machine: "" };
   const revoke = vi.fn();
   const metrics = await createMetrics(bb, bb.storage.database());
-  const start = createStart(scoped, mint, () => policy, revoke, metrics.record);
-  registerGateCli(scoped, { start, report: metrics.report, configGet: vi.fn(), configSet: vi.fn() });
+  const start = createStart(scoped, mint, () => policy, revoke, metrics.record, resolveSource);
+  registerGateCli(scoped, { start, report: metrics.report, configGet: vi.fn(), configSet: vi.fn(), readInstructions: vi.fn() });
   const request = { projectId: "proj_example", parentThreadId: "thr_parent", args: [] };
   return { root, repo, git, write, first, start, request, mint, spawn, revoke, policy, bb, harness, report: metrics.report };
 }
+it("loads the verified commit from a real process clone even after its checkout moves", async () => {
+  let source: ProcessSource | null = null;
+  let refusal: string | undefined;
+  const f = await fixture(async () => {
+    if (refusal) throw new Error(refusal);
+    return source;
+  });
+  const second = await f.write("second");
+  f.policy.remote = "https://git.example.test/legacy.git";
+  f.policy.branch = "legacy";
+  source = { clonePath: f.repo, branch: "main", commit: f.first };
+  const dryRun = () => f.start({ ...f.request, dryRun: true });
+  expect(await dryRun()).toMatchObject({ sourceBranch: "main", sourceCommit: f.first, build: { brief: "first" } });
+  source.commit = second;
+  expect(await dryRun()).toMatchObject({ sourceBranch: "main", sourceCommit: second, build: { brief: "second" } });
+  source.commit = "0".repeat(40);
+  await expect(f.start(f.request)).rejects.toThrow("Could not load the verified Project Instructions commit");
+  source.commit = second;
+  f.policy.script = "../builder.py";
+  await expect(f.start(f.request)).rejects.toThrow("Set script to a file relative");
+  refusal = "Project Instructions launch source is stale";
+  await expect(f.start(f.request)).rejects.toThrow(refusal);
+  expect(f.mint).not.toHaveBeenCalled();
+  expect(f.spawn).not.toHaveBeenCalled();
+});
 it("dry-runs fresh remote main without minting, then starts the exact brief with resolved spawn fields", async () => {
   const f = await fixture();
   expect(await f.start({ ...f.request, dryRun: true })).toMatchObject({ dryRun: true, sourceCommit: f.first, build: { brief: "first" } });

@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -15,6 +16,7 @@ async function setup(enabled = true, existing = false) {
     get: async () => makeThreadResponse({ projectId: PROJECT }),
     events: { list: async () => existing ? [{ type: "thread/started" }] : [] },
   } } });
+  harness.sdk.stub("plugins.list", async () => ({ plugins: [] }));
   await plugin(bb);
   await harness.behavior.callRpc("settings.write", { projectId: PROJECT, values: { enabled, method: "script" } });
   cleanups.push(() => harness.lifecycle.dispose());
@@ -31,7 +33,10 @@ async function setup(enabled = true, existing = false) {
     }
     for (const [projectId, patch] of Object.entries(groups)) await harness.behavior.callRpc("settings.write", { projectId, values: patch });
   };
-  return { setSettings, get harness() { return harness; }, check, mint, reload: async () => { ({ bb, harness } = await harness.lifecycle.reload(plugin)); } };
+  return { setSettings, get harness() { return harness; }, check, mint, reload: async () => {
+    ({ bb, harness } = await harness.lifecycle.reload(plugin));
+    harness.sdk.stub("plugins.list", async () => ({ plugins: [] }));
+  } };
 }
 it("defaults off and reacts to the enforcement switch", async () => {
   const h = await setup(false);
@@ -157,7 +162,9 @@ it("persists instruction mode, text and enforcement through reload, then admits 
   await h.setSettings({ enabled_proj_other: true, method_proj_other: "instruction", instruction_proj_other: "Read the task, check dependencies, then create a session.", ttl_proj_other: 3 });
   await h.reload();
   const instructions = h.harness.registrations.instructionProvider!({ projectId: "proj_other", threadId: "thr_parent" });
-  expect(instructions).toContain("Read the task, check dependencies");
+  expect(instructions).toContain("bb agent-spawn-gate instructions --project proj_other");
+  const read = await h.harness.behavior.runCli(["instructions"], { projectId: "proj_other" });
+  expect(read).toMatchObject({ exitCode: 0, stdout: "Read the task, check dependencies, then create a session." });
   expect(instructions).toContain("RPC mint");
   expect(instructions).not.toContain("Use this launch script");
   expect(h.harness.registrations.instructionProvider!({ projectId: PROJECT, threadId: "thr_parent" })).toBeNull();
@@ -175,6 +182,57 @@ it("uses the selected script and fails closed on empty instruction mode", async 
   const value = await h.harness.behavior.callRpc("mint", { projectId: PROJECT, parentThreadId: "thr_parent", brief: "No card, just a task." }) as { prompt: string };
   expect((await h.check({ input: { text: value.prompt } })).action).toBe("proceed");
   await expect(h.setSettings({ method_proj_sample: "invalid" })).rejects.toThrow();
+});
+it("reads instruction files from the exact shared commit and refuses broken sources without falling back", async () => {
+  const h = await setup();
+  const clonePath = await mkdtemp(join(tmpdir(), "spawn-process-"));
+  cleanups.push(() => rm(clonePath, { recursive: true, force: true }));
+  const git = (...args: string[]) => execFileSync("git", args, { cwd: clonePath, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
+  git("init", "-b", "main");
+  git("config", "user.name", "Test");
+  git("config", "user.email", "test@example.test");
+  const commit = async (text: string) => {
+    await writeFile(join(clonePath, "launch.md"), text);
+    git("add", "launch.md");
+    git("commit", "-m", "Update launch guide");
+    return git("rev-parse", "HEAD");
+  };
+  const head = await commit("First guide.\n");
+  const next = await commit("Current guide.\n");
+  const source = {
+    projectId: PROJECT, configured: true, enabled: true, clonePath, branch: "main",
+    head, originHead: head, state: "fresh", reason: null as string | null, fetchedAt: null,
+  };
+  const callSource = vi.fn(async ({ outputSchema }: { outputSchema: { parse(value: unknown): unknown } }) => outputSchema.parse(source));
+  h.harness.sdk.stub("plugins.callRpc", callSource);
+  h.harness.sdk.stub("plugins.list", async () => ({ plugins: [{ id: "project-instructions" }] }));
+  const read = () => h.harness.behavior.runCli(["instructions"], { projectId: PROJECT });
+  await h.setSettings({ method_proj_sample: "instruction", instruction_proj_sample: "Legacy text." });
+  await expect(h.mint()).rejects.toThrow("Set instructionFile");
+  const setFile = (value: string) => h.harness.behavior.callRpc("config.set", { projectId: PROJECT, key: "instructionFile", value });
+  await expect(setFile("../launch.md")).rejects.toThrow("rpc input validation failed");
+  await setFile("launch.md");
+  expect((await read()).stdout).toBe("First guide.\n");
+  source.head = source.originHead = next;
+  expect((await read()).stdout).toBe("Current guide.\n");
+  await expect(h.mint()).resolves.toMatchObject({ token: expect.any(String) });
+  await setFile("absent.md");
+  await expect(h.mint()).rejects.toThrow("Publish instructionFile");
+  await setFile("launch.md");
+  for (const state of ["wrong_branch", "stale", "missing", "dirty", "unreachable", "error"]) {
+    source.state = state;
+    source.reason = "Repair the fixture checkout";
+    expect(await read()).toMatchObject({ exitCode: 1, stderr: expect.stringContaining(state) });
+    await expect(h.mint()).rejects.toThrow(state);
+  }
+  source.enabled = false;
+  source.state = "disabled";
+  expect((await read()).stdout).toBe("Legacy text.");
+  source.configured = false;
+  source.state = "not_configured";
+  expect((await read()).stdout).toBe("Legacy text.");
+  callSource.mockRejectedValueOnce(new Error("Source RPC unavailable"));
+  await expect(h.mint()).rejects.toThrow("Project Instructions launch source is unavailable");
 });
 it("admits plain text in another project's script mode without requiring Work Board", async () => {
   const h = await setup(false);

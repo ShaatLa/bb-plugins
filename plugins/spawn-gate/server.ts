@@ -6,14 +6,16 @@ import { registerGateCli } from "./cli";
 import { createMetrics, reportContract } from "./metrics";
 import { migrateLegacyGate } from "./migration";
 import { defaultPaceThreshold } from "./pace";
+import { createProcessSourceResolver, isProcessPath, type ProcessSource } from "./process-source";
 import { invalidRemote, isBuilderRemote } from "./remote";
-import { briefInput, createStart, machineSetting, startInput, startOutput } from "./start";
+import { briefInput, createStart, machineSetting, readProcessInstructions, startInput, startOutput } from "./start";
 import { registerWorkBoardOwnerTool } from "./work-board-owners";
 
 const hash = (text: string) => createHash("sha256").update(text).digest("hex");
 const admission = /^agent-admission v1 token=([a-f0-9]{64})$/;
 const projectValues = z.object({
   enabled: z.boolean(), method: z.enum(["script", "instruction"]), instruction: z.string().max(20_000),
+  instructionFile: z.string().max(500).refine(path => !path || isProcessPath(path), "Use a file path relative to the process clone"),
   script: z.string().min(1).max(500), remote: z.string().max(2000).refine(isBuilderRemote, invalidRemote),
   branch: z.string().max(1024).refine(isBuilderBranch, invalidBranch),
   machine: machineSetting,
@@ -25,6 +27,7 @@ const fieldInput = <K extends keyof ProjectValues>(key: K) =>
   z.object({ projectId: z.string(), key: z.literal(key), value: projectValues.shape[key] }).strict();
 const configSetInput = z.discriminatedUnion("key", [
   fieldInput("enabled"), fieldInput("method"), fieldInput("instruction"), fieldInput("script"),
+  fieldInput("instructionFile"),
   fieldInput("remote"), fieldInput("branch"), fieldInput("machine"), fieldInput("ttlMinutes"),
 ]);
 export const rpcContract = defineRpcContract({
@@ -52,10 +55,12 @@ export default async function plugin(bb: BbPluginApi) {
     },
   });
   let config = await bb.storage.kv.get<Record<string, string | number | boolean>>("project-settings-v1") ?? {};
+  const resolveSource = createProcessSourceResolver(bb);
   const policy = (projectId: string) => ({
     enabled: config[`enabled_${projectId}`] === true,
     method: (config[`method_${projectId}`] ?? "instruction") === "instruction" ? "instruction" as const : "script" as const,
     instruction: String(config[`instruction_${projectId}`] ?? ""),
+    instructionFile: String(config[`instructionFile_${projectId}`] ?? ""),
     script: String(config[`script_${projectId}`] ?? "spawn.py"),
     remote: String(config[`remote_${projectId}`] ?? ""),
     branch: String(config[`branch_${projectId}`] ?? ""),
@@ -67,11 +72,9 @@ export default async function plugin(bb: BbPluginApi) {
   const launchInstructions = (rules: ReturnType<typeof policy>, projectId: string, parentThreadId: string | null) => {
     const parent = parentThreadId ?? "<parent-thread-id>";
     if (rules.method === "script") {
-      return `Use this launch script: ${rules.script}. Run bb agent-spawn-gate start --project ${projectId} --parent-thread ${parent} -- <builder args>. The plugin fetches the configured builder branch (or the remote default), runs the builder, and mints and submits the admission. Put --dry-run before -- to validate without minting or starting.`;
+      return `Use this launch script: ${rules.script}. Run bb agent-spawn-gate start --project ${projectId} --parent-thread ${parent} -- <builder args>. The plugin resolves the project's launch source, runs the builder, and mints and submits the admission. Put --dry-run before -- to validate without minting or starting.`;
     }
-    if (!rules.instruction.trim()) return "Configure nonempty launch instructions in Spawn Gate before minting.";
-    return `Follow these launch instructions:
-${rules.instruction}
+    return `Read and follow the current launch instructions with bb agent-spawn-gate instructions --project ${projectId}.
 Call RPC mint with {"projectId":"${projectId}","parentThreadId":"${parent}","brief":"Review the proposed change."}. Save your actual request to request.json and run bb plugin rpc call ${bb.pluginId} mint --input-file request.json --json. Save the returned prompt verbatim to prompt.txt and submit it once with bb thread spawn --project ${projectId} --parent-thread ${parent} --prompt-file prompt.txt. If the prompt changes or the admission expires, mint again.`;
   };
   bb.agents.contributeInstructions(({ projectId, threadId }) => {
@@ -96,7 +99,6 @@ Use the configured workflow. Changing gate settings to get a child started chang
   });
   const mint = async ({ projectId, parentThreadId, brief }: { projectId: string; parentThreadId: string; brief: string }) => {
       const rules = policy(projectId);
-      if (rules.method === "instruction" && !rules.instruction.trim()) throw new Error("Configure launch instructions with a nonempty instruction field in Spawn Gate before minting");
       const parent = await bb.sdk.threads.get({ threadId: parentThreadId });
       if (parent.projectId !== projectId) throw new Error("Use a parent thread in the requested project, or change projectId to match the parent");
       const token = randomBytes(32).toString("hex"), expiresAt = Date.now() + rules.ttl;
@@ -108,6 +110,21 @@ Use the configured workflow. Changing gate settings to get a child started chang
     };
   const requireProject = async (projectId: string) => {
     if (!(await bb.sdk.projects.list()).some(project => project.id === projectId)) throw new Error("Unknown project. Run bb project list and pass an existing project ID");
+  };
+  const instructionText = async (rules: ReturnType<typeof policy>, source: ProcessSource | null, signal?: AbortSignal) => {
+    if (source) return readProcessInstructions(source, rules.instructionFile, signal);
+    if (!rules.instruction.trim()) throw new Error("Configure launch instructions with a nonempty instruction field in Spawn Gate before minting");
+    return rules.instruction;
+  };
+  const readInstructions = async (projectId: string, signal?: AbortSignal) => {
+    await requireProject(projectId);
+    const rules = policy(projectId);
+    if (rules.method !== "instruction") throw new Error("Use bb agent-spawn-gate start for projects in Script mode.");
+    const source = await resolveSource(projectId, signal);
+    return {
+      instruction: await instructionText(rules, source, signal),
+      ...(source ? { sourceBranch: source.branch, sourceCommit: source.commit } : {}),
+    };
   };
   const writeProject = async (projectId: string, values: Partial<ProjectValues>) => {
     await requireProject(projectId);
@@ -134,8 +151,8 @@ Use the configured workflow. Changing gate settings to get a child started chang
   };
   const start = createStart(bb, mint, policy, token => {
     db.prepare("DELETE FROM tokens WHERE digest = ?").run(hash(token));
-  }, metrics.record, async () => (await settings.get()).paceThreshold);
-  registerGateCli(bb, { start, report: metrics.report, configGet, configSet });
+  }, metrics.record, resolveSource, async () => (await settings.get()).paceThreshold);
+  registerGateCli(bb, { start, report: metrics.report, configGet, configSet, readInstructions });
   bb.rpc.register(rpcContract, {
     async "settings.read"() {
       return { projects: (await bb.sdk.projects.list()).map(project => ({ id: project.id, name: project.name, values: view(project.id) })) };
@@ -143,7 +160,12 @@ Use the configured workflow. Changing gate settings to get a child started chang
     "settings.write": ({ projectId, values }) => writeProject(projectId, values),
     "config.get": configGet,
     "config.set": configSet,
-    mint,
+    async mint(input, context) {
+      const rules = policy(input.projectId);
+      const source = await resolveSource(input.projectId, context.experimental_signal);
+      if (rules.method === "instruction") await instructionText(rules, source, context.experimental_signal);
+      return mint(input);
+    },
     start: (input, context) => start(input, context.experimental_signal),
     report: metrics.report,
   }, { experimental_discoverable: true });

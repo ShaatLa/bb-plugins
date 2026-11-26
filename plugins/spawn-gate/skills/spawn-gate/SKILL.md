@@ -40,8 +40,15 @@ check. The role's provider list still applies.
 
 ## Instruction mode and existing mint integrations
 
-Follow the configured instructions first. If Instruction mode has empty
-instructions, ask for project-specific launch instructions before starting.
+Read and follow the current launch instructions first:
+
+```sh
+bb agent-spawn-gate instructions --project proj_example
+```
+
+When Project Instructions is enabled, `script` and `instructionFile` resolve
+from the project's verified process clone. If that clone is stale or broken,
+wait for its update or ask the project owner to repair it before launching.
 Save the mint request as `request.json`, using a parent in the target project
 and a nonempty task brief without any `agent-admission ` line.
 
@@ -70,7 +77,7 @@ bb agent-spawn-gate config set ttlMinutes 15 --project proj_example
 bb agent-spawn-gate report --project proj_example --from 2025-01-01 --to 2025-01-07 --events
 ```
 
-Settings keys are `enabled`, `method`, `script`, `remote`, `branch`, `machine`, `instruction` and `ttlMinutes`
+Settings keys are `enabled`, `method`, `script`, `remote`, `branch`, `machine`, `instruction`, `instructionFile` and `ttlMinutes`
 (1–60, default 10). A new project defaults to disabled. Config defaults to the
 current project if the flag is omitted. Report defaults to all projects and
 seven inclusive UTC days ending at `--to` (today if omitted).

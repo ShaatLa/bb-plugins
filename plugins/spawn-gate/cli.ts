@@ -8,14 +8,16 @@ function oneSelection(flag: string, values?: string[]) {
   return values?.[0];
 }
 
-export function registerGateCli(bb: BbPluginApi, { start, report, configGet, configSet }: {
+export function registerGateCli(bb: BbPluginApi, { start, report, configGet, configSet, readInstructions }: {
   start: ReturnType<typeof createStart>;
   report: Awaited<ReturnType<typeof createMetrics>>["report"];
   configGet: (input: unknown) => Promise<unknown>;
   configSet: (input: unknown) => Promise<unknown>;
+  readInstructions: (projectId: string, signal?: AbortSignal) => Promise<{ instruction: string; sourceBranch?: string; sourceCommit?: string }>;
 }) {
   const usage = "bb agent-spawn-gate start [--project <id>] [--parent-thread <id>] [--machine <id-or-name>] [--requires-heavy-lease] [--dry-run] -- <builder args...>";
   const reportUsage = "bb agent-spawn-gate report [--project <id>] [--from YYYY-MM-DD] [--to YYYY-MM-DD] [--events] [--json]";
+  const instructionsUsage = "bb agent-spawn-gate instructions [--project <id>] [--json]";
   const configUsage = [
     "bb agent-spawn-gate config get [<key>] [--project <id>]",
     "bb agent-spawn-gate config set <key> <value> [--project <id>]",
@@ -33,10 +35,11 @@ export function registerGateCli(bb: BbPluginApi, { start, report, configGet, con
       "Reads all projects unless --project is passed. Dates are inclusive UTC, defaulting to seven days ending at --to (today if omitted). --events includes individual refusals.",
       "Example: bb agent-spawn-gate report --project proj_example --from 2025-01-01 --to 2025-01-07 --events",
     ].join("\n"),
+    instructions: [instructionsUsage, "Read current launch instructions for an Instruction-mode project."].join("\n"),
     config: [
       configUsage,
       "Omitting --project uses the current project. Pass it once. Read or change one field at a time.",
-      "Fields: enabled (true|false), method (script|instruction), script (repository-relative path), remote (HTTPS or SSH Git remote, empty to use the project remote), branch (Git branch name, empty to use the remote default), instruction (text), ttlMinutes (integer 1–60).",
+      "Fields: enabled (true|false), method (script|instruction), script (repository-relative path), remote (HTTPS or SSH Git remote, empty to use the project remote), branch (Git branch name, empty to use the remote default), instruction (legacy text), instructionFile (clone-relative path with Project Instructions), ttlMinutes (integer 1–60).",
       "Field machine accepts an enrolled machine ID or an unambiguous name. Set it to an empty string to restore normal placement.",
       "Example: bb agent-spawn-gate config set ttlMinutes 15 --project proj_example",
     ].join("\n"),
@@ -45,6 +48,7 @@ export function registerGateCli(bb: BbPluginApi, { start, report, configGet, con
     commands: [
       { name: "start", summary: "Refresh the builder, validate its JSON, mint and start", usage },
       { name: "report", summary: "Report gate activity over an inclusive UTC date window", usage: reportUsage },
+      { name: "instructions", summary: "Read the current launch instructions", usage: instructionsUsage },
       { name: "config", summary: "Read or change per-project settings", usage: configUsage },
     ],
     async run(argv, ctx) {
@@ -53,9 +57,18 @@ export function registerGateCli(bb: BbPluginApi, { start, report, configGet, con
         const options = argv.slice(1, separator < 0 ? undefined : separator);
         if (!argv.length || argv[0] === "--help" || options.includes("--help")) {
           const command = argv[0];
-          const stdout = command === "start" || command === "report" || command === "config"
-            ? help[command] : [usage, reportUsage, configUsage].join("\n");
+          const stdout = command === "start" || command === "report" || command === "config" || command === "instructions"
+            ? help[command] : [usage, reportUsage, instructionsUsage, configUsage].join("\n");
           return { exitCode: 0, stdout };
+        }
+        if (argv[0] === "instructions") {
+          const { values } = parseArgs({ args: argv.slice(1), options: {
+            project: { type: "string", multiple: true }, json: { type: "boolean" },
+          } });
+          const projectId = oneSelection("--project", values.project) ?? ctx.projectId;
+          if (!projectId) throw new Error("Supply --project when no bb project context is available");
+          const result = await readInstructions(projectId, ctx.signal);
+          return { exitCode: 0, stdout: values.json ? JSON.stringify(result) : result.instruction };
         }
         if (argv[0] === "report") {
           const { values } = parseArgs({ args: argv.slice(1), options: {

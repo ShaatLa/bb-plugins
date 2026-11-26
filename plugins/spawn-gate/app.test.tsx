@@ -6,7 +6,7 @@ const app = await loadPluginApp(() => import("./app"));
 afterEach(cleanup);
 HTMLElement.prototype.scrollIntoView = vi.fn();
 it("renders one project form and saves only the selected project", async () => {
-  const defaults = { enabled: false, method: "instruction", instruction: "Review the task.", script: "spawn.py", remote: "", branch: "", machine: "", ttlMinutes: 10 };
+  const defaults = { enabled: false, method: "instruction", instruction: "Review the task.", instructionFile: "", script: "spawn.py", remote: "", branch: "", machine: "", ttlMinutes: 10 };
   const projects = [
     { id: "proj_sample", name: "Sample", values: { ...defaults, method: "script", script: "tools/spawn.py" } },
     { id: "proj_other", name: "Other", values: { ...defaults } },

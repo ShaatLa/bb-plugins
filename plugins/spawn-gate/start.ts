@@ -8,6 +8,7 @@ import type { RecordMetric } from "./metrics";
 import { assessPace, defaultPaceThreshold, paceReport, providerPolicy } from "./pace";
 import { placeOnMachine, requireHeavySlots, resolveMachine } from "./placement";
 import { invalidRemote, isBuilderRemote } from "./remote";
+import { isProcessPath, type ProcessSource, type ResolveProcessSource } from "./process-source";
 
 const text = z.string().min(1).max(1000);
 const projectId = z.string().regex(/^proj_[a-z0-9]+$/);
@@ -115,7 +116,24 @@ function builderCard(args: string[]) {
   return null;
 }
 
-export function createStart(bb: BbPluginApi, mint: (request: { projectId: string; parentThreadId: string; brief: string }) => Promise<{ prompt: string; token: string }>, policy: (id: string) => { method: string; script: string; remote: string; branch: string; machine: string }, revoke: (token: string) => void, record: RecordMetric, paceThreshold = async () => defaultPaceThreshold) {
+export async function readProcessInstructions(source: ProcessSource, path: string, signal = new AbortController().signal) {
+  if (!isProcessPath(path)) throw new Error("Set instructionFile to a file relative to the Project Instructions clone.");
+  let text: string;
+  try {
+    const git = (...args: string[]) => run("git", ["--no-replace-objects", "--literal-pathspecs", ...args], source.clonePath, signal);
+    const entry = await git("ls-tree", "--full-tree", "--format=%(objectmode) %(objecttype) %(objectname)", source.commit, "--", path);
+    const blob = /^100(?:644|755) blob ([a-f0-9]{40,64})\n?$/.exec(entry)?.[1];
+    if (!blob) throw new Error("Not a regular file");
+    text = await git("cat-file", "blob", blob);
+  } catch {
+    signal.throwIfAborted();
+    throw new Error(`Publish instructionFile as a regular file on the Project Instructions branch ${source.branch}, then update the process checkout.`);
+  }
+  if (!text.trim() || text.includes("\u0000") || text.length > 20_000) throw new Error("Set instructionFile to a nonempty text file with at most 20,000 characters.");
+  return text;
+}
+
+export function createStart(bb: BbPluginApi, mint: (request: { projectId: string; parentThreadId: string; brief: string }) => Promise<{ prompt: string; token: string }>, policy: (id: string) => { method: string; script: string; remote: string; branch: string; machine: string }, revoke: (token: string) => void, record: RecordMetric, resolveSource: ResolveProcessSource, paceThreshold = async () => defaultPaceThreshold) {
   const controller = new AbortController();
   bb.onDispose(() => controller.abort());
   const queues = new Map<string, Promise<unknown>>();
@@ -139,29 +157,38 @@ export function createStart(bb: BbPluginApi, mint: (request: { projectId: string
       if (host && request.requiresHeavyLease) await requireHeavySlots(bb.sdk, host, signal);
       reason = "checkout_error";
       const project = await bb.sdk.projects.get({ projectId: request.projectId });
-      if (!isBuilderRemote(rules.remote)) throw new Error(invalidRemote);
-      if (!isBuilderBranch(rules.branch)) throw new Error(invalidBranch);
-      const remote = rules.remote || project.gitRemoteUrl;
+      const source = await resolveSource(request.projectId, signal);
+      if (source && !isProcessPath(rules.script)) throw new Error("Set script to a file relative to the Project Instructions clone.");
+      if (!source && !isBuilderRemote(rules.remote)) throw new Error(invalidRemote);
+      if (!source && !isBuilderBranch(rules.branch)) throw new Error(invalidBranch);
+      const remote = source?.clonePath ?? (rules.remote || project.gitRemoteUrl);
       if (!remote || remote.startsWith("-")) throw new Error("Set Spawn Gate remote or configure a Git remote for the selected project before running start");
       const root = join(dirname(bb.storage.database().name), "checkouts", request.projectId);
       await mkdir(root, { recursive: true });
-      const git = (args: string[]) => run("git", ["-c", "core.hooksPath=/dev/null", ...args], root, signal, "", { ...process.env, GIT_TERMINAL_PROMPT: "0" });
+      const git = (args: string[]) => run("git", ["--no-replace-objects", "-c", "core.hooksPath=/dev/null", ...args], root, signal, "", { ...process.env, GIT_TERMINAL_PROMPT: "0" });
       try { await stat(join(root, ".git")); }
       catch (error) {
         if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
         await git(["init"]);
-        await git(["remote", "add", "origin", remote]);
       }
-      await git(["remote", "set-url", "origin", remote]);
-      let sourceBranch = rules.branch;
+      await git(["config", "remote.origin.url", remote]);
+      let sourceBranch = source?.branch ?? rules.branch;
       if (!sourceBranch) {
         const head = await git(["ls-remote", "--symref", "origin", "HEAD"]);
         const match = /^ref: refs\/heads\/([^\s]+)\s+HEAD$/m.exec(head);
         if (!match) throw new Error("Set Spawn Gate branch or set the Git remote HEAD to its default branch, then rerun start");
         sourceBranch = match[1];
       }
-      await git(["fetch", "--depth=1", "origin", `refs/heads/${sourceBranch}`]);
+      try {
+        if (source) await run("git", ["--no-replace-objects", "cat-file", "-e", `${source.commit}^{commit}`], source.clonePath, signal);
+        await git(["fetch", "--depth=1", "origin", source?.commit ?? `refs/heads/${sourceBranch}`]);
+      } catch (error) {
+        signal.throwIfAborted();
+        if (!source) throw error;
+        throw new Error(`Could not load the verified Project Instructions commit ${source.commit} from the local clone. Restore the process checkout and retry.`);
+      }
       sourceCommit = (await git(["rev-parse", "FETCH_HEAD"])).trim();
+      if (source && sourceCommit !== source.commit) throw new Error("The fetched commit differs from the verified Project Instructions commit. Refresh the process checkout and retry.");
       await git(["checkout", "--force", "--detach", sourceCommit]);
       await git(["clean", "-ffdx"]);
       const candidate = join(root, rules.script), lexical = relative(root, candidate);
@@ -172,6 +199,7 @@ export function createStart(bb: BbPluginApi, mint: (request: { projectId: string
       });
       const inside = relative(await realpath(root), script);
       if (isAbsolute(rules.script) || inside === ".." || inside.startsWith("../") || isAbsolute(inside)) throw new Error("Set a repository-relative launch script inside the checkout");
+      if (source && !isProcessPath(inside)) throw new Error("Set script to a tracked file inside the Project Instructions checkout.");
       reason = "builder_error";
       const env = {
         ...await builderEnvironment(), BB_PROJECT_ID: request.projectId, BB_THREAD_ID: request.parentThreadId,

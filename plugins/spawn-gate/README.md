@@ -29,8 +29,9 @@ the dropdown. Every project offers the same settings:
 - **Execution machine:** optional machine ID or name for child sessions.
   Leave it blank to keep normal placement.
 - **Launch script:** repository-relative path, shown in Script mode.
-- **Launch instructions:** steps agents must follow, shown in Instruction mode.
-  Nonempty instructions are required to mint admissions in this mode.
+- **Launch instruction file:** clone-relative path in Instruction mode when
+  Project Instructions is enabled.
+- **Launch instructions:** typed text for Instruction mode in other projects.
 - **Admission lifetime:** 1–60 minutes to use a newly minted token. It does not
   limit the session's duration.
 
@@ -44,8 +45,26 @@ there is no custom stylesheet.
 The selected workflow and mint procedure are contributed to agents when their
 provider sessions are next constructed. Existing sessions are not hot-rewritten.
 Refusals also show how to use the selected workflow. In Script mode, start
-executes the configured builder from a fresh checkout of the selected branch.
-The caller is responsible for following Instruction mode's text.
+executes the configured builder from the selected source. In Instruction mode,
+read the current text with `bb agent-spawn-gate instructions` before minting.
+
+## Shared project process source
+
+When Project Instructions is enabled for the project, Spawn Gate resolves its
+server-local process clone through `source.get`. In Script mode, set `script`
+relative to that clone. In Instruction mode, set `instructionFile` relative to
+the clone. For example:
+
+```sh
+bb agent-spawn-gate config set instructionFile docs/launch.md --project proj_example
+bb agent-spawn-gate instructions --project proj_example
+```
+
+Spawn Gate uses the exact commit verified by Project Instructions. Update the
+existing process checkout after a push to its branch. Until the checkout reaches
+the new tip, the gate refuses to start or mint. A missing, wrong-branch, dirty
+or unverifiable enabled clone also refuses. A disabled or unconfigured project
+continues using its existing `remote` and `branch` or its typed `instruction`.
 
 ## Settings RPC
 

@@ -12,7 +12,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from ".
 import { SettingsSection, SettingsWithControl } from "./components/ui/settings-section";
 import { invalidRemote, isBuilderRemote } from "./remote";
 
-type Values = { enabled: boolean; method: "script" | "instruction"; instruction: string; script: string; remote: string; branch: string; machine: string; ttlMinutes: number };
+type Values = { enabled: boolean; method: "script" | "instruction"; instruction: string; instructionFile: string; script: string; remote: string; branch: string; machine: string; ttlMinutes: number };
 type Project = { id: string; name: string; values: Values };
 
 type LaunchValues = Omit<Values, "enabled">;
@@ -39,21 +39,26 @@ function ProjectForm({ project, onSave }: { project: Project; onSave: (projectId
         </Select>
       </SettingsWithControl>
       {value.method === "script" ? <>
-        <SettingsWithControl label="Builder repository" description="HTTPS or SSH Git remote. Leave blank to use the project's Git remote." controlPlacement="below">
+        <SettingsWithControl label="Builder repository" description="For projects without enabled Project Instructions. Leave blank to use the project's Git remote." controlPlacement="below">
           <Input aria-label="Builder repository" value={value.remote} maxLength={2000} onChange={e => update({ remote: e.target.value })} />
         </SettingsWithControl>
-        <SettingsWithControl label="Builder branch" description="Git branch name. Leave blank to use the remote default branch." controlPlacement="below">
+        <SettingsWithControl label="Builder branch" description="For projects without enabled Project Instructions. Leave blank to use the remote default branch." controlPlacement="below">
           <Input aria-label="Builder branch" value={value.branch} maxLength={1024} onChange={e => update({ branch: e.target.value })} />
         </SettingsWithControl>
         <SettingsWithControl label="Execution machine" description="Machine ID or name for child sessions. Leave blank to use normal placement." controlPlacement="below">
           <Input aria-label="Execution machine" value={value.machine} maxLength={200} onChange={e => update({ machine: e.target.value })} />
         </SettingsWithControl>
-        <SettingsWithControl label="Launch script" description="Repository-relative JSON builder. The plugin fetches the selected branch before running the script." controlPlacement="below">
+        <SettingsWithControl label="Launch script" description="Path to the JSON builder in the selected Git source." controlPlacement="below">
           <Input aria-label="Launch script" value={value.script} required maxLength={500} onChange={e => update({ script: e.target.value })} />
         </SettingsWithControl>
-      </> : <SettingsWithControl label="Launch instructions" description="Steps for the agent to follow before creating a child session." controlPlacement="below">
-        <Textarea aria-label="Launch instructions" rows={6} maxLength={20_000} required={enabled} value={value.instruction} onChange={e => update({ instruction: e.target.value, method: "instruction" })} />
-      </SettingsWithControl>}
+      </> : <>
+        <SettingsWithControl label="Launch instruction file" description="Path relative to the process clone when Project Instructions is enabled." controlPlacement="below">
+          <Input aria-label="Launch instruction file" maxLength={500} value={value.instructionFile ?? ""} onChange={e => update({ instructionFile: e.target.value })} />
+        </SettingsWithControl>
+        <SettingsWithControl label="Launch instructions" description="Instruction text for projects without enabled Project Instructions." controlPlacement="below">
+          <Textarea aria-label="Launch instructions" rows={6} maxLength={20_000} required={enabled && !value.instructionFile?.trim()} value={value.instruction} onChange={e => update({ instruction: e.target.value, method: "instruction" })} />
+        </SettingsWithControl>
+      </>}
       <SettingsWithControl label="Admission lifetime, minutes" description="Time to use a newly issued one-use admission before it expires (1–60 minutes).">
         <Input aria-label="Admission lifetime, minutes" className="w-24" type="number" min={1} max={60} required value={Number.isNaN(value.ttlMinutes) ? "" : value.ttlMinutes} onChange={e => update({ ttlMinutes: e.target.valueAsNumber })} />
       </SettingsWithControl>
@@ -108,7 +113,7 @@ function GateProjectView({ showActivity = false }: { showActivity?: boolean }) {
       checked={project.values.enabled}
       disabled={savingGate}
       onCheckedChange={async enabled => {
-        if (enabled && project.values.method === "instruction" && !project.values.instruction.trim()) {
+        if (enabled && project.values.method === "instruction" && !project.values.instruction.trim() && !project.values.instructionFile?.trim()) {
           setSaveError("Add launch instructions before enabling Spawn Gate.");
           return;
         }
