@@ -52,15 +52,15 @@ export function ManagerQuickSet({ projectId, className }: { projectId: string; c
   return (
     <>
       {/* Takes only the room the project name leaves (flex basis 0, growing up to its own width), so the name is never
-          cut for it; its 44px minimum fits the padding, borders, gaps and chevron, so the chevron stays visible. Class strings stay plain literals: Tailwind does not pick up a
-          class that a template placeholder follows. */}
-      <span className={cn("flex min-w-11 grow basis-0 max-w-max", className)} title={linked ? name || undefined : UNLINKED}>
-        {/* An outlined chip like the header's own buttons, so it reads as a control and not as header text. */}
-        <Button type="button" size="sm" variant="outline" className="h-6 min-w-0 max-w-64 gap-1.5 overflow-hidden rounded-md px-2 text-xs font-normal shadow-none"
+          cut for it. bb labels a picker with muted text beside a control that holds only the value: the static "Manager"
+          label sits outside the outlined chip. When room runs short the thread name in the chip gives way first (down to
+          the chip's 44px of padding, border and chevron), then the label. Class strings stay plain literals: Tailwind
+          does not pick up a class that a template placeholder follows. */}
+      <span className={cn("flex min-w-14 grow basis-0 max-w-max items-center gap-1.5", className)} title={linked ? name || undefined : UNLINKED}>
+        <span className="min-w-0 truncate text-xs text-muted-foreground">Manager</span>
+        <Button type="button" size="sm" variant="outline" className="h-6 min-w-11 max-w-56 shrink-[20] gap-1.5 overflow-hidden rounded-md px-2 text-xs font-normal shadow-none"
           disabled={busy || !linked} aria-label={current ? `Manager: ${name}` : "Set manager"} onClick={() => setChoosing(true)}>
-          <span className="min-w-0 truncate text-muted-foreground">{current ? "Manager" : "Set manager"}</span>
-          {/* The thread name gives way first, then the label; the chevron always stays. */}
-          {current ? <span className="min-w-0 shrink-[20] truncate text-foreground">{name}</span> : null}
+          <span className={cn("min-w-0 truncate", current ? "text-foreground" : "text-muted-foreground")}>{current ? name : "Set manager"}</span>
           <Icon name="ChevronDown" className="size-3 shrink-0 text-muted-foreground" />
         </Button>
       </span>
