@@ -132,6 +132,8 @@ Expanded timing lists use compact inset rows with aligned duration values. Workf
 
 ## Agent access
 
+The agent tools `ci_dashboard_metrics` and `ci_dashboard_manage` are offered only in sessions of a BB project whose GitHub remote the dashboard shows (`importBbRepositories` on, or the repository listed in `repository`). Other projects get the `ci-dashboard` skill and can use the `ci` and `manage` RPCs.
+
 Use `view=lanes` for seven UTC days of successful full-attempt wall and per-lane p50/p90 timings and sample counts; optional `event` selects a pipeline. Data comes from the local job store.
 
 Use the native **ci_dashboard_metrics** tool to read CI data. For example:

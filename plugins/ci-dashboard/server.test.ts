@@ -1,11 +1,11 @@
 import { DatabaseSync } from "node:sqlite";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { emptyGlobal, emptyRepoState, enabledEvents, syncGlobal } from "./ci-observer";
 import { gunzipSync } from "node:zlib";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
-import { createFakePluginHost, experimental_scanPublicSdkOnly, makeThreadResponse } from "@get-bb/plugin-sdk/testing";
+import { createFakePluginHost, experimental_scanPublicSdkOnly, makePluginAgentConfigurationContext, makeThreadResponse } from "@get-bb/plugin-sdk/testing";
 import plugin from "./server";
 import { compress } from "./cache-cleanup";
 import { ciReportSchema } from "./agent-ci";
@@ -266,6 +266,27 @@ test("imports GitHub remotes from BB, merges manual repos, and de-duplicates cas
       { repository: "acme/WIDGETS", projectName: null }, { repository: "acme/manual", projectName: null },
     ] });
     expect(harness.inspection.sdk.callsTo("projects.list")).toHaveLength(1);
+  } finally { await harness.lifecycle.dispose(); }
+});
+
+test("agent tools reach only projects whose GitHub repository the dashboard shows", async () => {
+  const { bb, harness } = createFakePluginHost({ settings: { repository: "acme/Widgets", importBbRepositories: true } });
+  try {
+    await plugin(bb);
+    const resolve = (gitRemoteUrl: string | null) => harness.registrations.agentConfigurationProvider!(makePluginAgentConfigurationContext({ project: { id: "proj_example", name: "Example", kind: "standard", gitRemoteUrl } }));
+    const tools = ["ci_dashboard_metrics", "ci_dashboard_manage"];
+    expect(resolve("https://github.com/acme/app.git")).toEqual({ tools, skills: ["ci-dashboard"] });
+    expect(resolve(null)).toEqual({ tools: [], skills: ["ci-dashboard"] });
+    expect(resolve("https://gitlab.example/acme/app.git").tools).toEqual([]);
+    await harness.behavior.setSettings({ importBbRepositories: false });
+    expect(resolve("https://github.com/acme/app.git").tools).toEqual([]);
+    expect(resolve("git@github.com:ACME/widgets.git").tools).toEqual(tools);
+    // Names must come from the real manifest's skill roots and the registered tools, or bb rejects the whole selection.
+    const roots: string[] = JSON.parse(readFileSync("package.json", "utf8")).bb.skills;
+    const skills = roots.flatMap((root) => readdirSync(root).map((dir) => /^name: (.+)$/m.exec(readFileSync(join(root, dir, "SKILL.md"), "utf8"))![1]));
+    const selection = resolve("git@github.com:ACME/widgets.git");
+    expect(skills).toEqual(expect.arrayContaining(selection.skills));
+    expect(harness.registrations.agentTools.map((tool) => tool.name)).toEqual(expect.arrayContaining(selection.tools as string[]));
   } finally { await harness.lifecycle.dispose(); }
 });
 

@@ -207,7 +207,17 @@ export default async function plugin(bb: BbPluginApi) {
     const custom = JSON.stringify(rules) === JSON.stringify(defaultDraftRules) ? [] : [rules];
     return createHash("sha256").update(JSON.stringify(["ci-exclude-cancelled-skipped-v1", "review:none", values.repository, values.importBbRepositories, values.token ?? "", ...custom])).digest("hex");
   }
+  // Agent tools go only to sessions in projects whose GitHub repository the dashboard shows. configure is synchronous, so it reads these cached values;
+  // registration stays synchronous (services must exist before migration finishes), and until the first read no session gets the tools.
+  let agentScope: Values | undefined;
+  settings.get().then((values) => { agentScope ??= values; }, (error) => bb.log.warn(`CI Dashboard: settings unavailable for agent tools: ${describe(error)}`));
+  bb.agents.configure(({ project }) => {
+    const repo = githubRepository(project.gitRemoteUrl)?.toLowerCase();
+    const shown = !!repo && !!agentScope && (agentScope.importBbRepositories || splitRepositories(agentScope.repository).some((name) => name.toLowerCase() === repo));
+    return { tools: shown ? ["ci_dashboard_metrics", "ci_dashboard_manage"] : [], skills: ["ci-dashboard"] };
+  });
   settings.onChange((next, prev) => {
+    agentScope = next;
     if (!available) return;
     // A changed observer list takes effect now (confirmation to new subscribers) instead of at the next loop; the loop reads fresh settings anyway.
     if (next.observerThreads !== prev.observerThreads) void repositoryNames(next).then((names) => syncObservers(next, names)).catch((error) => logOnce(`CI observer sync failed: ${describe(error)}`));
@@ -956,7 +966,7 @@ export default async function plugin(bb: BbPluginApi) {
   });
   bb.agents.registerTool({
     name: "ci_dashboard_metrics",
-    description: "Read GitHub Actions CI data for CI Dashboard repositories: pass rate, outcomes, failures, branch/workflow health, estimated timings in milliseconds, and slow-run links by ID. Also job-level signals: runner pool stalls, runner losses and mass cancels, reruns that still fail, flaky and transient failures. Failure and rerun rows carry the run event (pull_request, push, merge_group); merge_group failure rows add queuePullRequest and queueOnly (passes on the PR, fails only in the merge queue), and failureCountsByEvent splits the failure counts. view=lanes gives seven UTC days of full-attempt wall and lane p50/p90 with sample counts; event selects a pipeline. view=stall gives the live runner pool queues plus per runner pool job counts and p50/p90 queue wait and duration in ms, overall (poolTimings) and by event (poolTimingsByEvent). Signals are deploy-agnostic: they come from run and job facts only, not from deployment tooling. view=summary (default) adds open signals and runner pool queues to the run-level report; view=problems returns only the open CI health problems with ids and handled state (smallest; use it before ci_dashboard_manage); view=signals|stall|losses|failures|reruns returns only that job-level slice with no run-level metrics. Index views are compact and give every row a ref (job:ID, run:ID:ATTEMPT, queue:RUN:ATTEMPT, pool:NAME, pr:N, sha:SHA, or a problem/signal id); to see more about one row call this tool again with ref=<that ref> (view, selection, refresh and event are then ignored): the answer is a few lines of summary, facts and related refs from the local store, with no log text, so walk index view -> ref -> related ref instead of asking for big dumps. Job-level data comes from a local store filled by a budgeted backfill of job history, so you must check backfill.remaining and backfill.coveredSince before concluding something did not happen. Defaults to a local cached snapshot; you must inspect stale, pending, updatedAt and errors. Set refresh:true to collect fresh run-level data. Pass rates exclude cancelled/skipped; timing estimates use successful runs only. Never writes to GitHub: no deployments, reruns, cancellations or other writes are triggered.",
+    description: "Read-only CI data for CI Dashboard repositories (pass rate, failures, timings in ms, job-level signals); never writes to GitHub. view=problems lists open problems with ids for ci_dashboard_manage. Rows carry refs: pass ref=<ref> for one small inspection and follow its related refs instead of asking for big dumps. Check stale, pending, updatedAt and errors (refresh:true collects fresh run-level data), and backfill.remaining and backfill.coveredSince before concluding something did not happen. Details: ci-dashboard skill.",
     parameters: ciQuerySchema,
     presentation: { label: { pending: "Reading CI Dashboard", completed: "Read CI Dashboard" } },
     async execute(input, { signal }) {
@@ -998,11 +1008,11 @@ export default async function plugin(bb: BbPluginApi) {
         if (issue.input === "subscribe_pr" || issue.input === "unsubscribe_pr") throw new Error(`${issue.input} was removed in 0.8.0: PR events are no longer delivered by CI Dashboard. Remove this call.`);
         return undefined;
       },
-    }).describe("Problem actions (id required): take: you (or the worker in threadId) are working on the problem; fix_pending: a fix PR/card exists (ref required); release: back to open; dismiss: nobody needs to act. Observer actions: subscribe: add the thread to the observers; unsubscribe: remove it; replace: make it the only observer; list: show observers."),
-    id: z.string().min(1).max(300).optional().describe("Problem actions only (required): problem id from ci_dashboard_metrics view=problems or view=signals (problems[].id), from an observer line (`problem <id>`) or from a ref"),
-    repository: repositorySchema.optional().describe("Problem actions only: owner/repo, e.g. acme/app; required when several repositories are configured"),
-    threadId: z.string().optional().describe("BB thread id, e.g. thr_example. Only take, fix_pending, subscribe, unsubscribe, replace accept it. Tool defaults to caller; fix_pending preserves the worker when omitted. RPC requires it except for fix_pending."),
-    ref: z.string().trim().min(1).max(80).optional().describe('fix_pending only (required): the fix, as a PR number like "#12", a tracker key like "FIX-1" or a URL. Not a ci_dashboard_metrics ref'),
+    }).describe("Problem actions take, fix_pending, release, dismiss need id; observer actions take at most threadId."),
+    id: z.string().min(1).max(300).optional().describe("Problem id from view=problems, an observer line or a ref."),
+    repository: repositorySchema.optional().describe("Problem actions: owner/repo; required when several are configured."),
+    threadId: z.string().optional().describe("BB thread id; defaults to this thread. Only take, fix_pending, subscribe, unsubscribe and replace accept it."),
+    ref: z.string().trim().min(1).max(80).optional().describe('fix_pending only: the fix as "#12", "FIX-1" or a URL; not a CI ref.'),
   }).strict();
   function validateManage(input: z.infer<typeof manageInput>) {
     const accepted: Record<typeof input.action, string[]> = {
@@ -1079,7 +1089,7 @@ export default async function plugin(bb: BbPluginApi) {
   // All writes live here; ci_dashboard_metrics stays read-only.
   bb.agents.registerTool({
     name: "ci_dashboard_manage",
-    description: 'Change CI Dashboard state (the read tool is ci_dashboard_metrics). Problem actions claim CI problems so the CI health status shows who deals with them: action=take when you or a worker start on a problem (id required; pass the worker\'s threadId when you delegate, it defaults to this thread), action=fix_pending with ref (PR number, tracker key or URL) once a fix PR/card exists, action=release to hand it back, action=dismiss when nobody needs to act. The claim closes itself when the problem resolves, is dropped when its investigating thread is archived or deleted, and expires after the claimTimeoutHours setting (default 24 h; observers get one "Claim dropped" line). Problem ids come from ci_dashboard_metrics view=problems or view=signals, from "problem <id>" in observer lines, or from a ref. Returns previous and new handled states; changes may replace another thread\'s claim. Observer actions choose which BB threads receive CI event messages (merge queue removals, runner losses, default-branch red, pool stalls, mass cancels, deployments), pushed as short classified lines that wake an idle agent so nobody has to poll: action=subscribe when you start watching CI (threadId defaults to this thread), action=replace to take over as the only observer (returns removed thread ids), action=unsubscribe when you stop, action=list to read the current observers. A newly subscribed thread gets one confirmation line and no history; archived or deleted threads are removed automatically. Returns the observer list and the enabled event types. Writes only plugin state and the observerThreads setting; nothing is written to GitHub.',
+    description: "Change CI Dashboard state; nothing is written to GitHub (reads: ci_dashboard_metrics). Claims show who deals with a CI problem: take when you or a worker start (pass the worker's threadId when you delegate), fix_pending with ref once a fix PR or card exists, release to hand it back, dismiss when nobody needs to act. Observers get CI event lines pushed so nobody has to poll: subscribe, replace (become the only observer), unsubscribe, list. Pass only the fields the action accepts. Details: ci-dashboard skill.",
     parameters: manageInput,
     presentation: { label: { pending: "Updating CI Dashboard", completed: "Updated CI Dashboard" } },
     async execute(input, ctx) {
