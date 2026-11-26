@@ -135,7 +135,7 @@ function useReadOnView(ref: React.RefObject<HTMLElement | null>, enabled: boolea
 // Set by the chat: opens bb's "Editing message" box for one of the owner's sent messages.
 // Editing a sent message happens inside its bubble: the target is stable, the live editor comes through its own context
 // so typing re-renders only the editor, not every card.
-export const EditSentContext = createContext<{ start: (item: Item) => void; editing: { threadId: string; seq: number } | null } | null>(null);
+export const EditSentContext = createContext<{ start: (item: Item) => void; editing: { threadId: string; seq: number } | null; saved?: readonly { threadId: string; seq: number; text: string; files: readonly Attachment[]; state: 'saving' | 'late'; refresh: () => void }[] } | null>(null);
 export const SentEditorContext = createContext<ReactNode>(null);
 function SentEditor() { return <>{useContext(SentEditorContext)}</>; }
 // A chat shares one refresh: a useRpcRefresh in every card subscribes it to fetch state and re-renders it on each fetch.
@@ -277,6 +277,7 @@ export function ItemCard({ item, members, late, live = true, chat = false, marka
   const editSent = useContext(EditSentContext);
   const group = members?.length ? members : [item], last = group.at(-1)!;
   const inEdit = !!editSent?.editing && item.kind === 'mine' && editSent.editing.threadId === item.threadId && editSent.editing.seq === item.questionSeq && group.length === 1;
+  const saved = item.kind === 'mine' && group.length === 1 ? editSent?.saved?.find(edit => edit.threadId === item.threadId && edit.seq === item.questionSeq) ?? null : null;
   // An earlier question answered by this message: the owner's bubble, clamped and muted, that jumps to where it was asked.
   // A question answered here but asked further up: a slim muted one-line bubble on the owner's side (its first line and any
   // files), without time or buttons; a click goes to the question.
@@ -402,7 +403,8 @@ export function ItemCard({ item, members, late, live = true, chat = false, marka
       {chat && <div className={`flex items-center gap-0.5 px-1 ${rowFade}`}>{expandButton}{!placeholder && <MessageCopy small link text={messageLink(item.projectId, item.threadId, item.questionSeq)} />}</div>}
     </> : part === 'answer' ? <div className="ml-auto flex w-fit min-w-0 max-w-[85%] sm:max-w-[70%] flex-col items-end gap-1">{group.map(echo)}</div> : <div className={`ml-auto flex ${inEdit ? 'w-full' : 'w-fit'} max-w-[85%] sm:max-w-[70%] flex-col items-end gap-1`}>
       {late?.map(echo)}
-      {group.map(member => inEdit && member === item ? <div key={member.id} data-sent-message-inline-editor className="w-full"><SentEditor /></div> : <div key={member.id} className={userBubble}>{member.question && <div ref={member === item ? question : undefined} className={`whitespace-pre-wrap break-words ${expanded ? '' : 'line-clamp-6'}`}><InlineCommentText threadId={member.threadId} text={member.question} prefixes={workBoard?.projects.map(p => p.prefix)} /></div>}{member.attachments.length > 0 && <ItemAttachments attachments={member.attachments} projectId={member.projectId} />}</div>)}
+      {group.map(member => inEdit && member === item ? <div key={member.id} data-sent-message-inline-editor className="w-full"><SentEditor /></div> : <div key={member.id} className={`${userBubble} ${saved && member === item ? 'opacity-70' : ''}`}>{(shown => <>{shown.text && <div ref={member === item ? question : undefined} className={`whitespace-pre-wrap break-words ${expanded ? '' : 'line-clamp-6'}`}><InlineCommentText threadId={member.threadId} text={shown.text} prefixes={workBoard?.projects.map(p => p.prefix)} /></div>}{shown.files.length > 0 && <ItemAttachments attachments={[...shown.files]} projectId={member.projectId} />}</>)(saved && member === item ? { text: saved.text, files: saved.files } : { text: member.question, files: member.attachments })}</div>)}
+      {saved && <div role="status" data-sent-edit-state className="flex items-center gap-2 text-xs text-muted-foreground">{saved.state === 'late' ? <>Saved, not shown yet<Button type="button" size="sm" variant="ghost" className="h-6 px-2 text-xs" onClick={saved.refresh}>Refresh</Button></> : 'Saving…'}</div>}
       {/* bb's row under the owner's own message: time, then Copy and Save, shown on hover (always on touch screens). */}
       {chat && <div className="flex items-center gap-[13px] text-muted-foreground">{time}<span className="flex items-center gap-0.5 opacity-60 transition-opacity hover:opacity-100 focus-within:opacity-100 [@media(hover:none)]:opacity-100">
         {expandButton}

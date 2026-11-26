@@ -593,15 +593,41 @@ function InboxChat({ onBulkRead, bbChat = false, search: searchProp, onSearch, t
   const [sentEdit, setSentEdit] = useState<ComposeDraft & { threadId: string; seq: number } | null>(null), [editPending, setEditPending] = useState(false), [editError, setEditError] = useState('');
   const editing = sentEdit?.threadId === selected ? sentEdit : null, sentEditRef = useRef(sentEdit); sentEditRef.current = sentEdit;
   const startSentEdit = useCallback((item: Item) => { setEditError(''); setSentEdit({ threadId: item.threadId, seq: item.questionSeq!, text: item.question, files: item.attachments.map(a => ({ type: a.type, path: a.path, name: a.name ?? a.path.split('/').pop() ?? a.path, ...(a.mimeType ? { mimeType: a.mimeType } : {}), ...(a.sizeBytes ? { sizeBytes: a.sizeBytes } : {}), ...(a.sourceProjectId ? { sourceProjectId: a.sourceProjectId } : {}) })) }); }, []);
+  // Save shows the edit at once; the bubble keeps the edited text until bb's replacement (the returned sequence) is listed.
+  // Every saved edit stays until its own replacement is listed; a second save never drops the first.
+  type SavedEdit = { threadId: string; seq: number; text: string; files: ComposeDraft['files']; newSeq?: number; savedAt?: number; late?: boolean };
+  const [savedEdits, setSavedEdits] = useState<SavedEdit[]>([]);
   async function submitSentEdit() {
     const edit = editing;
     if (!edit || editPending || (!edit.text.trim() && !edit.files.length)) return;
-    setEditPending(true); setEditError('');
-    try { await sdk.threads.editMessage({ threadId: edit.threadId, operationId: crypto.randomUUID(), expectedRequestSequence: edit.seq, input: toInput(edit) }); setSentEdit(current => current === edit ? null : current); refresh(); }
-    // A failure belongs to the edit that sent it; another bubble's editor opened meanwhile must not show it.
-    catch (e) { if (sentEditRef.current === edit) setEditError(errorText(e)); }
-    finally { setEditPending(false); }
+    const shown: SavedEdit = { threadId: edit.threadId, seq: edit.seq, text: edit.text.trim(), files: edit.files };
+    setEditPending(true); setEditError(''); setSavedEdits(old => [...old.filter(e => !(e.threadId === shown.threadId && e.seq === shown.seq)), shown]); setSentEdit(current => current === edit ? null : current);
+    try {
+      const result = await sdk.threads.editMessage({ threadId: edit.threadId, operationId: crypto.randomUUID(), expectedRequestSequence: edit.seq, input: toInput(edit) });
+      // bb's rollback also deleted every later message, including later edits still waiting for their replacement.
+      setSavedEdits(old => old.filter(e => e === shown || e.threadId !== shown.threadId || e.seq < shown.seq).map(e => e === shown ? { ...shown, newSeq: result.requestSequence, savedAt: Date.now() } : e)); refresh();
+    } catch (e) {
+      setSavedEdits(old => old.filter(entry => entry !== shown));
+      // The failed text goes back into its editor, unless the owner has since opened another bubble's editor.
+      if (sentEditRef.current === null) { setSentEdit(edit); setEditError(errorText(e)); } else setComposeError(errorText(e));
+    } finally { setEditPending(false); }
   }
+  useEffect(() => {
+    const list = pages.flatMap(page => page.items), listed = (edit: SavedEdit) => !!edit.newSeq && list.some(item => item.kind === 'mine' && item.threadId === edit.threadId && item.questionSeq === edit.newSeq);
+    const done = savedEdits.filter(listed);
+    if (!done.length) return;
+    setSavedEdits(old => old.filter(edit => !done.includes(edit)));
+    // bb's rollback deleted every later message, so an editor still open on one of them has nothing left to edit.
+    const open = sentEditRef.current;
+    if (open && done.some(edit => edit.threadId === open.threadId && open.seq > edit.seq) && !list.some(item => item.kind === 'mine' && item.threadId === open.threadId && item.questionSeq === open.seq)) { setSentEdit(null); setComposeError('The message you were editing was removed by the earlier edit.'); }
+  }, [pages, savedEdits]);
+  useEffect(() => {
+    const waiting = savedEdits.filter(edit => edit.savedAt && !edit.late);
+    if (!waiting.length) return;
+    const next = Math.min(...waiting.map(edit => edit.savedAt! + 30000)) - Date.now();
+    const timer = setTimeout(() => setSavedEdits(old => old.map(edit => edit.savedAt && !edit.late && Date.now() - edit.savedAt >= 30000 ? { ...edit, late: true } : edit)), Math.max(0, next));
+    return () => clearTimeout(timer);
+  }, [savedEdits]);
   async function poolCompose() {
     if (!selected || composePending || (!compose.text.trim() && !compose.files.length)) return;
     const threadId = selected, sent = compose;
@@ -993,7 +1019,10 @@ function InboxChat({ onBulkRead, bbChat = false, search: searchProp, onSearch, t
   // A steer joins the running turn's card once ingested; placing it there at once keeps the bubble from jumping up later.
   const steerHost = [...items].reverse().find(item => item.kind === 'mine' && item.threadId === selected && item.turnId && item.status === 'waiting' && item.dismissedAt === null);
   const joined = optimistic.filter(b => b.steer && b.threadId === selected && steerHost);
-  const chatItems = useMemo(() => joined.length ? [...items, ...joined.map(b => ({ ...sendingItem(b, recipients?.recipients.find(r => r.threadId === b.threadId)), turnId: steerHost!.turnId, answerSeq: steerHost!.answerSeq, interimSeq: steerHost!.interimSeq }))] : items, [items, joined.map(b => b.id).join(), steerHost?.id]);
+  const withSteers = useMemo(() => joined.length ? [...items, ...joined.map(b => ({ ...sendingItem(b, recipients?.recipients.find(r => r.threadId === b.threadId)), turnId: steerHost!.turnId, answerSeq: steerHost!.answerSeq, interimSeq: steerHost!.interimSeq }))] : items, [items, joined.map(b => b.id).join(), steerHost?.id]);
+  // After bb's rollback removed the edited bubble and before its replacement is listed, the edit still shows at the end of the chat.
+  const savedGone = savedEdits.filter(edit => edit.threadId === selected && !items.some(item => item.kind === 'mine' && item.threadId === edit.threadId && (item.questionSeq === edit.seq || item.questionSeq === edit.newSeq)));
+  const chatItems = useMemo(() => savedGone.length ? [...withSteers, ...savedGone.map(edit => ({ ...sendingItem({ threadId: edit.threadId, text: edit.text, id: edit.savedAt ?? 0 }, recipients?.recipients.find(r => r.threadId === edit.threadId)), id: `ans_saving_edit_${edit.seq}`, questionSeq: edit.seq }))] : withSteers, [withSteers, savedGone.map(edit => `${edit.seq}:${edit.newSeq}`).join(), savedEdits]);
   // bb can deliver a queued message before a queue read notices it gone; its placeholder leaves once the chat shows it.
   const landedPending = landings.pending;
   useEffect(() => { if (landedPending.size) setPendingQueue(old => old.filter(row => !landedPending.has(row.id))); }, [landedPending]);
@@ -1049,7 +1078,7 @@ function InboxChat({ onBulkRead, bbChat = false, search: searchProp, onSearch, t
   }, []);
   // The editor sits in the edited bubble; the bottom composer keeps its own draft meanwhile.
   const sentEditor = editing ? <><Composer key={`edit:${editing.seq}`} editMode autoFocus label="Edit message" sendLabel="Save" placeholder="Edit message" header={<div data-sent-message-edit-cap className="flex min-h-7 items-center gap-1.5 px-3 pt-1.5 text-xs text-subtle-foreground"><Icon name="Edit" aria-hidden className="size-3.5 shrink-0" /><span>Editing message</span><Button type="button" size="sm" variant="ghost" className="ml-auto h-6 px-2 text-xs" onClick={() => setSentEdit(null)}>Cancel</Button></div>} value={editing.text} onChange={text => setSentEdit(current => current && { ...current, text })} attachments={editing.files} onAttachments={update => setSentEdit(current => current && { ...current, files: update(current.files) })} projectId={current?.projectId} pending={editPending} onSend={() => void submitSentEdit()} onCancel={() => setSentEdit(null)} />{editError && <p role="alert" className="px-1 pt-1 text-xs text-destructive">{editError}</p>}</> : null;
-  const editSentValue = useMemo(() => ({ start: startSentEdit, editing: editing && { threadId: editing.threadId, seq: editing.seq } }), [startSentEdit, editing?.threadId, editing?.seq]);
+  const editSentValue = useMemo(() => ({ start: startSentEdit, editing: editing && { threadId: editing.threadId, seq: editing.seq }, saved: savedEdits.map(edit => ({ threadId: edit.threadId, seq: edit.seq, text: edit.text, files: edit.files, state: edit.late ? 'late' as const : 'saving' as const, refresh })) }), [startSentEdit, editing?.threadId, editing?.seq, savedEdits]);
   return <FullTranscriptContext.Provider value={openTranscript}><EditSentContext.Provider value={editSentValue}><SentEditorContext.Provider value={sentEditor}><RefreshContext.Provider value={sharedRefresh}><AnsweringContext.Provider value={answering}><WorkBoardContext.Provider value={workBoard ?? null}><ComposerThread.Provider value={selected ?? null}><div ref={grid} className="relative grid h-full grid-cols-[minmax(0,1fr)]">
     {bbChat && selected ? <div className="flex min-h-0 min-w-0 flex-col">{mobileHeader}<ThreadChat key={selected} threadId={selected} variant="full" className="min-h-0 flex-1" /></div> :
     <div className={`relative flex min-h-0 min-w-0 flex-col ${!selected ? 'max-[639px]:hidden' : ''}`}><div ref={scroll} inert={transcript || undefined} aria-hidden={transcript || undefined} style={transcript ? {visibility:'hidden'} : undefined} className="relative min-h-0 flex-1 overflow-auto [overflow-anchor:none]" onMouseUp={capture} onKeyUp={event => { if (event.key !== 'Escape' && event.key !== 'Tab') capture(event); }} onKeyDown={event => { if (event.key === 'Tab' && selectionBar && !event.shiftKey) { event.preventDefault(); popup.current?.querySelector<HTMLElement>('button')?.focus(); } }} onScroll={event => { const node = event.currentTarget; if (!node.clientHeight || latestFrame.current || Date.now() - resizedAt.current < 500) return; latestFrame.current = requestAnimationFrame(() => { latestFrame.current = 0; checkLatest(); position.current = { ...position.current, height: node.scrollHeight, top: node.scrollTop, bottom: node.scrollHeight - node.scrollTop - node.clientHeight < AT_BOTTOM }; if (selected && !position.current.fresh) { scrollPending.current = { threadId: selected, top: node.scrollTop, depth, ...(atEnd(node) ? { bottom: true as const } : {}) }; if (!scrollTimer.current) scrollTimer.current = setTimeout(() => { const pending = scrollPending.current; if (pending && pending.threadId === selected) { const view = node.getBoundingClientRect().top, first = Array.from(node.querySelectorAll<HTMLElement>('[aria-label=History] [data-history-ids]')).find(el => el.getBoundingClientRect().bottom > view + 1); if (first) Object.assign(pending, { anchor: first.dataset.historyIds!.split(' ')[0], offset: first.getBoundingClientRect().top - view }); } saveScroll(); }, 200); } }); }}>

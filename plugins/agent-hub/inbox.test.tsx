@@ -340,6 +340,119 @@ describe('editing a sent message in its bubble', () => {
     await act(async () => { fail(new Error('Edit refused')); });
     expect(within(bubbleEditor(slot)!).queryByRole('alert')).toBeNull();
   });
+  // A thread with an earlier and a later own message; `items` changes what the next chat read returns.
+  const liveSetup = (editMessage: (input: any) => any) => {
+    const first = { ...base, id:'ans_first', question:'First one', questionSeq:3, createdAt:base.createdAt - 1000 }, later = { ...base, id:'ans_later', question:'Later one', questionSeq:7 };
+    const state = { items: [later, first] as Item[] };
+    return { state, first, later, editMessage, ...setup({ list: () => ({ items: state.items, nextCursor:null }), editMessage }) };
+  };
+  const editAndSave = async (slot: ReturnType<typeof setup>['slot'], index: number, text: string) => {
+    fireEvent.click(slot.getAllByRole('button', { name:'Edit message' })[index]!);
+    change(within(bubbleEditor(slot)!).getByRole('textbox', { name:'Edit message' }), { target:{ value:text } });
+    fireEvent.click(within(bubbleEditor(slot)!).getByRole('button', { name:'Save' }));
+  };
+  it('shows the edit at once and keeps it through stale and failed reads until bb\'s replacement is listed', async () => {
+    let finish!: (v: object) => void;
+    const { slot, recipients, state, later } = liveSetup(vi.fn(() => new Promise(done => { finish = done; })));
+    fireEvent.click(await recipients.findByRole('option')); await slot.findByText('Later one');
+    await editAndSave(slot, 1, 'Later, edited');
+    expect(bubbleEditor(slot)).toBeNull();
+    expect(slot.getByText('Later, edited')).toBeTruthy(); expect(slot.getByText('Saving…')).toBeTruthy();
+    await act(async () => { finish({ ok:true, operationId:'op', requestSequence:12 }); });
+    // The read after Save is stale: the old bubble is still listed, so the edit stays.
+    await waitFor(() => expect(slot.getByText('Later, edited')).toBeTruthy());
+    // A partial read without the old bubble and without the replacement keeps it too.
+    state.items = state.items.filter((i: Item) => i.id !== later.id);
+    await act(async () => { await slot.behavior.experimental_invalidateRpc(['answers:items']); });
+    expect(slot.getByText('Later, edited')).toBeTruthy();
+    // bb's replacement is listed: the mark goes.
+    state.items = [{ ...later, id:'ans_new', question:'Later, edited', questionSeq:12 }, ...state.items];
+    await act(async () => { await slot.behavior.experimental_invalidateRpc(['answers:items']); });
+    await waitFor(() => expect(slot.queryByText('Saving…')).toBeNull());
+    expect(slot.getAllByText('Later, edited')).toHaveLength(1);
+  });
+  it('says the edit is saved but not shown yet after 30 s, keeps it, and refreshes on request', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime:true });
+    const { slot, recipients, list } = liveSetup(vi.fn(async () => ({ ok:true, operationId:'op', requestSequence:12 })));
+    fireEvent.click(await recipients.findByRole('option')); await slot.findByText('Later one');
+    await editAndSave(slot, 0, 'Later, edited');
+    await waitFor(() => expect(slot.getByText('Saving…')).toBeTruthy());
+    await act(async () => { vi.advanceTimersByTime(31000); });
+    await waitFor(() => expect(slot.getByText('Saved, not shown yet')).toBeTruthy());
+    expect(slot.getByText('Later, edited')).toBeTruthy();
+    const calls = list.mock.calls.length; fireEvent.click(slot.getByRole('button', { name:'Refresh' }));
+    await waitFor(() => expect(list.mock.calls.length).toBeGreaterThan(calls));
+    vi.useRealTimers();
+  });
+  it('shows the saved draft\'s text and files while pending, also for a message that had only attachments', async () => {
+    const editMessage = vi.fn(() => new Promise(() => {}));
+    const pic = { type:'localImage' as const, path:'/pic.png', name:'pic.png' };
+    const onlyFile = { ...base, id:'ans_file', question:'', questionSeq:5, attachments:[pic] };
+    const { slot, recipients } = setup({ list: () => ({ items:[onlyFile], nextCursor:null }), editMessage }); fireEvent.click(await recipients.findByRole('option'));
+    await waitFor(() => expect(slot.getAllByRole('button', { name:'Edit message' })).toHaveLength(1));
+    expect(slot.getByText('pic.png')).toBeTruthy();
+    fireEvent.click(slot.getByRole('button', { name:'Edit message' }));
+    const editor = bubbleEditor(slot)!;
+    change(within(editor).getByRole('textbox', { name:'Edit message' }), { target:{ value:'Now with words' } });
+    fireEvent.click(within(editor).getByRole('button', { name:'Remove pic.png' }));
+    fireEvent.click(within(editor).getByRole('button', { name:'Save' }));
+    await waitFor(() => expect(slot.getByText('Now with words')).toBeTruthy());
+    expect(slot.queryByText('pic.png')).toBeNull();
+  });
+  it('drops a later edit awaiting its replacement once an earlier message\'s edit rolls it back', async () => {
+    let n = 12;
+    const { slot, recipients } = liveSetup(vi.fn(async () => ({ ok:true, operationId:'op', requestSequence:n++ })));
+    fireEvent.click(await recipients.findByRole('option')); await slot.findByText('Later one');
+    await editAndSave(slot, 1, 'Later, edited');
+    await waitFor(() => expect(slot.getByText('Later, edited')).toBeTruthy());
+    await editAndSave(slot, 0, 'First, edited');
+    await waitFor(() => expect(slot.getByText('First, edited')).toBeTruthy());
+    await waitFor(() => expect(slot.queryByText('Later, edited')).toBeNull());
+  });
+  it('keeps an earlier edit awaiting its replacement when another bubble is saved', async () => {
+    let n = 12;
+    const { slot, recipients } = liveSetup(vi.fn(async () => ({ ok:true, operationId:'op', requestSequence:n++ })));
+    fireEvent.click(await recipients.findByRole('option')); await slot.findByText('Later one');
+    await editAndSave(slot, 0, 'First, edited');
+    await waitFor(() => expect(slot.getByText('First, edited')).toBeTruthy());
+    await editAndSave(slot, 1, 'Later, edited');
+    await waitFor(() => expect(slot.getByText('Later, edited')).toBeTruthy());
+    expect(slot.getByText('First, edited')).toBeTruthy();
+  });
+  it('reopens the editor with the edited text and the error when the save fails', async () => {
+    const { slot, recipients } = liveSetup(vi.fn(async () => { throw new Error('Edit refused'); }));
+    fireEvent.click(await recipients.findByRole('option')); await slot.findByText('Later one');
+    await editAndSave(slot, 0, 'Later, edited');
+    await waitFor(() => expect(within(bubbleEditor(slot)!).getByRole('alert').textContent).toBe('Edit refused'));
+    expect(within(bubbleEditor(slot)!).getByRole('textbox', { name:'Edit message' }).textContent).toBe('Later, edited');
+  });
+  it('restores the bubble and reports a failed save at the composer when another bubble is being edited', async () => {
+    let fail!: (e: Error) => void;
+    const { slot, recipients } = liveSetup(vi.fn(() => new Promise((_, reject) => { fail = reject; })));
+    fireEvent.click(await recipients.findByRole('option')); await slot.findByText('Later one');
+    await editAndSave(slot, 0, 'Later, edited');
+    fireEvent.click(slot.getAllByRole('button', { name:'Edit message' })[1]!);
+    await act(async () => { fail(new Error('Edit refused')); });
+    expect(slot.getByText('Later one')).toBeTruthy(); expect(within(bubbleEditor(slot)!).queryByRole('alert')).toBeNull();
+    expect(slot.getAllByRole('alert').some(a => a.textContent === 'Edit refused')).toBe(true);
+  });
+  it.each([['later', 0, 1, true], ['earlier', 1, 0, false]] as const)('on success while an %s bubble is in edit, closes its editor only if bb removed it', async (_, saveIndex, editIndex, removed) => {
+    let finish!: (v: object) => void;
+    const { slot, recipients, state, first, later } = liveSetup(vi.fn(() => new Promise(done => { finish = done; })));
+    fireEvent.click(await recipients.findByRole('option')); await slot.findByText('Later one');
+    await editAndSave(slot, saveIndex, 'Edited');
+    fireEvent.click(slot.getAllByRole('button', { name:'Edit message' })[editIndex]!);
+    // Saving the first message rolls back the later one; saving the later one leaves the first.
+    state.items = removed ? [{ ...first, id:'ans_new', question:'Edited', questionSeq:12 }] : [{ ...later, id:'ans_new', question:'Edited', questionSeq:12 }, first];
+    await act(async () => { finish({ ok:true, operationId:'op', requestSequence:12 }); });
+    if (removed) {
+      await waitFor(() => expect(bubbleEditor(slot)).toBeNull());
+      expect(slot.getAllByRole('alert').some(a => a.textContent === 'The message you were editing was removed by the earlier edit.')).toBe(true);
+    } else {
+      await waitFor(() => expect(slot.queryByText('Saving…')).toBeNull());
+      expect(bubbleEditor(slot)).toBeTruthy();
+    }
+  });
   it('shows an edit error inside the editor and stays in edit mode', async () => {
     const { slot, recipients } = editSetup(vi.fn(async () => { throw new Error('Edit refused'); })); fireEvent.click(await recipients.findByRole('option'));
     await slot.findByText('Question one');
