@@ -703,7 +703,7 @@ bb work-board show ABC-12 --json
 
 ## Dispatch и иерархия тредов
 
-`bb work-board dispatch KEY --preset NAME`, вызванный из треда, делает новый тред дочерним для вызывающего (`BB_THREAD_ID`), поэтому уведомления о жизненном цикле и архивация следуют иерархии. `--parent-notifications auto|stuck|off` задаёт, какие ходы потомка будят родителя (без флага действует значение bb по умолчанию); `--no-parent` запускает тред вне иерархии (флаги взаимоисключающие). Запуск из UI человеком и `--thread` не меняют родителя. Рекомендации агентам — в разделе «Building a hierarchy without burning provider limits» в `skills/work-board/SKILL.md`.
+`bb work-board dispatch KEY --preset NAME`, вызванный из треда, делает новый тред дочерним для вызывающего (`BB_THREAD_ID`), поэтому уведомления о жизненном цикле и архивация следуют иерархии. `--parent-notifications auto|stuck|off` задаёт, какие ходы потомка будят родителя (без флага действует значение bb по умолчанию); `--no-parent` запускает тред вне иерархии (флаги взаимоисключающие). Запуск из UI человеком и `--thread` не меняют родителя. Рекомендации агентам — в разделе «Building a hierarchy without burning provider limits» в `skills/work-board/references/hierarchy.md`.
 
 ## Заявки на последовательность
 

@@ -1,0 +1,233 @@
+{
+ "fixture": "skill-split.fixture.md",
+ "base": "work-board/",
+ "substitutions": [],
+ "files": {
+  "SKILL.md": [
+   {
+    "old": [
+     1,
+     13
+    ]
+   },
+   {
+    "old": [
+     91,
+     226
+    ]
+   },
+   {
+    "added": "When you take a task from Backlog or Todo, move it as `bb work-board show` suggests (In progress, or the planning status when the project requires a plan) before you start; its epic follows automatically.\n\n"
+   },
+   {
+    "old": [
+     227,
+     252
+    ]
+   },
+   {
+    "added": "`bb work-board show KEY` and `create` print this link ready to copy. Use `::task{key=\"EXA-12\"}` on its own line only when the person needs the live status card.\n\n"
+   },
+   {
+    "old": [
+     253,
+     284
+    ]
+   },
+   {
+    "old": [
+     314,
+     325
+    ]
+   },
+   {
+    "added": "For a readiness-gated check (`--smoke`, `--beyond-design`), question warnings and reopening a check, see `references/questions.md`.\n\n"
+   },
+   {
+    "old": [
+     332,
+     335
+    ]
+   },
+   {
+    "added": "## Topics\n\nOpen the reference when the task involves its topic; each file starts with what it covers.\n\n- `references/questions.md`: question types and recommendations, evidence and templates, answer attachments; replace or reopen a failed check, the check flow (numbers, rounds, held checks), a withdrawn answer, `question update`, examples.\n- `references/plans.md`: `plan show|set|edit|submit|reply`, plan debt, and the review loop (as the author or as the reviewer).\n- `references/pr-ci.md`: `pr link`, `pr wait`, `sync`, linked-PR messages, review, QA and merge evidence, the Done-after-review rule, Check receipt, pausing an unfinished card.\n- `references/threads.md`: attached sessions and worker recovery, `dispatch` to an existing thread, thread health, sharing task context, UI screens.\n- `references/hierarchy.md`: epics, sub-agent hierarchy and provider limits, dependencies, sequence claims, locks, activity, recurring cards.\n- `references/project.md`: project workflows and statuses, status push notifications, manager attention, repository checks, secret guard.\n- `references/storage.md`: Git snapshots (export, import), task archive, archive queries, storage maintenance.\n- `references/attachments.md`: files and images on tasks, comments and answers.\n- `references/delegation.md`: dispatch and execution presets.\n"
+   }
+  ],
+  "references/questions.md": [
+   {
+    "added": "# Questions, evidence and templates\n\nRead this file when you ask, answer or edit an owner question, replace or reopen a failed check, or record evidence or a template.\n\n"
+   },
+   {
+    "old": [
+     48,
+     64
+    ]
+   },
+   {
+    "old": [
+     307,
+     313
+    ]
+   },
+   {
+    "old": [
+     326,
+     331
+    ]
+   },
+   {
+    "old": [
+     336,
+     358
+    ]
+   },
+   {
+    "added": "One question asks one decision or one check in one or two short plain sentences, with at most one link. Put what the owner has to do in `--step` (repeat it; the steps show as a numbered list under the question), not in a comment. Split a multi-part acceptance into several `--kind check` questions, each answerable on its own with its own link. Evidence, tables, quotes of earlier remarks, inventories and history go into a task comment, not the question. Acceptance material is a link to a local design server or the product, never screenshots. When an existing check's state changes, never add a parallel check: edit an open one with `question update`, `--reopen` an answered one whose prompt and steps are unchanged, and replace it after any changed link or step with `bb work-board question add KEY --kind check --supersedes ID --supersedes-revision N`. Start the new prompt with what changed since the previous check.\n"
+   }
+  ],
+  "references/plans.md": [
+   {
+    "added": "# Task plans and the review loop\n\nRead this file when you write, submit, change or review a task plan, or a card shows plan debt.\n\n"
+   },
+   {
+    "old": [
+     471,
+     502
+    ]
+   },
+   {
+    "added": "If a card you work on shows a `Plan debt` advisory (in `bb work-board show KEY`), it is in work without an approved plan: write the plan and submit it with `bb work-board plan submit KEY --reviewer …` now. Work Board reminds the card's executors after a decision is answered, a PR is linked and 24 h; `bb work-board list --plan-debt` lists such cards.\n"
+   }
+  ],
+  "references/pr-ci.md": [
+   {
+    "added": "# Pull requests, CI and Done after review\n\nRead this file when you link or observe a pull request, wait for its CI, record review, QA or merge evidence, move a card to Done, or pause an unfinished card.\n\n"
+   },
+   {
+    "old": [
+     389,
+     430
+    ]
+   },
+   {
+    "old": [
+     551,
+     580
+    ]
+   }
+  ],
+  "references/threads.md": [
+   {
+    "added": "# Threads and assignment\n\nRead this file when you attach, detach or recover a worker session, send a task to an existing thread, or read thread health.\n\n"
+   },
+   {
+    "old": [
+     285,
+     306
+    ]
+   },
+   {
+    "old": [
+     370,
+     374
+    ]
+   },
+   {
+    "old": [
+     465,
+     470
+    ]
+   },
+   {
+    "old": [
+     537,
+     550
+    ]
+   }
+  ],
+  "references/hierarchy.md": [
+   {
+    "added": "# Epics, hierarchy and coordination\n\nRead this file when you work with epics, spawn child threads, link dependencies, claim sequence numbers, take a lock or read a card's activity.\n\n"
+   },
+   {
+    "old": [
+     14,
+     43
+    ]
+   },
+   {
+    "old": [
+     76,
+     90
+    ]
+   },
+   {
+    "old": [
+     431,
+     464
+    ]
+   },
+   {
+    "old": [
+     515,
+     523
+    ]
+   },
+   {
+    "added": "Agents can add/remove links with `bb work-board dependency add KEY --blocked-by OTHER` and `dependency remove KEY --blocked-by OTHER`.\n"
+   }
+  ],
+  "references/project.md": [
+   {
+    "added": "# Project settings and notices\n\nRead this file when you change project workflows or statuses, set up status pushes, manager attention or repository checks, or handle secrets.\n\n"
+   },
+   {
+    "old": [
+     44,
+     47
+    ]
+   },
+   {
+    "old": [
+     359,
+     369
+    ]
+   },
+   {
+    "old": [
+     503,
+     514
+    ]
+   },
+   {
+    "old": [
+     532,
+     536
+    ]
+   }
+  ],
+  "references/storage.md": [
+   {
+    "added": "# Snapshots, archive and storage\n\nRead this file when you export or import a project snapshot, archive or search archived tasks, or clean plugin storage.\n\n"
+   },
+   {
+    "old": [
+     65,
+     75
+    ]
+   },
+   {
+    "old": [
+     375,
+     388
+    ]
+   },
+   {
+    "old": [
+     524,
+     531
+    ]
+   }
+  ]
+ }
+}

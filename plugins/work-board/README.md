@@ -800,7 +800,7 @@ Export v8 adds required top-level `project.json.gitSync` and `tasks/<id>.json.pu
 
 ## Dispatch and Thread Hierarchy
 
-`bb work-board dispatch KEY --preset NAME`, when called from a thread, makes the new thread a child of the caller (`BB_THREAD_ID`), so lifecycle notifications and archiving follow the hierarchy. `--parent-notifications auto|stuck|off` specifies which child turns wake the parent (without the flag, bb's default value applies); `--no-parent` runs the thread outside the hierarchy (the flags are mutually exclusive). Launching from the UI by a user and `--thread` do not change the parent. Agent recommendations are in the "Building a hierarchy without burning provider limits" section of `skills/work-board/SKILL.md`.
+`bb work-board dispatch KEY --preset NAME`, when called from a thread, makes the new thread a child of the caller (`BB_THREAD_ID`), so lifecycle notifications and archiving follow the hierarchy. `--parent-notifications auto|stuck|off` specifies which child turns wake the parent (without the flag, bb's default value applies); `--no-parent` runs the thread outside the hierarchy (the flags are mutually exclusive). Launching from the UI by a user and `--thread` do not change the parent. Agent recommendations are in the "Building a hierarchy without burning provider limits" section of `skills/work-board/references/hierarchy.md`.
 
 ## Sequence claims
 

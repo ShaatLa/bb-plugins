@@ -59,7 +59,7 @@ const same = (left: string | undefined, right: string) => left?.toLowerCase() ==
 const OWNER_MOVE = "the owner can still move the card on the board";
 
 /**
- * The Done rule for an agent move (see SKILL.md). A card that delivers PRs needs an approval at each PR's gate head from a
+ * The Done rule for an agent move (see skills/work-board/references/pr-ci.md). A card that delivers PRs needs an approval at each PR's gate head from a
  * thread that is neither the mover nor a known author of that PR; a card without one needs an approval after it last
  * entered In Progress. Reads only; the caller records the decision.
  */

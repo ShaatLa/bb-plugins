@@ -150,6 +150,7 @@ describe("show: Next step", () => {
   });
 });
 
-it("tells agents in the standing instructions to move a task they take", () => {
-  expect(TASK_LINK_INSTRUCTIONS).toContain("When you take a task from Backlog or Todo, move it as `bb work-board show` suggests");
+it("keeps the status move on take in the skill, not in the standing instructions", () => {
+  expect(TASK_LINK_INSTRUCTIONS).not.toContain("When you take a task from Backlog or Todo");
+  expect(TASK_LINK_INSTRUCTIONS).toContain("Open the work-board skill");
 });
