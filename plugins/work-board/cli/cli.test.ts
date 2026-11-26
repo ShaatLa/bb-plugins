@@ -214,7 +214,7 @@ describe("bb work-board CLI", () => {
     expect(stdout(await harness.runCli(["comment", "CMP-1", "--kind", "review", "--head", "b".repeat(40), "--verdict", "changes", "--thread", "thr_reviewer", "--body", "Pre-PR review", "--json"]))).toContain('"verdict":"changes"');
     expect(evidence.exitCode).toBe(0);
     const brief = JSON.parse(stdout(await harness.runCli(["show", "CMP-1", "--brief", "--json"])));
-    expect(brief.questions[0]).toEqual({ id: question.id, prompt: "Choose\nnow", kind: "decision", askedByThread: question.askedByThread, answer: "One; Two; Details", answeredBy: expect.any(String), updatedAt: expect.any(String) });
+    expect(brief.questions[0]).toEqual({ id: question.id, prompt: "Choose\nnow", kind: "decision", askedByThread: question.askedByThread, answer: "One; Two; Details", answeredBy: expect.any(String), updatedAt: expect.any(String), verdict: null });
     expect(brief.more.questions).toBe("bb work-board question list CMP-1");
     expect(brief.more.evidence).toBe("bb work-board evidence CMP-1");
     expect(brief.more.comments).toContain("--kind system");

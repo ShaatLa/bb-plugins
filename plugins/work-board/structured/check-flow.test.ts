@@ -195,23 +195,26 @@ describe("agents read the stable verdict", () => {
     const open = await ask("Four?", 4);
     const ru = await ask("Five?", 5, { options: russian });
     const ruOther = await ask("Six?", 6, { options: russian });
-    const approveReject = await ask("Seven?", 7, { options: ["Approve", "Reject"] });
+    const legacy = await ask("Seven?", 7, { options: ["Confirmed", "Problem found"] });
+    const custom = await ask("Eight?", 8, { options: ["Approve", "Maybe", "Reject"] });
     const { question: decision } = await structured.handlers.createQuestion({ taskId: task.id, kind: "decision", askedByThread: null, prompt: "Which?", mode: "single", options: ["A", "B"] });
     await answer(confirmed, [0], "fine");
     await answer(problem, [1]);
     await answer(text, [], "cut off");
     await answer(ru, [0]);
     await answer(ruOther, [1]);
-    await answer(approveReject, [0]);
+    await answer(legacy, [0]);
+    await answer(custom, [0]);
     // Answered, so --brief slims it like other closed questions and must still carry verdict: null.
     await answer(decision as typeof confirmed, [0]);
-    const expected = [[confirmed.id, "approve"], [problem.id, "reject"], [text.id, "reject"], [open.id, null], [ru.id, "approve"], [ruOther.id, null], [approveReject.id, null], [decision.id, null]];
+    const expected = [[confirmed.id, "approve"], [problem.id, "reject"], [text.id, "reject"], [open.id, null], [ru.id, "approve"], [ruOther.id, null], [legacy.id, "approve"], [custom.id, null], [decision.id, null]];
     // A missing key must fail: "verdict" in question, not a value that toEqual would match against null.
     const read = (questions: { id: string; verdict?: string | null }[]) => expected.map(([id]) => { const question = questions.find((entry) => entry.id === id)!; return [id, "verdict" in question ? question.verdict : "missing"]; });
     const list = JSON.parse((await harness.runCli(["question", "list", task.key, "--json"])).stdout) as { questions: { id: string; verdict: string | null; state: string }[] };
     expect(read(list.questions)).toStrictEqual(expected);
     expect(list.questions.find((question) => question.id === ru.id)!.state).toBe("confirmed");
-    expect(list.questions.find((question) => question.id === approveReject.id)!.state).toBe("answered");
+    expect(list.questions.find((question) => question.id === custom.id)!.state).toBe("answered");
+    expect(confirmed.options.map((option) => option.label)).toEqual(["Approve", "Reject"]);
     for (const flags of [[], ["--brief"]]) {
       const show = JSON.parse((await harness.runCli(["show", task.key, "--json", ...flags])).stdout) as { questions: { id: string; verdict?: string | null }[] };
       expect(read(show.questions)).toStrictEqual(expected);

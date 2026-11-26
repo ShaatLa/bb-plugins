@@ -625,12 +625,12 @@ export function QuestionsSection({
   const earlierDecisions = decisions.filter((question) => !isQuestionOpen(question) && !nested(question));
   const earlierCount = earlierChains.length + earlierDecisions.length;
   const stateLabel = (chain: CheckChain) =>
-    chain.state === "confirmed" ? "Confirmed" : chain.state === "problem" ? "Problem found" : chain.state === "answered" ? "Answered" : chain.state === "held" ? `On hold until check ${chain.heldBy!.number} is fixed` : chain.state === "withdrawn" ? "Withdrawn" : "Waiting";
+    chain.state === "confirmed" ? "Approved" : chain.state === "problem" ? "Rejected" : chain.state === "answered" ? "Answered" : chain.state === "held" ? `On hold until check ${chain.heldBy!.number} is fixed` : chain.state === "withdrawn" ? "Withdrawn" : "Waiting";
   const renderCheck = (chain: CheckChain) => {
     const head = heads(chain);
     if (chain.state === "problem") {
       return <div key={head.id}>{renderQuestion(head, (form) =>
-        <CompactCheck key={`${head.id}:${head.revision}`} question={head} tone="problem" heading={`${chain.number}. Problem found — waiting for the fix`} form={form} changeable />)}</div>;
+        <CompactCheck key={`${head.id}:${head.revision}`} question={head} tone="problem" heading={`${chain.number}. Rejected — waiting for the fix`} form={form} changeable />)}</div>;
     }
     return <div key={head.id} className="space-y-1">
       <p className="flex items-center gap-2 text-xs text-muted-foreground">
@@ -752,7 +752,7 @@ export function QuestionsSection({
                   const next = event.target.value as "decision" | "check";
                   setKind(next);
                   setOptions(next === "check"
-                    ? [{ label: "Confirmed" }, { label: "Problem found" }]
+                    ? [{ label: "Approve" }, { label: "Reject" }]
                     : [{ label: "" }]);
                 }}
               >

@@ -52,13 +52,21 @@ describe("verdict labels and the stable verdict", () => {
     expect(verdictOf(read(options, ["ok"]))).toBe("confirmed");
     expect(verdictOf(read(options, ["ok", "later"]))).toBe("answered");
   });
-  it("does not read Approve and Reject as verdicts yet", () => {
-    expect(verdictOf(read(pair, ["a"]))).toBe("answered");
-    expect(verdictOf(read(pair, ["r"]))).toBe("answered");
-    expect(verdictField(read(pair, ["a"]))).toBeNull();
+  it("reads Approve and Reject as verdicts only as the exact pair", () => {
+    expect(verdictOf(read(pair, ["a"]))).toBe("confirmed");
+    expect(verdictOf(read(pair, ["a"], "fine"))).toBe("confirmed");
+    expect(verdictOf(read(pair, ["r"]))).toBe("problem");
+    expect(verdictOf(read(pair, [], "cut off"))).toBe("problem");
+    expect(verdictOf(read(pair, ["a", "r"]))).toBe("problem");
+    expect(verdictField(read(pair, ["a"]))).toBe("approve");
+    expect(verdictField(read(pair, ["r"]))).toBe("reject");
+    expect(verdictLabels(pair)).toEqual(["Approve", "Reject"]);
     const three = [pair[0]!, { id: "m", label: "Maybe" }, pair[1]!];
     expect(verdictOf(read(three, ["a"]))).toBe("answered");
+    expect(verdictOf(read(three, ["r"]))).toBe("answered");
+    expect(verdictField(read(three, ["a"]))).toBeNull();
     expect(verdictLabels(three)).toEqual([]);
+    expect(verdictOf(read([pair[0]!, { id: "m", label: "Maybe" }], ["a"]))).toBe("answered");
     expect(verdictLabels(OPTIONS)).toEqual(["Confirmed", "Problem found"]);
     expect(verdictLabels(russian)).toEqual(["Подтверждаю"]);
   });

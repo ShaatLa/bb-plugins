@@ -1370,7 +1370,7 @@ export function registerTasksCli(
             option: {
               type: "string",
               repeatable: true,
-              description: "Option text; repeat for each option (required for a decision; a check defaults to Confirmed / Problem found)",
+              description: "Option text; repeat for each option (required for a decision; a check defaults to Approve / Reject)",
             },
             multiple: {
               type: "boolean",
@@ -1394,7 +1394,7 @@ export function registerTasksCli(
                 domain,
                 input.positionals["key-or-id"],
               );
-              const optionLabels = input.options.option.length ? input.options.option : input.options.kind === "check" ? ["Confirmed", "Problem found"] : [];
+              const optionLabels = input.options.option.length ? input.options.option : input.options.kind === "check" ? ["Approve", "Reject"] : [];
               const recommended = input.options.recommend.map((value) =>
                 z.coerce.number().int().min(1).max(20).parse(value),
               );
@@ -3071,7 +3071,7 @@ export function registerTasksCli(
                 const design = q.beyondDesign ? `\nBeyond the design: ${q.beyondDesign}` : "";
                 if ("withdrawnAt" in q && q.withdrawnAt) return `${oneLine(q.prompt)} — ${withdrawalLine(q)}${design}`;
                 if (q.supersededBy) return `superseded by ${q.supersededBy}: ${oneLine(q.prompt).slice(0, 160)}${"answer" in q && q.answer ? ` → ${oneLine(q.answer).slice(0, 160)}` : ""} (${q.id})${design}`;
-                const place = "number" in q && q.number != null ? `check ${q.number} (${q.state}) ` : "";
+                const place = "number" in q && q.number != null ? `check ${q.number} (${({ confirmed: "approved", problem: "rejected" } as Record<string, string>)[q.state as string] ?? q.state}) ` : "";
                 if ("answer" in q) return `✓ ${place}${oneLine(q.prompt).slice(0, 160)} → ${oneLine(q.answer).slice(0, 160)} (${q.id})${design}`;
                 return `${"heldBy" in q && q.heldBy ? `${heldLine(q)}\n` : ""}${JSON.stringify(q)}`;
               }).join("\n") : [JSON.stringify(shownQuestions, null, 2), ...questions.filter(q => q.withdrawnAt).map(withdrawalLine)].join("\n");

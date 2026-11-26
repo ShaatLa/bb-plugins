@@ -31,7 +31,7 @@ it("supports one-option decisions, default/custom check options and free text fo
   }
   const result = await call(["question", "add", f.task.key, "--kind", "check", "--prompt", "Validate", "--json"]);
   expect(result.exitCode, result.stderr).toBe(0);
-  expect(JSON.parse(result.stdout).question.options.map((o: any) => o.label)).toEqual(["Confirmed", "Problem found"]);
+  expect(JSON.parse(result.stdout).question.options.map((o: any) => o.label)).toEqual(["Approve", "Reject"]);
 });
 it("stamps the CLI asker and delivers answers there before attached workers", async () => {
   const f = setup();

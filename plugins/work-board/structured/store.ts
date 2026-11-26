@@ -334,7 +334,7 @@ export function createStructuredStore(bb: BbPluginApi, store: TasksApiStore) {
         steps: input.steps ?? [],
         mode: input.mode,
         allowOther: true,
-        options: (input.kind === "check" && !input.options.length ? ["Confirmed", "Problem found"] : input.options).map((option) => ({
+        options: (input.kind === "check" && !input.options.length ? ["Approve", "Reject"] : input.options).map((option) => ({
           ...(typeof option === "string" ? { label: option } : option),
           id: createUlid(),
         })),

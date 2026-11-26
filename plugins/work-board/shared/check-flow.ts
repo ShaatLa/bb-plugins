@@ -10,13 +10,24 @@ export type CheckState = CheckVerdict | "held" | "superseded";
 /** The part of a question a verdict reads; history snapshots have it too. */
 type AnswerState = Pick<TaskQuestion, "options" | "selectedOptionIds" | "answerText">;
 
-/** Labels that confirm a check, and the one that fails it. Step A: only the labels existing checks carry. */
+/** Legacy labels count in any option set. Approve / Reject count only as the exact pair (see `isVerdictPair`). */
 const CONFIRM_LABELS = ["Confirmed", "Подтверждаю"];
 const PROBLEM_LABELS = ["Problem found"];
 
+/** Exactly the two options a check gets by default: any other set keeps Approve and Reject as ordinary options. */
+function isVerdictPair(options: readonly { label: string }[]): boolean {
+  const labels = options.map((option) => option.label);
+  return labels.length === 2 && labels.includes("Approve") && labels.includes("Reject");
+}
+
+const confirms = (options: readonly { label: string }[], label: string) =>
+  CONFIRM_LABELS.includes(label) || (label === "Approve" && isVerdictPair(options));
+const fails = (options: readonly { label: string }[], label: string) =>
+  PROBLEM_LABELS.includes(label) || (label === "Reject" && isVerdictPair(options));
+
 /** Which labels of a check's options are verdicts: the form leaves them out of the chosen answer, as the heading says it. */
 export function verdictLabels(options: readonly { label: string }[]): string[] {
-  return options.map((option) => option.label).filter((label) => CONFIRM_LABELS.includes(label) || PROBLEM_LABELS.includes(label));
+  return options.map((option) => option.label).filter((label) => confirms(options, label) || fails(options, label));
 }
 
 /**
@@ -27,8 +38,8 @@ export function verdictOf(state: AnswerState, withdrawn = false): CheckVerdict {
   if (withdrawn) return "withdrawn";
   const labels = state.options.filter((option) => state.selectedOptionIds.includes(option.id)).map((option) => option.label);
   if (!labels.length && !state.answerText) return "open";
-  if (labels.some((label) => PROBLEM_LABELS.includes(label))) return "problem";
-  if (labels.length === 1 && CONFIRM_LABELS.includes(labels[0]!)) return "confirmed";
+  if (labels.some((label) => fails(state.options, label))) return "problem";
+  if (labels.length === 1 && confirms(state.options, labels[0]!)) return "confirmed";
   return labels.length ? "answered" : "problem";
 }
 
