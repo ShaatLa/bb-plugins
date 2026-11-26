@@ -246,6 +246,27 @@ describe('Pinned group', () => {
     fireEvent.pointerUp(window, { clientX: 0, clientY: 10 });
     await waitFor(() => expect(reorderPinned).toHaveBeenCalledExactlyOnceWith({ threadId: 'thr_k2', previousThreadId: null, nextThreadId: 'thr_k1' }));
   });
+  it('marks pinned rows with a pin icon, and only those', async () => {
+    const { slot } = setup({ rows: [{ id: 'thr_top', fields: pin(20) }, { id: 'thr_kid', fields: { parentThreadId: 'thr_top' } }, { id: 'thr_parent' }, { id: 'thr_pinsub', fields: { parentThreadId: 'thr_parent', ...pin(10) } }, { id: 'thr_plainsub', fields: { parentThreadId: 'thr_parent' } }, { id: 'thr_plain' }], contacts: ['thr_parent', 'thr_plain', 'thr_top'] });
+    await slot.findByText('pinsub'); await slot.findByText('kid');
+    const marked = (name: string) => !!within((slot.getByText(name).closest('button') as HTMLElement)).queryByRole('img', { name: 'Pinned' });
+    expect(['top', 'pinsub'].map(marked)).toEqual([true, true]);
+    expect(['kid', 'plainsub', 'plain', 'parent'].map(marked)).toEqual([false, false, false, false]);
+  });
+  it('opens a pinned sub-session\'s own sub-sessions from its chevron under a collapsed parent', async () => {
+    const { slot } = setup({ rows: [{ id: 'thr_parent' }, { id: 'thr_lead', fields: { parentThreadId: 'thr_parent', ...pin(10) } }, { id: 'thr_worker', fields: { parentThreadId: 'thr_lead' } }, { id: 'thr_other', fields: { parentThreadId: 'thr_parent' } }], contacts: ['thr_parent'] });
+    await slot.findByText('lead');
+    fireEvent.click(slot.getByRole('button', { name: 'Hide sub-sessions' }));
+    await waitFor(() => expect(slot.queryByText('other')).toBeNull());
+    expect(slot.queryByText('worker')).toBeNull();
+    const chevron = slot.getByRole('button', { name: 'Show nested sub-sessions' });
+    expect(chevron.getAttribute('aria-expanded')).toBe('false');
+    fireEvent.click(chevron);
+    await waitFor(() => expect(slot.getByText('worker')).toBeTruthy());
+    expect(slot.queryByText('other')).toBeNull();
+    fireEvent.click(slot.getByRole('button', { name: 'Hide nested sub-sessions' }));
+    await waitFor(() => expect(slot.queryByText('worker')).toBeNull());
+  });
   it('shows a pinned session instead of the empty state', async () => {
     const { slot } = setup({ rows: [{ id: 'thr_only', fields: pin(10) }], contacts: [] });
     await slot.findByRole('group', { name: 'Pinned' });
