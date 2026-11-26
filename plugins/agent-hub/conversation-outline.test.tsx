@@ -23,16 +23,20 @@ it('names the outline button in a hover tooltip', () => {
   const slot=renderSlot({component:ConversationOutline},{threadId:'thr_example',onJump:()=>{}},{sdk:{threads:{conversationOutline:vi.fn()}}} as any);
   expect(slot.getByRole('button',{name:'Thread table of contents'}).getAttribute('title')).toBe('Table of contents');
 });
-it('opens a wide, tall list whose entries wrap to two lines, with the full line on hover, and closes on Escape', async () => {
-  const long='A long question that runs well past one line of the list, so it has to wrap before it is cut';
-  const conversationOutline=vi.fn(async()=>({items:[{id:'thr_example:user-seed:5',role:'user',preview:long}],maxSeq:5}));
-  const slot=renderSlot({component:ConversationOutline},{threadId:'thr_example',onJump:()=>{}},{sdk:{threads:{conversationOutline}}} as any);
+it('lists the newest message first, one line per entry with the full line on hover, and closes on Escape', async () => {
+  const long='A long question that runs well past one line of the list, so it is cut';
+  const conversationOutline=vi.fn(async()=>({items:[{id:'thr_example:user-seed:2',role:'user',preview:'Old one'},{id:'thr_example:user-seed:5',role:'user',preview:long}],maxSeq:5})), onJump=vi.fn();
+  const slot=renderSlot({component:ConversationOutline},{threadId:'thr_example',onJump},{sdk:{threads:{conversationOutline}}} as any);
   fireEvent.click(slot.getByRole('button',{name:'Thread table of contents'}));
-  const entry=await slot.findByRole('button',{name:long}), list=slot.getByRole('dialog');
-  expect(list.style.maxHeight).not.toBe('');
-  expect(entry.className).not.toContain('truncate'); expect(entry.querySelector('.line-clamp-2')?.textContent).toBe(long); expect(entry.getAttribute('title')).toBe(long);
+  await slot.findByRole('button',{name:long});
+  const list=slot.getByRole('dialog'), entries=list.querySelectorAll('button');
+  expect(Array.from(entries).map(b=>b.textContent)).toEqual([long,'Old one']);
+  expect(entries[0]!.className).toContain('truncate'); expect(entries[0]!.getAttribute('title')).toBe(long);
   fireEvent.keyDown(list,{key:'Escape'});
   expect(slot.queryByRole('dialog')).toBeNull();
+  fireEvent.click(slot.getByRole('button',{name:'Thread table of contents'}));
+  fireEvent.click(await slot.findByRole('button',{name:long}));
+  expect(onJump).toHaveBeenCalledWith(5);
 });
 it('closes on Escape with focus still on the button, and keeps the list inside the viewport as it resizes', async () => {
   const conversationOutline=vi.fn(async()=>({items:[],maxSeq:0}));
@@ -42,20 +46,20 @@ it('closes on Escape with focus still on the button, and keeps the list inside t
   const size=(w:number)=>{Object.defineProperty(window,'innerWidth',{configurable:true,value:w}); fireEvent(window,new Event('resize'));};
   size(1200); fireEvent.click(button);
   const list=slot.getByRole('dialog');
-  // Wide window: 512 px wide, right-aligned to the button.
-  expect([list.style.width,list.style.left]).toEqual(['512px','488px']);
+  // Wide window: 288 px wide, right-aligned to the button.
+  expect([list.style.width,list.style.left]).toEqual(['288px','712px']);
   // A button near the left edge: the list shifts right to stay on screen.
   right=120; size(1200); expect(list.style.left).toBe('8px');
   // A short landscape window: the list ends above the bottom edge, so its last entries scroll into view.
   const tall=(h:number)=>Object.defineProperty(window,'innerHeight',{configurable:true,value:h});
-  tall(1000); size(1200); expect([list.style.top,list.style.maxHeight]).toEqual(['34px','700px']);
-  tall(150); size(1200); expect([list.style.top,list.style.maxHeight]).toEqual(['34px','105px']);
+  tall(1000); size(1200); expect([list.style.top,list.style.maxHeight]).toEqual(['34px','288px']);
+  tall(150); size(1200); expect([list.style.top,list.style.maxHeight]).toEqual(['34px','108px']);
   // A button low in a short window: the list opens above it, within the space there.
   let bottom=230; box.getBoundingClientRect=()=>({right,left:right-30,top:bottom-30,bottom,width:30,height:30,x:right-30,y:bottom-30,toJSON:()=>({})});
   tall(300); size(1200); expect([list.style.top,list.style.bottom,list.style.maxHeight]).toEqual(['','104px','188px']);
   tall(1000); bottom=30;
   // A phone-width window after rotation: the list narrows to the viewport.
-  right=360; size(375); expect([list.style.width,list.style.left]).toEqual(['359px','8px']);
+  right=360; size(375); expect([list.style.width,list.style.left]).toEqual(['288px','72px']);
   button.focus(); fireEvent.keyDown(button,{key:'Escape'});
   expect(slot.queryByRole('dialog')).toBeNull();
 });

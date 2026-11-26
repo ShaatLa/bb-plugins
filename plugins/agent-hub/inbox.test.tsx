@@ -419,6 +419,38 @@ describe('editing a sent message in its bubble', () => {
     await waitFor(() => expect(slot.getByText('Later, edited')).toBeTruthy());
     expect(slot.getByText('First, edited')).toBeTruthy();
   });
+  const busy = () => Object.assign(new Error('HTTP 409: Thread thr_one is still active; the stop did not finish'), { status:409 });
+  it('retries a save bb refuses while it finishes a stop, without showing an error', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime:true });
+    let calls = 0;
+    const editMessage = vi.fn(async () => { if (++calls === 1) throw busy(); return { ok:true, operationId:'op', requestSequence:12 }; });
+    const { slot, recipients } = liveSetup(editMessage); fireEvent.click(await recipients.findByRole('option')); await slot.findByText('Later one');
+    await editAndSave(slot, 1, 'Later, edited');
+    await act(async () => { await vi.advanceTimersByTimeAsync(1600); });
+    await waitFor(() => expect(editMessage).toHaveBeenCalledTimes(2));
+    expect(bubbleEditor(slot)).toBeNull(); expect(slot.getByText('Later, edited')).toBeTruthy();
+    expect(new Set(editMessage.mock.calls.map(([input]: any) => input.operationId)).size).toBe(2);
+    const [first, second] = editMessage.mock.calls.map(([input]: any) => input) as any[];
+    expect(second.expectedRequestSequence).toBe(first.expectedRequestSequence); expect(second.input).toEqual(first.input);
+    vi.useRealTimers();
+  });
+  it('gives up after three retries of a refused save and reopens the editor with the error', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime:true });
+    const editMessage = vi.fn(async () => { throw busy(); });
+    const { slot, recipients } = liveSetup(editMessage); fireEvent.click(await recipients.findByRole('option')); await slot.findByText('Later one');
+    await editAndSave(slot, 1, 'Later, edited');
+    await act(async () => { await vi.advanceTimersByTimeAsync(5000); });
+    await waitFor(() => expect(within(bubbleEditor(slot)!).getByRole('alert').textContent).toContain('still active'));
+    expect(editMessage).toHaveBeenCalledTimes(4);
+    vi.useRealTimers();
+  });
+  it('does not retry another 409', async () => {
+    const editMessage = vi.fn(async () => { throw Object.assign(new Error('HTTP 409: The message changed'), { status:409 }); });
+    const { slot, recipients } = liveSetup(editMessage); fireEvent.click(await recipients.findByRole('option')); await slot.findByText('Later one');
+    await editAndSave(slot, 1, 'Later, edited');
+    await waitFor(() => expect(within(bubbleEditor(slot)!).getByRole('alert').textContent).toContain('The message changed'));
+    expect(editMessage).toHaveBeenCalledTimes(1);
+  });
   it('reopens the editor with the edited text and the error when the save fails', async () => {
     const { slot, recipients } = liveSetup(vi.fn(async () => { throw new Error('Edit refused'); }));
     fireEvent.click(await recipients.findByRole('option')); await slot.findByText('Later one');

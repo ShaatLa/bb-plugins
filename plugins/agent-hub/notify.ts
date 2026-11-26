@@ -40,13 +40,24 @@ export function createNotifier(bb:BbPluginApi,db:Database.Database) {
   for (const id of ids) db.prepare('UPDATE items SET notify_state=2 WHERE id=?').run(id);
  })();
  const log=(e:unknown)=>{if (Date.now()-lastError>=3600000 || !lastError) {lastError=Date.now(); bb.log.debug(`Agent Hub push unavailable: ${String(e)}`);}};
- const push=async(input:{title:string;body:string;threadId?:string})=>{
+ // When Agent Hub last pushed each thread, so a landing on it can be told apart in the log (bb's push carries no link, only the thread).
+ const pushed=new Map<string,number>();
+ const topOf=async(threadId:string)=>{let id=threadId; try {for(let i=0;i<4;i++){const t=await bb.sdk.threads.get({threadId:id}); if(!t.parentThreadId) break; id=t.parentThreadId;}} catch {/* the log keeps the thread itself */} return id;};
+ const push=async(input:{title:string;body:string;threadId?:string},kind:'question'|'blocking'|'reminder'|'answer'|'notice'|'summary')=>{
+  const thread=input.threadId, line=async(via:string)=>bb.log.info(`push via=${via} thread=${thread ?? 'none'} contact=${thread ? await topOf(thread) : 'none'} kind=${kind}`);
+  let via='push-notifications';
   if([...notifiers.values()].some(at=>Date.now()-at<45000)) {
-   try {await bb.realtime.publish(NOTIFICATIONS_CHANNEL,{...input,id:randomUUID()});return;} catch(e){log(e);}
+   try {await bb.realtime.publish(NOTIFICATIONS_CHANNEL,{...input,id:randomUUID()}); await line('in-app'); return;} catch(e){log(e); via='push-notifications (in-app failed)';}
   }
   const outputSchema=z.object({channels:z.array(z.string())});
-  try {const result=outputSchema.parse(await bb.sdk.plugins.callRpc({pluginId:'push-notifications',method:'notifications.send',input,outputSchema})); if (!result.channels.length) log('no channels');}
-  catch(e){log(e);}
+  try {
+   const result=outputSchema.parse(await bb.sdk.plugins.callRpc({pluginId:'push-notifications',method:'notifications.send',input,outputSchema}));
+   if (!result.channels.length) {log('no channels'); await line(`${via} channels=none`); return;}
+   // Only a push bb actually sent can explain a later landing on its thread.
+   if (thread) pushed.set(thread,Date.now());
+   for (const [id,at] of pushed) if (Date.now()-at>900000) pushed.delete(id);
+   await line(`${via} channels=${result.channels.join('+')}`);
+  } catch(e){log(e); await line(`${via} failed`);}
  };
  const serial=(task:()=>Promise<void>|void)=>{chain=chain.then(task).catch(e=>bb.log.warn(`Agent Hub notify: ${String(e)}`)); return chain;};
  const arm=()=>{if(endTimer) clearTimeout(endTimer); const end=windowEnd(); if(end!==null){endTimer=setTimeout(()=>void serial(summary),Math.max(0,end-Date.now())); endTimer.unref();}};
@@ -58,7 +69,7 @@ export function createNotifier(bb:BbPluginApi,db:Database.Database) {
   const valid=selected.filter(matches),chosen=valid.filter(r=>r.urgency!=='blocking'),threads=new Set(chosen.map(r=>r.thread_id)).size;
   db.transaction(()=>{db.prepare('UPDATE items SET notify_state=0 WHERE notify_state=2').run();db.prepare("DELETE FROM notify_meta WHERE key='held_for'").run();})();
   for(const r of valid.filter(r=>r.urgency==='blocking')) await sendOne(r);
-  if(chosen.length && level!=='off') await push({title:'Agent Hub',body:`While you were away: ${chosen.length} new in ${threads} threads`});
+  if(chosen.length && level!=='off') await push({title:'Agent Hub',body:`While you were away: ${chosen.length} new in ${threads} threads`},'summary');
   arm();
  }
  // A notice leads with its own title; its project and sender follow.
@@ -68,11 +79,11 @@ export function createNotifier(bb:BbPluginApi,db:Database.Database) {
   return {title:clean(r.question,80)||'Agent Hub',body:clean([project,r.trigger_source].filter(Boolean).join(' · '),180)||'Report',...(r.thread_id!==NOTICE_THREAD ? {threadId:r.thread_id} : {})};
  };
  async function sendOne(r:Row) {
-  if(r.notice) {await push(await noticePush(r));return;}
+  if(r.notice) {await push(await noticePush(r),'notice');return;}
   const titles=await bb.sdk.threads.list({threadIds:[r.thread_id],includeHidden:true,limit:1});
   const minutes=Math.max(1,Math.floor((Date.now()-r.created_at)/60000)),age=minutes<60 ? `${minutes}m` : minutes<1440 ? `${Math.floor(minutes/60)}h` : `${Math.floor(minutes/1440)}d`;
   const title=clean(titles[0]?.title ?? 'Agent Hub',80)||'Agent Hub',body=r.reminders>0 && r.reminded_at!==null ? `Still waiting (${age}): ${r.question}` : r.kind==='for_me' ? r.question : r.failed_at!==null && r.status!=='answered' ? `Turn failed: ${r.question}` : r.answer ?? r.question;
-  await push({title:r.urgency==='blocking' ? `Blocking · ${title}` : title,body:clean(inlineCommentPreview(body),180),threadId:r.thread_id});
+  await push({title:r.urgency==='blocking' ? `Blocking · ${title}` : title,body:clean(inlineCommentPreview(body),180),threadId:r.thread_id},r.reminders>0 && r.reminded_at!==null ? 'reminder' : r.urgency==='blocking' ? 'blocking' : r.kind==='for_me' ? 'question' : 'answer');
  }
  async function flush(){
   flushTimer=undefined; if(disposed || !queue.size) return;
@@ -81,9 +92,9 @@ export function createNotifier(bb:BbPluginApi,db:Database.Database) {
   if(!batch.length)return;
   const ids=[...new Set(batch.map(r=>r.thread_id))],real=ids.filter(id=>id!==NOTICE_THREAD);
   const titles=new Map((real.length ? await bb.sdk.threads.list({threadIds:real,includeHidden:true,limit:200}) : []).map(t=>[t.id,t.title ?? 'Agent Hub']));
-  if(batch.length===1 && batch[0].notice) await push(await noticePush(batch[0]));
-  else if(batch.length===1){const r=batch[0],body=r.kind==='for_me'?r.question:r.failed_at!==null && r.status!=='answered'?`Turn failed: ${r.question}`:r.answer ?? r.question; await push({title:clean(titles.get(r.thread_id) ?? 'Agent Hub',80)||'Agent Hub',body:clean(inlineCommentPreview(body),180),threadId:r.thread_id});}
-  else await push({title:`${batch.length} new in Agent Hub`,body:clean(ids.slice(0,3).map(id=>titles.get(id) ?? 'Agent Hub').join(', '),180),...(ids.length===1 && real.length===1?{threadId:ids[0]}:{})});
+  if(batch.length===1 && batch[0].notice) await push(await noticePush(batch[0]),'notice');
+  else if(batch.length===1){const r=batch[0],body=r.kind==='for_me'?r.question:r.failed_at!==null && r.status!=='answered'?`Turn failed: ${r.question}`:r.answer ?? r.question; await push({title:clean(titles.get(r.thread_id) ?? 'Agent Hub',80)||'Agent Hub',body:clean(inlineCommentPreview(body),180),threadId:r.thread_id},r.kind==='for_me' ? 'question' : 'answer');}
+  else await push({title:`${batch.length} new in Agent Hub`,body:clean(ids.slice(0,3).map(id=>titles.get(id) ?? 'Agent Hub').join(', '),180),...(ids.length===1 && real.length===1?{threadId:ids[0]}:{})},'summary');
  }
  function run(){return serial(async()=>{
   if(disposed)return;
@@ -95,5 +106,5 @@ export function createNotifier(bb:BbPluginApi,db:Database.Database) {
  });}
  settings.onChange((next)=>{level=next.notify as Level;quiet=next.quietHours;if(level==='off'){queue.clear();if(flushTimer)clearTimeout(flushTimer);flushTimer=undefined;db.prepare('UPDATE items SET notify_state=0 WHERE notify_state=2').run();db.prepare("DELETE FROM notify_meta WHERE key='held_for'").run();} arm();void run();});
  chain=settings.get().then(value=>{level=value.notify as Level;quiet=value.quietHours;db.transaction(()=>{db.prepare('UPDATE items SET notify_state=0 WHERE notify_state=1').run();const old=db.prepare("SELECT value FROM notify_meta WHERE key='held_for'").get() as {value:number}|undefined;if(old && old.value!==windowEnd()){db.prepare('UPDATE items SET notify_state=0 WHERE notify_state=2').run();db.prepare("DELETE FROM notify_meta WHERE key='held_for'").run();}})();arm();}).catch(log);
- return {run,settings,beat,dispose:async()=>{disposed=true;if(flushTimer)clearTimeout(flushTimer);if(endTimer)clearTimeout(endTimer);await chain;}};
+ return {run,settings,beat,pushedAt:(threadId:string)=>{const at=pushed.get(threadId); return at!==undefined && Date.now()-at<=900000 ? at : null;},dispose:async()=>{disposed=true;if(flushTimer)clearTimeout(flushTimer);if(endTimer)clearTimeout(endTimer);await chain;}};
 }

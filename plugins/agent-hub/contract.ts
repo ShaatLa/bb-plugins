@@ -60,6 +60,7 @@ export const inputs = {
 };
 const ok=z.object({ok:z.literal(true)});
 export const rpcContract=defineRpcContract({
+ 'pushLanding':{input:z.object({threadId:z.string().min(1).max(200),redirected:z.boolean(),reason:z.enum(['cold-start','regained-attention','no-input-navigation','user-input','new-thread','message-link','chat-mode-bb'])}).strict(),output:z.object({ok:z.literal(true)})},
  'notifier.beat':{input:z.object({clientId:z.string().min(1).max(200),canNotify:z.boolean()}).strict(),output:z.object({ok:z.literal(true)})},
  'config.get':{input:configGet,output:z.unknown()},
  'config.set':{input:configSet,output:z.unknown()},

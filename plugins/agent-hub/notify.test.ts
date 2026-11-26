@@ -56,3 +56,16 @@ it.each(['fresh','absent','stale','denied','publish failure'])('routes desktop d
  if(mode==='fresh') expect(h.host.harness.realtimeSignals).toContainEqual({channel:'agent-hub:notifications',payload:expect.objectContaining({title:'Thread title',body:'Question?',threadId:'t'})});
 });
 it('pushes the reply to the owner\'s own message in a sub-session at level all, not its background or spawn brief',async()=>{vi.useFakeTimers();const h=setup({notify:'all'});await h.notifier.run();h.db.prepare("INSERT INTO sub_threads VALUES ('u')").run();h.insert('ans_own','u','mine');h.insert('ans_bg','u','update');h.db.prepare("INSERT INTO items(id,kind,thread_id,status,question,answer,notify_state,spawned,created_at,updated_at) VALUES ('ans_brief','mine','u','answered','Brief','answer',1,1,1,1)").run();await h.notifier.run();await vi.advanceTimersByTimeAsync(10000);expect(h.sent).toEqual([expect.objectContaining({threadId:'u'})]);expect(h.db.prepare("SELECT id FROM items WHERE notify_state<>0 OR read_at IS NULL ORDER BY id").all()).toEqual([{id:'ans_own'}]);});
+it('logs each push with its thread, contact and kind, and remembers when it pushed the thread',async()=>{at('11:00');const h=setup({notify:'all'});const info=vi.spyOn(h.host.bb.log,'info');await h.notifier.run();h.insert('ans_a');await h.notifier.run();await vi.advanceTimersByTimeAsync(10000);
+ expect(h.sent).toHaveLength(1);expect(info).toHaveBeenCalledWith('push via=push-notifications channels=desktop thread=t contact=t kind=question');
+ expect(typeof h.notifier.pushedAt('t')).toBe('number');expect(h.notifier.pushedAt('u')).toBeNull();
+ h.insert('ans_b');h.insert('ans_c','u');await h.notifier.run();await vi.advanceTimersByTimeAsync(10000);
+ expect(info).toHaveBeenCalledWith('push via=push-notifications channels=desktop thread=none contact=none kind=summary');});
+it('logs a push landing with whether Agent Hub had pushed that thread',async()=>{const host=createFakePluginHost({pluginId:'agent-hub',sdk:{threads:{list:async()=>[]},projects:{list:async()=>[]}}});plugin(host.bb);active.push(()=>host.harness.lifecycle.dispose());
+ const info=vi.spyOn(host.bb.log,'info');
+ expect(await host.harness.behavior.callRpc('pushLanding',{threadId:'thr_example',redirected:true,reason:'cold-start'})).toEqual({ok:true});
+ expect(info).toHaveBeenCalledWith('push landing thread=thr_example redirected=true reason=cold-start agentHubPush=none');});
+it('records a push for a landing only when bb sent it, and forgets it after 15 minutes',async()=>{at('11:00');let fail=false;const h=setup({notify:'all'},async()=>{if(fail)throw new Error('down');return {channels:['desktop']};});await h.notifier.run();
+ fail=true;h.insert('ans_a');await h.notifier.run();await vi.advanceTimersByTimeAsync(10000);expect(h.notifier.pushedAt('t')).toBeNull();
+ fail=false;h.insert('ans_b');await h.notifier.run();await vi.advanceTimersByTimeAsync(10000);expect(typeof h.notifier.pushedAt('t')).toBe('number');
+ await vi.advanceTimersByTimeAsync(16*60000);expect(h.notifier.pushedAt('t')).toBeNull();});

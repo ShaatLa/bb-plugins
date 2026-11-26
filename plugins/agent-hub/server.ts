@@ -328,6 +328,8 @@ function start(bb: BbPluginApi, migrationError: string | null) {
     catch (e) {if (notFound(e)) return NOTICE_THREAD; throw e;}
   }
   const handlers = {
+    // Where a click on a push about a thread went: the landing the client saw, and whether Agent Hub had just pushed that thread.
+    pushLanding(raw:{threadId:string;redirected:boolean;reason:string}) {const at=notifier.pushedAt(raw.threadId); bb.log.info(`push landing thread=${raw.threadId} redirected=${raw.redirected} reason=${raw.reason} agentHubPush=${at===null ? 'none' : `${Math.round((Date.now()-at)/1000)}s ago`}`); return {ok:true as const};},
     'notifier.beat': notifier.beat,
     'config.get':config.get,
     'config.set':config.set,

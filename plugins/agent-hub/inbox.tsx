@@ -603,7 +603,13 @@ function InboxChat({ onBulkRead, bbChat = false, search: searchProp, onSearch, t
     const shown: SavedEdit = { threadId: edit.threadId, seq: edit.seq, text: edit.text.trim(), files: edit.files };
     setEditPending(true); setEditError(''); setSavedEdits(old => [...old.filter(e => !(e.threadId === shown.threadId && e.seq === shown.seq)), shown]); setSentEdit(current => current === edit ? null : current);
     try {
-      const result = await sdk.threads.editMessage({ threadId: edit.threadId, operationId: crypto.randomUUID(), expectedRequestSequence: edit.seq, input: toInput(edit) });
+      // bb refuses an edit with 409 "still active" while it finishes a stop; the same edit goes through a moment later.
+      const input = toInput(edit), stillActive = (e: unknown) => ((e as { status?: number }).status === 409 || /\b409\b/.test(errorText(e))) && /still active/i.test(errorText(e));
+      let result: Awaited<ReturnType<typeof sdk.threads.editMessage>> | undefined;
+      for (let attempt = 0; !result; attempt++) {
+        try { result = await sdk.threads.editMessage({ threadId: edit.threadId, operationId: crypto.randomUUID(), expectedRequestSequence: edit.seq, input }); }
+        catch (e) { if (attempt < 3 && stillActive(e)) await new Promise(done => setTimeout(done, 1500)); else throw e; }
+      }
       // bb's rollback also deleted every later message, including later edits still waiting for their replacement.
       setSavedEdits(old => old.filter(e => e === shown || e.threadId !== shown.threadId || e.seq < shown.seq).map(e => e === shown ? { ...shown, newSeq: result.requestSequence, savedAt: Date.now() } : e)); refresh();
     } catch (e) {
