@@ -470,6 +470,7 @@ function ReceiptBlock({ project, updater }: { project: Project; updater: Project
   const [timeout, setTimeoutSeconds] = useState(String(saved?.timeoutSeconds ?? 60));
   const [pattern, setPattern] = useState(saved?.linkPathPattern ?? "");
   const [wrappers, setWrappers] = useState(saved?.linkWrappers?.join("\n") ?? "");
+  const [hosts, setHosts] = useState(saved?.linkHosts?.join("\n") ?? "");
   return <div className="space-y-2">
     <SwitchRow label="Check receipt" checked={enabled} disabled={updater.busy}
       onChange={async on => {
@@ -484,9 +485,11 @@ function ReceiptBlock({ project, updater }: { project: Project; updater: Project
       <label>Receipt production hint<Input value={hint} onChange={e => setHint(e.target.value)} /></label>
       <label>Link path pattern<Input value={pattern} onChange={e => setPattern(e.target.value)} /></label>
       <label>Link wrappers (one per line)<textarea className="block w-full rounded border" value={wrappers} onChange={e => setWrappers(e.target.value)} /></label>
+      <label>Link hosts (one per line)<textarea className="block w-full rounded border" value={hosts} onChange={e => setHosts(e.target.value)} /></label>
       <Button size="sm" disabled={!validatorId || !hint} onClick={() => void updater.update({ checkReceipt: {
         validatorId, hint, timeoutSeconds: Number(timeout), ...(pattern ? { linkPathPattern: pattern } : {}),
         ...(wrappers.trim() ? { linkWrappers: wrappers.trim().split(/\r?\n/).map(line => line.trim()) } : {}),
+        ...(hosts.trim() ? { linkHosts: hosts.trim().split(/\r?\n/).map(line => line.trim()) } : {}),
       } })}>Save check receipt</Button>
     </fieldset>}
   </div>;

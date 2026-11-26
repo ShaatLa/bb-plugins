@@ -8,7 +8,7 @@ import { createStore, registerTasksApi } from "../api";
 import { registerTasksCli } from "../cli";
 import * as runner from "../checks/runner";
 import type { TaskQuestion } from "../shared/contract";
-import { agentReceiptRefusal, receiptInScope } from "../shared/check-receipt";
+import { agentReceiptRefusal, checkReceiptSchema, receiptInScope } from "../shared/check-receipt";
 import { createStructuredStore } from "./store";
 
 const disposals: (() => Promise<void>)[] = [];
@@ -65,7 +65,7 @@ it("restricts project writes and validates project settings and host registratio
     expect(noop.exitCode, noop.stderr).toBe(0);
     expect(noop.stdout).toContain("checkReceipt=null");
   }
-  for (const extra of [{argv:["program"]}, { cwd:"/" }, {validatorId:"missing"}, {hint:""}, {hint:"x".repeat(1001)}, {timeoutSeconds:4}, {timeoutSeconds:301}, {linkPathPattern:"["}, {linkPathPattern:"x".repeat(501)}, {linkWrappers:Array(6).fill("/_frame?src")}, {linkWrappers:["invalid"]}])
+  for (const extra of [{argv:["program"]}, { cwd:"/" }, {validatorId:"missing"}, {hint:""}, {hint:"x".repeat(1001)}, {timeoutSeconds:4}, {timeoutSeconds:301}, {linkPathPattern:"["}, {linkPathPattern:"x".repeat(501)}, {linkWrappers:Array(6).fill("/_frame?src")}, {linkWrappers:["invalid"]}, {linkHosts:[]}, {linkHosts:Array(6).fill("127.0.0.1")}, {linkHosts:["127.0.0.1:8080"]}, {linkHosts:["Example.com"]}, {linkHosts:["http://127.0.0.1"]}, {linkHosts:["[0:0:0:0:0:0:0:1]"]}, {linkHosts:["127.1"]}, {linkHosts:["0x7f.0.0.1"]}, {linkHosts:["127.0.0.1/work"]}, {linkHosts:[""]}])
     await expect(f.set({...setting,...extra})).rejects.toThrow();
   await f.set({validatorId:"example",hint:"make receipt"});
   expect(f.harness.logEntries.some(e => e.message.includes("check receipt for EXA") && e.message.includes(process.execPath))).toBe(true);
@@ -103,6 +103,12 @@ it("allows activation and only provable tightening of an enabled receipt", () =>
   expect(agentReceiptRefusal(scoped, { ...scoped, linkWrappers: [...scoped.linkWrappers, "/a?url"] })).toBeNull();
   for (const linkWrappers of [[], ["/a?url"]])
     expect(agentReceiptRefusal(scoped, { ...scoped, linkWrappers })).toMatch(/wrapper/);
+  const hosted = { ...scoped, linkHosts: ["127.0.0.1"] };
+  expect(agentReceiptRefusal(scoped, hosted)).toMatch(/host list is owner-only/);
+  expect(agentReceiptRefusal({ ...scoped, linkHosts: ["127.0.0.1", "localhost"] }, hosted)).toMatch(/removing a Check receipt link host/);
+  expect(agentReceiptRefusal(hosted, { ...hosted, linkHosts: ["127.0.0.1", "localhost"] })).toBeNull();
+  expect(agentReceiptRefusal(hosted, scoped)).toBeNull();
+  expect(agentReceiptRefusal(hosted, setting)).toBeNull();
 });
 
 it("reads the current host file on each validation and fails closed until it is repaired", async () => {
@@ -159,6 +165,23 @@ it("accepts only direct paths and one same-origin wrapper hop", () => {
     ["/_frame?src=/product",false], ["/_frame?src=https://other.example/canvas/example",false], ["/_frame?src=/canvas/example&src=/canvas/other",false],
     ["/_frame?src=/_frame%3Fsrc%3D/canvas/example",false], ["/_frame?src=/canvas/example&extra=value",false],
   ] as const) expect(receiptInScope(scoped, `Inspect [preview](${link})`, [])).toBe(expected);
+});
+
+it("limits scoped links to absolute http(s) links on listed hosts when link hosts are set", () => {
+  const hosted = { ...setting, linkPathPattern: "^/(?:work)?$", linkWrappers: ["/_frame?src"], linkHosts: ["127.0.0.1"] };
+  for (const [link, expected] of [
+    ["http://127.0.0.1:5173/",true], ["http://127.0.0.1:6006/work",true], ["https://127.0.0.1:6006/work",true], ["HTTP://127.0.0.1:1/",true],
+    ["http://127.0.0.1:5173/_frame?src=/work",true], ["http://127.0.0.1:5173/_frame?src=http://127.0.0.1:6006/work",false],
+    ["https://example.com/",false], ["https://example.com/work",false], ["http://localhost:5173/work",false],
+    ["/work",false], ["/",false], ["work",false], ["//127.0.0.1:5173/work",false], ["ftp://127.0.0.1/work",false],
+    ["http://127.0.0.1:5173/other",false], ["http://127.1:5173/work",true], ["http://0x7f.0.0.1:5173/work",true],
+  ] as const) expect(receiptInScope(hosted, `Inspect [preview](${link})`, []), link).toBe(expected);
+  const loopback6 = checkReceiptSchema.parse({ ...hosted, linkHosts: ["[::1]"] })!;
+  expect(receiptInScope(loopback6, "Inspect [preview](http://[0:0:0:0:0:0:0:1]:5173/work)", [])).toBe(true);
+  // Without link hosts the path alone decides, on any host, as before.
+  const legacy = { ...hosted, linkHosts: undefined };
+  for (const link of ["https://example.com/work", "/work", "http://127.0.0.1:5173/"])
+    expect(receiptInScope(legacy, `Inspect [preview](${link})`, []), link).toBe(true);
 });
 
 it("reads a client file on add and update and reports exactly one unused-receipt note", async () => {

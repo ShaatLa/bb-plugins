@@ -12,6 +12,10 @@ export const checkReceiptSchema = z.object({
     try { new RegExp(value); return true; } catch { return false; }
   }, "Invalid link path pattern").optional(),
   linkWrappers: z.array(z.string().regex(/^\/(?!\/)[^?#\s]*\?[\w.-]+$/)).max(5).optional(),
+  // Only the canonical URL.hostname form, so the scope test can compare strings (`[::1]`, not `[0:0:0:0:0:0:0:1]`).
+  linkHosts: z.array(z.string().refine(host => {
+    try { return new URL(`http://${host}/`).hostname === host; } catch { return false; }
+  }, "Link host must be a canonical hostname such as 127.0.0.1")).min(1).max(5).optional(),
 }).strict().nullable();
 export type CheckReceipt = z.infer<typeof checkReceiptSchema>;
 
@@ -25,6 +29,11 @@ export function agentReceiptRefusal(current: CheckReceipt, next: CheckReceipt): 
   if (current.linkPathPattern !== next.linkPathPattern) return "adding or editing the Check receipt link path pattern is owner-only";
   if (current.linkWrappers?.some(wrapper => !next.linkWrappers?.includes(wrapper)))
     return "removing a Check receipt link wrapper is owner-only";
+  // Dropping the host list widens scope; setting one or removing a host narrows it.
+  if (!next.linkHosts) return null;
+  if (!current.linkHosts) return "adding a Check receipt link host list is owner-only";
+  if (current.linkHosts.some(host => !next.linkHosts!.includes(host)))
+    return "removing a Check receipt link host is owner-only";
   return null;
 }
 
@@ -34,7 +43,10 @@ export function receiptInScope(setting: CheckReceipt | undefined, prompt: string
   const pattern = new RegExp(setting.linkPathPattern);
   return questionLinks(prompt, steps).some(link => {
     try {
+      // With hosts listed, only absolute http(s) links on a listed host count; relative and `//` targets do not.
+      if (setting.linkHosts && !/^https?:/i.test(link)) return false;
       const url = new URL(link, "https://example.invalid");
+      if (setting.linkHosts && !setting.linkHosts.includes(url.hostname)) return false;
       if (pattern.test(url.pathname)) return true;
       return setting.linkWrappers?.some(wrapper => {
         const [path, param] = wrapper.split("?");

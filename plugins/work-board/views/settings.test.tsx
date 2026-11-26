@@ -814,12 +814,13 @@ it("reopens every receipt policy field saved for the project", async () => {
     registerTasksApi(bb,store);
     const rpc=Object.fromEntries(Object.keys(tasksRpcContract).map(method=>[method,(input:unknown)=>harness.callRpc(method,input)]));
     const show=()=>renderSlot(app.settingsSections[0]!,{},{rpc});
-    const fields={"Registered validator ID":"preview","Receipt timeout (seconds)":"45","Receipt production hint":"make receipt","Link path pattern":"^/canvas/","Link wrappers (one per line)":"/_frame?src\n/view?url"};
+    const fields={"Registered validator ID":"preview","Receipt timeout (seconds)":"45","Receipt production hint":"make receipt","Link path pattern":"^/canvas/","Link wrappers (one per line)":"/_frame?src\n/view?url","Link hosts (one per line)":"127.0.0.1\nlocalhost"};
     const panel=show();
     fireEvent.click(await panel.findByRole("switch",{name:"Check receipt"}));
     for(const [name,value] of Object.entries(fields)) fireEvent.change(panel.getByLabelText(name),{target:{value}});
     fireEvent.click(panel.getByRole("button",{name:"Save check receipt"}));
     await waitFor(()=>expect(store.tasks.getProject(project.id)?.checkReceipt?.linkWrappers).toEqual(["/_frame?src","/view?url"]));
+    expect(store.tasks.getProject(project.id)?.checkReceipt?.linkHosts).toEqual(["127.0.0.1","localhost"]);
     cleanup();
     const reloaded=show();
     for(const [name,value] of Object.entries(fields)) expect(((await reloaded.findByLabelText(name)) as HTMLInputElement).value).toBe(value);
