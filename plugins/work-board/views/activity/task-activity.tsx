@@ -13,6 +13,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
+import { useTasksNavigation } from "../../shell/routes.js";
 import { TasksEditor } from "../../editor/tasks-editor.js";
 import { Markdown, experimental_saveFile, useBbNavigate, useRealtime } from "@get-bb/plugin-sdk/app";
 import {
@@ -38,6 +39,8 @@ import type {
   TaskPullRequest,
 } from "../../shared/contract.js";
 import { errorMessage } from "../../shared/errors.js";
+import { findTaskKeys, withTaskKeyLinks } from "../../shared/task-keys.js";
+import { useTaskKeys } from "../../shell/task-keys.js";
 import { withNativeThreadMentions } from "../../shared/thread-links.js";
 import {
   formatFileSize,
@@ -357,8 +360,14 @@ export function CommentCard({ entry, nowMs }: { entry: FeedEntry; nowMs: number 
   const { comment, attachments } = entry;
   const agent = comment.kind === "agent";
   const navigate = useBbNavigate();
+  const navigation = useTasksNavigation();
   const openThread = useOpenThread();
   const [lightbox, setLightbox] = useState<Attachment | null>(null);
+  const mentions = /\]\(bb(?:task|thread):\/\//.test(comment.body);
+  // Plain comments stay host Markdown; the keys of existing cards are linked in the rendered copy only.
+  const keys = mentions ? [] : findTaskKeys(comment.body).map((range) => range.key);
+  const lookup = useTaskKeys(keys);
+  const resolved = new Map(keys.flatMap((key) => { const task = lookup(key); return task ? [[key, task.currentKey] as const] : []; }));
   return (
     <div className="relative mb-3.5 flex gap-2.5">
       {agent ? (
@@ -379,7 +388,7 @@ export function CommentCard({ entry, nowMs }: { entry: FeedEntry; nowMs: number 
             {formatRelativeTime(comment.createdAt, nowMs)}
           </time>
         </div>
-        {/\]\(bb(?:task|thread):\/\//.test(comment.body) ? (
+        {mentions ? (
           <TasksEditor
             value={comment.body}
             onChange={() => {}}
@@ -387,10 +396,11 @@ export function CommentCard({ entry, nowMs }: { entry: FeedEntry; nowMs: number 
             variant="comment"
             onOpenThread={(threadId) => openThread(threadId)}
             onOpenUrl={(url) => navigate.openUrl(url)}
+            onOpenTask={(taskKey) => navigation.go({ kind: "task", taskKey })}
           />
         ) : (
           <Markdown
-            content={withNativeThreadMentions(comment.body, window.location.origin)}
+            content={withTaskKeyLinks(withNativeThreadMentions(comment.body, window.location.origin), resolved)}
             className="text-sm [overflow-wrap:anywhere]"
           />
         )}
@@ -422,6 +432,7 @@ interface ComposerProps {
 export function CommentComposer({ taskId, notificationTarget }: ComposerProps) {
   const rpc = useTasksRpc();
   const navigate = useBbNavigate();
+  const navigation = useTasksNavigation();
   const openThread = useOpenThread();
   const mentionItems = useMentionItems();
   const [body, setBody] = useState("");
@@ -486,6 +497,7 @@ export function CommentComposer({ taskId, notificationTarget }: ComposerProps) {
         mentionItems={mentionItems}
         onOpenThread={(threadId) => openThread(threadId)}
         onOpenUrl={(url) => navigate.openUrl(url)}
+            onOpenTask={(taskKey) => navigation.go({ kind: "task", taskKey })}
         onSubmit={() => void send()}
         onAttachFiles={(files) =>
           setPendingFiles((current) => [...current, ...stageFiles(files)])

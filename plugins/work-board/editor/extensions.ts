@@ -24,6 +24,7 @@ import {
 } from "@tiptap/pm/model";
 import { Suggestion, type SuggestionProps } from "@tiptap/suggestion";
 import type { IconSvgElement } from "@hugeicons/react";
+import { TaskKeyLinks } from "./task-key-links.js";
 import BubbleChatIcon from "@hugeicons/core-free-icons/BubbleChatIcon";
 
 export type MentionItem =
@@ -365,6 +366,8 @@ const MentionSuggestion = Extension.create<{
 export function createEditorExtensions(options?: {
   placeholder?: () => string;
   mentionHandle?: MentionSuggestionHandle;
+  // Renders the keys of existing cards as links; gets the key-shaped words of the document.
+  onTaskKeys?: (keys: string[]) => void;
 }): Extensions {
   return [
     StarterKit,
@@ -380,6 +383,7 @@ export function createEditorExtensions(options?: {
     TaskMention,
     ThreadMention,
     TrailingParagraph,
+    ...(options?.onTaskKeys ? [TaskKeyLinks.configure({ onKeys: options.onTaskKeys })] : []),
     MentionSuggestion.configure({
       handle: options?.mentionHandle ?? null,
     }),

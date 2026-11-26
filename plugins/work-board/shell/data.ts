@@ -35,7 +35,7 @@ let rpcUsers = 0;
 const readMethods = new Set<string>([
   "listTaskDependencies", "listSequences", "listTaskClaims", "listFolders",
   "getBoardPreferences", "listProjects", "listQuestions", "questionCounts",
-  "listTemplates", "getTask", "getTaskByKey", "listTasks", "listLabels",
+  "listTemplates", "getTask", "getTaskByKey", "resolveTaskKeys", "listTasks", "listLabels",
   "listComments", "commentsRevision", "listCommentThreads", "listAttachments", "listTaskThreads", "listTaskCardMeta",
   "listTaskPullRequests", "listPresets", "listMachines", "searchThreads",
   "listBbProjects", "getTaskPlan", "listTaskPlanVersions", "listPlanNotes", "getNavigationBadgeCriteria", "navigationBadge",

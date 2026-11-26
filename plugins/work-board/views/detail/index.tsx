@@ -700,6 +700,7 @@ function TaskDetail({
             mentionItems={mentionItems}
             onOpenThread={(threadId) => openThread(threadId)}
             onOpenUrl={(url) => navigate.openUrl(url)}
+            onOpenTask={(taskKey) => navigation.go({ kind: "task", taskKey })}
           />
 
           <PlanCard key={`plan-${task.id}`} task={task} />

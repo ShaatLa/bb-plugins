@@ -1261,6 +1261,26 @@ export const tasksRpcContract = {
     input: z.object({ taskKey: nonBlankStringSchema }).strict(),
     output: z.object({ task: taskSchema.nullable() }).strict(),
   },
+  // Which of these keys are cards, current or old (an alias kept after a project move): one batched read for text rendering.
+  resolveTaskKeys: {
+    input: z.object({ keys: z.array(nonBlankStringSchema).max(500) }).strict(),
+    output: z
+      .object({
+        tasks: z.array(
+          z
+            .object({
+              key: z.string(),
+              currentKey: z.string(),
+              title: z.string(),
+              status: z.string(),
+              statusName: z.string(),
+              archived: z.boolean(),
+            })
+            .strict(),
+        ),
+      })
+      .strict(),
+  },
   updateTask: {
     input: updateTaskInputSchema,
     output: taskMutationResultSchema,

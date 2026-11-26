@@ -504,6 +504,7 @@ function PlanViewBody({ taskKey, surface, task }: { taskKey: string; surface: "p
             className="min-h-0"
             onOpenThread={openThread}
             onOpenUrl={(url) => navigate.openUrl(url)}
+            onOpenTask={(taskKey) => navigation.go({ kind: "task", taskKey })}
           />
         </div>
       );

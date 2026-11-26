@@ -2,9 +2,15 @@ import { installTestPluginRuntime } from "@get-bb/plugin-sdk/testing/app";
 import { configure } from "@testing-library/react";
 import { resetTaskDatasetCachesForTest } from "./shell/task-dataset";
 import { resetQuerySnapshotStateForTest } from "./shell/query-snapshot";
-import { beforeEach } from "vitest";
+import { beforeEach, vi } from "vitest";
 
 if (typeof window !== "undefined") installTestPluginRuntime();
+
+// Most tests render text outside a slot and never mention a card key; shell/task-keys.test.tsx unmocks the real lookup.
+vi.mock("./shell/task-keys", () => {
+  const noCards = () => undefined;
+  return { useTaskKeys: () => noCards };
+});
 
 configure({ asyncUtilTimeout: 8_000 });
 

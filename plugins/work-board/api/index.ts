@@ -1361,6 +1361,17 @@ export function registerHandlers(
       const task = store.tasks.getTaskByKey(input.taskKey);
       return { task: task ? apiTask(store, task) : null };
     },
+    resolveTaskKeys(input) {
+      // One getTaskByKey per distinct key: it applies the current-key and alias rules exactly, and the call itself is the batch (max 500 keys).
+      const tasks = [];
+      for (const key of new Set(input.keys)) {
+        const task = store.tasks.getTaskByKey(key);
+        if (!task) continue;
+        const statusName = store.tasks.getProject(task.projectId)?.statuses?.find((status) => status.id === task.status)?.name;
+        tasks.push({ key, currentKey: task.key, title: task.title, status: task.status, statusName: statusName ?? task.status, archived: task.archivedAt !== null });
+      }
+      return { tasks };
+    },
     async updateTask(input) {
       try {
         const current = store.tasks.getTask(input.taskId);

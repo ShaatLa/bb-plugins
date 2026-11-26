@@ -26,6 +26,7 @@
         "@tiptap/suggestion": "^2.27.2",
         "cmdk": "^1.1.1",
         "diff": "^9.0.0",
+        "markdown-it": "^14.1.0",
         "tiptap-markdown": "^0.8.10",
         "zod": "^4.3.6",
       },

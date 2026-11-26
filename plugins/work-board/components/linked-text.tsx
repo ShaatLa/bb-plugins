@@ -1,7 +1,10 @@
 import { experimental_copyToClipboard } from "@get-bb/plugin-sdk/app";
 import { BbLink } from "./bb-link";
-import { Fragment, useEffect, useState } from "react";
+import { Fragment, useEffect, useState, type ReactNode } from "react";
 import { Icon } from "@/components/ui/icon";
+import { findTaskKeys, taskKeyTitle } from "../shared/task-keys";
+import { taskHref } from "../shared/task-link";
+import { useTaskKeys } from "../shell/task-keys";
 
 const TRAILING = /[.,;:!?)\]»”]+$/;
 // `[label](target)` with one level of nested brackets in the label and of parentheses in the target, a bare web URL,
@@ -85,7 +88,21 @@ function CopyCode({ code, labeled = false }: { code: string; labeled?: boolean }
 
 /** Plain text with Markdown links and bare http(s) URLs rendered as links bb opens itself, and inline code with a copy button (a long value as its own block). */
 export function LinkedText({ text, copy = true }: { text: string; copy?: boolean }) {
-  return <>{spans(text).map((span, index) => span.kind === "code" && copy && span.code.length >= BLOCK_CODE_MIN
+  const parts = spans(text);
+  // Keys are looked up in plain text only, never in code or a link label; a card's key then links in place.
+  const lookup = useTaskKeys(parts.flatMap((span) => span.kind === "text" ? findTaskKeys(span.text).map((range) => range.key) : []));
+  const withKeys = (value: string) => {
+    const nodes: ReactNode[] = [];
+    let last = 0;
+    for (const { key, start, end } of findTaskKeys(value)) {
+      const task = lookup(key);
+      if (!task) continue;
+      nodes.push(value.slice(last, start), <a key={start} href={taskHref(task.currentKey)} title={taskKeyTitle(task)} className={LINK_CLASS}>{key}</a>);
+      last = end;
+    }
+    return nodes.length === 0 ? value : <>{nodes}{value.slice(last)}</>;
+  };
+  return <>{parts.map((span, index) => span.kind === "code" && copy && span.code.length >= BLOCK_CODE_MIN
     // Spans only: the callers render this inside <p>, <legend> and <li>, where <div> and <pre> are invalid.
     ? <span key={index} data-code-block="" className="my-1 block w-full overflow-hidden rounded-md border border-border bg-muted text-left">
         <span className="flex justify-end border-b border-border px-1 py-0.5"><CopyCode code={span.code} labeled /></span>
@@ -96,6 +113,7 @@ export function LinkedText({ text, copy = true }: { text: string; copy?: boolean
         <code className="rounded bg-muted px-1 font-mono text-[0.9em] whitespace-pre-wrap [overflow-wrap:anywhere]">{span.code}</code>
         {copy && <CopyCode code={span.code} />}
       </Fragment>
+    : span.kind === "text" ? <Fragment key={index}>{withKeys(span.text)}</Fragment>
     : span.kind !== "link" ? <Fragment key={index}>{span.text}</Fragment>
     // An in-app path stays a plain anchor, so the task-link interceptor opens it in bb.
     : span.app ? <a key={index} href={span.href} className={LINK_CLASS}>{span.label}</a>

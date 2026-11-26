@@ -17,6 +17,8 @@ import { Button } from "@/components/ui/button";
 import { usePointerCoarse } from "@/components/ui/hooks/use-pointer-coarse";
 import { cn } from "@/lib/utils";
 import { errorMessage } from "../shared/errors.js";
+import { useTaskKeys } from "../shell/task-keys.js";
+import { taskKeyLinksKey } from "./task-key-links.js";
 import { toast } from "sonner";
 import {
   createEditorExtensions,
@@ -207,6 +209,8 @@ interface TasksEditorProps {
   onOpenThread?: (threadId: string) => void;
   /** Opens an http(s) link from the content; returns whether it was handled. */
   onOpenUrl?: (url: string) => boolean;
+  /** Opens the card behind a linked key in the main view; the side panel and hosted board intercept the click first. */
+  onOpenTask?: (taskKey: string) => void;
   onSubmit?: () => void;
   /**
    * Serialize to Markdown at most once per animation frame instead of on every
@@ -229,6 +233,7 @@ export function TasksEditor({
   mentionItems,
   onOpenThread,
   onOpenUrl,
+  onOpenTask,
   onSubmit,
   deferChange = false,
   onEditorReady,
@@ -253,6 +258,13 @@ export function TasksEditor({
   openThreadRef.current = onOpenThread;
   const openUrlRef = useRef(onOpenUrl);
   openUrlRef.current = onOpenUrl;
+  // The keys of existing cards render as links: the document's key-shaped words are looked up in one shared batch.
+  const [docKeys, setDocKeys] = useState<string[]>([]);
+  const lookupTaskKey = useTaskKeys(docKeys);
+  const lookupRef = useRef(lookupTaskKey);
+  lookupRef.current = lookupTaskKey;
+  const openTaskRef = useRef(onOpenTask);
+  openTaskRef.current = onOpenTask;
   const onSubmitRef = useRef(onSubmit);
   onSubmitRef.current = onSubmit;
   const readyRef = useRef(onEditorReady);
@@ -358,6 +370,7 @@ export function TasksEditor({
       extensions: createEditorExtensions({
         placeholder: () => placeholderRef.current ?? "",
         mentionHandle,
+        onTaskKeys: (keys) => setDocKeys((current) => current.join(" ") === keys.join(" ") ? current : keys),
       }),
       content: initialValueRef.current,
       autofocus: false,
@@ -365,7 +378,16 @@ export function TasksEditor({
         // Editable content never follows anchors itself, so web links open through bb's browser preference.
         handleClick(_view, _pos, event) {
           if (event.button !== 0 || event.altKey || event.shiftKey) return false;
-          const href = (event.target as Element | null)?.closest?.("a[href]")?.getAttribute("href");
+          const anchor = (event.target as Element | null)?.closest?.("a[href]");
+          // A card key opens in place: the side panel and the hosted board take the click first, else the main view.
+          const taskKey = anchor?.getAttribute("data-task-key");
+          if (taskKey && openTaskRef.current) {
+            if (event.metaKey || event.ctrlKey) return false;
+            event.preventDefault();
+            openTaskRef.current(taskKey);
+            return true;
+          }
+          const href = anchor?.getAttribute("href");
           if (!href || !/^https?:\/\//i.test(href) || !openUrlRef.current) return false;
           event.preventDefault();
           return openUrlRef.current(href);
@@ -431,6 +453,7 @@ export function TasksEditor({
       },
     });
     editorRef.current = editor;
+    editor.view.dispatch(editor.state.tr.setMeta(taskKeyLinksKey, lookupRef.current));
     if (!readOnly) {
       const last = editor.state.doc.lastChild;
       const paragraph = editor.state.schema.nodes.paragraph;
@@ -519,6 +542,11 @@ export function TasksEditor({
       editor.destroy();
     };
   }, [readOnly, variant]);
+
+  useEffect(() => {
+    const editor = editorRef.current;
+    if (editor && !editor.isDestroyed) editor.view.dispatch(editor.state.tr.setMeta(taskKeyLinksKey, lookupTaskKey));
+  }, [lookupTaskKey]);
 
   useEffect(() => {
     initialValueRef.current = value;
