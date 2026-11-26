@@ -133,7 +133,11 @@ function useReadOnView(ref: React.RefObject<HTMLElement | null>, enabled: boolea
 }
 // bb's icon set has no double check; drawn in its stroke style (geometry as Lucide's check-check).
 // Set by the chat: opens bb's "Editing message" box for one of the owner's sent messages.
-export const EditSentContext = createContext<((item: Item) => void) | null>(null);
+// Editing a sent message happens inside its bubble: the target is stable, the live editor comes through its own context
+// so typing re-renders only the editor, not every card.
+export const EditSentContext = createContext<{ start: (item: Item) => void; editing: { threadId: string; seq: number } | null } | null>(null);
+export const SentEditorContext = createContext<ReactNode>(null);
+function SentEditor() { return <>{useContext(SentEditorContext)}</>; }
 // A chat shares one refresh: a useRpcRefresh in every card subscribes it to fetch state and re-renders it on each fetch.
 export const RefreshContext = createContext<(() => void) | null>(null);
 // A chat answers its open questions at once: the question leaves the stack and shows answered while bb delivers the reply.
@@ -272,6 +276,7 @@ export function ItemCard({ item, members, late, live = true, chat = false, marka
   const refresh = useContext(RefreshContext) ?? experimental_useRpcRefresh().refresh;
   const editSent = useContext(EditSentContext);
   const group = members?.length ? members : [item], last = group.at(-1)!;
+  const inEdit = !!editSent?.editing && item.kind === 'mine' && editSent.editing.threadId === item.threadId && editSent.editing.seq === item.questionSeq && group.length === 1;
   // An earlier question answered by this message: the owner's bubble, clamped and muted, that jumps to where it was asked.
   // A question answered here but asked further up: a slim muted one-line bubble on the owner's side (its first line and any
   // files), without time or buttons; a click goes to the question.
@@ -395,16 +400,16 @@ export function ItemCard({ item, members, late, live = true, chat = false, marka
       {/* The quote has no header text: bb's [bb message from …] header, a notice's own line and a sender's leading [tag] are already in the header. */}
       {quoteText && <div data-agent-message className="ml-3 mr-2 border-l-2 sm:ml-8 border-border-seam pl-3 text-sm text-muted-foreground"><div ref={question} className={`break-words ${expanded ? '' : '[&_p]:my-0 line-clamp-3'}`}><AgentMarkdown content={quoteText} threadId={item.threadId} /></div></div>}
       {chat && <div className={`flex items-center gap-0.5 px-1 ${rowFade}`}>{expandButton}{!placeholder && <MessageCopy small link text={messageLink(item.projectId, item.threadId, item.questionSeq)} />}</div>}
-    </> : part === 'answer' ? <div className="ml-auto flex w-fit min-w-0 max-w-[85%] sm:max-w-[70%] flex-col items-end gap-1">{group.map(echo)}</div> : <div className="ml-auto flex w-fit max-w-[85%] sm:max-w-[70%] flex-col items-end gap-1">
+    </> : part === 'answer' ? <div className="ml-auto flex w-fit min-w-0 max-w-[85%] sm:max-w-[70%] flex-col items-end gap-1">{group.map(echo)}</div> : <div className={`ml-auto flex ${inEdit ? 'w-full' : 'w-fit'} max-w-[85%] sm:max-w-[70%] flex-col items-end gap-1`}>
       {late?.map(echo)}
-      {group.map(member => <div key={member.id} className={userBubble}>{member.question && <div ref={member === item ? question : undefined} className={`whitespace-pre-wrap break-words ${expanded ? '' : 'line-clamp-6'}`}><InlineCommentText threadId={member.threadId} text={member.question} prefixes={workBoard?.projects.map(p => p.prefix)} /></div>}{member.attachments.length > 0 && <ItemAttachments attachments={member.attachments} projectId={member.projectId} />}</div>)}
+      {group.map(member => inEdit && member === item ? <div key={member.id} data-sent-message-inline-editor className="w-full"><SentEditor /></div> : <div key={member.id} className={userBubble}>{member.question && <div ref={member === item ? question : undefined} className={`whitespace-pre-wrap break-words ${expanded ? '' : 'line-clamp-6'}`}><InlineCommentText threadId={member.threadId} text={member.question} prefixes={workBoard?.projects.map(p => p.prefix)} /></div>}{member.attachments.length > 0 && <ItemAttachments attachments={member.attachments} projectId={member.projectId} />}</div>)}
       {/* bb's row under the owner's own message: time, then Copy and Save, shown on hover (always on touch screens). */}
       {chat && <div className="flex items-center gap-[13px] text-muted-foreground">{time}<span className="flex items-center gap-0.5 opacity-60 transition-opacity hover:opacity-100 focus-within:opacity-100 [@media(hover:none)]:opacity-100">
         {expandButton}
         <MessageCopy small text={group.map(member => member.question).filter(Boolean).join('\n\n')} />
         <MessageCopy small link text={messageLink(item.projectId, item.threadId, item.questionSeq)} />
         {item.kind === 'mine' && group.every(member => member.questionSeq !== null) && <Button size="sm" {...iconProps(savedOwn ? 'Saved to Agent Hub' : 'Save to Agent Hub')} className="size-6 px-0 [&_[data-icon-root]]:size-[13px] [@media(hover:none)]:size-8" onClick={() => void act(async () => { for (const member of group) await rpc.call('save', { threadId: member.threadId, seq: member.questionSeq!, role: 'user', text: member.question }); setSavedOwn(true); })}><Icon name={savedOwn ? 'Check' : 'Star'} aria-hidden /></Button>}
-        {editSent && item.kind === 'mine' && group.length === 1 && item.questionSeq !== null && !item.threadDeleted && <Button size="sm" {...iconProps('Edit message')} className="size-6 px-0 [&_[data-icon-root]]:size-[13px] [@media(hover:none)]:size-8" onClick={() => editSent(item)}><Icon name="Edit" aria-hidden /></Button>}
+        {editSent && item.kind === 'mine' && group.length === 1 && item.questionSeq !== null && !item.threadDeleted && <Button size="sm" {...iconProps('Edit message')} aria-pressed={inEdit} className="size-6 px-0 [&_[data-icon-root]]:size-[13px] [@media(hover:none)]:size-8" onClick={() => editSent.start(item)}><Icon name="Edit" aria-hidden /></Button>}
       </span></div>}
     </div>}
     {!chat && (clamped || expanded) && <Button variant="ghost" size="sm" aria-expanded={expanded} onClick={() => setExpanded(!expanded)}>{expanded ? 'Collapse question' : 'Expand question'}</Button>}

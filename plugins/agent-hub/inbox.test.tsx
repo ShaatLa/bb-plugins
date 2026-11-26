@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { afterEach, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { act, cleanup, fireEvent, waitFor, within } from '@testing-library/react';
 const change = (element: Element, init: { target: { value?: string; files?: File[] } }) => { if (element.getAttribute('contenteditable') !== null) { (element as HTMLElement).dataset.testValue = init.target.value ?? ''; fireEvent.input(element); } else fireEvent.change(element, init); };
 import { renderSlot as sdkRenderSlot } from '@get-bb/plugin-sdk/testing/app';
@@ -272,15 +272,74 @@ it('offers Copy and Save under the owner\'s own message, like bb', async () => {
   fireEvent.click(slot.getByRole('button', { name:'Save to Agent Hub' }));
   await waitFor(() => expect(save).toHaveBeenCalledWith(expect.objectContaining({ threadId:'thr_one', seq:7, role:'user', text:'Question one' })));
 });
-it('edits a sent message as bb does: Edit opens "Editing message" in the composer and submits through threads.editMessage', async () => {
-  const editMessage = vi.fn(async () => ({ ok:true, operationId:'op', requestSequence:9 }));
-  const { slot, recipients } = setup({ list: () => ({ items:[{ ...base, questionSeq:7 }], nextCursor:null }), editMessage }); fireEvent.click(await recipients.findByRole('option'));
-  await slot.findByText('Question one');
-  fireEvent.click(slot.getByRole('button', { name:'Edit message' }));
-  expect(slot.getByText('Editing message')).toBeTruthy();
-  fireEvent.click(slot.getByRole('button', { name:'Submit edit' }));
-  await waitFor(() => expect(editMessage).toHaveBeenCalledWith(expect.objectContaining({ threadId:'thr_one', expectedRequestSequence:7, input:[expect.objectContaining({ type:'text', text:'Question one' })] })));
-  await waitFor(() => expect(slot.queryByText('Editing message')).toBeNull());
+describe('editing a sent message in its bubble', () => {
+  const pic = { type:'localImage' as const, path:'/pic.png', name:'pic.png' }, doc = { type:'localFile' as const, path:'/draft.txt', name:'draft.txt' };
+  const editSetup = (editMessage = vi.fn(async () => ({ ok:true, operationId:'op', requestSequence:9 }))) => {
+    localStorage.setItem('bb-plugin-answers:page:compose', JSON.stringify({ thr_one: { text:'My draft', files:[doc] } }));
+    const items = [{ ...base, id:'ans_two', question:'Second one', questionSeq:9, attachments:[pic], createdAt:base.createdAt + 1000 }, { ...base, questionSeq:7 }];
+    return { editMessage, ...setup({ list: () => ({ items, nextCursor:null }), editMessage }) };
+  };
+  const bubbleEditor = (slot: ReturnType<typeof setup>['slot']) => slot.container.querySelector<HTMLElement>('[data-sent-message-inline-editor]');
+  const draft = (slot: ReturnType<typeof setup>['slot']) => slot.getByRole('textbox', { name:'Send message' });
+  it('opens the editor inside the bubble, keeps the bottom draft, and saves through threads.editMessage', async () => {
+    const { slot, recipients, editMessage } = editSetup(); fireEvent.click(await recipients.findByRole('option'));
+    await slot.findByText('Question one');
+    expect(draft(slot).textContent).toBe('My draft');
+    fireEvent.click(slot.getAllByRole('button', { name:'Edit message' })[0]!);
+    const editor = bubbleEditor(slot)!;
+    expect(within(editor).getByText('Editing message')).toBeTruthy();
+    expect(within(editor).getByRole('textbox', { name:'Edit message' }).textContent).toBe('Question one');
+    expect(draft(slot).textContent).toBe('My draft'); expect(slot.getByText('draft.txt')).toBeTruthy();
+    fireEvent.click(within(editor).getByRole('button', { name:'Save' }));
+    await waitFor(() => expect(editMessage).toHaveBeenCalledWith(expect.objectContaining({ threadId:'thr_one', expectedRequestSequence:7, input:[expect.objectContaining({ type:'text', text:'Question one' })] })));
+    await waitFor(() => expect(bubbleEditor(slot)).toBeNull());
+    expect(draft(slot).textContent).toBe('My draft'); expect(slot.getByText('draft.txt')).toBeTruthy();
+  });
+  it('keeps the sent message\'s attachments in the editor and sends them on Save', async () => {
+    const { slot, recipients, editMessage } = editSetup(); fireEvent.click(await recipients.findByRole('option'));
+    await slot.findByText('Second one');
+    fireEvent.click(slot.getAllByRole('button', { name:'Edit message' })[1]!);
+    const editor = bubbleEditor(slot)!;
+    expect(within(editor).getByRole('textbox', { name:'Edit message' }).textContent).toBe('Second one');
+    fireEvent.click(within(editor).getByRole('button', { name:'Save' }));
+    await waitFor(() => expect(editMessage).toHaveBeenCalledWith(expect.objectContaining({ expectedRequestSequence:9, input:expect.arrayContaining([expect.objectContaining({ type:'localImage', path:'/pic.png' })]) })));
+  });
+  it.each(['button', 'Escape'])('cancels with %s: the bubble comes back, nothing rolls back, the draft stays', async how => {
+    const { slot, recipients, editMessage } = editSetup(); fireEvent.click(await recipients.findByRole('option'));
+    await slot.findByText('Question one');
+    fireEvent.click(slot.getAllByRole('button', { name:'Edit message' })[0]!);
+    const editor = bubbleEditor(slot)!;
+    if (how === 'button') fireEvent.click(within(editor).getByRole('button', { name:'Cancel' })); else fireEvent.keyDown(within(editor).getByRole('textbox', { name:'Edit message' }), { key:'Escape' });
+    await waitFor(() => expect(bubbleEditor(slot)).toBeNull());
+    expect(slot.getByText('Question one')).toBeTruthy(); expect(editMessage).not.toHaveBeenCalled();
+    expect(draft(slot).textContent).toBe('My draft');
+  });
+  it('edits one bubble at a time: Edit on another moves the editor there without sending', async () => {
+    const { slot, recipients, editMessage } = editSetup(); fireEvent.click(await recipients.findByRole('option'));
+    await slot.findByText('Second one');
+    fireEvent.click(slot.getAllByRole('button', { name:'Edit message' })[0]!);
+    fireEvent.click(slot.getAllByRole('button', { name:'Edit message' })[1]!);
+    expect(slot.container.querySelectorAll('[data-sent-message-inline-editor]')).toHaveLength(1);
+    expect(within(bubbleEditor(slot)!).getByRole('textbox', { name:'Edit message' }).textContent).toBe('Second one');
+    expect(slot.getByText('Question one')).toBeTruthy(); expect(editMessage).not.toHaveBeenCalled();
+  });
+  it('does not show a failed save of one bubble in another bubble\'s editor opened meanwhile', async () => {
+    let fail!: (e: Error) => void;
+    const { slot, recipients } = editSetup(vi.fn(() => new Promise((_, reject) => { fail = reject; }))); fireEvent.click(await recipients.findByRole('option'));
+    await slot.findByText('Second one');
+    fireEvent.click(slot.getAllByRole('button', { name:'Edit message' })[0]!);
+    fireEvent.click(within(bubbleEditor(slot)!).getByRole('button', { name:'Save' }));
+    fireEvent.click(slot.getAllByRole('button', { name:'Edit message' })[1]!);
+    await act(async () => { fail(new Error('Edit refused')); });
+    expect(within(bubbleEditor(slot)!).queryByRole('alert')).toBeNull();
+  });
+  it('shows an edit error inside the editor and stays in edit mode', async () => {
+    const { slot, recipients } = editSetup(vi.fn(async () => { throw new Error('Edit refused'); })); fireEvent.click(await recipients.findByRole('option'));
+    await slot.findByText('Question one');
+    fireEvent.click(slot.getAllByRole('button', { name:'Edit message' })[0]!);
+    fireEvent.click(within(bubbleEditor(slot)!).getByRole('button', { name:'Save' }));
+    await waitFor(() => expect(within(bubbleEditor(slot)!).getByRole('alert').textContent).toBe('Edit refused'));
+  });
 });
 it('puts an interim reply above the final answer in the same card, under "Answered below" instead of a clock', async () => {
   const { slot, recipients } = setup({ list: () => ({ items:[late], nextCursor:null }) }); fireEvent.click(await recipients.findByRole('option'));
