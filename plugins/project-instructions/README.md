@@ -53,6 +53,31 @@ A skill is selected only if it passes the checks bb itself applies (frontmatter 
 
 The plugin reads the clone on every thread configuration, so whatever updates the clone (a fetch and checkout on a schedule, say) reaches the next thread with no copy. The plugin does not update the clone.
 
+## Source for other plugins
+
+`source.get {projectId}` (RPC) and `bb project-instructions source --project <id> [--json]` return the project's resolved process source, so another plugin (a launcher, say) can take its launch material from the same clone instead of a copy:
+
+```json
+{ "projectId": "proj_example", "configured": true, "enabled": true, "clonePath": "/abs/clone", "branch": "main",
+  "head": "<sha>", "originHead": "<sha>", "state": "fresh", "reason": null, "fetchedAt": 1795680000000 }
+```
+
+The first failing check sets `state`:
+
+| State | Meaning |
+|---|---|
+| `not_configured` | `clonePath` or `branch` is not set. |
+| `disabled` | Configured, `enabled` is false. Answered from memory, before any filesystem or git call. |
+| `missing` | The clone does not exist or is not a git work tree. |
+| `wrong_branch` | The branch identity rule above fails. |
+| `dirty` | Tracked files are changed (untracked files are ignored). |
+| `unreachable` | `git ls-remote origin refs/heads/<branch>` failed, timed out (10 s) or found no such branch. |
+| `stale` | HEAD is not the origin tip just read: behind, ahead, diverged, or the tip is not fetched yet. |
+| `fresh` | HEAD is exactly the origin tip just read. |
+| `error` | Anything unexpected; `reason` has its first line. |
+
+This is stricter than root injection: `fresh` needs the live origin tip, so between a push to the branch and the clone's next checkout the state is `stale`. `reason` is null only for `fresh`; `originHead` is set only when `ls-remote` succeeded; `fetchedAt` (mtime of `FETCH_HEAD`) is diagnostic only. The root file plays no part. Nothing here fetches or writes to the clone. Each call that probes logs `source.get <id>: probed, state <state>`, and every `config set` logs the change.
+
 ## Limits
 
 - The root and the skills are read on the machine where the bb server runs. Skills reach remote hosts as content, but the paths in the header and the notice only resolve on the server's machine.

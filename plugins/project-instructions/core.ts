@@ -1,5 +1,5 @@
-import { execFileSync } from "node:child_process";
-import { lstatSync, mkdirSync, readFileSync, readdirSync, readlinkSync, statSync, symlinkSync, unlinkSync } from "node:fs";
+import { execFile, execFileSync } from "node:child_process";
+import { lstatSync, mkdirSync, readFileSync, readdirSync, readlinkSync, realpathSync, statSync, symlinkSync, unlinkSync } from "node:fs";
 import { isAbsolute, join, relative, resolve } from "node:path";
 import matter from "gray-matter";
 import { z } from "zod";
@@ -8,6 +8,7 @@ export const ROOT_CAP = 4096;
 export const GRACE_MS = 10_000;
 export const STATUS_TTL_MS = 2000;
 export const GIT_TIMEOUT_MS = 2000;
+export const LS_REMOTE_TIMEOUT_MS = 10_000;
 export const DOC_SKILL = "project-instructions";
 export const DEFAULT_SKILLS_DIR = ".bb/skills";
 const MAX_SKILL_ENTRIES = 2000;
@@ -44,24 +45,33 @@ export type Status =
   | { ok: true; rootPath: string; rootDir: string; branch: string; text: string }
   | { ok: false; reason: string; rootPath?: string; length?: number };
 
-function git(clone: string, args: string[]): { code: number; out: string; err: string } {
+export type GitResult = { code: number; out: string; err: string };
+const gitEnv = () => ({ ...process.env, GIT_OPTIONAL_LOCKS: "0", GIT_TERMINAL_PROMPT: "0" });
+/** A failed git run, from execFileSync (`status`) or execFile (numeric `code`). */
+function gitFailure(e: unknown, stderr?: string): GitResult {
+  const x = e as { status?: number | null; code?: string | number; signal?: string | null; killed?: boolean; stderr?: string };
+  const err = x.code === "ENOENT" ? "git is not installed" : x.signal || x.killed || x.code === "ETIMEDOUT" ? "git timed out" : String(stderr ?? x.stderr ?? "").trim().split("\n")[0]!.slice(0, 200);
+  return { code: typeof x.status === "number" ? x.status : typeof x.code === "number" ? x.code : -1, out: "", err };
+}
+
+export function git(clone: string, args: string[]): GitResult {
   try {
-    const out = execFileSync("git", ["-C", clone, ...args], { encoding: "utf8", timeout: GIT_TIMEOUT_MS, stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, GIT_OPTIONAL_LOCKS: "0", GIT_TERMINAL_PROMPT: "0" } });
-    return { code: 0, out, err: "" };
-  } catch (e) {
-    const x = e as { status?: number | null; code?: string; signal?: string | null; stderr?: string };
-    const err = x.code === "ENOENT" ? "git is not installed" : x.signal || x.code === "ETIMEDOUT" ? "git timed out" : String(x.stderr ?? "").trim().split("\n")[0]!.slice(0, 200);
-    return { code: typeof x.status === "number" ? x.status : -1, out: "", err };
-  }
+    return { code: 0, out: execFileSync("git", ["-C", clone, ...args], { encoding: "utf8", timeout: GIT_TIMEOUT_MS, stdio: ["ignore", "pipe", "pipe"], env: gitEnv() }), err: "" };
+  } catch (e) { return gitFailure(e); }
+}
+
+/** For a network call (ls-remote): never blocks the server while the remote answers. */
+export function gitAsync(clone: string, args: string[], timeoutMs: number): Promise<GitResult> {
+  return new Promise(done => execFile("git", ["-C", clone, ...args], { encoding: "utf8", timeout: timeoutMs, env: gitEnv() }, (e, out, err) => done(e ? gitFailure(e, err) : { code: 0, out, err: "" })));
 }
 
 /** Attached HEAD must be exactly the branch; a detached HEAD must be at or behind origin/<branch>. */
-function branchIdentity(clone: string, branch: string): string | null {
-  const head = git(clone, ["rev-parse", "--symbolic-full-name", "HEAD"]);
+function branchIdentity(clone: string, branch: string, run: typeof git = git): string | null {
+  const head = run(clone, ["rev-parse", "--symbolic-full-name", "HEAD"]);
   if (head.code !== 0) return `git failed in ${clone}: ${head.err || "exit " + head.code}`;
   const ref = head.out.trim();
   if (ref === "HEAD") {
-    const anc = git(clone, ["merge-base", "--is-ancestor", "HEAD", "refs/remotes/origin/" + branch]);
+    const anc = run(clone, ["merge-base", "--is-ancestor", "HEAD", "refs/remotes/origin/" + branch]);
     if (anc.code === 0) return null;
     return anc.code === 1 ? `the clone ${clone} is detached at a commit that is not on origin/${branch}` : `git failed in ${clone}: ${anc.err || "exit " + anc.code}`;
   }
@@ -80,6 +90,76 @@ export function computeStatus(c: ProjectConfig): Status {
   const bad = branchIdentity(s.clonePath, s.branch);
   if (bad) return { ok: false, reason: bad, rootPath, length: text.length };
   return { ok: true, rootPath, rootDir: resolve(rootPath, ".."), branch: s.branch, text };
+}
+
+/** Every filesystem and git access of sourceGet, so tests can count them. */
+export type Probes = {
+  realpath(path: string): string;
+  git: typeof git;
+  gitAsync: typeof gitAsync;
+  mtime(path: string): number | null;
+};
+export const realProbes: Probes = {
+  realpath: p => realpathSync(p),
+  git,
+  gitAsync,
+  mtime: p => { try { return Math.round(statSync(p).mtimeMs); } catch { return null; } },
+};
+
+export const SOURCE_STATES = ["not_configured", "disabled", "missing", "wrong_branch", "dirty", "unreachable", "stale", "fresh", "error"] as const;
+export type SourceResult = {
+  projectId: string; configured: boolean; enabled: boolean;
+  clonePath: string | null; branch: string | null; head: string | null; originHead: string | null;
+  state: (typeof SOURCE_STATES)[number]; reason: string | null; fetchedAt: number | null;
+};
+
+/**
+ * The resolved process source for launch material, strict: `fresh` only when HEAD is the origin tip
+ * read live by ls-remote. The first failing check sets the state. Nothing is ever fetched or written.
+ */
+export async function sourceGet(projectId: string, c: ProjectConfig, p: Probes = realProbes): Promise<SourceResult> {
+  const configured = Boolean(c.clonePath && c.branch), enabled = c.enabled ?? false;
+  const r: SourceResult = { projectId, configured, enabled, clonePath: c.clonePath ?? null, branch: c.branch ?? null, head: null, originHead: null, state: "not_configured", reason: "clonePath and branch are not both set", fetchedAt: null };
+  if (!configured) return r;
+  // Disabled projects keep their legacy launch source: answer before any filesystem or git probe.
+  if (!enabled) return { ...r, state: "disabled", reason: "Project Instructions is not enabled for this project" };
+  const branch = c.branch!, done = (state: SourceResult["state"], reason: string | null): SourceResult => ({ ...r, state, reason });
+  try {
+    let clone: string;
+    try { clone = p.realpath(c.clonePath!); } catch { return done("missing", `${c.clonePath} does not exist`); }
+    const inside = p.git(clone, ["rev-parse", "--is-inside-work-tree"]);
+    if (inside.code !== 0 || inside.out.trim() !== "true") return done("missing", `${clone} is not a git work tree`);
+    r.clonePath = clone;
+    const head = p.git(clone, ["rev-parse", "HEAD"]);
+    if (head.code !== 0) throw new Error(`git rev-parse HEAD failed in ${clone}: ${head.err || "exit " + head.code}`);
+    r.head = head.out.trim();
+    const common = p.git(clone, ["rev-parse", "--git-common-dir"]);
+    if (common.code === 0) r.fetchedAt = p.mtime(resolve(clone, common.out.trim(), "FETCH_HEAD"));
+    const bad = branchIdentity(clone, branch, p.git);
+    if (bad) return done(bad.startsWith("git failed") ? "error" : "wrong_branch", bad);
+    const status = p.git(clone, ["status", "--porcelain", "--untracked-files=no"]);
+    if (status.code !== 0) throw new Error(`git status failed in ${clone}: ${status.err || "exit " + status.code}`);
+    const changed = status.out.split("\n").filter(Boolean).length;
+    if (changed) return done("dirty", `${changed} tracked file${changed === 1 ? "" : "s"} changed in ${clone}`);
+    const ref = "refs/heads/" + branch, ls = await p.gitAsync(clone, ["ls-remote", "--exit-code", "origin", ref], LS_REMOTE_TIMEOUT_MS);
+    const tip = ls.code === 0 ? ls.out.split("\n").map(l => l.split("\t")).find(([, name]) => name === ref)?.[0] : undefined;
+    if (!tip) return done("unreachable", ls.code === 2 || ls.code === 0 ? `branch ${branch} does not exist on origin` : `git ls-remote origin failed: ${ls.err || "exit " + ls.code}`);
+    r.originHead = tip;
+    if (tip === r.head) return done("fresh", null);
+    // Exit 0 is yes and 1 is no; any other exit (timeout, broken repository) is an error, never a stale diagnosis.
+    const yes = (args: string[]) => {
+      const g = p.git(clone, args);
+      if (g.code === 0 || g.code === 1) return g.code === 0;
+      throw new Error(`git ${args[0]} failed in ${clone}: ${g.err || "exit " + g.code}`);
+    };
+    const short = tip.slice(0, 12);
+    if (!yes(["rev-parse", "--verify", "--quiet", tip + "^{commit}"])) return done("stale", `the origin tip ${short} of ${branch} is not fetched yet`);
+    if (yes(["merge-base", "--is-ancestor", "HEAD", tip])) return done("stale", `HEAD is behind the origin tip ${short} of ${branch}`);
+    if (yes(["merge-base", "--is-ancestor", tip, "HEAD"])) return done("stale", `HEAD is ahead of the origin tip ${short} of ${branch}`);
+    return done("stale", `HEAD has diverged from the origin tip ${short} of ${branch}`);
+  } catch (e) {
+    return { ...r, clonePath: c.clonePath!, head: null, originHead: null, fetchedAt: null, state: "error", reason: (e instanceof Error ? e.message : String(e)).split("\n")[0]!.slice(0, 300) };
+  }
 }
 
 export type Scan = { name: string; error?: string; ctimeMs: number };

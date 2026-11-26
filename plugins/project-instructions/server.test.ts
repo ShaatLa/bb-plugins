@@ -1,12 +1,12 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import matter from "gray-matter";
 import { afterEach, expect, it } from "vitest";
 import { createFakePluginHost } from "@get-bb/plugin-sdk/testing";
 import plugin from "./server.js";
-import { DOC_SKILL, GRACE_MS, ROOT_CAP, scanSkill } from "./core.js";
+import { DOC_SKILL, GRACE_MS, ROOT_CAP, realProbes, scanSkill, type Probes } from "./core.js";
 
 const dirs: string[] = [], cleanups: (() => Promise<void>)[] = [];
 afterEach(async () => { for (const c of cleanups.splice(0)) await c(); for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true }); });
@@ -29,11 +29,11 @@ function makeClone(root = "Root marker A. See [more](docs/more.md).\n", skills: 
   return clone;
 }
 
-async function setup() {
+async function setup(probes?: Probes) {
   const linkedDir = join(tmp(), "linked-skills");
   let clock = Date.now();
   const host = createFakePluginHost({ pluginId: "project-instructions" });
-  await plugin(host.bb, { now: () => clock, linkedDir });
+  await plugin(host.bb, { now: () => clock, linkedDir, probes });
   cleanups.push(() => host.harness.lifecycle.dispose());
   const reg = host.harness.registrations;
   const rpc = (method: string, input: unknown) => host.harness.behavior.callRpc(method, input) as Promise<any>;
@@ -234,4 +234,111 @@ it("keeps the configuration across a reload and reports it from the CLI", async 
 
 it("ships a doc skill that passes the same checks as the process skills", () => {
   expect(scanSkill(join(import.meta.dirname, "skills"), DOC_SKILL).error).toBeUndefined();
+});
+
+/** A bare origin with one commit on main, a work repo that pushes to it, and a clone of the origin detached at origin/main. */
+function makeOrigin() {
+  const base = tmp(), origin = join(base, "origin.git"), work = join(base, "work"), clone = join(base, "clone");
+  git(base, "init", "-q", "--bare", "-b", "main", origin);
+  git(base, "init", "-q", "-b", "main", work);
+  writeFileSync(join(work, "a.txt"), "1\n"); git(work, "add", "-A"); git(work, "commit", "-q", "-m", "1"); git(work, "push", "-q", origin, "main");
+  git(base, "clone", "-q", origin, clone); git(clone, "checkout", "-q", "--detach", "origin/main");
+  const push = (text: string) => { writeFileSync(join(work, "a.txt"), text); git(work, "commit", "-qam", text); git(work, "push", "-q", origin, "main"); };
+  return { origin, work, clone, push };
+}
+const source = (h: Awaited<ReturnType<typeof setup>>, projectId = "proj_example") => h.rpc("source.get", { projectId });
+const probedLines = (h: Awaited<ReturnType<typeof setup>>) => h.host.harness.logEntries.filter(e => e.message.includes("probed"));
+
+it("answers not_configured and disabled without any filesystem or git probe", async () => {
+  let calls = 0;
+  const count = <T,>(f: T) => ((...a: unknown[]) => { calls++; return (f as (...x: unknown[]) => unknown)(...a); }) as T;
+  const h = await setup({ realpath: count(realProbes.realpath), git: count(realProbes.git), gitAsync: count(realProbes.gitAsync), mtime: count(realProbes.mtime) });
+  const { clone } = makeOrigin();
+  await h.set("proj_half", "clonePath", clone);
+  await h.configure("proj_off", { clonePath: clone, enabled: false });
+  expect(await source(h, "proj_none")).toMatchObject({ state: "not_configured", configured: false, enabled: false, clonePath: null, branch: null, head: null });
+  expect(await source(h, "proj_half")).toMatchObject({ state: "not_configured", configured: false, clonePath: clone, branch: null });
+  expect(await source(h, "proj_off")).toEqual({ projectId: "proj_off", configured: true, enabled: false, clonePath: clone, branch: "main", head: null, originHead: null, state: "disabled", reason: "Project Instructions is not enabled for this project", fetchedAt: null });
+  expect(calls).toBe(0);
+  expect(probedLines(h)).toEqual([]);
+});
+
+it("reports a missing clone and a directory that is not a repository", async () => {
+  const h = await setup(), plain = tmp();
+  await h.configure("proj_gone", { clonePath: join(plain, "nope") });
+  await h.configure("proj_plain", { clonePath: plain });
+  expect(await source(h, "proj_gone")).toMatchObject({ state: "missing", clonePath: join(plain, "nope"), head: null });
+  expect(await source(h, "proj_plain")).toMatchObject({ state: "missing", head: null, reason: expect.stringContaining("not a git work tree") });
+});
+
+it("is fresh only at the live origin tip, detached or attached, with no root file", async () => {
+  const h = await setup(), o = makeOrigin();
+  await h.configure("proj_example", { clonePath: o.clone });
+  const tip = git(o.origin, "rev-parse", "main");
+  expect(await source(h)).toMatchObject({ state: "fresh", reason: null, head: tip, originHead: tip, clonePath: realpathSync(o.clone), branch: "main" });
+  git(o.clone, "checkout", "-q", "-B", "main", "origin/main");
+  expect(await source(h)).toMatchObject({ state: "fresh", head: tip });
+  expect(probedLines(h).map(e => e.message)).toEqual(["source.get proj_example: probed, state fresh", "source.get proj_example: probed, state fresh"]);
+});
+
+it("reports wrong_branch and dirty, but ignores untracked files", async () => {
+  const h = await setup(), o = makeOrigin();
+  await h.configure("proj_example", { clonePath: o.clone });
+  writeFileSync(join(o.clone, "untracked.txt"), "x");
+  expect((await source(h)).state).toBe("fresh");
+  writeFileSync(join(o.clone, "a.txt"), "changed\n");
+  expect(await source(h)).toMatchObject({ state: "dirty", reason: expect.stringContaining("1 tracked file changed") });
+  git(o.clone, "checkout", "-q", "--", "a.txt");
+  git(o.clone, "checkout", "-q", "-b", "other");
+  expect(await source(h)).toMatchObject({ state: "wrong_branch", reason: expect.stringContaining("refs/heads/other") });
+});
+
+it("reports an unreachable origin and a branch missing on origin", async () => {
+  const h = await setup(), o = makeOrigin(), gone = makeOrigin();
+  await h.configure("proj_example", { clonePath: o.clone });
+  await h.configure("proj_deleted", { clonePath: gone.clone });
+  git(o.clone, "remote", "set-url", "origin", join(tmp(), "no-such-origin.git"));
+  expect(await source(h)).toMatchObject({ state: "unreachable", originHead: null, reason: expect.stringContaining("ls-remote origin failed") });
+  git(gone.origin, "update-ref", "-d", "refs/heads/main");
+  expect(await source(h, "proj_deleted")).toMatchObject({ state: "unreachable", reason: "branch main does not exist on origin" });
+});
+
+it("is stale after a push until the clone is at the new tip, and says why", async () => {
+  const h = await setup(), o = makeOrigin();
+  await h.configure("proj_example", { clonePath: o.clone });
+  o.push("2\n");
+  const tip = git(o.origin, "rev-parse", "main");
+  expect(await source(h)).toMatchObject({ state: "stale", originHead: tip, reason: `the origin tip ${tip.slice(0, 12)} of main is not fetched yet` });
+  git(o.clone, "fetch", "-q");
+  expect(await source(h)).toMatchObject({ state: "stale", reason: expect.stringContaining("behind"), fetchedAt: expect.any(Number) });
+  git(o.clone, "checkout", "-q", "--detach", "origin/main");
+  expect((await source(h)).state).toBe("fresh");
+  git(o.clone, "checkout", "-q", "-B", "main", "origin/main");
+  writeFileSync(join(o.clone, "a.txt"), "local\n"); git(o.clone, "commit", "-qam", "local");
+  expect(await source(h)).toMatchObject({ state: "stale", reason: expect.stringContaining("ahead") });
+});
+
+it("turns an unexpected probe failure into an error result", async () => {
+  const h = await setup({ ...realProbes, git: () => { throw new Error("probe exploded\nsecond line"); } });
+  const { clone } = makeOrigin();
+  await h.configure("proj_example", { clonePath: clone });
+  expect(await source(h)).toEqual({ projectId: "proj_example", configured: true, enabled: true, clonePath: clone, branch: "main", head: null, originHead: null, state: "error", reason: "probe exploded", fetchedAt: null });
+});
+
+it("reports a failing stale probe as an error, not as a stale diagnosis", async () => {
+  for (const [failing, fetch] of [["rev-parse", false], ["merge-base", true]] as const) {
+    const h = await setup({ ...realProbes, git: (clone, args) => (failing === "rev-parse" ? args.includes("--verify") : args[0] === "merge-base" && args[3] !== "refs/remotes/origin/main")
+      ? { code: 128, out: "", err: "fatal: broken" } : realProbes.git(clone, args) });
+    const o = makeOrigin();
+    await h.configure("proj_example", { clonePath: o.clone });
+    o.push("2\n");
+    if (fetch) git(o.clone, "fetch", "-q");
+    expect(await source(h)).toMatchObject({ state: "error", reason: expect.stringContaining(`git ${failing} failed`), head: null, originHead: null });
+  }
+});
+
+it("logs every config change", async () => {
+  const h = await setup();
+  await h.set("proj_example", "branch", "main");
+  expect(h.host.harness.logEntries.map(e => e.message)).toContain('Project proj_example: branch set to "main"');
 });

@@ -4,18 +4,26 @@ import { fileURLToPath } from "node:url";
 import { cliCommand, defineCli, defineRpcContract, type BbPluginApi } from "@get-bb/plugin-sdk";
 import { z } from "zod";
 import {
-  CONFIG_KEYS, DEFAULT_SKILLS_DIR, DOC_SKILL, GRACE_MS, ROOT_CAP, STATUS_TTL_MS, computeStatus, configKey, evaluateSkills, parseConfigValue, scanSkill, skillNames, skillsRootOf, sourceOf, syncLinks,
-  type ProjectConfig, type Source, type Status,
+  CONFIG_KEYS, DEFAULT_SKILLS_DIR, DOC_SKILL, GRACE_MS, ROOT_CAP, SOURCE_STATES, STATUS_TTL_MS, computeStatus, configKey, evaluateSkills, parseConfigValue, realProbes, scanSkill, skillNames, skillsRootOf, sourceGet, sourceOf, syncLinks,
+  type ProjectConfig, type Probes, type Source, type Status,
 } from "./core";
 
 const projectId = z.string().min(1).max(200);
 const configGet = z.object({ projectId, key: z.string().min(1).optional() }).strict();
 const configSet = z.object({ projectId, key: z.string().min(1), value: z.unknown() }).strict();
 const checkInput = z.object({ projectId }).strict();
+const nullable = z.string().nullable();
+/** The `source.get` result; callers in other plugins pass their own copy as `outputSchema`. */
+export const sourceResult = z.object({
+  projectId: z.string(), configured: z.boolean(), enabled: z.boolean(),
+  clonePath: nullable, branch: nullable, head: nullable, originHead: nullable,
+  state: z.enum(SOURCE_STATES), reason: nullable, fetchedAt: z.number().nullable(),
+}).strict();
 export const rpcContract = defineRpcContract({
   "config.get": { input: configGet, output: z.unknown() },
   "config.set": { input: configSet, output: z.unknown() },
   check: { input: checkInput, output: z.unknown() },
+  "source.get": { input: checkInput, output: sourceResult },
 });
 
 /** The plugin's own directory (the one with its package.json), whether this runs from source or from dist/. */
@@ -26,7 +34,7 @@ function pluginDir() {
   }
 }
 
-type Env = { now?: () => number; linkedDir?: string; graceMs?: number };
+type Env = { now?: () => number; linkedDir?: string; graceMs?: number; probes?: Probes };
 const MAX_SKIPPED = 50;
 
 export default async function plugin(bb: BbPluginApi, env: Env = {}) {
@@ -100,6 +108,7 @@ export default async function plugin(bb: BbPluginApi, env: Env = {}) {
     }
     await bb.storage.kv.set(configKey(id), next);
     configs.set(id, next); memo.delete(id);
+    bb.log.info(`Project ${id}: ${key} set to ${JSON.stringify(value)}`);
     syncAll();
     return value;
   };
@@ -120,7 +129,12 @@ export default async function plugin(bb: BbPluginApi, env: Env = {}) {
     ...(r.note ? [r.note] : []),
   ].join("\n");
 
-  bb.rpc.register(rpcContract, { "config.get": i => getConfig(configGet.parse(i)), "config.set": i => setConfig(configSet.parse(i)), check: i => check(checkInput.parse(i)) });
+  const source = async ({ projectId: id }: z.infer<typeof checkInput>) => {
+    const r = await sourceGet(id, configs.get(id) ?? {}, env.probes ?? realProbes);
+    if (r.state !== "not_configured" && r.state !== "disabled") bb.log.info(`source.get ${id}: probed, state ${r.state}`);
+    return r;
+  };
+  bb.rpc.register(rpcContract, { "config.get": i => getConfig(configGet.parse(i)), "config.set": i => setConfig(configSet.parse(i)), check: i => check(checkInput.parse(i)), "source.get": i => source(checkInput.parse(i)) });
 
   const project = { type: "string", description: "Project id" } as const, json = { type: "boolean", description: "Return JSON" } as const;
   bb.cli.register(defineCli({ name: "project-instructions", summary: "Inject a project's process root and skills from one local git clone", commands: {
@@ -137,6 +151,11 @@ export default async function plugin(bb: BbPluginApi, env: Env = {}) {
       if (!i.options.project) throw new Error("--project is required");
       const r = check({ projectId: i.options.project });
       return { exitCode: 0, stdout: i.options.json ? JSON.stringify(r) : checkText(r) };
+    } }),
+    source: cliCommand({ summary: "Show the resolved launch source other plugins get from source.get: clone, branch, verified origin tip and state", options: { project, json }, async run(i) {
+      if (!i.options.project) throw new Error("--project is required");
+      const r = await source({ projectId: i.options.project });
+      return { exitCode: 0, stdout: i.options.json ? JSON.stringify(r) : [`Project ${r.projectId}: ${r.state}${r.reason ? ` (${r.reason})` : ""}`, `Clone: ${r.clonePath ?? "-"} on ${r.branch ?? "-"}`, `HEAD: ${r.head ?? "-"}`, `Origin tip: ${r.originHead ?? "-"}`].join("\n") };
     } }),
   } }));
 

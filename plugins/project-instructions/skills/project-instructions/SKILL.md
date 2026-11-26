@@ -18,4 +18,6 @@ Keys: `clonePath` (absolute path of a local git clone), `branch`, `rootFile` (re
 
 The root is injected only when the clone is on `<branch>` (a detached clone at or behind `origin/<branch>` also counts) and the root file is at most 4,096 characters; otherwise the thread gets one line naming the reason and no skill of the project is offered. Nothing is ever cut. A skill that changed in the last 10 seconds waits for a later thread. A skill name present in two enabled projects is offered to neither.
 
+`bb project-instructions source --project <id> [--json]` (RPC `source.get`) shows the launch source other plugins read: clone, branch, HEAD, the origin tip read live with `git ls-remote`, and a state (`fresh` only when HEAD is exactly that tip; otherwise `not_configured`, `disabled`, `missing`, `wrong_branch`, `dirty`, `unreachable`, `stale` or `error`, with a reason).
+
 The plugin never updates the clone; something else must keep it current.
