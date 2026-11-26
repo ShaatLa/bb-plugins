@@ -23,7 +23,11 @@ function storeSelection(threadId: string | undefined) {
 }
 type ContactPage = { threadId: string | undefined; working: boolean; open: boolean; listeners: Set<() => void> };
 const ContactContext = createContext<ContactPage | null>(null);
-const pages = new Set<ContactPage>();
+const pages = new Set<ContactPage>(), pageListeners = new Set<() => void>();
+// bb treats every Agent Hub page as one pane, so while one is mounted a navigation split can only focus it.
+export function useChatPageOpen() {
+  return useSyncExternalStore(listener => { pageListeners.add(listener); return () => { pageListeners.delete(listener); }; }, () => pages.size > 0, () => false);
+}
 let activePage: ContactPage | undefined;
 function activatePage(page: ContactPage) {
   activePage = page; storeSelection(page.threadId); setOpenChat(page.threadId, page.working);
@@ -65,7 +69,7 @@ export function ContactPageProvider({ children }: { children: ReactNode }) {
     const url = new URL(window.location.href);
     if (url.searchParams.has('thread')) { url.searchParams.delete('thread'); window.history.replaceState(window.history.state, '', url); }
   }, []);
-  useEffect(() => { pages.add(page); activatePage(page); return () => { pages.delete(page); if (activePage === page) { activePage = undefined; const last = [...pages].at(-1); if (last) activatePage(last); } }; }, [page]);
+  useEffect(() => { pages.add(page); activatePage(page); pageListeners.forEach(listener => listener()); return () => { pages.delete(page); pageListeners.forEach(listener => listener()); if (activePage === page) { activePage = undefined; const last = [...pages].at(-1); if (last) activatePage(last); } }; }, [page]);
   return createElement(ContactContext.Provider, { value: page }, children);
 }
 export function useContactPage() { return useContext(ContactContext); }

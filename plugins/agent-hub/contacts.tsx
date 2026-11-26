@@ -9,7 +9,7 @@ import { useStoredState } from './lib/stored-state';
 import { Avatar, ago } from './inbox';
 import { useSteadyError } from './app';
 import { EmptyState } from './empty';
-import { beginContactDrag, mountSidebarContacts, selectContact, useSelectedContact } from './open-chat';
+import { beginContactDrag, mountSidebarContacts, selectContact, useChatPageOpen, useSelectedContact } from './open-chat';
 import { byPin, pinnedTree, useReparent } from './reparent';
 import { createPortal } from 'react-dom';
 const errorText = (e: unknown) => e instanceof Error ? e.message : String(e);
@@ -106,7 +106,8 @@ export function useContacts(selected: string | undefined) {
 function ContactRow({ threadId, split, onSplitDrag, ...props }: ComponentProps<'button'> & { threadId: string; split: boolean; onSplitDrag?: () => void }) {
   const item = experimental_useSidebarNavigation().items.find(item => item.action.kind === 'open-plugin-panel' && item.action.pluginId === 'agent-hub' && item.action.panelId === 'agent-hub');
   const navigation = experimental_useSidebarNavigationSplit(item?.id ?? '', { onDragStart: () => { onSplitDrag?.(); beginContactDrag(threadId); } });
-  const thread = experimental_useSidebarThreadSplit(threadId), splitProps = item && navigation.isAvailable ? navigation.splitProps : thread.splitProps;
+  // With an Agent Hub page open, bb would only focus it, so the drag splits the session's bb thread beside the chat instead.
+  const pageOpen = useChatPageOpen(), thread = experimental_useSidebarThreadSplit(threadId), splitProps = item && navigation.isAvailable && !pageOpen ? navigation.splitProps : thread.splitProps;
   return <button {...props} {...(split ? { ...splitProps, onPointerDown: (event: PointerEvent<HTMLButtonElement>) => { props.onPointerDown?.(event); splitProps.onPointerDown?.(event); } } : {})} />;
 }
 // Pointing at a contact starts reading its chat, so the click finds the first page already loaded; the chat page listens

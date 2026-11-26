@@ -581,6 +581,18 @@ it('shows a message bb will queue in the queue card at once, until the queue bri
   await waitFor(() => expect(slot.container.querySelector('[data-queue-row="q1"]')).toBeTruthy());
   expect(slot.container.querySelector('[data-queue-pending]')).toBeNull();
 });
+it('drops the queue placeholder once bb delivers the message, even before a queue read lists it', async () => {
+  const thread = { id:'thr_one', title:'One', projectId:'pr_one', parentThreadId:null, parentNotifications:'all', archivedAt:null, pinnedAt:null, sectionId:null, isUnread:false, status:'active', runtimeStatus:'active', queuedWork:'none', hasPendingInteraction:false, indicator:'runtime', activity:{ workflows:0, backgroundAgents:0, backgroundCommands:0, planMode:false }, environment:{ id:'env', path:'/x' } };
+  let resolve!: (value: object) => void, items: Item[] = [base];
+  const { slot, recipients } = setup({ sidebarThreads: { threads:[thread], projects:[] }, send: () => new Promise(done => { resolve = done; }), queuedMessages: { list: () => Promise.resolve([]) }, list: () => ({ items, nextCursor:null }) }); fireEvent.click(await recipients.findByRole('option'));
+  const editor = await slot.findByRole('textbox', { name:'Send message' }); change(editor, { target:{ value:'Later one' } }); fireEvent.click(slot.getByRole('button', { name:'Send message' }));
+  await waitFor(() => expect(slot.container.querySelector('[data-queue-pending]')?.textContent).toBe('Later one'));
+  // bb queued it, then took it into the next turn before any queue read saw it listed.
+  items = [itemSchema.parse({ ...base, id:'ans_later', question:'Later one', questionSeq:5, status:'waiting', answer:null, answerSeq:null, createdAt:Date.now(), updatedAt:Date.now() }), base];
+  await act(async () => { resolve({ ok:true, delivery:'queued' }); });
+  await waitFor(() => expect(slot.container.querySelector('[data-queue-pending]')).toBeNull());
+  expect(slot.getAllByText('Later one')).toHaveLength(1);
+});
 it('drops the pending bubble when bb queues the message, since the queue card shows it', async () => {
   const { slot, recipients } = setup({ send: () => Promise.resolve({ ok:true, delivery:'queued' }) }); fireEvent.click(await recipients.findByRole('option'));
   change(await slot.findByRole('textbox', { name:'Send message' }), { target:{ value:'Queued one' } }); fireEvent.click(slot.getByRole('button', { name:'Send message' }));
@@ -629,6 +641,18 @@ it('hides a queued row whose recorded message spells its mention or line break d
   const { slot, recipients } = setup({ list: () => ({ items:[{ ...base, id:'ans_sent', question:'@thread:thr_example#msg=7 Why twice?', questionSeq:9, createdAt:5 }], nextCursor:null }), queuedMessages: { list: () => Promise.resolve([row, { ...row, id:'q2', content:[{ type:'text', text:'Why twice?', mentions:[] }], createdAt:2 }]) } }); fireEvent.click(await recipients.findByRole('option'));
   await waitFor(() => expect(slot.container.querySelector('[data-queue-row="q2"]')).toBeTruthy());
   await waitFor(() => expect(slot.container.querySelector('[data-queue-row="q1"]')).toBeNull());
+});
+it('brings a Send now row back and drops its bubble when bb keeps the message queued', async () => {
+  const row = { id:'q1', threadId:'thr_one', content:[{ type:'text', text:'Still waiting', mentions:[] }], createdAt:1, updatedAt:1 };
+  let finish!: (value: object) => void;
+  const sendNow = vi.fn(() => new Promise(done => { finish = done; }));
+  const { slot, recipients } = setup({ queuedMessages: { list: () => Promise.resolve([row]), send:sendNow } }); fireEvent.click(await recipients.findByRole('option'));
+  fireEvent.click(await slot.findByRole('button', { name:'Send queued message 1 now' }));
+  await waitFor(() => expect(slot.container.querySelector('[data-queue-row="q1"]')).toBeNull());
+  expect(slot.getAllByText('Still waiting')).toHaveLength(1);
+  await act(async () => { finish({ ok:true, delivery:'queued' }); });
+  await waitFor(() => expect(slot.container.querySelector('[data-queue-row="q1"]')).toBeTruthy());
+  expect(slot.getAllByText('Still waiting')).toHaveLength(1);
 });
 it('drops a queued row bb already sent: Send now answers 404 quietly and the row does not come back', async () => {
   const row = { id:'q1', threadId:'thr_one', content:[{ type:'text', text:'Already sent', mentions:[] }], createdAt:1, updatedAt:1 };

@@ -226,6 +226,30 @@ export const keepInList: Modifier = ({ transform, draggingNodeRect, scrollableAn
 };
 // Only the owner's own words come back as a chat message; a bb notice, another thread's or plugin's message never does, so holding it would leave it hanging.
 const landsInChat = (row: QueueRow) => !row.systemNotice && !row.senderThreadId && (!row.originPluginId || ['agent-hub', 'answers'].includes(row.originPluginId));
+const rowText = (row: QueueRow) => row.content.filter(part => part.type === 'text').map(part => part.text).join('\n');
+const sameText = (a: string, b: string) => { const plain = (text: string) => text.replace(/@thread:thr_[A-Za-z0-9_-]+(?:#msg=\d+)?/g, ' ').replace(/\s+/g, ' ').trim(); return plain(a) === plain(b); };
+// The composer's stand-in for a message bb queued, until bb's queue lists it or the chat shows it delivered.
+export type PendingRow = { threadId: string; text: string; id: number; done: boolean; seenIds: string[]; queuedIds: string[] };
+// On a queue re-read each done stand-in takes at most one real row new since it was added; `taken` remembers those rows across re-reads.
+export function reconcilePending(old: PendingRow[], rows: QueueRow[], taken: Set<string>, now = Date.now()) {
+  if (!old.some(row => row.done)) return old;
+  return old.filter(row => {
+    if (!row.done) return true;
+    if (now - row.id > 10000) return false;
+    const real = rows.find(next => !taken.has(next.id) && !row.queuedIds.includes(next.id) && next.threadId === row.threadId && sameText(rowText(next), row.text));
+    if (real) taken.add(real.id);
+    return !real;
+  });
+}
+// Delivered owner messages, each matched to one owner in one pass (real rows, then leaving rows, then stand-ins); `owners` keeps
+// an item with its first owner across renders, so identical texts never share an item.
+export function matchLandings(items: readonly Item[], real: readonly QueueRow[], pending: readonly PendingRow[], owners: ReadonlyMap<string, string>) {
+  const mine = items.filter(item => item.kind === 'mine' && item.questionSeq !== null), used = new Set<string>(), rows = new Map<string, string>(), stand = new Map<number, string>();
+  const take = (owner: string, fits: (item: Item) => boolean) => { const hit = mine.find(item => !used.has(item.id) && (owners.get(item.id) ?? owner) === owner && fits(item)); if (hit) used.add(hit.id); return hit?.id; };
+  for (const row of real) { const id = take(`row:${row.id}`, item => item.threadId === row.threadId && item.createdAt >= row.createdAt && sameText(item.question, rowText(row))); if (id) rows.set(row.id, id); }
+  for (const row of pending) { const id = take(`pending:${row.id}`, item => !row.seenIds.includes(item.id) && item.threadId === row.threadId && sameText(item.question, row.text)); if (id) stand.set(row.id, id); }
+  return { rows, pending: stand };
+}
 const isScheduled = (row: QueueRow) => !!row.sendAt && row.sendAt > Date.now();
 const RETIME_MINUTES = [3, 5, 10, 20, 40];
 const span = (minutes: number) => minutes < 60 ? `${minutes} min` : `${Math.floor(minutes / 60)} h${minutes % 60 ? ` ${minutes % 60} min` : ''}`;
@@ -439,7 +463,9 @@ function InboxChat({ onBulkRead, bbChat = false, search: searchProp, onSearch, t
   const answering = useMemo<Answering>(() => ({ answered, failed: answerFailed,
     answer: (id, text) => { setAnswered(old => new Map(old).set(id, text)); setAnswerFailed(old => { const next = new Map(old); next.delete(id); return next; }); },
     fail: (id, error) => { setAnswered(old => { const next = new Map(old); next.delete(id); return next; }); setAnswerFailed(old => new Map(old).set(id, error)); } }), [answered, answerFailed]);
-  const [pendingQueue, setPendingQueue] = useState<{ threadId: string; text: string; id: number; done: boolean }[]>([]);
+  // Real queue rows that already stood in for a placeholder; each does so once, across re-reads.
+  const reconciled = useRef(new Set<string>());
+  const [pendingQueue, setPendingQueue] = useState<PendingRow[]>([]);
   const [optimistic, setOptimistic] = useState<{ threadId: string; text: string; id: number; seenIds: string[]; steer?: boolean }[]>([]), [queue, setQueue] = useState<Awaited<ReturnType<typeof sdk.threads.queuedMessages.list>>>([]), [queueOf, setQueueOf] = useState<string | null>(null), [queueError, setQueueError] = useState(''), [queueVersion, setQueueVersion] = useState(0), [context, setContext] = useState<{ threadId: string; usage: ContextUsage } | null>(null), contexts = useRef(new Map<string, { usage: ContextUsage; at: number }>());
 
   const pluginBrands = usePluginBrands(queue.some(row => !!row.originPluginId || row.waitingOn?.kind === 'plugin'));
@@ -596,7 +622,7 @@ function InboxChat({ onBulkRead, bbChat = false, search: searchProp, onSearch, t
     if (showBubble) setOptimistic(old => [...old, { threadId, text: sent.text.trim(), id: optimisticId, seenIds: pages.flatMap(page => page.items.map(item => item.id)), steer: options?.mode === 'steer' }]);
     // A message bb will queue shows in the queue card at once, without actions, until the queue reread brings its real row.
     const queuing = !showBubble && !handoff && options?.mode !== 'draft' && !!sent.text.trim() && (!!options?.sendAt || willQueue(threadId, options));
-    if (queuing) setPendingQueue(old => [...old, { threadId, text: sent.text.trim(), id: optimisticId, done: false }]);
+    if (queuing) setPendingQueue(old => [...old, { threadId, text: sent.text.trim(), id: optimisticId, done: false, seenIds: pages.flatMap(page => page.items.map(item => item.id)), queuedIds: queue.map(row => row.id) }]);
     // The composer empties on Send, like bb's chat; a failed send puts the message back if nothing new was typed.
     const cleared:ComposeDraft={text:'',files:[],...(handoff ? {} : sent.execution ? {execution:sent.execution} : {}),...(sent.permissionMode ? {permissionMode:sent.permissionMode} : {})};
     if (JSON.stringify(drafts[threadId]) === JSON.stringify(sent)) { drafts[threadId] = cleared; saveDrafts(); }
@@ -629,7 +655,7 @@ function InboxChat({ onBulkRead, bbChat = false, search: searchProp, onSearch, t
   useEffect(() => { if (!optimistic.length) return; const timer = setTimeout(() => setOptimistic(old => old.filter(b => Date.now() - b.id < 30000)), 30000); return () => clearTimeout(timer); }, [optimistic]);
   // The server bumps this stamp on bb's queue events, so rows queued from bb's chat or by agents show up at once.
   const queueStamp = useQuery({ contract: rpcContract, method: 'queueStamp', input: { threadId: selected ?? 'thr_none' }, enabled: !!selected }).data?.stamp;
-  useEffect(() => { if (!selected || !visible) return; let active = true; void sdk.threads.queuedMessages.list({ threadId: selected }).then(rows => { if (active) { setQueue(old => { const gone = old.filter(row => row.threadId === selected && landsInChat(row) && !rows.some(next => next.id === row.id) && !dropped.current.has(row.id)); if (gone.length) setLeaving(current => [...current.filter(l => !gone.some(g => g.id === l.row.id)), ...gone.map(row => ({ row, at: Date.now() }))]); return rows; }); setQueueOf(selected); setPendingQueue(old => old.some(row => row.done) ? old.filter(row => !(row.done && (rows.some(next => next.threadId === row.threadId && sameSent(queueText(next), row.text)) || Date.now() - row.id > 10000))) : old); setQueueError(''); } }).catch(e => { if (active) setQueueError(errorText(e)); }); return () => { active = false; }; }, [sdk, selected, visible, queueVersion, queueStamp, sidebarThreads.find(t => t.id === selected)?.queuedWork]);
+  useEffect(() => { if (!selected || !visible) return; let active = true; void sdk.threads.queuedMessages.list({ threadId: selected }).then(rows => { if (active) { setQueue(old => { const gone = old.filter(row => row.threadId === selected && landsInChat(row) && !rows.some(next => next.id === row.id) && !dropped.current.has(row.id)); if (gone.length) setLeaving(current => [...current.filter(l => !gone.some(g => g.id === l.row.id)), ...gone.map(row => ({ row, at: Date.now() }))]); return rows; }); setQueueOf(selected); setPendingQueue(old => reconcilePending(old, rows, reconciled.current)); setQueueError(''); } }).catch(e => { if (active) setQueueError(errorText(e)); }); return () => { active = false; }; }, [sdk, selected, visible, queueVersion, queueStamp, sidebarThreads.find(t => t.id === selected)?.queuedWork]);
   // A scheduled row needs the 5 s tick (its due time and "in Nm" label); other rows only change when bb's chat sends or
   // deletes them, which queuedWork may not reflect, so they get a slow 30 s check.
   const scheduledQueue = queue.some(row => !!row.sendAt && row.sendAt > Date.now());
@@ -713,7 +739,6 @@ function InboxChat({ onBulkRead, bbChat = false, search: searchProp, onSearch, t
   const leavingText = (entry: { row: typeof queue[number] }) => queueText(entry.row).trim();
   // The recorded message may spell a mention or line break differently from its queued row, so both compare without them.
   const sameSent = (a: string, b: string) => { const plain = (text: string) => text.replace(/@thread:thr_[A-Za-z0-9_-]+(?:#msg=\d+)?/g, ' ').replace(/\s+/g, ' ').trim(); return plain(a) === plain(b); };
-  const landed = (entry: { row: typeof queue[number] }, list: Item[]) => list.some(item => item.kind === 'mine' && item.threadId === entry.row.threadId && item.questionSeq !== null && sameSent(item.question, leavingText(entry)));
   // Send now (a steer into a running turn, or a scheduled row sent early) answers at once like the composer: the row
   // leaves the queue and the chat shows the message while bb records it. If bb keeps it queued or refuses, it comes back.
   const [sentNow, setSentNow] = useState<string[]>([]);
@@ -957,7 +982,10 @@ function InboxChat({ onBulkRead, bbChat = false, search: searchProp, onSearch, t
   const shown = pages === NO_PAGES ? loadedPages : pages.slice(0, depth);
   // The chat records a sent message before the queue reread drops its row, so the row leaves the card as the message
   // lands. Each chat message hides one row, so a repeat of the same text still queued stays.
-  const landedRows = useMemo(() => { const mine = pages.flatMap(page => page.items).filter(item => item.kind === 'mine' && item.questionSeq !== null), used = new Set<string>(), hidden = new Set<string>(); for (const row of [...queue, ...leaving.map(entry => entry.row)]) { const hit = mine.find(item => !used.has(item.id) && item.threadId === row.threadId && item.createdAt >= row.createdAt && sameSent(item.question, queueText(row))); if (hit) { used.add(hit.id); hidden.add(row.id); } } return hidden; }, [pages, queue, leaving]);
+  const owners = useRef(new Map<string, string>());
+  const landings = useMemo(() => matchLandings(pages.flatMap(page => page.items), [...queue, ...leaving.map(entry => entry.row)], pendingQueue, owners.current), [pages, queue, leaving, pendingQueue]);
+  useEffect(() => { landings.rows.forEach((item, row) => owners.current.set(item, `row:${row}`)); landings.pending.forEach((item, row) => owners.current.set(item, `pending:${row}`)); }, [landings]);
+  const landedRows = landings.rows;
   const shownQueue = [...queue.filter(row => !sentNow.includes(row.id)), ...leaving.filter(entry => !queue.some(row => row.id === entry.row.id)).map(entry => entry.row)].filter(row => !landedRows.has(row.id));
   const held = leaving.filter(entry => entry.row.threadId === selected).map(leavingText);
   const items = useMemo(() => { const seen = new Set<string>(); return shown.flatMap(page => page.items).map(item => item.kind === 'for_me' && item.status === 'open' && answered.has(item.id) ? { ...item, status: 'replied' as const, answer: answered.get(item.id)!, answerSource: 'user' as const, updatedAt: Date.now() } : item).filter(item => (item.kind !== 'for_me' || item.status !== 'open') && !(item.kind === 'mine' && item.questionSeq === null && held.includes(item.question.trim())) && !seen.has(item.id) && !!seen.add(item.id)).reverse(); }, [pages, loadedPages, depth, held.join('\n'), answered]);
@@ -965,8 +993,11 @@ function InboxChat({ onBulkRead, bbChat = false, search: searchProp, onSearch, t
   const steerHost = [...items].reverse().find(item => item.kind === 'mine' && item.threadId === selected && item.turnId && item.status === 'waiting' && item.dismissedAt === null);
   const joined = optimistic.filter(b => b.steer && b.threadId === selected && steerHost);
   const chatItems = useMemo(() => joined.length ? [...items, ...joined.map(b => ({ ...sendingItem(b, recipients?.recipients.find(r => r.threadId === b.threadId)), turnId: steerHost!.turnId, answerSeq: steerHost!.answerSeq, interimSeq: steerHost!.interimSeq }))] : items, [items, joined.map(b => b.id).join(), steerHost?.id]);
+  // bb can deliver a queued message before a queue read notices it gone; its placeholder leaves once the chat shows it.
+  const landedPending = landings.pending;
+  useEffect(() => { if (landedPending.size) setPendingQueue(old => old.filter(row => !landedPending.has(row.id))); }, [landedPending]);
   // Checked on new leavers too: the chat may record the message before the queue read that notices it gone.
-  useEffect(() => { const list = pages.flatMap(page => page.items); setLeaving(current => { const next = current.filter(entry => !landed(entry, list)); return next.length === current.length ? current : next; }); }, [pages, leaving]);
+  useEffect(() => { setLeaving(current => { const next = current.filter(entry => !landings.rows.has(entry.row.id)); return next.length === current.length ? current : next; }); }, [landings]);
   // A queued row whose message the chat already recorded after it was queued may be a stale read (bb sent it between
   // reads, its event missed); reread the queue once for it rather than wait for the 30 s check.
   const recheckedRows = useRef(new Set<string>());
@@ -1007,7 +1038,7 @@ function InboxChat({ onBulkRead, bbChat = false, search: searchProp, onSearch, t
   const searchControls = <div className="relative flex min-w-0 items-center gap-1"><Button size="sm" variant="ghost" className="text-xs" aria-label="Full transcript" {...{ title: "Full transcript" }} onClick={openTranscript}><Icon name="FileText" aria-hidden /></Button>{search && <input aria-label="Search conversation" autoFocus className="w-32 min-w-0 rounded border border-border-seam bg-background px-2 text-sm max-[639px]:min-w-0 max-[639px]:w-20" value={query} onChange={e => setQuery(e.target.value)} onKeyDown={e => { if (e.key === 'Escape') { setSearch(false); setQuery(''); setOlder(false); } }} />}{search && query.trim() && <div role="listbox" aria-label="Search results" className="absolute right-3 top-full z-10 max-h-64 w-72 overflow-auto rounded border border-border-seam bg-background shadow-lg">{searchError && <p role="alert">{searchError}</p>}{matches.map(match => <button key={match.id} role="option" aria-selected={false} className="answers-hit block w-full border-b border-border-seam p-2 text-left text-xs hover:bg-state-hover" onClick={() => { jumpTo(match.id); setSearch(false); }}>{(match.answer || match.question).slice(0, 160)} <time className="block text-muted-foreground">{new Date(match.updatedAt).toLocaleDateString()}</time></button>)}</div>}{selected && <ConversationOutline key={selected} threadId={selected} onJump={seq => jumpTo(`seq:${seq}`)} />}<Button size="sm" variant="ghost" aria-label="Search conversation" {...{ title: `Search conversation (${chatShortcut('f')})` }} aria-pressed={search} onClick={() => { setSearch(!search); setOlder(false); }}><Icon name="Search" aria-hidden /></Button></div>;
   const headerTitle = selected && <><ThreadHeader thread={openThread} parent={sidebarThreads.find(thread => thread.id === openThread?.parentThreadId)} title={current?.threadTitle ?? 'Untitled thread'} onSelect={setSelected} actionsTarget={mergedHeader ? toolbarTargets!.actions : null} trailing={mergedHeader ? undefined : searchControls} /></>;
   const mobileHeader = selected && (mergedHeader ? <>{createPortal(headerTitle, toolbarTargets!.title!)}{createPortal(searchControls, toolbarTargets!.search!)}</> : <div ref={headerRef} className="sticky top-0 z-[2] flex items-center gap-2.5 border-b border-border-seam bg-background px-4 py-2"><Button size="sm" variant="ghost" className="min-[640px]:hidden" aria-label="Back" onClick={() => setSelected(undefined)}><Icon name="ArrowLeft" aria-hidden /></Button>{headerTitle}</div>);
-  const queueCard = useMemo(() => (<QueueCard rows={shownQueue.filter(row => row.threadId === selected)} pending={pendingQueue.filter(row => row.threadId === selected).map(row => row.text)} waitReason={queueWait} sourceBrand={row => !row.senderThreadId && row.originPluginId && !['agent-hub', 'answers'].includes(row.originPluginId) ? pluginBrands.find(brand => brand.id === row.originPluginId) ?? null : null} sourceName={row => row.senderThreadId ? sidebarThreads.find(thread => thread.id === row.senderThreadId)?.title ?? null : (row.originPluginId ? pluginBrands.find(brand => brand.id === row.originPluginId)?.name ?? row.originPluginId : null) ?? (row.origin === 'cli' ? 'CLI' : null)} projectId={current?.projectId} edit={queueEdit} onEdit={(row, update) => update ? setQueueEdit(current => current?.id === row.id ? { ...current, ...update } : current) : void startQueueEdit(row)} onFinish={(row, save) => void finishQueueEdit(row, save)} onSend={row => void sendQueued(row)} onDelete={row => { dropped.current.add(row.id); void queueAction(() => sdk.threads.queuedMessages.delete({ threadId: row.threadId, queuedMessageId: row.id }), true); }} onSchedule={(row, sendAt) => void queueAction(() => sdk.threads.queuedMessages.update({ threadId: row.threadId, queuedMessageId: row.id, expectedUpdatedAt: row.updatedAt, sendAt }))} onReorder={(row, previousQueuedMessageId, nextQueuedMessageId) => void queueAction(() => sdk.threads.queuedMessages.reorder({ threadId: row.threadId, queuedMessageId: row.id, previousQueuedMessageId, nextQueuedMessageId }))} />), [queue, pendingQueue, sentNow, leaving, selected, queueEdit, openThread?.providerId, openThread?.environment?.id, openThread?.host?.id, sidebarThreads, pluginBrands, current?.projectId, sdk, rpc]);
+  const queueCard = useMemo(() => (<QueueCard rows={shownQueue.filter(row => row.threadId === selected)} pending={pendingQueue.filter(row => row.threadId === selected && !landedPending.has(row.id)).map(row => row.text)} waitReason={queueWait} sourceBrand={row => !row.senderThreadId && row.originPluginId && !['agent-hub', 'answers'].includes(row.originPluginId) ? pluginBrands.find(brand => brand.id === row.originPluginId) ?? null : null} sourceName={row => row.senderThreadId ? sidebarThreads.find(thread => thread.id === row.senderThreadId)?.title ?? null : (row.originPluginId ? pluginBrands.find(brand => brand.id === row.originPluginId)?.name ?? row.originPluginId : null) ?? (row.origin === 'cli' ? 'CLI' : null)} projectId={current?.projectId} edit={queueEdit} onEdit={(row, update) => update ? setQueueEdit(current => current?.id === row.id ? { ...current, ...update } : current) : void startQueueEdit(row)} onFinish={(row, save) => void finishQueueEdit(row, save)} onSend={row => void sendQueued(row)} onDelete={row => { dropped.current.add(row.id); void queueAction(() => sdk.threads.queuedMessages.delete({ threadId: row.threadId, queuedMessageId: row.id }), true); }} onSchedule={(row, sendAt) => void queueAction(() => sdk.threads.queuedMessages.update({ threadId: row.threadId, queuedMessageId: row.id, expectedUpdatedAt: row.updatedAt, sendAt }))} onReorder={(row, previousQueuedMessageId, nextQueuedMessageId) => void queueAction(() => sdk.threads.queuedMessages.reorder({ threadId: row.threadId, queuedMessageId: row.id, previousQueuedMessageId, nextQueuedMessageId }))} />), [queue, pendingQueue, landedPending, sentNow, leaving, selected, queueEdit, openThread?.providerId, openThread?.environment?.id, openThread?.host?.id, sidebarThreads, pluginBrands, current?.projectId, sdk, rpc]);
   // Activity uses display:none, so restore the offset before the first visible paint.
   const keptTop = useRef<number | null>(null);
   useLayoutEffect(() => {

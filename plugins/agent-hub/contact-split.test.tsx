@@ -53,16 +53,17 @@ it('keeps page selections independent and sends sidebar clicks to the last inter
   expect(within(sidebar.container).getByRole('option', { name: /two/ }).getAttribute('aria-selected')).toBe('true');
   expect(sidebar.inspection.navigateCalls).toEqual([]);
 });
-it('applies an unconsumed drag after release to the last-interacted page', async () => {
+it('leaves an open page\'s chat alone when a sidebar row is dragged, since the drag splits the bb thread', async () => {
   const { sidebar, page } = await setup();
   const first = page();
   fireEvent.click(await within(first.container).findByRole('option', { name: /one/ }));
-  fireEvent.pointerDown(first.container.querySelector('section')!);
-  fireEvent.pointerDown(within(sidebar.container).getByRole('option', { name: /two/ }));
+  const two = within(sidebar.container).getByRole('option', { name: /two/ });
+  await waitFor(() => expect(two.getAttribute('data-thread-split')).toBe('true'));
+  fireEvent.pointerDown(two);
   vi.useFakeTimers();
   fireEvent.pointerUp(document.body);
   act(() => vi.runOnlyPendingTimers());
-  expect(selected(first, 'two')).toBe('true');
+  expect(selected(first, 'one')).toBe('true');
 });
 it.each(['Escape', 'pointercancel', 'blur', 'sidebar'])('clears a cancelled drag on %s', async cancel => {
   const { sidebar, page } = await setup();
@@ -77,16 +78,12 @@ it('preserves thread split props when navigation split is unavailable', async ()
   const { sidebar } = await setup();
   expect(within(sidebar.container).getByRole('option', { name: /one/ }).getAttribute('data-thread-split')).toBe('true');
 });
-it('lets a pane bb mounts just after the release claim the drag, leaving the existing pane alone', async () => {
+it('splits the bb thread instead while an Agent Hub page is open', async () => {
   const { sidebar, page } = await setup();
-  const first = page();
-  fireEvent.click(await within(first.container).findByRole('option', { name: /one/ }));
-  fireEvent.pointerDown(within(sidebar.container).getByRole('option', { name: /two/ }));
-  fireEvent.pointerUp(document.body);
-  await new Promise(resolve => setTimeout(resolve, 20));
-  const next = page();
-  await waitFor(() => expect(selected(next, 'two')).toBe('true'));
-  await new Promise(resolve => setTimeout(resolve, 700));
-  expect(selected(first, 'one')).toBe('true');
-  expect(selected(next, 'two')).toBe('true');
+  const one = () => within(sidebar.container).getByRole('option', { name: /one/ });
+  expect(one().getAttribute('data-thread-split')).toBeNull();
+  const open = page();
+  await waitFor(() => expect(one().getAttribute('data-thread-split')).toBe('true'));
+  open.unmount();
+  await waitFor(() => expect(one().getAttribute('data-thread-split')).toBeNull());
 });
