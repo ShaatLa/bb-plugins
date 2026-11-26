@@ -706,6 +706,17 @@ async function exampleChain() {
   return { first, second, render };
 }
 
+it("shows a custom Approve option as the chosen answer under Earlier Answered", async () => {
+  const { task, rpc, structured } = setup();
+  await structured.handlers.createQuestion({ taskId: task.id, kind: "check", mode: "single", options: ["Approve", "Maybe", "Reject"], prompt: "Check the layout", askedByThread: null });
+  const question = structured.listQuestions(task.id)[0]!;
+  const answeredQuestion = { ...question, selectedOptionIds: [question.options[0]!.id], answeredBy: "Owner", revision: 2, updatedAt: "2026-01-02T12:00:00Z" };
+  const slot = renderSlot(app.navPanels[0]!, { subPath: `task/${task.key}` }, { rpc: { ...rpc, listQuestions: async () => ({ questions: [answeredQuestion] }) } });
+  const earlier = (await slot.findByText("Earlier (1)")).closest("details")!;
+  expect(earlier.textContent).toContain("Check 1 · Answered");
+  expect(within(earlier).getByText("Approve")).toBeTruthy();
+});
+
 it.each([
   ["single", 1, null, "Confirmed"],
   ["single", 0, "Looks good", "Looks good"],

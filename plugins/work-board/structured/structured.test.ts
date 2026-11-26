@@ -1578,6 +1578,7 @@ describe("owner check readiness", () => {
     expect(await answer(second, 1)).not.toContain(reminder);
     expect(await answer(await ask("Does cancel work?"), 0)).not.toContain(reminder);
     expect(await answer(await ask("Does retry work?", evidence), 0)).toContain(reminder);
+    expect(await answer(await ask("Does sync work?", { ...evidence, options: ["Подтверждаю", "Есть замечание"] }), 0)).toContain(reminder);
     // A multiple-choice answer that also reports a problem is not a confirmation.
     const mixed = await ask("Does export work?", { ...evidence, mode: "multiple" });
     await structured.handlers.answerQuestion({ questionId: mixed.id, revision: 1, selectedOptionIds: mixed.options.map(option => option.id), authorName: "You" });

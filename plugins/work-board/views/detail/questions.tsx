@@ -1,5 +1,5 @@
 import { isQuestionOpen } from "../../shared/questions";
-import { checkFlow, type CheckChain } from "../../shared/check-flow";
+import { checkFlow, verdictLabels, type CheckChain } from "../../shared/check-flow";
 import { DisclosureSummary } from "../../components/disclosure";
 import { ActorLabel } from "../../components/thread-chip";
 import { useEffect, useId, useMemo, useState, useRef, type ReactNode } from "react";
@@ -249,8 +249,9 @@ function CompactCheck({ question, heading, tone, form, changeable }: {
 }) {
   const [changing, setChanging] = useState(false);
   const labels = question.options.filter((option) => question.selectedOptionIds.includes(option.id)).map((option) => option.label);
-  // Confirmed and Problem found are already in the heading; any other chosen option is the verdict itself.
-  const chosen = labels.filter((label) => label !== "Confirmed" && label !== "Problem found");
+  // The verdict labels of this check are already in the heading; any other chosen option is the verdict itself.
+  const verdicts = verdictLabels(question.options);
+  const chosen = labels.filter((label) => !verdicts.includes(label));
   return (
     <div className="space-y-2">
       <div className="space-y-1 rounded-md border border-border p-3 text-sm">

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { checkFlow, placeChecks, stateOfQuestion, verdictOf } from "./check-flow";
+import { checkFlow, placeChecks, stateOfQuestion, verdictField, verdictLabels, verdictOf } from "./check-flow";
 import type { TaskQuestion } from "./contract";
 
 const OPTIONS = [{ id: "ok", label: "Confirmed" }, { id: "bad", label: "Problem found" }, { id: "meh", label: "Needs a look" }];
@@ -33,6 +33,46 @@ describe("verdictOf", () => {
     expect(verdictOf(state(["meh"]))).toBe("answered");
     expect(verdictOf(state(["ok", "meh"]))).toBe("answered");
     expect(verdictOf(state([]), true)).toBe("withdrawn");
+  });
+});
+
+describe("verdict labels and the stable verdict", () => {
+  const pair = [{ id: "a", label: "Approve" }, { id: "r", label: "Reject" }];
+  const russian = [{ id: "ok", label: "Подтверждаю" }, { id: "bad", label: "Есть замечание" }];
+  const read = (options: { id: string; label: string }[], selectedOptionIds: string[], answerText: string | null = null) => ({ options, selectedOptionIds, answerText });
+  it("reads «Подтверждаю» like Confirmed and leaves its counterpart as answered", () => {
+    expect(verdictOf(read(russian, ["ok"]))).toBe("confirmed");
+    expect(verdictOf(read(russian, ["ok"], "fine"))).toBe("confirmed");
+    expect(verdictOf(read(russian, ["bad"]))).toBe("answered");
+    expect(verdictField(read(russian, ["ok"]))).toBe("approve");
+    expect(verdictField(read(russian, ["bad"]))).toBeNull();
+  });
+  it("keeps the legacy rule in any option set", () => {
+    const options = [{ id: "ok", label: "Confirmed" }, { id: "later", label: "Later" }];
+    expect(verdictOf(read(options, ["ok"]))).toBe("confirmed");
+    expect(verdictOf(read(options, ["ok", "later"]))).toBe("answered");
+  });
+  it("does not read Approve and Reject as verdicts yet", () => {
+    expect(verdictOf(read(pair, ["a"]))).toBe("answered");
+    expect(verdictOf(read(pair, ["r"]))).toBe("answered");
+    expect(verdictField(read(pair, ["a"]))).toBeNull();
+    const three = [pair[0]!, { id: "m", label: "Maybe" }, pair[1]!];
+    expect(verdictOf(read(three, ["a"]))).toBe("answered");
+    expect(verdictLabels(three)).toEqual([]);
+    expect(verdictLabels(OPTIONS)).toEqual(["Confirmed", "Problem found"]);
+    expect(verdictLabels(russian)).toEqual(["Подтверждаю"]);
+  });
+  it("maps the verdict field from the answer alone", () => {
+    expect(verdictField(read(OPTIONS, []))).toBeNull();
+    expect(verdictField(read(OPTIONS, ["ok"]))).toBe("approve");
+    expect(verdictField(read(OPTIONS, ["bad"]))).toBe("reject");
+    expect(verdictField(read(OPTIONS, [], "cut off"))).toBe("reject");
+    expect(verdictField(read(OPTIONS, ["meh"]))).toBeNull();
+  });
+  it("places a verdict on every question and null on a decision", () => {
+    const decision = { ...check("d1", 1), kind: "decision" } as TaskQuestion;
+    const placed = placeChecks([decision, answered(check("c1", 2), 5, ["ok"]), check("c2", 3)]);
+    expect(placed.map((question) => [question.id, question.verdict])).toEqual([["d1", null], ["c1", "approve"], ["c2", null]]);
   });
 });
 

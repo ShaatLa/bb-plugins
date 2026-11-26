@@ -10,17 +10,32 @@ export type CheckState = CheckVerdict | "held" | "superseded";
 /** The part of a question a verdict reads; history snapshots have it too. */
 type AnswerState = Pick<TaskQuestion, "options" | "selectedOptionIds" | "answerText">;
 
+/** Labels that confirm a check, and the one that fails it. Step A: only the labels existing checks carry. */
+const CONFIRM_LABELS = ["Confirmed", "Подтверждаю"];
+const PROBLEM_LABELS = ["Problem found"];
+
+/** Which labels of a check's options are verdicts: the form leaves them out of the chosen answer, as the heading says it. */
+export function verdictLabels(options: readonly { label: string }[]): string[] {
+  return options.map((option) => option.label).filter((label) => CONFIRM_LABELS.includes(label) || PROBLEM_LABELS.includes(label));
+}
+
 /**
- * Confirmed is exactly one selected option labelled Confirmed (the rule the readiness check uses, a comment may come with it).
+ * Confirmed is exactly one selected confirming option (the rule the readiness check uses, a comment may come with it).
  * A selected Problem found, or text with no option, is a problem. Any other answer is just answered.
  */
 export function verdictOf(state: AnswerState, withdrawn = false): CheckVerdict {
   if (withdrawn) return "withdrawn";
   const labels = state.options.filter((option) => state.selectedOptionIds.includes(option.id)).map((option) => option.label);
   if (!labels.length && !state.answerText) return "open";
-  if (labels.includes("Problem found")) return "problem";
-  if (labels.length === 1 && labels[0] === "Confirmed") return "confirmed";
+  if (labels.some((label) => PROBLEM_LABELS.includes(label))) return "problem";
+  if (labels.length === 1 && CONFIRM_LABELS.includes(labels[0]!)) return "confirmed";
   return labels.length ? "answered" : "problem";
+}
+
+/** The stable verdict consumers read instead of labels: it reads the answer only, so withdrawal stays in `withdrawnAt`. */
+export function verdictField(state: AnswerState): "approve" | "reject" | null {
+  const verdict = verdictOf(state);
+  return verdict === "confirmed" ? "approve" : verdict === "problem" ? "reject" : null;
 }
 
 export interface CheckChain {
@@ -146,6 +161,8 @@ export interface CheckPlace {
   number: number;
   state: CheckState;
   round: number;
+  /** `approve` or `reject` once answered as such, otherwise null. */
+  verdict: "approve" | "reject" | null;
   heldBy?: { id: string; number: number };
 }
 
@@ -155,10 +172,10 @@ export function placeChecks<Q extends TaskQuestion>(questions: readonly Q[]): (Q
   const byId = new Map(questions.map((question) => [question.id, question]));
   const checks = flow.chains.flatMap((chain) => chain.ids.map((id) => ({
     ...byId.get(id)!,
-    number: chain.number, state: stateOfQuestion(flow, id)!, round: chain.round,
+    number: chain.number, state: stateOfQuestion(flow, id)!, round: chain.round, verdict: verdictField(byId.get(id)!),
     ...(chain.headId === id && chain.heldBy ? { heldBy: chain.heldBy } : {}),
   })));
-  return [...questions.filter((question) => question.kind !== "check"), ...checks] as (Q & Partial<CheckPlace>)[];
+  return [...questions.filter((question) => question.kind !== "check").map((question) => ({ ...question, verdict: null })), ...checks] as (Q & Partial<CheckPlace>)[];
 }
 
 /** One line for a held check, as the CLI prints it. */

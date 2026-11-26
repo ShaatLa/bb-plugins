@@ -2990,6 +2990,7 @@ export function registerTasksCli(
                 }),
                 updatedAt: question.updatedAt,
                 ...(question.number !== undefined ? { number: question.number, state: question.state, round: question.round } : {}),
+                verdict: question.verdict ?? null,
                 ...(question.supersedes ? { supersedes: question.supersedes } : {}),
                 ...(question.supersededBy ? { supersededBy: question.supersededBy, supersededAt: question.supersededAt } : {}),
               } : question) : questions;

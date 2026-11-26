@@ -3,7 +3,7 @@ import { receiptInScope } from "../shared/check-receipt";
 import { assertNotPlanApproval, assertQuestionShape, assertReopenKeepsScope, assertStepsAtomic, assertStepsSingleAction, checkGuidance, isQuestionOpen, isWaitingOnOwner, normalizedPrompt, supersededRefusal } from "../shared/questions";
 import { UNANSWERED_QUESTION, WAITING_ON_OWNER, NEWEST_UNANSWERED } from "../db/waiting-on-owner";
 import { refreshCheckFlow } from "../db/check-flow";
-import { checkFlow } from "../shared/check-flow";
+import { checkFlow, verdictOf } from "../shared/check-flow";
 import type { BbPluginApi, PluginRpcHandlers } from "@get-bb/plugin-sdk";
 import type { TasksApiStore } from "../api";
 import { createUlid } from "../db/store";
@@ -463,7 +463,7 @@ export function createStructuredStore(bb: BbPluginApi, store: TasksApiStore) {
           `Question ID: ${next.id}; revision: ${next.revision}`,
           ...(next.kind === "check" && next.beyondDesign && isQuestionOpen(current) &&
             // Confirmed alone: a multiple-choice answer that also reports a problem is not a confirmation.
-            next.selectedOptionIds.length === 1 && next.options.find(option => option.id === next.selectedOptionIds[0])?.label === "Confirmed" &&
+            verdictOf(next) === "confirmed" &&
             !listQuestions(next.taskId).some(q => q.kind === "check" && isQuestionOpen(q))
             ? ["The owner confirmed the last open check. If this card's work goes to a PR, run the full review and the tests once now, then open it."] : []),
         ].join("\n\n");
