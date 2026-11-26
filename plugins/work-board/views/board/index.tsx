@@ -3,7 +3,7 @@ import { waitingOnOwner, waitingOrder } from "../../shared/waiting-on-owner";
 import { TaskAdvisories } from "../../components/task-advisories";
 import { displayName } from "../../shared/display-name.js";
 import { usePrSummaries, PullRequestSummary, type PrSummary } from "../../components/pr-summary";
-import { TaskActivityIndicator } from "../../components/task-activity";
+import { PausedChip, TaskActivityIndicator } from "../../components/task-activity";
 import { DependencyWarning } from "../../components/dependency-warning";
 import { useTaskStatuses } from "../../shell/task-statuses.js";
 import {
@@ -194,9 +194,9 @@ function TaskCard({
                 Epic
               </span>
             ) : null}
-            <TaskActivityIndicator activity={meta.activity} failureMarker={!!meta.threadHealth?.failed.length} />
+            <TaskActivityIndicator activity={meta.activity} pauses={meta.pauses} failureMarker={!!meta.threadHealth?.failed.length} />
             <DependencyWarning blockedBy={meta.blockedBy} />
-            {meta.pauses?.map((pause, i) => <span key={`${pause.signal}-${i}`} title={pause.until ? `${pause.reason}, until ${new Date(pause.until).toLocaleString()}` : pause.reason}>Paused: {pause.reason}</span>)}
+            <PausedChip activity={meta.activity} pauses={meta.pauses} />
             <TaskAdvisories items={meta.advisories} compact />
             <ThreadHealthMarkers health={meta.threadHealth} />
           </div>

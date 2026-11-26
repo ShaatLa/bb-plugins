@@ -19,6 +19,7 @@ import { uploadAttachment, Lightbox } from "./attachments";
 import { AttachmentTracks } from "../activity/task-activity";
 import { checkChanges } from "./check-changes";
 import { formatRelativeTime, formatFileSize, useNowTick } from "../activity/time";
+import { questionAnchor } from "./paused";
 import { MAX_ATTACHMENT_SIZE_BYTES } from "../../shared/attachments";
 import type { Attachment } from "../../shared/contract";
 
@@ -597,7 +598,7 @@ export function QuestionsSection({
           }}
         />}
       </>;
-    return <div key={question.id} className="space-y-2">
+    return <div key={question.id} id={questionAnchor(question.id)} className="space-y-2">
       {compact && !question.supersededBy && !question.withdrawnAt ? compact(body) : body}
       {chain.length ? (
         <details className="pl-3">

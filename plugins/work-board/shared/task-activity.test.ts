@@ -33,3 +33,15 @@ it("marks lost assignments abandoned while preserving live session activity", ()
 it("does not mistake agent comments without any lost assignment for abandonment", () => {
   expect(evaluateTaskActivity({ sessions: [], hasWorked: true, hasLostSession: false, terminal: false, complete: true }).state).toBeNull();
 });
+
+it("reads Paused over every idle state, and Working, waiting and failure win over it", () => {
+  const run = (sessions: TaskActivitySession[], terminal = false, paused = true) => evaluateTaskActivity({ sessions, hasLostSession: true, hasWorked: true, terminal, complete: true, paused, pauseReason: "waiting on EXA-2" });
+  for (const state of ["attached", "queued"] as const) expect(run([session(state)]).state).toBe("paused");
+  expect(run([]).state).toBe("paused");
+  expect(run([]).diagnostics?.explanation).toBe("The card is paused: waiting on EXA-2.");
+  for (const state of ["working", "waiting-owner", "error"] as const) expect(run([session(state)]).state).toBe(state);
+  expect(run([session("queued"), session("error")]).state).toBe("error");
+  expect(run([], true).state).toBeNull();
+  expect(run([], false, false).state).toBe("abandoned");
+  expect(run([session("queued")], false, false).state).toBe("queued");
+});

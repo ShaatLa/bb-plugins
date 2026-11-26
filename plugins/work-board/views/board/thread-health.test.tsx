@@ -83,3 +83,20 @@ it("renders backend activity on a board card", async () => {
   const badge = await slot.findByText("Working");
   expect(slot.container.querySelector(`[data-task-key="${failedTask.key}"]`)?.contains(badge)).toBe(true);
 });
+
+it("shows a paused card as Paused with its reasons in the tooltip, and no Paused: text", async () => {
+  const { project, idleTask, rpc, sdk } = setup();
+  const original = rpc.listTaskCardMeta!;
+  rpc.listTaskCardMeta = async (input: unknown) => {
+    const result = await original(input) as { metadata: Array<{ taskId: string }> };
+    return { metadata: result.metadata.map((row) => row.taskId === idleTask.id ? { ...row,
+      activity: { state: "paused", workingCount: 0, attachedCount: 0, sessions: [], terminalWarning: false, hasFailure: false },
+      pauses: [{ signal: "held", reason: "waiting on EXA-9", until: null, targets: [{ kind: "task", taskKey: "EXA-2" }] }] } : row) };
+  };
+  const slot = renderSlot(app.navPanels[0]!, { subPath: `${project.id}?view=board` }, { rpc, sdk });
+  const label = await slot.findByText("Paused");
+  const card = slot.container.querySelector(`[data-task-key="${idleTask.key}"]`)!;
+  expect(card.contains(label)).toBe(true);
+  expect(card.textContent).not.toContain("Paused:");
+  expect(card.querySelector('[aria-label^="Paused"]')?.getAttribute("aria-label")).toContain("Waiting on EXA-2");
+});

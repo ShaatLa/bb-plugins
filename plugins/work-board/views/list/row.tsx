@@ -1,6 +1,6 @@
 import { waitingOnOwner } from "../../shared/waiting-on-owner";
 import { TaskAdvisories } from "../../components/task-advisories";
-import { TaskActivityIndicator } from "../../components/task-activity";
+import { PausedChip, TaskActivityIndicator } from "../../components/task-activity";
 import { DependencyWarning } from "../../components/dependency-warning";
 import { PullRequestSummary, type PrSummary } from "../../components/pr-summary";
 import { memo, useState, type CSSProperties } from "react";
@@ -185,7 +185,8 @@ export const TaskRow = memo(function TaskRow({
               Epic
             </span>
           ) : null}
-          <TaskActivityIndicator activity={meta?.activity} failureMarker={!!meta?.threadHealth.failed.length} />
+          <TaskActivityIndicator activity={meta?.activity} pauses={meta?.pauses} failureMarker={!!meta?.threadHealth.failed.length} />
+          <PausedChip activity={meta?.activity} pauses={meta?.pauses} />
           <DependencyWarning blockedBy={meta?.blockedBy} />
           <TaskAdvisories items={meta?.advisories} compact />
           <ThreadHealthMarkers health={meta?.threadHealth} />

@@ -72,3 +72,26 @@ it("renders activity on a list row", async () => {
   const badge = await slot.findByText("Queued");
   expect(slot.container.querySelector('[data-task-key="TSK-4"]')?.contains(badge)).toBe(true);
 });
+
+it("shows a pause on a list row: its reasons on the Paused state, and a Paused chip when another state wins", async () => {
+  const paused = makeTask({ id: "01HZT5", projectId: PROJECT_ID, number: 5, key: "TSK-5", title: "Paused task", position: 1 });
+  const working = makeTask({ id: "01HZT6", projectId: PROJECT_ID, number: 6, key: "TSK-6", title: "Working task", position: 2 });
+  const pauses = [{ signal: "held", reason: "waiting on EXA-9", until: null, targets: [{ kind: "task", taskKey: "EXA-2" }] }];
+  const activity = (state: string, workingCount: number) => ({ state, workingCount, attachedCount: workingCount, sessions: workingCount ? [{ threadId: "t", title: "Worker", role: "worker", state: "working" }] : [], terminalWarning: false, hasFailure: false });
+  const slot = renderSlot(app.navPanels[0]!, { subPath: PROJECT_ID }, { rpc: {
+    listProjects: () => ({ projects: [project] }), listFolders: () => ({ folders: [] }),
+    listPresets: () => ({ presets: [] }), sidebarSummary: () => ({ projects: [] }),
+    listLabels: () => ({ labels: [] }), listTasks: () => ({ tasks: [paused, working] }), listQuestions: () => ({ questions: [] }),
+    listTaskCardMeta: () => ({ metadata: [
+      { taskId: paused.id, attachmentCount: 0, taskThreads: [], threadHealth: { failed: [], idle: null }, activity: activity("paused", 0), pauses },
+      { taskId: working.id, attachmentCount: 0, taskThreads: [], threadHealth: { failed: [], idle: null }, activity: activity("working", 1), pauses },
+    ] }),
+  } });
+  const row = (key: string) => slot.container.querySelector(`[data-task-key="${key}"]`)!;
+  await slot.findAllByText("Paused");
+  expect(row("TSK-5").querySelector('[aria-label^="Paused"]')?.getAttribute("aria-label")).toContain("Waiting on EXA-2");
+  expect(row("TSK-6").textContent).toContain("Working");
+  const chip = [...row("TSK-6").querySelectorAll("span")].find((span) => span.textContent === "Paused");
+  expect(chip?.getAttribute("title")).toContain("EXA-2");
+  expect(row("TSK-5").textContent).not.toContain("Paused:");
+});

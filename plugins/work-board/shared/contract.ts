@@ -22,6 +22,7 @@ import {
 import { taskStatusSchema, taskStatusesSchema } from "./statuses.js";
 import { BADGE_CRITERIA } from "./badge.js";
 import { globalSettingsPatchSchema } from "./global-settings";
+import { cardPauseSchema } from "./pause";
 export { TASK_STATUSES } from "./statuses.js";
 export type { TaskStatusDefinition } from "./statuses.js";
 
@@ -1480,7 +1481,7 @@ export const tasksRpcContract = {
       taskThreads: z.array(taskThreadSchema),
       activity: taskActivitySchema.optional(),
       blockedBy: z.array(dependencyTaskSchema).optional(),
-      pauses: z.array(z.object({ signal: z.string(), reason: z.string(), until: z.string().nullable() }).strict()).optional(),
+      pauses: z.array(cardPauseSchema).optional(),
       advisories: z.array(taskAdvisorySchema).optional(),
       threadHealth: threadHealthSchema,
       staleStatusFlags: z.array(z.string()).default([]),

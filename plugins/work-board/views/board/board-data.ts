@@ -12,9 +12,10 @@ import { getSharedTask, loadTaskDataset, taskDatasetEpoch } from "../../shell/ta
 import { isActiveThread } from "../detail/meta.js";
 
 import type { TaskActivity } from "../../shared/task-activity.js";
+import type { CardPause } from "../../shared/pause.js";
 
 export interface BoardCardMeta {
-  pauses?: { signal: string; reason: string; until: string | null }[];
+  pauses?: CardPause[];
   blockedBy?: DependencyTask[];
   advisories?: TaskAdvisory[];
   activity?: TaskActivity;

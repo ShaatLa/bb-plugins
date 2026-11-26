@@ -189,6 +189,14 @@ it("exposes abandonment evidence consistently in RPC, CLI JSON and human output"
     expect(JSON.parse(ownerJson.stdout).activity).toMatchObject({ state: "abandoned", diagnostics: { hasWorked: true } });
     store.tasks.updateTask(task.id, { });
     expect((await activityService(host.bb, store).metadata([task.id])).get(task.id)?.state).toBe("abandoned");
+    // A pause replaces Abandoned in every reader, and ending it restores the earlier state.
+    const paused = await host.harness.runCli(["pause", task.key, "--reason", "waiting for a release", "--for", "1h"]);
+    expect(paused.exitCode, paused.stderr).toBe(0);
+    expect(JSON.parse((await host.harness.runCli(["show", task.key, "--json"])).stdout).activity).toMatchObject({ state: "paused", diagnostics: { explanation: "The card is paused: waiting for a release." } });
+    expect((await host.harness.runCli(["show", task.key])).stdout).toContain("Activity: Paused");
+    expect(((await host.harness.callRpc("listTaskCardMeta", { taskIds: [task.id] })) as { metadata: { activity: { state: string } }[] }).metadata[0]!.activity.state).toBe("paused");
+    await host.harness.runCli(["resume", task.key]);
+    expect((await activityService(host.bb, store).metadata([task.id])).get(task.id)?.state).toBe("abandoned");
   } finally { await host.harness.dispose(); }
 });
 

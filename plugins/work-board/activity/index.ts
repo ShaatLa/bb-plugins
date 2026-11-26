@@ -150,6 +150,9 @@ export function activityService(bb: BbPluginApi, store: TasksApiStore) {
       // Agent comments are work evidence, not assignment; only a confirmed lost link permits Abandoned.
       const lost = new Set(db.prepare<string[], { task_id: string }>(`SELECT DISTINCT task_id FROM comments WHERE task_id IN (${placeholders}) AND kind='system' AND (body LIKE 'Thread detached (archived):%' OR body LIKE 'Thread detached (deleted):%' OR body LIKE 'Thread detached (missing):%' OR body LIKE 'Thread detached (manual):%' OR body LIKE 'Thread detached (private):%')`).all(...ids).map(row => row.task_id));
       const taskData = store.tasks.listTaskActivity(ids);
+      // The pauses a card shows: applied and not run out. The first reason explains the Paused state.
+      const pauseReasons = new Map<string, string>();
+      for (const row of db.prepare<(string | number)[], { task_id: string; reason: string }>(`SELECT task_id, reason FROM task_pauses WHERE task_id IN (${placeholders}) AND applied=1 AND (until IS NULL OR until>?) ORDER BY started_at DESC`).all(...ids, new Date().toISOString())) pauseReasons.set(row.task_id, row.reason);
       const focusedKeys = new Map<string, string | null>();
       const focusedKey = (taskId: string | null) => {
         if (!taskId) return null;
@@ -187,7 +190,7 @@ export function activityService(bb: BbPluginApi, store: TasksApiStore) {
         }
         const task = taskData.get(id);
         const status = task?.status;
-        return [id, evaluateTaskActivity({ sessions, hasWorked: history.has(id), hasLostSession: inactiveSessions.length > 0 || lost.has(id), terminal: status === "done" || status === "canceled", inactiveSessions, complete: discoveryComplete && taskLinks.every((link) => snapshots.get(link.threadId)?.complete && !snapshots.get(link.threadId)?.dispatchUnavailable) })];
+        return [id, evaluateTaskActivity({ sessions, hasWorked: history.has(id), hasLostSession: inactiveSessions.length > 0 || lost.has(id), terminal: status === "done" || status === "canceled", paused: pauseReasons.has(id), pauseReason: pauseReasons.get(id), inactiveSessions, complete: discoveryComplete && taskLinks.every((link) => snapshots.get(link.threadId)?.complete && !snapshots.get(link.threadId)?.dispatchUnavailable) })];
       }));
     },
   };

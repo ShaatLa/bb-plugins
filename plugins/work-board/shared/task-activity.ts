@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-export const ACTIVITY_LABELS = { working: "Working", attached: "Assigned", abandoned: "Abandoned", error: "Error", "waiting-owner": "Waiting for owner", queued: "Queued" } as const;
+export const ACTIVITY_LABELS = { working: "Working", attached: "Assigned", abandoned: "Abandoned", error: "Error", "waiting-owner": "Waiting for owner", queued: "Queued", paused: "Paused" } as const;
 
 const inactiveSessionSchema = z.object({
   threadId: z.string().startsWith("thr_"),
@@ -27,7 +27,7 @@ export const taskActivitySessionSchema = z.object({
 }).strict();
 
 export const taskActivitySchema = z.object({
-  state: z.enum(["working", "waiting-owner", "queued", "attached", "abandoned", "error"]).nullable(),
+  state: z.enum(["working", "waiting-owner", "queued", "attached", "abandoned", "error", "paused"]).nullable(),
   workingCount: z.number().int().nonnegative(),
   attachedCount: z.number().int().nonnegative(),
   sessions: z.array(taskActivitySessionSchema),
@@ -52,19 +52,27 @@ export function evaluateTaskActivity(input: {
   hasLostSession: boolean;
   terminal: boolean;
   complete: boolean;
+  /** An applied manual or background pause that has not run out; the pause outranks every idle state. */
+  paused?: boolean;
+  /** The first pause reason, for the explanation. */
+  pauseReason?: string;
   inactiveSessions?: z.infer<typeof inactiveSessionSchema>[];
 }): TaskActivity {
   const { sessions, hasWorked, hasLostSession, terminal, complete } = input;
   const workingCount = sessions.filter((session) => session.state === "working").length;
   const hasFailure = sessions.some((session) => session.state === "error");
+  const paused = Boolean(input.paused) && !terminal;
   const state = workingCount ? "working"
     : sessions.some((session) => session.state === "waiting-owner") ? "waiting-owner"
+    : hasFailure && paused ? "error"
+    : paused ? "paused"
     : sessions.some((session) => session.state === "queued") ? "queued"
     : hasFailure ? "error"
     : sessions.length ? "attached"
     : complete && hasWorked && hasLostSession && !terminal ? "abandoned" : null;
   const explanation = state === "working" ? "An attached session is actively executing."
     : state === "waiting-owner" ? "An attached session has a pending owner interaction."
+    : state === "paused" ? `The card is paused${input.pauseReason ? `: ${input.pauseReason}` : ""}.`
     : state === "queued" ? "A dispatched request for this task is still in a session's queue."
     : state === "error" ? "An attached session has failed."
     : state === "attached" ? "Assigned sessions are available; none is actively executing."

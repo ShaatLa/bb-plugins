@@ -2,6 +2,7 @@ import { CurrentState } from "./current-state";
 import { PlanCard } from "../plan/card.js";
 import { useActivityPoll, useAdvisoryRecheck } from "../../shell/activity-poll.js";
 import { ActivityStatus } from "./activity-status.js";
+import { PausedBlock } from "./paused.js";
 import { isActiveThread } from "./meta.js";
 import { DependenciesSection } from "./dependencies";
 import { ClaimsLine } from "../../components/claims-line";
@@ -582,7 +583,7 @@ function TaskDetail({
   const parentTask = parent.data ?? null;
   const activityStatus = <>
     <ActivityStatus task={task} threads={threads.data ?? []} onStatusChange={(status) => void updateTask({ status })} activity={activity.data?.activity} advisories={activity.data?.advisories} isFetching={activity.isFetching} error={activity.error} />
-    {activity.data?.pauses?.map((pause, i) => <p key={`${pause.signal}-${i}`} className="text-sm text-muted-foreground">Paused: {pause.reason}{pause.until ? `, until ${new Date(pause.until).toLocaleString()}` : ""}</p>)}
+    <PausedBlock pauses={activity.data?.pauses} />
     {!task.archivedAt ? <div className="mb-4">
       <DispatchControl taskId={task.id} projectId={task.projectId} threads={threads.data ?? []} presets={presets.data} onError={push} align="start" className="w-full" />
     </div> : null}

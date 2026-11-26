@@ -1,6 +1,7 @@
 import { logReceiptChange } from "../checks/receipt-log";
 import { endPauses, pauseArm, setPauseMode, startManualPause, type PauseRow } from "../pause/store";
 import { pauseReport } from "../pause/report";
+import { pauseTargets } from "../pause/targets";
 import { assertNoSecrets } from "../shared/secret-guard";
 import { registeredValidator } from "../checks/receipt-registry";
 import { createHash } from "node:crypto";
@@ -1771,6 +1772,7 @@ export function registerHandlers(
         `SELECT task_id, COUNT(*) AS count FROM attachments WHERE task_id IN (${ids.map(() => "?").join(",")}) GROUP BY task_id`,
       ).all(...ids).map((row) => [row.task_id, row.count]));
       const pauses = bb.storage.database().prepare<(string | number)[], { task_id: string; signal: string; reason: string; until: string | null }>(`SELECT task_id,signal,reason,until FROM task_pauses WHERE task_id IN (${ids.map(() => "?").join(",")}) AND applied=1 AND (until IS NULL OR until>?)`).all(...ids, new Date().toISOString());
+      const targets = pauseTargets(bb.storage.database(), [...new Set(pauses.filter(pause => pause.signal === "held").map(pause => pause.task_id))], [...new Set(pauses.filter(pause => pause.signal === "owner_question").map(pause => pause.task_id))]);
       const threads = new Map<string, TaskThread[]>();
       const allLinks = store.tasks.listTaskThreadsForTasks(ids);
       for (const thread of allLinks) {
@@ -1796,7 +1798,8 @@ export function registerHandlers(
           taskId,
           attachmentCount: counts.get(taskId) ?? 0,
           staleStatusFlags: flags.get(taskId) ?? [],
-          pauses: pauses.filter(pause => pause.task_id === taskId).map(({ signal, reason, until }) => ({ signal, reason, until })),
+          pauses: pauses.filter(pause => pause.task_id === taskId).map(({ signal, reason, until }) => ({ signal, reason, until,
+            ...(signal === "held" || signal === "owner_question" ? { targets: targets[signal].get(taskId) ?? [] } : {}) })),
           activity: scopedActivity.get(taskId),
           blockedBy: blockedBy.get(taskId) ?? [],
           advisories: advisories.get(taskId) ?? [],
