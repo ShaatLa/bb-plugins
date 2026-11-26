@@ -11,6 +11,8 @@ import { NOTICE_ATTEMPT_CAP, REASON, UNKNOWN_BASELINE, type ClosureThread, type 
 
 const MAX_PARENT_HOPS = 5;
 const MAX_MEMO = 256;
+/** A closure older than this at the turn start is not compared: a thread that keeps working after many cards is not unfinished on each. */
+export const CLOSED_CARD_WINDOW_MS = 24 * 60 * 60 * 1000;
 
 type TurnThread = { id: string; parentThreadId: string | null; environmentId: string | null };
 
@@ -33,6 +35,19 @@ export function createClosureService(bb: BbPluginApi, tasks: TasksStore) {
   // together with the stored baselines.
   // `reading` marks a comparison whose idle took it and is doing the final read: that idle alone releases it.
   const comparisons = new Map<string, { environmentId: string; ambiguous: boolean; reading: boolean }>();
+  // One attempt per turn: `turnStarted` bumps the thread's token before any await, and the first `turnEnded` of a token
+  // records it, so a duplicate idle of the same turn returns at once. A restart empties both: the boot token is 0.
+  // Tokens come from one counter and are never reused, and the two maps are evicted together, so an evicted thread can
+  // never meet its old token again and have a real idle taken for a duplicate.
+  const turns = new Map<string, { token: number; at: number }>();
+  const endedToken = new Map<string, number>();
+  let lastToken = 0;
+  const boundTurns = () => {
+    while (turns.size > MAX_MEMO * 4) { const id = turns.keys().next().value!; turns.delete(id); endedToken.delete(id); }
+    while (endedToken.size > MAX_MEMO * 4) { const id = endedToken.keys().next().value!; endedToken.delete(id); turns.delete(id); }
+  };
+  // One batch at a time per thread and recipient.
+  const deliveries = new Map<string, Promise<unknown>>();
 
   const publish = (taskId: string, ...channels: string[]) => {
     for (const channel of channels) bb.realtime.publish(channel, { taskId });
@@ -261,6 +276,9 @@ export function createClosureService(bb: BbPluginApi, tasks: TasksStore) {
    * Anything unreadable, or another thread already running on the environment, stores the unknown baseline.
    */
   async function turnStarted(thread: TurnThread, kept: ClosureThread[]): Promise<void> {
+    turns.delete(thread.id);
+    turns.set(thread.id, { token: ++lastToken, at: Date.now() });
+    boundTurns();
     const environmentId = thread.environmentId;
     if (environmentId) for (const [id, comparison] of comparisons) if (id !== thread.id && comparison.environmentId === environmentId) comparison.ambiguous = true;
     const rows = kept.filter((entry) => !entry.workSeen && owesNotice(entry, thread.parentThreadId !== null));
@@ -292,22 +310,52 @@ export function createClosureService(bb: BbPluginApi, tasks: TasksStore) {
    * at the end of a later turn, even one that only answered.
    */
   async function turnEnded(thread: TurnThread): Promise<void> {
-    const taken = closures.takeTurn(thread.id).filter((entry) => entry.turnBaseline !== UNKNOWN_BASELINE);
+    // Before the first await: a duplicate idle of the same turn finds the token recorded and does nothing.
+    const turn = turns.get(thread.id);
+    const token = turn?.token ?? 0;
+    if (endedToken.get(thread.id) === token) return;
+    endedToken.set(thread.id, token);
+    boundTurns();
+    const startedAt = turn?.at ?? Date.now();
     const comparison = comparisons.get(thread.id);
-    if (taken.length) {
+    const taken = closures.takeTurn(thread.id).filter((entry) => entry.turnBaseline !== UNKNOWN_BASELINE);
+    const skip = (why: string) => bb.log.info(`No closed-card notice for ${thread.id}: ${why}`);
+    // Rule 1: another open card explains the turn. Rule 2: only closures from the last 24 h.
+    let working: string | null | undefined;
+    const busy = () => {
+      if (working !== undefined) return working;
+      const open = closures.openCards(thread.id);
+      return (working = open.length ? `it is working on ${open[0]}${open.length > 1 ? ` (and ${open.length - 1} more open card${open.length > 2 ? "s" : ""})` : ""}` : null);
+    };
+    const recent = (entry: ClosureThread) => startedAt - Date.parse(entry.closedAt) < CLOSED_CARD_WINDOW_MS;
+    const keyOf = (entry: ClosureThread) => tasks.getTask(entry.taskId)?.key ?? entry.taskId;
+    const old = (entries: ClosureThread[]) => skip(`closed more than 24 h ago (${entries.map(keyOf).join(", ")})`);
+    const why = taken.length ? busy() : null;
+    const comparable = why ? [] : taken.filter(recent);
+    if (why) skip(why);
+    else if (taken.length && comparable.length < taken.length) old(taken.filter((entry) => !recent(entry)));
+    if (comparable.length) {
       if (comparison) comparison.reading = true;
       try {
-        await compare(thread, taken, comparison);
+        await compare(thread, comparable, comparison);
       } finally {
         if (comparison && comparisons.get(thread.id) === comparison) comparisons.delete(thread.id);
       }
     } else if (comparison && !comparison.reading) {
-      // Nothing to compare (a reopened card, an early idle): the turn's latch is orphaned. A latch whose final read is
-      // in flight belongs to the idle before this duplicate one and stays.
+      // Nothing to compare (a reopened card, an early idle, a skipped turn): the turn's latch is orphaned. A latch whose
+      // final read is in flight belongs to the idle before this duplicate one and stays.
       comparisons.delete(thread.id);
     }
+    // Owed notices from earlier turns follow the same two rules: the ones they rule out are retired, not sent.
     const hasParent = thread.parentThreadId !== null;
-    await notify(thread, closures.owedNotices(thread.id).filter((entry) => owesNotice(entry, hasParent)));
+    const owed = closures.owedNotices(thread.id).filter((entry) => owesNotice(entry, hasParent));
+    const reason = owed.length ? busy() : null;
+    const stale = reason ? owed : owed.filter((entry) => !recent(entry));
+    if (stale.length) {
+      const retired = closures.retireWork(stale);
+      if (retired.length) bb.log.info(`Closed-card notice for ${thread.id} retired: ${reason ?? "closed more than 24 h ago"} (${retired.map(keyOf).join(", ")})`);
+    }
+    await notify(thread, owed.filter((entry) => !stale.includes(entry)));
   }
 
   /** A failed, deleted or archived thread: its turn is not compared, and reads still in flight cannot record or store. */
@@ -331,41 +379,71 @@ export function createClosureService(bb: BbPluginApi, tasks: TasksStore) {
     if (fingerprint !== base.fingerprint) closures.recordWork(rows);
   }
 
+  /** Runs one batch at a time per key; a later job waits and then finds the rows already claimed. */
+  function serially<T>(key: string, job: () => Promise<T>): Promise<T> {
+    const run = (deliveries.get(key) ?? Promise.resolve()).then(job);
+    const tail = run.then(() => undefined, () => undefined);
+    deliveries.set(key, tail);
+    void tail.then(() => { if (deliveries.get(key) === tail) deliveries.delete(key); });
+    return run;
+  }
+
+  /**
+   * One message to one recipient for all the rows of a turn. Each row keeps its own claim, so a retry and the rule that
+   * an unknown outcome is never resent stay per row; only the claimed rows join the batch.
+   */
+  function deliver(thread: { id: string; parentThreadId: string | null }, who: Recipient, rows: ClosureThread[]): Promise<void> {
+    return serially(`${thread.id}/${who}`, async () => {
+      const claimed = rows.flatMap((entry) => (closedCard(entry.closureId, entry.taskId) ? [{ entry, attempt: closures.claimNotice(entry.closureId, thread.id, who) }] : []))
+        .flatMap(({ entry, attempt }) => (attempt === null ? [] : [{ entry, attempt }]));
+      if (!claimed.length) return;
+      // Filled by `wanted` inside the serialized delivery and read by `text` right after it: what was checked is what is sent.
+      let cards: Array<{ entry: ClosureThread; key: string; status: string }> = [];
+      let transported = false;
+      try {
+        const to = who === "self" ? thread.id : await liveParent(thread.parentThreadId);
+        if (!to) throw new Error("no recipient");
+        const wanted = () => {
+          cards = claimed.flatMap(({ entry }) => {
+            const card = closedCard(entry.closureId, entry.taskId);
+            return card ? [{ entry, key: card.task.key, status: statusLabel(card.task.status, card.project.statuses) }] : [];
+          });
+          return cards.length > 0;
+        };
+        // Git compares the whole environment, so the text says what changed, not who changed it.
+        const where = who === "self" ? "in this session's environment" : `in the environment of @thread:${thread.id}`;
+        const text = () => {
+          if (cards.length === 1) {
+            const { key, status } = cards[0]!;
+            return `${key} is ${status}. Files ${where} changed during a turn after ${key} closed. If this is work for another card, it is fine; if ${key} is not finished, reopen it.`;
+          }
+          return `${cards.map(({ key, status }) => `${key} (${status})`).join(", ")}: files ${where} changed during a turn after these cards closed. If this is work for another card, it is fine; reopen any that is not finished.`;
+        };
+        const delivered = await notifyThread(bb, to, text, wanted);
+        transported = delivered;
+        const sent = delivered ? cards.map((card) => card.entry) : [];
+        closures.finishNotices(sent, who, "sent");
+        closures.finishNotices(claimed.map(({ entry }) => entry).filter((entry) => !sent.includes(entry)), who, "failed");
+      } catch (error) {
+        // After the transport call the notice may have arrived: its rows stay `sending`, an unknown outcome never resent.
+        if (transported) {
+          bb.log.warn(`Closed-card notice to the ${who} of ${thread.id} was sent, but its state could not be recorded; it stays unknown: ${errorMessage(error)}`);
+          return;
+        }
+        closures.finishNotices(claimed.map(({ entry }) => entry), who, "failed");
+        bb.log.warn(`Closed-card notice to the ${who} of ${thread.id} failed (attempt ${Math.max(...claimed.map(({ attempt }) => attempt))}): ${errorMessage(error)}`);
+      }
+    });
+  }
+
   /**
    * The notice owed by a turn that changed files after the card closed: the thread hears about it once, and its
-   * parent gets one informational copy. Each recipient has its own state; a failed one is retried while it has
-   * attempts left, and a delivery whose outcome is unknown is never resent.
+   * parent gets one informational copy, each as a single message however many cards closed.
    */
   async function notify(thread: { id: string; parentThreadId: string | null }, rows: ClosureThread[]): Promise<void> {
-    for (const entry of rows) {
-      const card = closedCard(entry.closureId, entry.taskId);
-      if (!card) continue;
-      const status = statusLabel(card.task.status, card.project.statuses);
-      const send = async (who: Recipient, text: (target: string) => string, target: () => Promise<string | null>) => {
-        const attempt = closures.claimNotice(entry.closureId, thread.id, who);
-        if (attempt === null) return;
-        try {
-          const to = await target();
-          if (!to) throw new Error("no recipient");
-          // The card may have been reopened while the recipient was being resolved or the previous send was pending.
-          // The card is checked again inside the serialized delivery, right before the transport call.
-          const delivered = await notifyThread(bb, to, text(to), () => closedCard(entry.closureId, entry.taskId) !== null);
-          closures.finishNotice(entry.closureId, thread.id, who, delivered ? "sent" : "failed");
-        } catch (error) {
-          closures.finishNotice(entry.closureId, thread.id, who, "failed");
-          bb.log.warn(`Closed-card notice to the ${who} of ${thread.id} failed (attempt ${attempt}): ${errorMessage(error)}`);
-        }
-      };
-      // Git compares the whole environment, so the text says what changed, not who changed it.
-      const key = card.task.key;
-      await send("self", () =>
-        `${key} is ${status}. Files in this session's environment changed during a turn after ${key} closed. If this is work for another card, it is fine; if ${key} is not finished, reopen it.`,
-        async () => thread.id);
-      if (thread.parentThreadId)
-        await send("parent", () =>
-          `${key} is ${status}. Files in the environment of @thread:${thread.id} changed during a turn after ${key} closed. If this is work for another card, it is fine; if ${key} is not finished, reopen it.`,
-          () => liveParent(thread.parentThreadId));
-    }
+    if (!rows.length) return;
+    await deliver(thread, "self", rows);
+    if (thread.parentThreadId) await deliver(thread, "parent", rows);
   }
 
   return { onClosed, lateLink, claimIdle, settleIdle, reviewerIdle, turnStarted, turnEnded, turnAbandoned, liveComparisons: () => comparisons.size };

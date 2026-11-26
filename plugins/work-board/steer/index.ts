@@ -136,12 +136,13 @@ function appendOrSend(
 
 /**
  * Wake one known thread, merged into its queued Work Board notice when there is one. Throws on failure. With `wanted`,
- * the notice is dropped (false) when it says no right before the transport call.
+ * the notice is dropped (false) when it says no right before the transport call. A `text` function is called right
+ * after `wanted`, inside the same serialized delivery.
  */
 export function notifyThread(
   bb: BbPluginApi,
   threadId: string,
-  text: string,
+  text: string | (() => string),
   wanted?: () => boolean,
 ): Promise<boolean> {
   return appendOrSend(bb, threadId, text, "queue-if-active", wanted);

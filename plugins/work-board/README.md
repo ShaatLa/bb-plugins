@@ -606,7 +606,15 @@ read, a missing HEAD SHA, an environment switched during the turn, or another th
 on the same environment that was running or active between the two reads. A
 restart, or the thread failing, being deleted or archived during the turn, discards
 the comparison without a log line. A failed notice is retried once, at the end of
-a later turn, so an answer-only turn can deliver a notice owed from earlier. Project settings, one key at a time with
+a later turn, so an answer-only turn can deliver a notice owed from earlier. Since 0.98.0 the notice
+is quiet about turns it cannot explain by the closed card: it is skipped while the thread is
+still linked to another open card (any status before Done or Canceled), which is what a
+thread working card after card in one environment is doing, and a closure is compared
+only for 24 hours after it was written. A thread with no open card that closed its card
+and keeps editing is still told. Several cards that closed this way produce one message
+to the thread and one to its parent per turn, listing every card, and a notice owed
+from an earlier turn is withdrawn (not sent) when either rule now applies to it. Every skip
+logs its reason. Project settings, one key at a time with
 `bb work-board config get|set KEY VALUE --project PREFIX` or in Settings:
 `archiveThreadsOnClose` (on by default, Archiving) and
 `archiveReviewerOnApproval` (on by default, Planning). A plan reviewer is archived

@@ -35,6 +35,8 @@ export interface ClosureThread {
   turnBaselineAt: string | null;
   /** A turn after the close changed the session's files: the notice is owed. */
   workSeen: boolean;
+  /** When the card's closure was written (ISO). */
+  closedAt: string;
 }
 
 interface ClosureThreadRow {
@@ -57,9 +59,10 @@ interface ClosureThreadRow {
   turn_baseline: string | null;
   turn_baseline_at: string | null;
   work_seen: number;
+  closed_at: string;
 }
 
-const SELECT_ROWS = `SELECT ct.*, c.task_id FROM closure_threads ct JOIN task_closures c ON c.id = ct.closure_id`;
+const SELECT_ROWS = `SELECT ct.*, c.task_id, c.closed_at FROM closure_threads ct JOIN task_closures c ON c.id = ct.closure_id`;
 
 /** The newest closure of its card, and not reopened. */
 const CURRENT_CLOSURE = `c.reopened_at IS NULL AND NOT EXISTS (SELECT 1 FROM task_closures n WHERE n.task_id = c.task_id AND n.rowid > c.rowid)`;
@@ -85,6 +88,7 @@ function fromRow(row: ClosureThreadRow): ClosureThread {
     turnBaseline: row.turn_baseline,
     turnBaselineAt: row.turn_baseline_at,
     workSeen: row.work_seen === 1,
+    closedAt: row.closed_at,
   };
 }
 
@@ -201,7 +205,7 @@ export function createClosureStore(db: Database) {
          action = CASE WHEN action IN ('on_idle', 'candidate', 'evaluating') THEN 'kept' ELSE action END
        WHERE thread_id = ? AND action NOT IN ('archiving', 'archived')
          AND closure_id IN (SELECT c.id FROM task_closures c WHERE ${CURRENT_CLOSURE})
-       RETURNING *, (SELECT task_id FROM task_closures WHERE id = closure_id) AS task_id`,
+       RETURNING *, (SELECT task_id FROM task_closures WHERE id = closure_id) AS task_id, (SELECT closed_at FROM task_closures WHERE id = closure_id) AS closed_at`,
     ).all(threadId);
     return found.map(fromRow).filter((entry) => entry.action === "kept");
   }
@@ -253,6 +257,30 @@ export function createClosureStore(db: Database) {
     return db.prepare<[string], ClosureThreadRow>(
       `${SELECT_ROWS} WHERE ct.thread_id = ? AND ct.action = 'kept' AND ct.work_seen = 1 AND ${CURRENT_CLOSURE} ORDER BY ct.rowid`,
     ).all(threadId).map(fromRow);
+  }
+
+  /**
+   * The keys of the cards a thread is working on: a live link (not completed or failed) to a card that is neither closed
+   * under its project's policy nor archived.
+   */
+  function openCards(threadId: string): string[] {
+    return db.prepare<[string], { key: string; status: string; policy: string | null }>(
+      `SELECT p.prefix || '-' || t.number AS key, t.status, p.workflow_policy AS policy
+       FROM task_threads tt JOIN tasks t ON t.id = tt.task_id JOIN projects p ON p.id = t.project_id
+       WHERE tt.thread_id = ? AND tt.live_status NOT IN ('completed', 'failed') AND t.archived_at IS NULL ORDER BY tt.rowid`,
+    ).all(threadId).filter((card) => !isClosedStatus({ workflowPolicy: card.policy ? JSON.parse(card.policy) : null }, card.status)).map((card) => card.key);
+  }
+
+  /**
+   * Withdraws the owed notice of rows that rule 1 or 2 no longer lets through: `work_seen` goes back to 0, the existing
+   * "not owed" state. A row whose delivery is in flight or unknown is left alone. Returns the rows it changed.
+   */
+  function retireWork(entries: readonly ClosureThread[]): ClosureThread[] {
+    const retire = db.prepare(
+      `UPDATE closure_threads SET work_seen = 0 WHERE closure_id = ? AND thread_id = ? AND work_seen = 1
+         AND self_notice NOT IN ('sending', 'unknown') AND parent_notice NOT IN ('sending', 'unknown')`,
+    );
+    return db.transaction(() => entries.filter((entry) => retire.run(entry.closureId, entry.threadId).changes > 0))();
   }
 
   /** A live `thread.idle`: claims the turn-bound rows whose turn was not followed by a new one. */
@@ -369,6 +397,11 @@ export function createClosureStore(db: Database) {
     db.prepare(`UPDATE closure_threads SET ${who}_notice = ? WHERE closure_id = ? AND thread_id = ? AND ${who}_notice = 'sending'`).run(state, closureId, threadId);
   }
 
+  /** Finishes a whole batch in one transaction. */
+  function finishNotices(entries: readonly ClosureThread[], who: Recipient, state: "sent" | "failed"): void {
+    db.transaction(() => { for (const entry of entries) finishNotice(entry.closureId, entry.threadId, who, state); })();
+  }
+
   /** Reviewer archive intents (plan §5). */
   function reviewerIntent(taskId: string, reviewerThread: string): void {
     const armed = db.prepare(
@@ -399,7 +432,7 @@ export function createClosureStore(db: Database) {
     return { unknownNotices: unknown };
   }
 
-  return { open, reopen, currentId, isCurrent, closedBy, rows, row, addLate, claim, markActive, setBaseline, takeTurn, abandonTurn, recordWork, owedNotices, claimIdle, linkUnchanged, claimReviewerIdle, setReviewerState, latestReviewId, reviewPending, reviewerSeenActive, holdsLink, ownArchive, holders, clearArchived, otherLinks, reviewsOpenFor, claimNotice, finishNotice, reviewerIntent, recoverOnStartup };
+  return { open, reopen, currentId, isCurrent, closedBy, rows, row, addLate, claim, markActive, setBaseline, takeTurn, abandonTurn, recordWork, owedNotices, claimIdle, linkUnchanged, claimReviewerIdle, setReviewerState, latestReviewId, reviewPending, reviewerSeenActive, holdsLink, ownArchive, holders, clearArchived, otherLinks, reviewsOpenFor, claimNotice, finishNotice, finishNotices, openCards, retireWork, reviewerIntent, recoverOnStartup };
 }
 
 export type ClosureStore = ReturnType<typeof createClosureStore>;

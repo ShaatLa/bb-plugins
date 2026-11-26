@@ -264,6 +264,8 @@ describe("lifecycle SQL scope", () => {
       ] as const) {
         f.store.tasks.updateTask(f.tasks[0]!.id, { status });
         f.queries.length = 0;
+        // Each idle is its own turn: a second idle of the same turn is a duplicate and does nothing. No SQL, no await.
+        void f.store.closures.turnStarted({ id: "thr_worker_0", parentThreadId: null, environmentId: null }, []);
         await f.harness.emitThreadEvent("thread.idle", {
           thread: makeThreadResponse({ id: "thr_worker_0", status: "idle" }),
           lastAssistantText: null,

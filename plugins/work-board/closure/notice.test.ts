@@ -63,7 +63,7 @@ describe("closed-card notice after a turn that changed files", () => {
     expect(sentTo(f, "thr_a")).toHaveLength(1);
   });
 
-  it("reads Git once per event for several closed cards and sends one notice per card", async () => {
+  it("reads Git once per event for several closed cards and sends one batched notice per recipient", async () => {
     const f = await closureFixture({ projectSettings: { archiveThreadsOnClose: "off" } });
     fixtures.push(f);
     for (const title of ["First", "Second"]) {
@@ -74,7 +74,9 @@ describe("closed-card notice after a turn that changed files", () => {
     await f.turn("thr_a", () => f.edit("thr_a"));
     expect(f.world.gitCalls.map((call) => call.method)).toEqual(["status", "files", "status", "files"]);
     expect(f.world.gitCalls.every((call) => call.signal instanceof AbortSignal)).toBe(true);
-    expect(sentTo(f, "thr_a").map((entry) => /EXA-\d+ is Done/.exec(entry.text)?.[0])).toEqual(["EXA-1 is Done", "EXA-2 is Done"]);
+    expect(sentTo(f, "thr_a").map((entry) => entry.text)).toEqual([
+      expect.stringContaining("EXA-1 (Done), EXA-2 (Done): files in this session's environment changed during a turn after these cards closed. If this is work for another card, it is fine; reopen any that is not finished."),
+    ]);
   });
 
   it("retires a turn-bound intent on a new turn and notifies at its end", async () => {

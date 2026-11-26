@@ -349,6 +349,14 @@ describe("comment notification delivery", () => {
         );
       });
 
+      it("builds a text function right after the wanted check, inside the delivery", async () => {
+        const f = setup();
+        const rows = stubQueue(f);
+        let wantedCalls = 0;
+        await notifyThread(f.bb, "thr_example", () => `body after ${wantedCalls} checks`, () => { wantedCalls++; return true; });
+        expect((rows[0].content[0] as { text: string }).text).toContain(`body after ${wantedCalls} checks`);
+      });
+
       it("re-lists once and retries the append after a stale-row conflict", async () => {
         const f = setup();
         const rows = stubQueue(f);

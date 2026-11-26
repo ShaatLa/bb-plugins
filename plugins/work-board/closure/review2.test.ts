@@ -148,7 +148,8 @@ describe("C2.5: a notice is dropped inside the delivery when the card was reopen
     hold.open();
     await idle;
     expect(f.world.sent).toEqual([]);
-    expect(f.row(id, "thr_a")).toMatchObject({ selfNotice: "failed", parentNotice: "failed" });
+    // The reopened card's closure is no longer current, so the parent copy is never claimed.
+    expect(f.row(id, "thr_a")).toMatchObject({ selfNotice: "failed", parentNotice: "none" });
   });
 });
 
