@@ -17,11 +17,19 @@ By default the project placement setting decides whether portable heavy work may
 run on another configured machine. `--anywhere` permits placement, `--local`
 keeps it here. `--spill` and `--spill auto` are aliases of `--anywhere`.
 Use `--needs go,docker,chrome,playwright,node,bun` to require installed tools.
-A remote run copies the worktree and returns output and exit code. Keep jobs local
-when they write files read afterwards (evidence, screenshots, renders, coverage,
-snapshots or dumps), depend on environment variables or ignored files, use ports,
-local services or git submodules. Arguments with absolute paths outside the
-worktree also force local placement. Use raw `acquire` for interactive holds.
+A remote run copies the worktree and returns output and exit code, and the files
+the command created or changed come back into your worktree (ignored directories
+included), so reports, screenshots, coverage and build output need no `--local`.
+A file you edited here during the run is kept and reported (`kept your local
+version of: ...`), and a file the command deleted goes to the Trash here only if
+you did not change it. Results over 1 GiB (`SLOTS_RUN_RETURN_MAX`) stay on the
+other machine and the run says where. The other machine keeps only the uploaded
+files plus `node_modules/` between runs, so build caches elsewhere are rebuilt.
+Keep jobs local when they depend on environment variables or on ignored files
+they read (ignored files and directories are outputs only, never uploaded, so the
+command must create its output directories), use ports, local services or git
+submodules. Arguments with absolute paths outside the worktree
+also force local placement. Use raw `acquire` for interactive holds.
 
 `--est` must carry a unit (`45m`, `2h`); a bare number means minutes. Estimates
 above `maxEstimateMinutes` (default 12 h) are refused; the lease of a longer job

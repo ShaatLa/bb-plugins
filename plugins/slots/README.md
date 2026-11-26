@@ -127,11 +127,25 @@ Use `--local` or `--anywhere` to override, and `--needs go,docker` to require
 installed tools. Set the inventory with `bb plugin config slots set machineTools
 'host_example=go,docker;host_other=node,bun'`. `--spill` remains an alias for
 `--anywhere`. Commands with absolute path arguments outside the worktree stay local.
+**Files from a remote run.** When a remote command ends with a known exit code (including a
+non-zero one) the files it created or changed come back into the worktree, ignored directories
+included. The other machine keeps only the uploaded files plus `node_modules/` between runs, so
+every other file present after the command was written by it, and a rewrite with identical size
+and mtime still returns because content hashes decide. The result is checked completely before
+anything is written: only plain files and symlinks, relative paths, no duplicates, no entry below
+a symlink, sizes as announced; otherwise nothing is applied, a warning is printed and the files
+stay on the other machine. A local path that changed during the run (edit, delete, type change, a
+new file) is kept and reported. A file the command deleted is moved to the macOS Trash here, only
+if it was not changed locally and its content was recorded before the run. Ignored files are
+outputs only (never uploaded, so a command creates its own ignored output directories). `SLOTS_RUN_RETURN_MAX` (default 1 GiB uncompressed) bounds one
+return; `SLOTS_RUN_BASELINE_MAX` (default 512 MiB of ignored files) bounds the local record
+before the run, above it existing ignored files are kept and reported instead of overwritten.
+A run on the other machine holds a kernel lock on its mirror, so two runs from one worktree
+queue; a lost or interrupted run returns nothing and leaves its result files there.
 The wrapper retries locally only if copying fails or remote setup proves the
 command did not start; ambiguous failures are never retried. Exit codes include
 69 for a lost machine, 124 for timeout and 130 for interruption. Limits: output
-arrives when the command ends (stdout and stderr merged, last 1 MB), files the
-job writes stay there, environment variables are not forwarded, absolute paths
+arrives when the command ends (stdout and stderr merged, last 1 MB), environment variables are not forwarded, absolute paths
 into this worktree, git submodules, paths with newlines, ports and dev servers
 are not supported, and the job runs as your user on that machine. A lease is
 never transferred to a child on another machine; that child leases its own.

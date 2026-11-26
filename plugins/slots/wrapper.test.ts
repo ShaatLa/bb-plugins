@@ -1,9 +1,15 @@
-import { afterEach, expect, it } from "vitest";
-import { mkdtemp, writeFile, chmod, readFile, readdir, rm } from "node:fs/promises";
+import { afterEach, expect, it, vi } from "vitest";
+
+import { mkdtemp, writeFile, chmod, readFile, readdir, rm, mkdir, stat, utimes, symlink, realpath } from "node:fs/promises";
+import { gzipSync } from "node:zlib";
+import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawn, spawnSync } from "node:child_process";
 import { setTimeout as sleep } from "node:timers/promises";
+
+// A remote-run test uploads the whole worktree; on a loaded machine that exceeds the 5 s default.
+vi.setConfig({ testTimeout: 30000 });
 
 const dirs: string[] = [];
 afterEach(async () => { for (const d of dirs.splice(0)) await rm(d, { recursive: true, force: true }); });
@@ -12,7 +18,7 @@ async function run(body: string, command: string, input = "", args: string[] = [
   const bb = join(dir, "bb"), log = join(dir, "log");
   await writeFile(bb, `#!/bin/sh\nprintf '%s\\n' "$*" >> "$LOG"\n${body}\n`); await chmod(bb, 0o755);
   const result = spawnSync("sh", ["./slots-run.sh", ...args, "--est", "1m", "--job", "test", "--", "sh", "-c", command], {
-    cwd: import.meta.dirname, input, encoding: "utf8", env: { ...process.env, PATH: `${dir}:${process.env.PATH}`, LOG: log, SLOTS_RUN_TEST_STEP: "0.01" }, timeout: 5000,
+    cwd: import.meta.dirname, input, encoding: "utf8", env: { ...process.env, PATH: `${dir}:${process.env.PATH}`, LOG: log, SLOTS_RUN_TEST_STEP: "0.01" }, timeout: 30000,
   });
   return { result, log: await readFile(log, "utf8") };
 }
@@ -177,7 +183,7 @@ esac
   await writeFile(bb, `#!/bin/sh\ncase "$1 $2" in "slots acquire") case "$*" in *"--place local"*) echo "use use-3 lease lease-4 renew 30" ;; *) echo "use use-1 lease lease-2 renew 30 host host_example" ;; esac ;; "file write") cat >/dev/null; echo "Error: HTTP 404: Host not found" >&2; exit 1 ;; esac\n`);
   const offline = run("true");
   expect(offline.status).toBe(0); expect(offline.stderr).toContain("could not copy the worktree to host_example");
-});
+}, 30000);
 
 it("queues locally outside a git worktree and never starts a remote copy", async () => {
   const dir = await mkdtemp(join(tmpdir(), "slots-no-git-")); dirs.push(dir);
@@ -222,3 +228,318 @@ it.each([
   expect(log.match(/terminal run /g)).toHaveLength(1);
   expect(log).not.toContain('--place local');
 });
+
+// --- Files written by a remote run come back (the fake bb runs the real runner on this machine with a separate HOME) ---
+const FAKE_BB = `#!/bin/sh
+printf '%s\\n' "$*" >> "$LOG"
+for a; do last=$a; done
+case "$1 $2" in
+  "slots acquire") echo "use use-1 lease lease-2 renew 30 host host_example" ;;
+  "file write") cat > "$last" ;;
+  "file read") [ -z "$READ_FAIL" ] || case $last in *.ret.[0-9]*) exit 1 ;; esac; cat "$last" ;;
+  "file remove") rm -f "$last" ;;
+  "terminal run") shift 2; while [ "$1" != -- ]; do [ "$1" = --id ] && id=$2; shift; done; shift
+    if [ -n "$FORGE" ]; then
+      r=\${8%.b64}.ret; n=$9; [ "$FORGE_META" != nonce ] || n=wrong
+      if [ "$FORGE_META" != none ]; then
+        [ "$FORGE" = - ] || cp "$FORGE" "$r.1"
+        d=0; [ -z "$FORGE_DEL" ] || { cp "$FORGE_DEL" "$r.del"; d=1; }
+        printf 'nonce=%s\\nstatus=%s\\ncount=%s\\nbytes=%s\\nparts=1\\ndel=%s\\n' "$n" "\${FORGE_STATUS:-packed}" 100 "\${FORGE_BYTES:-1000000}" "$d" > "$r.meta"
+      fi
+      exit 0
+    fi
+    HOME="$FAKE_HOME" "$@"; rc=$?; echo "Terminal $id exited with code $rc."; exit "$rc" ;;
+esac
+`;
+async function world(setup: Record<string, string> = {}) {
+  const dir = await realpath(await mkdtemp(join(tmpdir(), "slots-return-"))); dirs.push(dir);
+  const repo = join(dir, "repo"), home = join(dir, "home"), bin = join(dir, "bin");
+  await mkdir(join(repo, "pkg"), { recursive: true }); await mkdir(join(repo, "out"), { recursive: true }); await mkdir(home); await mkdir(bin);
+  const git = (...args: string[]) => spawnSync("git", ["-C", repo, ...args], { encoding: "utf8" });
+  git("init", "-q");
+  await writeFile(join(repo, ".gitignore"), "out/\n"); await writeFile(join(repo, "pkg", "a.txt"), "tracked"); await writeFile(join(repo, "edit.txt"), "orig");
+  git("add", ".gitignore", "pkg", "edit.txt"); git("-c", "user.email=t@example.com", "-c", "user.name=t", "commit", "-qm", "init");
+  await writeFile(join(repo, "out", "report.txt"), "old-ignored");
+  for (const [name, text] of Object.entries(setup)) { await mkdir(join(repo, name, ".."), { recursive: true }); await writeFile(join(repo, name), text); }
+  await writeFile(join(bin, "bb"), FAKE_BB); await chmod(join(bin, "bb"), 0o755);
+  await writeFile(join(bin, "trash"), `#!/bin/sh\nmkdir -p "${dir}/trash"; for a; do echo "$a" >> "${dir}/trashed"; mv "$a" "${dir}/trash/$(echo "$a" | tr / _)"; done\n`); await chmod(join(bin, "trash"), 0o755);
+  const log = join(dir, "log");
+  const env = (extra: Record<string, string> = {}) => ({ ...process.env, PATH: `${bin}:${process.env.PATH}`, LOG: log, FAKE_HOME: home, REPO: repo, SLOTS_RUN_UPLOAD_DIR: dir,
+    SLOTS_RUN_TRASH: join(bin, "trash"), SLOTS_RUN_TEST_STEP: "0.01", ...extra });
+  const args = (command: string) => [join(import.meta.dirname, "slots-run.sh"), "--anywhere", "--est", "1m", "--job", "t", "--", "sh", "-c", command];
+  const sh = (command: string, extra: Record<string, string> = {}) => spawnSync("sh", args(command), { cwd: repo, encoding: "utf8", timeout: 60000, env: env(extra) });
+  const start = (command: string, extra: Record<string, string> = {}) => spawn("sh", args(command), { cwd: repo, detached: true, env: env(extra), stdio: "ignore" });
+  const key = createHash("sha1").update(repo).digest("hex").slice(0, 16);
+  return { dir, repo, home, key, args, env, mirror: join(home, ".bb-slots", "work", key), sh, start, log: () => readFile(log, "utf8"), read: (f: string) => readFile(join(repo, f), "utf8"), bin };
+}
+const exists = (p: string) => stat(p).then(() => true, () => false);
+const waitFor = async (p: string, tries = 1000) => { for (let i = 0; i < tries; i++) { if (await exists(p)) return; await sleep(10); } throw new Error("timeout waiting for " + p); };
+const exited = (c: ReturnType<typeof spawn>) => new Promise<number | null>(resolve => { if (c.exitCode !== null) resolve(c.exitCode); else c.once("exit", resolve); });
+
+it.each([0, 3, 124, 130])("brings back new, changed and ignored files after the command exits %i", async code => {
+  const w = await world();
+  const r = w.sh(`mkdir -p out/sub; echo new > newfile.txt; echo changed > edit.txt; echo fresh > out/report.txt; echo cov > out/sub/cov.txt; printf nonl; exit ${code}`);
+  expect(r.status).toBe(code); expect(r.stdout.trim()).toBe("nonl");
+  expect(await w.read("newfile.txt")).toBe("new\n"); expect(await w.read("edit.txt")).toBe("changed\n");
+  expect(await w.read("out/report.txt")).toBe("fresh\n"); expect(await w.read("out/sub/cov.txt")).toBe("cov\n");
+  expect(r.stderr).toContain("brought back 4 files from host_example");
+  expect(await exists(join(w.dir, "repo", "pkg", "a.txt"))).toBe(true);
+  expect((await readdir(w.dir)).filter(f => f.includes(".ret"))).toEqual([]); // the remote result files are removed after the read
+}, 30000);
+
+it("returns a same-size rewrite with a restored mtime and a regenerated identical ignored output", async () => {
+  const w = await world();
+  const cmd = 'cp -p edit.txt "$FAKE_HOME/ref"; printf ORIG > edit.txt; touch -r "$FAKE_HOME/ref" edit.txt; mkdir -p out; echo R > out/report.txt; touch -t 202001010000 out/report.txt';
+  expect(w.sh(cmd).status).toBe(0);
+  expect(await w.read("edit.txt")).toBe("ORIG"); expect(await w.read("out/report.txt")).toBe("R\n");
+  await rm(join(w.repo, "out", "report.txt"));
+  const again = w.sh(cmd); expect(again.status).toBe(0);
+  expect(await w.read("out/report.txt")).toBe("R\n"); expect(again.stderr).toContain("brought back");
+}, 30000);
+
+it("keeps what changed here during the run and reports it", async () => {
+  const w = await world();
+  const r = w.sh('mkdir -p out; echo remote > pkg/a.txt; echo remote > edit.txt; echo remote > out/report.txt; echo remote > newfile.txt; echo remote > fresh.txt;' +
+    ' echo mine > "$REPO/edit.txt"; rm "$REPO/pkg/a.txt"; rm "$REPO/out/report.txt"; mkdir "$REPO/out/report.txt"; echo mine > "$REPO/newfile.txt"; exit 5');
+  expect(r.status).toBe(5);
+  expect(await w.read("edit.txt")).toBe("mine\n"); expect(await w.read("newfile.txt")).toBe("mine\n");
+  expect(await exists(join(w.repo, "pkg", "a.txt"))).toBe(false); expect((await stat(join(w.repo, "out", "report.txt"))).isDirectory()).toBe(true);
+  expect(await w.read("fresh.txt")).toBe("remote\n");
+  expect(r.stderr).toContain("kept your local version of:");
+  for (const f of ["edit.txt", "pkg/a.txt", "out/report.txt", "newfile.txt"]) expect(r.stderr).toContain(f);
+}, 30000);
+
+it("moves a file removed on the other machine to the Trash only if it is unchanged here", async () => {
+  const w = await world({ "gone.txt": "g" });
+  const r = w.sh('rm pkg/a.txt edit.txt; echo mine > "$REPO/edit.txt"');
+  expect(r.status).toBe(0);
+  expect(await exists(join(w.repo, "pkg", "a.txt"))).toBe(false); expect((await readFile(join(w.dir, "trashed"), "utf8")).replace(/\.slots-run-[0-9a-f]+\//, "")).toBe(`${join(w.repo, "pkg", "a.txt")}\n`);
+  expect(await readdir(join(w.repo, "pkg"))).toEqual([]);
+  expect(await w.read("edit.txt")).toBe("mine\n"); expect(r.stderr).toContain("moved to Trash: pkg/a.txt"); expect(r.stderr).toContain("kept your local version of: edit.txt");
+}, 30000);
+
+it("keeps a file edited here after the deletion check instead of trashing it", async () => {
+  const w = await world();
+  const r = w.sh("rm pkg/a.txt", { SLOTS_RUN_TEST_AT_delmove: 'echo mine > "$FILE"' });
+  expect(await w.read("pkg/a.txt")).toBe("mine\n"); expect(r.stderr).toContain("kept your local version of: pkg/a.txt"); expect(r.stderr).not.toContain("moved to Trash");
+  expect(await exists(join(w.dir, "trashed"))).toBe(false); expect(await readdir(join(w.repo, "pkg"))).toEqual(["a.txt"]);
+}, 30000);
+
+it("restores a file when the Trash call fails, and keeps it beside a file created meanwhile", async () => {
+  const w = await world();
+  const failed = w.sh("rm pkg/a.txt", { SLOTS_RUN_TRASH: "/usr/bin/false" });
+  expect(await w.read("pkg/a.txt")).toBe("tracked"); expect(failed.stderr).toContain("not applied: pkg/a.txt"); expect(await readdir(join(w.repo, "pkg"))).toEqual(["a.txt"]);
+  const raced = w.sh("rm pkg/a.txt", { SLOTS_RUN_TRASH: "/usr/bin/false", SLOTS_RUN_TEST_AT_delmove: 'echo mine > "$FILE"', SLOTS_RUN_TEST_AT_delplace: 'echo created > "$FILE"' });
+  expect(await w.read("pkg/a.txt")).toBe("created\n"); expect(raced.stderr).toContain("(yours is .slots-run-");
+  const kept = (await readdir(join(w.repo, "pkg"))).filter(f => f.startsWith(".slots-run-")); expect(kept).toHaveLength(1);
+  expect(await readFile(join(w.repo, "pkg", kept[0], "a.txt"), "utf8")).toBe("mine\n");
+}, 30000);
+
+it("puts back or reports a file moved for deletion when its hash step throws", async () => {
+  const w = await world();
+  const back = w.sh("rm pkg/a.txt", { SLOTS_RUN_TEST_THROW: "delhash" });
+  expect(await w.read("pkg/a.txt")).toBe("tracked"); expect(back.stderr).toContain("not applied: pkg/a.txt"); expect(await readdir(join(w.repo, "pkg"))).toEqual(["a.txt"]);
+  const taken = w.sh("rm pkg/a.txt", { SLOTS_RUN_TEST_THROW: "delhash", SLOTS_RUN_TEST_AT_delplace: 'echo created > "$FILE"' });
+  expect(await w.read("pkg/a.txt")).toBe("created\n"); expect(taken.stderr).toContain("(yours is .slots-run-");
+  const kept = (await readdir(join(w.repo, "pkg"))).filter(f => f.startsWith(".slots-run-")); expect(kept).toHaveLength(1);
+  expect(await readFile(join(w.repo, "pkg", kept[0], "a.txt"), "utf8")).toBe("tracked");
+  expect(await exists(join(w.dir, "trashed"))).toBe(false);
+}, 30000);
+
+it("reports a new output that could not be written as not applied and says where it stays", async () => {
+  const w = await world();
+  const r = w.sh("echo remote > newfile.txt", { SLOTS_RUN_TEST_THROW: "write" });
+  expect(await exists(join(w.repo, "newfile.txt"))).toBe(false); expect(r.stderr).not.toContain("kept your local version");
+  expect(r.stderr).toContain("not applied: newfile.txt (the new content stays on host_example in ~/.bb-slots/work/");
+  expect(await readFile(join(w.mirror, "newfile.txt"), "utf8")).toBe("remote\n"); expect(await leftovers(w)).toEqual([]);
+}, 30000);
+
+it("keeps an existing ignored file over SLOTS_RUN_BASELINE_MAX and writes a missing one", async () => {
+  const w = await world();
+  const r = w.sh("mkdir -p out; echo remote > out/report.txt; echo remote > out/new.txt", { SLOTS_RUN_BASELINE_MAX: "1" });
+  expect(await w.read("out/report.txt")).toBe("old-ignored"); expect(await w.read("out/new.txt")).toBe("remote\n");
+  expect(r.stderr).toContain("kept your local version of: out/report.txt");
+}, 30000);
+
+it("joins a multi-part result", async () => {
+  const w = await world();
+  const r = w.sh("mkdir -p out; head -c 35000000 /dev/urandom > out/big.bin; echo x > small.txt");
+  expect(r.status).toBe(0); expect((await stat(join(w.repo, "out", "big.bin"))).size).toBe(35000000);
+  expect(await w.log()).toMatch(/file read .*\.ret\.[3]\n/);
+}, 60000);
+
+it("warns and keeps the exit code for a skipped, failed, missing or foreign result and a failed read", async () => {
+  const w = await world();
+  const skipped = w.sh("echo remote-content-over-ten > newfile.txt; exit 3", { SLOTS_RUN_RETURN_MAX: "10" });
+  expect(skipped.status).toBe(3); expect(skipped.stderr).toContain("SLOTS_RUN_RETURN_MAX"); expect(await exists(join(w.repo, "newfile.txt"))).toBe(false);
+  for (const [meta, status, text] of [["", "failed", "packing failed"], ["none", "packed", "may not have come back"], ["nonce", "packed", "may not have come back"]]) {
+    const r = w.sh("exit 4", { FORGE: "-", FORGE_META: meta, FORGE_STATUS: status });
+    expect(r.status).toBe(0); expect(r.stderr).toContain(text);
+  }
+  const unread = w.sh("echo x > newfile.txt; exit 6", { READ_FAIL: "1" });
+  expect(unread.status).toBe(6); expect(unread.stderr).toContain("could not read the files"); expect(await exists(join(w.repo, "newfile.txt"))).toBe(false);
+}, 30000);
+
+// A minimal tar writer for hostile archives.
+function tarOf(entries: { name: string; type?: string; data?: string; link?: string; pax?: Record<string, string> }[]) {
+  const hdr = (name: string, type: string, size: number, link = "") => {
+    const b = Buffer.alloc(512); b.write(name, 0, 100); b.write("0000644\0", 100); b.write("0000000\0", 108); b.write("0000000\0", 116);
+    b.write(size.toString(8).padStart(11, "0") + "\0", 124); b.write("00000000000\0", 136); b.write("        ", 148); b.write(type, 156); b.write(link, 157, 100);
+    b.write("ustar\0", 257); b.write("00", 263); let s = 0; for (const x of b) s += x; b.write(s.toString(8).padStart(6, "0") + "\0 ", 148); return b;
+  };
+  const pad = (d: Buffer) => Buffer.concat([d, Buffer.alloc((512 - (d.length % 512)) % 512)]);
+  const chunks: Buffer[] = [];
+  for (const e of entries) {
+    if (e.pax) {
+      const recs = Object.entries(e.pax).map(([k, v]) => { const body = ` ${k}=${v}\n`; let n = body.length; while (String(n).length + body.length !== n) n = String(n).length + body.length; return `${n}${body}`; }).join("");
+      chunks.push(hdr("PaxHeader", "x", Buffer.byteLength(recs)), pad(Buffer.from(recs)));
+    }
+    const data = Buffer.from(e.data ?? "");
+    chunks.push(hdr(e.name, e.type ?? "0", e.type === "2" || e.type === "1" ? 0 : data.length, e.link), pad(data));
+  }
+  chunks.push(Buffer.alloc(1024));
+  return gzipSync(Buffer.concat(chunks)).toString("base64");
+}
+it.each<[string, unknown[], string?]>([
+  ["a parent path", [{ name: "../x", data: "evil" }]],
+  ["an absolute path", [{ name: "/tmp/slots-evil-x", data: "evil" }]],
+  ["a duplicate path", [{ name: "ok.txt", data: "1" }, { name: "ok.txt", data: "2" }]],
+  ["an entry below a symlink", [{ name: "s", type: "2", link: "/tmp" }, { name: "s/x", data: "evil" }]],
+  ["a pax path override with ..", [{ name: "ok.txt", data: "evil", pax: { path: "../x" } }]],
+  ["a hard link", [{ name: "h", type: "1", link: "edit.txt" }]],
+  ["a device entry", [{ name: "d", type: "3" }]],
+  ["a deleted path outside the worktree", [{ name: "ok.txt", data: "1" }], "../x\0"],
+  ["a deleted path that was never uploaded (an unchanged ignored file)", [{ name: "ok.txt", data: "1" }], "out/report.txt\0"],
+  ["a deleted path that was never uploaded (a missing file)", [{ name: "ok.txt", data: "1" }], "nothing.txt\0"],
+])("rejects an archive with %s before writing anything and keeps the remote files", async (_label, entries, del) => {
+  const w = await world(); const forged = join(w.dir, "forged.b64"), delFile = join(w.dir, "del.b64");
+  await writeFile(forged, tarOf(entries as never)); await writeFile(delFile, Buffer.from(del ?? "").toString("base64"));
+  const r = w.sh("exit 2", { FORGE: forged, ...(del ? { FORGE_DEL: delFile } : {}) });
+  expect(r.status).toBe(0); expect(r.stderr).toContain("rejected the files from"); expect(r.stderr).toContain("nothing was written");
+  expect(await exists(join(w.dir, "x"))).toBe(false); expect(await exists(join(w.repo, "ok.txt"))).toBe(false); expect(await exists(join("/tmp", "slots-evil-x"))).toBe(false);
+  expect(await w.read("edit.txt")).toBe("orig"); expect((await readdir(w.dir)).filter(f => f.includes(".ret.")).length).toBe(del ? 3 : 2);
+  expect(await exists(join(w.repo, "out", "report.txt"))).toBe(true);
+}, 30000);
+
+it("applies names with spaces and newlines", async () => {
+  const w = await world();
+  const forged = join(w.dir, "forged.b64");
+  await writeFile(forged, tarOf([{ name: "a b.txt", data: "sp" }, { name: "n\nl.txt", data: "nl" }]));
+  w.sh("exit 0", { FORGE: forged });
+  expect(await w.read("a b.txt")).toBe("sp"); expect(await w.read("n\nl.txt")).toBe("nl");
+}, 30000);
+
+it("returns a worktree file named .slots-deleted next to a deletion", async () => {
+  const w = await world();
+  const r = w.sh('echo mine > .slots-deleted; rm edit.txt');
+  expect(r.status).toBe(0); expect(r.stderr).not.toContain("rejected");
+  expect(await w.read(".slots-deleted")).toBe("mine\n"); expect(await exists(join(w.repo, "edit.txt"))).toBe(false);
+}, 30000);
+
+const leftovers = async (w: { repo: string }) => (await readdir(w.repo)).filter(f => f.startsWith(".slots-run-"));
+it.each([
+  ["the no-hard-link fallback", { SLOTS_RUN_TEST_NOLINK: "1", SLOTS_RUN_TEST_AT_place: 'echo created > "$REPO/edit.txt"' }, "orig"],
+  ["a rollback after a local edit", { SLOTS_RUN_TEST_AT_tmp: 'echo mine > "$REPO/edit.txt"', SLOTS_RUN_TEST_AT_place: 'echo created > "$REPO/edit.txt"' }, "mine\n"],
+])("never replaces a file created at the destination during %s", async (_label, extra, original) => {
+  const w = await world(); const forged = join(w.dir, "forged.b64");
+  await writeFile(forged, tarOf([{ name: "edit.txt", data: "remote" }]));
+  const r = w.sh("exit 0", { FORGE: forged, ...extra });
+  expect(await w.read("edit.txt")).toBe("created\n"); expect(r.stderr).toContain("your changed copy was left beside the original of: edit.txt (yours is .slots-run-");
+  const kept = await leftovers(w); expect(kept).toHaveLength(1); expect(await readFile(join(w.repo, kept[0]), "utf8")).toBe(original);
+}, 30000);
+
+it("restores a locally edited file by a no-replace link and the fallback copy", async () => {
+  for (const nolink of [false, true]) {
+    const w = await world(); const forged = join(w.dir, "forged.b64");
+    await writeFile(forged, tarOf([{ name: "edit.txt", data: "remote" }]));
+    const r = w.sh("exit 0", { FORGE: forged, SLOTS_RUN_TEST_AT_tmp: 'echo mine > "$REPO/edit.txt"', ...(nolink ? { SLOTS_RUN_TEST_NOLINK: "1" } : {}) });
+    expect(await w.read("edit.txt")).toBe("mine\n"); expect(r.stderr).toContain("kept your local version of: edit.txt"); expect(await leftovers(w)).toEqual([]);
+  }
+}, 60000);
+
+it.each(["hash", "unlink"])("reports the moved-aside original when its %s step fails", async step => {
+  const w = await world(); const forged = join(w.dir, "forged.b64");
+  await writeFile(forged, tarOf([{ name: "edit.txt", data: "remote" }]));
+  const r = w.sh("exit 0", { FORGE: forged, SLOTS_RUN_TEST_THROW: step });
+  expect(await w.read("edit.txt")).toBe("remote"); expect(r.stderr).toContain("your changed copy was left beside the original of: edit.txt (yours is .slots-run-");
+  const kept = await leftovers(w); expect(kept).toHaveLength(1); expect(await readFile(join(w.repo, kept[0]), "utf8")).toBe("orig");
+}, 30000);
+
+it.each([[false, "directory restored"], [true, "empty directory created meanwhile"]])("rolls back a directory that replaced the file without replacing anything (%s)", async (race, _label) => {
+  const w = await world(); const forged = join(w.dir, "forged.b64");
+  await writeFile(forged, tarOf([{ name: "edit.txt", data: "remote" }]));
+  const r = w.sh("exit 0", { FORGE: forged, SLOTS_RUN_TEST_AT_tmp: 'rm "$REPO/edit.txt"; mkdir "$REPO/edit.txt"; echo x > "$REPO/edit.txt/f"', ...(race ? { SLOTS_RUN_TEST_AT_place: 'mkdir "$REPO/edit.txt"' } : {}) });
+  const kept = await leftovers(w);
+  if (race) {
+    expect(await readdir(join(w.repo, "edit.txt"))).toEqual([]); expect(r.stderr).toContain("your changed copy was left beside the original of: edit.txt");
+    expect(kept).toHaveLength(1); expect(await readFile(join(w.repo, kept[0], "f"), "utf8")).toBe("x\n");
+  } else {
+    expect(await readFile(join(w.repo, "edit.txt", "f"), "utf8")).toBe("x\n"); expect(kept).toEqual([]); expect(r.stderr).not.toContain("left beside");
+  }
+}, 30000);
+
+it("keeps the moved-aside original when something wrote to it after it was checked", async () => {
+  const w = await world(); const forged = join(w.dir, "forged.b64");
+  await writeFile(forged, tarOf([{ name: "edit.txt", data: "remote" }]));
+  const r = w.sh("exit 0", { FORGE: forged, SLOTS_RUN_TEST_AT_placed: 'echo late >> "$ASIDE"' });
+  expect(await w.read("edit.txt")).toBe("remote"); expect(r.stderr).toContain("your changed copy was left beside the original of: edit.txt");
+  const kept = await leftovers(w); expect(kept).toHaveLength(1); expect(await readFile(join(w.repo, kept[0]), "utf8")).toBe("orig" + "late\n");
+}, 30000);
+
+it("keeps a file edited here while a large returned file is being written", async () => {
+  const w = await world(); const forged = join(w.dir, "forged.b64"), size = 300_000_000;
+  await writeFile(forged, tarOf([{ name: "edit.txt", data: "\0".repeat(size) }]));
+  const c = spawn("sh", w.args("exit 0"), { cwd: w.repo, env: w.env({ FORGE: forged, FORGE_BYTES: String(size) }), stdio: ["ignore", "ignore", "pipe"] });
+  let err = ""; c.stderr.on("data", d => { err += d; });
+  for (let i = 0; i < 20000; i++) { if ((await readdir(w.repo)).some(f => f.startsWith(".slots-run-"))) break; await sleep(1); }
+  await writeFile(join(w.repo, "edit.txt"), "mine");
+  await exited(c);
+  expect(await w.read("edit.txt")).toBe("mine"); expect(err).toContain("kept your local version of: edit.txt");
+  expect((await readdir(w.repo)).filter(f => f.startsWith(".slots-run-"))).toEqual([]);
+}, 60000);
+
+it("does not follow a symlinked directory in the worktree", async () => {
+  const w = await world(); const outside = join(w.dir, "outside"); await mkdir(outside); await symlink(outside, join(w.repo, "out", "link"));
+  const forged = join(w.dir, "forged.b64"); await writeFile(forged, tarOf([{ name: "out/link/x", data: "evil" }]));
+  const r = w.sh("exit 0", { FORGE: forged });
+  expect(await exists(join(outside, "x"))).toBe(false); expect(r.stderr).toContain("not applied: out/link/x");
+}, 30000);
+
+it("runs two runs from one worktree one after the other and releases the lock when the runner dies", async () => {
+  const w = await world(); const mark = join(w.dir, "marks");
+  const a = w.start(`echo a-start >> "${mark}"; sleep 1; echo a-end >> "${mark}"`);
+  await waitFor(mark);
+  const b = w.start(`echo b-start >> "${mark}"`);
+  await Promise.all([exited(a), exited(b)]);
+  expect((await readFile(mark, "utf8")).trim().split("\n")).toEqual(["a-start", "a-end", "b-start"]);
+  // A runner killed with SIGKILL and a daemon left by its command do not hold the lock.
+  const c = w.start(`echo $PPID > "${w.dir}/runner"; echo $$ > "${w.dir}/cmd"; (sleep 30 & echo $! > "${w.dir}/daemon"); sleep 30`);
+  await waitFor(join(w.dir, "daemon"));
+  process.kill(Number((await readFile(join(w.dir, "runner"), "utf8")).trim()), "SIGKILL");
+  await exited(c);
+  const t0 = Date.now(); const d = w.sh("echo ok"); expect(d.status).toBe(0); expect(d.stdout).toBe("ok\n"); expect(Date.now() - t0).toBeLessThan(10000);
+  for (const f of ["cmd", "daemon"]) { try { process.kill(Number((await readFile(join(w.dir, f), "utf8")).trim()), "SIGKILL"); } catch {} }
+}, 60000);
+
+it("waits for a legacy directory lock, never removes it, and the sweep keeps lock files", async () => {
+  const w = await world(); const base = join(w.home, ".bb-slots", "work");
+  await mkdir(base, { recursive: true }); await mkdir(`${w.mirror}.lock`);
+  await writeFile(`${w.mirror}.flock`, ""); await utimes(`${w.mirror}.flock`, 1, 1);
+  await mkdir(join(base, "otherkey")); await utimes(join(base, "otherkey"), 1, 1);
+  const a = w.start(`echo ran > "${w.dir}/ran"`);
+  await sleep(1500); expect(await exists(join(w.dir, "ran"))).toBe(false); expect(await exists(`${w.mirror}.lock`)).toBe(true);
+  await rm(`${w.mirror}.lock`, { recursive: true }); await exited(a);
+  expect(await exists(join(w.dir, "ran"))).toBe(true); expect(await exists(`${w.mirror}.lock`)).toBe(false);
+  expect(await exists(`${w.mirror}.flock`)).toBe(true); expect(await exists(join(base, "otherkey"))).toBe(false);
+}, 30000);
+
+it("forwards an interrupt to the command's process group and returns nothing", async () => {
+  const w = await world(); const ready = join(w.dir, "ready"), got = join(w.dir, "got");
+  const c = w.start(`trap 'echo term > "${got}"; exit 0' TERM; echo x > partial.txt; : > "${ready}"; while :; do sleep 0.05; done`);
+  await waitFor(ready); process.kill(-c.pid!, "SIGTERM");
+  expect(await exited(c)).toBe(130);
+  await waitFor(got);
+  for (let i = 0; i < 500 && !(await readdir(w.dir)).some(f => f.endsWith(".ret.meta")); i++) await sleep(10); // the runner outlives the wrapper
+  expect((await readdir(w.dir)).some(f => f.endsWith(".ret.meta"))).toBe(true); expect(await exists(join(w.repo, "partial.txt"))).toBe(false);
+  const next = w.sh("echo free"); expect(next.stdout).toBe("free\n"); // the lock is released
+}, 60000);
