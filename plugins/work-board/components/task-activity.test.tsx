@@ -48,3 +48,13 @@ it("renders distinct SVG artwork for activity states without host icon fallbacks
   }
   expect(artwork.size).toBe(5);
 });
+it("a paused indicator keeps the reason once: from its pause lines when given, from the explanation otherwise", () => {
+  const paused: TaskActivity = { state: "paused", workingCount: 0, attachedCount: 0, sessions: [], terminalWarning: false, hasFailure: false,
+    diagnostics: { explanation: "The card is paused: Waiting on EXA-2.", hasWorked: false, complete: true, checkedAt: "2026-01-01T00:00:00.000Z", inactiveSessions: [] } };
+  const { unmount } = render(<TaskActivityIndicator activity={paused} />);
+  expect(screen.getByText("Paused").getAttribute("aria-label")).toContain("Waiting on EXA-2");
+  unmount();
+  render(<TaskActivityIndicator activity={paused} pauses={[{ signal: "held", reason: "waiting on EXA-9", until: null, targets: [{ kind: "task", taskKey: "EXA-2" }] }]} />);
+  const label = screen.getByText("Paused").getAttribute("aria-label")!;
+  expect(label.match(/EXA-2/g)).toHaveLength(1);
+});

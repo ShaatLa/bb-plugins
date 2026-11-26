@@ -19,7 +19,8 @@ export const PAUSE_RESOLVED_NOTE = "resolved — the pause ends on the next chec
 /** The pause's reason as plain text: the items it waits on now, or the stored reason (with a note) when none is left. */
 export function pauseReasonText(pause: CardPause): string {
   const targets = pause.targets;
-  if (!targets) return pause.reason;
+  // Plain text (tooltips, the CLI): a Markdown link in a manual reason reads as its label.
+  if (!targets) return pause.reason.replace(/\[([^\]\n]+)\]\([^)\s]*\)/g, "$1");
   if (!targets.length) return `${pause.reason} (${PAUSE_RESOLVED_NOTE})`;
   return pause.signal === "held"
     ? `Waiting on ${targets.map((target) => target.kind === "task" ? target.taskKey : "").join(", ")}`

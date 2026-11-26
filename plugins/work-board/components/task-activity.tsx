@@ -16,7 +16,8 @@ export function TaskActivityIndicator({ activity, failureMarker = false, pauses 
   if (!activity?.state) return null;
   const { state, sessions, workingCount, attachedCount, terminalWarning, hasFailure } = activity;
   const detail = [
-    ...(activity.diagnostics ? [activity.diagnostics.explanation] : []),
+    // A paused card given its pause lines lists them below; the explanation would repeat the first one.
+    ...(activity.diagnostics && !(state === "paused" && pauses?.length) ? [activity.diagnostics.explanation] : []),
     ...sessions.map((session) => `${session.title || session.threadId} (${session.role === "parent" ? "Parent thread" : "Worker"}): ${labels[session.state]}`),
     ...(state === "paused" ? pauses?.map(pauseLineText) ?? [] : []),
     ...(terminalWarning ? ["Warning: work continues on a done or canceled card"] : []),
