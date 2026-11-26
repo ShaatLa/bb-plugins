@@ -57,6 +57,8 @@ New native tools become available when BB next constructs the provider session; 
 
 CI events can be pushed to BB threads so an agent watching CI is told instead of polling. Each message is one short Markdown line starting with **CI Dashboard** (bold); refs, problem ids and shas are inline code, and the GitHub link is a short `[run N]`/`[job N]` link, with ids and a GitHub link, sent with `threads.send` in `queue-if-active` mode: a busy agent gets it after its current turn, an idle agent wakes up. Green runs never produce messages.
 
+An observer receives events, and "Claim dropped" lines, only for the GitHub repository of its own BB project (the project's `gitRemoteUrl`); a thread in a project without a GitHub remote receives none, and its confirmation line says "no repositories".
+
 How to set the observer: Settings → CI Dashboard → `observerThreads` (comma-separated `thr_…` ids; blank turns the feature off), or the agent tool **ci_dashboard_manage** (the one write tool; `ci_dashboard_metrics` is read-only):
 
 ```json

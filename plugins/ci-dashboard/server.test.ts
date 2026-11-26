@@ -1518,14 +1518,20 @@ test("handled entries are pruned once their problem closes, and the stored map i
 });
 
 // --- agent claims: ci_dashboard_manage, automatic releases, observer echo ---
-function claimsHost(settings: object = {}) {
+// Observers receive only their own project's repository: threads live in proj_widgets (acme/widgets) unless a test moves them.
+function projectsOf(projectOf: Record<string, string> = {}, remotes: Record<string, string | null> = {}) {
+  const remote: Record<string, string | null> = { proj_widgets: "https://github.com/acme/widgets.git", ...remotes };
+  const projects = { get: vi.fn(async ({ projectId }: { projectId: string }) => ({ id: projectId, gitRemoteUrl: remote[projectId] ?? null })) };
+  return { projects, remote, projectOf: (threadId: string) => projectOf[threadId] ?? "proj_widgets" };
+}
+function claimsHost(settings: object = {}, { projects, projectOf } = projectsOf()) {
   const send = vi.fn(async (_args: unknown) => ({}));
-  const get = vi.fn(async ({ threadId }: { threadId: string }): Promise<{ id: string; archivedAt: number | null }> => {
+  const get = vi.fn(async ({ threadId }: { threadId: string }): Promise<{ id: string; projectId: string; archivedAt: number | null }> => {
     if (threadId === "thr_missing") throw new Error("404 thread not found");
-    return { id: threadId, archivedAt: threadId === "thr_archived" ? 1 : null };
+    return { id: threadId, projectId: projectOf(threadId), archivedAt: threadId === "thr_archived" ? 1 : null };
   });
   const host = createFakePluginHost({ pluginId: "ci-dashboard", settings: { repository: "acme/widgets", importBbRepositories: false, observerThreads: "thr_observer", ...settings },
-    sdk: { threads: { send, get } as never, plugins: { callRpc: (async () => ({ ok: true })) as never } } });
+    sdk: { threads: { send, get } as never, projects: projects as never, plugins: { callRpc: (async () => ({ ok: true })) as never } } });
   return { ...host, send, get };
 }
 const STALL_TITLE = "Runner pool stalled: self-hosted";
@@ -1647,6 +1653,39 @@ test("an archived or deleted investigating thread releases its claim with exactl
     await harness.behavior.emitThreadEvent("thread.deleted", { thread: makeThreadResponse({ id: "thr_gone" }) });
     expect(echoes()).toEqual([expect.stringContaining("thread archived"), `Claim dropped · ${STALL_TITLE} · problem \`${stallId}\` · thread deleted`]);
     expect(await harness.behavior.callRpc("navigationBadge", null)).toEqual({ count: 1, critical: 1 });
+  } finally { await harness.lifecycle.dispose(); }
+});
+
+test("Claim dropped goes only to observers of the problem's repository: after a restart before any pass, after a remote change, and never on a failed lookup", async () => {
+  live([queuedJob]);
+  const scope = projectsOf({ thr_one: "proj_one", thr_two: "proj_two" }, { proj_one: "https://github.com/acme/widgets.git", proj_two: "https://github.com/acme/gadgets.git" });
+  let { bb, harness, send } = claimsHost({ observerThreads: "thr_one, thr_two" }, scope);
+  try {
+    await plugin(bb);
+    await stalledPass(harness);
+    const echoes = (threadId: string) => sentTo(send, threadId).filter((line) => line.includes("Claim dropped"));
+    const drop = async () => {
+      await claimTool(harness, { action: "take", threadId: "thr_worker" });
+      await harness.behavior.emitThreadEvent("thread.archived", { thread: makeThreadResponse({ id: "thr_worker" }) });
+    };
+    // A restart, then a release before the first pass of the new process.
+    ({ bb, harness } = await harness.lifecycle.reload(plugin));
+    await drop();
+    expect(echoes("thr_one")).toHaveLength(1);
+    expect(echoes("thr_two")).toEqual([]);
+    // thr_one's project now points at acme/gadgets: acme/widgets lines stop at once.
+    scope.remote.proj_one = "https://github.com/acme/gadgets.git";
+    await drop();
+    expect(echoes("thr_one")).toHaveLength(1);
+    // Back on acme/widgets, but the project lookup fails: nothing is sent (fail closed, owner decision; no last known repository).
+    scope.remote.proj_one = "https://github.com/acme/widgets.git";
+    scope.projects.get.mockRejectedValueOnce(new Error("offline")).mockRejectedValueOnce(new Error("offline"));
+    await drop();
+    expect(echoes("thr_one")).toHaveLength(1);
+    // The lookup works again: delivery resumes.
+    await drop();
+    expect(echoes("thr_one")).toHaveLength(2);
+    expect(echoes("thr_two")).toEqual([]);
   } finally { await harness.lifecycle.dispose(); }
 });
 
@@ -1817,7 +1856,7 @@ function ciScenario() {
     removals: { 7: "2026-10-20T12:00:30Z", 8: "2026-10-20T12:00:30Z" } as Record<number, string | null>, reasons: {} as Record<number, string>, states: {} as Record<number, string>, lookupFails: false, lookups: [] as number[] };
   const normal = fetchMock.getMockImplementation()!;
   fetchMock.mockImplementation(async (input: string, options?: RequestInit) => {
-    const url = new URL(input), path = url.pathname.replace("/repos/acme/widgets", ""), status = url.searchParams.get("status");
+    const url = new URL(input), path = url.pathname.replace(/^\/repos\/acme\/(?:widgets|gadgets)/, ""), status = url.searchParams.get("status");
     let found: RegExpMatchArray | null;
     if (url.pathname === "/graphql" && String(options?.body).includes("REMOVED_FROM_MERGE_QUEUE_EVENT")) {
       const number = JSON.parse(String(options!.body)).variables.number as number;
@@ -1839,12 +1878,12 @@ function ciScenario() {
   });
   return state;
 }
-function observerHost(settings: object = {}, threadsOverride: object = {}) {
+function observerHost(settings: object = {}, threadsOverride: object = {}, scope = projectsOf()) {
   const send = vi.fn(async (_args: unknown) => ({}));
-  const get = vi.fn(async ({ threadId }: { threadId: string }): Promise<{ id: string; archivedAt: number | null }> => ({ id: threadId, archivedAt: null }));
+  const get = vi.fn(async ({ threadId }: { threadId: string }): Promise<{ id: string; projectId: string; archivedAt: number | null }> => ({ id: threadId, projectId: scope.projectOf(threadId), archivedAt: null }));
   const host = createFakePluginHost({ pluginId: "ci-dashboard", settings: { repository: "acme/widgets", importBbRepositories: false, observerThreads: "thr_observer", ...settings },
-    sdk: { threads: { send, get, ...threadsOverride } as never, plugins: { callRpc: (async () => ({ ok: true })) as never } } });
-  return { ...host, send, get };
+    sdk: { threads: { send, get, ...threadsOverride } as never, projects: scope.projects as never, plugins: { callRpc: (async () => ({ ok: true })) as never } } });
+  return { ...host, send, get, projects: scope.projects, remote: scope.remote };
 }
 const sentTo = (send: { mock: { calls: unknown[][] } }, threadId?: string) => send.mock.calls.map(([args]) => args as { threadId: string; mode: string; originPluginId: string; input: { text: string }[] }).filter((call) => !threadId || call.threadId === threadId).map((call) => {
   const head = "[bb message from plugin:ci-dashboard]\n\n";
@@ -1897,6 +1936,59 @@ test("observer: a merge queue removal and a runner loss reach the thread one loo
     await signalsPass(harness, 301_000);
     expect(sentTo(send, "thr_late")).toEqual([expect.stringContaining("Subscribed to CI events")]);
     expect(sentTo(send, "thr_observer")).toHaveLength(count);
+  } finally { await harness.lifecycle.dispose(); }
+});
+
+test("observer: two observers in two projects each get only their own repository's events; a project without a remote gets none", async () => {
+  const scenario = ciScenario();
+  const scope = projectsOf({ thr_one: "proj_widgets", thr_two: "proj_gadgets", thr_none: "proj_none" }, { proj_gadgets: "git@github.com:ACME/gadgets.git", proj_none: null });
+  const { bb, harness, send } = observerHost({ repository: "acme/widgets, acme/gadgets", observerThreads: "thr_one, thr_two, thr_none" }, {}, scope);
+  try {
+    await plugin(bb);
+    await signalsPass(harness, 0);
+    expect(sentTo(send, "thr_one")).toEqual([expect.stringMatching(/^Subscribed to CI events for acme\/widgets: /)]);
+    expect(sentTo(send, "thr_two")).toEqual([expect.stringMatching(/^Subscribed to CI events for acme\/gadgets: /)]);
+    expect(sentTo(send, "thr_none")).toEqual([expect.stringMatching(/^Subscribed to CI events for no repositories: /)]);
+    scenario.running = [];
+    await signalsPass(harness);
+    const one = sentTo(send, "thr_one").slice(1), two = sentTo(send, "thr_two").slice(1);
+    expect(one).toHaveLength(2);
+    expect(two).toHaveLength(2);
+    for (const line of one) expect(line).toContain("https://github.com/acme/widgets/actions/runs/");
+    for (const line of two) expect(line).toContain("https://github.com/acme/gadgets/actions/runs/");
+    expect(sentTo(send, "thr_none")).toHaveLength(1);
+  } finally { await harness.lifecycle.dispose(); }
+});
+
+test("observer: subscribing before any pass confirms only the thread's own repository at once", async () => {
+  const scope = projectsOf({ thr_two: "proj_gadgets" }, { proj_gadgets: "https://github.com/acme/gadgets" });
+  const { bb, harness, send } = observerHost({ repository: "acme/widgets, acme/gadgets", observerThreads: "" }, {}, scope);
+  try {
+    await plugin(bb);
+    await harness.behavior.callAgentTool("ci_dashboard_manage", { action: "subscribe" }, { threadId: "thr_two" });
+    expect(sentTo(send, "thr_two")).toEqual([expect.stringMatching(/^Subscribed to CI events for acme\/gadgets: /)]);
+  } finally { await harness.lifecycle.dispose(); }
+});
+
+test("observer: threads whose lookup returns 404 are dropped and get no message, also two at once after a restart", async () => {
+  let { bb, harness, send, get } = observerHost({ observerThreads: "thr_observer, thr_gone, thr_gone2, thr_gone3" });
+  const gone = new Set(["thr_gone"]);
+  get.mockImplementation(async ({ threadId }: { threadId: string }) => {
+    if (gone.has(threadId)) throw new Error("404 thread not found");
+    return { id: threadId, projectId: "proj_widgets", archivedAt: null };
+  });
+  const listed = async () => JSON.parse(await harness.behavior.callAgentTool("ci_dashboard_manage", { action: "list" }, { threadId: "thr_observer" }) as string).observerThreads;
+  try {
+    await plugin(bb);
+    await signalsPass(harness, 0);
+    expect(sentTo(send, "thr_gone")).toEqual([]);
+    expect(sentTo(send, "thr_observer")).toEqual([expect.stringContaining("Subscribed to CI events for acme/widgets")]);
+    expect(await listed()).toEqual(["thr_observer", "thr_gone2", "thr_gone3"]);
+    // After a restart nothing is cached: two subscribed threads found gone in the same pass are both dropped.
+    gone.add("thr_gone2").add("thr_gone3");
+    ({ bb, harness } = await harness.lifecycle.reload(plugin));
+    await signalsPass(harness);
+    expect(await listed()).toEqual(["thr_observer"]);
   } finally { await harness.lifecycle.dispose(); }
 });
 
@@ -2038,6 +2130,29 @@ test("observer: batching holds events and sends one digest after the interval", 
   } finally { await harness.lifecycle.dispose(); }
 });
 
+test("observer: a held digest goes only to observers that belonged to the repository when its events were accepted; a failed lookup there sends nothing later", async () => {
+  const scenario = ciScenario();
+  // thr_one: acme/widgets, but its lookup fails in the pass that accepts the events. thr_two: acme/gadgets, moved to acme/widgets before the digest. thr_three: acme/widgets throughout.
+  const scope = projectsOf({ thr_one: "proj_one", thr_two: "proj_two", thr_three: "proj_widgets" }, { proj_one: "https://github.com/acme/widgets.git", proj_two: "https://github.com/acme/gadgets.git" });
+  let failing = false;
+  const read = scope.projects.get.getMockImplementation()!;
+  scope.projects.get.mockImplementation(async (args: { projectId: string }) => { if (failing && args.projectId === "proj_one") throw new Error("offline"); return read(args); });
+  const { bb, harness, send } = observerHost({ observerBatchMinutes: 5, observerThreads: "thr_one, thr_two, thr_three" }, {}, scope);
+  try {
+    await plugin(bb);
+    await signalsPass(harness, 0);
+    scenario.running = [];
+    failing = true;
+    await signalsPass(harness);
+    failing = false;
+    scope.remote.proj_two = "https://github.com/acme/widgets.git";
+    await signalsPass(harness, 301_000);
+    expect(sentTo(send, "thr_three")[1]).toMatch(/^2 CI events\n/);
+    expect(sentTo(send, "thr_one")).toEqual([expect.stringContaining("Subscribed to CI events for acme/widgets")]);
+    expect(sentTo(send, "thr_two")).toEqual([expect.stringContaining("Subscribed to CI events for no repositories")]);
+  } finally { await harness.lifecycle.dispose(); }
+});
+
 test("observer: a deployment is announced once, when its status becomes final after the type was switched on", async () => {
   const scenario = ciScenario();
   scenario.running = [];
@@ -2073,7 +2188,7 @@ test("ci_dashboard_manage observer actions subscribe, replaces, unsubscribes and
   const { bb, harness, send, get } = observerHost({ observerThreads: "" });
   get.mockImplementation(async ({ threadId }: { threadId: string }) => {
     if (threadId === "thr_missing") throw new Error("404 thread not found");
-    return { id: threadId, archivedAt: threadId === "thr_archived" ? 1 : null };
+    return { id: threadId, projectId: "proj_widgets", archivedAt: threadId === "thr_archived" ? 1 : null };
   });
   try {
     await plugin(bb);
@@ -2331,7 +2446,7 @@ async function cutoverHost(legacy: boolean, enabled = 0) {
   const send = vi.fn(async (_args: unknown) => ({})), push = vi.fn(async () => ({ ok: true }));
   const { bb, harness } = createFakePluginHost({ pluginId: "ci-dashboard", dataDir: root,
     settings: { repository: "acme/widgets", importBbRepositories: false, observerThreads: "thr_observer", observeDeployments: "off" },
-    sdk: { threads: { send } as never, plugins: { callRpc: push as never } } });
+    sdk: { threads: { send, get: async ({ threadId }: { threadId: string }) => ({ id: threadId, projectId: "proj_widgets", archivedAt: null }) } as never, projects: projectsOf().projects as never, plugins: { callRpc: push as never } } });
   const observers = emptyGlobal();
   syncGlobal(observers, ["thr_observer"], enabledEvents({ observeDeployments: "off" }), Date.now() - 3_600_000);
   const state = {

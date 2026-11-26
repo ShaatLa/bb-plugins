@@ -33,7 +33,8 @@ export const observerThreadsSchema = z.string().max(2000).superRefine((value, co
 /** Shared by all repositories: when each thread subscribed and each event type was switched on. Older events are never sent. */
 export const globalStateSchema = z.object({ threads: z.record(z.string(), z.number()), types: z.record(z.string(), z.number()) });
 export type ObserverGlobal = { threads: Record<string, number>; types: Partial<Record<ObserverType, number>> };
-const renderedSchema = z.object({ key: z.string(), type: z.enum(OBSERVER_TYPES), at: z.number(), text: z.string() });
+// `to`: the observers that belonged to the repository when the event was accepted; a held digest goes only to them. Absent on items stored by older versions.
+const renderedSchema = z.object({ key: z.string(), type: z.enum(OBSERVER_TYPES), at: z.number(), text: z.string(), to: z.array(z.string()).optional() });
 export type Rendered = z.infer<typeof renderedSchema>;
 /** Per repository: keys already announced (with the time), events waiting for the next digest, deployments already seen in a final state. */
 export const repoStateSchema = z.object({ sent: z.record(z.string(), z.number()), pending: z.array(renderedSchema), pendingSince: z.number().nullable(), deploys: z.record(z.string(), z.number()) });
@@ -377,7 +378,7 @@ export function dispatch(state: ObserverRepoState, items: Rendered[], global: Ob
   const out: { threadId: string; text: string }[] = [];
   const deliver = (list: Rendered[]) => {
     for (const threadId of Object.keys(global.threads)) {
-      const mine = list.filter((item) => item.at >= global.threads[threadId]!);
+      const mine = list.filter((item) => item.at >= global.threads[threadId]! && (!item.to || item.to.includes(threadId)));
       if (!mine.length) continue;
       const lines = mine.slice(0, MAX_DIGEST).map((item) => `- ${item.text}`);
       out.push({ threadId, text: mine.length === 1 ? `${mine[0]!.text}` : [`${mine.length} CI events`, ...lines, ...(mine.length > MAX_DIGEST ? [`- … +${mine.length - MAX_DIGEST} more`] : [])].join("\n") });

@@ -498,10 +498,30 @@ export default async function plugin(bb: BbPluginApi) {
       if (threadGone.test(describe(error))) await removeObserver(threadId, "thread no longer available").catch((e) => logOnce(`CI observer: could not drop ${threadId}: ${describe(e)}`));
     }
   }
-  /** One line to the observer threads when a claim is dropped by the plugin (never when an agent or a person releases it, or when the problem resolves). */
-  async function echoClaimDropped(values: Values, title: string, id: string, reason: string) {
+  // An observer gets events only for the GitHub repository of its own bb project. A thread never changes project, so its project id is cached;
+  // the remote is read on every call, and any failure sends nothing (fail closed).
+  const observerProjects = new Map<string, string>();
+  async function observerScope(threadId: string): Promise<string | null> {
+    let projectId = observerProjects.get(threadId);
+    if (!projectId) {
+      try {
+        const thread = await bb.sdk.threads.get({ threadId });
+        if (thread.archivedAt) { await removeObserver(threadId, "thread archived"); return null; }
+        projectId = thread.projectId;
+        observerProjects.set(threadId, projectId);
+      } catch (error) {
+        logOnce(`CI observer: no project for ${threadId}: ${describe(error)}`);
+        if (threadGone.test(describe(error))) await removeObserver(threadId, "thread no longer available").catch((e) => logOnce(`CI observer: could not drop ${threadId}: ${describe(e)}`));
+        return null;
+      }
+    }
+    try { return githubRepository((await bb.sdk.projects.get({ projectId })).gitRemoteUrl)?.toLowerCase() ?? null; }
+    catch (error) { logOnce(`CI observer: no project repository for ${threadId}: ${describe(error)}`); return null; }
+  }
+  /** One line to the observers of the problem's repository when a claim is dropped by the plugin (never when an agent or a person releases it, or when the problem resolves). */
+  async function echoClaimDropped(values: Values, repo: string, title: string, id: string, reason: string) {
     const text = `${fit(`Claim dropped · ${title}`, undefined, ` · problem \`${id}\` · ${reason}`)}`;
-    for (const threadId of parseObserverThreads(values.observerThreads)) await notify(threadId, text);
+    for (const threadId of parseObserverThreads(values.observerThreads)) if (await observerScope(threadId) === repo.toLowerCase()) await notify(threadId, text);
   }
   /** Brings subscriptions and event-type start times in line with the settings; new subscribers get the one-line confirmation and no history. */
   function syncObservers(values: Values, repositories: string[]) {
@@ -511,11 +531,16 @@ export default async function plugin(bb: BbPluginApi) {
       const before = JSON.stringify(observerGlobal), enabled = enabledEvents(values);
       const added = syncGlobal(observerGlobal, parseObserverThreads(values.observerThreads), enabled, Date.now());
       if (JSON.stringify(observerGlobal) !== before) await bb.storage.kv.set("observers", observerGlobal);
-      for (const id of added) await notify(id, subscriptionNotice(repositories, enabled, values.observerQuietMinutes, values.observerBatchMinutes, deploymentMode(values.observeDeployments)));
+      for (const id of added) {
+        const scope = await observerScope(id);
+        // A thread the lookup found gone was just dropped from the list and gets nothing.
+        if (!parseObserverThreads((await settings.get()).observerThreads).includes(id)) continue;
+        await notify(id, subscriptionNotice(repositories.filter((repo) => repo.toLowerCase() === scope), enabled, values.observerQuietMinutes, values.observerBatchMinutes, deploymentMode(values.observeDeployments)));
+      }
       return observerGlobal;
     });
   }
-  async function observe(repo: string, rt: Runtime, values: Values, token: string | undefined, opened: Signal[], now: number, signal: AbortSignal, problems: Problems) {
+  async function observe(repo: string, rt: Runtime, values: Values, token: string | undefined, opened: Signal[], now: number, signal: AbortSignal, problems: Problems, scopes: ReadonlyMap<string, string | null>) {
     if (verifying) return;
     const global = observerGlobal ?? emptyGlobal();
     if (!Object.keys(global.threads).length) return;
@@ -558,20 +583,22 @@ export default async function plugin(bb: BbPluginApi) {
     // Lines about a problem that is open name its id, so an agent can claim it with ci_dashboard_manage.
     const openProblems = new Set(problems.map((problem) => problem.id));
     const artifacts = flakeSettings(values.flakeSignatures, values.flakeArtifacts).artifacts, rendered: Rendered[] = [];
+    // Fixed at acceptance: an observer whose lookup failed, or whose project was elsewhere, never gets this event, even from a later digest.
+    const to = [...scopes].filter(([, scope]) => scope === repo.toLowerCase()).map(([threadId]) => threadId);
     for (const event of accepted) {
       const tests = event.tests && rt.backfill ? await rt.backfill.run.failedTests(repo, event.tests.run, event.tests.jobs, artifacts, signal) : null;
       const messages = tests?.length ? rt.backfill!.run.cachedFailureMessages(repo, event.tests!.run, artifacts) : null;
-      rendered.push({ key: event.key, type: event.type, at: event.at, text: event.render(tests, event.problem && openProblems.has(event.problem) ? event.problem : undefined, messages) });
+      rendered.push({ key: event.key, type: event.type, at: event.at, to, text: event.render(tests, event.problem && openProblems.has(event.problem) ? event.problem : undefined, messages) });
     }
     if (deploymentMode(values.observeDeployments) !== "all") state.pending = state.pending.filter((event) => event.type !== "deploy" || (deploymentMode(values.observeDeployments) === "failures" && !event.key.endsWith(":success")));
     const messages = dispatch(state, rendered, global, config);
     // State first: a crash while sending loses a message instead of repeating it.
     if (JSON.stringify(state) !== before) await bb.storage.kv.set(`observer:${repo}`, state);
-    for (const message of messages) await notify(message.threadId, message.text);
+    for (const message of messages) if (scopes.get(message.threadId) === repo.toLowerCase()) await notify(message.threadId, message.text);
   }
   const REMOVED_FROM_QUEUE = "query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){state timelineItems(itemTypes:[REMOVED_FROM_MERGE_QUEUE_EVENT],last:20){nodes{... on RemovedFromMergeQueueEvent{createdAt reason beforeCommit{oid}}}}}}}";
   const removedFromQueueSchema = z.object({ data: z.object({ repository: z.object({ pullRequest: z.object({ state: z.string().optional(), timelineItems: z.object({ nodes: z.array(z.object({ createdAt: z.string(), reason: z.string().nullable().optional(), beforeCommit: z.object({ oid: z.string() }).nullable().optional() })) }) }).nullable() }).nullable() }) });
-  async function signalsRepository(repo: string, values: Values, token: string | undefined, signal: AbortSignal) {
+  async function signalsRepository(repo: string, values: Values, token: string | undefined, signal: AbortSignal, scopes: ReadonlyMap<string, string | null>) {
     const rt = runtimeFor(repo);
     rt.signal = signal;
     const now = Date.now(), nowIso = new Date(now).toISOString(), days = values.jobHistoryDays;
@@ -670,7 +697,7 @@ export default async function plugin(bb: BbPluginApi) {
     // The problem list is built once per pass and rebuilt only when the handled state below changes.
     let problems = await problemsOf(repo, rt);
     // 4b. observer threads: classified events pushed to agents that watch CI.
-    try { await observe(repo, rt, values, token, opened, now, signal, problems); }
+    try { await observe(repo, rt, values, token, opened, now, signal, problems, scopes); }
     catch (error) { signal.throwIfAborted(); logOnce(`CI observer for ${repo} failed: ${describe(error)}`); }
     // Handled entries of problems that closed are dropped, but only once the source of that kind of problem is known.
     try {
@@ -685,7 +712,7 @@ export default async function plugin(bb: BbPluginApi) {
           for (const id of expired) delete handled[id];
           await saveHandled(repo, rt);
           problems = await problemsOf(repo, rt);
-          for (const id of expired) await echoClaimDropped(values, titles.get(id)!, id, `no resolution within ${values.claimTimeoutHours} h`);
+          for (const id of expired) await echoClaimDropped(values, repo, titles.get(id)!, id, `no resolution within ${values.claimTimeoutHours} h`);
         }
       }
     } catch (error) { logOnce(`CI signals handled state for ${repo} not pruned: ${describe(error)}`); }
@@ -734,9 +761,13 @@ export default async function plugin(bb: BbPluginApi) {
     const names = await repositoryNames(values);
     if (!names.length) return;
     const { token } = await resolveGithubToken(values.token, signal);
-    await syncObservers(values, names).catch((error) => { signal.throwIfAborted(); logOnce(`CI observer sync failed: ${describe(error)}`); });
+    const global = await syncObservers(values, names).catch((error) => { signal.throwIfAborted(); logOnce(`CI observer sync failed: ${describe(error)}`); return observerGlobal; });
+    // Each observer's repository is resolved once per pass, before any repository sends. One at a time: a lookup can drop a gone thread,
+    // and two drops reading the same observerThreads list at once would restore each other's thread.
+    const scopes = new Map<string, string | null>();
+    for (const id of Object.keys(global?.threads ?? {})) scopes.set(id, await observerScope(id));
     for (const repo of names) {
-      try { await signalsRepository(repo, values, token, signal); }
+      try { await signalsRepository(repo, values, token, signal, scopes); }
       catch (error) { signal.throwIfAborted(); logOnce(`CI signals for ${repo} failed: ${describe(error)}`); }
     }
     if (Date.now() >= nextPrune) {
@@ -996,7 +1027,7 @@ export default async function plugin(bb: BbPluginApi) {
       const titles = new Map((await problemsOf(repo, rt)).map((problem) => [problem.id, problem.title]));
       for (const id of ids) delete handled[id];
       await saveHandled(repo, rt);
-      for (const id of ids) if (titles.has(id)) await echoClaimDropped(values, titles.get(id)!, id, why);
+      for (const id of ids) if (titles.has(id)) await echoClaimDropped(values, repo, titles.get(id)!, id, why);
       bb.realtime.publish(SIGNALS_CHANGED, await changed(values, repo));
     }
   }
