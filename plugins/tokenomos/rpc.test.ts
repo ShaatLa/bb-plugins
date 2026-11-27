@@ -3,6 +3,8 @@ import { describe, expect, it, vi } from 'vitest';
 import { registerRpc } from './rpc.js';
 import { registerCli } from './cli.js';
 import { MIGRATIONS } from './store/schema.js';
+import type { z } from 'zod';
+import type { limitsGetSchema } from './contract.js';
 
 function setup() {
     const { bb,harness }=createFakePluginHost({ pluginId:'tokenomos',sdk:{ projects:{ list: async () => [] } } });
@@ -22,7 +24,7 @@ describe('RPC and CLI', () => {
       const asPlugin={ experimental_caller:{ kind:'plugin' as const,pluginId:'example-plugin' } };
       await expect(harness.behavior.callRpc('costs.threads',{ threadIds:['missing'],includeDescendants:true },asPlugin)).resolves.toBeDefined();
       for (const [method,input] of Object.entries({ prune:{},'config.set':{ key:'language',value:'en' },summary:{ range:'week',by:'provider' } }))
-        await expect(harness.behavior.callRpc(method,input,asPlugin)).rejects.toThrow(/internal to its page and CLI.*costs\.sum/);
+        await expect(harness.behavior.callRpc(method,input,asPlugin)).rejects.toThrow(/internal to its page and CLI.*costs\.sum.*limits\.get/);
       await harness.behavior.callRpc('setPriceOverride',{ model:'claude-sonnet-5-5',rates:{ input:7 } });
       expect(JSON.parse((await settings.get()).priceOverrides)['claude-sonnet-5-5'].input).toBe(7);
       await harness.behavior.callRpc('setPriceOverride',{ model:'claude-sonnet-5-5',rates:{ output:17 } });
@@ -54,7 +56,7 @@ describe('RPC and CLI', () => {
     const resetsAt=new Date(Date.now()+6*86_400_000).toISOString();
     const rpc=vi.fn(async ({ method }: { method:string }) => method.endsWith('listResources')
       ? { resources:[{ id:'r',providerId:'claude-code',label:'Claude Code',accountKey:'acct' }] }
-      : { accountKey:'acct',observedAt:1,usage:{ status:'ok',planLabel:'Max',windows:[{ kind:'weekly',id:'w',label:'Weekly limit',usedPercent:50,resetsAt,model:null }] } });
+      : { accountKey:'acct',observedAt:Date.now(),usage:{ status:'ok',planLabel:'Max',windows:[{ kind:'weekly',id:'w',label:'Weekly limit',usedPercent:50,resetsAt,model:null }] } });
     const { bb,harness }=createFakePluginHost({ pluginId:'tokenomos',sdk:{ projects:{ list: async () => [] },
       plugins:{ experimental_discoverRpc: async () => [{ pluginId:'provider-claude-code' }],callRpc: rpc } } as never });
     const db=bb.storage.database(); bb.storage.migrate(db,MIGRATIONS);
@@ -192,4 +194,130 @@ it('exposes wakeCost unknown/not_found, CLI, and a 30 second watchlist memo',asy
   await vi.advanceTimersByTimeAsync(29999);expect((await harness.behavior.callRpc('watchlist',{}) as {items:unknown[]}).items).toHaveLength(1);
   await vi.advanceTimersByTimeAsync(1);expect(await harness.behavior.callRpc('watchlist',{})).toEqual({items:[]});
  }finally{await harness.lifecycle.dispose();vi.useRealTimers();}
+});
+
+describe('public limits.get', () => {
+  const NOW=1700002400000, L=604800000, RESET=1700600000000, START=RESET-L, H=3_600_000, M=60_000;
+  const asPlugin={ experimental_caller:{ kind:'plugin' as const,pluginId:'example-plugin' } };
+  type Win={ kind:string;id:string;label:string;usedPercent:number;resetsAt:string;model:string|null };
+  const weekly=(usedPercent:number,resetsAt=RESET,label='Weekly limit'): Win => ({ kind:'weekly',id:label==='Weekly limit'?'secondary':label,label,usedPercent,resetsAt:new Date(resetsAt).toISOString(),model:null });
+  const provider={ pluginId:'provider-claude-code',resourceId:'res-example' }, pool={ pluginId:'account-pool',resourceId:'pool-acct-example' };
+  type Opts={ windows?:(call:number) => Win[]; claudeAccounts?:number; codex?:boolean; observedAt?:number; outside?:boolean };
+  async function open(o:Opts={}) {
+    vi.useFakeTimers({ toFake:['Date'] }); vi.setSystemTime(NOW);
+    let calls=0;
+    const rpc=async ({ pluginId,method,input }: { pluginId:string;method:string;input:{ resourceId?:string } }) => {
+      if (method==='account.list') return [];
+      if (method.endsWith('listResources')) return pluginId==='provider-claude-code'
+        ? { resources:Array.from({ length:o.claudeAccounts ?? 1 },(_,i) => ({ id:i ? `res-${i}` : 'res-example',providerId:'claude-code',label:'Claude Code',accountKey:i ? `acct-${i}` : 'acct-example' })) }
+        : { resources:[{ id:'pool-acct-example',providerId:'claude-code',label:'Claude Code',accountKey:'acct-example' },
+          ...(o.codex ? [{ id:'pool-acct-example-2',providerId:'codex',label:'Codex',accountKey:'acct-example',scope:{ kind:'host',hostId:'host_example',hostName:'Example Mac' } }] : [])] };
+      if (input.resourceId==='pool-acct-example-2') return { accountKey:'acct-example',observedAt:null,usage:{ status:'unauthenticated',message:'sign in again' } };
+      if (input.resourceId==='res-example') calls++;
+      const key=input.resourceId==='res-example' || input.resourceId==='pool-acct-example' ? 'acct-example' : `acct-${input.resourceId!.slice(4)}`;
+      return { accountKey:key,observedAt:o.observedAt ?? NOW-M,usage:{ status:'ok',planLabel:'Max 5x',windows:o.windows?.(calls) ?? [weekly(1)] } };
+    };
+    const { bb,harness }=createFakePluginHost({ pluginId:'tokenomos',sdk:{ projects:{ list: async () => [] },system:{ config: async () => ({ primaryHostId:'host_example' }) },
+      plugins:{ experimental_discoverRpc: async () => [{ pluginId:'account-pool' },{ pluginId:'provider-claude-code' }],callRpc: rpc } } as never });
+    const db=bb.storage.database(); bb.storage.migrate(db,MIGRATIONS);
+    const settings=bb.settings.define({ rawRetentionDays:{ type:'number',default:30,label:'Raw' },rollupRetentionDays:{ type:'number',default:200,label:'Rollups' },referenceModel:{ type:'string',default:'claude-sonnet-5-5',label:'Reference' },includeOutsideBb:{ type:'boolean',default:o.outside ?? false,label:'Outside' },priceOverrides:{ type:'string',default:'{}',label:'Overrides' } });
+    registerRpc(bb,db,settings);
+    const get=async (input:{ hostId?:string }={}) => await harness.behavior.callRpc('limits.get',input,asPlugin) as z.infer<typeof limitsGetSchema>;
+    return { db,harness,get,settings,close: async () => { await harness.lifecycle.dispose(); vi.useRealTimers(); } };
+  }
+  const seedPrevious=(db:{ prepare(sql:string):{ run(...a:unknown[]):unknown } }) => db.prepare("INSERT INTO cursor(name,value) VALUES ('limits-windows',?)")
+    .run(JSON.stringify({ 'claude-code\u0000acct-example\u0000Weekly limit':{ last:{ startsAt:START-L,resetsAt:START,observedAt:START-H,usedPercent:40 } } }));
+
+  it('gives other plugins every account with its windows; early in a week it projects the previous window\'s pace (shared fixture)', async () => {
+    const t=await open({ codex:true });
+    try {
+      seedPrevious(t.db);
+      const asOf=NOW-M, forecastPercent=1+40/((START-H)-(START-L))*(RESET-asOf);
+      expect(await t.get()).toEqual({ version:1,now:NOW,accounts:[
+        { accountId:'claude-code\u0000acct-example',providerId:'claude-code',label:'Claude Code',plan:'Max 5x',host:null,source:provider,sources:[provider,pool],
+          status:'ok',message:null,observedAt:asOf,stale:false,
+          windows:[{ key:'Weekly limit',id:'secondary',label:'Weekly limit',kind:'weekly',model:null,usedPercent:1,resetsAt:RESET,startsAt:START,lengthMs:L,
+            elapsedShare:(asOf-START)/L,forecastPercent,pace:forecastPercent/100,runsOutAt:null,room:true,
+            forecast:{ method:'previous-window',reason:null,usdPerHour:null,usdPerPercent:null },asOf,stale:false,seenAt:null }] },
+        { accountId:'codex\u0000acct-example',providerId:'codex',label:'Codex',plan:null,host:{ id:'host_example',name:'Example Mac' },
+          source:{ pluginId:'account-pool',resourceId:'pool-acct-example-2' },sources:[{ pluginId:'account-pool',resourceId:'pool-acct-example-2' }],
+          status:'unauthenticated',message:'sign in again',observedAt:null,stale:false,windows:[] },
+      ] });
+      expect(forecastPercent).toBeCloseTo(40.76,1);
+      // Another machine's account is left out unless that machine is asked for; shared ones always come.
+      expect((await t.get({ hostId:'host_other' })).accounts.map(a => a.providerId)).toEqual(['claude-code']);
+    } finally { await t.close(); }
+  });
+
+  it('says there is no previous window when it has not watched a reset, and claims no room', async () => {
+    const t=await open();
+    try {
+      expect((await t.get()).accounts[0]!.windows[0]).toMatchObject({ forecastPercent:null,pace:null,runsOutAt:null,room:null,
+        forecast:{ method:null,reason:'no-previous-window',usdPerHour:null,usdPerPercent:null } });
+    } finally { await t.close(); }
+  });
+
+  describe('converts the last week\'s spend to percent only when it is the account\'s alone and complete', () => {
+    // A priced call every 6 hours for 8 days, and two in the first two hours of the week.
+    const history=(db:Parameters<typeof seedPrevious>[0],extra:{ from?:number;model?:string }={}) => {
+      const rows=[]; for (let ts=extra.from ?? NOW-8*24*H; ts<NOW-H; ts+=6*H) rows.push(ts);
+      rows.push(START+30*M,START+90*M);
+      const insert=db.prepare(`INSERT INTO usage_hourly(hour,provider,model,tier,band,project_id,thread_id,calls,fresh_in) VALUES (?,?,?,?,?,?,?,?,?)
+        ON CONFLICT DO UPDATE SET calls=calls+1,fresh_in=fresh_in+excluded.fresh_in`);
+      const raw=db.prepare("INSERT INTO usage_raw(key,ts,provider,model,fresh_in) VALUES (?,?,?,?,?)");
+      for (const ts of rows) { insert.run(Math.floor(ts/H)*H,'claude-code',extra.model ?? 'claude-sonnet-5-5','standard',0,'p','a',1,1_000_000); raw.run(`r${ts}`,ts,'claude-code',extra.model ?? 'claude-sonnet-5-5',1_000_000); }
+      db.prepare("INSERT INTO cursor(name,value) VALUES ('backfill-progress','{\"done\":true}')").run();
+      db.prepare("INSERT INTO source_status(source,state) VALUES ('claude-file','ok'),('bb-events','ok')").run();
+    };
+    const early=(used:number) => () => [weekly(used)];
+    const steady=() => [weekly(10,NOW+5*24*H)];
+    const method=async (o:Opts,seed:(db:Parameters<typeof seedPrevious>[0]) => void=history) => {
+      const t=await open({ outside:true,...o });
+      try { seed(t.db); return (await t.get()).accounts.find(a => a.accountId==='claude-code\u0000acct-example')!.windows[0]!.forecast; }
+      finally { await t.close(); }
+    };
+    it('early from 3% used without a previous reading, steady with full history', async () => {
+      expect(await method({ windows:early(3) })).toMatchObject({ method:'recent-spend',reason:null,usdPerHour:expect.any(Number),usdPerPercent:expect.any(Number) });
+      expect(await method({ windows:early(2) })).toMatchObject({ method:null,reason:'no-previous-window' });
+      expect(await method({ windows:steady })).toMatchObject({ method:'recent-spend' });
+    });
+    it('falls back to the window average otherwise', async () => {
+      expect(await method({ windows:steady,claudeAccounts:2 })).toMatchObject({ method:'window-average',usdPerHour:null });
+      expect(await method({ windows:steady,outside:false })).toMatchObject({ method:'window-average' });
+      expect(await method({ windows:steady },db => history(db,{ from:NOW-3*24*H }))).toMatchObject({ method:'window-average' });
+      expect(await method({ windows:steady },db => history(db,{ model:'mystery-model' }))).toMatchObject({ method:'window-average' });
+      expect(await method({ windows:steady },db => { history(db); db.prepare("UPDATE source_status SET state='degraded' WHERE source='claude-file'").run(); })).toMatchObject({ method:'window-average' });
+      expect(await method({ windows:steady },db => { history(db); db.prepare("UPDATE cursor SET value='{\"done\":false}' WHERE name='backfill-progress'").run(); })).toMatchObject({ method:'window-average' });
+      expect(await method({ windows:steady },db => { history(db); db.prepare("DELETE FROM source_status WHERE source='bb-events'").run(); })).toMatchObject({ method:'window-average' });
+    });
+  });
+
+  it('computes as of the measurement and never reports room without evidence', async () => {
+    const t=await open({ observedAt:NOW-40*M,windows:() => [weekly(50,NOW+5*24*H),weekly(100,NOW+5*24*H,'Weekly · Fable')] });
+    try {
+      const [half,out]=(await t.get()).accounts[0]!.windows;
+      expect(half).toMatchObject({ asOf:NOW-40*M,elapsedShare:(NOW-40*M-(NOW+5*24*H-L))/L,room:false,forecast:{ method:'window-average' } });
+      expect(half!.pace).toBeCloseTo(0.5/half!.elapsedShare!);
+      expect(out).toMatchObject({ key:'Weekly · Fable',room:false,forecast:{ reason:'exhausted' } });
+    } finally { await t.close(); }
+  });
+
+  it('reports a window or an account it no longer hears about as stale, with no room', async () => {
+    const t=await open({ windows:call => call<2 ? [weekly(10,NOW+5*24*H),weekly(20,NOW+5*24*H,'Weekly · Fable')] : [weekly(10,NOW+5*24*H)] });
+    try {
+      expect((await t.get()).accounts[0]!.windows.map(w => w.room)).toEqual([true,true]);
+      vi.setSystemTime(NOW+61_000); await t.get();
+      await vi.waitFor(async () => expect((await t.get()).accounts[0]!.windows[1]).toMatchObject({ stale:true,seenAt:NOW,asOf:NOW,room:null }));
+      expect((await t.get()).accounts[0]!.windows[0]).toMatchObject({ stale:false,room:true });
+    } finally { await t.close(); }
+    const never=new Promise<never>(() => {});
+    vi.useFakeTimers({ toFake:['Date'] }); vi.setSystemTime(NOW);
+    const { bb,harness }=createFakePluginHost({ pluginId:'tokenomos',sdk:{ projects:{ list: async () => [] },plugins:{ experimental_discoverRpc: async () => [{ pluginId:'provider-claude-code' }],callRpc: () => never } } as never });
+    const db=bb.storage.database(); bb.storage.migrate(db,MIGRATIONS);
+    db.prepare("INSERT INTO cursor(name,value) VALUES ('limits-last',?)").run(JSON.stringify({ at:NOW-H,accounts:[{ providerId:'claude-code',label:'Claude Code',plan:null,status:'ok',message:null,observedAt:NOW-H,
+      windows:[{ id:'w',label:'Weekly limit',kind:'weekly',usedPercent:10,resetsAt:NOW+5*24*H,model:null }] }] }));
+    registerRpc(bb,db,bb.settings.define({ rawRetentionDays:{ type:'number',default:30,label:'Raw' } }) as never);
+    try { expect((await harness.behavior.callRpc('limits.get',{},asPlugin) as z.infer<typeof limitsGetSchema>).accounts[0]).toMatchObject({ stale:true,windows:[{ room:null }] }); }
+    finally { await harness.lifecycle.dispose(); vi.useRealTimers(); }
+  });
 });

@@ -70,6 +70,21 @@ describe('collectLimits', () => {
     expect(accounts.map(a => [a.label, a.status, a.host])).toEqual([['Claude Code', 'ok', null], ['Codex', 'expired', { id: 'host_b', name: 'Mac' }]]);
   });
 
+  it('names the report an account comes from and every resource merged into it', async () => {
+    const list = (id: string) => ({ resources: [{ id, providerId: 'claude-code', label: 'Claude Code', accountKey: 'acct' }] });
+    const run = (providerFails: boolean) => collectLimits(async () => [{ pluginId: 'account-pool' }, { pluginId: 'provider-claude-code' }],
+      async (pluginId, method) => {
+        if (method === 'account.list') return [];
+        if (method.endsWith('listResources')) return list(pluginId === 'account-pool' ? 'pool-1' : 'res-1');
+        if (pluginId === 'provider-claude-code' && providerFails) throw new Error('offline');
+        return usage('acct', [week(12)]);
+      }, 'tokenomos');
+    const provider = { pluginId: 'provider-claude-code', resourceId: 'res-1' }, pool = { pluginId: 'account-pool', resourceId: 'pool-1' };
+    // The provider plugin's own report wins; Account Pooler stands in only when it fails.
+    expect((await run(false)).map(r => r.account)).toMatchObject([{ accountId: 'claude-code\0acct', source: provider, sources: [provider, pool], status: 'ok' }]);
+    expect((await run(true)).map(r => r.account)).toMatchObject([{ accountId: 'claude-code\0acct', source: pool, sources: [provider, pool], status: 'ok' }]);
+  });
+
   it('reports a failing resource as an error and skips a plugin whose inventory is malformed', async () => {
     const accounts = (await collectLimits(
       async () => [{ pluginId: 'provider-a' }, { pluginId: 'provider-b' }],
@@ -80,7 +95,9 @@ describe('collectLimits', () => {
       },
       'tokenomos',
     )).map(r => r.account);
-    expect(accounts).toEqual([{ providerId: 'a', label: 'A', host: null, plan: null, status: 'error', message: 'offline', observedAt: null, windows: [] }]);
+    const source = { pluginId: 'provider-a', resourceId: 'x' };
+    expect(accounts).toEqual([{ providerId: 'a', label: 'A', host: null, plan: null, status: 'error', message: 'offline', observedAt: null, windows: [],
+      accountId: 'a\0provider-a\0x', source, sources: [source] }]);
   });
 
   it('takes a failed provider plugin\'s account from an aggregator, and shows the last good numbers when both fail', async () => {

@@ -14,7 +14,12 @@ export type LimitAccount = {
   stale?: boolean;
   /** The machine a host-scoped source reports this account from; null when several machines (or a shared source) report it. */
   host?: { id: string; name: string } | null;
+  /** Stable id: provider id + provider-issued account key (or the source resource without one). */
+  accountId?: string;
+  /** The report the account's fresh windows come from, and every resource merged into it in that collection. */
+  source?: Source | null; sources?: Source[];
 };
+export type Source = { pluginId: string; resourceId: string };
 export type CallRpc = (pluginId: string, method: string, input: unknown, signal: AbortSignal) => Promise<unknown>;
 export type Discover = (method: string) => Promise<{ pluginId: string }[]>;
 
@@ -83,9 +88,9 @@ export async function collectLimits(discover: Discover, callRpc: CallRpc, selfId
           if (key) knownKeys.set(resource, key);
           const id = key ? `${r.providerId}\0${key}` : fallbackId;
           if (plan) plans.set(id, plan);
-          return { id, account: toAccount(r, got) };
+          return { id, account: { ...toAccount(r, got), source: { pluginId, resourceId: r.id } } };
         } catch (error) {
-          return { id: fallbackId, account: failed(r, error) };
+          return { id: fallbackId, account: { ...failed(r, error), source: { pluginId, resourceId: r.id } } };
         }
       }));
     } catch { return []; }
@@ -93,9 +98,10 @@ export async function collectLimits(discover: Discover, callRpc: CallRpc, selfId
   const out = new Map<string, LimitAccount>();
   for (const { id, account } of perPlugin.flat()) {
     const kept = out.get(id);
-    if (!kept) { out.set(id, account); continue; }
+    if (!kept) { out.set(id, { ...account, accountId: id, sources: [account.source!] }); continue; }
+    const sources = [...kept.sources!, account.source!];
     // An aggregator standing in for a failed provider plugin keeps the provider's own label.
-    const next = kept.status !== 'ok' && account.status === 'ok' ? { ...account, label: kept.label } : kept;
+    const next = kept.status !== 'ok' && account.status === 'ok' ? { ...account, accountId: id, label: kept.label, sources } : { ...kept, sources };
     // An account several machines (or a shared source) report belongs to none of them.
     out.set(id, kept.host?.id === account.host?.id ? next : { ...next, host: null });
   }
@@ -114,7 +120,7 @@ const KEEP_LAST_GOOD_MS = 24 * 3_600_000;
  * model, since sources name it differently ("Fable", "Weekly · fable"); others by label.
  */
 // Custom windows can share a model scope (an aggregate "Gemini Models" in 5h and 7d), so they keep their label.
-const windowKey = (w: LimitWindow) => w.kind !== 'custom' && w.model ? `${w.kind}:${w.model.toLowerCase()}` : w.label;
+export const windowKey = (w: LimitWindow) => w.kind !== 'custom' && w.model ? `${w.kind}:${w.model.toLowerCase()}` : w.label;
 
 export type CollectorState = { good?: [string, { at: number; account: LimitAccount }][]; keys?: [string, string][] };
 

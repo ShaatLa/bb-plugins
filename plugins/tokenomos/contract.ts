@@ -142,8 +142,31 @@ export const limitsSchema = z.object({
   })),
 });
 
+const source = z.object({ pluginId: z.string(), resourceId: z.string() });
+/** Public `limits.get` v1: fields are only ever added; a breaking change gets a new method name. Semantics in README. */
+export const limitsGetSchema = z.object({
+  version: z.literal(1), now: num,
+  accounts: z.array(z.object({
+    accountId: z.string(), providerId: z.string(), label: z.string(), plan: z.string().nullable(),
+    host: z.object({ id: z.string(), name: z.string() }).nullable(), source: source.nullable(), sources: z.array(source),
+    status: z.string(), message: z.string().nullable(), observedAt: nullableNum, stale: z.boolean(),
+    windows: z.array(z.object({
+      key: z.string(), id: z.string(), label: z.string(), kind: z.string(), model: z.string().nullable(), usedPercent: num, resetsAt: nullableNum,
+      startsAt: nullableNum, lengthMs: nullableNum, elapsedShare: nullableNum, forecastPercent: nullableNum, pace: nullableNum, runsOutAt: nullableNum,
+      room: z.boolean().nullable(),
+      forecast: z.object({
+        method: z.enum(['previous-window', 'recent-spend', 'window-average']).nullable(),
+        reason: z.enum(['exhausted', 'no-reset', 'too-early', 'no-previous-window']).nullable(),
+        usdPerHour: nullableNum, usdPerPercent: nullableNum,
+      }),
+      asOf: num, stale: z.boolean(), seenAt: nullableNum,
+    })),
+  })),
+});
+
 export const rpcContract = defineRpcContract({
   limits:{tags,input:z.object({}),output:limitsSchema},
+  'limits.get': { tags, input: z.object({ hostId: z.string().min(1).optional() }), output: limitsGetSchema },
   // One global setting at a time; the value is validated by that setting's own schema on the server.
   'config.get': { input: z.object({}), output: z.object({ values: z.record(z.string(), z.union([z.string(), z.number(), z.boolean()])) }) },
   'config.options': { input: z.object({}), output: z.object({ referenceModels: z.array(z.object({ model: z.string(), label: z.string(), provider: z.string().nullable() })) }) },

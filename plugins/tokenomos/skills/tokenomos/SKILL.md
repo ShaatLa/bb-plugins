@@ -1,6 +1,6 @@
 ---
 name: tokenomos
-description: Read token usage and API-equivalent cost of BB threads (spend by provider and model, savings estimates, provider limit pace and heavy-model share) with the tokenomos CLI, and call the costs.sum and costs.threads RPCs from other plugins.
+description: Read token usage and API-equivalent cost of BB threads (spend by provider and model, savings estimates, provider limit pace and heavy-model share) with the tokenomos CLI, and call the costs.sum, costs.threads and limits.get RPCs from other plugins.
 ---
 
 # Tokenomos
@@ -43,14 +43,18 @@ bb tokenomos limits [--json]
 
 - One line per account: `<label> [<providerId>] <plan>: <status>` (`stale, last known data from <time>` when the source did not answer this time; those numbers are kept up to 24 hours), then one line per limit window: percent used, share of the window elapsed, reset time (UTC), then `exhausted until reset`, `runs out <time>` (the limit is projected to end before its reset) or `~<n>% at reset`, then the window's API-equivalent spend, the heavy-model share of that cost, heavy calls of all calls, and `$ per 1%`.
 - Last line: the heavy model families (setting `heavyModels`, default `fable, opus, sol, astra, argon`) and the target for their share of the cost (setting `heavyTargetPercent`, default 50; `no target set` when it is 0).
-- `--json`: `{ heavyModels, heavyTarget /* fraction, null when off */, accounts: [{ providerId, label, plan, status, message, observedAt, stale?, windows: [{ id, label, kind, model, usedPercent, resetsAt, startsAt, elapsedShare, forecastPercent, runsOutAt, usage: { heavy: { usd, calls }, other: { usd, calls }, heavyShare, usdPerPercent, partial, recentUsdPerHour? } | null }] }] }`. `recentUsdPerHour` is the spend per hour over the last seven days, set for windows of a week or longer, whose forecast projects it. Times are epoch ms; a window at 0% with `resetsAt: null` has reset and not started again (the source leaves it out until the next request); `usage` is null when the window length is unknown; `heavyShare` is null for a window scoped to a heavy model (Claude's Fable week).
+- `--json`: `{ heavyModels, heavyTarget /* fraction, null when off */, accounts: [{ providerId, label, plan, status, message, observedAt, stale?, windows: [{ id, label, kind, model, usedPercent, resetsAt, startsAt, elapsedShare, forecastPercent, runsOutAt, usage: { heavy: { usd, calls }, other: { usd, calls }, heavyShare, usdPerPercent, partial, recentUsdPerHour? } | null }] }] }`. `recentUsdPerHour` is the spend per hour over the last seven days (whole hours), set for windows of a week or longer. A forecast uses it only when that spend is the account's alone and complete; otherwise the forecast is the previous window's own pace early in a week, then the window's own average. Times are epoch ms; a window at 0% with `resetsAt: null` has reset and not started again (the source leaves it out until the next request); `usage` is null when the window length is unknown; `heavyShare` is null for a window scoped to a heavy model (Claude's Fable week).
 - Reading it: a window that runs out before its reset needs load moved to another provider; a heavy share above the target means routine work should move to medium and light models (Sonnet, Terra, Haiku, Luna, Flash). The window spend is provider-wide and includes usage outside BB.
 
 Cost shape everywhere: `{ usd: number | null, tokens: { freshIn, cacheRead, cacheWrite, output }, estimated: boolean, partial: boolean }`.
 
 ## Public RPCs (plugin id `tokenomos`)
 
-Other plugins must use only these two: Tokenomos refuses a plugin caller on any other method with code `forbidden`, and the refusal names these two. Both are tagged `usage` and accept 1 to 2000 thread IDs (2000 spans in the time-window form); one call dedupes shared threads and descendants, so send a whole set (an epic) in one call rather than summing per-item results.
+Other plugins must use only these three: Tokenomos refuses a plugin caller on any other method with code `forbidden`, and the refusal names them.
+
+- `limits.get` input `{ hostId?: string }` → `{ version: 1, now, accounts: [{ accountId, providerId, label, plan, host, source, sources, status, message, observedAt, stale, windows: [{ key, id, label, kind, model, usedPercent, resetsAt, startsAt, lengthMs, elapsedShare, forecastPercent, pace, runsOutAt, room, forecast: { method, reason, usdPerHour, usdPerPercent }, asOf, stale, seenAt }] }] }`: provider limit windows with pace (`forecastPercent / 100`) and forecast for routing work. `room` is null when the pace is unknown or the reading is stale, never true without evidence; `forecast.reason` says why a forecast is missing. Field semantics are in the plugin README.
+
+The two cost RPCs are tagged `usage` and accept 1 to 2000 thread IDs (2000 spans in the time-window form); one call dedupes shared threads and descendants, so send a whole set (an epic) in one call rather than summing per-item results.
 
 - `costs.sum` input `{ threadIds: string[], includeDescendants: boolean }` → `{ priceVersion, cost: Cost, threadCount, updatedAt }`. `cost` is the deduplicated sum.
 - `costs.sum` also accepts `{ spans: { threadId, from, to: number | null }[], includeDescendants }` to count only calls made while each thread was inside its time windows (epoch ms; `to: null` means now). Overlapping spans are merged, a descendant uses the union of its roots' spans, and `threadCount` counts threads with at least one counted call. Hours cut by a span edge are exact for the last 30 days and whole-hour estimates (`estimated: true`) before that.

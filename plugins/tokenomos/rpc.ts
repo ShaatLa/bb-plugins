@@ -8,8 +8,8 @@ import { watchlist, wakeCost } from './store/context';
 import { prune } from './store/prune.js';
 import { REFERENCE_MODELS, SETTINGS, type SettingKey } from './settings.js';
 import { resolveModel } from './pricing/price.js';
-import { DEFAULT_HEAVY_MODELS, parseHeavy, RECENT, windowLength, windowPace, windowUsage } from './store/limits.js';
-import { createLimitCollector, type CollectorState, type LimitAccount } from './ingest/usage-limits.js';
+import { DEFAULT_HEAVY_MODELS, exactSpend, historyComplete, parseHeavy, previousPace, RECENT, recentRate, steadyAt, track, windowLength, windowPace, windowUsage, type Tracked } from './store/limits.js';
+import { createLimitCollector, windowKey, type CollectorState, type LimitAccount } from './ingest/usage-limits.js';
 
 export type Settings = { rawRetentionDays: number; rollupRetentionDays: number; referenceModel: string; includeOutsideBb: boolean; priceOverrides: string; contextWatchTokens?:number; heavyModels?: string; heavyTargetPercent?: number; language?: string };
 export type SettingsHandle = { get(): Promise<Settings>; experimental_set(values: Partial<Settings>): Promise<unknown> };
@@ -57,10 +57,27 @@ export function registerRpc(bb: BbPluginApi, db: Database, settings: SettingsHan
   const refreshMachines = async () => {
     try { selfHost = (await sdk.system.config()).primaryHostId; } catch { /* unknown: no account is dropped */ }
   };
+  // Each window's last fresh reading, and the last one of the window before: the account's own previous-window pace.
+  const TRACKED = 'limits-windows';
+  const tracked = (): Tracked => {
+    try { return JSON.parse((db.prepare('SELECT value FROM cursor WHERE name=?').get(TRACKED) as { value: string } | undefined)?.value ?? 'null') ?? {}; }
+    catch { return {}; }
+  };
+  const save = (name: string, value: unknown) => db.prepare('INSERT INTO cursor(name,value) VALUES (?,?) ON CONFLICT(name) DO UPDATE SET value=excluded.value').run(name, JSON.stringify(value));
+  const trackReadings = (accounts: LimitAccount[], at: number) => {
+    const t = tracked();
+    for (const a of accounts) if (a.status === 'ok' && !a.stale && a.accountId) for (const w of a.windows) {
+      const length = windowLength(w.kind, w.label);
+      if (w.stale || w.resetsAt === null || length === null) continue;
+      track(t, `${a.accountId}\0${windowKey(w)}`, { startsAt: w.resetsAt - length, resetsAt: w.resetsAt, observedAt: Math.min(a.observedAt ?? at, at), usedPercent: w.usedPercent }, length, at);
+    }
+    save(TRACKED, t);
+  };
   const refreshLimits = () => limitPending ??= Promise.all([collectLimitsNow(), refreshMachines()]).then(([accounts]) => {
     const had = limitCache !== undefined;
     limitCache = { at: Date.now(), accounts };
-    if (accounts.length) db.prepare('INSERT INTO cursor(name,value) VALUES (?,?) ON CONFLICT(name) DO UPDATE SET value=excluded.value').run(LAST_LIMITS, JSON.stringify({ ...limitCache, ...collectLimitsNow.state() }));
+    trackReadings(accounts, limitCache.at);
+    if (accounts.length) save(LAST_LIMITS, { ...limitCache, ...collectLimitsNow.state() });
     if (had) bb.rpc.experimental_invalidate(['usage']);
   }, () => { limitCache ??= { at: Date.now(), accounts: [] }; }).finally(() => { limitPending = undefined; });
   let machinesKnown: Promise<void> | undefined;
@@ -93,6 +110,45 @@ export function registerRpc(bb: BbPluginApi, db: Database, settings: SettingsHan
     const saved = savedModels()?.filter(m => resolveModel(m.model));
     return saved?.length ? saved : REFERENCE_MODELS.map(model => ({ model, label: model, provider: null }));
   };
+  /**
+   * Limit windows with pace and forecast, everything derived as of `asOf`, when the percent was measured. A long window
+   * early in its period projects the account's own previous-window pace. The last week's spend converts to percent only
+   * when it is the account's alone and complete: the provider's only account, usage outside bb counted, healthy and
+   * complete history, all priced, at least 3% used. Otherwise a steady window projects its own average.
+   */
+  const computeLimits = async (hostId?: string) => {
+    const o = await options(), heavy = parseHeavy(o.heavyModels ?? DEFAULT_HEAVY_MODELS), all = await limitAccounts(), t = tracked();
+    const rawFloor = Math.ceil((o.now - o.rawRetentionDays * 86_400_000) / 3_600_000) * 3_600_000;
+    const perProvider = new Map<string, number>();
+    for (const a of all) perProvider.set(a.providerId, (perProvider.get(a.providerId) ?? 0) + 1);
+    const host = hostId ?? selfHost;
+    // A window past its reset comes from a last known report; its numbers belong to a period that is over.
+    const accounts = all.filter(a => !a.host || !host || a.host.id === host).map(a => {
+      const live = a.windows.filter(w => w.resetsAt === null || w.resetsAt > o.now);
+      // All windows over and no fresh report yet: say so, instead of "no data: ok".
+      return { ...a, message: live.length || !a.windows.length ? a.message : a.message ?? 'reset, no fresh report yet', windows: live.map(w => {
+        const length = windowLength(w.kind, w.label), startsAt = w.resetsAt === null || length === null ? null : w.resetsAt - length;
+        const asOf = Math.min(o.now, (w.stale ? w.seenAt : a.observedAt) ?? o.now);
+        const usage = startsAt === null ? null : windowUsage(db, a.providerId, startsAt, w.usedPercent, w.model, heavy, o.overrides);
+        let rate: number | null = null, method: 'previous-window' | 'recent-spend' = 'recent-spend', spend: { usdPerHour: number; usdPerPercent: number } | null = null;
+        if (usage && startsAt !== null && length !== null && length >= RECENT) {
+          const recent = recentRate(db, a.providerId, asOf, w.model, heavy, o.overrides);
+          usage.recentUsdPerHour = recent.usdPerHour;
+          const prev = steadyAt(w.usedPercent, startsAt, length, asOf) ? null : previousPace(t[`${a.accountId}\0${windowKey(w)}`], startsAt, length);
+          if (prev !== null) { rate = prev; method = 'previous-window'; }
+          else if (w.usedPercent >= 3 && perProvider.get(a.providerId) === 1 && o.includeOutsideBb && !recent.partial && historyComplete(db, a.providerId, asOf)) {
+            const s = exactSpend(db, a.providerId, startsAt, asOf, w.model, heavy, o.overrides, rawFloor);
+            if (s && !s.partial && s.usd > 0) {
+              spend = { usdPerHour: recent.usdPerHour, usdPerPercent: s.usd / w.usedPercent };
+              rate = recent.usdPerHour / 3_600_000 / spend.usdPerPercent;
+            }
+          }
+        }
+        return { ...w, asOf, lengthMs: length, ...windowPace(w.usedPercent, w.resetsAt, length, asOf, rate, method), spend, usage };
+      }) };
+    });
+    return { o, heavy, accounts };
+  };
   let watched: {at:number;key:string;value:ReturnType<typeof watchlist>}|undefined;
   const handlers: PluginRpcHandlers<typeof rpcContract> = {
     watchlist: async () => {
@@ -101,25 +157,26 @@ export function registerRpc(bb: BbPluginApi, db: Database, settings: SettingsHan
       watchlistState?.(watched.value.items.length>0);return watched.value;
     },
     limits: async () => {
-      const o = await options(), heavy = parseHeavy(o.heavyModels ?? DEFAULT_HEAVY_MODELS);
-      // A window past its reset comes from a last known report; its numbers belong to a period that is over.
-      const accounts = (await limitAccounts()).filter(a => !a.host || !selfHost || a.host.id === selfHost).map(({ host: _, ...a }) => {
-        const live = a.windows.filter(w => w.resetsAt === null || w.resetsAt > o.now);
-        // All windows over and no fresh report yet: say so, instead of "no data: ok".
-        return { ...a, message: live.length || !a.windows.length ? a.message : a.message ?? 'reset, no fresh report yet', windows: live.map(w => {
-          const length = windowLength(w.kind, w.label), startsAt = w.resetsAt === null || length === null ? null : w.resetsAt - length;
-          const usage = startsAt === null ? null : windowUsage(db, a.providerId, startsAt, w.usedPercent, w.model, heavy, o.overrides);
-          // shortcut: the last week's spend counts from the first stored hour, so a fresh install underrates the pace for its first week.
-          if (usage && length !== null && length >= RECENT) {
-            const recent = windowUsage(db, a.providerId, o.now - RECENT, 0, w.model, heavy, o.overrides);
-            usage.recentUsdPerHour = ((recent.heavy.usd + recent.other.usd) / RECENT) * 3_600_000;
-          }
-          const perMs = usage?.recentUsdPerHour != null && usage.usdPerPercent ? usage.recentUsdPerHour / 3_600_000 / usage.usdPerPercent : null;
-          return { ...w, ...windowPace(w.usedPercent, w.resetsAt, length, o.now, perMs), usage };
-        }) };
-      });
+      const { o, heavy, accounts } = await computeLimits();
       const target = o.heavyTargetPercent ?? 50;
-      return { heavyModels: heavy, heavyTarget: target > 0 ? target / 100 : null, accounts };
+      return { heavyModels: heavy, heavyTarget: target > 0 ? target / 100 : null,
+        accounts: accounts.map(({ host: _h, accountId: _i, source: _s, sources: _ss, ...a }) => ({ ...a,
+          windows: a.windows.map(({ asOf: _a, lengthMs: _l, method: _m, reason: _r, spend: _sp, ...w }) => w) })) };
+    },
+    'limits.get': async i => {
+      const { o, accounts } = await computeLimits(i.hostId);
+      return { version: 1 as const, now: o.now, accounts: accounts.map(a => ({
+        accountId: a.accountId ?? `${a.providerId}\0${a.label}`, providerId: a.providerId, label: a.label, plan: a.plan, host: a.host ?? null,
+        source: a.source ?? null, sources: a.sources ?? [], status: a.status, message: a.message, observedAt: a.observedAt, stale: !!a.stale,
+        windows: a.windows.map(w => {
+          const pace = w.forecastPercent === null ? null : w.forecastPercent / 100;
+          // Missing evidence is never room: a stale reading or an unknown pace is null.
+          const room = w.stale || a.stale ? null : w.usedPercent >= 100 ? false : pace === null ? null : pace < 1;
+          return { key: windowKey(w), id: w.id, label: w.label, kind: w.kind, model: w.model, usedPercent: w.usedPercent, resetsAt: w.resetsAt,
+            startsAt: w.startsAt, lengthMs: w.lengthMs, elapsedShare: w.elapsedShare, forecastPercent: w.forecastPercent, pace, runsOutAt: w.runsOutAt, room,
+            forecast: { method: w.method, reason: w.reason, usdPerHour: w.spend?.usdPerHour ?? null, usdPerPercent: w.spend?.usdPerPercent ?? null },
+            asOf: w.asOf, stale: !!w.stale, seenAt: w.seenAt ?? null };
+        }) })) };
     },
     wakeCost: async i => {const o=await options();return wakeCost(db,i.threadId,o.now,o.overrides);},
     'costs.threads': async i => read.threadCosts(db,i.threadIds,i.includeDescendants,(await options()).overrides),
@@ -160,13 +217,13 @@ export function registerRpc(bb: BbPluginApi, db: Database, settings: SettingsHan
 }
 
 /** The only methods other plugins may call; the rest belong to the Tokenomos page and CLI and may change at any time. */
-export const PUBLIC_METHODS = new Set(['costs.sum', 'costs.threads']);
+export const PUBLIC_METHODS = new Set(['costs.sum', 'costs.threads', 'limits.get']);
 /** Refuses other plugins on internal methods, naming the public method to use instead. The page and the CLI call as clients. */
 function guardPublic<H extends Record<string, (input: never, ctx: { experimental_caller: { kind: string } }) => unknown>>(handlers: H): H {
   return Object.fromEntries(Object.entries(handlers).map(([method, handler]) => [method, PUBLIC_METHODS.has(method) ? handler
     : (input: never, ctx: { experimental_caller: { kind: string } }) => {
       if (ctx?.experimental_caller?.kind === 'plugin') throw new experimental_PluginRpcRefusal({ code: 'forbidden',
-        message: `Tokenomos "${method}" is internal to its page and CLI. Call "costs.sum" (spans for a time window, breakdown: true for per-model and per-thread rows) or "costs.threads" instead.` });
+        message: `Tokenomos "${method}" is internal to its page and CLI. Call "costs.sum" (spans for a time window, breakdown: true for per-model and per-thread rows), "costs.threads", or "limits.get" for provider limit windows with pace and forecast instead.` });
       return handler(input, ctx);
     }])) as H;
 }

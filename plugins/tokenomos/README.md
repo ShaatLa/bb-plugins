@@ -60,7 +60,7 @@ Additionally, the settings section shows the status of each source, disk volume,
 
 ## Integrations with Work Board and Agent Hub
 
-Public contract: RPC `costs.threads` and `costs.sum`; other methods refuse plugin callers with `forbidden`. Both are optional in either direction: Tokenomos does not require other plugins, and the calling plugin must work without Tokenomos—with a timeout and without displaying the value on error.
+Public contract: RPC `costs.threads`, `costs.sum` and `limits.get` (below); other methods refuse plugin callers with `forbidden`. Both are optional in either direction: Tokenomos does not require other plugins, and the calling plugin must work without Tokenomos—with a timeout and without displaying the value on error.
 
 Work Board calls `costs.sum` for the Cost section of a task. Agent Hub calls `costs.threads` with `includeDescendants` for the cost label of the open chat: the session itself plus its sub-sessions.
 
@@ -109,6 +109,53 @@ const sum = await sdk.plugins.callRpc({
   signal: AbortSignal.timeout(3000),
 }).catch(() => null);                 // error or no Tokenomos: hide the total
 ```
+
+## Provider limits for other plugins: `limits.get`
+
+Public, versioned (`version: 1`): fields are only ever added, and a breaking change gets a new method name. Spawn Gate reads it to route work by provider pace. Input `{ hostId?: string }`: without it, this machine's accounts and shared ones; with it, that machine's accounts and shared ones.
+
+```ts
+output: { version: 1, now: number, accounts: {
+  accountId: string,              // stable: provider id + provider-issued account key
+  providerId: string, label: string, plan: string | null,
+  host: { id, name } | null,      // null: shared, or reported by several machines
+  source: { pluginId, resourceId } | null,   // the report the fresh windows come from (a provider plugin wins over Account Pooler)
+  sources: { pluginId, resourceId }[],       // every provider-usage.v1 resource merged into the account in the latest collection;
+                                             // for "account-pool" the resource id is the Account Pooler account id
+  status: string, message: string | null,    // provider-usage.v1 status of the latest report
+  observedAt: number | null,      // when the source measured the numbers
+  stale: boolean,                 // the latest report failed or is missing: last good numbers, up to 24 h old
+  windows: {
+    key: string,                  // stable within the account and across sources: "weekly:fable", else the label
+    id, label, kind, model,       // model: scope as the source names it; null = all models
+    usedPercent: number,          // 0..100
+    resetsAt, startsAt, lengthMs, elapsedShare,  // epoch ms, ms, 0..1
+    forecastPercent: number | null,  // percent used at reset (can exceed 100)
+    pace: number | null,          // forecastPercent / 100: compare with a routing threshold
+    runsOutAt: number | null,     // when 100% comes before the reset (110% margin); asOf when exhausted
+    room: boolean | null,         // false: exhausted or pace >= 1; true: pace < 1; null: pace unknown, or the window or account is stale
+    forecast: { method: "previous-window" | "recent-spend" | "window-average" | null,
+                reason: "exhausted" | "no-reset" | "too-early" | "no-previous-window" | null,  // set exactly when forecastPercent is null
+                usdPerHour: number | null, usdPerPercent: number | null },                   // only for "recent-spend"
+    asOf: number,                 // what the derived numbers are computed for: observedAt (seenAt for a stale window)
+    stale: boolean, seenAt: number | null,       // left out of the latest report; seenAt: when last reported
+  }[] }[] }
+```
+
+How the forecast is made:
+
+- **Early in a window of a week or longer**, before 5% of it is gone or 5% used, it is the account's own pace over the previous window: its last reading there ÷ the time that reading covered. Tokenomos keeps the last reading of each window. The previous one counts only when it covers at least half its window and is the window right before this one. After an install or update there is no such reading until Tokenomos has watched a reset: `reason: "no-previous-window"`.
+- **Recent spend** (the last week's API-equivalent spend per hour ÷ this window's spend per 1%) is used only when the spend is the account's alone and complete. The conditions:
+  - the provider has one account;
+  - usage outside bb is counted;
+  - the provider's sources are healthy and the backfill is done;
+  - the history reaches a week back;
+  - everything is priced;
+  - at least 3% is used.
+  Token history has no account key, so with several accounts of one provider their spend cannot be told apart. Both spends end exactly at `asOf`.
+- **Otherwise**, from 5% elapsed or 5% used, it is the window's own average since its start. Windows shorter than a week have only this method.
+
+Treat a reading as unavailable when the account is missing, `status` is not `"ok"`, the account or the applicable window is `stale`, or `observedAt` is older than you accept. A fresh reading with `room: null` is usable; it has no forecast yet. Answers come from a cache refreshed in the background at most once a minute; only the first read after Tokenomos starts waits for the sources, so call it with a timeout (3 s) and fall back on an error.
 
 ## CLI
 
