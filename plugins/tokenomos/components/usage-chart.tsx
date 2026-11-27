@@ -284,7 +284,7 @@ export function UsageChart({ summary, by, metric, stale }: { summary: SummaryOut
       {empty ? <Muted>{t("chart.empty")}</Muted> : asTable ? <DataTable model={model} summary={summary} t={t} /> : (
         <div className="relative">
         <ChartContainer config={config} className="aspect-auto h-80 w-full" role="img" aria-label={t("chart.aria", { n: model.rows.length })} data-bucket-count={model.rows.length}>
-          <BarChart data={model.rows} margin={{ top: 4, right: 4, bottom: 0, left: 0 }} barCategoryGap="14%">
+          <BarChart accessibilityLayer={false} data={model.rows} margin={{ top: 4, right: 4, bottom: 0, left: 0 }} barCategoryGap="14%">
             <CartesianGrid vertical={false} />
             <XAxis dataKey="label" tickLine={false} axisLine={false} interval={interval} tickMargin={6} />
             <YAxis tickLine={false} axisLine={false} width={model.metric === "usd" ? 56 : 44} tickFormatter={(v: number) => axisTick(model.metric, v, t)} />

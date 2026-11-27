@@ -390,6 +390,25 @@ describe.each(LANGS)("page (%s)", (lang) => {
     expect(within(table).getAllByRole("row")).toHaveLength(count + 1);
   });
 
+  it("draws a chart that a click does not frame and Tab does not stop on", async () => {
+    // jsdom has no layout: give Recharts' ResponsiveContainer a size so the chart really renders.
+    vi.stubGlobal("ResizeObserver", class { observe() {} disconnect() {} });
+    const rect = vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue({ x: 0, y: 0, top: 0, left: 0, right: 800, bottom: 320, width: 800, height: 320, toJSON() {} } as DOMRect);
+    try {
+      const { slot } = await open("day/provider");
+      const surface = await waitFor(() => slot.container.querySelector("svg.recharts-surface") ?? Promise.reject(new Error("no chart")));
+      expect(slot.container.querySelectorAll("svg.recharts-surface")).toHaveLength(1);
+      expect(slot.container.querySelectorAll("[data-seg]").length).toBeGreaterThan(0);
+      // Recharts gives these layers tabindex=-1, so a click focuses them; the chart container hides their outline.
+      expect(slot.container.querySelectorAll("[class*=recharts-zIndex-layer]").length).toBeGreaterThan(0);
+      expect(surface.hasAttribute("tabindex")).toBe(false);
+      expect(surface.getAttribute("role")).toBeNull();
+    } finally {
+      rect.mockRestore();
+      vi.unstubAllGlobals();
+    }
+  });
+
   it("remembers the last range and metric and opens with them", async () => {
     localStorage.clear();
     const first = await page("week/provider", {}, lang);
