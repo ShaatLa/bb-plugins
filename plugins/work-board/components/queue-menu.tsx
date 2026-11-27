@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useRealtime, useSdk } from "@get-bb/plugin-sdk/app";
-import { DropdownMenu, DropdownMenuContent, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { useTasksQuery, useTasksRpc } from "../shell/data";
 import { useTasksNavigation } from "../shell/routes";
 import { useThreadName } from "./queue-chip";
@@ -41,7 +41,7 @@ export function QueueMenu({ projectId }: { projectId: string }) {
         <QueueHeading threadId={queue.threadId} working={states[queue.threadId]} />
         {queue.entries.map((entry) => <div key={entry.taskId} className="flex items-center gap-2 py-1">
           <span className="w-4">{entry.position === 1 ? "▶" : entry.position}</span>
-          <button type="button" className="min-w-0 flex-1 truncate text-left hover:underline" onClick={() => navigation.go({ kind: "task", taskKey: entry.key })}>{entry.key} · {entry.title} · {statuses.label(entry.status)}</button>
+          <DropdownMenuItem className="min-w-0 flex-1 truncate text-left hover:underline" onSelect={() => navigation.go({ kind: "task", taskKey: entry.key })}>{entry.key} · {entry.title} · {statuses.label(entry.status)}</DropdownMenuItem>
           {entry.position > 1 ? <button type="button" aria-label={`Move ${entry.key} up`} onClick={() => void act(queue.threadId, () => rpc.call("queueMove", { taskId: entry.taskId, position: entry.position - 1, actor: "owner" }))}>↑</button> : null}
           {entry.position < queue.entries.length ? <button type="button" aria-label={`Move ${entry.key} down`} onClick={() => void act(queue.threadId, () => rpc.call("queueMove", { taskId: entry.taskId, position: entry.position + 1, actor: "owner" }))}>↓</button> : null}
           <button type="button" aria-label={`Remove ${entry.key}`} onClick={() => void act(queue.threadId, () => rpc.call("queueRemove", { taskId: entry.taskId, actor: "owner" }))}>×</button>

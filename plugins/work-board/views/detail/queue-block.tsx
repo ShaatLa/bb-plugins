@@ -5,6 +5,7 @@ import { errorMessage } from "../../shared/errors";
 import type { CardQueue } from "../../shared/contract";
 import { useTasksQuery, useTasksRpc } from "../../shell/data";
 import { Button } from "@/components/ui/button";
+import { Icon } from "@/components/ui/icon";
 import { ThreadChooserDialog } from "./thread-chooser-dialog";
 
 /** The card's place in an executor's work queue, with the doors to join or leave it. */
@@ -16,13 +17,13 @@ export function QueueBlock({ taskId, projectId, queue }: { taskId: string; proje
   const [error, setError] = useState<string | null>(null);
   return (
     <div className="grid gap-1 text-xs">
-      <div className="flex flex-wrap items-center gap-2">
+      <div className="flex items-center gap-2">
         {queue ? <QueuePlace queue={queue} total={queues.data?.find((item) => item.threadId === queue.threadId)?.entries.length} /> : <span className="text-muted-foreground">Not in a work queue</span>}
         {queue ? (
-          <Button size="sm" variant="ghost" className="h-6 px-1 text-muted-foreground" disabled={busy} onClick={async () => {
+          <Button asChild size="icon" variant="ghost" className="ml-auto size-6 shrink-0 text-muted-foreground"><button type="button" aria-label="Remove from queue" title="Remove from queue" disabled={busy} onClick={async () => {
             setBusy(true); setError(null);
             try { await rpc.call("queueRemove", { taskId, actor: "owner" }); } catch (cause) { setError(errorMessage(cause)); } finally { setBusy(false); }
-          }}>Remove from queue</Button>
+          }}><Icon name="Trash2" className="size-3.5" /></button></Button>
         ) : (
           <Button size="sm" variant="ghost" className="h-6 px-1 text-muted-foreground" onClick={() => setChoosing(true)}>Add to queue of …</Button>
         )}
