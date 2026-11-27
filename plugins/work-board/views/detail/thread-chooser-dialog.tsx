@@ -146,8 +146,8 @@ export function ThreadChooserDialog(props: { onClose: () => void } & (
         {props.kind === "task" ? <fieldset disabled={sending} className="space-y-1">
           <legend className="sr-only">What to do with the chosen thread</legend>
           {(Object.keys(MODES) as Array<keyof typeof MODES>).map((key) => (
-            <label key={key} className="flex items-center gap-2 text-sm">
-              <input type="radio" name="thread-chooser-mode" checked={mode === key} onChange={() => setMode(key)} />
+            <label key={key} className="flex cursor-pointer items-center gap-2 text-sm">
+              <input className="size-4 shrink-0 accent-primary" type="radio" name="thread-chooser-mode" checked={mode === key} onChange={() => setMode(key)} />
               {MODES[key].label}
             </label>
           ))}
