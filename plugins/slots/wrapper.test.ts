@@ -42,6 +42,7 @@ it("passes placement and tool requirements to acquire", async () => {
   expect((await run(bb, 'true', '', ['--anywhere', '--needs', 'go,docker'])).log).toContain('--place auto --needs go,docker');
   expect((await run(bb, 'true', '', ['--spill', 'auto'])).log).toContain('--place auto');
   expect((await run(bb, 'true', '', ['--local'])).log).toContain('--place local');
+  expect((await run(bb, 'true', '', ['--local', '--git'])).result.stderr).toContain('slots-run: placement=local');
 });
 it("bounds a hung done and ignores its failure", async () => {
   const hung = await run('case $2 in acquire) echo "use use-1 lease lease-2 renew 30" ;; done) exec sleep 20 ;; esac', 'exit 9');
@@ -239,7 +240,15 @@ case "$1 $2" in
       *" --place local "*) echo "use use-1 lease lease-2 renew 30" ;;
       *) echo "use use-1 lease lease-2 renew 30 host host_example" ;;
     esac ;;
-  "file write") cat > "$last" ;;
+  "file write")
+    cat > "$last" || exit
+    case "$last" in
+      *.part.2)
+        case "$FAKE_BAD_UPLOAD_PART" in
+          failed) echo "upload failed" >&2; exit 1 ;;
+          missing) rm -f "$last" ;;
+        esac ;;
+    esac ;;
   "file read") [ -z "$READ_FAIL" ] || case $last in *.ret.[0-9]*) exit 1 ;; esac; cat "$last" ;;
   "file remove") rm -f "$last" ;;
   "terminal run") shift 2; while [ "$1" != -- ]; do [ "$1" = --id ] && id=$2; shift; done; shift
@@ -294,10 +303,15 @@ it("runs with a clean detached Git snapshot and its parent, returning files with
   git("-c", "user.email=test@example.test", "-c", "user.name=Example", "commit", "-qm", "third commit");
   const commits = git("rev-parse", "HEAD", "HEAD^");
   const script = 'git rev-parse HEAD HEAD^ && git status --porcelain && git show HEAD^:edit.txt && git rev-list --count HEAD && test -z "$(git remote)" && : > .git/remote-only && mkdir -p out && echo report > out/new.txt';
-  const result = spawnSync("sh", w.args(script, ["--git"]), { cwd: w.repo, env: w.env(), encoding: "utf8" });
+  const result = spawnSync("sh", w.args(script, ["--git"]), {
+    cwd: w.repo, env: w.env({ SLOTS_RUN_TEST_UPLOAD_PART_BYTES: "512" }), encoding: "utf8",
+  });
   expect(result.status, result.stderr).toBe(0);
   expect(result.stdout).toBe(commits + "parent version\n2\n");
   expect(result.stderr).toContain("running on host_example");
+  expect(result.stderr).not.toContain("placement=local");
+  expect(await w.log()).toMatch(/file write [^\n]*\.part\.2\n/);
+  expect((await readdir(w.dir)).filter(f => f.includes(".b64.part."))).toEqual([]);
   expect(await w.read("out/new.txt")).toBe("report\n");
   expect(await exists(join(w.repo, ".git", "remote-only"))).toBe(false);
   expect(await exists(join(w.mirror + "-git", ".git"))).toBe(false);
@@ -332,7 +346,23 @@ it("retries locally when a Git snapshot cannot be made", async () => {
   expect(result.status, result.stderr).toBe(0);
   expect(result.stdout).toBe(unborn);
   expect(result.stderr).toContain("retrying locally");
+  expect(result.stderr).toContain("slots-run: placement=local");
   expect(await w.log()).not.toContain("terminal run");
+});
+
+it.each(["failed", "missing"])("cleans up a %s Git upload part and runs the command locally once", async badPart => {
+  const w = await world();
+  const result = spawnSync("sh", w.args("printf '%s' \"$PWD\"; exit 7", ["--git"]), {
+    cwd: w.repo, env: w.env({ SLOTS_RUN_TEST_UPLOAD_PART_BYTES: "512", FAKE_BAD_UPLOAD_PART: badPart }), encoding: "utf8",
+  });
+  expect(result.status, result.stderr + result.stdout).toBe(7);
+  expect(result.stdout.endsWith(w.repo)).toBe(true);
+  expect(result.stderr.match(/slots-run: placement=local/g)).toHaveLength(1);
+  expect((await readdir(w.dir)).filter(f => f.includes(".b64.part."))).toEqual([]);
+  const log = await w.log();
+  expect(log).toMatch(/file write [^\n]*\.part\.2\n/);
+  if (badPart === "missing") expect(result.stdout).toContain("could not read the Git snapshot");
+  else expect(log).not.toContain("terminal run");
 });
 
 it("retries locally before running the command when the mirror status differs", async () => {

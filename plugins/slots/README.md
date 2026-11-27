@@ -136,9 +136,11 @@ parents available locally. The shallow snapshot supports `HEAD^` and excludes
 older history, branches, tags and remote refs. It carries the local index and
 working files, including staged changes, unstaged changes and nonignored
 untracked files. This works from a linked worktree and needs no credentials
-for origin. An unsupported checkout, a snapshot that exceeds the
-upload limit or a status mismatch triggers a local retry before the command
-starts. Git metadata is disposable and stays out of the returned files.
+for origin. The compressed archive travels in parts sized to fit the file API.
+An unsupported checkout, a failed copy or a status mismatch triggers a local
+retry before the command starts. Git metadata is disposable and stays out of
+the returned files. When a `--git` command runs locally, the wrapper writes
+`slots-run: placement=local` to stderr and preserves the command's exit status.
 Git attributes stored outside the worktree and local filters such as Git LFS
 can change status and cause a local retry.
 

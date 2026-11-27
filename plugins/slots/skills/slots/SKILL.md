@@ -23,6 +23,8 @@ Add `--git` for remote commands that read Git HEAD, status or diffs against
 HEAD. The mirror gets a detached checkout with the local commit and its
 immediate parents, the local index and working files. If the snapshot cannot
 be copied or validated, the wrapper retries locally before starting the command.
+For any `--git` command that runs locally, stderr includes
+`slots-run: placement=local`.
 A remote run copies the worktree and returns output and exit code, and the files
 the command created or changed come back into your worktree (ignored directories
 included), so reports, screenshots, coverage and build output need no `--local`.

@@ -99,7 +99,7 @@ die "unknown mode $mode\n";
 # run the command as a child, then pack what it wrote. The mirror holds only uploaded files when the command starts,
 # so every other file afterwards, and every uploaded file whose content changed, came from the command.
 RUNNER='
-key=$1 rel=$2 hash=$3 upload=$4 nonce=$5 retmax=$6 pl=$7 gitmode=$8; shift 8
+key=$1 rel=$2 hash=$3 upload=$4 nonce=$5 retmax=$6 pl=$7 gitmode=$8 upload_parts=$9; shift 9
 base=$HOME/.bb-slots/work m=$HOME/.bb-slots/work/$key ret=${upload%.b64}.ret
 perl=/usr/bin/perl; [ -x "$perl" ] || perl=$(command -v perl)
 legacy=
@@ -109,7 +109,21 @@ cleanup_mirror() {
   rm -f "$m.lock/flock-owner"; rmdir "$m.lock" 2>/dev/null
 }
 trap cleanup_mirror EXIT
-fail() { rm -f "$upload" "$m.tgz"; echo "slots-run: $1" >&2; echo "slots-run setup-failed $nonce"; exit 69; }
+remove_upload() {
+  if [ -n "$gitmode" ]; then rm -f "$upload".part.*; else rm -f "$upload"; fi
+}
+fail() {
+  remove_upload
+  if [ -n "$legacy" ]; then rm -f "$m.tgz" "$m.new.raw"; fi
+  echo "slots-run: $1" >&2; echo "slots-run setup-failed $nonce"; exit 69
+}
+decode_upload() {
+  part=1
+  while [ "$part" -le "$upload_parts" ]; do
+    base64 -d <"$upload.part.$part" || return 1
+    part=$((part + 1))
+  done
+}
 mkdir -p "$m" || fail "cannot create $m"
 # A kernel lock on fd 9 serializes runs on this mirror. It is dropped when this shell exits, whatever the cause.
 exec 9>>"$m.flock"
@@ -120,7 +134,7 @@ while ! mkdir "$m.lock" 2>/dev/null; do
   # A lock with this marker belongs to a runner of this version that died; we hold the flock, so no such runner is alive.
   if [ -e "$m.lock/flock-owner" ]; then rm -f "$m.lock/flock-owner"; rmdir "$m.lock" 2>/dev/null || sleep 1; continue; fi
   n=$((n + 1))
-  [ "$n" -lt 600 ] || { echo "slots-run: mirror $m is locked; remove $m.lock if no run is active" >&2; rm -f "$upload"; echo "slots-run setup-failed $nonce"; exit 69; }
+  [ "$n" -lt 600 ] || fail "mirror $m is locked; remove $m.lock if no run is active"
   sleep 1
 done
 : >"$m.lock/flock-owner"; legacy=1
@@ -130,8 +144,9 @@ if [ -n "$gitmode" ] || [ "$(cat "$m.hash" 2>/dev/null)" != "$hash" ] || [ ! -f 
   rm -f "$m.hash"
   if [ -n "$gitmode" ]; then
     rm -rf "$m/.git" || fail "could not reset Git metadata"
-    base64 -d <"$upload" >"$m.tgz" && tar tzf "$m.tgz" >"$m.new.raw" &&
+    decode_upload >"$m.tgz" && tar tzf "$m.tgz" >"$m.new.raw" &&
       sed -e "/^\.git$/d" -e "\|^\.git/|d" "$m.new.raw" | sort >"$m.new" || fail "could not read the Git snapshot"
+    remove_upload
     rm -f "$m.new.raw"
     tar xzf "$m.tgz" -C "$m" || fail "could not unpack the Git snapshot"
   else
@@ -160,9 +175,10 @@ if [ -n "$gitmode" ] || [ "$(cat "$m.hash" 2>/dev/null)" != "$hash" ] || [ ! -f 
   printf %s "$hash" >"$m.hash"
 fi
 trap - HUP INT TERM
-rm -f "$upload"; touch "$m"
+if [ -z "$gitmode" ]; then remove_upload; fi
+touch "$m"
 find "$base" -mindepth 1 -maxdepth 1 -mtime +7 ! -name "*.flock" ! -name "*.lock" ! -name "$key*" -exec rm -rf {} + 2>/dev/null
-find "$(dirname "$upload")" -maxdepth 1 -name "bb-slots-*.ret.*" -mtime +1 -exec rm -rf {} + 2>/dev/null
+find "$(dirname "$upload")" -maxdepth 1 \( -name "bb-slots-*.ret.*" -o -name "bb-slots-*.b64.part.*" \) -mtime +1 -exec rm -rf {} + 2>/dev/null
 "$perl" -e "$pl" clean "$m" "$m.manifest" && "$perl" -e "$pl" snap "$m" "$m.snap" || fail "could not index the mirror"
 if [ -n "$gitmode" ]; then
   actual=$(git -C "$m" rev-list --parents -n 1 HEAD) &&
@@ -491,6 +507,36 @@ git_worktree_list() (
   ' "$dir/paths" >"$dir/files"
 )
 
+# Base64 expands each 15 MB part to about 20 MB, below the file API limit.
+upload_git_archive() {
+  if ! { gzip -c "$dir/upload.tar" || touch "$dir/compress-failed"; } |
+    LC_ALL=C split -b "${SLOTS_RUN_TEST_UPLOAD_PART_BYTES:-15000000}" - "$dir/upload.part." 2>"$dir/err" ||
+    [ -f "$dir/compress-failed" ]; then
+    echo "could not split the compressed Git snapshot" >>"$dir/err"
+    return 1
+  fi
+  rm -f "$dir/upload.tar"
+  for piece in "$dir"/upload.part.*; do
+    upload_parts=$((upload_parts + 1))
+    if [ -n "$interrupted" ] || ! base64 <"$piece" >"$dir/encoded" 2>"$dir/err" ||
+      ! bb file write --host "$host" --stdin "$upload.part.$upload_parts" <"$dir/encoded" >/dev/null 2>"$dir/err"; then
+      remove_git_upload
+      return 1
+    fi
+    rm -f "$piece"
+  done
+  rm -f "$dir/encoded"
+  if [ -n "$interrupted" ]; then remove_git_upload; return 1; fi
+}
+
+remove_git_upload() {
+  part=$upload_parts
+  while [ "$part" -gt 0 ]; do
+    bb file remove --yes --host "$host" "$upload.part.$part" >/dev/null 2>&1
+    part=$((part - 1))
+  done
+}
+
 remote_exec() {
   root=$(git rev-parse --show-toplevel 2>/dev/null) || { echo "slots-run: the lease is on $host, but this directory is not in a git worktree" >&2; return 69; }
   here=$(pwd -P)
@@ -510,6 +556,7 @@ remote_exec() {
   # What each returnable path looks like now; a returned file overwrites only a local copy that still matches this.
   node -e "$BASE_JS" "$root" "$dir/files" "$dir/ignored" "$dir/base.json" "${SLOTS_RUN_BASELINE_MAX:-536870912}" 2>/dev/null || rm -f "$dir/base.json"
   upload=${SLOTS_RUN_UPLOAD_DIR:-/tmp}/bb-slots-$term.b64
+  upload_parts=0
   if [ -n "$gitmode" ]; then
     hash=git
     if ! { tr '\n' '\0' <"$dir/files" >"$dir/files0" &&
@@ -517,18 +564,19 @@ remote_exec() {
       COPYFILE_DISABLE=1 tar -rf "$dir/upload.tar" -C "$dir" .git; }; then
       echo "slots-run: could not archive the Git snapshot" >&2; retry=1; return 69
     fi
-    gzip -c "$dir/upload.tar" | base64 | bb file write --host "$host" --stdin "$upload" >/dev/null 2>"$dir/err"
+    upload_git_archive
   else
     hash=$(tar cf - -C "$root" -T "$dir/files" | shasum | cut -c1-40)
     tar czf - -C "$root" -T "$dir/files" | base64 | bb file write --host "$host" --stdin "$upload" >/dev/null 2>"$dir/err"
   fi
   if [ "$?" -ne 0 ]; then
+    if [ -n "$gitmode" ] && [ -n "$interrupted" ]; then return 130; fi
     echo "slots-run: could not copy the worktree to $host: $(tail -n 1 "$dir/err")" >&2; retry=1; return 69
   fi
   nonce=$(LC_ALL=C tr -dc 23456789abcdefghijkmnpqrstuvwxyz </dev/urandom | head -c 24)
   name=$(bb machine show --json "$host" 2>/dev/null | node -e 'let s="";process.stdin.on("data",x=>s+=x).on("end",()=>{try{process.stdout.write(JSON.parse(s).name||"")}catch{}})' 2>/dev/null)
   echo "slots-run: running on ${name:-$host}" >&2
-  bb terminal run --machine "$host" --id "$term" --timeout 12h --max-output-bytes 1048576 -- sh -c "$RUNNER" sh "$key" "$rel" "$hash" "$upload" "$nonce" "${SLOTS_RUN_RETURN_MAX:-1073741824}" "$PL" "$gitmode" "$@" >"$dir/out" 2>&1
+  bb terminal run --machine "$host" --id "$term" --timeout 12h --max-output-bytes 1048576 -- sh -c "$RUNNER" sh "$key" "$rel" "$hash" "$upload" "$nonce" "${SLOTS_RUN_RETURN_MAX:-1073741824}" "$PL" "$gitmode" "$upload_parts" "$@" >"$dir/out" 2>&1
   code=$?
   if [ -n "$interrupted" ]; then bb terminal close "$term" >/dev/null 2>&1; grep -v "^Terminal $term " "$dir/out"; return 130; fi
   # bb prints no status line for exit 0: the captured output is the result, no terminal lookup.
@@ -673,8 +721,12 @@ start=$(ps -o lstart= -p "$$" 2>/dev/null) || start=
   done
 ) & loop=$!
 }
+run_local() {
+  if [ -n "$gitmode" ]; then echo "slots-run: placement=local" >&2; fi
+  "$@"
+}
 start_heartbeat
-if [ -n "$host" ]; then remote_run "$@"; else "$@"; fi
+if [ -n "$host" ]; then remote_run "$@"; else run_local "$@"; fi
 status=$?
 if [ -n "$retry" ] && [ -z "$interrupted" ]; then
   echo "slots-run: remote setup failed before the command started; retrying locally" >&2
@@ -683,6 +735,6 @@ if [ -n "$retry" ] && [ -z "$interrupted" ]; then
   place=local
   acquire || exit $?
   start_heartbeat
-  "$@"; status=$?
+  run_local "$@"; status=$?
 fi
 exit "$status"
