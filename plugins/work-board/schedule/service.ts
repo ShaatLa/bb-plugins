@@ -13,7 +13,7 @@ import {
   activeStart, assertMayEdit, cancelStart, cardFacts, changeStart, claimDue, currentStart, insertStart, listLog, markAttached, markerOf, pruneLog, recordOutcome,
   releaseClaim, resolveStart, setLaunchParent, toStart, type Launch, type ScheduledStart,
 } from "./store";
-import { parseStartTime, splitArgs } from "./when";
+import { parseStartTime, splitArgs, withoutFinalPeriod } from "./when";
 
 type Database = ReturnType<BbPluginApi["storage"]["database"]>;
 type Names = "scheduleStart" | "changeScheduledStart" | "cancelScheduledStart" | "resolveScheduledStart" | "getScheduledStart" | "scheduleOptions" | "checkScheduledStart" | "listScheduledStartLog";
@@ -34,7 +34,7 @@ type StartNoticeRow = NoticeRow & { notice_id: string; start_id: string; kind: s
 function noticeText(_db: Database, row: StartNoticeRow, why: Why): string {
   const link = taskMarkdownLink(row.task_key);
   return [
-    row.kind === "refused" ? `The scheduled start of ${link} was refused and nothing was started: ${row.detail}.` : `The scheduled start of ${link} has an unknown outcome: ${row.detail}. A session may exist; the start is not retried. Check the project's threads, then run: bb work-board schedule resolve ${row.task_key} --launched <thread> | --not-launched.`,
+    row.kind === "refused" ? `The scheduled start of ${link} was refused and nothing was started: ${withoutFinalPeriod(row.detail)}.` : `The scheduled start of ${link} has an unknown outcome: ${withoutFinalPeriod(row.detail)}. A session may exist; the start is not retried. Check the project's threads, then run: bb work-board schedule resolve ${row.task_key} --launched <thread> | --not-launched.`,
     `Scheduled by ${row.setter}.`,
     why === "archived" ? `You get this because ${row.setter} is archived or gone.` : why === "none" ? `You get this because ${row.setter} is archived or gone and no live parent was found.` : why === "owner" ? "You get this because the start was scheduled by the owner, not by a thread." : "",
   ].filter(Boolean).join(" ");

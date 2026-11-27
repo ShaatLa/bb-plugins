@@ -75,3 +75,37 @@ describe("create --start-at", () => {
     expect((await f.run(["create", "--project", f.tracker.prefix, "--title", "x", "--start-gate"])).exitCode).not.toBe(0);
   });
 });
+
+describe("config set scheduledStartArgs", () => {
+  const stored = async (f: ReturnType<typeof fixture>) => (await f.call("config.get", { projectId: f.tracker.id, key: "scheduledStartArgs" })).values.scheduledStartArgs;
+
+  it("takes a value that starts with -- after `--`, quoted arguments kept whole", async () => {
+    const f = fixture();
+    const set = await f.run(["config", "set", "scheduledStartArgs", "--project", f.tracker.prefix, "--", "--card", "{key}", "--role", "impl", "--reason", "night run"]);
+    expect(set.exitCode).toBe(0);
+    expect(await stored(f)).toBe("--card {key} --role impl --reason 'night run'");
+    expect((await f.run(["config", "get", "scheduledStartArgs", "--project", f.tracker.prefix, "--json"])).stdout).toContain("--role impl");
+    // The stored text is what a bare --gate schedule launches with.
+    await f.schedule("+10m", { kind: "gate" });
+    expect(f.world.starts.at(-1)!.args).toEqual(["--card", f.task.key, "--role", "impl", "--reason", "night run"]);
+  });
+
+  it("still takes the value as a JSON string or plain text, and refuses the ambiguous forms", async () => {
+    const f = fixture();
+    expect((await f.run(["config", "set", "scheduledStartArgs", JSON.stringify("--card {key} --role check"), "--project", f.tracker.prefix])).exitCode).toBe(0);
+    expect(await stored(f)).toBe("--card {key} --role check");
+    expect((await f.run(["config", "set", "scheduledStartArgs", "plain {key}", "--project", f.tracker.prefix])).exitCode).toBe(0);
+    expect(await stored(f)).toBe("plain {key}");
+    expect((await f.run(["config", "set", "scheduledStartArgs", "x", "--project", f.tracker.prefix, "--", "--card"])).exitCode).not.toBe(0);
+    expect((await f.run(["config", "set", "autoArchiveAfterDays", "--project", f.tracker.prefix, "--", "7"])).stderr).toContain("scheduledStartArgs only");
+    expect((await f.run(["config", "set", "scheduledStartArgs", "--project", f.tracker.prefix])).stderr).toContain("missing the value");
+    expect(await stored(f)).toBe("plain {key}");
+  });
+
+  it("explains both forms in the help", async () => {
+    const f = fixture();
+    const help = await f.run(["config", "set", "--help"]);
+    expect(help.stdout).toContain("config set scheduledStartArgs --project EXA -- --card {key} --role impl");
+    expect(help.stdout).toContain("JSON string");
+  });
+});

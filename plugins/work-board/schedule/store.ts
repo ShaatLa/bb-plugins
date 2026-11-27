@@ -3,7 +3,7 @@ import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import { managerOf, zoneOf } from "../queue/store";
 import { isClosedStatus } from "../shared/workflow-policy";
 import { cardComment } from "../notices/once";
-import { formatStartTime } from "./when";
+import { formatStartTime, withoutFinalPeriod } from "./when";
 
 type Database = ReturnType<BbPluginApi["storage"]["database"]>;
 export type StartMode = "spawn_gate" | "preset";
@@ -160,8 +160,8 @@ export type Outcome =
 const NOTICE_KINDS = new Set(["refused", "unknown"]);
 const OUTCOME_COMMENT = (key: string, outcome: Outcome) =>
   outcome.state === "launched" ? (outcome.event === "reconciled" ? `Scheduled start launched ${outcome.threadId} (found by its marker after a restart)` : `Scheduled start launched ${outcome.threadId}`)
-  : outcome.state === "refused" ? `Scheduled start refused, nothing was started: ${outcome.error}`
-  : outcome.state === "unknown" ? `Scheduled start outcome unknown: ${outcome.error}. A session may exist and nothing is retried. Check the project's threads, then run: bb work-board schedule resolve ${key} --launched <thread> | --not-launched`
+  : outcome.state === "refused" ? `Scheduled start refused, nothing was started: ${withoutFinalPeriod(outcome.error)}`
+  : outcome.state === "unknown" ? `Scheduled start outcome unknown: ${withoutFinalPeriod(outcome.error)}. A session may exist and nothing is retried. Check the project's threads, then run: bb work-board schedule resolve ${key} --launched <thread> | --not-launched`
   : `Scheduled start canceled: ${outcome.error}`;
 
 /** One transaction: the new state, the log row, the card comment and, for refused and unknown, the notice row. */

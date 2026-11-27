@@ -42,5 +42,8 @@ export function splitArgs(text: string): string[] {
 
 /** The reverse of `splitArgs`: an argument that is empty or holds anything but plain characters is single-quoted (a quote becomes `'\\''`). */
 export function joinArgs(args: readonly string[]): string {
-  return args.map((arg) => (/^[\w\-./:=@%+,]+$/.test(arg) ? arg : `'${arg.replaceAll("'", "'\\''")}'`)).join(" ");
+  return args.map((arg) => (/^[\w\-./:=@%+,{}]+$/.test(arg) ? arg : `'${arg.replaceAll("'", "'\\''")}'`)).join(" ");
 }
+
+/** An error text ready to sit before a sentence's own period: trailing periods and spaces dropped. */
+export const withoutFinalPeriod = (text: string) => text.replace(/[.\s]+$/, "");

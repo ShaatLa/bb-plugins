@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { useOpenThread } from "../../components/open-thread";
+import { useThreadName } from "../../components/queue-chip";
 import { BLANK_START, StartLaterForm, isoOf, launchOf, localOf, type StartLaterValue } from "../../components/start-later-form";
 import { formatStartTime, joinArgs } from "../../schedule/when";
 import type { CardScheduledStart, ScheduledStartInfo } from "../../shared/contract";
@@ -8,6 +9,13 @@ import { useTasksQuery, useTasksRpc } from "../../shell/data";
 import { Button } from "@/components/ui/button";
 
 const local = (iso: string) => new Date(iso).toLocaleString([], { dateStyle: "medium", timeStyle: "short" });
+
+/** A thread by its name, like the queue block shows one; the id stays in the tooltip. */
+function ThreadName({ id }: { id: string }) {
+  const name = useThreadName(id);
+  return <span title={id}>{name}</span>;
+}
+const Setter = ({ setter }: { setter: string }) => (setter === "owner" ? <>the owner</> : <ThreadName id={setter} />);
 
 const valueOf = (start: ScheduledStartInfo): StartLaterValue => ({ at: localOf(start.at), args: start.builderArgs ? joinArgs(start.builderArgs) : "", presetId: start.presetId ?? "", brief: start.brief ?? "" });
 
@@ -48,7 +56,7 @@ export function ScheduleBlock({ taskId, projectId, taskKey, start }: { taskId: s
       ) : current && active ? (
         <>
           <div>Scheduled for <span className="font-medium" title={formatStartTime(current.at)}>{local(current.at)}</span>{current.state === "launching" ? " · launching now" : ""}</div>
-          <div className="text-muted-foreground [overflow-wrap:anywhere]">{current.mode === "spawn_gate" ? `Spawn Gate: ${(current.builderArgs ?? []).join(" ")}` : `Preset ${current.presetName ?? current.presetId}`} · set by {current.setter}</div>
+          <div className="text-muted-foreground [overflow-wrap:anywhere]">{current.mode === "spawn_gate" ? `Spawn Gate: ${(current.builderArgs ?? []).join(" ")}` : `Preset ${current.presetName ?? current.presetId}`} · set by <Setter setter={current.setter} /></div>
           {current.policyError ? <div className="text-warning">Waiting to retry: {current.policyError}</div> : null}
           {current.state === "scheduled" ? (
             <div className="flex gap-2">
@@ -58,7 +66,7 @@ export function ScheduleBlock({ taskId, projectId, taskKey, start }: { taskId: s
           ) : null}
         </>
       ) : current?.state === "launched" && current.threadId ? (
-        <div>Launched <button type="button" className="hover:underline" onClick={() => open(current.threadId!)}>{current.threadId}</button> at {local(current.at)}</div>
+        <div>Launched <button type="button" className="hover:underline" title={current.threadId} onClick={() => open(current.threadId!)}><ThreadName id={current.threadId} /></button> at {local(current.at)}</div>
       ) : current && (current.state === "refused" || current.state === "unknown") ? (
         <>
           <div role="status" className="text-warning [overflow-wrap:anywhere]">{current.state === "refused" ? "Start refused" : "Start outcome unknown"}{current.reasonCode ? ` (${current.reasonCode})` : ""}: {current.error}</div>

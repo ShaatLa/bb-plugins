@@ -204,6 +204,26 @@ describe("launching", () => {
     expect(g.row().state).toBe("unknown");
   });
 
+  it("does not double the period when the error already ends with one", async () => {
+    const f = fixture();
+    await f.schedule("+10m");
+    f.world.start = async (input) => { if (input.dryRun) return { dryRun: true }; throw rpcError("handler_error", "HTTP 409: This project checkout has no usable git branch."); };
+    f.due();
+    await f.sweep();
+    expect(f.row().state).toBe("unknown");
+    const [text] = f.to("thr_setter");
+    expect(text).toContain("unknown outcome: HTTP 409: This project checkout has no usable git branch. A session may exist");
+    expect(text).not.toContain("..");
+    expect(f.comments().find((body) => body.includes("outcome unknown"))).not.toContain("..");
+    // A refusal reads the same way.
+    const g = fixture();
+    await g.schedule("+10m");
+    g.world.start = async (input) => { if (input.dryRun) return { dryRun: true }; throw rpcError("invalid_input", "Bad arguments."); };
+    g.due(); await g.sweep();
+    expect(g.to("thr_setter")[0]).toContain("nothing was started: Bad arguments. ");
+    expect(g.to("thr_setter")[0]).not.toContain("..");
+  });
+
   it("attaches a launched Spawn Gate session on a later sweep when the first attach failed", async () => {
     const f = fixture();
     await f.schedule("+10m");

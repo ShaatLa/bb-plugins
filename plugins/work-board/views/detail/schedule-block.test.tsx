@@ -6,7 +6,9 @@ import { ScheduleBlock } from "./schedule-block";
 const calls: [string, unknown][] = [];
 let handlers: Record<string, (input: any) => unknown> = {};
 const rpc = { call: async (method: string, input: unknown) => { calls.push([method, input]); const handler = handlers[method]; if (!handler) throw new Error(`no handler ${method}`); return handler(input); } };
-vi.mock("../../components/open-thread", () => ({ useOpenThread: () => vi.fn() }));
+const opened: string[] = [];
+vi.mock("../../components/open-thread", () => ({ useOpenThread: () => (id: string) => { opened.push(id); } }));
+vi.mock("../../components/queue-chip", () => ({ useThreadName: (id: string) => `Name of ${id}` }));
 vi.mock("../../shell/data", async () => {
   const React = await import("react");
   return {
@@ -35,7 +37,8 @@ const block = (start?: Record<string, unknown>) => render(<ScheduleBlock taskId=
 it("shows the scheduled start with its mode, args and setter, and cancels it", async () => {
   block({ at: AT, mode: "spawn_gate", state: "scheduled", setter: "thr_setter" });
   expect(await screen.findByText(/Spawn Gate: --card EXA-1 --role impl/)).toBeTruthy();
-  expect(screen.getByText(/set by thr_setter/)).toBeTruthy();
+  expect(screen.getByText("Name of thr_setter").getAttribute("title")).toBe("thr_setter");
+  expect(screen.getByText(/set by/).textContent).toMatch(/set by Name of thr_setter$/);
   fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
   await waitFor(() => expect(calls).toContainEqual(["cancelScheduledStart", { taskId: "t1", actor: "owner" }]));
 });
@@ -92,7 +95,11 @@ it("needs a preset in a project without Spawn Gate, and sends it with the brief"
 it("shows a launched session, and a refused or unknown start with its error and the resolve command", async () => {
   handlers.getScheduledStart = () => ({ scheduledStart: info({ state: "launched", threadId: "thr_launched" }) });
   const first = block();
-  expect(await screen.findByText("thr_launched")).toBeTruthy();
+  const link = await screen.findByText("Name of thr_launched");
+  expect(link.getAttribute("title")).toBe("thr_launched");
+  fireEvent.click(link);
+  expect(opened).toEqual(["thr_launched"]);
+  expect(screen.queryByText("thr_launched")).toBeNull();
   first.unmount();
   handlers.getScheduledStart = () => ({ scheduledStart: info({ state: "unknown", error: "request timed out" }) });
   block();
@@ -119,4 +126,10 @@ it("parses an edited args field, keeping quoted arguments whole", async () => {
   handlers.changeScheduledStart = () => ({ scheduledStart: info() });
   fireEvent.click(screen.getByRole("button", { name: "Save change" }));
   await waitFor(() => expect(calls.find(([method]) => method === "changeScheduledStart")?.[1]).toMatchObject({ launch: { kind: "gate", args: ["--reason", "night run", "--card", "EXA-1"] } }));
+});
+
+it("reads the owner as the owner, not as an id", async () => {
+  handlers.getScheduledStart = () => ({ scheduledStart: info({ setter: "owner" }) });
+  block();
+  expect((await screen.findByText(/set by the owner/)).textContent).toContain("set by the owner");
 });

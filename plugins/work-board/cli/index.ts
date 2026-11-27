@@ -84,7 +84,7 @@ import { ACTIVITY_LABELS } from "../shared/task-activity.js";
 import { threadHealthJson } from "../shared/thread-health";
 import { checksCliCommands } from "../checks/cli";
 import { queueCliCommands } from "../queue/cli";
-import { formatStartTime } from "../schedule/when";
+import { formatStartTime, joinArgs } from "../schedule/when";
 import { launchFromOptions, scheduleCliCommands, startSummary, actorOf as scheduleActor } from "../schedule/cli";
 import { LITERAL_TEXT_FIELDS } from "../checks/config";
 import { planCommands } from "./plan";
@@ -1158,18 +1158,28 @@ export function registerTasksCli(
         }),
         "config set": cliCommand({
           summary: "Change one project setting; lists take JSON or a comma-separated value",
+          description: [
+            "A value that starts with `--` is read as an option. For `scheduledStartArgs` put it after `--` and everything there is the value:",
+            "  bb work-board config set scheduledStartArgs --project EXA -- --card {key} --role impl",
+            "Any key also takes the value as one JSON string: `config set scheduledStartArgs '\"--card {key} --role impl\"' --project EXA`.",
+          ].join("\n"),
           positionals: [
             { name: "key", description: "Setting key; `config get` lists them", required: true },
-            { name: "value", description: "New value: JSON, or plain text", required: true },
+            { name: "value", description: "New value: JSON, or plain text" },
           ],
+          passthrough: true,
           options: { project: REQUIRED_PROJECT_OPTION, json: JSON_OPTION },
           run(input, ctx) {
             return guard(async () => {
               const project = await requiredProject(domain, ctx, input.options.project);
-              const raw = input.positionals.value;
+              const afterDashes = input.passthrough.length > 0;
+              if (afterDashes && (input.positionals.key !== "scheduledStartArgs" || input.positionals.value !== undefined)) throw new CliError("text after `--` is the value of scheduledStartArgs only; give other values as the value argument");
+              if (!afterDashes && input.positionals.value === undefined) throw new CliError("missing the value: give it as an argument, or after `--` for scheduledStartArgs");
+              // Quoting that `splitArgs` reads back exactly keeps an argument with spaces whole.
+              const raw = afterDashes ? joinArgs(input.passthrough) : input.positionals.value!;
               let value: unknown = raw;
               // Branch and script are literal text: JSON decoding would turn the legal branch `1e3` into 1000.
-              if (!LITERAL_TEXT_FIELDS.some((field) => input.positionals.key === `checks.${field}`)) {
+              if (!afterDashes && !LITERAL_TEXT_FIELDS.some((field) => input.positionals.key === `checks.${field}`)) {
                 try { value = JSON.parse(raw); } catch { /* plain text stays a string */ }
               }
               const result = await domain["config.set"]({ projectId: project.id, key: input.positionals.key, value });
