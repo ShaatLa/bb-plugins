@@ -241,7 +241,7 @@ fi
     kind: "agent", threadId: "thr_previous", body: `Review range: ${base}..${previousHead}`, provider: { id: "claude-code" },
   };
   const card = {
-    task, plan, project: { linkedBbProjectId: f.request.projectId }, dependencies: { blockedBy: [] as { status: string }[] },
+    task, plan, project: { linkedBbProjectId: f.request.projectId }, dependencies: { blockedBy: [] as { key: string; title: string; status: string }[] },
     comments: [
       { ...previousReview, id: "comment_oldest", createdAt: "2025-01-01T00:00:00.000Z" },
       {
@@ -289,9 +289,24 @@ fi
   task.status = "in_progress"; task.type = "epic"; await saveCard();
   await expect(launch("check")).rejects.toThrow('{"reasonCode": "unsupported_card_type"}');
   task.type = "task"; plan.state = "approved";
-  card.dependencies.blockedBy.push({ status: "in_progress" }); await saveCard();
-  await expect(launch("impl")).rejects.toThrow('{"reasonCode": "open_dependency"}');
-  card.dependencies.blockedBy[0].status = "done";
+  card.dependencies.blockedBy.push(
+    { key: "EXA-2", title: "Prepare\n the fixture", status: "in_progress" },
+    { key: "EXA-3", title: "Abandoned predecessor", status: "canceled" },
+    { key: "EXA-4", title: "Finished predecessor", status: "done" },
+  );
+  await saveCard();
+  for (const role of ["impl", "check", "review"]) {
+    await expect(launch(role)).rejects.toThrow('{"reasonCode": "open_dependency"}');
+  }
+  expect(await launch("plan-review", false)).toMatchObject({ dryRun: false, threadId: "thr_child" });
+  expect(f.spawn).toHaveBeenLastCalledWith(expect.objectContaining({
+    providerId: "claude-code",
+    prompt: expect.stringContaining("## Open predecessors\n- EXA-2 (in_progress) — Prepare the fixture\n- EXA-3 (canceled) — Abandoned predecessor\n"),
+  }));
+  expect(f.spawn).not.toHaveBeenLastCalledWith(expect.objectContaining({
+    prompt: expect.stringContaining("EXA-4"),
+  }));
+  for (const predecessor of card.dependencies.blockedBy) predecessor.status = "done";
   card.project.linkedBbProjectId = "proj_other"; await saveCard();
   await expect(launch("impl")).rejects.toThrow('{"reasonCode": "wrong_project"}');
   card.project.linkedBbProjectId = f.request.projectId;
@@ -302,12 +317,13 @@ fi
   await expect(launch("review")).rejects.toThrow('{"reasonCode": "no_eligible_provider"}');
   task.description = "Scope: plugins/other/"; await saveCard();
   await expect(launch("impl")).rejects.toThrow('{"reasonCode": "scope_not_allowed"}');
-  expect(f.spawn).toHaveBeenCalledTimes(1);
+  expect(f.spawn).toHaveBeenCalledTimes(2);
   const report = await f.report({ events: true });
-  expect(report.projects[0]).toMatchObject({ starts: 1, dryRuns: 3, blockedStarts: 0 });
+  expect(report.projects[0]).toMatchObject({ starts: 2, dryRuns: 3, blockedStarts: 0 });
   expect(report.events?.map(event => event.reason).sort()).toEqual([
     "builder:card_closed", "builder:missing_review_range", "builder:no_approved_plan", "builder:no_eligible_provider",
-    "builder:open_dependency", "builder:scope_not_allowed", "builder:scope_not_allowed", "builder:unknown_role", "builder:unsupported_card_type",
+    "builder:open_dependency", "builder:open_dependency", "builder:open_dependency",
+    "builder:scope_not_allowed", "builder:scope_not_allowed", "builder:unknown_role", "builder:unsupported_card_type",
     "builder:wrong_project",
   ]);
 
@@ -336,8 +352,8 @@ fi
       spawn: { environment: reused, parentNotifications: "stuck" },
     } });
   }
-  expect(f.mint).toHaveBeenCalledTimes(1);
-  expect(f.spawn).toHaveBeenCalledTimes(1);
+  expect(f.mint).toHaveBeenCalledTimes(2);
+  expect(f.spawn).toHaveBeenCalledTimes(2);
   expect(await launch("review", false)).toMatchObject({ dryRun: false, threadId: "thr_child" });
   expect(f.spawn).toHaveBeenLastCalledWith(expect.objectContaining({ environment: reused }));
   expect(await launch("impl", false, ...pinOptions)).toMatchObject({ dryRun: false, threadId: "thr_child" });
@@ -700,7 +716,7 @@ it("checks weekly pace before mint and uses the configured order for opted-in fa
     providerPace: { overridden: false, providers: [{ providerId: "codex", pace: null }, {}, {}] },
     build: { spawn: { providerId: "codex" } },
   });
-});
+}, 15_000);
 
 it("uses the weekly quota of available pooled accounts even without local provider usage", async () => {
   const f = await fixture();

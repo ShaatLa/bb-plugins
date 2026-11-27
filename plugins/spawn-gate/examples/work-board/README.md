@@ -70,8 +70,9 @@ reaches the pace threshold, add `--reason "why this provider is needed"` to
 approve the override for that request. Keep credentials out of the reason.
 It appears in the admitted brief and, for real starts, in `report --events`.
 
-The task must be open, its blockers must be Done, and its Work Board project
-must be linked to the launch project. Add one line to the description such as
+The task must be open and its Work Board project must be linked to the
+launch project. The `impl`, `check`, and `review` roles require all
+predecessors to be Done. A `plan-review` brief lists any open predecessors. Add one line to the description such as
 `Scope: plugins/example/`. Trailing whitespace on that line is allowed. For
 a plugin owner mapped to exactly one directory, an omitted scope uses that
 directory. Only the mapped owner or manager can launch for that scope. An open

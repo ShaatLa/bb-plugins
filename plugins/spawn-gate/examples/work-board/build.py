@@ -124,7 +124,8 @@ def assemble(card, config, request, role, provider, model, reason):
         raise Refusal("card_closed", "Use an open Work Board task.")
     if task["type"] != "task":
         raise Refusal("unsupported_card_type", "Use the key of a Work Board task within the epic.")
-    if any(item["status"] != "done" for item in card["dependencies"]["blockedBy"]):
+    open_predecessors = [item for item in card["dependencies"]["blockedBy"] if item["status"] != "done"]
+    if open_predecessors and role != "plan-review":
         raise Refusal("open_dependency", "Wait until all blocking Work Board tasks are Done.")
     if role == "plan-review" and (not plan or not plan.get("body")):
         raise Refusal("missing_plan", "Save the plan before launching its reviewer.")
@@ -150,6 +151,12 @@ def assemble(card, config, request, role, provider, model, reason):
     parent_thread = bb("thread", "show", parent)["thread"] if reuse_parent or role == "plan-review" else {}
     if role == "plan-review":
         excluded = parent_thread["providerId"]
+        if open_predecessors:
+            entries = "\n".join(
+                f'- {item["key"]} ({" ".join(item["status"].split())}) — {" ".join(item["title"].split())}'
+                for item in open_predecessors
+            )
+            review = f"\n## Open predecessors\n{entries}\n"
     if reuse_parent and not parent_thread.get("environmentId"):
         raise Refusal("missing_parent_environment", "Launch from a parent thread with an attached BB environment.")
     execution, policy = role_route(config, role, excluded, provider, model, reason)
