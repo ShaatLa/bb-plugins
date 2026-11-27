@@ -17,7 +17,7 @@ export function QueueBlock({ taskId, projectId, queue }: { taskId: string; proje
   const [error, setError] = useState<string | null>(null);
   return (
     <div className="grid gap-1 text-xs">
-      <div className="flex items-center gap-2">
+      <div className="flex min-w-0 items-center gap-2">
         {queue ? <QueuePlace queue={queue} total={queues.data?.find((item) => item.threadId === queue.threadId)?.entries.length} /> : <span className="text-muted-foreground">Not in a work queue</span>}
         {queue ? (
           <Button asChild size="icon" variant="ghost" className="ml-auto size-6 shrink-0 text-muted-foreground"><button type="button" aria-label="Remove from queue" title="Remove from queue" disabled={busy} onClick={async () => {
