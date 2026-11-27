@@ -2,14 +2,14 @@
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
 import { QueueMenu } from "./queue-menu";
-const state = vi.hoisted(() => ({ queues: [] as any[], calls: [] as any[], failure: false, error: "", refresh: vi.fn(), go: vi.fn() }));
+const state = vi.hoisted(() => ({ queues: [] as any[], calls: [] as any[], failure: false, error: "", refresh: vi.fn(), go: vi.fn(), gate: null as Promise<void> | null }));
 const sdk = { threads: { get: async ({ threadId }: { threadId: string }) => ({ title: threadId }), list: async () => [] } };
 vi.mock("@get-bb/plugin-sdk/app", async (actual) => ({ ...await actual<object>(), useSdk: () => sdk, useRealtime: () => {} }));
-vi.mock("../shell/data", () => ({ useTasksQuery: () => ({ data: state.queues, error: state.error, refresh: state.refresh }), useTasksRpc: () => ({ call: async (method: string, input: unknown) => { state.calls.push([method, input]); if (state.failure) throw new Error("Order refused"); } }) }));
+vi.mock("../shell/data", () => ({ useTasksQuery: () => ({ data: state.queues, error: state.error, refresh: state.refresh }), useTasksRpc: () => ({ call: async (method: string, input: unknown) => { state.calls.push([method, input]); if (state.gate) await state.gate; if (state.failure) throw new Error("Order refused"); } }) }));
 vi.mock("../shell/routes", () => ({ useTasksNavigation: () => ({ go: state.go }) }));
 vi.mock("../shell/task-statuses", () => ({ useTaskStatuses: () => ({ label: (status: string) => status }) }));
 const entry = (n: number, position = n) => ({ taskId: `task${n}`, key: `EXA-${n}`, title: `Card ${n}`, status: "todo", position });
-afterEach(() => { cleanup(); state.queues = []; state.calls = []; state.failure = false; state.error = ""; state.refresh.mockReset(); state.go.mockReset(); });
+afterEach(() => { cleanup(); state.queues = []; state.calls = []; state.failure = false; state.error = ""; state.refresh.mockReset(); state.go.mockReset(); state.gate = null; });
 it("opens a card and closes the menu", async () => {
   state.queues = [{ threadId: "thr_example", entries: [entry(1)] }];
   render(<QueueMenu projectId="proj_example" />);
@@ -107,6 +107,30 @@ it("does not move focus after a refused keyboard move", async () => {
   state.queues = [{ threadId: "thr_first", entries: [entry(1), entry(2), entry(3)] }];
   view.rerender(<QueueMenu projectId="proj_example" />);
   expect(document.activeElement).toBe(item("EXA-1"));
+});
+it("restores focus only after the removal completes, not on a refresh while it is pending", async () => {
+  state.queues = [{ threadId: "thr_first", entries: [entry(1), entry(2), entry(3)] }];
+  const view = render(<QueueMenu projectId="proj_example" />);
+  fireEvent.pointerDown(screen.getByRole("button", { name: /Queue: next EXA-2/ }), { button: 0, ctrlKey: false });
+  const menu = await screen.findByRole("menu");
+  const item = (key: string) => within(menu).getByRole("menuitem", { name: new RegExp(key) });
+  let release!: () => void;
+  state.gate = new Promise((resolve) => { release = resolve; });
+  item("EXA-2").focus();
+  fireEvent.keyDown(item("EXA-2"), { key: "Delete" });
+  // An unrelated refresh lands while the removal is pending.
+  state.queues = [{ threadId: "thr_first", entries: [entry(1), entry(2), entry(3)] }];
+  view.rerender(<QueueMenu projectId="proj_example" />);
+  expect(document.activeElement).toBe(item("EXA-2"));
+  release(); state.gate = null;
+  await waitFor(() => expect(state.refresh).toHaveBeenCalledTimes(2));
+  // A read that started before the removal resolves after it, still with the removed card.
+  state.queues = [{ threadId: "thr_first", entries: [entry(1), entry(2), entry(3)] }];
+  view.rerender(<QueueMenu projectId="proj_example" />);
+  expect(document.activeElement).toBe(item("EXA-2"));
+  state.queues = [{ threadId: "thr_first", entries: [entry(1), entry(3, 2)] }];
+  view.rerender(<QueueMenu projectId="proj_example" />);
+  expect(document.activeElement).toBe(item("EXA-3"));
 });
 it("shows the current icon and next card label", () => {
   state.queues = [{ threadId: "thr_example", entries: [entry(1)] }];

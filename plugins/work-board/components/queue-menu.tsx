@@ -9,6 +9,8 @@ import { useThreadName } from "./queue-chip";
 import { errorMessage } from "../shared/errors";
 import { useTaskStatuses } from "../shell/task-statuses";
 
+type QueueList = readonly { entries: readonly { taskId: string; position: number }[] }[];
+
 export function QueueMenu({ projectId }: { projectId: string }) {
   const sdk = useSdk();
   const rpc = useTasksRpc();
@@ -21,7 +23,8 @@ export function QueueMenu({ projectId }: { projectId: string }) {
   const [error, setError] = useState<{ threadId: string; message: string } | null>(null);
   const [drag, setDrag] = useState<{ threadId: string; taskId: string; position: number } | null>(null);
   const [over, setOver] = useState<{ taskId: string; edge: "top" | "bottom" } | null>(null);
-  const focusId = useRef<string | null>(null);
+  // Where focus goes after a keyboard change, consumed only by data that already shows the change (a stale read can land first).
+  const focusTarget = useRef<{ taskId: string | null; settled: (queues: QueueList) => boolean } | null>(null);
   const contentRef = useRef<HTMLDivElement>(null);
   const queues = query.data ?? [];
   const ids = queues.map((queue) => queue.threadId).join("\0");
@@ -35,21 +38,22 @@ export function QueueMenu({ projectId }: { projectId: string }) {
     return () => { cancelled = true; };
   }, [sdk, ids, threadRevision]);
   useEffect(() => {
-    if (focusId.current) {
-      const item = Array.from(contentRef.current?.querySelectorAll<HTMLElement>("[data-task-id]") ?? []).find((node) => node.dataset.taskId === focusId.current);
-      if (item) { item.focus(); focusId.current = null; }
-    }
+    const target = focusTarget.current;
+    if (!target || !query.data || !target.settled(query.data)) return;
+    focusTarget.current = null;
+    if (target.taskId) Array.from(contentRef.current?.querySelectorAll<HTMLElement>("[data-task-id]") ?? []).find((node) => node.dataset.taskId === target.taskId)?.focus();
   }, [query.data]);
   if (!queues.length && !query.error) return null;
   const first = queues[0]?.entries[1] ?? queues[0]?.entries[0];
   const current = first?.position === 1;
   const others = Math.max(0, queues.length - 1);
-  const act = async (threadId: string, action: () => Promise<unknown>) => {
+  const act = async (threadId: string, action: () => Promise<unknown>, focus?: { taskId: string | null; settled: (queues: QueueList) => boolean }) => {
     setError(null);
-    try { await action(); await query.refresh(); } catch (cause) { focusId.current = null; setError({ threadId, message: errorMessage(cause) }); }
+    try { await action(); if (focus) focusTarget.current = focus; await query.refresh(); } catch (cause) { focusTarget.current = null; setError({ threadId, message: errorMessage(cause) }); }
   };
   return <DropdownMenu onOpenChange={(open) => { if (open) void query.refresh(); }}>
-    <span className="ml-2 flex min-w-0 shrink items-center gap-1.5">
+    {/* Shares the room the project name leaves with the manager control, as that control does, so the name is never cut. */}
+    <span className="ml-2 flex min-w-14 grow basis-0 max-w-max items-center gap-1.5">
       <span className="min-w-0 truncate text-xs text-muted-foreground">Queue</span>
       <DropdownMenuTrigger asChild><Button type="button" size="sm" variant="outline" className="h-6 min-w-11 max-w-56 shrink-[20] gap-1.5 overflow-hidden rounded-md px-2 text-xs font-normal shadow-none" aria-label={first ? `Queue: ${current ? "current" : "next"} ${first.key} ${first.title}${others ? `, ${others} more queues` : ""}` : "Queue: unavailable"}>
         {current ? <Icon name="Play" className="size-3 shrink-0" /> : null}<span className="min-w-0 truncate">{first ? `${first.key} · ${first.title}` : "Unavailable"}</span>{others ? <span className="shrink-0 text-muted-foreground">+{others}</span> : null}<Icon name="ChevronDown" className="size-3 shrink-0 text-muted-foreground" />
@@ -67,8 +71,8 @@ export function QueueMenu({ projectId }: { projectId: string }) {
             const remove = event.key === "Delete" || event.key === "Backspace";
             if (!move && !remove) return;
             event.preventDefault(); event.stopPropagation();
-            if (move) { const position = entry.position + (event.key === "ArrowUp" ? -1 : 1); if (position < 1 || position > queue.entries.length) return; focusId.current = entry.taskId; void act(queue.threadId, () => rpc.call("queueMove", { taskId: entry.taskId, position, actor: "owner" })); }
-            else { focusId.current = (queue.entries[index + 1] ?? queue.entries[index - 1])?.taskId ?? null; void act(queue.threadId, () => rpc.call("queueRemove", { taskId: entry.taskId, actor: "owner" })); }
+            if (move) { const position = entry.position + (event.key === "ArrowUp" ? -1 : 1); if (position < 1 || position > queue.entries.length) return; void act(queue.threadId, () => rpc.call("queueMove", { taskId: entry.taskId, position, actor: "owner" }), { taskId: entry.taskId, settled: (queues) => queues.some((item) => item.entries.some((other) => other.taskId === entry.taskId && other.position === position)) }); }
+            else void act(queue.threadId, () => rpc.call("queueRemove", { taskId: entry.taskId, actor: "owner" }), { taskId: (queue.entries[index + 1] ?? queue.entries[index - 1])?.taskId ?? null, settled: (queues) => !queues.some((item) => item.entries.some((other) => other.taskId === entry.taskId)) });
           }}>{entry.key} · {entry.title} · {statuses.label(entry.status)}</DropdownMenuItem>
           <button type="button" tabIndex={-1} aria-label={`Remove ${entry.key} from the queue`} onClick={() => void act(queue.threadId, () => rpc.call("queueRemove", { taskId: entry.taskId, actor: "owner" }))}><Icon name="Trash2" className="size-3.5" /></button>
         </div>)}
