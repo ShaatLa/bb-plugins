@@ -23,11 +23,10 @@ it("shows the latest time, matched actor and elapsed bar", () => {
   rerender(<PausedBlock pauses={[pause, { signal: "owner_question", reason: "waiting", until: null, targets: [] }]} />);
   expect(screen.getByText("Paused")).toBeTruthy();
 });
-it("resumes and extends, disclosing automatic pauses and retained questions", async () => {
+it("resumes and extends, disclosing automatic pauses in the Extend menu", async () => {
   time();
   const resume = vi.fn().mockResolvedValue(undefined), extend = vi.fn().mockResolvedValue(undefined);
   render(<PausedBlock pauses={[pause, { signal: "background", reason: "Running", until }, { signal: "owner_question", reason: "waiting", until: null, targets: [] }]} resume={resume} extend={extend} />);
-  expect(screen.getByText(/waiting on the owner stays/)).toBeTruthy();
   fireEvent.click(screen.getByText("Extend ▾"));
   expect(screen.getByText("Also ends the automatic pause.")).toBeTruthy();
   fireEvent.click(screen.getByText("+1 h"));
@@ -57,11 +56,10 @@ it("matches same-reason pauses by deadline and identifies owner and automatic ac
   const { container, rerender } = render(<PausedBlock pauses={[first, second]} details={[{ ...row, ...first, source: "auto" }, { ...row, ...second, source: "manual", threadId: "thr_other" }]} names={new Map([["thr_other", "Other"]])} />);
   expect(container.textContent).toContain("paused automatically");
   expect(container.textContent).toContain("paused by Other");
-  rerender(<PausedBlock pauses={[pause]} details={[{ ...row, threadId: "owner" }]} notices />);
+  rerender(<PausedBlock pauses={[pause]} details={[{ ...row, threadId: "owner" }]} />);
   expect(container.textContent).toContain("paused by the owner");
-  expect(container.textContent).toContain("stale-status notices for this card apply again");
-  rerender(<PausedBlock pauses={[pause]} details={[row]} notices={false} />);
-  expect(container.textContent).not.toContain("stale-status notices");
+  // Only the relevant facts: no explanation of what ends the pause (owner's remark).
+  expect(container.textContent).not.toMatch(/Ends (at|earlier|when)|stale-status notices|Resume ends/);
 });
 it("disables extension at the eight hour limit", () => {
   time();

@@ -43,8 +43,8 @@ function clock(iso: string, now: number) {
   return date.toLocaleDateString() === new Date(now).toLocaleDateString() ? date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : date.toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
 }
 
-export function PausedBlock({ pauses, details, names, questions = [], notices = false, resume, extend, onError }: {
-  pauses?: CardPause[]; details?: PauseDetails[]; names?: ReadonlyMap<string, string>; questions?: TaskQuestion[]; notices?: boolean;
+export function PausedBlock({ pauses, details, names, questions = [], resume, extend, onError }: {
+  pauses?: CardPause[]; details?: PauseDetails[]; names?: ReadonlyMap<string, string>; questions?: TaskQuestion[];
   resume?: () => Promise<unknown>; extend?: (reason: string, durationMs: number) => Promise<unknown>; onError?: (message: string) => void;
 }) {
   const now = useNowTick();
@@ -68,13 +68,9 @@ export function PausedBlock({ pauses, details, names, questions = [], notices = 
         {elapsed !== null && Number.isFinite(elapsed) && <div aria-hidden="true" className="mb-1 h-1 rounded bg-muted"><div className="h-full rounded bg-warning" style={{ width: `${elapsed}%` }} /></div>}
         <div><Reason pause={pause} questions={questions} /></div>
         {row && <div className="text-muted-foreground">{pause.until && <>Until <time dateTime={pause.until} title={new Date(pause.until).toLocaleString()}>{clock(pause.until, now)}</time> · </>}{row.source === "auto" ? "paused automatically" : `paused by ${row.threadId === "owner" ? "the owner" : names?.get(row.threadId) ?? row.threadId}`} at <time dateTime={row.startedAt} title={new Date(row.startedAt).toLocaleString()}>{clock(row.startedAt, now)}</time></div>}
-        {pause.signal === "manual" && <div className="text-muted-foreground">{pause.until && `Ends at ${clock(pause.until, now)}. `}Ends earlier on Resume, a status change, or a new turn in a session attached to this card.{notices && " Then stale-status notices for this card apply again."}</div>}
-        {pause.signal === "background" && <div className="text-muted-foreground">Automatic: ends when its session starts a turn, on a status change or Resume, and at most 8 h after it started.{notices && " Then stale-status notices apply again."}</div>}
-        {pause.signal === "owner_question" && <div className="text-muted-foreground">Ends when the question is answered.</div>}
       </li>;
     })}</ul>
     {canResume && <div className="mt-2 flex items-start gap-2"><Button size="sm" variant="outline" className="h-7" disabled={busy} onClick={() => resume && void run(resume)}>Resume now</Button>{manual && <div><Button size="sm" variant="outline" className="h-7" disabled={busy} aria-expanded={menu} onClick={() => setMenu(!menu)}>Extend ▾</Button>{menu && <div className="mt-1 rounded-md border bg-popover p-1">{[["+1 h", 3600000], ["+4 h", 14400000], ["8 h from now", MAX_PAUSE_MS]] .map(([label, extra]) => { const duration = Math.min(MAX_PAUSE_MS, label === "8 h from now" ? MAX_PAUSE_MS : remaining + Number(extra)); return <button className="block w-full rounded px-2 py-1 text-left hover:bg-muted disabled:opacity-50" type="button" key={label} disabled={busy || duration <= remaining} onClick={() => extend && void run(() => extend(manual.reason, Math.max(60000, Math.floor(duration))))}>{label}</button>; })}{pauses.some(p => p.signal === "background") && <div className="px-2 py-1 text-muted-foreground">Also ends the automatic pause.</div>}</div>}</div>}</div>}
-    {canResume && pauses.some(p => p.signal === "owner_question") && <div className="mt-1 text-muted-foreground">Resume ends the manual and automatic pauses; waiting on the owner stays.</div>}
   </section>;
 }
 
