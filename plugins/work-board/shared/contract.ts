@@ -530,8 +530,11 @@ const tasksDomainErrorSchema = z
       "project_not_empty",
       "project_prefix_conflict",
       "attachment_referenced",
+      "idempotency_target_gone",
+      "due_date_conflict",
     ]),
     message: z.string(),
+    currentDueDate: dueDateSchema.nullable().optional(),
   })
   .strict();
 
@@ -601,6 +604,7 @@ const updateTaskInputSchema = z
     status: taskStatusSchema.optional(),
     priority: taskPrioritySchema.optional(),
     dueDate: dueDateSchema.nullable().optional(),
+    expectedDueDate: dueDateSchema.nullable().optional(),
     parentTaskId: idSchema.nullable().optional(),
     type: z.enum(TASK_TYPES).optional(),
     epicId: idSchema.nullable().optional(),
@@ -611,6 +615,7 @@ const updateTaskInputSchema = z
     authorName: nonBlankStringSchema.default("You"),
   })
   .strict()
+  .refine((input) => input.expectedDueDate === undefined || input.dueDate !== undefined, { message: "expectedDueDate requires dueDate" })
   .refine(
     (input) =>
       input.title !== undefined ||
@@ -1106,6 +1111,7 @@ export const tasksRpcContract = {
     input: z
       .object({
         projectId: idSchema,
+        idempotencyKey: z.string().min(1).max(200).optional(),
         agentThreadId: evidenceThreadSchema.nullable().optional(),
         title: nonBlankStringSchema,
         description: z.string().default(""),

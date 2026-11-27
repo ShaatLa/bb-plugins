@@ -1153,6 +1153,7 @@ export const MIGRATIONS = [
     occurrence_id TEXT NOT NULL, state TEXT NOT NULL CHECK(state IN ('pending','done')),
     at TEXT NOT NULL, reason TEXT NOT NULL, PRIMARY KEY (attempt_id, occurrence_id)
   );`,
+  `CREATE TABLE task_idempotency (project_id TEXT NOT NULL, key TEXT NOT NULL, task_id TEXT NOT NULL, created_at TEXT NOT NULL, PRIMARY KEY (project_id, key));`,
 ] as const;
 
 /** Approval rows written before the comment id existed: the N-th row is the N-th approving review comment, only where the counts agree. */

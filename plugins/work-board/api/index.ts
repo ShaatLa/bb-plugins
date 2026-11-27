@@ -1311,9 +1311,22 @@ export function registerHandlers(
     },
     createTask(input) {
       try {
-        validateTaskParent(store, input.projectId, input.parentTaskId);
-        validateTaskLabels(store, input.projectId, input.labelIds);
-        const task = store.transaction(() => {
+        if (input.idempotencyKey !== undefined) assertNoSecrets(input.idempotencyKey, "idempotency key");
+        const db = bb.storage.database();
+        const lookup = () => {
+          const row = db.prepare<[string, string], { task_id: string }>("SELECT task_id FROM task_idempotency WHERE project_id=? AND key=?").get(input.projectId, input.idempotencyKey!);
+          if (!row) return null;
+          const task = store.tasks.getTask(row.task_id);
+          if (!task || task.projectId !== input.projectId) fail("idempotency_target_gone", "The original task is no longer in this project");
+          return apiTask(store, task);
+        };
+        const write = () => store.transaction(() => {
+          if (input.idempotencyKey !== undefined) {
+            const existing = lookup();
+            if (existing) return existing;
+          }
+          validateTaskParent(store, input.projectId, input.parentTaskId);
+          validateTaskLabels(store, input.projectId, input.labelIds);
           const created = store.tasks.createTask({
             agentThreadId: input.agentThreadId,
             projectId: input.projectId,
@@ -1332,8 +1345,15 @@ export function registerHandlers(
             epicId: input.epicId,
           });
           replaceTaskLabels(store, created.id, input.labelIds);
+          if (input.idempotencyKey !== undefined) db.prepare<[string, string, string, string]>("INSERT INTO task_idempotency (project_id, key, task_id, created_at) VALUES (?, ?, ?, ?)").run(input.projectId, input.idempotencyKey, created.id, new Date().toISOString());
           return apiTask(store, created);
         });
+        let task;
+        try { task = write(); } catch (error) {
+          if (input.idempotencyKey === undefined || !String(error).includes("UNIQUE constraint failed: task_idempotency.project_id, task_idempotency.key")) throw error;
+          task = store.transaction(lookup);
+          if (!task) throw error;
+        }
         publishTasksChanged(bb, task.id, task.projectId);
         return { ok: true, task };
       } catch (error) {
@@ -1412,6 +1432,9 @@ export function registerHandlers(
           // The card as it is now, after the SDK reads: its archive state and the old values the history lines compare.
           const before = store.tasks.getTask(current.id);
           if (!before) throw new Error(`Task not found: ${input.taskId}`);
+          if (input.expectedDueDate !== undefined && before.dueDate !== input.expectedDueDate) {
+            throw new TasksDomainFailure({ code: "due_date_conflict", message: "The due date has changed", currentDueDate: before.dueDate });
+          }
           // The caller's own session is attached first, so the closure snapshot below includes it.
           assertNoOpenOwnerQuestions(bb, store, before, input.status, input.agentThreadId);
           const doneClause = assertReviewBeforeDone(store, before, input.status, input.agentThreadId, gateAuthors);
