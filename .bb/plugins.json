@@ -50,6 +50,10 @@
     {
       "name": "project-instructions",
       "source": "./plugins/project-instructions"
+    },
+    {
+      "name": "process-journal",
+      "source": "./plugins/process-journal"
     }
   ]
 }

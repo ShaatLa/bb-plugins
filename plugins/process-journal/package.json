@@ -1,0 +1,50 @@
+{
+  "name": "bb-plugin-process-journal",
+  "version": "0.1.0",
+  "type": "module",
+  "keywords": [
+    "bb-plugin"
+  ],
+  "engines": {
+    "bb": ">=0.50",
+    "bbPluginSdk": ">=0.6.132"
+  },
+  "bb": {
+    "name": "Process Journal",
+    "description": "Record process failures and track evidence that fixes worked.",
+    "branding": {
+      "icon": "BookOpen"
+    },
+    "server": "./server.ts",
+    "app": "./app.tsx",
+    "skills": [
+      "./skills"
+    ]
+  },
+  "dependencies": {
+    "zod": "^4.6.5",
+    "@js-temporal/polyfill": "^0.5.1"
+  },
+  "devDependencies": {
+    "@get-bb/plugin-sdk": "0.6.132",
+    "@testing-library/dom": "10.4.2",
+    "@testing-library/react": "16.3.3",
+    "@types/better-sqlite3": "7.6.13",
+    "@types/node": "22.20.5",
+    "@types/react": "19.3.0",
+    "@types/react-dom": "19.3.0",
+    "better-sqlite3": "12.11.1",
+    "cron-parser": "5.10.2",
+    "hono": "4.13.13",
+    "jsdom": "29.1.1",
+    "react": "19.3.1",
+    "react-dom": "19.3.1",
+    "typescript": "5.9.3",
+    "vitest": "4.1.12"
+  },
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "build": "bb plugin build"
+  }
+}

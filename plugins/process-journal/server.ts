@@ -1,0 +1,236 @@
+import { cliCommand, defineCli, type BbPluginApi } from "@get-bb/plugin-sdk";
+import { z } from "zod";
+import { methods, rpcContract, type Config, type Input } from "./contract";
+import { SecretDetectedError } from "./secret-guard";
+import { createStore, JournalError, requireCondition, versionOne } from "./store";
+import { createSweep, measureCommand } from "./sweep";
+import { createWorkBoard, workBoardApi } from "./work-board";
+
+type Caller = { kind: "cli"; threadId?: string } | { kind: "client" } | { kind: "plugin"; pluginId: string };
+
+const changed = "journal:changed";
+const instructions = "Record process failures in Process Journal in the same turn. Keep each proposal's manager, next deadline, and measurement evidence current. Load the process-journal skill for commands. Handle wake-ups for your proposals and acknowledge owner questions in the journal.";
+
+export default function plugin(bb: BbPluginApi) {
+  const db = bb.storage.database();
+  bb.storage.migrate(db, [versionOne]);
+  const store = createStore(db);
+  const boardApi = workBoardApi(bb);
+  const board = createWorkBoard(store, boardApi);
+  const publish = (projectId: string) => bb.realtime.publish(changed, { projectId });
+  const settings = bb.settings.define({
+    metricCommands: { type: "string", label: "Trusted metric commands JSON", default: "{}" },
+  });
+  const thread = (threadId: string) => bb.sdk.threads.get({ threadId });
+  function reachable(t: Awaited<ReturnType<typeof thread>>, projectId: string) {
+    return t.projectId === projectId && !t.archivedAt && !t.deletedAt;
+  }
+  async function managerReachable(projectId: string, managerId: string) {
+    return thread(managerId).then(t => reachable(t, projectId), () => false);
+  }
+  const worker = createSweep(store, {
+    measure: async name => measureCommand((await settings.get()).metricCommands, name),
+    send: async (project, manager, message, wanted) => {
+      let target: Awaited<ReturnType<typeof thread>>;
+      try { target = await thread(manager); }
+      catch (error) {
+        return typeof error === "object" && error !== null && "code" in error && error.code === "thread_not_found"
+          ? "unreachable" : "retry";
+      }
+      if (!wanted()) return "obsolete";
+      if (!reachable(target, project)) return "unreachable";
+      try {
+        await bb.sdk.threads.send({
+          threadId: manager, originPluginId: bb.pluginId, mode: "queue-if-active",
+          input: [{ type: "text", text: `[bb message from plugin:${bb.pluginId}]\n\n${message}`, mentions: [] }],
+        });
+        return "sent";
+      } catch { return "uncertain"; }
+    },
+    notice: async input => {
+      const result = await bb.sdk.plugins.callRpc({
+        pluginId: "agent-hub", method: "notice", input,
+        outputSchema: z.object({ id: z.string(), created: z.boolean() }), signal: AbortSignal.timeout(10_000),
+      });
+      return result.id;
+    },
+  });
+  let busy = false;
+  async function tick() {
+    if (busy) return;
+    busy = true;
+    const before = db.prepare("SELECT total_changes() AS count");
+    try {
+      const count = (before.get() as { count: number }).count;
+      try { await worker.sweep(); } catch { bb.log.warn("Process Journal sweep failed; it will retry"); }
+      for (const { projectId, config } of store.configuredProjects()) {
+        if (!config.enabled || !config.boardProject) continue;
+        try { await board.reconcile(projectId, config); }
+        catch { bb.log.warn("Process Journal Work Board reconciliation failed; it will retry"); }
+      }
+      if ((before.get() as { count: number }).count !== count) bb.realtime.publish(changed, {});
+    } finally { busy = false; }
+  }
+  worker.recovery();
+  bb.background.schedule("process-journal", "* * * * *", tick);
+  bb.background.service("process-journal-startup", { start: async () => { await tick(); } });
+  bb.agents.contributeInstructions(({ projectId, threadId }) => {
+    const c = store.config(projectId);
+    return c.enabled && c.managers.includes(threadId) ? instructions : null;
+  });
+
+  function verifyProject(projectId: string) {
+    return bb.sdk.projects.get({ projectId });
+  }
+  async function actorFor(projectId: string, caller: Caller) {
+    if (caller.kind === "client") return "BB client";
+    if (caller.kind === "plugin") return `Plugin ${caller.pluginId}`;
+    if (!caller.threadId) return "Local operator";
+    const found = await thread(caller.threadId).catch(() => null);
+    requireCondition(found && reachable(found, projectId), "invalid_actor", "Actor must be an active thread in this project");
+    return caller.threadId;
+  }
+  function enabled(projectId: string) {
+    requireCondition(store.config(projectId).enabled, "journal_disabled", "Enable Process Journal for this project first");
+  }
+  async function write<I extends { projectId: string }, O>(i: I, caller: Caller, fn: (actor: string) => O | Promise<O>) {
+    const actor = await actorFor(i.projectId, caller);
+    enabled(i.projectId);
+    const result = await fn(actor);
+    publish(i.projectId);
+    return result;
+  }
+  async function validManager(projectId: string, id: string | null | undefined) {
+    if (id) requireCondition(await managerReachable(projectId, id), "invalid_manager", "Manager must be an active thread in this project");
+  }
+  function commandConfigured(i: { command?: string } | undefined) {
+    if (!i?.command) return;
+    // The proposal refers to a name, never to executable text.
+    return settings.get().then(({ metricCommands }) => {
+      let catalog: Record<string, unknown> = {};
+      try { catalog = z.record(z.string(), z.unknown()).parse(JSON.parse(metricCommands)); } catch { }
+      requireCondition(Object.hasOwn(catalog, i.command!), "invalid_metric", "Metric command is not in the trusted catalog");
+    });
+  }
+  const handlers = {
+    projects: async (_: Input<"projects">) => {
+      const projects = await bb.sdk.projects.list();
+      const configured = store.configuredProjects().filter(row => row.config.enabled);
+      return Promise.all(configured.map(async ({ projectId: id, config: c }) => ({
+        id, name: projects.find(p => p.id === id)?.name ?? id, timeZone: c.timeZone,
+        managers: await Promise.all(c.managers.map(async manager => {
+          const t = await thread(manager).catch(() => null);
+          return { id: manager, name: t?.title ?? manager, reachable: t ? Boolean(reachable(t, id)) : false };
+        })),
+      })));
+    },
+    "config.get": (i: Input<"config.get">) => i.key ? store.config(i.projectId)[i.key] : store.config(i.projectId),
+    "config.set": async (i: Input<"config.set">) => {
+      await verifyProject(i.projectId);
+      const next = methods["config.set"].input.parse(i);
+      if (next.key === "managers") {
+        const ids = z.array(z.string()).max(50).parse(next.value);
+        await Promise.all(ids.map(id => validManager(next.projectId, id)));
+      }
+      if ((next.key === "defaultManager" || next.key === "scheduleManager") && typeof next.value === "string") {
+        await validManager(next.projectId, next.value);
+      }
+      if (next.key === "boardProject" && next.value !== null) {
+        const { projects } = await boardApi.projects();
+        const boardProject = projects.find(p => p.id === next.value);
+        requireCondition(boardProject && (!boardProject.linkedBbProjectId || boardProject.linkedBbProjectId === next.projectId),
+          "board_scope", "Choose a Work Board project mapped to this BB project or an unlinked board");
+      }
+      const result = store.setConfig(next.projectId, next.key, next.value);
+      publish(next.projectId);
+      return result;
+    },
+    "entry.add": (i: Input<"entry.add">, caller: Caller) => write(i, caller, async actor => {
+      if (i.proposal) {
+        await validManager(i.projectId, i.proposal.managerId ?? store.config(i.projectId).defaultManager);
+        await commandConfigured(i.proposal.metric);
+      }
+      return store.addEntry(i, actor);
+    }),
+    "entry.list": (i: Input<"entry.list">) => store.listEntries(i),
+    "proposal.add": (i: Input<"proposal.add">, caller: Caller) => write(i, caller, async actor => {
+      await validManager(i.projectId, i.proposal.managerId ?? store.config(i.projectId).defaultManager);
+      await commandConfigured(i.proposal.metric);
+      return store.insertProposal(i, actor);
+    }),
+    "proposal.update": (i: Input<"proposal.update">, caller: Caller) => write(i, caller, async actor => {
+      await validManager(i.projectId, i.patch.managerId);
+      await commandConfigured(i.patch.metric);
+      return store.update(i, actor);
+    }),
+    "proposal.measure": (i: Input<"proposal.measure">, caller: Caller) => write(i, caller, actor => store.measure(i, actor)),
+    "proposal.transition": (i: Input<"proposal.transition">, caller: Caller) => write(i, caller, actor => store.transition(i, actor)),
+    "proposal.comment": (i: Input<"proposal.comment">, caller: Caller) =>
+      write(i, caller, actor => store.comment(i.projectId, i.proposalId, actor, "comment", i.body)),
+    "proposal.rollback": (i: Input<"proposal.rollback">, caller: Caller) =>
+      write(i, caller, actor => store.comment(i.projectId, i.proposalId, actor, "rollback", i.evidence)),
+    "proposal.ack": (i: Input<"proposal.ack">, caller: Caller) => write(i, caller, actor => store.ack(i, actor)),
+    "proposal.detail": async (i: Input<"proposal.detail">) => {
+      const p = store.proposal(i.projectId, i.proposalId);
+      return { proposal: p, entry: store.entry(i.projectId, p.entryId), ...store.events(i.projectId, p.id, i.before),
+        links: store.links(i.projectId, p.id), managerReachable: await managerReachable(i.projectId, p.managerId),
+        measured: store.measured(p.projectId, p.id) };
+    },
+    list: (i: Input<"list">) => store.list(i),
+    digest: (i: Input<"digest">) => store.digest(i.projectId, i.managerId),
+    "fix.create": (i: Input<"fix.create">, caller: Caller) => write(i, caller, actor => board.create(i, actor)),
+    "fix.link": (i: Input<"fix.link">, caller: Caller) => write(i, caller, actor => board.linkExisting(i, actor)),
+    "fix.resolveDeadline": (i: Input<"fix.resolveDeadline">, caller: Caller) => write(i, caller, () => board.resolve(i)),
+    "run.list": (i: Input<"run.list">) => store.listRuns(i),
+    "run.finish": (i: Input<"run.finish">, caller: Caller) => write(i, caller, actor => store.finishRun(i, actor)),
+  };
+  bb.rpc.register(rpcContract, Object.fromEntries(
+    Object.entries(handlers).map(([key, fn]) => [
+      key, (input: never, context: { experimental_caller: Exclude<Caller, { kind: "cli" }> }) =>
+        fn(input, context.experimental_caller),
+    ]),
+  ) as { [K in keyof typeof handlers]: (input: Input<K>, context: {
+    experimental_caller: Exclude<Caller, { kind: "cli" }>;
+  }) => ReturnType<typeof handlers[K]> });
+
+  const project = { type: "string", description: "BB project ID; defaults to the current thread's project" } as const;
+  const input = { type: "string", description: "JSON object with operation fields" } as const;
+  const json = { type: "boolean", description: "Output JSON (the default)" } as const;
+  function result(body: unknown) { return { exitCode: 0, stdout: JSON.stringify(body) }; }
+  function failure(error: unknown) {
+    const known = error instanceof JournalError || error instanceof SecretDetectedError || error instanceof z.ZodError || error instanceof SyntaxError;
+    const code = error instanceof JournalError ? error.code : known ? "invalid_input" : "operation_failed";
+    const message = error instanceof z.ZodError ? error.issues.map(issue => `${issue.path.join(".")}: ${issue.message}`).join("; ")
+      : known ? (error as Error).message : "Operation failed. Check the configuration and try again.";
+    return { exitCode: 1, stdout: JSON.stringify({ ok: false, error: { code, message } }) };
+  }
+  const commands = Object.fromEntries(Object.entries(methods).filter(([key]) => !key.startsWith("config.")).map(([key, method]) => [
+    key.replaceAll(".", "-").replace(/[A-Z]/g, letter => "-" + letter.toLowerCase()),
+    cliCommand({ summary: `Process Journal ${key}`, options: { project, input, json }, async run(i, ctx) {
+      try {
+        const args = z.record(z.string(), z.unknown()).parse(JSON.parse(i.options.input ?? "{}"));
+        const parsed = method.input.parse(key === "projects" ? args : { ...args, projectId: i.options.project ?? ctx.projectId ?? args.projectId });
+        const handler = handlers[key as keyof typeof handlers] as (value: typeof parsed, caller: Caller) => unknown;
+        return result(await handler(parsed, { kind: "cli", threadId: ctx.threadId }));
+      } catch (error) { return failure(error); }
+    } }),
+  ]));
+  bb.cli.register(defineCli({ name: "process-journal", summary: "Record failures and measure process fixes", commands: {
+    ...commands,
+    config: cliCommand({ summary: "Read or change one project configuration field", options: { project, json }, positionals: [
+      { name: "action", description: "get or set", required: true },
+      { name: "key", description: "Configuration field", required: false },
+      { name: "value", description: "JSON value, or a plain string", required: false },
+    ], async run(i, ctx) {
+      try {
+        const { action, key, value } = i.positionals;
+        const projectId = i.options.project ?? ctx.projectId;
+        if (action === "get" && value === undefined) return result(handlers["config.get"](methods["config.get"].input.parse({ projectId, key })));
+        requireCondition(action === "set" && key !== undefined && value !== undefined, "usage", "Use config get [key] or config set <key> <value>");
+        let data: unknown = value;
+        try { data = JSON.parse(value); } catch (error) { if (!(error instanceof SyntaxError)) throw error; }
+        return result(await handlers["config.set"](methods["config.set"].input.parse({ projectId, key, value: data })));
+      } catch (error) { return failure(error); }
+    } }),
+  } }));
+}
