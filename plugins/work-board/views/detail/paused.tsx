@@ -2,7 +2,7 @@ import { Fragment, useState } from "react";
 import { HugeiconsIcon } from "@hugeicons/react";
 import PauseCircleIcon from "@hugeicons/core-free-icons/PauseCircleIcon";
 import { LinkedText } from "../../components/linked-text";
-import { MAX_PAUSE_MS, pauseHeading, pauseReasonText, type CardPause, type PauseTarget } from "../../shared/pause";
+import { pauseHeading, pauseReasonText, type CardPause, type PauseTarget } from "../../shared/pause";
 import type { TaskQuestion } from "../../shared/contract";
 import { placeChecks } from "../../shared/check-flow";
 import { taskHref } from "../../shared/task-link";
@@ -80,7 +80,7 @@ export function PausedBlock({ pauses, details, names, questions = [], resume, ex
       {/* A popover over the card, so opening it never changes the block's height. */}
       <DropdownMenuTrigger asChild><Button size="sm" variant="outline" className="h-7" disabled={busy}>Extend ▾</Button></DropdownMenuTrigger>
       <DropdownMenuContent align="start">
-        {[["+1 h", 3600000], ["+4 h", 14400000], ["8 h from now", MAX_PAUSE_MS]].map(([label, extra]) => { const duration = Math.min(MAX_PAUSE_MS, label === "8 h from now" ? MAX_PAUSE_MS : remaining + Number(extra)); return <DropdownMenuItem key={label} disabled={busy || duration <= remaining} onSelect={() => extend && void run(() => extend(manual.reason, Math.max(60000, Math.floor(duration))))}>{label}</DropdownMenuItem>; })}
+        {[["+1 h", 3600000], ["+4 h", 14400000], ["+1 day", 86400000]].map(([label, extra]) => <DropdownMenuItem key={label} disabled={busy} onSelect={() => extend && void run(() => extend(manual.reason, Math.floor(remaining + Number(extra))))}>{label}</DropdownMenuItem>)}
         {pauses.some(p => p.signal === "background") && <div className="px-2 py-1 text-xs text-muted-foreground">Also ends the automatic pause.</div>}
       </DropdownMenuContent>
     </DropdownMenu>}</div>}

@@ -1,15 +1,17 @@
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import { PILOT_STATUSES, staleRows } from "../attention/observe";
-import { endPauses, pauseArm, startSignalPause, type PauseRow } from "./store";
+import { endPauses, expireDuePauses, pauseArm, startSignalPause, type PauseRow } from "./store";
 import { UNANSWERED_QUESTION } from "../db/waiting-on-owner";
+import { drainPauseExpiryNotices } from "./expiry";
 
 /** Reconcile a single snapshot in one transaction; a failed SDK read leaves signal state untouched. */
 export async function sweepPauseSignals(bb: BbPluginApi): Promise<void> {
   const db = bb.storage.database();
   db.transaction(() => {
-    const expired = db.prepare<[string], PauseRow>("SELECT * FROM task_pauses WHERE signal IN ('manual','background') AND until<=?").all(new Date().toISOString());
-    for (const row of expired) endPauses(db, row.task_id, "expired", "system", { signal: row.signal, threadId: row.thread_id });
+    expireDuePauses(db, new Date().toISOString());
   })();
+  // After the commit, and without holding up the signal sweep below.
+  void drainPauseExpiryNotices(bb);
   const modes = new Map(db.prepare<[], { project_id: string; mode: string }>("SELECT project_id,mode FROM pause_modes WHERE mode<>'off'").all().map(row => [row.project_id, row.mode]));
   const cards = staleRows(db).filter(row => modes.has(row.project_id) && !row.archived && PILOT_STATUSES.includes(row.status));
   const ids = cards.map(card => card.id);

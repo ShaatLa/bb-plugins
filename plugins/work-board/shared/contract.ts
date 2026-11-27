@@ -958,7 +958,7 @@ export const tasksRpcContract = {
     output: z.object({ mode: z.enum(["off", "trial", "on"]) }).strict(),
   },
   pauseTask: {
-    input: z.object({ taskId: idSchema, reason: z.string().trim().min(1).max(300), durationMs: z.number().int().min(60000).max(28800000), actor: z.string().min(1) }).strict(),
+    input: z.object({ taskId: idSchema, reason: z.string().trim().min(1).max(300), durationMs: z.number().int().min(60000), actor: z.string().min(1) }).strict(),
     output: z.object({ ok: z.literal(true), until: z.string() }).strict(),
   },
   resumeTask: {

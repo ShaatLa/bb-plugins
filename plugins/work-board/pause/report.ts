@@ -1,6 +1,6 @@
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import { getWorkflowPolicy } from "../shared/workflow-policy";
-import { pauseArm } from "./store";
+import { endedManualSpans, fillCoverage, pauseArm } from "./store";
 
 type Database = ReturnType<BbPluginApi["storage"]["database"]>;
 const MINUTE = 60_000, HOUR = 60 * MINUTE, DAY = 24 * HOUR;
@@ -14,6 +14,31 @@ const ms = (value: string) => Date.parse(value);
 const overlap = (a: Interval, b: Interval) => Math.max(0, Math.min(a.end, b.end) - Math.max(a.start, b.start));
 const within = (at: number, intervals: Interval[]) => intervals.some(i => at >= i.start && at < i.end);
 const clipped = (interval: Interval, window: Interval): Interval | null => { const start = Math.max(interval.start, window.start), end = Math.min(interval.end, window.end); return start < end ? { start, end } : null; };
+
+/**
+ * The time of a manual pause beyond eight hours of continuous manual coverage, per card: after that a wait is deliberate, never an
+ * abandonment, so the report treats it as out of scope. Coverage chains Extends and re-pauses at most five minutes apart. A pause
+ * carries its own start and coverage start (on its end row, or on its live row), so an old or pruned log row is never needed. A pause
+ * counts until its deadline at the latest, however late the sweep ended it. Rows
+ * written before those columns existed are paired and merged the v1 way.
+ */
+function manualExcess(db: Database, projectId: string, nowMs: number): Map<string, Interval[]> {
+  const items = endedManualSpans(db, { projectId });
+  for (const row of db.prepare<[string], { task_id: string; started_at: string; until: string | null; coverage_started_at: string | null }>("SELECT x.task_id,x.started_at,x.until,x.coverage_started_at FROM task_pauses x JOIN tasks t ON t.id=x.task_id WHERE t.project_id=? AND x.signal='manual' AND x.applied=1").all(projectId)) {
+    const span = { start: ms(row.started_at), end: Math.min(nowMs, row.until ? ms(row.until) : Infinity), coverage: row.coverage_started_at ? ms(row.coverage_started_at) : null };
+    if (Number.isFinite(span.start) && Number.isFinite(span.end)) (items.get(row.task_id) ?? items.set(row.task_id, []).get(row.task_id)!).push(span);
+  }
+  const result = new Map<string, Interval[]>();
+  for (const [taskId, list] of items) {
+    list.sort((a, b) => a.start - b.start);
+    fillCoverage(list);
+    for (const item of list) {
+      const range = { start: Math.max(item.start, item.coverage! + 8 * HOUR), end: item.end };
+      if (range.start < range.end) (result.get(taskId) ?? result.set(taskId, []).get(taskId)!).push(range);
+    }
+  }
+  return result;
+}
 
 /** Report uses raw samples and occurrence deliveries, never pause events as evidence of work. */
 export function pauseReport(db: Database, projectId: string, since?: string, until?: string, nowMs = Date.now()) {
@@ -45,6 +70,8 @@ export function pauseReport(db: Database, projectId: string, since?: string, unt
   const samples = db.prepare<[string, string, string], Sample>("SELECT * FROM pause_samples WHERE project_id=? AND at>=? AND at<? ORDER BY at,task_id").all(projectId, retainedSince, new Date(end).toISOString());
   const byRun = new Map(runs.map((at, i) => [at, intervals[i]!]));
   const arms = { control: empty(), auto: empty() };
+  const excess = manualExcess(db, projectId, nowMs);
+  const excluded = (taskId: string, at: number) => within(at, excess.get(taskId) ?? []);
   // The trial judges automatic pauses on their own: from a card's first owner pause action (T) on, the card leaves both arms'
   // keep metrics. The lookback starts with the A/B interval holding the window start, so moving the start cannot re-include it.
   const lookback = (ab.find(i => i.start <= start && start < i.end) ?? ab.find(i => i.start >= start && i.start < end))?.start ?? start;
@@ -56,7 +83,7 @@ export function pauseReport(db: Database, projectId: string, since?: string, unt
   }
   for (const taskId of touchedAt.keys()) arms[pauseArm(taskId)].owner.cards++;
   for (const sample of samples) {
-    if (!sample.in_scope) continue;
+    if (!sample.in_scope || excluded(sample.task_id, ms(sample.at))) continue;
     const interval = byRun.get(ms(sample.at));
     if (!interval) continue;
     const t = touchedAt.get(sample.task_id) ?? Infinity;
@@ -127,7 +154,7 @@ export function pauseReport(db: Database, projectId: string, since?: string, unt
     };
     for (let i = 0; i < rows.length; i++) {
       const row = rows[i]!, at = ms(row.at), interval = byRun.get(at)!;
-      const population = !!row.in_scope && !row.held && !row.waiting_owner && row.status === policy.inProgressStatus;
+      const population = !!row.in_scope && !row.held && !row.waiting_owner && row.status === policy.inProgressStatus && !excluded(taskId, at);
       if (!population) { finish(at); lastWork = null; entry = null; unknown = false; continue; }
       if (entry === null) { entry = at; lastWork = at; unknown = at > start - 8 * HOUR; }
       if (row.worked) { finish(at); lastWork = at; unknown = false; }
@@ -155,6 +182,8 @@ export function pauseReport(db: Database, projectId: string, since?: string, unt
   const diagnosticRows = db.prepare<[string, string, string], { at: string; event: string; signal: string | null; end_reason: string | null; applied: number | null; thread_id: string | null }>("SELECT at,event,signal,end_reason,applied,thread_id FROM pause_log WHERE project_id=? AND at>=? AND at<? AND event IN ('start','end')").all(projectId, new Date(start).toISOString(), new Date(end).toISOString()).filter(row => within(ms(row.at), periods));
   const diagnostics: Record<string, number> = {};
   for (const row of diagnosticRows) { const key = `${row.thread_id === 'owner' ? 'owner:' : ''}${row.event}:${row.signal ?? '-'}:${row.end_reason ?? '-'}`; diagnostics[key] = (diagnostics[key] ?? 0) + 1; }
+  for (const arm of ["control", "auto"] as const) diagnostics[`manualBeyond8h:${arm}`] = 0;
+  for (const [taskId, ranges] of excess) for (const range of ranges) { const part = clipped(range, window); if (part) diagnostics[`manualBeyond8h:${pauseArm(taskId)}`]! += part.end - part.start; }
   let verdict: string;
   if (abMs < 7 * DAY) verdict = "extend: under 7 days";
   else if (unsampledMs > abMs * 0.1) verdict = "extend: incomplete sampling";

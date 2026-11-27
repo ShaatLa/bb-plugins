@@ -69,12 +69,12 @@ it("matches same-reason pauses by deadline and identifies owner and automatic ac
   // Only the relevant facts: no explanation of what ends the pause (owner's remark).
   expect(container.textContent).not.toMatch(/Ends (at|earlier|when)|stale-status notices|Resume ends/);
 });
-it("disables extension at the eight hour limit", () => {
+it("offers every extension at any length, with +1 day instead of an eight hour clamp", () => {
   time();
   render(<PausedBlock pauses={[{ ...pause, until: "2026-11-01T18:00:00.000Z" }]} />);
   fireEvent.keyDown(screen.getByText("Extend ▾"), { key: "ArrowDown" });
-  expect(screen.getByRole("menuitem", { name: "+1 h" }).getAttribute("aria-disabled")).toBe("true");
-  expect(screen.getByRole("menuitem", { name: "8 h from now" }).getAttribute("aria-disabled")).toBe("true");
+  for (const name of ["+1 h", "+4 h", "+1 day"]) expect(screen.getByRole("menuitem", { name }).getAttribute("aria-disabled")).toBeNull();
+  expect(screen.queryByRole("menuitem", { name: "8 h from now" })).toBeNull();
 });
 it("hides the resolved question id and uses its link when found", () => {
   const reason = "waiting on owner question q_example";
@@ -93,14 +93,13 @@ it("reports action failures", async () => {
   await vi.waitFor(() => expect(onError).toHaveBeenCalledWith("Could not resume"));
 });
 
-it("caps an extension at eight hours from now", async () => {
+it("adds an extension to the remaining time without a cap", async () => {
   time();
   const extend = vi.fn().mockResolvedValue(undefined);
   render(<PausedBlock pauses={[{ ...pause, until: "2026-11-01T16:00:00.000Z" }]} extend={extend} resume={vi.fn()} />);
   fireEvent.keyDown(screen.getByText("Extend ▾"), { key: "ArrowDown" });
   fireEvent.click(screen.getByRole("menuitem", { name: "+4 h" }));
-  // Six hours are left: +4 h would be ten, so the call asks for the eight-hour maximum.
-  expect(extend).toHaveBeenCalledWith("Waiting", 8 * 3600000);
+  expect(extend).toHaveBeenCalledWith("Waiting", 10 * 3600000);
 });
 
 it("uses pause details only for the card they were read for", () => {

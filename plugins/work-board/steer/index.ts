@@ -194,7 +194,7 @@ export async function deliverCommentToLatestAgent(
 }
 
 /** The first candidate that can take a message; `candidates` grows with the parents of archived ones. Throws when a read fails. */
-async function firstReachable(bb: BbPluginApi, candidates: string[], at: { threadId?: string } = {}, skipMissing = false): Promise<string | undefined> {
+export async function firstReachable(bb: BbPluginApi, candidates: string[], at: { threadId?: string } = {}, skipMissing = false): Promise<string | undefined> {
   for (const threadId of candidates) {
     at.threadId = threadId;
     let thread: Awaited<ReturnType<BbPluginApi["sdk"]["threads"]["get"]>>;

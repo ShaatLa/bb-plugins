@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-/** Manual and background waits cannot suppress attention for longer than eight hours. */
+/** The cap on a background pause. A manual pause has no upper limit. */
 export const MAX_PAUSE_MS = 8 * 60 * 60_000;
 
 /** What a held or owner-question pause waits on now, as the UI links it. The stored `reason` is only a snapshot from when the pause began. */

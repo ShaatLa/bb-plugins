@@ -995,12 +995,12 @@ export function registerTasksCli(
         pause: cliCommand({
           summary: "Pause an unfinished task while waiting",
           positionals: [KEY_POSITIONAL],
-          options: { reason: { type: "string", required: true, description: "What the card is waiting for" }, for: { type: "string", required: true, description: "Duration, e.g. 30m or 2h (maximum 8h)" }, json: JSON_OPTION },
+          options: { reason: { type: "string", required: true, description: "What the card is waiting for" }, for: { type: "string", required: true, description: "Duration, e.g. 30m, 2h or 3d (at least 1 minute)" }, json: JSON_OPTION },
           run(input, ctx) { return guard(async () => {
             const task = await resolveTask(domain, input.positionals["key-or-id"]);
-            const match = /^(\d+)(m|h)$/.exec(input.options.for);
-            if (!match) throw new CliError("Duration must use minutes or hours, e.g. 30m or 2h; maximum 8h");
-            const durationMs = Number(match[1]) * (match[2] === "h" ? 3_600_000 : 60_000);
+            const match = /^(\d+)(m|h|d)$/.exec(input.options.for);
+            if (!match) throw new CliError("Duration must use minutes, hours or days, e.g. 30m, 2h or 3d");
+            const durationMs = Number(match[1]) * { m: 60_000, h: 3_600_000, d: 86_400_000 }[match[2] as "m" | "h" | "d"];
             const result = await domain.pauseTask({ taskId: task.id, reason: input.options.reason, durationMs, actor: ctx.threadId ?? process.env.BB_THREAD_ID ?? "owner" });
             return input.options.json ? JSON.stringify(result) : `Paused ${task.key} until ${result.until}`;
           }); },

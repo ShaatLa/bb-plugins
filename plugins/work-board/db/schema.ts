@@ -1179,6 +1179,17 @@ export const MIGRATIONS = [
     PRIMARY KEY (question_id, revision)
   );
   CREATE INDEX check_answer_outbox_task ON check_answer_outbox(task_id, thread_id, state);`,
+  // One expiry notice per manual pause (local, never exported). The row is the proof that a notice was owed and the record of what was tried.
+  `CREATE TABLE pause_expiry_notices (
+     pause_id TEXT PRIMARY KEY, project_id TEXT NOT NULL, task_id TEXT NOT NULL, task_key TEXT NOT NULL, setter TEXT NOT NULL,
+     reason TEXT NOT NULL, started_at TEXT NOT NULL, until TEXT NOT NULL, expired_at TEXT NOT NULL,
+     state TEXT NOT NULL CHECK(state IN ('pending','sending','sent','unknown','unknown_on_card','failed_on_card','on_card')),
+     attempts INTEGER NOT NULL DEFAULT 0, recipient TEXT, attempted_at TEXT, next_at TEXT, cursor TEXT, last_error TEXT
+   );`,
+  // The start of a manual pause's continuous coverage (Extends and quick re-pauses chain), so the report needs no old log rows.
+  `ALTER TABLE task_pauses ADD COLUMN coverage_started_at TEXT;
+   ALTER TABLE pause_log ADD COLUMN coverage_started_at TEXT;
+   ALTER TABLE pause_log ADD COLUMN pause_started_at TEXT;`,
 ] as const;
 
 /** Approval rows written before the comment id existed: the N-th row is the N-th approving review comment, only where the counts agree. */
