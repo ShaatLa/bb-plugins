@@ -242,15 +242,17 @@ export function onStatusChange(db: Database, taskId: string, to: string, how: { 
   }
 }
 
-export function listQueue(db: Database, input: { threadId: string; projectId?: string }): ProjectQueue[] {
-  const rows = db.prepare<[string, string | null, string | null], QueueRow & { key: string; title: string; status: string }>(
+export function listQueue(db: Database, input: { threadId?: string; projectId?: string }): ProjectQueue[] {
+  if (!input.threadId && !input.projectId) throw new Error("threadId or projectId is required");
+  const rows = db.prepare<[string | null, string | null, string | null, string | null], QueueRow & { key: string; title: string; status: string }>(
     `SELECT q.*, p.prefix || '-' || t.number AS key, t.title, t.status FROM task_queue q JOIN tasks t ON t.id=q.task_id JOIN projects p ON p.id=t.project_id
-     WHERE q.thread_id=? AND (? IS NULL OR q.project_id=?) ORDER BY q.project_id, q.position`).all(input.threadId, input.projectId ?? null, input.projectId ?? null);
+     WHERE (? IS NULL OR q.thread_id=?) AND (? IS NULL OR q.project_id=?) ORDER BY q.project_id, q.thread_id, q.position`).all(input.threadId ?? null, input.threadId ?? null, input.projectId ?? null, input.projectId ?? null);
   const grouped = new Map<string, ProjectQueue>();
   for (const row of rows) {
-    const queue = grouped.get(row.project_id) ?? { projectId: row.project_id, threadId: row.thread_id, entries: [] };
+    const groupKey = JSON.stringify([row.project_id, row.thread_id]);
+    const queue = grouped.get(groupKey) ?? { projectId: row.project_id, threadId: row.thread_id, entries: [] };
     queue.entries.push({ taskId: row.task_id, key: row.key, title: row.title, status: row.status, position: row.position, addedBy: row.added_by, addedAt: row.added_at });
-    grouped.set(row.project_id, queue);
+    grouped.set(groupKey, queue);
   }
   return [...grouped.values()];
 }

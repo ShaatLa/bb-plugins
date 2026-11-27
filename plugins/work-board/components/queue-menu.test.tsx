@@ -1,0 +1,35 @@
+// @vitest-environment jsdom
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { afterEach, expect, it, vi } from "vitest";
+import { QueueMenu } from "./queue-menu";
+const state = vi.hoisted(() => ({ queues: [] as any[], calls: [] as any[], failure: false, error: "", refresh: vi.fn() }));
+const sdk = { threads: { get: async ({ threadId }: { threadId: string }) => ({ title: threadId }), list: async () => [] } };
+vi.mock("@get-bb/plugin-sdk/app", async (actual) => ({ ...await actual<object>(), useSdk: () => sdk, useRealtime: () => {} }));
+vi.mock("../shell/data", () => ({ useTasksQuery: () => ({ data: state.queues, error: state.error, refresh: state.refresh }), useTasksRpc: () => ({ call: async (method: string, input: unknown) => { state.calls.push([method, input]); if (state.failure) throw new Error("Order refused"); } }) }));
+vi.mock("../shell/routes", () => ({ useTasksNavigation: () => ({ go: vi.fn() }) }));
+vi.mock("../shell/task-statuses", () => ({ useTaskStatuses: () => ({ label: (status: string) => status }) }));
+const entry = (n: number, position = n) => ({ taskId: `task${n}`, key: `EXA-${n}`, title: `Card ${n}`, status: "todo", position });
+afterEach(() => { cleanup(); state.queues = []; state.calls = []; state.failure = false; state.error = ""; state.refresh.mockReset(); });
+it("hides the trigger when there are no queues", () => { render(<QueueMenu projectId="proj_example" />); expect(screen.queryByText(/Queues/)).toBeNull(); });
+it("exposes an initial read error", async () => { state.error = "Read failed"; render(<QueueMenu projectId="proj_example" />); fireEvent.pointerDown(screen.getByRole("button", { name: "Queues · 0" }), { button: 0, ctrlKey: false }); expect((await screen.findByRole("alert")).textContent).toBe("Read failed"); });
+it("lists queues in a portal, moves and removes cards, and shows refusals", async () => {
+  state.queues = [{ threadId: "thr_first", entries: [entry(1), entry(2)] }, { threadId: "thr_second", entries: [entry(3, 1)] }];
+  const { container } = render(<QueueMenu projectId="proj_example" />);
+  fireEvent.pointerDown(screen.getByRole("button", { name: "Queues · 2" }), { button: 0, ctrlKey: false });
+  const menu = await screen.findByRole("menu");
+  expect(container.contains(menu)).toBe(false);
+  expect(within(menu).getAllByText("▶")).toHaveLength(2);
+  expect(within(menu).getByText("2")).toBeTruthy();
+  expect(within(menu).queryByRole("button", { name: "Move EXA-1 up" })).toBeNull();
+  expect(within(menu).queryByRole("button", { name: "Move EXA-2 down" })).toBeNull();
+  fireEvent.click(within(menu).getByRole("button", { name: "Move EXA-2 up" }));
+  await waitFor(() => expect(state.calls).toContainEqual(["queueMove", { taskId: "task2", position: 1, actor: "owner" }]));
+  fireEvent.click(within(menu).getByRole("button", { name: "Move EXA-1 down" }));
+  await waitFor(() => expect(state.calls).toContainEqual(["queueMove", { taskId: "task1", position: 2, actor: "owner" }]));
+  fireEvent.click(within(menu).getByRole("button", { name: "Remove EXA-1" }));
+  await waitFor(() => expect(state.calls).toContainEqual(["queueRemove", { taskId: "task1", actor: "owner" }]));
+  state.failure = true;
+  fireEvent.click(within(menu).getByRole("button", { name: "Move EXA-2 up" }));
+  expect(await within(menu).findByText("Order refused")).toBeTruthy();
+  expect(within(menu).getByText(/EXA-1 · Card 1/)).toBeTruthy();
+});

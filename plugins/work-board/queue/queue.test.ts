@@ -229,6 +229,16 @@ describe("next-card notice", () => {
 });
 
 describe("queue calls and CLI", () => {
+  it("lists all project queues in thread and position order and validates the selector", async () => {
+    const f = setup();
+    const a = f.card(), b = f.card(), c = f.card();
+    add(f, a); add(f, b, { threadId: OTHER, actor: "owner" }); add(f, c);
+    const all = await f.call("queueList", { projectId: f.project.id });
+    expect(all.queues.map((q: any) => [q.threadId, q.entries.map((e: any) => e.key)])).toEqual([[EXEC, [a.key, c.key]], [OTHER, [b.key]]]);
+    const one = await f.call("queueList", { threadId: EXEC });
+    expect(one.queues).toEqual([all.queues[0]]);
+    await expect(f.call("queueList", {})).rejects.toThrow();
+  });
   it("refuses an archived or unknown executor thread and publishes through the RPC", async () => {
     const f = setup({ archived: ["thr_gone"] });
     const task = f.card();

@@ -4,7 +4,7 @@ import { useTaskStatuses } from "../../shell/task-statuses.js";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Label, Task } from "../../shared/contract.js";
 import { errorMessage } from "../../shared/errors.js";
-import { useProjects, useTasksRpc } from "../../shell/data.js";
+import { useProjects, useTasksQuery, useTasksRpc } from "../../shell/data.js";
 import { useTasksNavigation } from "../../shell/routes.js";
 import { NewTaskDialog } from "../manage/new-task-dialog.js";
 import { DetailToasts, useDetailToasts } from "../detail/toast.js";
@@ -73,6 +73,7 @@ function LoadingRows() {
 }
 
 export function ListView({ projectId, activeOnly = false }: ListViewProps) {
+  const queues = useTasksQuery(async (client) => (await client.call("queueList", { projectId: projectId! })).queues, ["tasks:changed"], [projectId], { enabled: projectId !== null });
   const { ids: statusIds, label: statusLabel } = useTaskStatuses(projectId);
   const navigation = useTasksNavigation();
   const rpc = useTasksRpc();
@@ -321,6 +322,7 @@ export function ListView({ projectId, activeOnly = false }: ListViewProps) {
               key={task.id}
               task={task}
               meta={meta.data?.get(task.id)}
+              queueTotal={queues.data?.find((q) => q.threadId === meta.data?.get(task.id)?.queue?.threadId)?.entries.length}
               prSummary={prSummaries.data?.get(task.id)}
               questionKinds={questionCounts.details?.get(task.id)}
               unansweredQuestions={questionCounts.data?.get(task.id)}

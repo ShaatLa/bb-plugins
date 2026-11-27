@@ -18,9 +18,11 @@ vi.mock("../shell/routes", () => ({ useTasksNavigation: () => ({ go: vi.fn() }) 
 afterEach(() => { cleanup(); calls.length = 0; });
 
 it("shows the chip on a waiting and on the current card", async () => {
-  render(<><QueueChip queue={{ threadId: "thr_example", position: 3 }} /><QueueChip queue={{ threadId: "thr_example", position: 1 }} /></>);
-  await waitFor(() => expect(screen.getByText("Queued #3 · Example executor")).toBeTruthy());
-  expect(screen.getByText("Current in queue · Example executor")).toBeTruthy();
+  render(<><QueueChip queue={{ threadId: "thr_example", position: 3 }} /><QueueChip queue={{ threadId: "thr_example", position: 1 }} /><QueueChip queue={{ threadId: "thr_example", position: 2 }} total={4} /><QueueChip queue={{ threadId: "thr_example", position: 3 }} total={4} /></>);
+  await waitFor(() => expect(screen.getByText("Queue of Example executor · #3")).toBeTruthy());
+  expect(screen.getByText("Queue of Example executor · current")).toBeTruthy();
+  expect(screen.getByText("Queue of Example executor · 2 of 4")).toBeTruthy();
+  expect(screen.getByText("Queue of Example executor · 3 of 4")).toBeTruthy();
 });
 
 it("lists the queue in order, reorders by drag and removes a card", async () => {

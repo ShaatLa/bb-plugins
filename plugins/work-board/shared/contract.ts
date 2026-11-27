@@ -929,7 +929,7 @@ export const tasksRpcContract = {
   },
   // The manual work queue of an executor thread: an ordered list of cards; the first is current.
   queueList: {
-    input: z.object({ threadId: z.string().startsWith("thr_"), projectId: idSchema.optional() }).strict(),
+    input: z.object({ threadId: z.string().startsWith("thr_").optional(), projectId: idSchema.optional() }).strict().refine((value) => value.threadId || value.projectId, "threadId or projectId is required"),
     output: z.object({ queues: z.array(queueSchema) }).strict(),
   },
   queueAdd: {

@@ -85,6 +85,7 @@ function LabelChips({
 }
 
 interface TaskRowProps {
+  queueTotal?: number;
   prSummary?: PrSummary;
   unansweredQuestions?: number;
   questionKinds?: { decisions: number; checks: number };
@@ -104,6 +105,7 @@ interface TaskRowProps {
 }
 
 export const TaskRow = memo(function TaskRow({
+  queueTotal,
   prSummary,
   unansweredQuestions,
   questionKinds,
@@ -189,7 +191,7 @@ export const TaskRow = memo(function TaskRow({
           ) : null}
           <TaskActivityIndicator activity={meta?.activity} pauses={shownPauses(meta?.pauses, meta?.blockedBy)} failureMarker={!!meta?.threadHealth.failed.length} />
           <PausedChip activity={meta?.activity} pauses={shownPauses(meta?.pauses, meta?.blockedBy)} />
-          <QueueChip queue={meta?.queue} />
+          <QueueChip queue={meta?.queue} total={queueTotal} />
           <DependencyWarning blockedBy={meta?.blockedBy} />
           <TaskAdvisories items={meta?.advisories} compact />
           <ThreadHealthMarkers health={meta?.threadHealth} />

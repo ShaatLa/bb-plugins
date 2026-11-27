@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
-import { act, cleanup, fireEvent, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { makeThreadResponse } from "@get-bb/plugin-sdk/testing";
 import { loadPluginApp, renderSlot } from "@get-bb/plugin-sdk/testing/app";
 import { makeTask, rpcInput, taskTab } from "../../test-fixtures.js";
 import { stubDetailWidth } from "./test-width.js";
@@ -28,8 +29,9 @@ afterEach(() => { cleanup(); TestResizeObserver.all.clear(); });
 const PROJECT_ID = "01HZZZZZZZZZZZZZZZZZZZZZP1";
 const task = makeTask({ id: "01HZZZZZZZZZZZZZZZZZZZZZT5", projectId: PROJECT_ID, number: 5, key: "TSK-5", title: "Ship the rail", position: 1 });
 
-function render(surface: "main" | "side" = "main", withThread = false) {
+function render(surface: "main" | "side" = "main", withThread = false, queued = false) {
   const options = {
+    sdk: { threads: { get: async () => makeThreadResponse({ id: "thr_example", title: "Example worker" }), list: async () => [] } },
     rpc: {
       listTaskDependencies: () => ({ blockedBy: [], blocks: [] }),
       listProjects: () => ({ projects: [{ id: PROJECT_ID, name: "Tasks Plugin", prefix: "TSK", nextTaskNumber: 6, color: "blue", folderId: null, linkedBbProjectId: null, planning: "optional", createdAt: "2026-07-15T00:00:00.000Z" }] }),
@@ -45,7 +47,9 @@ function render(surface: "main" | "side" = "main", withThread = false) {
       listQuestions: () => ({ questions: [] }),
       listComments: () => ({ comments: [] }),
       listBbProjects: () => ({ bbProjects: [] }),
-      listTaskCardMeta: () => ({ metadata: [] }),
+      listTaskCardMeta: () => ({ metadata: queued ? [{ taskId: task.id, taskThreads: [], queue: { threadId: "thr_example", position: 2 } }] : [] }),
+      queueRemove: () => ({}),
+      queueList: () => ({ queues: [{ projectId: PROJECT_ID, threadId: "thr_example", entries: [1, 2, 3, 4].map((position) => ({ position })) }] }),
     },
   };
   return surface === "main"
@@ -59,6 +63,25 @@ const rail = () => document.querySelector('aside[aria-label="Task details"]');
 const callCount = (slot: ReturnType<typeof render>, method: string) => slot.rpcCalls.filter((call) => call.method === method).length;
 
 describe("task view layout", () => {
+  it.each([480, 640])("keeps the unqueued section inside the status card at %ipx", async (width) => {
+    setWidth(width);
+    const slot = render();
+    const activity = await slot.findByRole("region", { name: "Task activity status" });
+    expect(within(activity).getByText("Not in a work queue")).toBeTruthy();
+    expect(within(activity).getByRole("button", { name: "Add to queue of …" })).toBeTruthy();
+    expect(slot.getAllByText("Not in a work queue")).toHaveLength(1);
+    fireEvent.click(within(activity).getByRole("button", { name: "Add to queue of …" }));
+    expect(await slot.findByRole("dialog", { name: "Add to a work queue" })).toBeTruthy();
+  });
+  it.each([480, 640])("shows the queue position in the status card at %ipx", async (width) => {
+    setWidth(width);
+    const slot = render("main", false, true);
+    const activity = await slot.findByRole("region", { name: "Task activity status" });
+    await waitFor(() => expect(activity.textContent).toContain("2nd of 4 in the queue of"));
+    expect(slot.getAllByRole("button", { name: "Remove from queue" })).toHaveLength(1);
+    fireEvent.click(within(activity).getByRole("button", { name: "Remove from queue" }));
+    await waitFor(() => expect(slot.rpcCalls).toContainEqual(expect.objectContaining({ method: "queueRemove", input: { taskId: task.id, actor: "owner" } })));
+  });
   it.each(["main", "side"] as const)("shows the rail beside the content at 640px in the %s view", async (surface) => {
     const slot = render(surface);
     await slot.findByRole("textbox", { name: "Task title" });

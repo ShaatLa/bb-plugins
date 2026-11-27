@@ -92,6 +92,7 @@ interface DragState {
 }
 
 interface TaskCardProps {
+  queueTotal?: number;
   highlighted?: boolean;
   expanded?: boolean;
   onExpandedChange?: (taskId: string, expanded: boolean) => void;
@@ -116,6 +117,7 @@ interface TaskCardProps {
 }
 
 function TaskCard({
+  queueTotal,
   highlighted = false,
   expanded = false,
   onExpandedChange,
@@ -199,7 +201,7 @@ function TaskCard({
             <TaskActivityIndicator activity={meta.activity} pauses={shownPauses(meta.pauses, meta.blockedBy)} failureMarker={!!meta.threadHealth?.failed.length} />
             <DependencyWarning blockedBy={meta.blockedBy} />
             <PausedChip activity={meta.activity} pauses={shownPauses(meta.pauses, meta.blockedBy)} />
-            <QueueChip queue={meta.queue} />
+            <QueueChip queue={meta.queue} total={queueTotal} />
             <TaskAdvisories items={meta.advisories} compact />
             <ThreadHealthMarkers health={meta.threadHealth} />
           </div>
@@ -343,6 +345,7 @@ interface BoardViewProps {
 }
 
 export function BoardView({ projectId, highlightKeys }: BoardViewProps) {
+  const queues = useTasksQuery(async (client) => (await client.call("queueList", { projectId })).queues, ["tasks:changed"], [projectId]);
   const { ids: statusIds, label: statusLabel } = useTaskStatuses(projectId);
   const rpc = useTasksRpc();
   const { toasts, push, dismiss } = useDetailToasts();
@@ -690,6 +693,7 @@ export function BoardView({ projectId, highlightKeys }: BoardViewProps) {
         <TaskCard
           key={task.id}
           task={task}
+          queueTotal={queues.data?.find((q) => q.threadId === metaByTaskId.get(task.id)?.queue?.threadId)?.entries.length}
           highlighted={highlightKeys?.has(task.key) ?? false}
           expanded={expandedCards.has(task.id)}
           onExpandedChange={setExpanded}
@@ -810,6 +814,7 @@ export function BoardView({ projectId, highlightKeys }: BoardViewProps) {
           >
             <TaskCard
               task={ghostTask}
+              queueTotal={queues.data?.find((q) => q.threadId === metaByTaskId.get(ghostTask.id)?.queue?.threadId)?.entries.length}
               labelsById={labelsById}
               meta={metaByTaskId.get(ghostTask.id) ?? EMPTY_META}
               unansweredQuestions={questionTotals.get(ghostTask.id)}

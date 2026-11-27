@@ -1,4 +1,6 @@
 import { useState } from "react";
+import { QueueBlock } from "./queue-block.js";
+import type { CardQueue } from "../../shared/contract.js";
 import { ConfirmDeleteDialog, ConfirmDeleteDialogContent } from "@/components/ui/confirm-delete-dialog";
 import { cn } from "@/lib/utils";
 import { THREAD_STATUS_META, formatRelativeTime } from "./meta.js";
@@ -16,7 +18,7 @@ import { StatusIcon } from "../../components/status-icon.js";
 import { useTaskStatuses } from "../../shell/task-statuses.js";
 import { useOpenThread } from "../../components/open-thread";
 
-export function ActivityStatus({ task, activity, advisories, isFetching, error, threads, pullRequests, unavailableThreadIds, onDetach, onError, onStatusChange }: { task: Task; activity?: TaskActivity; advisories?: TaskAdvisory[]; isFetching: boolean; error: string | null; threads: TaskThread[]; pullRequests?: TaskPullRequest[]; unavailableThreadIds: string[]; onDetach: (thread: TaskThread) => Promise<void>; onError: (message: string) => void; onStatusChange: (status: Task["status"]) => void }) {
+export function ActivityStatus({ task, queue, activity, advisories, isFetching, error, threads, pullRequests, unavailableThreadIds, onDetach, onError, onStatusChange }: { task: Task; queue?: CardQueue; activity?: TaskActivity; advisories?: TaskAdvisory[]; isFetching: boolean; error: string | null; threads: TaskThread[]; pullRequests?: TaskPullRequest[]; unavailableThreadIds: string[]; onDetach: (thread: TaskThread) => Promise<void>; onError: (message: string) => void; onStatusChange: (status: Task["status"]) => void }) {
   const openThread = useOpenThread();
   const [confirm, setConfirm] = useState<TaskThread | null>(null);
   const [choosing, setChoosing] = useState(false);
@@ -69,6 +71,7 @@ export function ActivityStatus({ task, activity, advisories, isFetching, error, 
           {confirm ? <ConfirmDeleteDialogContent title="Detach thread?" description={`"${confirm.title}" will no longer be listed on this task. The thread itself is not deleted; re-attach it with bb work-board attach.`} confirmLabel="Detach" pending={pending} size="sm" onCancel={() => setConfirm(null)} onConfirm={() => { const thread = confirm; setConfirm(null); setPending(true); void onDetach(thread).catch((error) => onError(error instanceof Error ? error.message : String(error))).finally(() => setPending(false)); }} /> : null}
         </ConfirmDeleteDialog>
       </div> : null}
+      {!task.archivedAt ? <div className="mt-2 border-t border-border pt-2"><div className="mb-1 text-2xs text-muted-foreground">Queue</div><QueueBlock taskId={task.id} projectId={task.projectId} queue={queue} /></div> : null}
     </section>
   );
 }
