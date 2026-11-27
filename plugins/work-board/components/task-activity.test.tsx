@@ -73,3 +73,12 @@ it("keeps per-session lines in the default tooltip", async () => {
   expect(tooltip.textContent).toContain("Parent (Parent thread): Assigned");
   expect(tooltip.textContent).toContain("Worker (Worker): Working");
 });
+it("shows time left in the indicator and fallback chip", async () => {
+  const { PausedChip } = await import("./task-activity");
+  const pauses = [{ signal: "manual", reason: "Waiting", until: new Date(Date.now() + 4 * 3600000 + 1000).toISOString() }];
+  const { unmount } = render(<TaskActivityIndicator activity={{ ...base, state: "paused" }} pauses={pauses} />);
+  expect(screen.getByText("Paused · 4 h left")).toBeTruthy();
+  unmount();
+  render(<PausedChip activity={base} pauses={pauses} />);
+  expect(screen.getByText("Paused · 4 h left")).toBeTruthy();
+});

@@ -15,3 +15,15 @@ it("shows no pause on a blocked card and never a wait on a predecessor", () => {
   expect(shownPauses([manual, held], [{ key: "EXA-2" }])).toEqual([]);
   expect(shownPauses(undefined, undefined)).toEqual([]);
 });
+
+it("formats remaining time and hides resolved target ids", async () => {
+  const { formatLeft, pauseHeading } = await import("./pause");
+  const now = Date.parse("2026-01-01T00:00:00Z");
+  expect(formatLeft("2026-01-01T00:35:00Z", now)).toBe("35 min left");
+  expect(formatLeft("2026-01-01T04:00:00Z", now)).toBe("4 h left");
+  expect(formatLeft("2026-01-01T00:00:30Z", now)).toBe("less than a minute left");
+  expect(formatLeft("2025-12-31T23:59:00Z", now)).toBe("less than a minute left");
+  expect(pauseReasonText({ signal: "owner_question", reason: "waiting on owner question q_example", until: null, targets: [] })).toBe("Answered — the pause ends within a minute.");
+  expect(pauseReasonText({ signal: "held", reason: "waiting on EXA-2", until: null, targets: [] })).toBe("Predecessor done — the pause ends within a minute.");
+  expect(pauseHeading([{ signal: "manual", reason: "x", until: "2026-01-01T04:00:00Z" }], now)).toBe("Paused · 4 h left");
+});

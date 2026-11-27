@@ -9,6 +9,7 @@ import type { TasksApiStore } from "../api";
 import { createUlid } from "../db/store";
 import { getWorkflowPolicy } from "../shared/workflow-policy";
 import { touchAttention } from "../attention/ledger";
+import { endPauses } from "../pause/store";
 import { planningOn, READINESS_HINT } from "../shared/project-settings";
 import { defaultTaskThreadId, deliverCommentToLatestAgent, notifyThread } from "../steer";
 import { errorMessage } from "../shared/errors";
@@ -205,6 +206,8 @@ export function createStructuredStore(bb: BbPluginApi, store: TasksApiStore) {
   const syncDecisionLabel = (taskId: string) => {
     // The held checks come first: the attention ledger and the label below read them.
     refreshCheckFlow(db, taskId);
+    const unanswered = db.prepare<[string], { id: string }>(`SELECT q.id FROM task_questions q WHERE q.task_id=? AND ${UNANSWERED_QUESTION} LIMIT 1`).get(taskId);
+    if (!unanswered) endPauses(db, taskId, "signal_cleared", "system", { signal: "owner_question" });
     // An open owner question changes the stale-status observation (no_active_thread), so the ledger is updated in this write.
     touchAttention(db, [taskId]);
     const task = store.tasks.getTask(taskId)!;

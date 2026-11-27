@@ -14,17 +14,28 @@ export type PauseTarget = z.infer<typeof pauseTargetSchema>;
 export const cardPauseSchema = z.object({ signal: z.string(), reason: z.string(), until: z.string().nullable(), targets: z.array(pauseTargetSchema).optional() }).strict();
 export type CardPause = z.infer<typeof cardPauseSchema>;
 
-export const PAUSE_RESOLVED_NOTE = "resolved — the pause ends on the next check";
-
 /** The pause's reason as plain text: the items it waits on now, or the stored reason (with a note) when none is left. */
 export function pauseReasonText(pause: CardPause): string {
   const targets = pause.targets;
   // Plain text (tooltips, the CLI): a Markdown link in a manual reason reads as its label.
   if (!targets) return pause.reason.replace(/\[([^\]\n]+)\]\([^)\s]*\)/g, "$1");
-  if (!targets.length) return `${pause.reason} (${PAUSE_RESOLVED_NOTE})`;
+  if (!targets.length) return pause.signal === "held" ? "Predecessor done — the pause ends within a minute." : "Answered — the pause ends within a minute.";
   return pause.signal === "held"
     ? `Waiting on ${targets.map((target) => target.kind === "task" ? target.taskKey : "").join(", ")}`
     : `Waiting on the owner: ${targets.map((target) => target.kind === "question" ? target.label : "").join(", ")}`;
+}
+
+export function formatLeft(until: string, now: number): string {
+  const minutes = Math.floor((Date.parse(until) - now) / 60_000);
+  if (!Number.isFinite(minutes) || minutes < 1) return "less than a minute left";
+  if (minutes < 60) return `${minutes} min left`;
+  return `${Math.floor(minutes / 60)} h left`;
+}
+
+export function pauseHeading(pauses: readonly CardPause[], now: number): string {
+  if (!pauses.length || pauses.some(p => !p.until)) return "Paused";
+  const latest = pauses.reduce((a, p) => Date.parse(p.until!) > Date.parse(a) ? p.until! : a, pauses[0]!.until!);
+  return `Paused · ${formatLeft(latest, now)}`;
 }
 
 /** "in 5m", "in 3h": the time left, for a future instant. */

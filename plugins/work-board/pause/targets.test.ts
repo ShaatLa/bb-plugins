@@ -60,8 +60,10 @@ it("names the open questions: checks by number, decisions by prompt, never a hel
   expect(labels()).toEqual(["check 1", "check 2"]);
   // The first check fails: the later one is held and nobody waits on the owner for it.
   await harness.callRpc("answerQuestion", { questionId: first.id, revision: 1, selectedOptionIds: [], answerText: "broken", authorName: "Owner" });
+  // No question waits on the owner any more, so the answer's own write ends the owner-question pause.
   expect(targets()).toBeUndefined();
-  expect(db.prepare("SELECT reason FROM task_pauses WHERE task_id=?").get(card.id)).toEqual({ reason: stored });
+  expect(db.prepare("SELECT reason FROM task_pauses WHERE task_id=?").get(card.id)).toBeUndefined();
+  expect(db.prepare("SELECT end_reason FROM pause_log WHERE task_id=? AND event='end' AND signal='owner_question'").get(card.id)).toEqual({ end_reason: "signal_cleared" });
   await harness.dispose();
 });
 

@@ -3,7 +3,7 @@ import { CurrentState } from "./current-state";
 import { PlanCard } from "../plan/card.js";
 import { useActivityPoll, useAdvisoryRecheck } from "../../shell/activity-poll.js";
 import { ActivityStatus } from "./activity-status.js";
-import { PausedBlock } from "./paused.js";
+import { PausedBlock, pauseDetailsFor } from "./paused.js";
 import { QueueBlock } from "./queue-block.js";
 import { isActiveThread } from "./meta.js";
 import { DependenciesSection } from "./dependencies";
@@ -28,6 +28,8 @@ import {
   experimental_copyToClipboard,
   useBbNavigate,
   useRpc,
+  useSdk,
+  useRealtime,
 } from "@get-bb/plugin-sdk/app";
 import {
   listAllTasks,
@@ -318,6 +320,7 @@ function TaskDetail({
   header: (copyAction?: ReactNode) => ReactNode;
 }) {
   const rpc = useTasksRpc();
+  const sdk = useSdk();
   const { ref: layoutRef, wide } = useWideDetail();
   const questionsRef = useRef<HTMLDivElement>(null);
   const questions = useTasksQuery(async client => (await client.call("listQuestions", { taskId: task.id })).questions, ["tasks:changed"], [task.id], { relevantTaskIds: [task.id] });
@@ -430,6 +433,18 @@ function TaskDetail({
     [task.id],
     { relevantTaskIds: [task.id] },
   );
+  const [pauseGeneration, setPauseGeneration] = useState(0);
+  useRealtime("tasks:changed", (payload) => {
+    const id = typeof payload === "object" && payload !== null ? Reflect.get(payload, "taskId") : undefined;
+    if (typeof id !== "string" || id === task.id) setPauseGeneration(value => value + 1);
+  });
+  const pauseDetails = useTasksQuery(async (client) => {
+    const rows = (await client.call("listPauses", { taskId: task.id })).pauses;
+    const ids = [...new Set(rows.filter(row => row.source !== "auto" && row.threadId !== "owner").map(row => row.threadId))];
+    const threads = ids.length ? await sdk.threads.list({ threadIds: ids, limit: ids.length, includeHidden: true }).catch(() => []) : [];
+    return { taskId: task.id, rows, names: new Map(threads.map(thread => [thread.id, thread.title ?? thread.titleFallback ?? thread.id])) };
+  }, [], [task.id, pauseGeneration], { enabled: !!activity.data?.pauses?.length });
+  const attentionSettings = useTasksQuery(client => client.call("getAttentionSettings", { projectId: task.projectId }), ["projects:changed", "settings:changed"], [task.projectId], { enabled: !!activity.data?.pauses?.length });
   const dependencies = useTasksQuery(
     async query => query.call("listTaskDependencies", { taskId: task.id }),
     ["tasks:changed"], [task.id], { relevantTaskIds: [task.id] },
@@ -588,7 +603,7 @@ function TaskDetail({
   const parentTask = parent.data ?? null;
   const activityStatus = <>
     <ActivityStatus key={task.id} task={task} threads={threads.data ?? []} pullRequests={pullRequests.data?.pullRequests} unavailableThreadIds={pullRequests.data?.unavailableThreadIds ?? []} onError={push} onDetach={async (thread) => { await delegationRpc.call("taskThreadsDetach", { taskId: task.id, threadId: thread.threadId }); threads.refresh(); }} onStatusChange={(status) => void updateTask({ status })} activity={activity.data?.activity} advisories={activity.data?.advisories} isFetching={activity.isFetching} error={activity.error} />
-    <PausedBlock pauses={shownPauses(activity.data?.pauses, activity.data?.blockedBy)} />
+    <PausedBlock key={task.id} pauses={shownPauses(activity.data?.pauses, activity.data?.blockedBy)} details={pauseDetailsFor(pauseDetails, task.id)} names={pauseDetails.data?.names} questions={questions.data} notices={attentionSettings.data?.state.effective.mode === "live"} resume={async () => { await rpc.call("resumeTask", { taskId: task.id, actor: "owner" }); await pauseDetails.refresh(); }} extend={async (reason, durationMs) => { await rpc.call("pauseTask", { taskId: task.id, reason, durationMs, actor: "owner" }); await pauseDetails.refresh(); }} onError={push} />
     {!task.archivedAt ? <div className="mb-4">
       <DispatchControl taskId={task.id} projectId={task.projectId} threads={threads.data ?? []} presets={presets.data} onError={push} align="start" className="w-full" />
     </div> : null}

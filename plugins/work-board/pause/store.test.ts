@@ -98,3 +98,21 @@ it("validates, replaces and expires manual pauses", async () => {
   expect(store.tasks.staleStatusFlags([task.id]).get(task.id)).toContain("no_active_thread");
   await harness.dispose();
 });
+
+it("replacing manual and background pauses leaves held pauses, and resume leaves them too", async () => {
+  const { bb, harness } = createFakePluginHost({ pluginId: "work-board" });
+  const store = createStore(bb);
+  const project = store.tasks.createProject({ name: "Example", prefix: "EXA", color: "blue" });
+  const task = store.tasks.createTask({ projectId: project.id, title: "Example", status: "in_progress" });
+  const db = bb.storage.database();
+  const { startSignalPause } = await import("./store");
+  startManualPause(db, task.id, "Waiting", 3600000, "owner");
+  startSignalPause(db, task.id, "background", "thr_example", "Running", true);
+  startSignalPause(db, task.id, "held", "system", "Waiting", true);
+  startManualPause(db, task.id, "Waiting", 7200000, "owner");
+  expect(db.prepare("SELECT signal,end_reason FROM pause_log WHERE event='end' ORDER BY signal").all()).toEqual([{ signal: "background", end_reason: "replaced" }, { signal: "manual", end_reason: "replaced" }]);
+  expect(db.prepare("SELECT signal FROM task_pauses ORDER BY signal").all()).toEqual([{ signal: "held" }, { signal: "manual" }]);
+  db.transaction(() => endPauses(db, task.id, "resume", "owner"))();
+  expect(db.prepare("SELECT signal FROM task_pauses").all()).toEqual([{ signal: "held" }]);
+  await harness.dispose();
+});

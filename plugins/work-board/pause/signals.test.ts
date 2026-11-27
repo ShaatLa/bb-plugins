@@ -174,7 +174,24 @@ it("ignores a held check when it records owner-question waits", async () => {
   expect(db.prepare("SELECT signal FROM task_pauses WHERE task_id=?").all(task.id)).toEqual([{ signal: "owner_question" }]);
   // The first check fails: the second is held, and nobody waits on the owner any more.
   await harness.callRpc("answerQuestion", { questionId: first.id, revision: 1, selectedOptionIds: [], answerText: "broken", authorName: "Owner" });
+  expect(db.prepare("SELECT count(*) AS n FROM task_pauses WHERE task_id=?").get(task.id)).toEqual({ n: 0 });
+  expect(db.prepare("SELECT end_reason,thread_id FROM pause_log WHERE task_id=? AND signal='owner_question' AND event='end'").get(task.id)).toEqual({ end_reason: "signal_cleared", thread_id: "system" });
   await sweepPauseSignals(bb);
   expect(db.prepare("SELECT count(*) AS n FROM task_pauses WHERE task_id=?").get(task.id)).toEqual({ n: 0 });
+  await harness.dispose();
+});
+
+it("ends the owner-question pause in the last answer transaction", async () => {
+  const { bb, harness } = createFakePluginHost({ pluginId: "work-board" });
+  const { registerTasksApi } = await import("../api");
+  const store = createStore(bb); registerTasksApi(bb, store);
+  const project = store.tasks.createProject({ name: "Example", prefix: "EXA", color: "blue" });
+  const task = store.tasks.createTask({ projectId: project.id, title: "Example", status: "in_progress" });
+  const { question } = await harness.callRpc("createQuestion", { taskId: task.id, kind: "check", prompt: "Ready?" }) as { question: { id: string } };
+  const db = bb.storage.database(); setPauseMode(db, project.id, "on"); await sweepPauseSignals(bb);
+  expect(db.prepare("SELECT signal FROM task_pauses WHERE task_id=?").get(task.id)).toEqual({ signal: "owner_question" });
+  await harness.callRpc("answerQuestion", { questionId: question.id, revision: 1, selectedOptionIds: [], answerText: "Yes", authorName: "Owner" });
+  expect(db.prepare("SELECT signal FROM task_pauses WHERE task_id=?").get(task.id)).toBeUndefined();
+  expect(db.prepare("SELECT end_reason,thread_id FROM pause_log WHERE task_id=? AND event='end'").get(task.id)).toEqual({ end_reason: "signal_cleared", thread_id: "system" });
   await harness.dispose();
 });
