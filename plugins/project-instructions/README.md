@@ -6,7 +6,7 @@ Instructions form a directed graph: the plugin injects only the **root** file. T
 
 ## Configuration
 
-In bb, open **Settings → Plugins → Project Instructions** and choose a project. Save each field individually. **Check source** runs the same diagnostics as the CLI.
+In bb, open **Settings → Plugins → Project Instructions** and choose a project. Text fields save individually when you leave the field or press Enter. The right side of the field shows the save result and offers a retry on failure. Switches apply immediately. Concurrent writes to the same field are last-write-wins. **Check source** runs the same diagnostics as the CLI.
 
 Open **Project Instructions** in the sidebar to see the configured projects, root file and preview, selectable and skipped skills, and the last sync result. Sync history records requests made with sync allowed and preserves the last successful fast-forward. **Refresh** reads diagnostics and recorded results without contacting the remote.
 

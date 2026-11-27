@@ -1,14 +1,15 @@
-import { useCallback, useEffect, useState, type ReactNode } from "react";
-import { definePluginApp, UrlLink, useRpc } from "@get-bb/plugin-sdk/app";
+import { useCallback, useEffect, useId, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
+import { definePluginApp, experimental_Icon as Icon, UrlLink, useRpc } from "@get-bb/plugin-sdk/app";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "./components/ui/select";
+import { Switch } from "./components/ui/switch";
 import type { rpcContract } from "./server";
+import { SettingsDraft } from "./settings-draft";
 import { fieldValues, type ConfigValues, type ProjectStatus, type StatusProject } from "./status-contract";
 
 const title = "Project Instructions";
 const card = "min-w-0 rounded-lg border border-border bg-card px-4 py-3.5";
 const muted = "text-sm text-muted-foreground";
 const button = "rounded-md border border-border bg-background px-3 py-1.5 text-sm font-medium hover:bg-muted focus-visible:outline-2 focus-visible:outline-ring disabled:opacity-50";
-const input = "min-w-0 rounded-md border border-input bg-background px-2.5 py-1.5 text-sm focus-visible:outline-2 focus-visible:outline-ring disabled:opacity-50";
 const fieldLabels = {
   clonePath: "Clone path",
   branch: "Branch",
@@ -171,72 +172,140 @@ function StatusPage() {
   </main>;
 }
 
-function SettingRow({ label, value, save }: {
-  label: string; value: ConfigValues[keyof ConfigValues]; save: (value: string | boolean) => Promise<ConfigValues[keyof ConfigValues]>;
+const settingRow = "grid gap-1.5 py-1.5 first:pt-0 last:pb-0 min-[400px]:grid-cols-[8rem_minmax(0,1fr)]";
+const settingLabel = "self-center text-sm font-medium";
+
+function TextSetting({ label, value, version, draft, save }: {
+  label: string; value: string; version: number; draft: SettingsDraft; save: (value: string) => Promise<string>;
 }) {
+  const id = useId();
+  const composing = useRef(false);
+  const state = useSyncExternalStore(draft.subscribe, draft.getSnapshot);
+  useEffect(() => { draft.reconcile(value, version); }, [draft, value, version]);
+
+  return <div className={settingRow}>
+    <label htmlFor={id} className={settingLabel}>{label}</label>
+    <div className="min-w-0">
+      <div className="flex min-w-0 items-center gap-2 rounded-md border border-input bg-background px-2.5 focus-within:border-ring focus-within:ring-1 focus-within:ring-ring">
+        <input id={id} className="min-w-0 flex-1 bg-transparent py-1 text-sm outline-none"
+          value={state.text}
+          aria-invalid={state.status === "invalid" || undefined}
+          aria-describedby={state.error ? `${id}-error` : undefined}
+          onChange={event => draft.edit(event.target.value)}
+          onCompositionStart={() => { composing.current = true; }}
+          onCompositionEnd={() => { composing.current = false; }}
+          onBlur={event => {
+            const page = event.currentTarget.ownerDocument;
+            const staysOnPage = event.relatedTarget?.ownerDocument === page || page.hasFocus();
+            if (!composing.current && page.visibilityState !== "hidden" && staysOnPage) draft.commit(save);
+          }}
+          onKeyDown={event => {
+            if (event.key === "Enter" && !event.nativeEvent.isComposing && !composing.current) draft.commit(save);
+          }} />
+        <span role="status" className="shrink-0 text-xs text-muted-foreground">
+          {state.status === "saving" && "Saving…"}
+          {state.status === "saved" && <>
+            <Icon name="Check" className="size-4" aria-hidden />
+            <span className="sr-only">Saved</span>
+          </>}
+          {state.status === "failed" && "Not saved"}
+        </span>
+        {state.status === "failed" && <button type="button" aria-label={`Retry saving ${label}`}
+          className="shrink-0 rounded px-1.5 py-1 text-xs font-medium hover:bg-muted focus-visible:outline-2 focus-visible:outline-ring"
+          onFocus={draft.stopRetry}
+          onClick={event => {
+            event.currentTarget.parentElement?.querySelector("input")?.focus();
+            draft.commit(save, true);
+          }}>Retry</button>}
+      </div>
+      {state.error && <p id={`${id}-error`} role="alert" className="mt-1 break-words text-xs text-destructive">{state.error}</p>}
+    </div>
+  </div>;
+}
+
+function BooleanSetting({ label, value, save }: {
+  label: string; value: boolean; save: (value: boolean) => Promise<unknown>;
+}) {
+  const id = useId();
   const [saved, setSaved] = useState(value);
-  const [draft, setDraft] = useState(typeof value === "string" ? value : "");
-  const [feedback, setFeedback] = useState<{ pending?: boolean; saved?: boolean; error?: string }>({});
-  async function apply(next: string | boolean) {
-    setFeedback({ pending: true });
+  const [pending, setPending] = useState(false);
+  const [error, setError] = useState<string>();
+
+  async function apply(next: boolean) {
+    if (pending) return;
+    setError(undefined);
+    setPending(true);
     try {
-      const stored = await save(next);
-      setSaved(stored);
-      if (typeof stored === "string") setDraft(stored);
-      setFeedback({ saved: true });
+      await save(next);
+      setSaved(next);
     } catch (cause) {
-      setFeedback({ error: errorText(cause) });
+      setError(errorText(cause));
+    } finally {
+      setPending(false);
     }
   }
 
-  return <form className="grid gap-2 py-3 first:pt-0 last:pb-0 sm:grid-cols-[8rem_minmax(0,1fr)]"
-    onSubmit={event => { event.preventDefault(); if (!feedback.pending && typeof saved !== "boolean" && draft !== (saved ?? "")) void apply(draft); }}>
-    <div className="flex items-start pt-1.5 text-sm font-medium">{label}</div>
-    <div className="min-w-0 space-y-1">
-      {typeof saved === "boolean"
-        ? <button
-          type="button" role="switch" aria-label={label} aria-checked={saved} disabled={feedback.pending}
-          className={button} onClick={() => void apply(!saved)}
-        >{saved ? "On" : "Off"}</button>
-        : <div className="flex gap-2">
-          <input aria-label={label} className={`${input} flex-1`} value={draft} disabled={feedback.pending}
-            onChange={event => { setDraft(event.target.value); setFeedback({}); }} />
-          <button type="submit" className={button} aria-label={`Save ${label.toLowerCase()}`}
-            disabled={feedback.pending || draft === (saved ?? "")}>Save</button>
-        </div>}
-      {feedback.error && <Notice error={feedback.error} />}
-      {feedback.pending && <Notice>Saving…</Notice>}
-      {feedback.saved && <Notice>Saved</Notice>}
+  return <div className={settingRow}>
+    <label htmlFor={id} className={settingLabel}>{label}</label>
+    <div className="min-w-0">
+      <div className="flex h-7 items-center gap-2">
+        <Switch id={id} checked={saved} onCheckedChange={apply}
+          aria-disabled={pending || undefined} className="aria-disabled:cursor-not-allowed aria-disabled:opacity-50" />
+        {pending && <span role="status" className="text-xs text-muted-foreground">Saving…</span>}
+      </div>
+      {error && <Notice error={error} />}
     </div>
-  </form>;
+  </div>;
 }
 
-function ProjectSettings({ projectId, revision }: { projectId: string; revision: number }) {
+function ProjectSettings({ projectId, drafts, diagnosticsRevision, refreshDiagnostics }: {
+  projectId: string; drafts: Map<string, SettingsDraft>; diagnosticsRevision: number; refreshDiagnostics: () => void;
+}) {
   const rpc = useRpc<typeof rpcContract>();
-  const [edits, setEdits] = useState(0);
+  const [revision, setRevision] = useState(0);
   const { data, error } = useRead(useCallback(async () => {
     return Promise.all(fields.map(async key => {
+      const draftKey = JSON.stringify([projectId, key]);
+      const version = drafts.get(draftKey)?.version ?? 0;
       const result = await rpc.call("config.get", { projectId, key });
-      return { key, value: fieldValues[key].parse(result) };
+      const value = fieldValues[key].parse(result);
+      return { key, value, version, draftKey };
     }));
-  }, [rpc, projectId]), revision);
+  }, [rpc, projectId, drafts]), revision);
+
+  async function apply(key: keyof ConfigValues, value: string | boolean) {
+    const result = await rpc.call("config.set", { projectId, key, value });
+    refreshDiagnostics();
+    return result;
+  }
 
   return <>
     <section aria-label="Project settings" className={`${card} divide-y divide-border`}>
-      {data ? data.map(({ key, value }) => <SettingRow key={key} label={fieldLabels[key]} value={value}
-        save={async next => {
-          const result = await rpc.call("config.set", { projectId, key, value: next });
-          const saved = fieldValues[key].parse(result);
-          setEdits(n => n + 1);
-          return saved;
-        }} />) : <Notice error={error}>Loading settings…</Notice>}
+      {data ? data.map(({ key, value, version, draftKey }) => {
+        const label = fieldLabels[key];
+        if (key === "enabled" || key === "allowSync") {
+          return <BooleanSetting key={key} label={label} value={fieldValues[key].parse(value)}
+            save={async next => fieldValues[key].parse(await apply(key, next))} />;
+        }
+        const saved = fieldValues[key].parse(value) ?? "";
+        let draft = drafts.get(draftKey);
+        if (!draft) {
+          draft = new SettingsDraft(projectId, key, saved);
+          drafts.set(draftKey, draft);
+        }
+        return <TextSetting key={key} label={label} value={saved} version={version} draft={draft}
+          save={async next => fieldValues[key].parse(await apply(key, next)) ?? ""} />;
+      }) : error ? <div className="space-y-2">
+        <Notice error={error} />
+        <button type="button" className={button} onClick={() => setRevision(n => n + 1)}>Retry settings</button>
+      </div> : <Notice>Loading settings…</Notice>}
     </section>
     <section aria-label="Source check" className={`${card} space-y-3`}>
       <div className="flex flex-wrap items-center justify-between gap-2">
         <h2 className="text-sm font-semibold">Source check</h2>
-        <button type="button" className={button} onClick={() => setEdits(n => n + 1)}>Check source</button>
+        <button type="button" className={button} onClick={refreshDiagnostics}>Check source</button>
       </div>
-      <Diagnostics projectId={projectId} revision={edits} />
+      <Diagnostics projectId={projectId} revision={diagnosticsRevision} />
     </section>
   </>;
 }
@@ -244,6 +313,9 @@ function ProjectSettings({ projectId, revision }: { projectId: string; revision:
 function Settings() {
   const [revision, setRevision] = useState(0);
   const [selected, setSelected] = useState<string>();
+  const [drafts] = useState(() => new Map<string, SettingsDraft>());
+  const [diagnosticsRevision, setDiagnosticsRevision] = useState(0);
+  const refreshDiagnostics = useCallback(() => setDiagnosticsRevision(n => n + 1), []);
   const { data, error } = useProjects(revision);
   const projects = data?.filter(project => project.available);
   const current = projects?.find(project => project.id === selected)
@@ -266,7 +338,8 @@ function Settings() {
           </SelectContent>
         </Select>
       </label>
-      <ProjectSettings key={current.id} projectId={current.id} revision={revision} />
+      <ProjectSettings key={current.id} projectId={current.id} drafts={drafts}
+        diagnosticsRevision={diagnosticsRevision} refreshDiagnostics={refreshDiagnostics} />
     </>}
   </div>;
 }

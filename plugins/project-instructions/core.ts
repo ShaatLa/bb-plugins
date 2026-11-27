@@ -3,6 +3,7 @@ import { lstatSync, mkdirSync, readFileSync, readdirSync, readlinkSync, realpath
 import { isAbsolute, join, relative, resolve } from "node:path";
 import matter from "gray-matter";
 import { z } from "zod";
+import { textConfigSchemas } from "./config-fields";
 
 export const ROOT_CAP = 4096;
 export const GRACE_MS = 10_000;
@@ -14,12 +15,8 @@ const MAX_SKILL_ENTRIES = 2000;
 // The server's own skill-name rule, so a skill it would reject is never linked or selected.
 const SKILL_NAME = /^(?!.*--)[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/;
 
-const relPath = z.string().min(1).max(500).refine(p => !isAbsolute(p) && !p.split(/[\\/]/).includes(".."), "must be a relative path without ..");
 export const KEY_SCHEMAS = {
-  clonePath: z.string().min(1).max(1000).refine(p => isAbsolute(p), "must be an absolute path"),
-  branch: z.string().regex(/^[A-Za-z0-9._][A-Za-z0-9._/-]{0,200}$/, "must be a plain branch name"),
-  rootFile: relPath,
-  skillsDir: relPath,
+  ...textConfigSchemas(isAbsolute, path => !isAbsolute(path)),
   enabled: z.boolean(),
   allowSync: z.boolean(),
 } as const;
