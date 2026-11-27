@@ -256,7 +256,31 @@ In **Settings → Plugins → Work Board → Workflow**, select a project and pr
 
 Click the icon next to the status name to select one of 20 available icons. **Default** restores the original icon. Icons are saved automatically for the selected project and appear in all task views; selecting an icon does not affect status behavior. You can also choose from 10 colors in the existing palette. The color is saved independently of the icon. Statuses without a selected color use the theme color.
 
-The status ID is permanent and cannot be changed, but the name can be edited. IDs allow 1–64 lowercase Latin letters, digits, and `_`, and must start with a letter. Names allow 1–80 characters. A project can contain 6–32 statuses; IDs and names must be unique within the project. The six system IDs (`backlog`, `todo`, `in_progress`, `in_review`, `done`, `canceled`) are preserved; you can edit their names and reorder them. New stages are treated as incomplete. Task completion and owner notifications remain tied to `done`, while cancellation is tied to `canceled`.
+The status ID is permanent and cannot be changed, but the name can be edited. IDs allow 1–64 lowercase Latin letters, digits, and `_`, and must start with a letter. Names allow 1–80 characters. A project can contain 1–32 statuses; IDs and names must be unique within the project.
+
+**No status is special.** A project can rename, add, reorder and delete any status, including `backlog`, `todo`, `in_progress`, `in_review`, `done` and `canceled`. What the plugin needs to know about a status comes from the project's **workflow roles** (`workflowPolicy`), not from fixed ids. A role the policy leaves out takes its default at read time, from the project's own status list, and is never written back, so existing projects keep working as they are:
+
+| Role | Default when omitted | Meaning |
+|---|---|---|
+| `doneStatus` | `done` | satisfies a dependency, closed as done, "done only" notifications |
+| `canceledStatus` | `canceled` | closed as canceled; never plan-gated |
+| `closedStatuses` | `[done, canceled]` that the project lists | every closed status; the done and canceled roles are always closed too |
+| `notStartedStatuses` | `[backlog, todo]` that the project lists | start hints, start moves, planning entry |
+| `newCardStatus` | `backlog`, else the first status | status of a new card from the API and CLI |
+| `readyStatus` | `todo`, else the new-card status | the new-task dialog's and a new sub-task's status |
+| `inProgressStatus`, `reviewStatus`, `testingStatus`, `bugfixStatus`, `planningStatus`, `earlyStatuses` | as before | as before |
+| `pilotStatuses` | `[in_progress, in_review, in_testing, bugfix]`, unfiltered | the stale-status and pause pilot scope |
+
+An omitted role takes its default, an explicit `null` means "no such status", and an explicit array (even `[]`) is used as stored minus statuses the project no longer lists. A write checks only the roles it changes: each must name a listed status (or be `null` where the role allows it).
+
+**Deleting a status.** The Remove button opens one dialog when something still points at the status: the cards in it (archived ones included) move to a status you pick, and each single role that points at it (explicitly or by its default) gets a new status or *None*. Array roles drop the status on their own. An empty status that no role names is deleted at once. All of it is one request, validated before anything is written; each card moves through the normal status-change path (the closed time, the system comment `Status: Run-up → Backlog (status deleted)`, dependency state, epic roll-up, plan-debt), with no push notification. A move into a status that needs an approved plan is refused for a card without one, and then nothing moves. History keeps the old id as text. Moving a card into a status its project does not list is refused (`EXA-1: status `todo` is not in this project (statuses: …)`).
+
+```sh
+bb work-board project update EXA --statuses-file ./statuses.json \
+  --move-status todo=backlog --set-role reviewStatus=none
+```
+
+`--move-status <from>=<to>` (repeatable) names where the cards of a deleted status go; `--set-role <role>=<status|none>` (repeatable) sets a single role (`none` is refused for `newCardStatus`). An import of an archive snapshot taken before a deletion follows the usual rules: without `--overwrite` it is refused as a conflict, with it the snapshot's status list returns with its cards.
 
 ```sh
 bb work-board project show EXA --json
@@ -267,7 +291,7 @@ bb work-board list --project EXA --exclude-status done,canceled
 bb work-board project update EXA --statuses-file ./statuses.json
 ```
 
-The `statuses.json` file is a complete ordered array `[{"id":"backlog","name":"Backlog"}, …]` containing all system IDs. It is read on the calling machine; for remote machines, use `--machine`. RPC method: `updateProject({projectId, statuses:[{id,name},…]})`; the `project.statuses` field is available in the project JSON. Export **v6** stores this array in `project.json`, and `task.status` contains the ID. Importing v1–v5 restores the original six statuses. Other archive files remain unchanged.
+The `statuses.json` file is a complete ordered array `[{"id":"backlog","name":"Backlog"}, …]` with the statuses to keep. It is read on the calling machine; for remote machines, use `--machine`. RPC method: `updateProject({projectId, statuses:[{id,name},…]})`; the `project.statuses` field is available in the project JSON. Export **v6** stores this array in `project.json`, and `task.status` contains the ID. Importing v1–v5 restores the original six statuses. Other archive files remain unchanged.
 
 ## Secrets Protection
 

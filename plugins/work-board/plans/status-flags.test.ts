@@ -8,7 +8,7 @@ import { createStore, registerTasksApi } from "../api";
 import { registerTasksCli } from "../cli";
 import type { PlanAuthor } from "../shared/contract";
 import { DEFAULT_TASK_STATUSES } from "../shared/statuses";
-import { planGatedStatuses } from "../shared/workflow-policy";
+import { planGatedStatuses, workflowPolicySchema } from "../shared/workflow-policy";
 import { createPlanStore } from "./store";
 
 const hosts: ReturnType<typeof createFakePluginHost>[] = [];
@@ -81,7 +81,7 @@ describe("status flags", () => {
 
   it("keeps the owner's first manual edit made in optional mode: the later switch to required prefills nothing", () => {
     const f = setup("optional");
-    f.store.tasks.updateProject(f.project.id, { statuses: withStatus(DEFAULT_TASK_STATUSES, { id: "ready", name: "Ready", requiresApprovedPlan: true }, "todo") });
+    f.store.tasks.updateProject(f.project.id, { statuses: withStatus(DEFAULT_TASK_STATUSES, { id: "ready", name: "Ready", requiresApprovedPlan: true }, "todo"), workflowPolicy: workflowPolicySchema.parse({ ...f.current().workflowPolicy, planningStatus: null }) });
     expect(f.current()).toMatchObject({ planFlagsInitialized: true });
     expect(planGatedStatuses(f.current())).toEqual(["ready"]);
     f.store.tasks.updateProject(f.project.id, { planning: "required" });
@@ -135,7 +135,8 @@ describe("status flags", () => {
     await writeFile(path, JSON.stringify({ bugfixStatus: "todo" }));
     expect((await f.harness.runCli(args)).exitCode).toBe(0);
     f.store.tasks.updateProject(f.project.id, { doneRequiresReview: "off" });
-    await writeFile(path, JSON.stringify({ doneStatus: "todo" }));
+    // A policy file replaces the whole policy: the earlier bugfix mapping is kept explicitly, since resetting it to its default names an unlisted status.
+    await writeFile(path, JSON.stringify({ doneStatus: "todo", bugfixStatus: "todo" }));
     expect((await f.harness.runCli(args)).exitCode).toBe(0);
     expect(f.current().workflowPolicy?.doneStatus).toBe("todo");
   });

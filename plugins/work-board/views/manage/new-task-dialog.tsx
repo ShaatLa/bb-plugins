@@ -3,10 +3,12 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import {
   TASK_PRIORITIES,
   type TaskType,
+  type Project,
   type Task,
   type TaskPriority,
   type TaskStatus,
 } from "../../shared/contract.js";
+import { resolveRoles } from "../../shared/status-roles.js";
 import { EpicPicker } from "../../components/epic-picker.js";
 import { errorMessage } from "../../shared/errors.js";
 import {
@@ -152,12 +154,14 @@ const KIND_CHOICES: ReadonlyArray<{
 function blankDraft(
   projectId: string | null,
   defaultStatus: TaskStatus | undefined,
+  projectList: readonly Project[],
 ): NewTaskDraft {
   return {
     projectId,
     title: "",
     description: "",
-    status: defaultStatus ?? "todo",
+    // The ready status of the project the dialog opens on (the first one when the caller names none).
+    status: defaultStatus ?? resolveRoles(projectList.find((entry) => entry.id === projectId) ?? projectList[0] ?? {}).ready,
     priority: "none",
     labelIds: [],
     dueDate: "",
@@ -184,7 +188,7 @@ export function NewTaskDialog({
   const projectList = useProjectList();
 
   const [draft, setDraft] = useState(() =>
-    blankDraft(projectId, defaultStatus),
+    blankDraft(projectId, defaultStatus, projectList),
   );
   const [createMore, setCreateMore] = useState(false);
   const [submitting, setSubmitting] = useState(false);
@@ -221,12 +225,12 @@ export function NewTaskDialog({
     clearNewTaskDraft();
     if (!open) {
       // Release the draft and staged files on close; uploaded attachments are untouched.
-      setDraft(blankDraft(projectId, defaultStatus));
+      setDraft(blankDraft(projectId, defaultStatus, projectList));
       setPendingFiles([]);
       setCreatedTask(null);
       return;
     }
-    setDraft(blankDraft(projectId, defaultStatus));
+    setDraft(blankDraft(projectId, defaultStatus, projectList));
     setLabelQuery("");
     setPendingFiles([]);
     setCreatedTask(null);
@@ -280,7 +284,12 @@ export function NewTaskDialog({
   );
 
   const changeProject = (id: string) =>
-    updateDraft((current) => ({ projectId: id, labelIds: [], epicId: null, status: (projectList.find((project) => project.id === id)?.statuses ?? []).some((status) => status.id === current.status) || ["backlog", "todo", "in_progress", "in_review", "done", "canceled"].includes(current.status) ? current.status : "backlog" }));
+    updateDraft((current) => {
+      const destination = projectList.find((project) => project.id === id);
+      // The status stays when the destination lists it; otherwise the destination's ready status takes its place.
+      const kept = (destination?.statuses ?? []).some((status) => status.id === current.status);
+      return { projectId: id, labelIds: [], epicId: null, status: kept ? current.status : resolveRoles(destination ?? {}).ready };
+    });
 
   const toggleLabel = (labelId: string) =>
     updateDraft((current) => ({
@@ -290,7 +299,7 @@ export function NewTaskDialog({
     }));
 
   const discardDraft = () => {
-    setDraft(blankDraft(projectId, defaultStatus));
+    setDraft(blankDraft(projectId, defaultStatus, projectList));
     setPendingFiles([]);
     setError(null);
     titleRef.current?.focus();

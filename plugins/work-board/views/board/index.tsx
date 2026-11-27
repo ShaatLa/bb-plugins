@@ -1,12 +1,12 @@
 import { shownPauses } from "../../shared/pause.js";
 import { sortTasks } from "../../shared/sort";
-import { waitingOnOwner, waitingOrder } from "../../shared/waiting-on-owner";
+import { waitingOrder } from "../../shared/waiting-on-owner";
 import { TaskAdvisories } from "../../components/task-advisories";
 import { displayName } from "../../shared/display-name.js";
 import { usePrSummaries, PullRequestSummary, type PrSummary } from "../../components/pr-summary";
 import { PausedChip, TaskActivityIndicator } from "../../components/task-activity";
 import { DependencyWarning } from "../../components/dependency-warning";
-import { useTaskStatuses } from "../../shell/task-statuses.js";
+import { useTaskStatuses, useWaitingOnOwner } from "../../shell/task-statuses.js";
 import {
   useEffect,
   useMemo,
@@ -139,6 +139,7 @@ function TaskCard({
   onPointerDown,
   onClick,
 }: TaskCardProps) {
+  const waitingOnOwner = useWaitingOnOwner();
   const setExpanded = (value: boolean) => onExpandedChange?.(task.id, value);
   const childQuestions = subtasks.reduce(
     (sum, child) => sum + (questionCounts?.get(child.id) ?? 0),
@@ -345,8 +346,9 @@ interface BoardViewProps {
 }
 
 export function BoardView({ projectId, highlightKeys }: BoardViewProps) {
+  const waitingOnOwner = useWaitingOnOwner();
   const queues = useTasksQuery(async (client) => (await client.call("queueList", { projectId })).queues, ["tasks:changed"], [projectId]);
-  const { ids: statusIds, label: statusLabel } = useTaskStatuses(projectId);
+  const { ids: statusIds, label: statusLabel, roles: projectRoles } = useTaskStatuses(projectId);
   const rpc = useTasksRpc();
   const { toasts, push, dismiss } = useDetailToasts();
   const navigation = useTasksNavigation();
@@ -510,7 +512,7 @@ export function BoardView({ projectId, highlightKeys }: BoardViewProps) {
     ) {
       return null;
     }
-    for (const status of visibleBoardStatuses(current)) {
+    for (const status of visibleBoardStatuses(current, projectRoles.canceled)) {
       const columnElement = columnRefs.current.get(status);
       if (!columnElement) continue;
       const rect = columnElement.getBoundingClientRect();
@@ -802,7 +804,7 @@ export function BoardView({ projectId, highlightKeys }: BoardViewProps) {
           drag !== null && "cursor-grabbing",
         )}
       >
-        {visibleBoardStatuses(visibleColumns).map(renderColumn)}
+        {visibleBoardStatuses(visibleColumns, projectRoles.canceled).map(renderColumn)}
         {drag && ghostTask ? (
           <div
             className="pointer-events-none fixed z-50"

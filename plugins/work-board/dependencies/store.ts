@@ -2,6 +2,7 @@ import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import type { TasksStore } from "../db";
 import type { DependencyTask } from "../shared/contract";
 import { touchAttention } from "../attention/ledger";
+import { isDoneIn } from "../db/status-sql";
 
 type Database = ReturnType<BbPluginApi["storage"]["database"]>;
 export type DependencyEdge = { taskId: string; blockingTaskId: string };
@@ -57,7 +58,7 @@ export function createDependencyStore(db: Database, tasks: TasksStore) {
           p.prefix || '-' || t.number AS key, t.title, t.status
         FROM task_dependencies d JOIN tasks t ON t.id=d.blocking_task_id
         JOIN projects p ON p.id=t.project_id
-        WHERE d.task_id IN (${ids.map(() => "?").join(",")}) AND t.status <> 'done'
+        WHERE d.task_id IN (${ids.map(() => "?").join(",")}) AND NOT ${isDoneIn("t")}
         ORDER BY p.prefix, t.number
       `).all(...ids);
       for (const { taskId, ...task } of rows) {

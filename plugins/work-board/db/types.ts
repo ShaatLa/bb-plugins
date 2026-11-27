@@ -184,6 +184,10 @@ export interface UpdateProjectInput {
   folderId?: string | null;
   linkedBbProjectId?: string | null;
   statuses?: TaskStatusDefinition[];
+  /** Deleted status id → listed status its cards move to, in the same write. */
+  statusMoves?: Record<string, string>;
+  /** Who the moves of a status deletion are written as; default "You". */
+  authorName?: string;
 }
 
 export interface CreateTaskInput {

@@ -1,20 +1,21 @@
 import { UNANSWERED_QUESTION, WAITING_ON_OWNER } from "../db/waiting-on-owner";
 import { idleThreshold } from "../shared/project-settings";
-import { getWorkflowPolicy } from "../shared/workflow-policy";
+import { inProject, isClosedIn, reviewSql } from "../db/status-sql";
+import { resolveRoles } from "../shared/status-roles";
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import type { BadgeCriterion } from "../shared/badge";
 import { evaluateThreadHealth, staleIdleMinutes } from "../shared/thread-health";
 import type { TasksApiStore } from ".";
 
 const LIVE = `t.archived_at IS NULL`;
-const ACTIVE = `${LIVE} AND t.status NOT IN ('done', 'canceled')`;
+const ACTIVE = `${LIVE} AND NOT ${isClosedIn("t")}`;
 const UNANSWERED = `EXISTS (SELECT 1 FROM task_questions q WHERE q.task_id = t.id AND ${UNANSWERED_QUESTION})`;
 
 const QUERIES: Record<Exclude<BadgeCriterion, "stale_idle">, string> = {
   open: ACTIVE,
   waiting_on_owner: WAITING_ON_OWNER,
   // The project's review status; an explicit null policy value counts nothing.
-  in_review: `${LIVE} AND t.status = (SELECT CASE WHEN json_type(p.workflow_policy, '$.reviewStatus') IS NULL THEN 'in_review' ELSE json_extract(p.workflow_policy, '$.reviewStatus') END FROM projects p WHERE p.id = t.project_id)`,
+  in_review: `${LIVE} AND ${inProject("t", (proj) => `COALESCE(t.status = ${reviewSql(proj)}, 0)`)}`,
   needs_answer: `${ACTIVE} AND ${UNANSWERED}`,
   failed_thread: `${ACTIVE} AND EXISTS (SELECT 1 FROM task_threads l WHERE l.task_id = t.id AND l.live_status = 'failed')`,
 };
@@ -29,7 +30,8 @@ export function navigationBadgeCounts(
   const db = bb.storage.database();
   const projects = store.tasks.listProjects();
   const thresholds = new Map(projects.map((project) => [project.id, idleThreshold(project)]));
-  const waitingStatuses = new Map(projects.map((project) => [project.id, [getWorkflowPolicy(project).reviewStatus]]));
+  const waitingStatuses = new Map(projects.map((project) => [project.id, [resolveRoles(project).review]]));
+  const closedStatuses = new Map(projects.map((project) => [project.id, resolveRoles(project).closed]));
   const ids = (where: string) =>
     db.prepare<[], { id: string }>(`SELECT t.id FROM tasks t WHERE ${where}`).all().map((row) => row.id);
   const union = new Set<string>();
@@ -47,7 +49,7 @@ export function navigationBadgeCounts(
       const activity = store.tasks.listTaskActivity(candidates);
       matched = candidates.filter((taskId) => {
         const task = activity.get(taskId);
-        const health = evaluateThreadHealth(task?.status ?? "", links.get(taskId) ?? [], task?.lastActivityAt ?? "", task ? thresholds.get(task.projectId) ?? null : null, task ? waitingStatuses.get(task.projectId) : undefined);
+        const health = evaluateThreadHealth(task?.status ?? "", links.get(taskId) ?? [], task?.lastActivityAt ?? "", task ? thresholds.get(task.projectId) ?? null : null, task ? waitingStatuses.get(task.projectId) : undefined, false, task ? closedStatuses.get(task.projectId) : undefined);
         return staleIdleMinutes(health.idle, now) !== null;
       });
     } else {

@@ -21,7 +21,7 @@ describe("visibleBoardStatuses", () => {
   });
 
   it("hides the Canceled column while it is empty", () => {
-    expect(visibleBoardStatuses(columns(0))).toEqual([
+    expect(visibleBoardStatuses(columns(0), "canceled")).toEqual([
       "backlog",
       "todo",
       "in_progress",
@@ -31,7 +31,7 @@ describe("visibleBoardStatuses", () => {
   });
 
   it("shows Canceled once it holds cards", () => {
-    expect(visibleBoardStatuses(columns(2))).toEqual([
+    expect(visibleBoardStatuses(columns(2), "canceled")).toEqual([
       "backlog",
       "todo",
       "in_progress",
@@ -42,7 +42,7 @@ describe("visibleBoardStatuses", () => {
   });
 
   it("keeps Canceled in its configured position", () => {
-    expect(visibleBoardStatuses({ backlog: [], canceled: ["c1"], in_testing: [], done: [] })).toEqual([
+    expect(visibleBoardStatuses({ backlog: [], canceled: ["c1"], in_testing: [], done: [] }, "canceled")).toEqual([
       "backlog", "canceled", "in_testing", "done",
     ]);
   });
@@ -187,7 +187,7 @@ describe("applyBoardMove", () => {
 
 it("keeps configured custom columns and moves cards into and out of them", () => {
   const columns = { backlog: [{ id: "a", status: "backlog" }], in_testing: [], todo: [], in_progress: [], in_review: [], done: [], canceled: [] };
-  expect(visibleBoardStatuses(columns)).toEqual(["backlog", "in_testing", "todo", "in_progress", "in_review", "done"]);
+  expect(visibleBoardStatuses(columns, "canceled")).toEqual(["backlog", "in_testing", "todo", "in_progress", "in_review", "done"]);
   const moved = applyBoardMove(columns, "a", "in_testing", 0);
   expect(moved.in_testing).toEqual([{ id: "a", status: "in_testing" }]);
   expect(applyBoardMove(moved, "a", "done", 0).in_testing).toEqual([]);

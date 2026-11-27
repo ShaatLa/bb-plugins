@@ -1,15 +1,30 @@
 import { z } from "zod";
 import { DEFAULT_TASK_STATUSES, taskStatusSchema } from "./statuses.js";
+import { isNotStarted, resolveRoles, ROLE_DEFAULTS } from "./status-roles.js";
 
 export const workflowPolicySchema = z.object({
-  bugfixStatus: taskStatusSchema.nullable().default("bugfix"),
-  doneStatus: taskStatusSchema.nullable().default("done"),
-  inProgressStatus: taskStatusSchema.nullable().default("in_progress"),
-  reviewStatus: taskStatusSchema.nullable().default("in_review"),
-  testingStatus: taskStatusSchema.nullable().default("in_testing"),
+  bugfixStatus: taskStatusSchema.nullable().default(ROLE_DEFAULTS.bugfixStatus),
+  doneStatus: taskStatusSchema.nullable().default(ROLE_DEFAULTS.doneStatus),
+  inProgressStatus: taskStatusSchema.nullable().default(ROLE_DEFAULTS.inProgressStatus),
+  reviewStatus: taskStatusSchema.nullable().default(ROLE_DEFAULTS.reviewStatus),
+  testingStatus: taskStatusSchema.nullable().default(ROLE_DEFAULTS.testingStatus),
   /** The status a card sits in while a session plans it; null turns the automatic move off. Valid only as `planningStatusOf` says. */
   planningStatus: taskStatusSchema.nullable().default(null),
-  earlyStatuses: z.array(taskStatusSchema).default(["todo", "in_progress"]),
+  earlyStatuses: z.array(taskStatusSchema).default([...ROLE_DEFAULTS.earlyStatuses]),
+  // The roles below have no schema default on purpose: an omitted role resolves at read time (`resolveRoles`) and is never
+  // written back, so a later status list change moves it. Only a project that sets one stores it.
+  /** The status a card is closed as canceled in; never plan-gated. Null: no such status. */
+  canceledStatus: taskStatusSchema.nullable().optional(),
+  /** Every closed status; the done and canceled roles are always closed as well. */
+  closedStatuses: z.array(taskStatusSchema).optional(),
+  /** The statuses a card has not been started in: start hints, start moves, the stale-status scope. */
+  notStartedStatuses: z.array(taskStatusSchema).optional(),
+  /** The status of a new card made through the API and the CLI. */
+  newCardStatus: taskStatusSchema.optional(),
+  /** The status the new-task dialog and a new subtask start in; null means the new-card status. */
+  readyStatus: taskStatusSchema.nullable().optional(),
+  /** The statuses the stale-status and pause pilot covers. */
+  pilotStatuses: z.array(taskStatusSchema).optional(),
   ownerDecisionLabel: z.string().trim().min(1).max(100).nullable().default("owner decision"),
 }).strict();
 
@@ -19,19 +34,17 @@ export function getWorkflowPolicy(project: { workflowPolicy?: Partial<WorkflowPo
   return workflowPolicySchema.parse(project.workflowPolicy ?? {});
 }
 
-/** A card is closed in `done`, `canceled` and the policy's own done status. */
-export function isClosedStatus(project: { workflowPolicy?: Partial<WorkflowPolicy> | null }, status: string): boolean {
-  return status === "done" || status === "canceled" || status === getWorkflowPolicy(project).doneStatus;
+/** A card is closed in the project's closed statuses (see `resolveRoles`): the closed array, the done and the canceled status. */
+export function isClosedStatus(project: { workflowPolicy?: Partial<WorkflowPolicy> | null; statuses?: ReadonlyArray<{ id: string }> | null }, status: string): boolean {
+  return resolveRoles(project).closed.includes(status);
 }
 
 /**
- * The status that means "in progress" for a project: the policy's `inProgressStatus` when it is set, else `in_progress`
+ * The status that means "in progress" for a project: the policy's `inProgressStatus` when it is set, else the default In progress status
  * when the project has that status, else none (a project without one has no plan gate and no automatic move).
  */
 export function effectiveInProgressStatus(project: { workflowPolicy?: Partial<WorkflowPolicy> | null; statuses?: ReadonlyArray<{ id: string }> | null }): string | null {
-  const configured = getWorkflowPolicy(project).inProgressStatus;
-  if (configured) return configured;
-  return (project.statuses?.length ? project.statuses : DEFAULT_TASK_STATUSES).some((status) => status.id === "in_progress") ? "in_progress" : null;
+  return resolveRoles({ workflowPolicy: getWorkflowPolicy(project), statuses: project.statuses?.length ? project.statuses : DEFAULT_TASK_STATUSES }).inProgress;
 }
 
 /**
@@ -41,7 +54,7 @@ export function effectiveInProgressStatus(project: { workflowPolicy?: Partial<Wo
  */
 export function usableStartTarget(project: { workflowPolicy?: Partial<WorkflowPolicy> | null; statuses?: ReadonlyArray<{ id: string }> | null }, fromStatus: string): string | null {
   const target = effectiveInProgressStatus(project);
-  if (!target || target === "backlog" || target === "todo" || isClosedStatus(project, target) || isClosedStatus(project, fromStatus)) return null;
+  if (!target || isNotStarted(project, target) || isClosedStatus(project, target) || isClosedStatus(project, fromStatus)) return null;
   const order = (project.statuses?.length ? project.statuses : DEFAULT_TASK_STATUSES).map((status) => status.id);
   const from = order.indexOf(fromStatus);
   return from >= 0 && order.indexOf(target) > from ? target : null;
@@ -68,7 +81,7 @@ export function planningStatusOf(project: ZoneProject): string | null {
 
 /** The statuses a delegated card leaves for In progress: Backlog, Todo and, while it is a valid target, the planning status. */
 export function startsFromStatus(project: ZoneProject, status: string): boolean {
-  return status === "backlog" || status === "todo" || (planningStatusOf(project) !== null && status === planningStatusOf(project));
+  return isNotStarted(project, status) || (planningStatusOf(project) !== null && status === planningStatusOf(project));
 }
 
 /**
@@ -108,20 +121,21 @@ export function withPlanningStatus(policy: Partial<WorkflowPolicy> | null | unde
   return getWorkflowPolicy({ workflowPolicy: { ...policy, planningStatus } });
 }
 
-/** The statuses the owner marked "only with an approved plan". `canceled` can never be marked. */
+/** The statuses the owner marked "only with an approved plan". The canceled status can never be marked. */
 export function planGatedStatuses(project: ZoneProject): string[] {
-  return (project.statuses ?? []).filter((status) => status.requiresApprovedPlan === true && status.id !== "canceled").map((status) => status.id);
+  const canceled = resolveRoles(project).canceled;
+  return (project.statuses ?? []).filter((status) => status.requiresApprovedPlan === true && status.id !== canceled).map((status) => status.id);
 }
 
 /** The work zone of a project: its statuses marked "only with an approved plan". Column order does not matter. */
 export function inWorkZone(project: ZoneProject, status: string): boolean {
-  return status !== "canceled" && planGatedStatuses(project).includes(status);
+  return planGatedStatuses(project).includes(status);
 }
 
-/** The old position rule, used only to prefill the flags: the effective In progress status and every later one, except `canceled`. */
+/** The old position rule, used only to prefill the flags: the effective In progress status and every later one, except the canceled status. */
 export function inPositionZone(project: ZoneProject, status: string): boolean {
   const start = effectiveInProgressStatus(project);
-  if (!start || status === "canceled") return false;
+  if (!start || status === resolveRoles(project).canceled) return false;
   const order = (project.statuses?.length ? project.statuses : DEFAULT_TASK_STATUSES).map((entry) => entry.id);
   const first = order.indexOf(start);
   return first >= 0 && order.indexOf(status) >= first;
@@ -136,7 +150,7 @@ export function inWorkNow(project: ZoneProject & { planFlagsInitialized?: boolea
 }
 
 /**
- * The statuses with their "only with an approved plan" flags settled; a flag is kept only when true, and `canceled` is
+ * The statuses with their "only with an approved plan" flags settled; a flag is kept only when true, and the canceled status is
  * never marked. A status without a flag keeps the one it had (`previous`), and a new one gets the position default when
  * the project requires planning. The flags count as initialized once the owner edited one, or once the project is first
  * switched to `required` while they were not: that switch prefills every flag by position, and nothing refills them later.
@@ -151,12 +165,13 @@ export function settlePlanFlags<T extends { id: string; requiresApprovedPlan?: b
   const { planning, workflowPolicy } = input;
   const before = new Map((input.previous ?? []).map((status) => [status.id, status.requiresApprovedPlan === true]));
   const byPosition = (id: string) => inPositionZone({ workflowPolicy, statuses: input.statuses }, id);
-  const edited = input.statuses.some((status) => status.id !== "canceled" && status.requiresApprovedPlan !== undefined && status.requiresApprovedPlan !== (before.get(status.id) ?? false));
+  const canceled = resolveRoles({ workflowPolicy, statuses: input.statuses }).canceled;
+  const edited = input.statuses.some((status) => status.id !== canceled && status.requiresApprovedPlan !== undefined && status.requiresApprovedPlan !== (before.get(status.id) ?? false));
   const marked = input.statuses.map((status) => status.requiresApprovedPlan ?? before.get(status.id) ?? (planning === "required" && byPosition(status.id)));
   const prefill = planning === "required" && !input.initialized && !edited;
   const settled = input.statuses.map((status, index) => {
     const { requiresApprovedPlan: _flag, ...rest } = status;
-    const flag = status.id !== "canceled" && (prefill ? byPosition(status.id) : marked[index]);
+    const flag = status.id !== canceled && (prefill ? byPosition(status.id) : marked[index]);
     return (flag ? { ...rest, requiresApprovedPlan: true } : rest) as T;
   });
   return { statuses: settled, initialized: input.initialized || edited || prefill };

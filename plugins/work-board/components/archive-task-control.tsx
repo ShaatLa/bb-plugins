@@ -3,6 +3,7 @@ import type { Task } from "../shared/contract";
 import { useTasksRpc } from "../shell/data";
 import { Button } from "@/components/ui/button";
 import { errorMessage } from "../shared/errors";
+import { useTaskStatuses } from "../shell/task-statuses";
 
 export function ArchiveTaskControl({
   task,
@@ -12,8 +13,9 @@ export function ArchiveTaskControl({
   onError: (message: string) => void;
 }) {
   const rpc = useTasksRpc();
+  const { roles } = useTaskStatuses(task.projectId);
   const [busy, setBusy] = useState(false);
-  if (!task.archivedAt && !["done", "canceled"].includes(task.status))
+  if (!task.archivedAt && !roles.closed.includes(task.status))
     return null;
   const change = async () => {
     setBusy(true);

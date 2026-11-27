@@ -1,4 +1,4 @@
-import { planningStatusOf, workflowPolicySchema } from "../shared/workflow-policy";
+import { getWorkflowPolicy, planningStatusOf, workflowPolicySchema } from "../shared/workflow-policy";
 import { isUtf8 } from "node:buffer";
 import {
   mkdtemp,
@@ -1137,7 +1137,7 @@ it("round-trips configurable project statuses, their order and custom task stage
   const source = await seed();
   const statuses: TaskStatusDefinition[] = DEFAULT_TASK_STATUSES.map((status) => ({ ...status }));
   statuses[2]!.name = "Development";
-  statuses.splice(4, 0, { id: "in_testing", name: "In testing", icon: "testing", color: "steelblue" });
+  statuses.splice(4, 0, { id: "in_testing", name: "In testing", icon: "testing", color: "steelblue" }, { id: "repair", name: "Repair" });
   const workflowPolicy = workflowPolicySchema.parse({ bugfixStatus: "repair" });
   // Planning off: an import that creates a planning project settles a Planning status, which this round trip does not cover.
   source.store.tasks.updateProject(source.project.id, { statuses, workflowPolicy, autoArchiveAfterDays: "14", staleIdleMinutes: "120", planning: "off" });
@@ -1602,7 +1602,7 @@ describe("archive v20: reviewers, review history and planning", () => {
     it("enables and imports a board whose Done is named Planning, with the id planning free, and keeps its statuses unchanged", async () => {
       const source = await seed();
       const statuses = DEFAULT_TASK_STATUSES.map((status) => (status.id === "done" ? { ...status, name: "Planning" } : { ...status }));
-      source.store.tasks.updateProject(source.project.id, { planning: "off", statuses });
+      source.store.tasks.updateProject(source.project.id, { planning: "off", statuses, workflowPolicy: workflowPolicySchema.parse({ ...getWorkflowPolicy(source.store.tasks.getProject(source.project.id)!), planningStatus: null }) });
       source.store.tasks.updateProject(source.project.id, { planning: "optional" });
       const enabled = source.store.tasks.getProject(source.project.id)!;
       expect(enabled.statuses).toEqual(statuses);
@@ -2178,4 +2178,61 @@ it("excludes the receipt validator and preserves the local selection on overwrit
   await writeFile(path,jsonText(manifest));
   await expect(restore()).rejects.toThrow();
   expect(target.store.tasks.getProject(source.project.id)?.checkReceipt).toEqual(setting);
+});
+
+it("restores a deleted status with --overwrite and refuses the conflicting import without it, keeping the deletion history", async () => {
+  const f = setup();
+  const named = DEFAULT_TASK_STATUSES.map((status) => (status.id === "todo" ? { ...status, name: "Run-up" } : { ...status }));
+  const project = f.store.tasks.createProject({ name: "Statuses", prefix: "STA", color: "blue" });
+  f.store.tasks.updateProject(project.id, { statuses: named });
+  const card = f.store.tasks.createTask({ projectId: project.id, title: "A", status: "todo" });
+  const out = join(await directory(), "snapshot");
+  await exportProject(f.bb, f.store, project.id, out);
+  f.store.tasks.updateProject(project.id, { statuses: named.filter((status) => status.id !== "todo"), statusMoves: { todo: "backlog" } });
+  await expect(importProject(f.bb, f.store, out, false)).rejects.toThrow("Import conflict");
+  expect(f.store.tasks.getProject(project.id)!.statuses?.map((status) => status.id)).not.toContain("todo");
+  expect(f.store.tasks.getTask(card.id)?.status).toBe("backlog");
+  await importProject(f.bb, f.store, out, true);
+  expect(f.store.tasks.getProject(project.id)!.statuses?.map((status) => status.id)).toContain("todo");
+  expect(f.store.tasks.getTask(card.id)?.status).toBe("todo");
+  expect(f.store.tasks.listComments(card.id).map((comment) => comment.body)).toContain("Status: Run-up → Backlog (status deleted)");
+});
+
+it("round-trips a project without todo, keeps the export version, and refuses a crafted snapshot whose card is in a status its own list lacks", async () => {
+  const f = setup();
+  const project = f.store.tasks.createProject({ name: "No todo", prefix: "NTD", color: "blue" });
+  f.store.tasks.updateProject(project.id, { statuses: DEFAULT_TASK_STATUSES.filter((status) => status.id !== "todo").map((status) => ({ ...status })) });
+  const card = f.store.tasks.createTask({ projectId: project.id, title: "A" });
+  f.store.tasks.updateTask(card.id, { status: "in_progress" });
+  const out = join(await directory(), "snapshot");
+  await exportProject(f.bb, f.store, project.id, out);
+  const manifestPath = join(out, "project.json");
+  const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
+  expect(manifest.version).toBe(26);
+  expect(manifest.project.statuses.map((status: { id: string }) => status.id)).not.toContain("todo");
+  // a round trip into a fresh database
+  const target = setup();
+  await importProject(target.bb, target.store, out, false);
+  expect(target.store.tasks.getProject(project.id)!.statuses?.map((status) => status.id)).not.toContain("todo");
+  expect(target.store.tasks.getTask(card.id)?.status).toBe("in_progress");
+  // crafted: the card's own status is missing from the snapshot's list; refused before any write, even with --overwrite
+  manifest.project.statuses = manifest.project.statuses.filter((status: { id: string }) => status.id !== "in_progress");
+  await writeFile(manifestPath, jsonText(manifest));
+  const before = JSON.stringify(f.store.tasks.getProject(project.id));
+  await expect(importProject(f.bb, f.store, out, true)).rejects.toThrow("Task has a status not defined by its project");
+  expect(JSON.stringify(f.store.tasks.getProject(project.id))).toBe(before);
+  expect(f.store.tasks.getTask(card.id)?.status).toBe("in_progress");
+});
+
+it("refuses an overwrite whose status list would strand a local card, before any write", async () => {
+  const f = setup();
+  const project = f.store.tasks.createProject({ name: "Stranded", prefix: "STR", color: "blue" });
+  f.store.tasks.updateProject(project.id, { statuses: DEFAULT_TASK_STATUSES.filter((status) => status.id !== "todo").map((status) => ({ ...status })) });
+  const out = join(await directory(), "snapshot");
+  await exportProject(f.bb, f.store, project.id, out);
+  f.store.tasks.updateProject(project.id, { statuses: DEFAULT_TASK_STATUSES.map((status) => ({ ...status })) });
+  const local = f.store.tasks.createTask({ projectId: project.id, title: "Local", status: "todo" });
+  await expect(importProject(f.bb, f.store, out, true)).rejects.toThrow("Imported workflow removes a status used by retained tasks");
+  expect(f.store.tasks.getProject(project.id)!.statuses?.map((status) => status.id)).toContain("todo");
+  expect(f.store.tasks.getTask(local.id)?.status).toBe("todo");
 });

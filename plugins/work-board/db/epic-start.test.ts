@@ -30,7 +30,11 @@ function setup(planning: "off" | "required" = "off") {
   const history = (id: string) => store.tasks.listComments(id).filter((comment) => comment.authorName === "Work Board" && comment.body.endsWith(" started)"));
   const signals = (channel: string, id: string) => host.harness.realtimeSignals.filter((signal) => signal.channel === channel && (signal.payload as { taskId: string }).taskId === id);
   const statuses = (policy: Record<string, unknown>, list: Array<{ id: string; name: string }> = DEFAULT_TASK_STATUSES) =>
-    store.tasks.updateProject(project.id, { statuses: list as never, workflowPolicy: workflowPolicySchema.parse({ ...store.tasks.getProject(project.id)!.workflowPolicy, ...policy }) });
+    {
+      store.tasks.updateProject(project.id, { statuses: list as never });
+      // Written raw: these cases map a role to a status the project does not list, which the settings write refuses.
+      host.bb.storage.database().prepare("UPDATE projects SET workflow_policy = ? WHERE id = ?").run(JSON.stringify(workflowPolicySchema.parse({ ...store.tasks.getProject(project.id)!.workflowPolicy, ...policy })), project.id);
+    };
   return { ...host, host, store, project, task, epic, call, status, history, signals, statuses };
 }
 

@@ -2,7 +2,6 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRealtime, useRpc } from "@get-bb/plugin-sdk/app";
 import type { z } from "zod";
 import {
-  TASK_STATUSES,
   tasksRpcContract,
   type TasksRpcContract,
 } from "../shared/contract.js";
@@ -120,27 +119,23 @@ export async function listAllTasks(
   return tasks;
 }
 
-export const OPEN_TASK_STATUSES: readonly TaskStatus[] = TASK_STATUSES.filter(
-  (status) => status !== "done" && status !== "canceled",
-);
-
-const CLOSED_TASK_STATUSES: readonly TaskStatus[] = ["done", "canceled"];
-
+/** Open cards first, then the closed ones (`closedStatuses`: the closed status ids of the projects read); the union is complete either way. */
 export async function listTasksOpenFirst(
   rpc: TasksRpc,
   input: Omit<TaskListQuery, "statuses">,
   publish: (open: Task[]) => void,
+  closedStatuses: readonly TaskStatus[],
 ): Promise<Task[]> {
   const openRequest = listAllTasks(rpc, {
     ...input,
-    excludeStatuses: [...CLOSED_TASK_STATUSES],
+    excludeStatuses: [...closedStatuses],
   }).then((open) => {
     publish(open);
     return open;
   });
   const closedRequest = listAllTasks(rpc, {
     ...input,
-    statuses: [...CLOSED_TASK_STATUSES],
+    statuses: [...closedStatuses],
   });
   const [open, closed] = await Promise.all([openRequest, closedRequest]);
   const byId = new Map<string, Task>();

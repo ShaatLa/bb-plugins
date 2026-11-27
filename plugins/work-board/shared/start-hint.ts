@@ -1,5 +1,6 @@
 import { DEFAULT_TASK_STATUSES, statusLabel, type TaskStatusDefinition } from "./statuses.js";
 import { planningRequired } from "./project-settings.js";
+import { isNotStarted } from "./status-roles.js";
 import { isClosedStatus, planningStatusOf, usableStartTarget, type WorkflowPolicy } from "./workflow-policy.js";
 
 type HintProject = {
@@ -9,7 +10,7 @@ type HintProject = {
 };
 
 /**
- * The "Next step" text of `bb work-board show` for a card still in Backlog or Todo, or null. `epic` is the card's
+ * The "Next step" text of `bb work-board show` for a card that has not started (a not-started status), or null. `epic` is the card's
  * effective epic (its own, or its parent's). The same text goes to the plain output and to `startHint` in the JSON.
  */
 export function startHint(
@@ -18,7 +19,7 @@ export function startHint(
   plan: { state: string } | null,
   epic: { key: string; status: string } | null,
 ): string | null {
-  if (task.type === "epic" || task.archivedAt || (task.status !== "backlog" && task.status !== "todo")) return null;
+  if (task.type === "epic" || task.archivedAt || !isNotStarted(project, task.status)) return null;
   let target: string | null;
   if (planningRequired(project) && plan?.state !== "approved") {
     target = planningStatusOf(project);
@@ -28,8 +29,8 @@ export function startHint(
   } else target = usableStartTarget(project, task.status);
   if (!target) return null;
   const lines = [`Taking this task? Move it first: bb work-board update ${task.key} --status ${target}`];
-  const epicTarget = epic && (epic.status === "backlog" || epic.status === "todo") ? usableStartTarget(project, epic.status) : null;
-  if (epic && epicTarget && target !== "backlog" && target !== "todo" && !isClosedStatus(project, target))
+  const epicTarget = epic && isNotStarted(project, epic.status) ? usableStartTarget(project, epic.status) : null;
+  if (epic && epicTarget && !isNotStarted(project, target) && !isClosedStatus(project, target))
     lines.push(`Its epic ${epic.key} moves to ${statusLabel(epicTarget, project.statuses ?? undefined)} automatically when this task starts.`);
   return lines.join("\n");
 }

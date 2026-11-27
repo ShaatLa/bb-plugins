@@ -1,7 +1,8 @@
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
-import { PILOT_STATUSES, staleRows } from "../attention/observe";
+import { inPilotScope, projectPolicies, staleRows } from "../attention/observe";
 import { endPauses, expireDuePauses, pauseArm, startSignalPause, type PauseRow } from "./store";
 import { UNANSWERED_QUESTION } from "../db/waiting-on-owner";
+import { doneSql } from "../db/status-sql";
 import { drainPauseExpiryNotices } from "./expiry";
 
 /** Reconcile a single snapshot in one transaction; a failed SDK read leaves signal state untouched. */
@@ -13,7 +14,8 @@ export async function sweepPauseSignals(bb: BbPluginApi): Promise<void> {
   // After the commit, and without holding up the signal sweep below.
   void drainPauseExpiryNotices(bb);
   const modes = new Map(db.prepare<[], { project_id: string; mode: string }>("SELECT project_id,mode FROM pause_modes WHERE mode<>'off'").all().map(row => [row.project_id, row.mode]));
-  const cards = staleRows(db).filter(row => modes.has(row.project_id) && !row.archived && PILOT_STATUSES.includes(row.status));
+  const policies = projectPolicies(db);
+  const cards = staleRows(db).filter(row => modes.has(row.project_id) && !row.archived && policies.has(row.project_id) && inPilotScope(policies.get(row.project_id)!, row.status));
   const ids = cards.map(card => card.id);
   const links = ids.length ? db.prepare<[string], { task_id: string; thread_id: string }>("SELECT task_id,thread_id FROM task_threads WHERE task_id IN (SELECT value FROM json_each(?)) AND live_status NOT IN ('completed','failed')").all(JSON.stringify(ids)) : [];
   const threadIds = [...new Set(links.map(link => link.thread_id))];
@@ -31,7 +33,7 @@ export async function sweepPauseSignals(bb: BbPluginApi): Promise<void> {
     const currentCards = new Map(staleRows(db, ids).map(card => [card.id, card]));
     for (const original of cards) {
       const card = currentCards.get(original.id);
-      if (!card || card.archived || card.project_id !== original.project_id || !PILOT_STATUSES.includes(card.status)) continue;
+      if (!card || card.archived || card.project_id !== original.project_id || !policies.has(card.project_id) || !inPilotScope(policies.get(card.project_id)!, card.status)) continue;
       const mode = db.prepare<[string], { mode: string }>("SELECT mode FROM pause_modes WHERE project_id=?").get(card.project_id)?.mode ?? "off";
       if (mode === "off") continue;
       const applied = mode === "on" || pauseArm(card.id) === "auto";
@@ -39,7 +41,7 @@ export async function sweepPauseSignals(bb: BbPluginApi): Promise<void> {
         const existing = db.prepare<[string, string], PauseRow>("SELECT * FROM task_pauses WHERE task_id=? AND signal=?").get(card.id, signal);
         if (present && !existing) {
           const detail = signal === "held"
-            ? db.prepare<[string], { value: string }>("SELECT p.prefix || '-' || b.number AS value FROM task_dependencies d JOIN tasks b ON b.id=d.blocking_task_id JOIN projects p ON p.id=b.project_id WHERE d.task_id=? AND b.status<>'done' LIMIT 1").get(card.id)?.value
+            ? db.prepare<[string], { value: string }>(`SELECT p.prefix || '-' || b.number AS value FROM task_dependencies d JOIN tasks b ON b.id=d.blocking_task_id JOIN projects p ON p.id=b.project_id WHERE d.task_id=? AND NOT ${doneSql("b", "p")} LIMIT 1`).get(card.id)?.value
             : db.prepare<[string], { value: string }>(`SELECT q.id AS value FROM task_questions q WHERE q.task_id=? AND ${UNANSWERED_QUESTION} LIMIT 1`).get(card.id)?.value;
           startSignalPause(db, card.id, signal, "system", signal === "held" ? `waiting on ${detail ?? "a predecessor"}` : `waiting on owner question ${detail ?? "unknown"}`, true);
         }

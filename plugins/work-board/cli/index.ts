@@ -9,6 +9,8 @@ import { advisoryText } from "../shared/task-advisories";
 import { openPlanDebt, pendingLookupsOf, unsentNoticesOf } from "../plan-debt/store";
 import { TASK_DATE_FIELDS } from "../shared/task-dates.js";
 import { getWorkflowPolicy, workflowPolicySchema } from "../shared/workflow-policy.js";
+import { isNotStarted, resolveRoles, SINGLE_ROLES, type SingleRole } from "../shared/status-roles.js";
+import { roleIsNullable } from "../shared/status-delete.js";
 import { DEFAULT_TASK_STATUSES, taskStatusesSchema } from "../shared/statuses.js";
 import { resolve } from "node:path";
 import {
@@ -33,6 +35,8 @@ import {
   ownQuestionRefusal,
   childrenCards,
   publishProjectsChanged,
+  publishStatusMoves,
+  cardsInStatuses,
   registerHandlers,
   createPlanReviewFlow,
   type TasksApiStore,
@@ -1090,8 +1094,10 @@ export function registerTasksCli(
               return input.options.json ? JSON.stringify(result) : `${task.key}: ${action === "add" ? "blocked by" : "removed dependency on"} ${blocker.key}${result.changed ? "" : " (unchanged)"}`;
             }
             const result = await domain.listTaskDependencies({ taskId: task.id });
+            // Predecessors live in the task's own project, so its done status says which ones are satisfied.
+            const doneOf = resolveRoles((await listProjects(domain)).find(project => project.id === task.projectId) ?? {}).done;
             return input.options.json ? JSON.stringify(result) : [
-              `Blocked by: ${result.blockedBy.map(t => `${t.key} (${t.status}${t.status === "done" ? "; satisfied" : "; waiting for Done"})`).join(", ") || "none"}`,
+              `Blocked by: ${result.blockedBy.map(t => `${t.key} (${t.status}${t.status === doneOf ? "; satisfied" : "; waiting for Done"})`).join(", ") || "none"}`,
               `Blocks: ${result.blocks.map(t => `${t.key} (${t.status})`).join(", ") || "none"}`,
               `Related: ${result.related.map(t => `${t.key} (${t.status})`).join(", ") || "none"}`,
             ].join("\n");
@@ -1442,7 +1448,7 @@ export function registerTasksCli(
               );
               const warnings = [
                 ...(result.warnings ?? []),
-                ...(!task.progressNote && ["backlog", "todo"].includes(task.status)
+                ...(!task.progressNote && isNotStarted((await listProjects(domain)).find(project => project.id === task.projectId) ?? {}, task.status)
                   ? [`Task is in ${task.status} with no Current state; set it with ` + `\`bb work-board update ${task.key} --progress ...\`` + " and move the status if the work stage changed, so the owner sees why it waits on them."] : []),
                 // More than one link is refused by the store; length stays a warning.
                 ...(input.options.prompt.length > 300
@@ -2089,7 +2095,9 @@ export function registerTasksCli(
           ],
           options: {
             "workflow-policy-file": { type: "string", description: "JSON project workflow policy" },
-            "statuses-file": { type: "string", description: "JSON array of project statuses [{id,name}] from the invoking machine" },
+            "statuses-file": { type: "string", description: "JSON array of project statuses [{id,name}] from the invoking machine; any status can be dropped (cards still in it need --move-status, roles pointing at it need --set-role)" },
+            "move-status": { type: "string", repeatable: true, placeholder: "from=to", description: "With --statuses-file: move the cards of a deleted status to a status the project keeps; repeatable" },
+            "set-role": { type: "string", repeatable: true, placeholder: "role=status|none", description: `Set a workflow role (${SINGLE_ROLES.join(", ")}) to a status id, or none where the role allows it; repeatable` },
             "auto-archive": { type: "enum", values: ["off", "3", "7", "14", "30"] as const, description: "Project auto-archive interval in days" },
             "stale-idle": { type: "enum", values: ["off", "30", "45", "60", "120"] as const, description: "Project idle warning threshold in minutes" },
             "status-notifications": { type: "enum", values: ["off", "all", "done"] as const, description: "Project status change push notifications" },
@@ -2152,7 +2160,7 @@ export function registerTasksCli(
                   // A flag is the owner's: a file never changes one (an existing status keeps its flag, a new one gets the default).
                   statuses = taskStatusesSchema.parse(JSON.parse(text!)).map(({ requiresApprovedPlan: _flag, ...status }) => status);
                 }
-                catch { throw new CliError("Invalid statuses file: expected unique [{id,name}] definitions retaining the six system IDs"); }
+                catch { throw new CliError("Invalid statuses file: expected 1 to 32 unique [{id,name}] definitions"); }
               } else if (input.options.machine && !input.options["workflow-policy-file"]) throw new CliError("--machine requires a file option");
               let workflowPolicy;
               if (input.options["workflow-policy-file"]) {
@@ -2160,6 +2168,25 @@ export function registerTasksCli(
                 const text = await readTextOption(bb, ctx, hostId, undefined, input.options["workflow-policy-file"]);
                 try { workflowPolicy = workflowPolicySchema.parse(JSON.parse(text!)); }
                 catch { throw new CliError("Invalid workflow policy file"); }
+              }
+              const statusMoves: Record<string, string> = {};
+              for (const entry of input.options["move-status"]) {
+                const [from, to, ...rest] = entry.split("=");
+                if (!from || !to || rest.length || from in statusMoves) throw new CliError(`--move-status takes one <from>=<to> per deleted status, got "${entry}"`);
+                statusMoves[from] = to;
+              }
+              // A role is set on top of the project's current policy (or the policy file), so the other roles keep their values.
+              const setRoles = input.options["set-role"];
+              if (setRoles.length) {
+                const roles: Record<string, string | null> = {};
+                for (const entry of setRoles) {
+                  const [role, value, ...rest] = entry.split("=");
+                  if (!role || !value || rest.length || !(SINGLE_ROLES as readonly string[]).includes(role)) throw new CliError(`--set-role takes <role>=<status|none> with a role from: ${SINGLE_ROLES.join(", ")}; got "${entry}"`);
+                  if (value === "none" && !roleIsNullable(role as SingleRole)) throw new CliError(`${role} cannot be none: choose a status`);
+                  roles[role] = value === "none" ? null : value;
+                }
+                try { workflowPolicy = workflowPolicySchema.parse({ ...(workflowPolicy ?? getWorkflowPolicy(project)), ...roles }); }
+                catch (error) { throw new CliError(`Invalid --set-role: ${error instanceof Error ? error.message : String(error)}`); }
               }
               if (input.options["check-receipt"] !== undefined) throw new CliError(RECEIPT_PROJECT_UPDATE_REFUSAL, { code: "owner_only" });
               if (input.options["check-readiness"] !== undefined) throw new CliError(READINESS_OWNER_ONLY, { code: "owner_only" });
@@ -2178,6 +2205,7 @@ export function registerTasksCli(
                 linkedBbProjectId: input.options["unlink-bb-project"]
                   ? null
                   : input.options["link-bb-project"],
+                ...(Object.keys(statusMoves).length ? { statusMoves, authorName: taskAuthor(ctx) } : {}),
               };
               const renamePrefix = input.options["rename-prefix"];
               if (
@@ -2229,6 +2257,7 @@ export function registerTasksCli(
                   `Project prefix is already in use: ${renameInput.prefix}`,
                 );
               }
+              const moving = cardsInStatuses(bb, project.id, Object.keys(statusMoves));
               const updated = store.transaction(() => {
                 const policy = updateInput?.workflowPolicy;
                 if (policy) {
@@ -2252,9 +2281,12 @@ export function registerTasksCli(
                   color: updateInput?.color,
                   folderId: updateInput?.folderId,
                   linkedBbProjectId: updateInput?.linkedBbProjectId,
+                  statusMoves: updateInput?.statusMoves,
+                  authorName: updateInput?.authorName,
                 });
               });
               publishProjectsChanged(bb, updated.id);
+              publishStatusMoves(bb, updated.id, moving);
               return input.options.json
                 ? JSON.stringify({ project: updated })
                 : `Updated project ${updated.prefix}  ${updated.name}`;
@@ -2511,7 +2543,7 @@ export function registerTasksCli(
               description:
                 "Read the description from this UTF-8 file on the invoking machine",
             },
-            status: { type: "string", placeholder: "status-id", description: "Project workflow status ID (default: backlog)" },
+            status: { type: "string", placeholder: "status-id", description: "Project workflow status ID (default: the project's new-card status)" },
             priority: {
               type: "enum",
               values: TASK_PRIORITIES,
@@ -3053,7 +3085,7 @@ export function registerTasksCli(
                   activity,
                   advisories: cardMeta.advisories ?? [],
                   dependencies,
-                  blocked: dependencies.blockedBy.some(blocker => blocker.status !== "done"),
+                  blocked: dependencies.blockedBy.some(blocker => blocker.status !== resolveRoles(project).done),
                   pullRequests,
                   pullRequestUnavailableThreadIds: unavailableThreadIds,
                   latestCommentId,
@@ -3093,7 +3125,7 @@ export function registerTasksCli(
                   ["Automatic pause", automatic],
                   ...(cardMeta.queue ? [["Queue", cardMeta.queue.position === 1 ? `Current for ${cardMeta.queue.threadId}` : `Queued #${cardMeta.queue.position} for ${cardMeta.queue.threadId}`] as const] : []),
                   ...pauses.map(pause => ["Paused", `${pause.reason}${pause.until ? `, until ${pause.until}` : ""}`] as const),
-                  ["Blocked by", dependencies.blockedBy.map(blocker => `${blocker.key} (${blocker.status}${blocker.status === "done" ? "; satisfied" : "; waiting for Done"})`).join(", ") || "-"],
+                  ["Blocked by", dependencies.blockedBy.map(blocker => `${blocker.key} (${blocker.status}${blocker.status === resolveRoles(project).done ? "; satisfied" : "; waiting for Done"})`).join(", ") || "-"],
                   ["Blocks", dependencies.blocks.map(dependent => `${dependent.key} (${dependent.status})`).join(", ") || "-"],
                   ["Related", dependencies.related.map(other => `${other.key} (${other.status})`).join(", ") || "-"],
                   ...(task.archivedAt ? [["Archived", task.archivedAt] as const] : []),

@@ -1,12 +1,14 @@
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import { UNANSWERED_QUESTION } from "../db/waiting-on-owner";
+import { isDoneIn, notStartedSql } from "../db/status-sql";
+import { resolveRoles } from "../shared/status-roles";
 import { getWorkflowPolicy, isClosedStatus, startsFromStatus, type WorkflowPolicy } from "../shared/workflow-policy";
 
 type Database = ReturnType<BbPluginApi["storage"]["database"]>;
 
 export const ATTENTION_KIND = "stale-status";
-/** Statuses the pilot covers (the pilot scope); a custom workflow's other statuses stay out of scope. */
-export const PILOT_STATUSES: readonly string[] = ["in_progress", "in_review", "in_testing", "bugfix"];
+/** Whether a card's status is in the pilot scope of its project: the `pilotStatuses` role (default: In progress, review, testing and bugfix); other statuses stay out of scope. */
+export const inPilotScope = (policy: WorkflowPolicy, status: string): boolean => resolveRoles({ workflowPolicy: policy }).pilot.includes(status);
 export const PILOT_SIGNALS = ["no_active_thread", "no_open_pr", "pr_state_unavailable", "closed_unmerged_pr"] as const;
 export const ATTENTION_SIGNALS = [...PILOT_SIGNALS, "no_merge_or_outcome"] as const;
 export type AttentionSignal = (typeof ATTENTION_SIGNALS)[number];
@@ -66,7 +68,7 @@ export function staleRows(db: Database, taskIds?: readonly string[], projectId?:
         CASE WHEN t.archived_at IS NULL THEN 0 ELSE 1 END AS archived,
         CASE WHEN t.type='epic' AND EXISTS(SELECT 1 FROM task_labels tl JOIN labels l ON l.id=tl.label_id WHERE tl.task_id=t.id AND l.name='ongoing') THEN 1 ELSE 0 END AS ongoing,
         EXISTS(SELECT 1 FROM task_threads x WHERE x.task_id=t.id AND x.live_status IN ('starting','working')) AS active,
-        EXISTS(SELECT 1 FROM task_dependencies d JOIN tasks b ON b.id=d.blocking_task_id WHERE d.task_id=t.id AND b.status <> 'done') AS held,
+        EXISTS(SELECT 1 FROM task_dependencies d JOIN tasks b ON b.id=d.blocking_task_id WHERE d.task_id=t.id AND NOT ${isDoneIn("b")}) AS held,
         EXISTS(SELECT 1 FROM task_questions q WHERE q.task_id=t.id AND ${UNANSWERED_QUESTION}) AS waiting_owner,
         EXISTS(SELECT 1 FROM task_pauses x WHERE x.task_id=t.id AND x.applied=1 AND x.signal IN ('manual','background') AND x.until > ?) AS paused,
         EXISTS(SELECT 1 FROM project_pr_history h WHERE h.project_id=t.project_id) AS project_uses_prs,
@@ -97,7 +99,7 @@ export function staleRows(db: Database, taskIds?: readonly string[], projectId?:
 export function epicTasksInWork(db: Database, epicIds?: readonly string[], projectId?: string): Map<string, string[]> {
   const ids = epicIds ? JSON.stringify(epicIds) : null;
   const columns = "p.prefix || '-' || c.number AS key, c.number, c.status, c.project_id";
-  const open = "c.archived_at IS NULL AND c.status NOT IN ('backlog','todo')";
+  const open = `c.archived_at IS NULL AND NOT ${notStartedSql("c", "p")}`;
   const rows = db.prepare<(string | null)[], { epic_id: string; key: string; status: string; project_id: string }>(`
       WITH e(id) AS (SELECT t.id FROM tasks t WHERE t.type='epic' AND ${ids === null ? "(? IS NULL OR t.project_id=?)" : "t.id IN (SELECT value FROM json_each(?)) AND (? IS NULL OR t.project_id=?)"})
       SELECT c.epic_id AS epic_id, ${columns} FROM tasks c JOIN e ON e.id=c.epic_id JOIN projects p ON p.id=c.project_id WHERE ${open}
@@ -168,7 +170,7 @@ export function staleStatusObservations(db: Database, taskIds?: readonly string[
       taskId: row.id,
       trackerId: row.project_id,
       key: row.key,
-      inScope: !row.archived && PILOT_STATUSES.includes(row.status) && !row.held && !row.ongoing && !queuedWaiting,
+      inScope: !row.archived && inPilotScope(policy, row.status) && !row.held && !row.ongoing && !queuedWaiting,
       scopeReason: row.archived ? "archived" : row.ongoing ? "ongoing" : row.held ? "blocked" : queuedWaiting ? "queued" : "status_changed",
       doneScope: !row.archived && row.status === policy.doneStatus && !row.ongoing,
       signals: {

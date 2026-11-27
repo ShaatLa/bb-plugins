@@ -4,6 +4,8 @@ import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import type { TasksApiStore } from "../api";
 import { createActivityReads, MAX_SDK_READS, type AcceptedTurn, type ActivityReads } from "./shared-reads.js";
 import { epicTasksInWork } from "../attention/observe";
+import { isDoneIn } from "../db/status-sql";
+import { isClosed } from "../shared/status-roles";
 import { evaluateTaskActivity, type TaskActivity, type TaskActivitySession } from "../shared/task-activity";
 import { capacityWait } from "../attention/capacity-wait";
 
@@ -158,7 +160,7 @@ export function activityService(bb: BbPluginApi, store: TasksApiStore) {
       // open predecessor (the Blocked marker's rule): Blocked is its own state. The first reason explains the Paused state.
       const pauseReasons = new Map<string, string>();
       for (const row of db.prepare<(string | number)[], { task_id: string; reason: string }>(`SELECT p.task_id, p.reason FROM task_pauses p WHERE p.task_id IN (${placeholders}) AND p.applied=1 AND (p.until IS NULL OR p.until>?) AND p.signal<>'held'
-        AND NOT EXISTS (SELECT 1 FROM task_dependencies d JOIN tasks b ON b.id=d.blocking_task_id WHERE d.task_id=p.task_id AND b.status<>'done')
+        AND NOT EXISTS (SELECT 1 FROM task_dependencies d JOIN tasks b ON b.id=d.blocking_task_id WHERE d.task_id=p.task_id AND NOT ${isDoneIn("b")})
         ORDER BY p.started_at DESC`).all(...ids, new Date().toISOString())) pauseReasons.set(row.task_id, row.reason);
       const focusedKeys = new Map<string, string | null>();
       const focusedKey = (taskId: string | null) => {
@@ -199,7 +201,7 @@ export function activityService(bb: BbPluginApi, store: TasksApiStore) {
         }
         const task = taskData.get(id);
         const status = task?.status;
-        return [id, evaluateTaskActivity({ sessions, hasWorked: history.has(id), hasLostSession: inactiveSessions.length > 0 || lost.has(id), terminal: status === "done" || status === "canceled", paused: pauseReasons.has(id), pauseReason: pauseReasons.get(id), inactiveSessions, tasksInWork: tasksInWork.get(id), complete: discoveryComplete && taskLinks.every((link) => snapshots.get(link.threadId)?.complete && !snapshots.get(link.threadId)?.dispatchUnavailable) })];
+        return [id, evaluateTaskActivity({ sessions, hasWorked: history.has(id), hasLostSession: inactiveSessions.length > 0 || lost.has(id), terminal: status !== undefined && isClosed(store.tasks.getProject(task!.projectId) ?? {}, status), paused: pauseReasons.has(id), pauseReason: pauseReasons.get(id), inactiveSessions, tasksInWork: tasksInWork.get(id), complete: discoveryComplete && taskLinks.every((link) => snapshots.get(link.threadId)?.complete && !snapshots.get(link.threadId)?.dispatchUnavailable) })];
       }));
     },
   };

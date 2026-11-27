@@ -396,7 +396,7 @@ export function restoreProject(
     const snapshotArchiveSettings = manifest.version >= 21 ? { ...(archiveThreadsOnClose === undefined ? {} : { archiveThreadsOnClose }), ...(archiveReviewerOnApproval === undefined ? {} : { archiveReviewerOnApproval }) } : {};
     // The flags and their marker are the owner's too. They are merged by status id before the lists are compared: an
     // existing project keeps the local flag of every status it has (a new id gets the default), a project the import
-    // creates takes the snapshot's flags, and `canceled` is never marked. A flag-only difference is never a conflict or a write.
+    // creates takes the snapshot's flags, and the canceled status is never marked. A flag-only difference is never a conflict or a write.
     const incomingStatuses: Array<{ id: string; name: string; requiresApprovedPlan?: boolean }> = manifest.project.statuses ?? DEFAULT_TASK_STATUSES;
     const settledStatuses = currentProject
       ? settlePlanFlags({ statuses: incomingStatuses.map(({ requiresApprovedPlan: _flag, ...status }) => status), previous: currentProject.statuses, planning: currentProject.planning ?? "off", initialized: true, workflowPolicy: manifest.project.workflowPolicy }).statuses

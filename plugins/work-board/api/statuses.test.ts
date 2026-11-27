@@ -1,3 +1,4 @@
+import { getWorkflowPolicy } from "../shared/workflow-policy";
 import { afterEach, expect, it } from "vitest";
 import {
   createFakePluginHost,
@@ -62,7 +63,7 @@ it("uses project status IDs across API, board moves, CLI filters and open-first 
       title: "Invalid",
       status: "in_testing",
     }),
-  ).toThrow(/Unknown task status/);
+  ).toThrow(/not in this project/);
   const included = await harness.runCli([
     "list",
     "--project",
@@ -109,6 +110,7 @@ it("uses project status IDs across API, board moves, CLI filters and open-first 
     (tasks) => {
       first = tasks.map((entry) => entry.status);
     },
+    ["done", "canceled"],
   );
   expect(first).toEqual(["in_testing", "in_testing"]);
   expect(all).toHaveLength(3);
@@ -136,10 +138,10 @@ it("guards status removal, immutable IDs, pagination and cross-project moves wit
   });
   expect(() =>
     store.tasks.updateProject(project.id, { statuses: DEFAULT_TASK_STATUSES }),
-  ).toThrow(/used by tasks/);
+  ).toThrow(/1 card is in In testing/);
   const before = store.tasks.getProject(other.id);
   expect(() => store.tasks.moveTaskToProject(epic.id, other.id)).toThrow(
-    /Unknown task status/,
+    /not in this project/,
   );
   expect(store.tasks.getProject(other.id)).toEqual(before);
   expect(store.tasks.getTask(epic.id)?.projectId).toBe(project.id);
@@ -153,11 +155,9 @@ it("guards status removal, immutable IDs, pagination and cross-project moves wit
     .reverse();
   store.tasks.updateProject(project.id, { statuses: renamed });
   expect(store.tasks.getTask(child.id)?.status).toBe("in_testing");
-  expect(
-    taskStatusesSchema.safeParse(
-      statuses.filter((status) => status.id !== "done"),
-    ).success,
-  ).toBe(false);
+  // No status id is special: a list without Done is valid, and an empty one is not.
+  expect(taskStatusesSchema.safeParse(statuses.filter((status) => status.id !== "done")).success).toBe(true);
+  expect(taskStatusesSchema.safeParse([]).success).toBe(false);
   expect(
     taskStatusesSchema.safeParse([
       ...statuses,
@@ -185,10 +185,12 @@ it("guards status removal, immutable IDs, pagination and cross-project moves wit
     }),
   ).toThrow(/cursor/i);
   store.tasks.updateTask(child.id, { status: "todo" });
-  store.tasks.updateProject(project.id, { statuses: DEFAULT_TASK_STATUSES });
+  // The testing role still points at In testing, so the delete must set it (here: none) in the same request.
+  expect(() => store.tasks.updateProject(project.id, { statuses: DEFAULT_TASK_STATUSES })).toThrow(/testingStatus points to the deleted status/);
+  store.tasks.updateProject(project.id, { statuses: DEFAULT_TASK_STATUSES, workflowPolicy: getWorkflowPolicy({ workflowPolicy: { testingStatus: null } }) });
   expect(() =>
     store.tasks.updateTask(child.id, { status: "in_testing" }),
-  ).toThrow(/Unknown task status/);
+  ).toThrow(/not in this project/);
 });
 
 it("persists status icons per project and rejects unavailable icons without overwriting them", async () => {

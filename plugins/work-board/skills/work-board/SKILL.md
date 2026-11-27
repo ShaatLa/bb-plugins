@@ -195,8 +195,8 @@ line; each renders its own card.
 ## Invariants
 
 - Status ids are per project: read them with `project show PREFIX --json`
-  (`project.statuses`). The six system ids `backlog`, `todo`, `in_progress`,
-  `in_review`, `done` and `canceled` always exist; projects can add more.
+  (`project.statuses`). No status id is special: a project can rename, add or
+  delete any status, and what a status means comes from its workflow roles.
 - Use the project's review status (`workflowPolicy.reviewStatus`, default
   `in_review`) when implementation is complete but still needs human or agent
   review. Use `done` only when the task's completion criteria are met.

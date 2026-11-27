@@ -639,6 +639,10 @@ const updateProjectInputSchema = z
     statuses: taskStatusesSchema.optional(),
     // The stored statuses `statuses` was built on: the write is refused when they changed meanwhile.
     baseStatuses: taskStatusesSchema.optional(),
+    // Deleting statuses: each deleted id that still holds cards names the listed status they move to, in this same write.
+    statusMoves: z.record(taskStatusSchema, taskStatusSchema).optional(),
+    // Who the deletion moves are written as; the owner's app sends "You".
+    authorName: nonBlankStringSchema.optional(),
     autoArchiveAfterDays: autoArchiveAfterDaysSchema.optional(),
     staleIdleMinutes: staleIdleThresholdSchema.optional(),
     statusNotifications: statusNotificationsSchema.optional(),
@@ -1107,6 +1111,11 @@ export const tasksRpcContract = {
     input: z.object({ folderId: idSchema.nullable().optional() }).strict(),
     output: z.object({ projects: z.array(projectSchema) }).strict(),
   },
+  // What deleting a status would touch: the cards of the project in each status, archived ones counted apart.
+  statusCardCounts: {
+    input: z.object({ projectId: idSchema }).strict(),
+    output: z.object({ counts: z.record(z.string(), z.object({ cards: z.number().int(), archived: z.number().int() }).strict()) }).strict(),
+  },
   createTask: {
     input: z
       .object({
@@ -1115,7 +1124,7 @@ export const tasksRpcContract = {
         agentThreadId: evidenceThreadSchema.nullable().optional(),
         title: nonBlankStringSchema,
         description: z.string().default(""),
-        status: taskStatusSchema.default("backlog"),
+        status: taskStatusSchema.optional(),
         priority: taskPrioritySchema.default("none"),
         dueDate: dueDateSchema.nullable().default(null),
         parentTaskId: idSchema.nullable().default(null),

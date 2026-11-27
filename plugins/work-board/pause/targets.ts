@@ -1,5 +1,6 @@
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import { UNANSWERED_QUESTION } from "../db/waiting-on-owner";
+import { isDoneIn } from "../db/status-sql";
 import { placeChecks } from "../shared/check-flow";
 import type { TaskQuestion } from "../shared/contract";
 import type { PauseTarget } from "../shared/pause";
@@ -21,7 +22,7 @@ export function pauseTargets(db: PluginDatabase, held: readonly string[], asked:
   if (held.length) {
     const rows = db.prepare<[string], { task_id: string; key: string }>(
       `SELECT d.task_id, p.prefix || '-' || b.number AS key FROM task_dependencies d JOIN tasks b ON b.id=d.blocking_task_id JOIN projects p ON p.id=b.project_id
-       WHERE d.task_id IN (SELECT value FROM json_each(?)) AND b.status<>'done' ORDER BY p.prefix, b.number`).all(JSON.stringify(held));
+       WHERE d.task_id IN (SELECT value FROM json_each(?)) AND NOT ${isDoneIn("b")} ORDER BY p.prefix, b.number`).all(JSON.stringify(held));
     for (const row of rows) out.held.set(row.task_id, [...(out.held.get(row.task_id) ?? []), { kind: "task", taskKey: row.key }]);
   }
   if (asked.length) {

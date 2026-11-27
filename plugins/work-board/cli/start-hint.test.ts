@@ -50,7 +50,11 @@ function setup(planning: "off" | "optional" | "required" = "off") {
   if (planning !== "off") store.tasks.updateProject(created.id, { planning });
   const card = (title: string, input: Record<string, unknown> = {}) => store.tasks.createTask({ projectId: created.id, title, status: "backlog", ...input });
   const configure = (policy: Record<string, unknown>, statuses?: Array<{ id: string; name: string }>) =>
-    store.tasks.updateProject(created.id, { ...(statuses ? { statuses: statuses as never } : {}), workflowPolicy: workflowPolicySchema.parse({ ...store.tasks.getProject(created.id)!.workflowPolicy, ...policy }) });
+    {
+      if (statuses) store.tasks.updateProject(created.id, { statuses: statuses as never });
+      // Written raw: these cases map a role to a status the project does not list, which the settings write refuses.
+      host.bb.storage.database().prepare("UPDATE projects SET workflow_policy = ? WHERE id = ?").run(JSON.stringify(workflowPolicySchema.parse({ ...store.tasks.getProject(created.id)!.workflowPolicy, ...policy })), created.id);
+    };
   const withPlan = (taskId: string, state: "draft" | "approved") => {
     const before = store.tasks.getTask(taskId)!.status;
     const plans = createPlanStore(host.bb.storage.database(), store.tasks);

@@ -1,8 +1,10 @@
 import { isWaitingOnOwner } from "./questions";
+import { ROLE_DEFAULTS } from "./status-roles";
 import type { Task, TaskQuestion } from "./contract";
 
-export function waitingOnOwner(task: Task, unanswered: number): boolean {
-  return !task.archivedAt && !["done", "canceled"].includes(task.status) && unanswered > 0;
+/** `closed` is the closed statuses of the task's project (`resolveRoles(project).closed`); the default is a project with the standard ones. */
+export function waitingOnOwner(task: Task, unanswered: number, closed: readonly string[] = ROLE_DEFAULTS.closedStatuses): boolean {
+  return !task.archivedAt && !closed.includes(task.status) && unanswered > 0;
 }
 /** The newest open question the owner is waited on for; `held` is `checkFlow(...).held`, whose checks nobody waits on yet. */
 export function newestOpenQuestion(questions: readonly TaskQuestion[], held: ReadonlyMap<string, string> = new Map()) {

@@ -1,7 +1,9 @@
 import { checkReceiptSchema, receiptInScope } from "../shared/check-receipt";
 import { OPEN_QUESTION_SQL } from "../shared/questions";
 import { WAITING_ON_OWNER, NEWEST_UNANSWERED } from "./waiting-on-owner";
-import { effectiveInProgressStatus, ensurePlanningStatus, getWorkflowPolicy, inWorkZone, isClosedStatus, planningStatusOf, settlePlanFlags, usableStartTarget, withPlanningStatus, workflowPolicySchema } from "../shared/workflow-policy.js";
+import { ARRAY_ROLES, isNotStarted, resolveRoles, SINGLE_ROLES } from "../shared/status-roles.js";
+import { roleIsNullable, rolesPointingTo } from "../shared/status-delete.js";
+import { effectiveInProgressStatus, ensurePlanningStatus, getWorkflowPolicy, inWorkZone, isClosedStatus, planningStatusOf, settlePlanFlags, usableStartTarget, withPlanningStatus, workflowPolicySchema, type WorkflowPolicy } from "../shared/workflow-policy.js";
 import { recordPlanDebtEvent, syncPlanDebt, syncProjectPlanDebt } from "../plan-debt/store";
 import { prIdentity, prLinkSchema } from "../shared/git-sync";
 import { createClosureStore } from "../closure/store";
@@ -19,6 +21,7 @@ import {
   DEFAULT_TASK_STATUSES,
   statusLabel,
   taskStatusesSchema,
+  type TaskStatusDefinition,
 } from "../shared/statuses.js";
 import { createHash, randomBytes } from "node:crypto";
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
@@ -615,10 +618,11 @@ export function createTasksStore(db: PluginDatabase, log: (message: string) => v
     }
   }
   /** The write moved a card between open and closed: closing records a closure, reopening ends the current one. */
-  function trackClosure(task: Task, status: string, closerThreadId: string | null | undefined): void {
+  function trackClosure(task: Task, status: string, closerThreadId: string | null | undefined, source?: Project): void {
     if (status === task.status) return;
     const project = requireProject(task.projectId);
-    const was = isClosedStatus(project, task.status);
+    // A deletion move reads the old status under the project as it was; the new status under the project as it is.
+    const was = isClosedStatus(source ?? project, task.status);
     const now = isClosedStatus(project, status);
     if (!was && now) pendingClosures.push(closures.open(task.id, closerThreadId ?? null, project.archiveThreadsOnClose !== "off"));
     else if (was && !now) closures.reopen(task.id);
@@ -767,13 +771,11 @@ export function createTasksStore(db: PluginDatabase, log: (message: string) => v
     return project;
   }
 
-  function validateTaskStatus(projectId: string, status: string) {
-    if (
-      !(requireProject(projectId).statuses ?? DEFAULT_TASK_STATUSES).some(
-        (entry) => entry.id === status,
-      )
-    )
-      throw new Error(`Unknown task status: ${status}`);
+  function validateTaskStatus(projectId: string, status: string, key?: string) {
+    const project = requireProject(projectId);
+    const listed = project.statuses ?? DEFAULT_TASK_STATUSES;
+    if (!listed.some((entry) => entry.id === status))
+      throw new Error(`${key ?? project.prefix}: status \`${status}\` is not in this project (statuses: ${listed.map((entry) => entry.id).join(", ")})`);
   }
 
   function createProject(input: CreateProjectInput): Project {
@@ -828,8 +830,65 @@ export function createTasksStore(db: PluginDatabase, log: (message: string) => v
     return rows.map(projectFromRow);
   }
 
+  /** Cards per status of a project, archived ones counted apart. */
+  function statusCardCounts(projectId: string): Map<string, { cards: number; archived: number }> {
+    return new Map(db.prepare<[string], { status: string; cards: number; archived: number }>(
+      "SELECT status, COUNT(*) AS cards, COALESCE(SUM(archived_at IS NOT NULL), 0) AS archived FROM tasks WHERE project_id = ? GROUP BY status",
+    ).all(projectId).map((row) => [row.status, { cards: row.cards, archived: row.archived }]));
+  }
+
+  /**
+   * Settles a status deletion before anything is written. Returns the policy with the deleted ids dropped from its explicit
+   * arrays, or throws one error that lists everything the request still lacks: cards with no move, single roles still
+   * pointing at a deleted status. Moves are checked here and run by the caller.
+   */
+  function settleStatusDeletion(project: Project, nextStatuses: readonly TaskStatusDefinition[], nextPolicy: WorkflowPolicy | undefined, moves: Record<string, string>): WorkflowPolicy | undefined {
+    const nextIds = new Set(nextStatuses.map((status) => status.id));
+    const before = project.statuses ?? DEFAULT_TASK_STATUSES;
+    const counts = statusCardCounts(project.id);
+    const removed = [...new Set([...before.map((status) => status.id), ...counts.keys()])].filter((id) => !nextIds.has(id));
+    const label = (id: string) => { const name = before.find((status) => status.id === id)?.name; return name && name !== id ? `${name} (${id})` : id; };
+    const problems: string[] = [];
+    for (const [from, to] of Object.entries(moves)) {
+      if (!removed.includes(from)) problems.push(`--move-status ${from}=${to}: ${from} is not being deleted`);
+      else if (!nextIds.has(to)) problems.push(`--move-status ${from}=${to}: ${to} is not a status the project keeps (statuses: ${[...nextIds].join(", ")})`);
+    }
+    for (const id of removed) {
+      const held = counts.get(id);
+      if (held && held.cards > 0 && !(id in moves))
+        problems.push(`${held.cards} card${held.cards === 1 ? " is" : "s are"} in ${label(id)}${held.archived ? ` (${held.archived} archived)` : ""}; move ${held.cards === 1 ? "it" : "them"} with --move-status ${id}=<status>`);
+    }
+    const roles = removed.flatMap((id) => rolesPointingTo({ workflowPolicy: nextPolicy, statuses: before }, id).map((role) => ({ role, id })));
+    for (const { role, id } of roles)
+      problems.push(`${role} points to the deleted status ${label(id)}; set it with --set-role ${role}=<status${roleIsNullable(role) ? "|none" : ""}>`);
+    if (problems.length) throw new Error(`Cannot delete ${removed.map(label).join(", ")}: ${problems.join("; ")}`);
+    if (!removed.length || !nextPolicy) return nextPolicy;
+    const trimmed: Record<string, unknown> = { ...nextPolicy };
+    for (const role of ARRAY_ROLES) if (Array.isArray(trimmed[role])) trimmed[role] = (trimmed[role] as string[]).filter((id) => !removed.includes(id));
+    return trimmed as WorkflowPolicy;
+  }
+
+  /** A role this write changes must name a status the new list holds (null only where the role allows it); one it leaves alone is tolerated as before. */
+  function assertChangedRoles(project: Project, nextStatuses: readonly TaskStatusDefinition[], nextPolicy: WorkflowPolicy | undefined): void {
+    if (!nextPolicy) return;
+    const ids = new Set(nextStatuses.map((status) => status.id));
+    const was = getWorkflowPolicy(project) as Record<string, unknown>;
+    const now = nextPolicy as Record<string, unknown>;
+    for (const role of SINGLE_ROLES) {
+      if (JSON.stringify(now[role]) === JSON.stringify(was[role])) continue;
+      const value = now[role];
+      if (value === null && !roleIsNullable(role)) throw new Error(`${role} cannot be none`);
+      if (typeof value === "string" && !ids.has(value)) throw new Error(`${role}: status \`${value}\` is not in this project (statuses: ${[...ids].join(", ")})`);
+    }
+    for (const role of ARRAY_ROLES) {
+      if (JSON.stringify(now[role]) === JSON.stringify(was[role])) continue;
+      const missing = ((now[role] as string[] | undefined) ?? []).filter((id) => !ids.has(id));
+      if (missing.length) throw new Error(`${role}: ${missing.map((id) => `\`${id}\``).join(", ")} not in this project (statuses: ${[...ids].join(", ")})`);
+    }
+  }
+
   function updateProject(id: string, input: UpdateProjectInput): Project {
-    return db.transaction(() => {
+    return closureScope(() => db.transaction(() => {
       const current = requireProject(id);
       const requested = taskStatusesSchema.parse(
         input.statuses ?? current.statuses ?? DEFAULT_TASK_STATUSES,
@@ -849,11 +908,11 @@ export function createTasksStore(db: PluginDatabase, log: (message: string) => v
       }
       assertNoSecretsInValue(statuses, "statuses");
       assertNoSecretsInValue(policy, "workflowPolicy");
-      const ids = new Set(statuses.map((status) => status.id));
-      if (listTasks({ projectId: id }).some((task) => !ids.has(task.status)))
-        throw new Error(
-          "Cannot remove a status that is used by tasks; move those tasks first",
-        );
+      const moves = input.statusMoves ?? {};
+      assertChangedRoles(current, statuses, policy);
+      // Nothing is written until the whole request validates: cards still in a deleted status need a move, and a single
+      // role still pointing at one needs a new value in the same request.
+      policy = settleStatusDeletion(current, statuses, policy, moves);
       const folderId =
         input.folderId === undefined ? current.folderId : input.folderId;
       if (folderId !== null) requireFolder(folderId);
@@ -898,9 +957,33 @@ export function createTasksStore(db: PluginDatabase, log: (message: string) => v
         planningChanged ? (current.planning ?? "off") : (current.planningPrevious ?? null),
         id,
       );
+
+      const ids = new Set(statuses.map((status) => status.id));
+      // Archived cards count too: the query takes every card of the project.
+      const stranded = db.prepare<[string], { id: string }>("SELECT id FROM tasks WHERE project_id = ? ORDER BY status, position, id").all(id).map((row) => requireTask(row.id)).filter((task) => !ids.has(task.status));
+      const movedIds: string[] = [];
+      if (stranded.length) {
+        const before = current.statuses ?? DEFAULT_TASK_STATUSES;
+        const by = input.authorName ?? "You";
+        const refused: string[] = [];
+        // Each card goes through the status-change path of `update --status`, judged against the project as this request
+        // leaves it (new list, roles and plan flags), with the old project only for the old status. A refusal of any card
+        // aborts the whole request: the transaction rolls everything back, the project write included.
+        for (const task of stranded) {
+          const target = moves[task.status]!;
+          try {
+            updateTaskTransaction(task.id, { status: target, statusLog: { by, cause: "status deleted" }, notifyStatus: false }, { fromLabel: statusLabel(task.status, before), source: current });
+            movedIds.push(task.id);
+          } catch (error) {
+            refused.push(`${task.key}: ${error instanceof Error ? error.message : String(error)}`);
+          }
+        }
+        if (refused.length) throw new Error(`Cannot delete the status: ${refused.join("; ")}`);
+      }
       syncProjectPlanDebt(db, id);
+      if (movedIds.length) touchAttention(db, movedIds);
       return requireProject(id);
-    })();
+    })(), true);
   }
 
   function deleteProject(id: string): boolean {
@@ -1032,7 +1115,7 @@ export function createTasksStore(db: PluginDatabase, log: (message: string) => v
 
   /** A card is started once it left Backlog and Todo and is not closed; Planning counts (unlike the plan gate's work zone). */
   function isStarted(project: Project, status: string): boolean {
-    return status !== "backlog" && status !== "todo" && !isClosedStatus(project, status);
+    return !isNotStarted(project, status) && !isClosedStatus(project, status);
   }
 
   /** The epic a card belongs to: its own, or for a sub-task (which has none) its parent's. */
@@ -1049,7 +1132,7 @@ export function createTasksStore(db: PluginDatabase, log: (message: string) => v
   function startEpicOf(task: Task, project: Project): void {
     const epicId = effectiveEpicId(task);
     const epic = epicId ? getTask(epicId) : undefined;
-    if (!epic || epic.type !== "epic" || epic.archivedAt || (epic.status !== "backlog" && epic.status !== "todo")) return;
+    if (!epic || epic.type !== "epic" || epic.archivedAt || !isNotStarted(project, epic.status)) return;
     const target = usableStartTarget(project, epic.status);
     if (!target) return;
     try {
@@ -1067,12 +1150,12 @@ export function createTasksStore(db: PluginDatabase, log: (message: string) => v
    * Called at the end of a write of `task`; `before` is the card before it (null for a new card). Only a change from not
    * started to started, or a changed epic of a started card, moves the epic, so one the owner moved back stays put.
    */
-  function advanceEpicFor(task: Task, before: Task | null): void {
+  function advanceEpicFor(task: Task, before: Task | null, source?: Project): void {
     if (task.type === "epic") return;
     const project = requireProject(task.projectId);
     // Compared by effective epic: moving a sub-task between two tasks of the same epic changes nothing for the epic.
     const epicChanged = before !== null && effectiveEpicId(before) !== effectiveEpicId(task);
-    const startedNow = before === null || !isStarted(project, before.status);
+    const startedNow = before === null || !isStarted(source ?? project, before.status);
     if (isStarted(project, task.status) && (startedNow || epicChanged)) startEpicOf(task, project);
     // Sub-tasks inherit the epic: a task joining one brings its started sub-tasks with it.
     if (epicChanged && task.type === "task" && before?.epicId !== task.epicId)
@@ -1083,7 +1166,7 @@ export function createTasksStore(db: PluginDatabase, log: (message: string) => v
     (input: CreateTaskInput): Task => {
       const project = requireProject(input.projectId);
       const id = createUlid();
-      const status = input.status ?? "backlog";
+      const status = input.status ?? resolveRoles(project).newCard;
       validateTaskStatus(project.id, status);
       const parentTaskId = input.parentTaskId ?? null;
       const type = input.type ?? "task";
@@ -1535,7 +1618,7 @@ export function createTasksStore(db: PluginDatabase, log: (message: string) => v
     return plan ? planGateRefusal(task.key, plan, target) : noPlanGateRefusal(task.key, target);
   }
   function isDone(project: Project, status: string) {
-    return status !== "canceled" && isClosedStatus(project, status);
+    return status !== resolveRoles(project).canceled && isClosedStatus(project, status);
   }
 
   function reviewRoles(project: Project) {
@@ -1581,21 +1664,26 @@ export function createTasksStore(db: PluginDatabase, log: (message: string) => v
     return gateRefusal(task, status, project, project);
   }
 
-  function validateWorkflowTransition(task: Task, status: string) {
-    const gate = planGate(task, status);
+  /** `source` is the project as it was before a status deletion that moves the card: the gate lets a card already in a zone stay. */
+  function validateWorkflowTransition(task: Task, status: string, source?: Project) {
+    const gate = source ? gateRefusal(task, status, source, requireProject(task.projectId)) : planGate(task, status);
     if (gate) throw new Error(gate);
+    // The source status is judged by the project it was in, the target by the project as it is now (they differ in a deletion move).
+    const sourcePolicy = getWorkflowPolicy(source ?? requireProject(task.projectId));
     const policy = getWorkflowPolicy(requireProject(task.projectId));
-    if (status !== task.status && policy.bugfixStatus && policy.doneStatus && task.status === policy.bugfixStatus && status === policy.doneStatus)
+    if (status !== task.status && sourcePolicy.bugfixStatus && policy.doneStatus && task.status === sourcePolicy.bugfixStatus && status === policy.doneStatus)
       throw new Error("Cannot move directly from bugfix to done: failed review or testing must be resolved first");
   }
   const statusLogSchema = z.object({ by: z.string().trim().min(1), cause: z.string().trim().min(1).optional() }).strict();
   /** The comment the last status entry wrote; the epic roll-up reads it right after its own write. */
   let lastStatusComment: Comment | null = null;
   /** Every status change writes its history entry here, in the write's own transaction: no caller can skip it. */
-  function writeStatusEntry(task: Task, status: string, log: StatusLog | undefined): void {
+  function writeStatusEntry(task: Task, status: string, log: StatusLog | undefined, fromLabel?: string): void {
     const { by, cause } = statusLogSchema.parse(log ?? { by: "Work Board" });
     const label = statusLabel(status, requireProject(task.projectId).statuses);
-    lastStatusComment = createComment({ taskId: task.id, kind: "system", authorName: by, body: `Status changed to ${label} by ${by}${cause ? ` (${cause})` : ""}` });
+    // A deletion move names the old status by its own label, which the history keeps after the status is gone.
+    const body = fromLabel ? `Status: ${fromLabel} → ${label}${cause ? ` (${cause})` : ""}` : `Status changed to ${label} by ${by}${cause ? ` (${cause})` : ""}`;
+    lastStatusComment = createComment({ taskId: task.id, kind: "system", authorName: by, body });
   }
   /** A queued card changing status, in the write's own transaction; the writes that carry no actor name are automatic. */
   function queueStatusGate(task: Task, status: string, log: StatusLog | undefined): void {
@@ -1603,23 +1691,31 @@ export function createTasksStore(db: PluginDatabase, log: (message: string) => v
     const automatic = log === undefined || log.by === "Work Board";
     queueStatusChange(db, task.id, status, { automatic, by: log?.by ?? "Work Board", ...(log?.cause ? { cause: log.cause } : {}), label: statusLabel(status, requireProject(task.projectId).statuses) });
   }
+  /**
+   * `relocation` marks a status move made by a status deletion, run after the new list, policy and flags are written: it
+   * names the old label, keeps the project as it was (`source`) for the old status's meaning, and leaves the card's epic
+   * and parent unjudged.
+   */
   const updateTaskTransaction = db.transaction(
-    (id: string, input: UpdateTaskInput): Task => {
+    (id: string, input: UpdateTaskInput, relocation?: { fromLabel: string; source: Project }): Task => {
       const current = requireTask(id);
       const status = input.status ?? current.status;
       if (input.closerThreadId && !getTaskThreadByThreadId(id, input.closerThreadId) && !db.prepare<[string, string]>("SELECT 1 FROM task_pauses WHERE task_id=? AND thread_id=? AND signal='manual'").get(id, input.closerThreadId))
         endPauses(db, id, "takeover", input.closerThreadId);
       const type = input.type ?? current.type;
-      validateTaskStatus(current.projectId, status);
+      validateTaskStatus(current.projectId, status, current.key);
       // The gate reads the resulting type: converting an epic and moving it in one update is judged as the task it becomes.
-      validateWorkflowTransition({ ...current, type }, status);
+      validateWorkflowTransition({ ...current, type }, status, relocation?.source);
       const parentTaskId =
         input.parentTaskId === undefined
           ? current.parentTaskId
           : input.parentTaskId;
       const epicId = input.epicId === undefined ? current.epicId : input.epicId;
-      validateTaskEpic(current.projectId, type, epicId, parentTaskId, id);
-      validateTaskParent(current.projectId, parentTaskId, id);
+      // A status deletion moves archived cards too; their unchanged epic and parent are not judged again.
+      if (!relocation) {
+        validateTaskEpic(current.projectId, type, epicId, parentTaskId, id);
+        validateTaskParent(current.projectId, parentTaskId, id);
+      }
 
       let position = current.position;
       if (status !== current.status) {
@@ -1640,7 +1736,7 @@ export function createTasksStore(db: PluginDatabase, log: (message: string) => v
         endPauses(db, id, linked ? "status_change" : "takeover", actor);
       }
       queueStatusGate(current, status, input.statusLog);
-      trackClosure(current, status, input.closerThreadId);
+      trackClosure(current, status, input.closerThreadId, relocation?.source);
       db.prepare<
         [
           string,
@@ -1684,9 +1780,9 @@ export function createTasksStore(db: PluginDatabase, log: (message: string) => v
           .run(input.progressNote, input.progressNote === null ? null : nowIso(), input.progressNote === null ? null : input.authorName ?? "You", id);
       }
       const updated = requireTask(id);
-      if (status !== current.status) writeStatusEntry(current, status, input.statusLog);
+      if (status !== current.status) writeStatusEntry(current, status, input.statusLog, relocation?.fromLabel);
       syncPlanDebt(db, id);
-      advanceEpicFor(updated, current);
+      advanceEpicFor(updated, current, relocation?.source);
       return updated;
     },
   );
@@ -1711,7 +1807,7 @@ export function createTasksStore(db: PluginDatabase, log: (message: string) => v
       const moving = archiveFamily(root.id);
       if (moving.some(task => scheduleTemplate.get(task.id)))
         throw new Error("This card was a schedule template and keeps its schedule history in its project. Archive it instead, or create a new card in the target project.");
-      for (const task of moving) validateTaskStatus(target.id, task.status);
+      for (const task of moving) validateTaskStatus(target.id, task.status, task.key);
       // The whole family stays in the source when any non-epic card would enter the destination's gated work zone.
       for (const task of moving) {
         if (agentThreadId && target.checkReceipt) {
@@ -1954,7 +2050,7 @@ export function createTasksStore(db: PluginDatabase, log: (message: string) => v
     if (!archived && parentId && requireTask(parentId).archivedAt)
       throw new Error(`Restore parent ${requireTask(parentId).key} first`);
     const family = archiveFamily(id);
-    if (archived && family.some(task => !["done", "canceled"].includes(task.status)))
+    if (archived && family.some(task => !isClosedStatus(requireProject(task.projectId), task.status)))
       throw new Error("Complete or cancel the task and its children before archiving");
     const timestamp = nowIso();
     const changed = family.filter(task => archived ? !task.archivedAt : Boolean(task.archivedAt));
@@ -1967,8 +2063,8 @@ export function createTasksStore(db: PluginDatabase, log: (message: string) => v
     requireProject(projectId);
     const changed: Task[] = [];
     for (const task of listTasks({ projectId, archive: "active", parentTaskId: null })) {
-      // The root is part of its own family, so a root that is not done or canceled can never archive; skip before building the family.
-      if (!["done", "canceled"].includes(task.status)) continue;
+      // The root is part of its own family, so a root that is not closed can never archive; skip before building the family.
+      if (!isClosedStatus(requireProject(projectId), task.status)) continue;
       const family = archiveFamily(task.id);
       if (inactiveBefore && family.some(member => !member.archivedAt && (
         member.updatedAt > inactiveBefore ||
@@ -1982,7 +2078,7 @@ export function createTasksStore(db: PluginDatabase, log: (message: string) => v
             OR EXISTS (SELECT 1 FROM task_threads WHERE task_id = @taskId AND live_status IN ('starting', 'working'))
         `).get({ taskId: member.id, cutoff: inactiveBefore })
       ))) continue;
-      if (family.every(member => ["done", "canceled"].includes(member.status)))
+      if (family.every(member => isClosedStatus(requireProject(projectId), member.status)))
         changed.push(...setTaskArchived(task.id, true));
     }
     return changed;

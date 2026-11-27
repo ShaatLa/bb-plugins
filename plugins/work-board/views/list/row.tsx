@@ -1,6 +1,6 @@
 import { QueueChip } from "../../components/queue-chip";
 import { shownPauses } from "../../shared/pause.js";
-import { waitingOnOwner } from "../../shared/waiting-on-owner";
+import { useWaitingOnOwner } from "../../shell/task-statuses.js";
 import { TaskAdvisories } from "../../components/task-advisories";
 import { PausedChip, TaskActivityIndicator } from "../../components/task-activity";
 import { DependencyWarning } from "../../components/dependency-warning";
@@ -122,6 +122,7 @@ export const TaskRow = memo(function TaskRow({
   pending,
   keyChars,
 }: TaskRowProps) {
+  const waitingOnOwner = useWaitingOnOwner();
   const [openMenu, setOpenMenu] = useState<"status" | "priority" | null>(null);
 
   return (

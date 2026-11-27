@@ -5,7 +5,7 @@ import { registerTasksCli } from "../cli";
 import { registerDelegation } from "../delegate";
 import type { PlanAuthor } from "../shared/contract";
 import { DEFAULT_TASK_STATUSES } from "../shared/statuses";
-import { effectiveInProgressStatus, inPositionZone, inWorkNow, inWorkZone } from "../shared/workflow-policy";
+import { effectiveInProgressStatus, inPositionZone, inWorkNow, inWorkZone, workflowPolicySchema } from "../shared/workflow-policy";
 import { createPlanStore } from "./store";
 
 const hosts: ReturnType<typeof createFakePluginHost>[] = [];
@@ -96,7 +96,7 @@ describe("status gate in a project that requires planning", () => {
 
   it("gates the whole work zone: In review, a custom status after In progress and Done, but not Backlog, Todo or canceled", async () => {
     const { card, store, project, call, status } = setup();
-    store.tasks.updateProject(project.id, { statuses: WITH_TESTING });
+    store.tasks.updateProject(project.id, { statuses: WITH_TESTING, workflowPolicy: workflowPolicySchema.parse({ ...store.tasks.getProject(project.id)!.workflowPolicy, planningStatus: null }) });
     const task = card("Work");
     for (const target of ["in_review", "in_testing", "done"]) {
       await expect(call("updateTask", { taskId: task.id, status: target, authorName: "You" })).rejects.toThrow(/with planning required a card enters .* only after its plan is approved/);
@@ -142,7 +142,7 @@ describe("status gate in a project that requires planning", () => {
     // Source: a custom status that sits before In progress. Destination: the same id sits inside its zone.
     const source = store.tasks.createProject({ name: "Source", prefix: "SRC", color: "red" });
     store.tasks.updateProject(source.id, { statuses: [...DEFAULT_TASK_STATUSES.slice(0, 2), { id: "ready", name: "Ready" }, ...DEFAULT_TASK_STATUSES.slice(2)], planning: "optional" });
-    store.tasks.updateProject(project.id, { statuses: [...DEFAULT_TASK_STATUSES.slice(0, 3), { id: "ready", name: "Ready" }, ...DEFAULT_TASK_STATUSES.slice(3)] });
+    store.tasks.updateProject(project.id, { statuses: [...DEFAULT_TASK_STATUSES.slice(0, 3), { id: "ready", name: "Ready" }, ...DEFAULT_TASK_STATUSES.slice(3)], workflowPolicy: workflowPolicySchema.parse({ ...store.tasks.getProject(project.id)!.workflowPolicy, planningStatus: null }) });
     const epic = store.tasks.createTask({ projectId: source.id, title: "Epic", type: "epic", status: "ready" });
     const child = store.tasks.createTask({ projectId: source.id, title: "Child", status: "ready", epicId: epic.id });
     withPlan(child.id, "draft");

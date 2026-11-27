@@ -2,6 +2,7 @@ import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import type { TasksStore } from "../db";
 import type { PlanAuthor, PlanReview, PlanVersion, SaveTaskPlanInput, TaskPlanHead } from "../shared/contract";
 import { assertNoSecrets } from "../shared/secret-guard.js";
+import { isNotStarted } from "../shared/status-roles";
 import { isClosedStatus, planningStatusOf } from "../shared/workflow-policy";
 import { statusLabel } from "../shared/statuses.js";
 import { planningOffMessage, planningOn, planningRequired } from "../shared/project-settings";
@@ -262,7 +263,7 @@ export function createPlanStore(db: Database, tasks: TasksStore) {
     const project = !current && !task.archivedAt ? tasks.getProject(task.projectId) : undefined;
     const planning = project && planningOn(project) ? planningStatusOf(project) : null;
     // A closed card never moves, even when the owner mapped Done to Backlog or Todo; a card already there is not "moved".
-    if (planning && project && (task.status === "backlog" || task.status === "todo") && task.status !== planning && !isClosedStatus(project, task.status) && !tasks.planGate(task, planning)) {
+    if (planning && project && isNotStarted(project, task.status) && task.status !== planning && !isClosedStatus(project, task.status) && !tasks.planGate(task, planning)) {
       tasks.updateTask(task.id, { status: planning, statusLog: { by: "Work Board", cause: "plan v1 written" } });
       movedTo = { status: planning, label: statusLabel(planning, project!.statuses) };
     }

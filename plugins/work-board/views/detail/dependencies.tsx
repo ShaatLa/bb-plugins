@@ -53,7 +53,7 @@ function AddLink({ task, onSelect }: { task: Task; onSelect: (id: string, kind: 
 
 export function DependenciesSection({ task, onError, query }: { task: Task; onError: (message: string) => void; query: { data?: { blockedBy: DependencyTask[]; blocks: DependencyTask[]; related: DependencyTask[] }; error: string | null; refresh: () => void } }) {
   const rpc = useTasksRpc();
-  const { label: statusLabel } = useTaskStatuses(task.projectId);
+  const { label: statusLabel, roles: { done } } = useTaskStatuses(task.projectId);
   const navigation = useTasksNavigation();
   const [pending, setPending] = useState(false);
   async function change(otherId: string, direction: LinkKind, remove: boolean) {
@@ -69,7 +69,7 @@ export function DependenciesSection({ task, onError, query }: { task: Task; onEr
     } catch (error) { onError(errorMessage(error)); }
     finally { setPending(false); }
   }
-  const blockedBy = query.data?.blockedBy.filter(row => row.status !== "done");
+  const blockedBy = query.data?.blockedBy.filter(row => row.status !== done);
   const links = LINK_KINDS.flatMap(kind => (query.data?.[kind] ?? []).map(row => ({ kind, row })));
   return <section aria-label="Task dependencies" aria-busy={pending || undefined} className="mb-6 mt-5 border-t border-border pt-6 text-xs">
     <div className="mb-1 flex items-center gap-2">

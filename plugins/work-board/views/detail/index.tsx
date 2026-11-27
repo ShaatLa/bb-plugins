@@ -91,8 +91,9 @@ function SubTaskDonut({
   subtasks: Task[];
   onClick: () => void;
 }) {
+  const { roles } = useTaskStatuses(subtasks[0]?.projectId);
   if (subtasks.length === 0) return null;
-  const done = subtasks.filter((subtask) => subtask.status === "done").length;
+  const done = subtasks.filter((subtask) => subtask.status === roles.done).length;
   const degrees = (done / subtasks.length) * 360;
   return (
     <button
@@ -224,7 +225,8 @@ function SubTasksSection({
   onCreate: (title: string) => Promise<boolean>;
 }) {
   const navigation = useTasksNavigation();
-  const { label: statusLabel } = useTaskStatuses(task.projectId);
+  const taskStatuses = useTaskStatuses(task.projectId);
+  const { label: statusLabel } = taskStatuses;
   const questionCounts = useQuestionCounts(subtasks);
   const [adding, setAdding] = useState(false);
   const [title, setTitle] = useState("");
@@ -263,7 +265,7 @@ function SubTasksSection({
       ))}
       {adding ? (
         <div className="flex h-8 items-center gap-2 border-b border-border-hairline px-0.5">
-          <StatusIcon projectId={task.projectId} status="todo" className="opacity-60" />
+          <StatusIcon projectId={task.projectId} status={taskStatuses.roles.ready} className="opacity-60" />
           <input
             autoFocus
             value={title}
@@ -320,6 +322,7 @@ function TaskDetail({
 }) {
   const rpc = useTasksRpc();
   const sdk = useSdk();
+  const { roles: projectRoles } = useTaskStatuses(task.projectId);
   const { ref: layoutRef, wide } = useWideDetail();
   const questionsRef = useRef<HTMLDivElement>(null);
   const questions = useTasksQuery(async client => (await client.call("listQuestions", { taskId: task.id })).questions, ["tasks:changed"], [task.id], { relevantTaskIds: [task.id] });
@@ -575,7 +578,7 @@ function TaskDetail({
         ...(task.type === "epic"
           ? { epicId: task.id }
           : { parentTaskId: task.id }),
-        status: "todo",
+        status: projectRoles.ready,
       });
       if (!result.ok) {
         push(result.error.message);

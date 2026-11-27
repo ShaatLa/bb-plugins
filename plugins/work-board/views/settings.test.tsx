@@ -355,7 +355,7 @@ it("keeps names and new statuses as drafts until Save, writes removals at once, 
       {},
       {
         rpc: Object.fromEntries(
-          ["getBoardPreferences", "getGitSyncConfig", "getStorageStatus", "listProjects", "updateProject"].map((method) => [
+          ["getBoardPreferences", "getGitSyncConfig", "getStorageStatus", "listProjects", "updateProject", "statusCardCounts"].map((method) => [
             method,
             (input: unknown) => harness.callRpc(method, input),
           ]),
@@ -366,9 +366,10 @@ it("keeps names and new statuses as drafts until Save, writes removals at once, 
     const backlog = await settings.findByRole("textbox", {
       name: "Status name backlog",
     });
+    // No status is special: even Backlog can be removed.
     expect(
       settings.queryByRole("button", { name: "Remove Backlog" }),
-    ).toBeNull();
+    ).not.toBeNull();
     const moveBacklog = settings.getByRole("button", { name: "Move Backlog" });
     moveBacklog.focus();
     fireEvent.keyDown(moveBacklog, { key: " " });
@@ -435,13 +436,11 @@ it("keeps names and new statuses as drafts until Save, writes removals at once, 
     fireEvent.click(
       await settings.findByRole("button", { name: "Remove Проверка" }),
     );
-    await settings.findByRole("alert");
-    expect(
-      settings.getByRole("textbox", { name: "Status name status" }),
-    ).toBeTruthy();
-    expect(store.tasks.getTask(task.id)?.status).toBe("status");
-    store.tasks.updateTask(task.id, { status: "todo" });
-    fireEvent.click(settings.getByRole("button", { name: "Remove Проверка" }));
+    // A status that still holds cards opens the dialog; Delete waits for the target.
+    fireEvent.click(await settings.findByRole("combobox", { name: "Move cards to" }));
+    fireEvent.click(await settings.findByRole("option", { name: "Todo" }));
+    fireEvent.click(settings.getByRole("button", { name: "Delete" }));
+    await waitFor(() => expect(store.tasks.getTask(task.id)?.status).toBe("todo"));
     await waitFor(() =>
       expect(store.tasks.getProject(project.id)?.statuses).toHaveLength(6),
     );
@@ -685,9 +684,9 @@ it("shows the plan-gated statuses only when planning is required, and the status
     const block = () => within(settings.getByRole("region", { name: "Planning" })).queryByTestId("plan-gated-statuses");
     expect(block()).toBeNull();
     expect(settings.queryByText(/Changes save automatically/)).toBeNull();
-    expect(settings.queryByText(/System statuses stay; statuses used by tasks cannot be deleted\./)).toBeNull();
+    expect(settings.queryByText(/Any status can be deleted/)).toBeNull();
     await editStatuses(settings);
-    expect(settings.queryByText(/System statuses stay; statuses used by tasks cannot be deleted\./)).not.toBeNull();
+    expect(settings.queryByText(/Any status can be deleted/)).not.toBeNull();
     expect(settings.queryAllByRole("checkbox", { name: /approved plan/ })).toHaveLength(0);
     expect(settings.queryByText("Plan", { selector: "label" })).toBeNull();
     for (const [label, value] of [["Optional", "optional"], ["Required", "required"], ["Optional", "optional"]] as const) {
@@ -830,4 +829,61 @@ it("reopens every receipt policy field saved for the project", async () => {
     cleanup();
     await harness.dispose();
   }
+});
+
+const statusRpc = (harness: { callRpc: (method: string, input: unknown) => Promise<unknown> }) => ({ rpc: Object.fromEntries(Object.keys(tasksRpcContract).map((method) => [method, (input: unknown) => harness.callRpc(method, input)])) });
+
+it("deletes a status in one request: the cards' move and the roles pointing at it come from one dialog", async () => {
+  const { bb, harness } = createFakePluginHost({ pluginId: "work-board" });
+  try {
+    const store = createStore(bb);
+    registerTasksApi(bb, store);
+    const project = store.tasks.createProject({ name: "Workflow", prefix: "WF", color: "blue" });
+    const card = store.tasks.createTask({ projectId: project.id, title: "In review", status: "in_review" });
+    const settings = renderSlot(app.settingsSections[0]!, {}, statusRpc(harness));
+    await editStatuses(settings);
+    fireEvent.click(await settings.findByRole("button", { name: "Remove In Review" }));
+    // The cards and the review role both point at it: both pickers show, and the info line names the early statuses only when they hold it.
+    await settings.findByRole("combobox", { name: "Move cards to" });
+    const roleSelect = settings.getByRole("combobox", { name: "Review status" });
+    expect(settings.getByText(/1 card is in In Review/)).toBeTruthy();
+    const deleteButton = () => settings.getByRole("button", { name: "Delete" }) as HTMLButtonElement;
+    expect(deleteButton().disabled).toBe(true);
+    fireEvent.click(settings.getByRole("combobox", { name: "Move cards to" }));
+    fireEvent.click(await settings.findByRole("option", { name: "In Progress" }));
+    expect(deleteButton().disabled).toBe(true);
+    fireEvent.click(roleSelect);
+    // None is offered: the review role is nullable.
+    fireEvent.click(await settings.findByRole("option", { name: "None" }));
+    expect(deleteButton().disabled).toBe(false);
+    const before = settings.rpcCalls.filter((call) => call.method === "updateProject").length;
+    fireEvent.click(deleteButton());
+    await waitFor(() => expect(store.tasks.getTask(card.id)?.status).toBe("in_progress"));
+    const updates = settings.rpcCalls.filter((call) => call.method === "updateProject").slice(before);
+    expect(updates).toHaveLength(1);
+    expect(updates[0]!.input).toMatchObject({ statusMoves: { in_review: "in_progress" }, workflowPolicy: { reviewStatus: null }, authorName: "You" });
+    expect((updates[0]!.input as { statuses: Array<{ id: string }> }).statuses.map((status) => status.id)).not.toContain("in_review");
+    expect(store.tasks.getProject(project.id)?.statuses?.map((status) => status.id)).not.toContain("in_review");
+  } finally { cleanup(); await harness.dispose(); }
+});
+
+it("asks only for the role when an empty status is referenced, and deletes an unreferenced empty status at once", async () => {
+  const { bb, harness } = createFakePluginHost({ pluginId: "work-board" });
+  try {
+    const store = createStore(bb);
+    registerTasksApi(bb, store);
+    const project = store.tasks.createProject({ name: "Workflow", prefix: "WF", color: "blue" });
+    const settings = renderSlot(app.settingsSections[0]!, {}, statusRpc(harness));
+    await editStatuses(settings);
+    fireEvent.click(await settings.findByRole("button", { name: "Remove Done" }));
+    await settings.findByRole("combobox", { name: "Done status" });
+    expect(settings.queryByRole("combobox", { name: "Move cards to" })).toBeNull();
+    fireEvent.click(settings.getByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(settings.queryByRole("combobox", { name: "Done status" })).toBeNull());
+    expect(store.tasks.getProject(project.id)?.statuses?.map((status) => status.id)).toContain("done");
+    // Todo is empty and no role names it: it goes without a dialog (the early statuses drop it on their own).
+    fireEvent.click(settings.getByRole("button", { name: "Remove Todo" }));
+    await waitFor(() => expect(store.tasks.getProject(project.id)?.statuses?.map((status) => status.id)).not.toContain("todo"));
+    expect(settings.queryByRole("button", { name: "Delete" })).toBeNull();
+  } finally { cleanup(); await harness.dispose(); }
 });

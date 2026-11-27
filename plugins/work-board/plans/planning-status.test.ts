@@ -130,7 +130,8 @@ describe("planning status in the project settings", () => {
 describe("planning status and workflow roles when planning is turned on", () => {
   it("adds no column that would close cards when the policy maps the absent id planning to Done", () => {
     const f = setup("off");
-    f.store.tasks.updateProject(f.project.id, { workflowPolicy: workflowPolicySchema.parse({ doneStatus: "planning" }) });
+    // Written raw: the settings write refuses a role naming a status the project does not list.
+    f.db.prepare("UPDATE projects SET workflow_policy = ? WHERE id = ?").run(JSON.stringify(workflowPolicySchema.parse({ doneStatus: "planning" })), f.project.id);
     f.store.tasks.updateProject(f.project.id, { planning: "optional" });
     expect(ids(f.current().statuses ?? DEFAULT_TASK_STATUSES)).not.toContain("planning");
     expect(planningStatusOf(f.current())).toBeNull();

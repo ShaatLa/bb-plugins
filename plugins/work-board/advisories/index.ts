@@ -7,6 +7,7 @@ import { createGitSyncStore } from "../git-sync/store";
 import { observationTtl, prLinkSchema, prSnapshotSchema } from "../shared/git-sync";
 import { getWorkflowPolicy } from "../shared/workflow-policy";
 import { epicTasksInWork } from "../attention/observe";
+import { isDoneIn } from "../db/status-sql";
 import { openPlanDebts } from "../plan-debt/store";
 
 const deliverySnapshot = prSnapshotSchema.pick({ repository: true, number: true, url: true, state: true, mergeSha: true, mergedAt: true, observedAt: true, updatedAt: true, coverage: true });
@@ -28,7 +29,7 @@ export function taskAdvisories(bb: BbPluginApi, tasks: ReturnType<TasksApiStore[
         'coverage', json_extract(s.payload, '$.coverage')) AS snapshot, s.error
       FROM tasks t JOIN projects p ON p.id=t.project_id JOIN task_pr_links l ON l.task_id=t.id
       JOIN git_pr_snapshots s ON s.project_id=t.project_id AND s.identity=l.identity
-      WHERE t.id IN (${ids.map(() => "?").join(",")}) AND t.status <> 'done' AND s.payload IS NOT NULL
+      WHERE t.id IN (${ids.map(() => "?").join(",")}) AND NOT ${isDoneIn("t")} AND s.payload IS NOT NULL
         AND json_extract(l.payload, '$.role')='delivers' AND json_extract(l.payload, '$.confirmed')=1
         AND COALESCE(json_extract(l.payload, '$.excluded'), 0)=0 AND json_extract(s.payload, '$.state')='merged'
       ORDER BY t.id, l.identity`).all(...ids);

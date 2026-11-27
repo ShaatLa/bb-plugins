@@ -26,7 +26,6 @@ import { useProjects, useTasksRpc } from "../shell/data.js";
 import {
   DEFAULT_TASK_STATUSES,
   STALE_STATUSES,
-  TASK_STATUSES,
   STATUS_ICONS,
   statusIconSchema,
   taskStatusesSchema,
@@ -37,6 +36,10 @@ import { errorMessage } from "../shared/errors.js";
 import type { archiveSettingSchema, autoArchiveAfterDaysSchema, planningSchema, statusNotificationsSchema, staleIdleThresholdSchema } from "../shared/project-settings";
 import type { z } from "zod";
 import { NewProjectDialog } from "./manage/new-project-dialog.js";
+import { DeleteStatusDialog, type StatusDeletion } from "./status-delete-dialog.js";
+import { deletionPlan } from "../shared/status-delete.js";
+import { resolveRoles } from "../shared/status-roles.js";
+import { getWorkflowPolicy, workflowPolicySchema } from "../shared/workflow-policy.js";
 
 type Addition = { key: number; name: string };
 /** A status id from its name, unique among `taken`; ids are never derived any other way. */
@@ -49,14 +52,16 @@ function statusId(name: string, taken: readonly string[]) {
   return id;
 }
 /** Renames and additions replayed by status id onto the latest stored statuses, so a flag changed meanwhile is kept. */
-function withDrafts(latest: TaskStatusDefinition[], renames: Record<string, string>, additions: Addition[]) {
+function withDrafts(latest: TaskStatusDefinition[], renames: Record<string, string>, additions: Addition[], policy?: Project["workflowPolicy"]) {
   const next = latest.map((status) => (renames[status.id] === undefined ? status : { ...status, name: renames[status.id]! }));
   const added: TaskStatusDefinition[] = [];
   for (const { name } of additions) {
     if (!name.trim()) continue;
     added.push({ id: statusId(name, [...next, ...added].map((status) => status.id)), name: name.trim() });
   }
-  const done = next.findIndex((status) => status.id === "done");
+  // New statuses go before the first closed one (the project's own closed statuses), else at the end.
+  const closed = resolveRoles({ workflowPolicy: policy, statuses: next }).closed;
+  const done = next.findIndex((status) => closed.includes(status.id));
   next.splice(done < 0 ? next.length : done, 0, ...added);
   return next;
 }
@@ -95,7 +100,8 @@ function ProjectStatuses({ project, onBusy }: { project: Project; onBusy: (busy:
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [didSave, setDidSave] = useState(false);
-  const named = withDrafts(persisted, renames, []);
+  const [deleting, setDeleting] = useState<{ status: TaskStatusDefinition; plan: ReturnType<typeof deletionPlan>; error: string | null } | null>(null);
+  const named = withDrafts(persisted, renames, [], project.workflowPolicy);
   const statuses = dragOrder ?? named;
   const dirty = persisted.some((status) => renames[status.id] !== undefined && renames[status.id] !== status.name) || additions.length > 0;
   const drag = useRef<{
@@ -137,11 +143,46 @@ function ProjectStatuses({ project, onBusy }: { project: Project; onBusy: (busy:
       setSaving(false);
     }
   };
+  /**
+   * Deleting a status: with no cards in it and no workflow role pointing at it, it goes at once; otherwise the dialog asks
+   * where the cards and the roles go, and one request carries the new list, the roles and the moves.
+   */
+  const requestDelete = async (status: TaskStatusDefinition) => {
+    setError(null);
+    try {
+      const { counts } = await rpc.call("statusCardCounts", { projectId: project.id });
+      const plan = deletionPlan(project, status.id, counts[status.id]);
+      if (plan.cards === 0 && plan.roles.length === 0) void write((latest) => latest.filter((entry) => entry.id !== status.id));
+      else setDeleting({ status, plan, error: null });
+    } catch (error) {
+      setError(errorMessage(error));
+    }
+  };
+  const confirmDelete = async ({ statusMoves, roles }: StatusDeletion) => {
+    if (!deleting) return;
+    setSaving(true);
+    try {
+      const result = await rpc.call("updateProject", {
+        projectId: project.id,
+        baseStatuses: persisted,
+        statuses: taskStatusesSchema.parse(persisted.filter((entry) => entry.id !== deleting.status.id)),
+        ...(Object.keys(roles).length ? { workflowPolicy: workflowPolicySchema.parse({ ...getWorkflowPolicy(project), ...roles }) } : {}),
+        ...(statusMoves ? { statusMoves, authorName: "You" } : {}),
+      });
+      setPersisted(result.project.statuses ?? DEFAULT_TASK_STATUSES);
+      setDidSave(true);
+      setDeleting(null);
+    } catch (error) {
+      setDeleting((current) => current && { ...current, error: errorMessage(error) });
+    } finally {
+      setSaving(false);
+    }
+  };
   const replace = (id: string, change: (status: TaskStatusDefinition) => TaskStatusDefinition) =>
     void write((latest) => latest.map((entry) => (entry.id === id ? change(entry) : entry)));
   const save = async () => {
     const drafts = { renames, additions };
-    if (await write((latest) => withDrafts(latest, drafts.renames, drafts.additions))) {
+    if (await write((latest) => withDrafts(latest, drafts.renames, drafts.additions, project.workflowPolicy))) {
       setRenames({});
       setAdditions([]);
     }
@@ -178,7 +219,7 @@ function ProjectStatuses({ project, onBusy }: { project: Project; onBusy: (busy:
   return (
     <div className="max-w-2xl space-y-2">
       <p className="text-xs text-muted-foreground">
-        System statuses stay; statuses used by tasks cannot be deleted.
+        Any status can be deleted; its cards move to a status you choose.
       </p>
       <p id={dragInstructions} className="sr-only">
         Drag to reorder. With the keyboard, press Space to pick up, use arrow
@@ -333,21 +374,18 @@ function ProjectStatuses({ project, onBusy }: { project: Project; onBusy: (busy:
                 }
               }}
             />
-            {(TASK_STATUSES as readonly string[]).includes(status.id) ? (
-              <span className="size-7 shrink-0" />
-            ) : (
-              <Button
-                type="button"
-                variant="ghost"
-                size="icon"
-                className="size-7"
-                aria-label={`Remove ${status.name}`}
-                onPointerDown={(event) => event.preventDefault()}
-                onClick={() => void write((latest) => latest.filter((entry) => entry.id !== status.id))}
-              >
-                <Icon name="Trash2" className="size-3.5" />
-              </Button>
-            )}
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon"
+              className="size-7"
+              aria-label={`Remove ${status.name}`}
+              disabled={persisted.length <= 1}
+              onPointerDown={(event) => event.preventDefault()}
+              onClick={() => void requestDelete(status)}
+            >
+              <Icon name="Trash2" className="size-3.5" />
+            </Button>
           </div>
         ))}
         {additions.map((addition) => (
@@ -394,6 +432,17 @@ function ProjectStatuses({ project, onBusy }: { project: Project; onBusy: (busy:
         {dirty ? <Button size="sm" variant="ghost" className="h-7 px-2.5" disabled={saving} onClick={discard}>Discard</Button> : null}
         {dirty ? <span className="text-xs text-muted-foreground">Unsaved names</span> : null}
       </div>
+      {deleting ? (
+        <DeleteStatusDialog
+          status={deleting.status}
+          plan={deleting.plan}
+          remaining={persisted.filter((entry) => entry.id !== deleting.status.id)}
+          pending={saving}
+          error={deleting.error}
+          onCancel={() => setDeleting(null)}
+          onDelete={(deletion) => void confirmDelete(deletion)}
+        />
+      ) : null}
       {error ? (
         <p role="alert" className="text-xs text-destructive">
           {error}
@@ -499,7 +548,9 @@ function PlanningBlock({ project, updater }: { project: Project; updater: Projec
   const { busy, update, run, rpc } = updater;
   const heading = useId();
   const statuses: TaskStatusDefinition[] = project.statuses ?? DEFAULT_TASK_STATUSES;
-  const marked = statuses.filter((status) => status.requiresApprovedPlan === true && status.id !== "canceled");
+  // The canceled status can never be plan-gated, so it is never offered.
+  const canceledId = resolveRoles(project).canceled;
+  const marked = statuses.filter((status) => status.requiresApprovedPlan === true && status.id !== canceledId);
   const unmarked = statuses.filter((status) => status.requiresApprovedPlan !== true);
   const setFlag = (id: string, on: boolean) => void run(`plan:${id}`, () => writeStatuses(rpc, project.id, statuses,
     (latest) => latest.map((status) => (status.id === id ? { ...status, requiresApprovedPlan: on } : status))));
@@ -529,11 +580,11 @@ function PlanningBlock({ project, updater }: { project: Project; updater: Projec
                 </Button>
               </span>
             ))}
-            {unmarked.some((status) => status.id !== "canceled") ? (
+            {unmarked.some((status) => status.id !== canceledId) ? (
               <Select value="" disabled={busy} onValueChange={(id) => setFlag(id, true)}>
                 <SelectTrigger aria-label="Add status" className="h-7 w-auto gap-1 text-xs"><SelectValue placeholder="+ Add status" /></SelectTrigger>
                 <SelectContent>
-                  {unmarked.filter((status) => status.id !== "canceled").map((status) => (
+                  {unmarked.filter((status) => status.id !== canceledId).map((status) => (
                     <SelectItem key={status.id} value={status.id}>{status.name}</SelectItem>
                   ))}
                 </SelectContent>

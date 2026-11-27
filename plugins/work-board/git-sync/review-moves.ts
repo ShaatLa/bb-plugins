@@ -49,7 +49,7 @@ export function moveCardsToReview(
     }
     if (row && row.state === "open" && row.reviewed_head?.toLowerCase() === head) continue;
     const bugfix = task.status === policy.bugfixStatus;
-    const past = !bugfix && (isClosedStatus(project, task.status) || task.status === "canceled" || statuses.findIndex((status) => status.id === task.status) >= target);
+    const past = !bugfix && (isClosedStatus(project, task.status) || statuses.findIndex((status) => status.id === task.status) >= target);
     const early = !bugfix && !past && policy.earlyStatuses.includes(task.status);
     // Backlog, Planning and the like keep no marker, so the PR is looked at again once the card reaches an early status.
     if (!bugfix && !past && !early) continue;

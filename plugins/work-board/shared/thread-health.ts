@@ -1,8 +1,5 @@
 import type { TaskThread, ThreadHealth } from "./contract.js";
-
-const IDLE_EXEMPT_STATUSES = new Set(["done", "canceled"]);
-// A dead thread on finished work needs no attention.
-const FAILED_EXEMPT_STATUSES = new Set(["done", "canceled"]);
+import { ROLE_DEFAULTS } from "./status-roles.js";
 
 export function evaluateThreadHealth(
   taskStatus: string,
@@ -10,16 +7,18 @@ export function evaluateThreadHealth(
   lastActivityAt: string,
   thresholdMinutes: number | null,
   /** The project's review status (workflow policy): the task waits for review there. */
-  waitingStatuses: readonly (string | null)[] = ["in_review"],
+  waitingStatuses: readonly (string | null)[] = [ROLE_DEFAULTS.reviewStatus],
   /** An unanswered owner question: the agent is waiting for the owner, not stuck. */
   waitingOnOwner = false,
+  /** The project's closed statuses: a closed card has no idle or failed-thread attention (a dead thread on finished work needs none). */
+  closedStatuses: readonly string[] = ROLE_DEFAULTS.closedStatuses,
 ): ThreadHealth {
-  const failed = FAILED_EXEMPT_STATUSES.has(taskStatus) ? [] : links
+  const failed = closedStatuses.includes(taskStatus) ? [] : links
     .filter((link) => link.liveStatus === "failed")
     .map((link) => ({ threadId: link.threadId, title: link.title, failedAt: link.updatedAt }));
   const idleLinks = links.filter((link) => link.liveStatus === "idle");
   const busy = links.some((link) => link.liveStatus === "working" || link.liveStatus === "starting");
-  if (thresholdMinutes === null || IDLE_EXEMPT_STATUSES.has(taskStatus) || waitingStatuses.includes(taskStatus) || waitingOnOwner || busy || idleLinks.length === 0) {
+  if (thresholdMinutes === null || closedStatuses.includes(taskStatus) || waitingStatuses.includes(taskStatus) || waitingOnOwner || busy || idleLinks.length === 0) {
     return { failed, idle: null };
   }
   // The most recently idled thread counts: the task is only stale once every idle thread has been quiet.

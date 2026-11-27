@@ -64,7 +64,7 @@ export const taskStatusesSchema = z
       })
       .strict(),
   )
-  .min(6)
+  .min(1)
   .max(32)
   .superRefine((statuses, ctx) => {
     if (
@@ -75,13 +75,6 @@ export const taskStatusesSchema = z
       ctx.addIssue({
         code: "custom",
         message: "Status IDs and names must be unique",
-      });
-    if (
-      TASK_STATUSES.some((id) => !statuses.some((status) => status.id === id))
-    )
-      ctx.addIssue({
-        code: "custom",
-        message: "The six system status IDs must be retained",
       });
   });
 export type TaskStatusDefinition = z.infer<typeof taskStatusesSchema>[number];

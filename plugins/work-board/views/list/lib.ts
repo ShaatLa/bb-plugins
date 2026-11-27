@@ -49,7 +49,7 @@ export function groupTasksByStatus(
   const ordered = [...statuses];
   for (const status of byStatus.keys())
     if (!ordered.includes(status))
-      ordered.splice(Math.max(0, ordered.indexOf("done")), 0, status);
+      ordered.push(status);
   return ordered.flatMap((status) => {
     const bucket = byStatus.get(status);
     return bucket ? [{ status, tasks: bucket }] : [];

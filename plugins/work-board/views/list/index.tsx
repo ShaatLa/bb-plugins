@@ -1,6 +1,6 @@
-import { waitingOnOwner, waitingOrder } from "../../shared/waiting-on-owner";
+import { waitingOrder } from "../../shared/waiting-on-owner";
 import { usePrSummaries } from "../../components/pr-summary";
-import { useTaskStatuses } from "../../shell/task-statuses.js";
+import { useTaskStatuses, useWaitingOnOwner } from "../../shell/task-statuses.js";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Label, Task } from "../../shared/contract.js";
 import { errorMessage } from "../../shared/errors.js";
@@ -73,6 +73,7 @@ function LoadingRows() {
 }
 
 export function ListView({ projectId, activeOnly = false }: ListViewProps) {
+  const waitingOnOwner = useWaitingOnOwner();
   const queues = useTasksQuery(async (client) => (await client.call("queueList", { projectId: projectId! })).queues, ["tasks:changed"], [projectId], { enabled: projectId !== null });
   const { ids: statusIds, label: statusLabel } = useTaskStatuses(projectId);
   const navigation = useTasksNavigation();

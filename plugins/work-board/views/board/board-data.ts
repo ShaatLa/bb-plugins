@@ -10,6 +10,7 @@ import {
 import { taskBatches } from "../../shell/task-batches";
 import { getSharedTask, loadTaskDataset, taskDatasetEpoch } from "../../shell/task-dataset";
 import { isActiveThread } from "../detail/meta.js";
+import { resolveRoles } from "../../shared/status-roles.js";
 
 import type { TaskActivity } from "../../shared/task-activity.js";
 import type { CardPause } from "../../shared/pause.js";
@@ -33,6 +34,8 @@ export interface BoardData {
   subtasks: Task[];
   labelsById: Map<string, Label>;
   metaByTaskId: Map<string, BoardCardMeta>;
+  /** The project's done status (its workflow role): what the sub-task progress counts as done. */
+  doneStatus: string | null;
 }
 
 export const EMPTY_META: BoardCardMeta = {
@@ -50,7 +53,7 @@ function remember(projectId: string, board: BoardData) {
   return board;
 }
 
-function assembleBoard(tasks: Task[], labelsById: Map<string, Label>, metaByTaskId: Map<string, BoardCardMeta>): BoardData {
+function assembleBoard(tasks: Task[], labelsById: Map<string, Label>, metaByTaskId: Map<string, BoardCardMeta>, doneStatus: string | null): BoardData {
   const topLevel = tasks.filter((task) => task.parentTaskId === null && !task.archivedAt);
   const progress = new Map<string, { done: number; total: number }>();
   for (const task of tasks) {
@@ -58,13 +61,14 @@ function assembleBoard(tasks: Task[], labelsById: Map<string, Label>, metaByTask
     if (parentId === null) continue;
     const entry = progress.get(parentId) ?? { done: 0, total: 0 };
     entry.total++;
-    if (task.status === "done") entry.done++;
+    if (task.status === doneStatus) entry.done++;
     progress.set(parentId, entry);
   }
   return {
     tasks: topLevel,
     subtasks: tasks.filter((task) => task.parentTaskId !== null && !task.archivedAt),
     labelsById,
+    doneStatus,
     metaByTaskId: new Map(topLevel.map((task) => [task.id, {
       ...(metaByTaskId.get(task.id) ?? EMPTY_META),
       subDone: progress.get(task.id)?.done ?? 0,
@@ -77,15 +81,17 @@ export async function fetchBoard(rpc: TasksRpc, projectId: string, publish?: Que
   const entry = snapshots.get(projectId);
   const cached = entry?.epoch === taskDatasetEpoch ? entry.board : undefined;
   if (cached) publish?.(cached);
+  // The done status is a project role, read fresh with every load: a settings change refetches the board.
+  const doneStatus = await rpc.call("listProjects", {}).then((result) => resolveRoles(result.projects.find((project) => project.id === projectId) ?? {}).done, () => cached?.doneStatus ?? null);
   const tasks = await loadTaskDataset(rpc, projectId, (partial) => {
-    publish?.(assembleBoard(partial, cached?.labelsById ?? new Map(), cached?.metaByTaskId ?? new Map()));
+    publish?.(assembleBoard(partial, cached?.labelsById ?? new Map(), cached?.metaByTaskId ?? new Map(), doneStatus));
   });
-  if (publish) return remember(projectId, assembleBoard(tasks, cached?.labelsById ?? new Map(), cached?.metaByTaskId ?? new Map()));
+  if (publish) return remember(projectId, assembleBoard(tasks, cached?.labelsById ?? new Map(), cached?.metaByTaskId ?? new Map(), doneStatus));
   const [labels, metadata] = await Promise.all([
     rpc.call("listLabels", { projectId }).then((result) => new Map(result.labels.map((label) => [label.id, label])), () => new Map<string, Label>()),
     cardMetadata(rpc, tasks.filter((task) => task.parentTaskId === null).map((task) => task.id)),
   ]);
-  return remember(projectId, assembleBoard(tasks, labels, metadata));
+  return remember(projectId, assembleBoard(tasks, labels, metadata, doneStatus));
 }
 
 type MetadataRow = (typeof tasksRpcContract.listTaskCardMeta.output._output.metadata)[number];
@@ -229,7 +235,7 @@ export async function patchBoard(
     if (parentId === null) continue;
     const entry = progress.get(parentId) ?? { done: 0, total: 0 };
     entry.total += 1;
-    if (task.status === "done") entry.done += 1;
+    if (task.status === current.doneStatus) entry.done += 1;
     progress.set(parentId, entry);
   }
   for (const task of tasks) {

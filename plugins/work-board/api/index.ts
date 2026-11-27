@@ -7,7 +7,9 @@ import { registeredValidator } from "../checks/receipt-registry";
 import { createHash } from "node:crypto";
 import { UNANSWERED_QUESTION } from "../db/waiting-on-owner";
 import { OPEN_QUESTION_SQL } from "../shared/questions";
-import { getWorkflowPolicy, isClosedStatus } from "../shared/workflow-policy";
+import { isClosedStatus } from "../shared/workflow-policy";
+import { resolveRoles } from "../shared/status-roles";
+import { isClosedIn } from "../db/status-sql";
 import { observeStatusNotifications } from "../status-notifications";
 import { taskAdvisories } from "../advisories";
 import { idleThreshold } from "../shared/project-settings";
@@ -178,7 +180,7 @@ export function createStore(bb: BbPluginApi): TasksApiStore {
             `
               SELECT COUNT(*) AS count
               FROM tasks
-              WHERE archived_at IS NULL AND status NOT IN ('done', 'canceled')
+              WHERE archived_at IS NULL AND NOT ${isClosedIn("tasks")}
             `,
           )
           .get()?.count ?? 0
@@ -261,6 +263,19 @@ export function publishProjectsChanged(
 export function publishSettingsChanged(bb: BbPluginApi, projectId: string): void {
   const payload: ProjectsChangedEvent = { projectId };
   bb.realtime.publish("settings:changed", payload);
+}
+
+/** The cards a status deletion will move, read before it commits (afterwards they no longer hold the deleted statuses). */
+export function cardsInStatuses(bb: BbPluginApi, projectId: string, statuses: readonly string[]): string[] {
+  if (!statuses.length) return [];
+  return bb.storage.database().prepare<[string, string], { id: string }>(
+    "SELECT id FROM tasks WHERE project_id = ? AND status IN (SELECT value FROM json_each(?))",
+  ).all(projectId, JSON.stringify(statuses)).map((row) => row.id);
+}
+
+/** After the commit of a status deletion: one change event per moved card and one for its new history comment. */
+export function publishStatusMoves(bb: BbPluginApi, projectId: string, taskIds: readonly string[]): void {
+  for (const taskId of taskIds) { publishTasksChanged(bb, taskId, projectId); publishCommentsChanged(bb, taskId); }
 }
 
 export function publishCommentsChanged(bb: BbPluginApi, taskId: string): void {
@@ -820,16 +835,17 @@ export async function childrenCards(bb: BbPluginApi, store: TasksApiStore, paren
     .filter((thread) => thread.archivedAt == null)
     .sort((a, b) => b.updatedAt - a.updatedAt)
     .map((thread) => {
-      const cards = store.tasks
+      const rows = store.tasks
         .listTaskThreadsByThreadId(thread.id)
         .filter((link) => link.presetName !== "Parent thread")
         .flatMap((link) => {
           const task = store.tasks.getTask(link.taskId);
           return task && !task.archivedAt
-            ? [{ key: task.key, title: task.title, status: task.status, progressNote: task.progressNote, progressUpdatedAt: task.progressUpdatedAt }]
+            ? [{ closed: isClosedStatus(store.tasks.getProject(task.projectId) ?? {}, task.status), card: { key: task.key, title: task.title, status: task.status, progressNote: task.progressNote, progressUpdatedAt: task.progressUpdatedAt } }]
             : [];
         });
-      const shown = includeFinished ? cards : cards.filter((card) => !["done", "canceled"].includes(card.status));
+      const cards = rows.map((row) => row.card);
+      const shown = includeFinished ? cards : rows.filter((row) => !row.closed).map((row) => row.card);
       return {
         threadId: thread.id,
         title: thread.title ?? thread.titleFallback ?? null,
@@ -1248,6 +1264,7 @@ export function registerHandlers(
     updateProject(input) {
       const { projectId, baseStatuses, ...changes } = input;
       const canonical = (statuses: unknown) => JSON.stringify(taskStatusesSchema.parse(statuses));
+      const moving = cardsInStatuses(bb, projectId, Object.keys(changes.statusMoves ?? {}));
       const { before, project, registration } = store.transaction(() => {
         const before = store.tasks.getProject(projectId);
         if (baseStatuses && canonical(before?.statuses ?? DEFAULT_TASK_STATUSES) !== canonical(baseStatuses)) throw new Error(STALE_STATUSES);
@@ -1263,7 +1280,15 @@ export function registerHandlers(
       if (project.doneRequiresReview !== before?.doneRequiresReview) bb.log.info(`done after review for ${project.prefix}: ${before?.doneRequiresReview} → ${project.doneRequiresReview}`);
       if ((project.planning ?? "off") !== (before?.planning ?? "off")) bb.log.info(`planning for ${project.prefix}: ${before?.planning ?? "off"} → ${project.planning}`);
       publishProjectsChanged(bb, project.id);
+      publishStatusMoves(bb, project.id, moving);
       return { project };
+    },
+    statusCardCounts(input) {
+      const counts: Record<string, { cards: number; archived: number }> = {};
+      for (const row of bb.storage.database().prepare<[string], { status: string; cards: number; archived: number }>(
+        "SELECT status, COUNT(*) AS cards, COALESCE(SUM(archived_at IS NOT NULL), 0) AS archived FROM tasks WHERE project_id = ? GROUP BY status",
+      ).all(input.projectId)) counts[row.status] = { cards: row.cards, archived: row.archived };
+      return { counts };
     },
     renameProjectPrefix(input) {
       try {
@@ -1825,7 +1850,8 @@ export function registerHandlers(
       const advisories = taskAdvisories(bb, activity, blockedBy, scopedActivity, threads);
       const projects = store.tasks.listProjects();
       const thresholds = new Map(projects.map((project) => [project.id, idleThreshold(project)]));
-      const waitingStatuses = new Map(projects.map((project) => [project.id, [getWorkflowPolicy(project).reviewStatus]]));
+      const waitingStatuses = new Map(projects.map((project) => [project.id, [resolveRoles(project).review]]));
+      const closedStatuses = new Map(projects.map((project) => [project.id, resolveRoles(project).closed]));
       const waitingOnOwner = new Set(bb.storage.database().prepare<string[], { task_id: string }>(
         `SELECT DISTINCT q.task_id FROM task_questions q WHERE q.task_id IN (${ids.map(() => "?").join(",")}) AND ${UNANSWERED_QUESTION}`,
       ).all(...ids).map((row) => row.task_id));
@@ -1843,7 +1869,7 @@ export function registerHandlers(
           blockedBy: blockedBy.get(taskId) ?? [],
           advisories: advisories.get(taskId) ?? [],
           taskThreads: links.filter((link) => link.liveStatus === "starting" || link.liveStatus === "working"),
-          threadHealth: evaluateThreadHealth(task?.status ?? "", links, task?.lastActivityAt ?? "", task ? thresholds.get(task.projectId) ?? null : null, task ? waitingStatuses.get(task.projectId) : undefined, waitingOnOwner.has(taskId)),
+          threadHealth: evaluateThreadHealth(task?.status ?? "", links, task?.lastActivityAt ?? "", task ? thresholds.get(task.projectId) ?? null : null, task ? waitingStatuses.get(task.projectId) : undefined, waitingOnOwner.has(taskId), task ? closedStatuses.get(task.projectId) : undefined),
         };
       }) };
     },

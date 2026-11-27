@@ -86,9 +86,9 @@ it("uses configured status IDs and distinguishes unavailable and closed PR snaps
   db.prepare<[string, string, string]>("UPDATE git_pr_snapshots SET payload=?, error='sync unavailable' WHERE project_id=? AND identity=?").run(JSON.stringify({ state: "merged" }), project.id, "pr");
   expect(store.tasks.staleStatusFlags([review.id]).get(review.id)).toEqual(["no_open_pr"]);
   // Testing after the merge is expected; testing with no PR at all is still flagged.
-  store.tasks.updateProject(project.id, { workflowPolicy: { bugfixStatus: null, doneStatus: "done", inProgressStatus: "todo", reviewStatus: "in_review", testingStatus: "in_testing", planningStatus: null, earlyStatuses: [], ownerDecisionLabel: null } });
   const statuses = [...(store.tasks.getProject(project.id)!.statuses ?? [])];
   if (!statuses.some((status) => status.id === "in_testing")) store.tasks.updateProject(project.id, { statuses: [...statuses, { id: "in_testing", name: "In testing" }] });
+  store.tasks.updateProject(project.id, { workflowPolicy: { bugfixStatus: null, doneStatus: "done", inProgressStatus: "todo", reviewStatus: "in_review", testingStatus: "in_testing", planningStatus: null, earlyStatuses: [], ownerDecisionLabel: null } });
   const testing = store.tasks.createTask({ projectId: project.id, title: "QA", status: "in_testing" });
   expect(store.tasks.staleStatusFlags([testing.id]).get(testing.id)).toEqual(["no_open_pr"]);
   db.prepare<[string, string, string]>("INSERT INTO task_pr_links VALUES (?, ?, ?)").run(testing.id, "pr", JSON.stringify({ excluded: false }));

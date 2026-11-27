@@ -3,7 +3,7 @@ import { z } from "zod";
 import type { TasksStore } from "./db/store";
 import type { Task } from "./db/types";
 import { statusLabel } from "./shared/statuses";
-import { getWorkflowPolicy } from "./shared/workflow-policy";
+import { isClosedAsDone } from "./shared/status-roles";
 
 const pushOutput = z.object({ ok: z.literal(true), channels: z.array(z.enum(["web", "desktop", "mobile"])) });
 
@@ -26,7 +26,7 @@ export function observeStatusNotifications(bb: BbPluginApi, tasks: TasksStore) {
           if (!task || task.status === before.status || task.archivedAt) continue;
           const project = tasks.getProject(task.projectId);
           if (!project || !project.statusNotifications || project.statusNotifications === "off") continue;
-          if (project.statusNotifications === "done" && task.status !== (getWorkflowPolicy(project).doneStatus ?? "done")) continue;
+          if (project.statusNotifications === "done" && !isClosedAsDone(project, task.status)) continue;
           const statuses = project.statuses;
           try {
             const result = await bb.sdk.plugins.callRpc({

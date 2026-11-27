@@ -9,11 +9,13 @@ export const BOARD_STATUSES = [
   "done",
 ] as const satisfies readonly TaskStatus[];
 
+/** The columns in the project's own status order; the canceled status's column (`canceled`, its workflow role) shows only while it holds cards. */
 export function visibleBoardStatuses(
   columns: Readonly<Record<TaskStatus, readonly unknown[]>>,
+  canceled: string | null = null,
 ): TaskStatus[] {
   return Object.keys(columns).filter(
-    (status) => status !== "canceled" || columns[status]!.length > 0,
+    (status) => status !== canceled || columns[status]!.length > 0,
   );
 }
 
