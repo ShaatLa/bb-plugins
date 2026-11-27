@@ -36,6 +36,13 @@ interface SystemBodySegment {
   bold: boolean;
 }
 
+export function threadLinkKind(body: string): "attached" | "detached" | "failed" | null {
+  if (body.startsWith("Thread attached")) return "attached";
+  if (body.startsWith("Thread detached")) return "detached";
+  if (/^Thread ".*" failed · thr_\S+$/.test(body)) return "failed";
+  return null;
+}
+
 export function splitSystemBody(
   body: string,
   authorName: string,

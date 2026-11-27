@@ -28,7 +28,7 @@ afterEach(() => { cleanup(); TestResizeObserver.all.clear(); });
 const PROJECT_ID = "01HZZZZZZZZZZZZZZZZZZZZZP1";
 const task = makeTask({ id: "01HZZZZZZZZZZZZZZZZZZZZZT5", projectId: PROJECT_ID, number: 5, key: "TSK-5", title: "Ship the rail", position: 1 });
 
-function render(surface: "main" | "side" = "main") {
+function render(surface: "main" | "side" = "main", withThread = false) {
   const options = {
     rpc: {
       listTaskDependencies: () => ({ blockedBy: [], blocks: [] }),
@@ -40,7 +40,7 @@ function render(surface: "main" | "side" = "main") {
       listTasks: (input: unknown) => (input !== null && rpcInput(input).parentTaskId ? { tasks: [] } : { tasks: [task] }),
       listLabels: () => ({ labels: [] }),
       listAttachments: () => ({ attachments: [] }),
-      listTaskThreads: () => ({ taskThreads: [] }),
+      listTaskThreads: () => ({ taskThreads: withThread ? [{ id: "row_example", taskId: task.id, threadId: "thr_example", title: "Example worker", presetName: "Worker", liveStatus: "working", attachedAt: "2026-07-15T00:00:00.000Z", updatedAt: "2026-07-15T00:00:00.000Z" }] : [] }),
       listTaskPullRequests: () => ({ pullRequests: [], unavailableThreadIds: [] }),
       listQuestions: () => ({ questions: [] }),
       listComments: () => ({ comments: [] }),
@@ -95,6 +95,19 @@ describe("task view layout", () => {
     expect(labels.compareDocumentPosition(section) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(section.compareDocumentPosition(description) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(slot.getAllByRole("region", { name: "Task activity status" })).toHaveLength(1);
+  });
+
+  it.each(["main", "side"] as const)("shows session rows in Activity before Details in the narrow %s view", async (surface) => {
+    setWidth(480);
+    const slot = render(surface, true);
+    const session = await slot.findByRole("button", { name: "Open thread Example worker" });
+    const section = details()!;
+    const activity = slot.getByRole("region", { name: "Task activity status" });
+    expect(activity.contains(session)).toBe(true);
+    expect(section.contains(activity)).toBe(false);
+    expect(activity.compareDocumentPosition(section) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(section.compareDocumentPosition(document.querySelector(".tiptap")!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(slot.queryByText("Agent threads")).toBeNull();
   });
 
   it.each([480, 640])("runs the cost, claims and pull request queries once at %ipx", async (width) => {

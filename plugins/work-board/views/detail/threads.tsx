@@ -11,15 +11,8 @@ import type {
 import { errorMessage } from "../../shared/errors.js";
 import {
   PR_STATE_META,
-  THREAD_STATUS_META,
-  formatRelativeTime,
-  isActiveThread,
 } from "./meta.js";
 import { PresetDialog, savePresetDraft } from "../manage/preset-dialog.js";
-import {
-  ConfirmDeleteDialog,
-  ConfirmDeleteDialogContent,
-} from "@/components/ui/confirm-delete-dialog";
 import { useTasksRpc } from "../../shell/data.js";
 import { Button } from "@/components/ui/button";
 import {
@@ -33,9 +26,8 @@ import { Icon } from "@/components/ui/icon";
 import { cn } from "@/lib/utils";
 import { ThreadChooserDialog } from "./thread-chooser-dialog";
 import { useDefaultThread } from "./thread-preference";
-import { useOpenThread } from "../../components/open-thread";
 
-function ThreadPullRequestPill({
+export function ThreadPullRequestPill({
   pullRequest,
   unavailable,
 }: {
@@ -68,76 +60,6 @@ function ThreadPullRequestPill({
     );
   }
   return null;
-}
-
-function ThreadCard({
-  thread,
-  pullRequest,
-  pullRequestUnavailable,
-  busy,
-  onDetach,
-}: {
-  thread: TaskThread;
-  pullRequest: TaskPullRequest | undefined;
-  pullRequestUnavailable: boolean;
-  busy: boolean;
-  onDetach: () => void;
-}) {
-  const openThread = useOpenThread();
-  const meta = THREAD_STATUS_META[thread.liveStatus];
-  return (
-    <div
-      data-thread-status={thread.liveStatus}
-      className={cn(
-        "mb-2 flex items-center gap-3 rounded-md border border-border bg-card px-3 py-2 shadow-2xs",
-        thread.liveStatus === "failed" && "border-destructive/60 bg-destructive/5",
-      )}
-    >
-      <span
-        className={cn(
-          "flex shrink-0 items-center gap-1.5 text-xs font-medium",
-          meta.textClassName,
-        )}
-      >
-        <span
-          aria-hidden
-          className={cn("size-1.5 rounded-full", meta.dotClassName)}
-        />
-        {meta.label}
-      </span>
-      <div className="min-w-0 flex-1">
-        <div className="truncate text-sm font-medium">{thread.title}</div>
-        <div className="text-xs text-muted-foreground">
-          {thread.presetName} · attached {formatRelativeTime(thread.attachedAt)}
-          {thread.liveStatus === "failed" ? (
-            <span className="text-destructive"> · failed {formatRelativeTime(thread.updatedAt)}</span>
-          ) : null}
-        </div>
-      </div>
-      <ThreadPullRequestPill
-        pullRequest={pullRequest}
-        unavailable={pullRequestUnavailable}
-      />
-      <button
-        type="button"
-        className="flex shrink-0 items-center gap-1 text-xs font-medium underline decoration-input underline-offset-2 hover:decoration-current"
-        onClick={() => openThread(thread.threadId)}
-      >
-        Open thread
-        <Icon name="ArrowUpRight" className="size-3" />
-      </button>
-      <button
-        type="button"
-        aria-label={`Detach ${thread.title}`}
-        title="Detach from task"
-        disabled={busy}
-        className="shrink-0 rounded p-0.5 text-muted-foreground hover:bg-state-hover hover:text-foreground disabled:opacity-70"
-        onClick={onDetach}
-      >
-        <Icon name="X" className="size-3" />
-      </button>
-    </div>
-  );
 }
 
 const LAST_PRESET_STORAGE_KEY = "bb-work-board:last-dispatch-preset";
@@ -291,12 +213,9 @@ export function DispatchControl(props: DispatchControlProps) {
   const [choosingThread, setChoosingThread] = useState(false);
   const [sending, setSending] = useState(false);
   const defaultThread = useDefaultThread(props.projectId);
-  const attachedThread = props.threads[0];
-  const hasShortcut = Boolean(attachedThread || defaultThread);
-  const openThread = useOpenThread();
+  const hasShortcut = Boolean(defaultThread);
   const rpc = useRpc<DelegationRpcContract>();
   const dispatch = async () => {
-    if (attachedThread) { openThread(attachedThread.threadId); return; }
     if (!defaultThread) { setChoosingThread(true); return; }
     setSending(true);
     try {
@@ -306,115 +225,23 @@ export function DispatchControl(props: DispatchControlProps) {
       setChoosingThread(true);
     } finally { setSending(false); }
   };
+  if (props.threads.length) return null;
   return (
     <div className={cn("grid w-full min-w-0 gap-1.5", props.className)}>
       <div className="flex items-center justify-between gap-2 text-xs">
-        <span className="text-muted-foreground">{props.threads.length ? "Assigned to" : "Unassigned"}</span>
+        <span className="text-muted-foreground">Unassigned</span>
       </div>
       {/* The chevron is a second door only when the main button does something else than open the chooser. */}
       <div className="flex min-w-0">
-        <Button size="sm" variant="outline" disabled={sending} className={cn("h-7 min-w-0 flex-1", hasShortcut && "rounded-r-none")} aria-label={attachedThread ? "Go to thread" : defaultThread ? `Send task to ${defaultThread.title}` : "Send to thread…"} onClick={() => void dispatch()}>
-          {attachedThread ? <Icon name="ArrowUpRight" className="size-3.5" /> : null}
-          <span className="truncate" title={attachedThread?.title}>{attachedThread ? `Go to ${attachedThread.title}` : sending ? "Dispatching…" : defaultThread?.title ?? "Send to thread…"}</span>
+        <Button size="sm" variant="outline" disabled={sending} className={cn("h-7 min-w-0 flex-1", hasShortcut && "rounded-r-none")} aria-label={defaultThread ? `Send task to ${defaultThread.title}` : "Send to thread…"} onClick={() => void dispatch()}>
+          <span className="truncate">{sending ? "Dispatching…" : defaultThread?.title ?? "Send to thread…"}</span>
         </Button>
         {hasShortcut ? <Button size="sm" variant="outline" disabled={sending} className="h-7 shrink-0 rounded-l-none border-l-0 px-1" aria-label="Choose another thread" onClick={() => setChoosingThread(true)}>
           <Icon name="ChevronDown" className="size-3.5" />
         </Button> : null}
       </div>
-      {attachedThread ? <Button size="sm" variant="ghost" className="h-6 justify-start px-1 text-muted-foreground" disabled={sending} aria-label={`Unassign ${attachedThread.title}`} onClick={async () => {
-        setSending(true);
-        try { await rpc.call("taskThreadsDetach", { taskId: props.taskId, threadId: attachedThread.threadId }); }
-        catch (error) { props.onError(errorMessage(error)); }
-        finally { setSending(false); }
-      }}>Unassign</Button> : null}
-      {!attachedThread ? <PresetDispatchControl {...props} className="w-full" /> : null}
+      <PresetDispatchControl {...props} className="w-full" />
       {choosingThread ? <ThreadChooserDialog kind="task" taskId={props.taskId} projectId={props.projectId} onClose={() => setChoosingThread(false)} /> : null}
     </div>
-  );
-}
-
-interface ThreadsSectionProps {
-  threads: TaskThread[];
-  pullRequests: TaskPullRequest[] | undefined;
-  unavailableThreadIds: string[];
-  onDetach: (thread: TaskThread) => Promise<void>;
-  onError: (message: string) => void;
-}
-
-export function ThreadsSection({
-  threads,
-  pullRequests,
-  unavailableThreadIds,
-  onDetach,
-  onError,
-}: ThreadsSectionProps) {
-  const [confirm, setConfirm] = useState<TaskThread | null>(null);
-  const [pending, setPending] = useState<ReadonlySet<string>>(new Set());
-
-  const performDetach = async (thread: TaskThread) => {
-    setPending((current) => new Set(current).add(thread.id));
-    try {
-      await onDetach(thread);
-    } catch (error) {
-      onError(errorMessage(error));
-    } finally {
-      setPending((current) => {
-        const next = new Set(current);
-        next.delete(thread.id);
-        return next;
-      });
-    }
-  };
-
-  const activeCount = threads.filter(isActiveThread).length;
-  const pullRequestByThread = new Map<string, TaskPullRequest>();
-  for (const pullRequest of pullRequests ?? []) {
-    for (const threadId of pullRequest.threadIds) {
-      pullRequestByThread.set(threadId, pullRequest);
-    }
-  }
-  const unavailable = new Set(unavailableThreadIds);
-
-  return (
-    <section>
-      <div className="mb-2 flex items-center gap-2 pt-1.5 text-xs font-semibold text-muted-foreground">
-        Agent threads
-        {activeCount > 0 ? (
-          <span className="font-normal">{activeCount} working now</span>
-        ) : null}
-      </div>
-      {threads.map((thread) => (
-        <ThreadCard
-          key={thread.id}
-          thread={thread}
-          pullRequest={pullRequestByThread.get(thread.threadId)}
-          pullRequestUnavailable={unavailable.has(thread.threadId)}
-          busy={pending.has(thread.id)}
-          onDetach={() => setConfirm(thread)}
-        />
-      ))}
-      <ConfirmDeleteDialog
-        className="max-w-sm"
-        open={confirm !== null}
-        onOpenChange={(open) => {
-          if (!open) setConfirm(null);
-        }}
-      >
-        {confirm ? (
-          <ConfirmDeleteDialogContent
-            title="Detach thread?"
-            description={`"${confirm.title}" will no longer be listed on this task. The thread itself is not deleted; re-attach it with bb work-board attach.`}
-            confirmLabel="Detach"
-            pending={false}
-            size="sm"
-            onCancel={() => setConfirm(null)}
-            onConfirm={() => {
-              setConfirm(null);
-              void performDetach(confirm);
-            }}
-          />
-        ) : null}
-      </ConfirmDeleteDialog>
-    </section>
   );
 }

@@ -53,7 +53,7 @@ import {
   DetailsSection,
   type TaskPropertyUpdate,
 } from "./rail.js";
-import { DispatchControl, ThreadsSection } from "./threads.js";
+import { DispatchControl } from "./threads.js";
 import { useWideDetail } from "./use-wide-detail.js";
 import { DetailToasts, useDetailToasts } from "./toast.js";
 import { DelayedLoading } from "@/components/ui/delayed-loading";
@@ -587,7 +587,7 @@ function TaskDetail({
       : saverRef.current.getDraft(task.id) ?? task.description;
   const parentTask = parent.data ?? null;
   const activityStatus = <>
-    <ActivityStatus task={task} threads={threads.data ?? []} onStatusChange={(status) => void updateTask({ status })} activity={activity.data?.activity} advisories={activity.data?.advisories} isFetching={activity.isFetching} error={activity.error} />
+    <ActivityStatus key={task.id} task={task} threads={threads.data ?? []} pullRequests={pullRequests.data?.pullRequests} unavailableThreadIds={pullRequests.data?.unavailableThreadIds ?? []} onError={push} onDetach={async (thread) => { await delegationRpc.call("taskThreadsDetach", { taskId: task.id, threadId: thread.threadId }); threads.refresh(); }} onStatusChange={(status) => void updateTask({ status })} activity={activity.data?.activity} advisories={activity.data?.advisories} isFetching={activity.isFetching} error={activity.error} />
     <PausedBlock pauses={shownPauses(activity.data?.pauses, activity.data?.blockedBy)} />
     {!task.archivedAt ? <div className="mb-4">
       <DispatchControl taskId={task.id} projectId={task.projectId} threads={threads.data ?? []} presets={presets.data} onError={push} align="start" className="w-full" />
@@ -762,27 +762,6 @@ function TaskDetail({
             />
           ) : null}
 
-          {(threads.data ?? []).length > 0 ? (
-            <div className="mt-6">
-              <ThreadsSection
-                threads={threads.data ?? []}
-                pullRequests={pullRequests.data?.pullRequests}
-                unavailableThreadIds={
-                  pullRequests.data?.unavailableThreadIds ?? []
-                }
-                onDetach={async (thread) => {
-                  await delegationRpc.call("taskThreadsDetach", {
-                    taskId: task.id,
-                    threadId: thread.threadId,
-                  });
-                  // The pull requests refresh once the reloaded list is in, and only if a thread is left.
-                  threads.refresh();
-                }}
-                onError={(message) => push(message)}
-              />
-            </div>
-          ) : null}
-
           <div className="mt-1" ref={questionsRef}>
             <QuestionsSection
               key={task.id}
@@ -796,6 +775,7 @@ function TaskDetail({
               onError={push}
             />
             <TaskActivity
+              key={task.id}
               taskId={task.id}
               pullRequests={pullRequests.data?.pullRequests}
             />

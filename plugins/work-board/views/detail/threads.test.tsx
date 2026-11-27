@@ -109,7 +109,7 @@ it.each(["working", "idle", "failed"])("opens an attached %s thread and hides ne
       listTaskThreads: () => ({ taskThreads: attached ? [{ ...taskThreadRow(THREAD_ROW_ID, "thr_worker000", "Worker"), liveStatus }] : [] }),
     }),
   });
-  const buttons = await slot.findAllByRole("button", { name: "Go to thread" });
+  const buttons = await slot.findAllByRole("button", { name: "Open thread Worker" });
   expect(buttons).toHaveLength(1);
   expect(slot.queryByRole("button", { name: "New worker" })).toBeNull();
   expect(slot.queryByRole("button", { name: "Choose dispatch preset" })).toBeNull();
@@ -119,12 +119,12 @@ it.each(["working", "idle", "failed"])("opens an attached %s thread and hides ne
   attached = false;
   await slot.behavior.emitRealtime("threads:changed", { taskId: TASK_ID });
   await slot.findAllByRole("button", { name: "Send task to Other default" });
-  expect(slot.queryByRole("button", { name: "Go to thread" })).toBeNull();
+  expect(slot.queryByRole("button", { name: "Open thread Worker" })).toBeNull();
   expect(await slot.findAllByRole("button", { name: "New worker" })).toHaveLength(1);
   expect(slot.getAllByRole("button", { name: "Choose dispatch preset" })).toHaveLength(1);
   attached = true;
   await slot.behavior.emitRealtime("threads:changed", { taskId: TASK_ID });
-  await slot.findAllByRole("button", { name: "Go to thread" });
+  await slot.findAllByRole("button", { name: "Open thread Worker" });
   expect(slot.queryByRole("button", { name: "New worker" })).toBeNull();
 });
 
@@ -145,7 +145,7 @@ it("shows a failed thread card clearly in the task detail", async () => {
   const slot = renderSlot(app.navPanels[0]!, { subPath: "task/TSK-5" }, { rpc: detailRpc({ listTaskThreads: () => ({ taskThreads: [
     { ...taskThreadRow(THREAD_ROW_ID, "thr_broken", "Broken worker"), liveStatus: "failed" },
   ] }) }) });
-  const detach = await slot.findByRole("button", { name: "Detach Broken worker" });
+  const detach = await slot.findByRole("button", { name: "Unassign Broken worker" });
   const card = detach.closest("[data-thread-status]")!;
   expect(card.getAttribute("data-thread-status")).toBe("failed");
   expect(card.textContent).toContain("Failed");
@@ -161,6 +161,11 @@ it.each(["main", "side"])("opens named active workers from the %s properties rai
     ? renderSlot(app.navPanels[0]!, { subPath: "task/TSK-5" }, options)
     : renderSlot(taskTab(app), { threadId: "thr_parent", environment: null }, { ...options, experimental_fixedTabTarget: { tabId: "task", target: { taskKey: "TSK-5" } } });
   const rail = await slot.findByRole("complementary", { name: "Task details" });
+  await within(rail).findByRole("button", { name: "Open thread Correctness review" });
+  const rows = Array.from(rail.querySelectorAll("[data-thread-status]"));
+  expect(rows).toHaveLength(2);
+  expect(rows.map((row) => row.querySelector("button")?.textContent)).toEqual(["Correctness review", "QA verification"]);
+  for (const row of rows) expect(row.textContent).toMatch(/Attached · attached .+/);
   fireEvent.click(await within(rail).findByRole("button", { name: "Open thread Correctness review" }));
   fireEvent.click(within(rail).getByRole("button", { name: "Open thread QA verification" }));
   expect(slot.navigateCalls).toEqual([
@@ -268,9 +273,14 @@ describe("task detail pull request pills", () => {
       },
     );
 
-    await slot.findByRole("button", { name: "Detach Offline worker" });
+    await slot.findByRole("button", { name: "Unassign Offline worker" });
     // The label comes from the PR lookup that follows the thread list.
     await waitFor(() => expect(slot.getAllByText("PR unavailable")).toHaveLength(1));
+    const worker = slot.getByRole("button", { name: "Open thread Worker" }).closest("[data-thread-status]")!;
+    const offline = slot.getByRole("button", { name: "Open thread Offline worker" }).closest("[data-thread-status]")!;
+    expect(within(worker as HTMLElement).queryByText("PR unavailable")).toBeNull();
+    expect(within(worker as HTMLElement).queryByRole("link")).toBeNull();
+    expect(within(offline as HTMLElement).getByText("PR unavailable")).toBeTruthy();
     expect(slot.queryAllByRole("link").filter((link) => link.getAttribute("href")?.startsWith("https://github.com/"))).toHaveLength(0);
   });
 
@@ -294,7 +304,8 @@ describe("task detail pull request pills", () => {
       },
     );
 
-    fireEvent.click(await slot.findByRole("button", { name: "Detach Worker" }));
+    fireEvent.click(await slot.findByRole("button", { name: "Unassign Worker" }));
+    expect(slot.rpcCalls.filter(({ method }) => method === "taskThreadsDetach")).toHaveLength(0);
     fireEvent.click(await slot.findByRole("button", { name: "Detach" }));
 
     await waitFor(() => {
@@ -410,12 +421,12 @@ describe("task detail pull request pills", () => {
         listTaskPullRequests: () => { lookups += 1; return { pullRequests: [], unavailableThreadIds: [] }; },
       }),
     });
-    fireEvent.click(await slot.findByRole("button", { name: "Detach Worker" }));
+    fireEvent.click(await slot.findByRole("button", { name: "Unassign Worker" }));
     await waitFor(() => expect(lookups).toBe(1));
     fireEvent.click(await slot.findByRole("button", { name: "Detach" }));
     await waitFor(() => expect(detached).toBe(true));
     await slot.behavior.emitRealtime("threads:changed", { taskId: TASK_ID });
-    await waitFor(() => expect(slot.queryByRole("button", { name: "Detach Worker" })).toBeNull());
+    await waitFor(() => expect(slot.queryByRole("button", { name: "Unassign Worker" })).toBeNull());
     await new Promise((resolve) => setTimeout(resolve, 200));
     expect(lookups).toBe(1);
   });
@@ -537,7 +548,7 @@ describe("task detail pull request pills", () => {
         listTaskPullRequests: () => new Promise((resolve) => { pending.push(() => resolve({ pullRequests: [], unavailableThreadIds: [] })); }),
       }),
     });
-    fireEvent.click(await slot.findByRole("button", { name: "Detach Offline worker" }));
+    fireEvent.click(await slot.findByRole("button", { name: "Unassign Offline worker" }));
     await waitFor(() => expect(pending).toHaveLength(1));
     // A realtime event drops the shared RPC flight, so the refresh after detaching one of two threads
     // starts a second lookup while the first is still pending: two overlap.
@@ -802,8 +813,8 @@ it.each(["central", "thread"])("groups status, linked sessions and dispatch in t
   expect(within(region).getByText("Sessions")).toBeTruthy();
   const rail = region.closest("aside")!;
   expect(within(rail).queryByText("Agents")).toBeNull();
-  expect(within(rail).getByRole("button", { name: "Go to thread" })).toBeTruthy();
-  expect(region.nextElementSibling?.contains(within(rail).getByRole("button", { name: "Go to thread" }))).toBe(true);
+  expect(within(region).getByRole("button", { name: "Open thread Scoped worker" })).toBeTruthy();
+  expect(slot.queryByText("Agent threads")).toBeNull();
   expect(within(rail).queryByRole("region", { name: "Task dependencies" })).toBeNull();
   const dependencies = slot.getByRole("region", { name: "Task dependencies" });
   const attachmentControls = slot.getByRole("button", { name: "Add reaction" }).parentElement!;
@@ -850,10 +861,11 @@ it("offers a chevron to another thread when a default is remembered, and opens t
   await slot.findByRole("dialog", { name: "Send to a thread" });
 });
 
-it("shows Go to thread with a chevron when a thread is linked", async () => {
+it("opens the chooser from the sessions block when a thread is linked", async () => {
   const slot = renderSlot(app.navPanels[0]!, { subPath: "task/TSK-5" }, { rpc: detailRpc(), sdk: { threads: { list: async () => [] } } });
-  expect(await slot.findAllByRole("button", { name: "Go to thread" })).toHaveLength(1);
-  expect(slot.getAllByRole("button", { name: "Choose another thread" })).toHaveLength(1);
+  expect(await slot.findAllByRole("button", { name: "Open thread Worker" })).toHaveLength(1);
+  fireEvent.click(slot.getByRole("button", { name: "Send to another thread…" }));
+  await slot.findByRole("dialog", { name: "Send to a thread" });
 });
 
 it("assigns responsibility from the chooser without sending a turn or changing task status", async () => {
@@ -940,6 +952,7 @@ it("keeps assignment visible when unassign fails", async () => {
     rpc: detailRpc({ listTaskThreads: () => ({ taskThreads: [taskThreadRow(THREAD_ROW_ID, "thr_worker", "Assigned worker")] }), taskThreadsDetach: () => { throw new Error("Could not unassign"); } }),
   });
   fireEvent.click((await slot.findAllByRole("button", { name: "Unassign Assigned worker" }))[0]!);
+  fireEvent.click(await slot.findByRole("button", { name: "Detach" }));
   await slot.findAllByText("Could not unassign");
-  expect(slot.getAllByRole("button", { name: "Go to thread" }).length).toBeGreaterThan(0);
+  expect(slot.getAllByRole("button", { name: "Open thread Assigned worker" }).length).toBeGreaterThan(0);
 });

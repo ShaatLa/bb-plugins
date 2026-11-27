@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, expect, it } from "vitest";
 import { TaskActivityIndicator } from "./task-activity";
 import type { TaskActivity } from "../shared/task-activity.js";
@@ -57,4 +57,19 @@ it("a paused indicator keeps the reason once: from its pause lines when given, f
   render(<TaskActivityIndicator activity={paused} pauses={[{ signal: "held", reason: "waiting on EXA-9", until: null, targets: [{ kind: "task", taskKey: "EXA-2" }] }]} />);
   const label = screen.getByText("Paused").getAttribute("aria-label")!;
   expect(label.match(/EXA-2/g)).toHaveLength(1);
+});
+
+it("can omit session details while retaining the explanation", () => {
+  render(<TaskActivityIndicator activity={base} sessionLines={false} />);
+  const label = screen.getByText("Working · 2/5").getAttribute("aria-label")!;
+  expect(label).not.toContain("Parent (Parent thread)");
+  expect(label).toContain("Linked thread failed");
+});
+
+it("keeps per-session lines in the default tooltip", async () => {
+  render(<TaskActivityIndicator activity={base} />);
+  fireEvent.pointerMove(screen.getByText("Working · 2/5"), { pointerType: "mouse" });
+  const tooltip = await screen.findByRole("tooltip");
+  expect(tooltip.textContent).toContain("Parent (Parent thread): Assigned");
+  expect(tooltip.textContent).toContain("Worker (Worker): Working");
 });

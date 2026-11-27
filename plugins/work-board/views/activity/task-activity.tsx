@@ -46,6 +46,7 @@ import {
   formatFileSize,
   formatRelativeTime,
   splitSystemBody,
+  threadLinkKind,
   useNowTick,
 } from "./time.js";
 import { CommentAuthor } from "./comment-author.js";
@@ -629,6 +630,15 @@ export function TaskActivity({ taskId, pullRequests }: TaskActivityProps) {
   const entries = useMemo(() => feed.data ?? [], [feed.data]);
   const comments = useMemo(() => entries.map((entry) => entry.comment), [entries]);
   const visibleEntries = entries.slice(-visibleCount);
+  const [expanded, setExpanded] = useState<{ taskId: string; ids: string[] }>({ taskId, ids: [] });
+  const expandedIds = expanded.taskId === taskId ? expanded.ids : [];
+  const groups: FeedEntry[][] = [];
+  for (const entry of visibleEntries) {
+    const isLink = entry.comment.kind === "system" && threadLinkKind(entry.comment.body);
+    const last = groups.at(-1);
+    if (isLink && last && last[0].comment.kind === "system" && threadLinkKind(last[0].comment.body)) last.push(entry);
+    else groups.push([entry]);
+  }
   const notificationTarget = useMemo(
     () => agentNotificationTarget(comments),
     [comments],
@@ -660,17 +670,20 @@ export function TaskActivity({ taskId, pullRequests }: TaskActivityProps) {
         {entries.length === 0 && !feed.isLoading && !feed.error ? (
           <div className="text-xs text-muted-foreground">No activity yet.</div>
         ) : null}
-        {visibleEntries.map((entry) =>
-          entry.comment.kind === "system" ? (
-            <SystemEvent
-              key={entry.comment.id}
-              comment={entry.comment}
-              nowMs={nowMs}
-            />
-          ) : (
-            <CommentCard key={entry.comment.id} entry={entry} nowMs={nowMs} />
-          ),
-        )}
+        {groups.map((group) => {
+          const entry = group[0];
+          if (group.length === 1) return entry.comment.kind === "system" ? <SystemEvent key={entry.comment.id} comment={entry.comment} nowMs={nowMs} /> : <CommentCard key={entry.comment.id} entry={entry} nowMs={nowMs} />;
+          const id = entry.comment.id;
+          const counts = (["attached", "detached", "failed"] as const).map((kind) => ({ kind, count: group.filter((item) => threadLinkKind(item.comment.body) === kind).length })).filter((item) => item.count);
+          const open = expandedIds.includes(id);
+          return <div key={id}>
+            <button type="button" aria-expanded={open} className="relative z-[1] my-2 flex items-center gap-2 text-xs text-muted-foreground" onClick={() => setExpanded({ taskId, ids: open ? expandedIds.filter((value) => value !== id) : [...expandedIds, id] })}>
+              <span aria-hidden className="mx-[7px] size-2 shrink-0 rounded-full border-2 border-muted bg-card" />
+              <span>{open ? "⌄" : "›"} Sessions changed: {counts.map(({ kind, count }) => `${count} ${kind}`).join(", ")} · {formatRelativeTime(group[group.length - 1].comment.createdAt, nowMs)}</span>
+            </button>
+            {open ? group.map((item) => <SystemEvent key={item.comment.id} comment={item.comment} nowMs={nowMs} />) : null}
+          </div>;
+        })}
       </div>
       <CommentComposer
         taskId={taskId}

@@ -12,13 +12,13 @@ import { ACTIVITY_LABELS as labels, type TaskActivity } from "../shared/task-act
 
 const icons = { abandoned: Unlink01Icon, error: AlertCircleIcon, "waiting-owner": HelpCircleIcon, queued: Clock01Icon, paused: PauseCircleIcon } as const;
 
-export function TaskActivityIndicator({ activity, failureMarker = false, pauses }: { activity?: TaskActivity; failureMarker?: boolean; pauses?: CardPause[] }) {
+export function TaskActivityIndicator({ activity, failureMarker = false, pauses, sessionLines = true }: { activity?: TaskActivity; failureMarker?: boolean; pauses?: CardPause[]; sessionLines?: boolean }) {
   if (!activity?.state) return null;
   const { state, sessions, workingCount, attachedCount, terminalWarning, hasFailure } = activity;
   const detail = [
     // A paused card given its pause lines lists them below; the explanation would repeat the first one.
     ...(activity.diagnostics && !(state === "paused" && pauses?.length) ? [activity.diagnostics.explanation] : []),
-    ...sessions.map((session) => `${session.title || session.threadId} (${session.role === "parent" ? "Parent thread" : "Worker"}): ${labels[session.state]}`),
+    ...(sessionLines ? sessions : []).map((session) => `${session.title || session.threadId} (${session.role === "parent" ? "Parent thread" : "Worker"}): ${labels[session.state]}`),
     ...(state === "paused" ? pauses?.map(pauseLineText) ?? [] : []),
     ...(terminalWarning ? ["Warning: work continues on a done or canceled card"] : []),
     ...(hasFailure ? ["Linked thread failed"] : []),
