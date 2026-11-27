@@ -19,6 +19,14 @@ keeps it here. `--spill` and `--spill auto` are aliases of `--anywhere`.
 Set the native `preferHost` setting to a configured host ID to try it first for portable heavy runs.
 Use `--local` only when the command needs something available only on this Mac, such as local state, a running service, or a path outside the worktree; run test suites, type checks, and builds without it so they can move to another machine.
 Use `--needs go,docker,chrome,playwright,node,bun` to require installed tools.
+Use `--check-docker-clock` for jobs comparing the remote host's clock with
+Docker. The entire measured range must fit within ±20 ms by default
+(`bb slots config get dockerClockSkewLimitMs`). The operator prepares
+`debian:bookworm-slim` with a one-time `docker pull` in the remote host's
+local Docker context. The probe uses Perl `Time::HiRes` and the cached image.
+An out-of-range or unknown result runs the command under a local lease,
+with the reason and `slots-run: placement=local` on stderr. `--local` skips
+the check.
 Add `--git` for remote commands that read Git HEAD, status or diffs against
 HEAD. The mirror gets a detached checkout with the local commit and its
 immediate parents, the local index and working files. If the snapshot cannot

@@ -453,6 +453,33 @@ it("missing config uses defaults without consulting old plugin settings or creat
   await expect(readFile(join(h.path, "config.json"))).rejects.toMatchObject({ code: "ENOENT" });
 });
 
+it("reads, validates and unsets the native Docker clock skew limit", async () => {
+  const h = await setup();
+  const key = "dockerClockSkewLimitMs";
+  const read = async () => {
+    const result = await h.harness.behavior.runCli(["config", "get", key, "--json"]);
+    expect(result.exitCode).toBe(0);
+    return JSON.parse(result.stdout ?? "");
+  };
+  expect(await read()).toEqual({ ok: true, data: { key, value: 20, default: 20, set: false } });
+  expect(await h.invoke("settingsWrite", { values: { [key]: 12 } })).toMatchObject({ ok: true, data: { values: { [key]: 12 }, setKeys: [key] } });
+  expect(await h.invoke("settingsWrite", { values: { [key]: 0.5 } })).toMatchObject({ ok: false });
+  expect(await read()).toEqual({ ok: true, data: { key, value: 12, default: 20, set: true } });
+  expect((await h.harness.behavior.runCli(["config", "unset", key])).exitCode).toBe(0);
+  expect(await read()).toEqual({ ok: true, data: { key, value: 20, default: 20, set: false } });
+  await expect(readFile(join(h.path, "config.json"))).rejects.toMatchObject({ code: "ENOENT" });
+});
+
+it("keeps the clock limit and legacy settings unchanged when a mixed write cannot save", async () => {
+  const h = await setup();
+  await h.configure({ dockerClockSkewLimitMs: 12, loadMax: 7 });
+  vi.spyOn(h.runtime.store, "saveConfig").mockRejectedValueOnce(new Error("disk full"));
+  expect(await h.invoke("settingsWrite", { values: { dockerClockSkewLimitMs: 5, loadMax: 9 } })).toMatchObject({ ok: false });
+  expect(await h.invoke("settingsRead", {})).toMatchObject({
+    ok: true, data: { values: { dockerClockSkewLimitMs: 12, loadMax: 7 } },
+  });
+});
+
 it("keeps observer and explicit overrides from an existing config file on restart", async () => {
   const h = await setup(undefined, undefined, { observerThreadId: "b", heavyCapacity: 2 });
   expect(await h.invoke("observer", {})).toMatchObject({ ok: true, data: { threadId: "b" } });

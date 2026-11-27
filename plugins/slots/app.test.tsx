@@ -356,7 +356,7 @@ test("keeps summary values compact and shows clamped-setting warnings", async ()
 const settingValues = { heavyCapacity: 4, heavyCapacityWithModel: 4, remoteHostsWithModel: "", deviceHosts: "", modelHoldMinutes: 60, localModelCapacity: 1, memFreeMinPct: 20, loadMax: 18, gateSamples: 2,
   gateIntervalSeconds: 15, leaseTtlMinutes: 30, maxEstimateMinutes: 720, heartbeatIntervalMinutes: 10, observerThreadId: "", observerEvents: "warn,expire",
   observerQueueWaitMinutes: 20, observerGateHoldMinutes: 15, portFrom: 41000, portTo: 41099, grantMode: "auto",
-  watchPolicy: "warn", watchCores: 3, watchWindowSeconds: 120, idleLeaseMinutes: 30, remoteHosts: "" };
+  watchPolicy: "warn", watchCores: 3, watchWindowSeconds: 120, idleLeaseMinutes: 30, remoteHosts: "", dockerClockSkewLimitMs: 20 };
 const form = (values: Record<string, unknown>, extra: Record<string, unknown> = {}) =>
   ({ cores: 18, heavyDefault: 4, values, defaults: settingValues, maxima: { localModelCapacity: 16 }, setKeys: [], ...extra });
 const pick = async (combobox: HTMLElement, name: string) => {

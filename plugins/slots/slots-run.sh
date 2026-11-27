@@ -537,6 +537,151 @@ remove_git_upload() {
   done
 }
 
+check_docker_clock() {
+  if ! bb slots config get dockerClockSkewLimitMs --json >"$dir/clock-config" 2>/dev/null ||
+     ! clock_limit=$(node -e '
+       const result = JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8"));
+       const value = result.data?.value;
+       if (result.ok !== true || result.data?.key !== "dockerClockSkewLimitMs" || !Number.isSafeInteger(value) || value < 1) process.exit(1);
+       process.stdout.write(String(value));
+     ' "$dir/clock-config" 2>/dev/null); then
+    clock_reason="unknown: could not read the skew limit"
+    return 1
+  fi
+  [ -z "$interrupted" ] || return 1
+  clock_term=term_$(LC_ALL=C tr -dc 23456789abcdefghijkmnpqrstuvwxyz </dev/urandom | head -c 10)
+  clock_probe=$(cat <<'CLOCK_PROBE'
+use strict;
+use warnings;
+use File::Temp qw(tempdir);
+use IPC::Open2 qw(open2);
+use POSIX qw(_exit);
+use Time::HiRes qw(gettimeofday clock_gettime CLOCK_MONOTONIC);
+
+sub wall_us {
+    my ($sec, $usec) = gettimeofday();
+    return $sec * 1_000_000 + $usec;
+}
+
+# Match Docker CLI precedence: an explicit context overrides DOCKER_HOST.
+my @docker = ("docker");
+push @docker, "--context", $ENV{DOCKER_CONTEXT} if length($ENV{DOCKER_CONTEXT} // "");
+my $scratch = tempdir(CLEANUP => 1);
+my $cidfile = "$scratch/probe.cid";
+my ($from, $to, $pid, $context);
+my ($common_low, $common_high);
+local $SIG{PIPE} = "IGNORE";
+local $SIG{ALRM} = sub { die "probe timed out\n" };
+local $SIG{INT} = local $SIG{TERM} = local $SIG{HUP} = sub { die "probe interrupted\n" };
+
+my $ok = eval {
+    alarm 20;
+    open($context, "-|", @docker, "context", "inspect", "--format", "{{.Endpoints.docker.Host}}") or die "Docker CLI unavailable\n";
+    my $endpoint = <$context> // "";
+    my $context_ok = close $context;
+    die "Docker context unavailable\n" unless $context_ok;
+    chomp $endpoint;
+    die "Docker endpoint is not a local Unix socket\n" unless $endpoint =~ m{\Aunix://(/.+)\z} && -S $1;
+    open my $image, "-|", @docker, "image", "inspect", "--format={{.Id}}", "debian:bookworm-slim" or die "Docker CLI unavailable\n";
+    my $image_id = <$image> // "";
+    my $image_ok = close $image;
+    die "probe image unavailable\n" unless $image_ok && $image_id =~ /\Asha256:[0-9a-f]{64}\n\z/;
+    $pid = open2($from, $to, @docker, "run", "--rm", "-i", "--pull=never", "--cidfile", $cidfile,
+        "--network=none", "--read-only", "--cap-drop=ALL", "debian:bookworm-slim", "timeout", "25s", "sh", "-c",
+        'printf "ready\n"; while IFS= read -r request; do date +%s%N || exit; done');
+    $to->autoflush(1);
+    die "probe container did not start\n" unless (<$from> // "") eq "ready\n";
+    my $mono_start = clock_gettime(CLOCK_MONOTONIC);
+    my $wall_start = wall_us();
+    for (1..5) {
+        my $before = wall_us();
+        print {$to} "time\n" or die "probe container input closed\n";
+        my $line = <$from>;
+        my $after = wall_us();
+        my $elapsed = (clock_gettime(CLOCK_MONOTONIC) - $mono_start) * 1_000_000;
+        die "invalid container clock sample\n" unless defined($line) && $line =~ /\A([0-9]{16})[0-9]{3}\n\z/;
+        my $vm = 0 + $1;
+        die "host clock stepped\n" if $after < $before || abs($after - $wall_start - $elapsed) > 1_000;
+        # Widen by 1 μs on each side for truncation of both wall timestamps.
+        my ($low, $high) = ($vm - $after - 1, $vm - $before + 1);
+        $common_low = $low if !defined($common_low) || $low > $common_low;
+        $common_high = $high if !defined($common_high) || $high < $common_high;
+        die "clock samples disagree\n" if $common_low > $common_high;
+    }
+    close $to;
+    waitpid($pid, 0);
+    my $status = $?;
+    undef $pid;
+    die "probe container failed\n" if $status;
+    1;
+};
+my $failure = $@;
+alarm 0;
+if (!$ok) {
+    close $to if defined $to && defined fileno($to);
+    if ($pid) {
+        kill "KILL", $pid;
+        waitpid($pid, 0);
+    }
+    # If Docker created the container, remove only the ID from this run.
+    if (open my $id_file, "<", $cidfile) {
+        my $id = <$id_file> // "";
+        chomp $id;
+        if ($id =~ /\A[0-9a-f]{64}\z/) {
+            my $cleaner = fork();
+            if (defined($cleaner) && !$cleaner) {
+                open STDOUT, ">", "/dev/null";
+                exec(@docker, "rm", "-f", $id) or _exit(1);
+            }
+            if ($cleaner) {
+                eval { alarm 4; waitpid($cleaner, 0); };
+                alarm 0;
+                if ($@) { kill "KILL", $cleaner; waitpid($cleaner, 0); }
+            }
+        }
+    }
+    # Use a bounded protocol line. Other Docker diagnostics are not forwarded.
+    $failure = "probe failed" unless $failure =~ /\A[A-Za-z0-9 .:-]{1,100}\n\z/;
+    chomp $failure;
+    print "clock-unknown $failure\n";
+    exit 0;
+}
+print "clock-range $common_low $common_high\n";
+CLOCK_PROBE
+)
+  bb terminal run --machine "$host" --id "$clock_term" --timeout 30s --max-output-bytes 4096 --json -- \
+    sh -c 'if command -v perl >/dev/null; then exec perl -e "$1"; fi; echo "clock-unknown Perl unavailable"' sh "$clock_probe" >"$dir/clock-result" 2>/dev/null
+  clock_terminal_status=$?
+  bb terminal close "$clock_term" >/dev/null 2>&1
+  if [ "$clock_terminal_status" -ne 0 ] || [ -n "$interrupted" ]; then
+    clock_reason="unknown: remote probe did not complete"
+    return 1
+  fi
+  if clock_reason=$(node -e '
+    const unknown = cause => { console.log("unknown: " + cause); process.exit(1); };
+    let terminal;
+    try { terminal = JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8")); }
+    catch { unknown("invalid probe result"); }
+    if (terminal.observation !== "exited" || terminal.exitCode !== 0 || typeof terminal.output !== "string")
+      unknown("remote probe did not complete");
+    const lines = terminal.output.split(/\r?\n/).filter(line => /^clock-(range|unknown) /.test(line));
+    if (lines.length !== 1) unknown("missing or ambiguous clock sample");
+    const cause = /^clock-unknown ([A-Za-z0-9 .:-]{1,100})$/.exec(lines[0]);
+    if (cause) unknown(cause[1]);
+    const match = /^clock-range (-?\d+) (-?\d+)$/.exec(lines[0]);
+    if (!match) unknown("invalid clock range");
+    const low = Number(match[1]), high = Number(match[2]), limit = Number(process.argv[2]);
+    if (!Number.isSafeInteger(low) || !Number.isSafeInteger(high) || low > high) unknown("invalid clock range");
+    if (low / 1000 >= -limit && high / 1000 <= limit) process.exit(0);
+    const signedMs = us => (us >= 0 ? "+" : "") + (us / 1000).toFixed(3);
+    const detail = signedMs(low) + ".." + signedMs(high) + " ms (window " + ((high - low) / 1000).toFixed(3) + " ms, limit ±" + limit + " ms)";
+    if (low / 1000 > limit || high / 1000 < -limit) { console.log(detail); process.exit(1); }
+    unknown("range crosses the limit: " + detail);
+  ' "$dir/clock-result" "$clock_limit" 2>/dev/null); then return 0; fi
+  [ -n "$clock_reason" ] || clock_reason="unknown: invalid probe result"
+  return 1
+}
+
 remote_exec() {
   root=$(git rev-parse --show-toplevel 2>/dev/null) || { echo "slots-run: the lease is on $host, but this directory is not in a git worktree" >&2; return 69; }
   here=$(pwd -P)
@@ -631,7 +776,7 @@ remote_run() {
 }
 trap 'cleanup' EXIT
 trap 'interrupted=1' INT TERM HUP
-pool=heavy job= est= priority= timeout= place=project needs= host= interrupted= retry= gitmode=
+pool=heavy job= est= priority= timeout= place=project needs= host= interrupted= retry= gitmode= check_clock= clock_fallback=
 while [ "$#" -gt 0 ]; do
   case $1 in
     --) shift; break ;;
@@ -639,6 +784,7 @@ while [ "$#" -gt 0 ]; do
     --anywhere) place=auto; shift ;;
     --local) place=local; shift ;;
     --git) gitmode=1; shift ;;
+    --check-docker-clock) check_clock=1; shift ;;
     --needs) shift; [ "$#" -gt 0 ] || exit 64; needs=$1; shift ;;
     --pool|--job|--est|--priority|--timeout)
       option=$1; shift; [ "$#" -gt 0 ] || exit 64
@@ -722,18 +868,30 @@ start=$(ps -o lstart= -p "$$" 2>/dev/null) || start=
 ) & loop=$!
 }
 run_local() {
-  if [ -n "$gitmode" ]; then echo "slots-run: placement=local" >&2; fi
+  if [ -n "$gitmode" ] || [ -n "$clock_fallback" ]; then echo "slots-run: placement=local" >&2; fi
   "$@"
 }
 start_heartbeat
-if [ -n "$host" ]; then remote_run "$@"; else run_local "$@"; fi
-status=$?
+if [ -n "$host" ] && [ -n "$check_clock" ]; then
+  if ! check_docker_clock; then
+    [ -z "$interrupted" ] || exit 130
+    echo "slots-run: Docker clock skew $clock_reason; retrying locally" >&2
+    retry=1; clock_fallback=1
+  fi
+  [ -z "$interrupted" ] || exit 130
+fi
+if [ -n "$clock_fallback" ]; then status=69
+elif [ -n "$host" ]; then remote_run "$@"; status=$?
+else run_local "$@"; status=$?
+fi
 if [ -n "$retry" ] && [ -z "$interrupted" ]; then
-  echo "slots-run: remote setup failed before the command started; retrying locally" >&2
+  if [ -z "$clock_fallback" ]; then echo "slots-run: remote setup failed before the command started; retrying locally" >&2; fi
   : > "$dir/stop"; kill "$loop" 2>/dev/null; wait "$loop" 2>/dev/null; loop=
   bb slots done "$use" >/dev/null 2>&1; use=; host=; rm -f "$dir/stop"
   place=local
+  if [ -n "$clock_fallback" ] && [ -n "$interrupted" ]; then exit 130; fi
   acquire || exit $?
+  if [ -n "$clock_fallback" ] && [ -n "$interrupted" ]; then exit 130; fi
   start_heartbeat
   run_local "$@"; status=$?
 fi

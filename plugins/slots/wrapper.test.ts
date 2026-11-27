@@ -237,9 +237,12 @@ for a; do last=$a; done
 case "$1 $2" in
   "slots acquire")
     case " $* " in
-      *" --place local "*) echo "use use-1 lease lease-2 renew 30" ;;
+      *" --place local "*)
+        if [ -n "$CLOCK_CONFIG" ]; then echo "use use-3 lease lease-4 renew 30"
+        else echo "use use-1 lease lease-2 renew 30"; fi ;;
       *) echo "use use-1 lease lease-2 renew 30 host host_example" ;;
     esac ;;
+  "slots config") printf '%s\\n' "$CLOCK_CONFIG" ;;
   "file write")
     cat > "$last" || exit
     case "$last" in
@@ -251,7 +254,14 @@ case "$1 $2" in
     esac ;;
   "file read") [ -z "$READ_FAIL" ] || case $last in *.ret.[0-9]*) exit 1 ;; esac; cat "$last" ;;
   "file remove") rm -f "$last" ;;
-  "terminal run") shift 2; while [ "$1" != -- ]; do [ "$1" = --id ] && id=$2; shift; done; shift
+  "terminal run") shift 2; while [ "$1" != -- ]; do
+      if [ "$1" = --json ]; then
+        if [ -n "$CLOCK_READY" ]; then : > "$CLOCK_READY"; sleep 10; fi
+        printf '%s\\n' "$CLOCK_RESULT"
+        exit 0
+      fi
+      [ "$1" = --id ] && id=$2; shift
+    done; shift
     if [ -n "$FORGE" ]; then
       r=\${8%.b64}.ret; n=$9; [ "$FORGE_META" != nonce ] || n=wrong
       if [ "$FORGE_META" != none ]; then
@@ -291,6 +301,90 @@ async function world(setup: Record<string, string> = {}) {
 const exists = (p: string) => stat(p).then(() => true, () => false);
 const waitFor = async (p: string, tries = 1000) => { for (let i = 0; i < tries; i++) { if (await exists(p)) return; await sleep(10); } throw new Error("timeout waiting for " + p); };
 const exited = (c: ReturnType<typeof spawn>) => new Promise<number | null>(resolve => { if (c.exitCode !== null) resolve(c.exitCode); else c.once("exit", resolve); });
+
+const clockConfig = (value: number | string = 20) => JSON.stringify({ ok: true, data: { key: "dockerClockSkewLimitMs", value } });
+const clockResult = (output: string) => JSON.stringify({ observation: "exited", exitCode: 0, output: "\n" + output + "\n" });
+const clockCommand = 'if [ "$HOME" = "$FAKE_HOME" ]; then echo remote; else echo local; fi';
+
+it("runs remotely once when the opt-in Docker clock range fits the configured limit", async () => {
+  const w = await world();
+  const result = spawnSync("sh", w.args(clockCommand, ["--check-docker-clock"]), {
+    cwd: w.repo, encoding: "utf8", env: w.env({ CLOCK_CONFIG: clockConfig(7), CLOCK_RESULT: clockResult("clock-range -7000 7000") }),
+  });
+  expect(result.status, result.stderr).toBe(0);
+  expect(result.stdout).toBe("remote\n");
+  expect(result.stderr).not.toContain("placement=local");
+  const log = await w.log();
+  expect(log).toContain("slots config get dockerClockSkewLimitMs --json");
+  const close = log.indexOf("terminal close ");
+  expect(log.indexOf("--timeout 30s")).toBeLessThan(close);
+  expect(close).toBeLessThan(log.indexOf("file write"));
+  expect(log.match(/^terminal run /gm)).toHaveLength(2);
+  expect(log).not.toContain("--place local");
+});
+
+it.each([
+  ["positive skew", ["--git"], clockResult("clock-range 49000 101000"), "+49.000..+101.000 ms", false],
+  ["negative skew without Git mode", [], clockResult("clock-range -30000 -20001"), "-30.000..-20.001 ms", false],
+  ["a range crossing the limit", [], clockResult("clock-range -25000 25000"), "unknown: range crosses the limit", false],
+  ["missing probe image", [], clockResult("clock-unknown probe image unavailable"), "unknown: probe image unavailable", false],
+  ["timeout", [], JSON.stringify({ observation: "timed-out", exitCode: null }), "unknown: remote probe did not complete", true],
+  ["malformed range", [], clockResult("clock-range 12 10"), "unknown: invalid clock range", false],
+] as const)("falls back locally for %s without copying the worktree", async (_case, args, output, reason, timedOut) => {
+  const w = await world();
+  const result = spawnSync("sh", w.args(clockCommand + "; exit 7", ["--check-docker-clock", ...args]), {
+    cwd: w.repo, encoding: "utf8", env: w.env({ CLOCK_CONFIG: clockConfig(), CLOCK_RESULT: output }),
+  });
+  expect(result.status, result.stderr).toBe(7);
+  expect(result.stdout).toBe("local\n");
+  expect(result.stderr).toContain("Docker clock skew " + reason);
+  expect(result.stderr.match(/placement=local/g)).toHaveLength(1);
+  const log = await w.log();
+  expect(log).not.toContain("file write");
+  expect(log.match(/^terminal run /gm)).toHaveLength(1);
+  expect(log.indexOf("slots done use-1")).toBeLessThan(log.lastIndexOf("--place local"));
+  expect(log.match(/slots done use-3/g)).toHaveLength(1);
+  if (timedOut) expect(log).toMatch(/^terminal close term_/m);
+});
+
+it.each([
+  ["unrequested", []],
+  ["explicitly local", ["--check-docker-clock", "--local"]],
+] as const)("skips the Docker check when %s", async (_case, args) => {
+  const w = await world();
+  const result = spawnSync("sh", w.args(clockCommand, [...args]), { cwd: w.repo, encoding: "utf8", env: w.env() });
+  expect(result.status, result.stderr).toBe(0);
+  expect(result.stdout).toBe(args.length ? "local\n" : "remote\n");
+  expect(result.stderr).not.toContain("placement=local");
+  expect(await w.log()).not.toMatch(/slots config|--timeout 30s/);
+});
+
+it("treats an invalid configured clock limit as unknown before starting a terminal", async () => {
+  const w = await world();
+  const result = spawnSync("sh", w.args(clockCommand, ["--check-docker-clock"]), {
+    cwd: w.repo, encoding: "utf8", env: w.env({ CLOCK_CONFIG: clockConfig("20") }),
+  });
+  expect(result.status, result.stderr).toBe(0);
+  expect(result.stdout).toBe("local\n");
+  expect(result.stderr).toContain("Docker clock skew unknown: could not read the skew limit");
+  expect(await w.log()).not.toContain("terminal run");
+});
+
+it("closes the probe terminal and releases only the remote use when interrupted", async () => {
+  const w = await world();
+  const ready = join(w.dir, "clock-ready");
+  const child = spawn("sh", w.args(clockCommand, ["--check-docker-clock"]), {
+    cwd: w.repo, detached: true, stdio: "ignore",
+    env: w.env({ CLOCK_CONFIG: clockConfig(), CLOCK_READY: ready }),
+  });
+  await waitFor(ready);
+  process.kill(-child.pid!, "SIGTERM");
+  expect(await exited(child)).toBe(130);
+  const log = await w.log();
+  expect(log).toMatch(/^terminal close term_/m);
+  expect(log.match(/slots done use-1/g)).toHaveLength(1);
+  expect(log).not.toMatch(/--place local|file write/);
+});
 
 it("runs with a clean detached Git snapshot and its parent, returning files without Git metadata", async () => {
   const w = await world();

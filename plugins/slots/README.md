@@ -130,6 +130,18 @@ installed tools. Set the inventory with `bb plugin config slots set machineTools
 'host_example=go,docker;host_other=node,bun'`. `--spill` remains an alias for
 `--anywhere`. Commands with absolute path arguments outside the worktree stay local.
 
+For tests that compare host time with a database in Docker, add
+`--check-docker-clock` to allow remote execution only when the measured Docker
+clock range fits within ±20 ms. Change the limit in Slots settings or with
+`bb slots config set dockerClockSkewLimitMs <milliseconds>`. The check uses the
+selected host's local Docker context. The host operator needs to run
+`docker pull debian:bookworm-slim` once in that context and provide Perl with
+`Time::HiRes`. The probe uses the cached image and reads the clocks before
+copying the worktree. If the range exceeds or crosses the limit, or the probe
+is unavailable, Slots releases the remote use and runs under a local lease.
+It prints the reason and `slots-run: placement=local` even without `--git`.
+Use `--local` to require local execution and skip the probe.
+
 Add `--git` when a remote command reads Git HEAD, status or diffs against HEAD.
 The mirror receives a detached checkout with the local commit and any immediate
 parents available locally. The shallow snapshot supports `HEAD^` and excludes

@@ -46,7 +46,14 @@ export async function register(bb: BbPluginApi, overrides: Partial<Runtime> = {}
   /** Other bb machines for the settings picker, refreshed on the sampler tick; empty when listing fails. */
   let knownHosts: { id: string; name: string | null; connected: boolean }[] = [];
   let hostsReady: Promise<void> = Promise.resolve();
+  const dockerClockSkewLimitDefault = 20;
+  const dockerClockSkewLimit = {
+    type: "number", label: "Docker clock skew limit (ms)",
+    description: "Maximum absolute Docker clock skew for remote jobs that opt in. Defaults to 20 ms.",
+    experimental_schema: z.number().int().min(1),
+  } satisfies PluginSettingDescriptor;
   const descriptors = {
+    dockerClockSkewLimitMs: { ...dockerClockSkewLimit, default: dockerClockSkewLimitDefault },
     watchPolicy: { type: "select", label: "Load watch", options: ["off", "warn"], default: "warn" },
     watchCores: { type: "number", label: "Watch cores", default: Math.min(3, Math.max(1, cores - 1)), experimental_schema: z.number().min(1).max(cores) },
     watchWindowSeconds: { type: "number", label: "Watch window seconds", default: 120, experimental_schema: z.number().int().min(60).max(900) },
@@ -80,7 +87,7 @@ export async function register(bb: BbPluginApi, overrides: Partial<Runtime> = {}
     awayMinutes: { type: "number", label: "Away after minutes", description: `Minutes without keyboard or mouse input before a machine counts as away.`, default: 10, experimental_schema: z.number().int().min(1).max(1440) },
     grantMode: { type: "select", label: "Grant mode", description: `Automatic grants follow queue order and passing checks; manual grants wait for the manager.`, options: ["auto", "manual"], experimental_optionLabels: { auto: "Automatic", manual: "Manual (manager grants)" }, default: "auto" },
   } satisfies Record<string, PluginSettingDescriptor>;
-  const nativeSettings = bb.settings.define({ machineTools: descriptors.machineTools, preferHost: { type: "string", label: "Preferred heavy host", description: "Configured host ID to try first for portable heavy work; empty keeps the default order.", default: "" } });
+  const nativeSettings = bb.settings.define({ machineTools: descriptors.machineTools, dockerClockSkewLimitMs: dockerClockSkewLimit, preferHost: { type: "string", label: "Preferred heavy host", description: "Configured host ID to try first for portable heavy work; empty keeps the default order.", default: "" } });
   let native = await nativeSettings.get();
   nativeSettings.onChange(next => { native = next; bb.realtime.publish(SLOTS_CHANGED, { at: runtime.now() }); });
   const defaults = Object.fromEntries(SETTING_KEYS.map(key => [key, descriptors[key].default])) as SettingValues;
@@ -88,13 +95,13 @@ export async function register(bb: BbPluginApi, overrides: Partial<Runtime> = {}
   const rawConfig = await store.loadConfig();
   const configSchema = z.object({ version: z.literal(1), values: z.partialRecord(z.enum(SETTING_KEYS), z.union([z.number(), z.string()])) }).strict();
   let explicit = rawConfig === undefined ? {} : configSchema.parse(rawConfig).values;
-  const readValues = () => ({ ...defaults, ...explicit, machineTools: native.machineTools }) as Awaited<ReturnType<typeof effectiveValues>>;
+  const readValues = () => ({ ...defaults, ...explicit, machineTools: native.machineTools, dockerClockSkewLimitMs: native.dockerClockSkewLimitMs ?? dockerClockSkewLimitDefault }) as Awaited<ReturnType<typeof effectiveValues>>;
   function effectiveValues() { return Object.fromEntries(SETTING_KEYS.map(key => [key, descriptors[key].default])) as {
     watchPolicy: "off" | "warn"; watchCores: number; watchWindowSeconds: number; idleLeaseMinutes: number;
     heavyCapacity: number; heavyCapacityWithModel: number; remoteHostsWithModel: string; deviceHosts: string; modelHoldMinutes: number; localModelCapacity: number; memFreeMinPct: number; loadMax: number; gateSamples: number;
     gateIntervalSeconds: number; leaseTtlMinutes: number; maxEstimateMinutes: number; heartbeatIntervalMinutes: number; observerThreadId: string;
     observerEvents: string; observerQueueWaitMinutes: number; observerGateHoldMinutes: number; portFrom: number; portTo: number; grantMode: string; remoteHosts: string; machineTools: string;
-    heavyCapacityAway: number; loadMaxAway: number; remoteHostsAway: string; remoteLoadMax: string; remoteLoadMaxAway: string; awayMinutes: number;
+    heavyCapacityAway: number; loadMaxAway: number; remoteHostsAway: string; remoteLoadMax: string; remoteLoadMaxAway: string; awayMinutes: number; dockerClockSkewLimitMs: number;
   }; }
   function validateField(key: SettingKey, value: unknown, stored = false) {
     const descriptor = descriptors[key];
@@ -108,11 +115,27 @@ export async function register(bb: BbPluginApi, overrides: Partial<Runtime> = {}
     for (const key of SETTING_KEYS) if (patch[key] !== undefined) next[key] = validateField(key, patch[key]);
     for (const key of unset) delete next[key];
     resolveSettings({ ...readValues(), ...next, ...Object.fromEntries(unset.map(key => [key, defaults[key]])) } as ReturnType<typeof readValues>);
-    if (patch.machineTools !== undefined || unset.includes("machineTools")) {
-      native = await nativeSettings.experimental_set({ machineTools: unset.includes("machineTools") ? null : String(patch.machineTools) });
-      delete next.machineTools;
+    const machineToolsChanged = patch.machineTools !== undefined || unset.includes("machineTools");
+    const clockLimitChanged = patch.dockerClockSkewLimitMs !== undefined || unset.includes("dockerClockSkewLimitMs");
+    const nativePatch = {
+      ...(machineToolsChanged ? { machineTools: unset.includes("machineTools") ? null : String(patch.machineTools) } : {}),
+      ...(clockLimitChanged ? { dockerClockSkewLimitMs: unset.includes("dockerClockSkewLimitMs") ? null : Number(patch.dockerClockSkewLimitMs) } : {}),
+    };
+    if (clockLimitChanged && Object.keys(patch).length + unset.length === 1) {
+      native = await nativeSettings.experimental_set(nativePatch);
+      return;
     }
+    if (machineToolsChanged) delete next.machineTools;
+    if (clockLimitChanged) delete next.dockerClockSkewLimitMs;
     await store.saveConfig(next);
+    if (machineToolsChanged || clockLimitChanged) {
+      try {
+        native = await nativeSettings.experimental_set(nativePatch);
+      } catch (error) {
+        await store.saveConfig(explicit);
+        throw error;
+      }
+    }
     explicit = next;
     settings = await getSettings();
     if (initialized) await transition({ type: "restored" });
@@ -120,11 +143,11 @@ export async function register(bb: BbPluginApi, overrides: Partial<Runtime> = {}
   }
   function settingView(key: SettingKey): SettingView {
     const view = formView();
-    return { key, value: view.values[key], default: key === "heavyCapacityWithModel" || key === "heavyCapacityAway" ? view.values.heavyCapacity : key === "loadMaxAway" ? view.values.loadMax : defaults[key], ...(view.maxima[key] !== undefined ? { max: view.maxima[key] } : {}), set: key in explicit };
+    return { key, value: view.values[key], default: key === "heavyCapacityWithModel" || key === "heavyCapacityAway" ? view.values.heavyCapacity : key === "loadMaxAway" ? view.values.loadMax : defaults[key], ...(view.maxima[key] !== undefined ? { max: view.maxima[key] } : {}), set: view.setKeys.includes(key) };
   }
   function formView(): SettingsFormView {
     return { values: { ...readValues(), heavyCapacity: settings.capacities.heavy, heavyCapacityWithModel: settings.withModel ?? settings.capacities.heavy, heavyCapacityAway: settings.heavyAway ?? settings.capacities.heavy, loadMax: settings.loadMax, loadMaxAway: settings.loadMaxAway ?? settings.loadMax, watchCores: settings.watchCores }, defaults: { ...defaults, heavyCapacityWithModel: settings.capacities.heavy, heavyCapacityAway: settings.capacities.heavy, loadMaxAway: settings.loadMax },
-      maxima: { watchCores: cores, heavyCapacityAway: cores, loadMaxAway: cores, awayMinutes: 1440, watchWindowSeconds: 900, idleLeaseMinutes: 240, heavyCapacity: cores, heavyCapacityWithModel: cores, modelHoldMinutes: 10080, loadMax: cores, localModelCapacity: LOCAL_MODEL_MAX, memFreeMinPct: 100, gateSamples: 100, gateIntervalSeconds: 3600, leaseTtlMinutes: 10080, maxEstimateMinutes: 10080, heartbeatIntervalMinutes: 10079, observerQueueWaitMinutes: 10080, observerGateHoldMinutes: 10080, portFrom: 65535, portTo: 65535 }, setKeys: Object.keys(explicit) as SettingKey[], cores, heavyDefault, hosts: knownHosts };
+      maxima: { watchCores: cores, heavyCapacityAway: cores, loadMaxAway: cores, awayMinutes: 1440, watchWindowSeconds: 900, idleLeaseMinutes: 240, heavyCapacity: cores, heavyCapacityWithModel: cores, modelHoldMinutes: 10080, loadMax: cores, localModelCapacity: LOCAL_MODEL_MAX, memFreeMinPct: 100, gateSamples: 100, gateIntervalSeconds: 3600, leaseTtlMinutes: 10080, maxEstimateMinutes: 10080, heartbeatIntervalMinutes: 10079, observerQueueWaitMinutes: 10080, observerGateHoldMinutes: 10080, portFrom: 65535, portTo: 65535 }, setKeys: [...Object.keys(explicit), ...(native.dockerClockSkewLimitMs === undefined ? [] : ["dockerClockSkewLimitMs"])] as SettingKey[], cores, heavyDefault, hosts: knownHosts };
   }
   const getSettings = async (): Promise<Settings> => {
     const current = readValues();

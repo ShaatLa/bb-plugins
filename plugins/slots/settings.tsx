@@ -192,6 +192,9 @@ export function SlotsSettings() {
         {number("loadMax", "Load limit", 0.1, cores, `max ${cores} (CPU cores)${latest ? ` · now ${latest.load1.toFixed(1)}` : ""}`, 0.1)}
         <Nested title="Advanced">{number("gateSamples", "Checks in a row", 1, 100)}{number("gateIntervalSeconds", "Seconds between checks", 1, 3600)}</Nested>
       </SettingsRowList></SettingsSection>
+      <SettingsSection title="Remote jobs"><SettingsRowList>
+        {number("dockerClockSkewLimitMs", "Docker clock skew limit (ms)", 1, Number.MAX_SAFE_INTEGER, "Applies to remote jobs that opt in to the Docker clock check.")}
+      </SettingsRowList></SettingsSection>
       <Collapsible title="Load watch" summary={values.watchPolicy === "off" ? "Off" : `Warn · ${values.watchCores} cores for ${values.watchWindowSeconds} s · idle notice ${minutes(Number(values.idleLeaseMinutes))}`}>
         <Row label="Policy" description="Warns when processes in a session's checkout use many cores for a while without a heavy slot. Reads only process ids, start times, CPU time and working directories.">
           <Choice label="Load watch policy" value={String(values.watchPolicy)} fallback={String(defaults.watchPolicy)} options={[["off", "Off"], ["warn", "Warn"]]} onChange={value => apply("watchPolicy", value)} />
