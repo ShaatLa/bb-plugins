@@ -25,6 +25,8 @@ import { storageService } from "../storage";
 import { gitSyncService } from "../git-sync/service";
 import { projectConfigHandlers } from "../config";
 import { queueHandlers } from "../queue/rpc";
+import { scheduleHandlers } from "../schedule/service";
+import { startsForCards, type ScheduledStart } from "../schedule/store";
 import { queuePlaces } from "../queue/store";
 import { attentionUiHandlers } from "../attention/rpc";
 import { checksUiHandlers } from "../checks/rpc";
@@ -228,6 +230,11 @@ function fail(code: TasksDomainError["code"], message: string): never {
 
 function taskFailure(error: TasksDomainFailure) {
   return { ok: false as const, error: error.detail };
+}
+
+/** What the card meta carries of a scheduled start. */
+function cardStartOf(start: ScheduledStart) {
+  return { at: start.startAt, mode: start.mode, state: start.state, setter: start.setter, ...(start.threadId ? { threadId: start.threadId } : {}), ...(start.error ? { error: start.error } : {}) };
 }
 
 export function publishTasksChanged(
@@ -1213,6 +1220,7 @@ export function registerHandlers(
     ...projectConfigHandlers(bb, store),
     ...attentionUiHandlers(bb, store),
     ...queueHandlers(bb, store),
+    ...scheduleHandlers(bb, store),
     ...checksUiHandlers(bb),
     ...createLockHandlers(bb, store),
     createFolder(input) {
@@ -1847,6 +1855,7 @@ export function registerHandlers(
       const scopedActivity = await activityService(bb, store).metadata(ids, discoveryComplete, allLinks);
       const blockedBy = dependencies.blockers(ids);
       const places = queuePlaces(bb.storage.database(), ids);
+      const starts = startsForCards(bb.storage.database(), ids);
       const advisories = taskAdvisories(bb, activity, blockedBy, scopedActivity, threads);
       const projects = store.tasks.listProjects();
       const thresholds = new Map(projects.map((project) => [project.id, idleThreshold(project)]));
@@ -1863,6 +1872,7 @@ export function registerHandlers(
           attachmentCount: counts.get(taskId) ?? 0,
           staleStatusFlags: flags.get(taskId) ?? [],
           ...(places.has(taskId) ? { queue: places.get(taskId) } : {}),
+          ...(starts.has(taskId) ? { scheduledStart: cardStartOf(starts.get(taskId)!) } : {}),
           pauses: pauses.filter(pause => pause.task_id === taskId).map(({ signal, reason, until }) => ({ signal, reason, until,
             ...(signal === "held" || signal === "owner_question" ? { targets: targets[signal].get(taskId) ?? [] } : {}) })),
           activity: scopedActivity.get(taskId),

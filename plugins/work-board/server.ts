@@ -21,6 +21,7 @@ import { planDebtService } from "./plan-debt/service";
 import { checkOutbox } from "./structured/check-outbox";
 import { autoArchiveTasks } from "./lifecycle/task-archive";
 import { sweepPauseSignals } from "./pause/signals";
+import { recoverScheduledStarts, sweepScheduledStarts } from "./schedule/service";
 import { samplePauses } from "./pause/sample";
 import { syncCapacityWaits } from "./attention/capacity-wait";
 import pkg from "./package.json" with { type: "json" };
@@ -76,6 +77,11 @@ export default async function plugin(bb: BbPluginApi) {
   });
 
   bb.background.schedule("git-pr-sync", "* * * * *", () => gitSyncService(bb, store).runDue());
+  // A card's scheduled start: a launch a restart interrupted is unknown (never relaunched), then a pass at startup and one a minute.
+  const interrupted = recoverScheduledStarts(bb.storage.database());
+  if (interrupted) bb.log.warn(`${interrupted} scheduled start(s) were interrupted by a restart; their outcome is unknown and they are not launched again`);
+  void sweepScheduledStarts(bb, store);
+  bb.background.schedule("scheduled-starts", "* * * * *", () => sweepScheduledStarts(bb, store));
   bb.background.schedule("pause-signals", "* * * * *", () => sweepPauseSignals(bb));
   bb.background.schedule("capacity-waits", "* * * * *", () => syncCapacityWaits(bb, store.tasks));
   bb.background.schedule("pause-samples", "*/10 * * * *", () => samplePauses(bb));

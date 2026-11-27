@@ -69,9 +69,10 @@ describe("Tasks plugin scaffold", () => {
     await plugin(bb);
 
     const { schedules, cli, rpcMethods } = harness.registrations;
-    expect(schedules.map(job => job.name).sort()).toEqual(["attention-reconcile", "auto-archive-tasks", "capacity-waits", "checks", "git-pr-sync", "held-check-answers", "pause-samples", "pause-signals", "plan-debt", "queue-scan", "storage-maintenance"]);
-    expect(cli!.commands.filter(cmd => /^schedule(?: |$)/.test(cmd.name))).toEqual([]);
-    expect(rpcMethods.filter(method => /schedule/i.test(method))).toEqual([]);
+    expect(schedules.map(job => job.name).sort()).toEqual(["attention-reconcile", "auto-archive-tasks", "capacity-waits", "checks", "git-pr-sync", "held-check-answers", "pause-samples", "pause-signals", "plan-debt", "queue-scan", "scheduled-starts", "storage-maintenance"]);
+    // Recurring cards moved to Automations; the only schedule surface is a card's scheduled start (schedule/).
+    expect(cli!.commands.filter(cmd => /^schedule(?: |$)/.test(cmd.name)).map(cmd => cmd.name).sort()).toEqual(["schedule"]);
+    expect(rpcMethods.filter(method => /schedule/i.test(method)).sort()).toEqual(["cancelScheduledStart", "changeScheduledStart", "checkScheduledStart", "getScheduledStart", "listScheduledStartLog", "resolveScheduledStart", "scheduleOptions", "scheduleStart"]);
     expect(harness.logEntries).toEqual([
       {
         level: "info",

@@ -927,6 +927,25 @@ const queueResultSchema = z.object({ changeId: z.string(), taskId: idSchema, thr
 /** Where a card stands in an executor's work queue; 1 is the current card. */
 export const cardQueueSchema = z.object({ threadId: z.string(), position: z.number().int().positive() }).strict();
 
+/** A card's scheduled start (schedule/): a time and what launches at it. */
+export const scheduledStartSchema = z.object({
+  id: z.string(), taskId: idSchema, at: z.string(), mode: z.enum(["spawn_gate", "preset"]),
+  state: z.enum(["scheduled", "launching", "launched", "refused", "unknown", "canceled"]),
+  setter: z.string(), builderArgs: z.array(z.string()).optional(), presetId: z.string().optional(), presetName: z.string().optional(), brief: z.string().optional(),
+  threadId: z.string().optional(), parentThreadId: z.string().optional(), error: z.string().optional(), reasonCode: z.string().optional(), policyError: z.string().optional(),
+}).strict();
+/** What the card JSON and the board chips carry of it. */
+export const cardScheduledStartSchema = z.object({
+  at: z.string(), mode: z.enum(["spawn_gate", "preset"]), state: z.enum(["scheduled", "launching", "launched", "refused", "unknown", "canceled"]),
+  setter: z.string(), threadId: z.string().optional(), error: z.string().optional(),
+}).strict();
+const startLaunchInputSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("gate"), args: z.array(z.string()).max(64).optional() }).strict(),
+  z.object({ kind: z.literal("preset"), presetId: idSchema, brief: z.string().max(20_000).optional() }).strict(),
+]);
+const startLogRowSchema = z.object({ id: z.number().int(), taskId: z.string().nullable(), taskKey: z.string().nullable(), projectId: z.string().nullable(), startId: z.string().nullable(), at: z.string(), event: z.string(), actor: z.string().nullable(), detail: z.record(z.string(), z.unknown()) }).strict();
+const scheduleResultSchema = z.object({ scheduledStart: scheduledStartSchema }).strict();
+
 export const tasksRpcContract = {
   pauseReport: {
     input: z.object({ projectId: idSchema, since: z.string().datetime().optional(), until: z.string().datetime().optional() }).strict(),
@@ -960,6 +979,41 @@ export const tasksRpcContract = {
   updateQueueMode: {
     input: z.object({ projectId: idSchema, mode: z.enum(["off", "trial", "on"]) }).strict(),
     output: z.object({ mode: z.enum(["off", "trial", "on"]) }).strict(),
+  },
+  // A card's scheduled start: at its time Work Board launches the session (Spawn Gate's start, or a preset). `actor` is a thread id, or `owner` from the app.
+  scheduleStart: {
+    input: z.object({ taskId: idSchema, at: z.string().min(1), launch: startLaunchInputSchema, actor: z.string().min(1) }).strict(),
+    output: scheduleResultSchema,
+  },
+  changeScheduledStart: {
+    input: z.object({ taskId: idSchema, at: z.string().min(1).optional(), launch: startLaunchInputSchema.optional(), actor: z.string().min(1) }).strict(),
+    output: scheduleResultSchema,
+  },
+  cancelScheduledStart: {
+    input: z.object({ taskId: idSchema, reason: z.string().max(300).optional(), actor: z.string().min(1) }).strict(),
+    output: scheduleResultSchema,
+  },
+  resolveScheduledStart: {
+    input: z.object({ taskId: idSchema, launchedThreadId: z.string().startsWith("thr_").optional(), notLaunched: z.boolean().optional(), actor: z.string().min(1) }).strict().refine((value) => (value.launchedThreadId !== undefined) !== (value.notLaunched === true), "give launchedThreadId or notLaunched, not both"),
+    output: scheduleResultSchema,
+  },
+  getScheduledStart: {
+    input: z.object({ taskId: idSchema }).strict(),
+    output: z.object({ scheduledStart: scheduledStartSchema.nullable() }).strict(),
+  },
+  // What a start form needs: how the project's sessions launch (null when the policy could not be read) and the defaults.
+  scheduleOptions: {
+    input: z.object({ projectId: idSchema }).strict(),
+    output: z.object({ mode: z.enum(["spawn_gate", "preset"]).nullable(), error: z.string().optional(), defaultArgs: z.string(), presets: z.array(z.object({ id: z.string(), name: z.string() }).strict()) }).strict(),
+  },
+  // The dry run of a start form's Check button; a refusal is the answer, not a failure.
+  checkScheduledStart: {
+    input: z.object({ taskId: idSchema, launch: startLaunchInputSchema, actor: z.string().min(1) }).strict(),
+    output: z.object({ ok: z.boolean(), mode: z.enum(["spawn_gate", "preset"]).optional(), error: z.string().optional(), reasonCode: z.string().optional() }).strict(),
+  },
+  listScheduledStartLog: {
+    input: z.object({ taskId: idSchema.optional(), projectId: idSchema.optional(), limit: z.number().int().min(1).max(1000).optional() }).strict().refine((value) => value.taskId || value.projectId, "taskId or projectId is required"),
+    output: z.object({ events: z.array(startLogRowSchema) }).strict(),
   },
   pauseTask: {
     input: z.object({ taskId: idSchema, reason: z.string().trim().min(1).max(300), durationMs: z.number().int().min(60000), actor: z.string().min(1) }).strict(),
@@ -1552,6 +1606,7 @@ export const tasksRpcContract = {
       threadHealth: threadHealthSchema,
       staleStatusFlags: z.array(z.string()).default([]),
       queue: cardQueueSchema.optional(),
+      scheduledStart: cardScheduledStartSchema.optional(),
     }).strict()) }).strict(),
   },
   listTaskPullRequests: {
@@ -1705,6 +1760,8 @@ export type Folder = z.infer<typeof folderSchema>;
 export type Project = z.infer<typeof projectSchema>;
 export type Task = z.infer<typeof taskSchema>;
 export type CardQueue = z.infer<typeof cardQueueSchema>;
+export type ScheduledStartInfo = z.infer<typeof scheduledStartSchema>;
+export type CardScheduledStart = z.infer<typeof cardScheduledStartSchema>;
 export type TaskStatus = z.infer<typeof taskStatusSchema>;
 export type TaskPriority = (typeof TASK_PRIORITIES)[number];
 export type Label = z.infer<typeof labelSchema>;

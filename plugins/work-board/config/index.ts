@@ -12,6 +12,8 @@ import { STALE_GIT_CONFIG, gitSyncConfigSchema, overlapEnabled } from "../shared
 import { ATTENTION_OWNER_ONLY } from "../shared/attention";
 import { setPauseMode } from "../pause/store";
 import { queueMode } from "../queue/store";
+import { startArgsSetting, DEFAULT_START_ARGS } from "../schedule/service";
+import { splitArgs } from "../schedule/when";
 import { kindState } from "../attention/modes";
 import { CHECK_FIELDS, CHECKS_CONFIG_KEYS, CHECKS_ENABLED_OWNER_ONLY, CHECKS_PREFIX, type CheckField } from "../checks/config";
 import { checksService } from "../checks/service";
@@ -34,7 +36,9 @@ type ProjectKey = keyof typeof PROJECT_KEYS;
 const GIT_KEYS = Object.keys(gitSyncConfigSchema.shape) as (keyof z.infer<typeof gitSyncConfigSchema>)[];
 // Stale-status notices (`attentionMode`: off or live) and the manager are the owner's to change in the project settings; the keys are readable here and refused by `config.set`.
 const ATTENTION_KEYS = ["attentionMode", "manager", "autoPause", "queueMode"];
-export const PROJECT_CONFIG_KEYS = [...Object.keys(PROJECT_KEYS), ...ATTENTION_KEYS, ...Object.keys(PR_EVENT_KEYS), ...GIT_KEYS.map((key) => `git.${key}`), ...CHECKS_CONFIG_KEYS];
+// The builder arguments a scheduled start launches Spawn Gate with, `{key}` replaced by the card key.
+const START_ARGS_KEY = "scheduledStartArgs";
+export const PROJECT_CONFIG_KEYS = [...Object.keys(PROJECT_KEYS), ...ATTENTION_KEYS, START_ARGS_KEY, ...Object.keys(PR_EVENT_KEYS), ...GIT_KEYS.map((key) => `git.${key}`), ...CHECKS_CONFIG_KEYS];
 
 /** JSON with object keys sorted, so two values compare equal regardless of key order; array order is kept. */
 const structural = (value: unknown) => JSON.stringify(value, (_key, entry: unknown) =>
@@ -61,6 +65,7 @@ export function projectConfigHandlers(bb: BbPluginApi, store: TasksApiStore) {
       attentionMode: kindState(bb.storage.database(), projectId).effective.mode,
       autoPause: bb.storage.database().prepare<[string], { mode: string }>("SELECT mode FROM pause_modes WHERE project_id=?").get(projectId)?.mode ?? "off",
       queueMode: queueMode(bb.storage.database(), projectId),
+      [START_ARGS_KEY]: startArgsSetting(bb.storage.database(), projectId),
       prEvents: prEventSettings(bb.storage.database(), projectId).events,
       prEventsManager: prEventSettings(bb.storage.database(), projectId).manager,
       manager: bb.storage.database().prepare<[string], { manager: string | null }>("SELECT manager FROM attention_manager WHERE tracker_id=?").get(projectId)?.manager ?? null,
@@ -110,6 +115,17 @@ export function projectConfigHandlers(bb: BbPluginApi, store: TasksApiStore) {
       if (key === "queueMode") throw new Error("the work queue mode (off, trial, on) is changed by the owner in the project settings");
       if (ATTENTION_KEYS.includes(key)) throw new Error(ATTENTION_OWNER_ONLY);
       requireProject(projectId);
+      if (key === START_ARGS_KEY) {
+        if (value !== null && value !== "" && typeof value !== "string") throw new Error(`${key} is the builder arguments as one text, e.g. ${DEFAULT_START_ARGS}`);
+        const text = typeof value === "string" ? value.trim() : "";
+        if (text.length > 500) throw new Error(`${key} is at most 500 characters`);
+        if (text) splitArgs(text);
+        const db = bb.storage.database();
+        if (text) db.prepare<[string, string]>("INSERT INTO scheduled_start_settings(project_id,args) VALUES (?,?) ON CONFLICT(project_id) DO UPDATE SET args=excluded.args").run(projectId, text);
+        else db.prepare<[string]>("DELETE FROM scheduled_start_settings WHERE project_id=?").run(projectId);
+        publishProjectsChanged(bb, projectId);
+        return { projectId, key, value: startArgsSetting(db, projectId) };
+      }
       if (key in PR_EVENT_KEYS)
         return { projectId, key, value: setPrEventSetting(bb.storage.database(), projectId, key as keyof typeof PR_EVENT_KEYS, value) };
       if (key.startsWith(CHECKS_PREFIX)) {

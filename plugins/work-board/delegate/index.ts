@@ -52,7 +52,7 @@ const presetExecutionSchema = z
 
 type DelegationErrorCode = "project_not_linked" | "spawn_target_invalid";
 
-class DelegationError extends Error {
+export class DelegationError extends Error {
   constructor(
     readonly code: DelegationErrorCode,
     message: string,

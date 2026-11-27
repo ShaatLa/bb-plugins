@@ -1,7 +1,7 @@
 import type { CardPause } from "../../shared/pause.js";
 import type { TaskAdvisory } from "../../shared/task-advisories";
 import { samePolledMetadata, useActivityPoll, useAdvisoryRecheck } from "../../shell/activity-poll";
-import { tasksRpcContract, type CardQueue } from "../../shared/contract";
+import { tasksRpcContract, type CardQueue, type CardScheduledStart } from "../../shared/contract";
 import { useEffect, useMemo, useRef } from "react";
 import { loadTaskDataset, taskDatasetSnapshot } from "../../shell/task-dataset";
 import { taskBatches } from "../../shell/task-batches";
@@ -123,6 +123,7 @@ export interface TaskRowMeta {
   activity?: TaskActivity;
   pauses?: CardPause[];
   queue?: CardQueue;
+  scheduledStart?: CardScheduledStart;
   activeThreads: TaskThread[];
   threadHealth: ThreadHealth;
 }
@@ -130,8 +131,8 @@ export interface TaskRowMeta {
 async function readListMeta(rpc: TasksRpc, ids: string[]) {
   const rows = await taskBatches(ids, async (taskIds) => (await rpc.call("listTaskCardMeta", { taskIds })).metadata);
   return new Map(rows
-    .filter((row) => row.advisories?.length || row.blockedBy?.length || row.activity?.state || row.pauses?.length || row.queue || row.threadHealth.failed.length > 0 || row.threadHealth.idle !== null)
-    .map((row) => [row.taskId, { activeThreads: row.taskThreads.filter(isActiveThread), threadHealth: row.threadHealth, activity: row.activity, pauses: row.pauses, queue: row.queue, advisories: row.advisories, blockedBy: row.blockedBy }]));
+    .filter((row) => row.advisories?.length || row.blockedBy?.length || row.activity?.state || row.pauses?.length || row.queue || row.scheduledStart || row.threadHealth.failed.length > 0 || row.threadHealth.idle !== null)
+    .map((row) => [row.taskId, { activeThreads: row.taskThreads.filter(isActiveThread), threadHealth: row.threadHealth, activity: row.activity, pauses: row.pauses, queue: row.queue, scheduledStart: row.scheduledStart, advisories: row.advisories, blockedBy: row.blockedBy }]));
 }
 async function patchListMeta(rpc: TasksRpc, current: ReadonlyMap<string, TaskRowMeta>, signals: readonly TaskSignal[]) {
   const ids = [...new Set([...signalTaskIds(signals, "threads:changed"), ...signalTaskIds(signals, "tasks:changed"), ...signalTaskIds(signals, "prs:changed")])];

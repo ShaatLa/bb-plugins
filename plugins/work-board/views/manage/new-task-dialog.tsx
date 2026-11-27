@@ -46,12 +46,14 @@ import { Button } from "@/components/ui/button";
 import { Icon } from "@/components/ui/icon";
 import { cn } from "@/lib/utils";
 import { CheckboxField, DEFAULT_COLOR } from "./shared.js";
+import { BLANK_START, StartLaterForm, isoOf, launchOf, type StartLaterValue } from "../../components/start-later-form.js";
 import {
   clearNewTaskDraft,
   hasDraftContent,
   type NewTaskDraft,
 } from "./new-task-draft.js";
 import { PRIORITY_LABELS } from "../list/lib.js";
+import { taskHref } from "../../shared/task-link.js";
 
 const CHIP_TRIGGER =
   "h-7 w-auto gap-1.5 rounded-md px-2 text-xs text-muted-foreground";
@@ -197,6 +199,10 @@ export function NewTaskDialog({
   const [creatingLabel, setCreatingLabel] = useState(false);
   const [pendingFiles, setPendingFiles] = useState<StagedAttachment[]>([]);
   const [createdTask, setCreatedTask] = useState<Task | null>(null);
+  // "Start later": the card is created first, then scheduled. A refused schedule keeps the card and offers a retry on it.
+  const [startLater, setStartLater] = useState<StartLaterValue | null>(null);
+  const [startMode, setStartMode] = useState<"spawn_gate" | "preset" | null>(null);
+  const [scheduleError, setScheduleError] = useState<string | null>(null);
   // The kind is chosen before editing; Back returns here without touching draft or files.
   const [step, setStep] = useState<Step>("choose");
   const titleRef = useRef<HTMLInputElement>(null);
@@ -361,14 +367,35 @@ export function NewTaskDialog({
   }, [step]);
 
   const requestClose = (next: boolean) => {
-    if (!next && createdTask !== null && pendingFiles.length > 0) return;
+    if (!next && createdTask !== null && (pendingFiles.length > 0 || scheduleError !== null)) return;
     onOpenChange(next);
   };
 
   useEffect(() => {
-    if (createdTask && pendingFiles.length === 0) finish(createdTask);
+    if (createdTask && pendingFiles.length === 0 && scheduleError === null) finish(createdTask);
     // oxlint-disable-next-line react/exhaustive-deps
-  }, [createdTask, pendingFiles.length]);
+  }, [createdTask, pendingFiles.length, scheduleError]);
+
+  /** The start the form asks for, or null while it is incomplete. */
+  const startRequest = (() => {
+    if (startLater === null || startMode === null) return null;
+    const at = isoOf(startLater.at);
+    if (at === null || (startMode === "preset" && startLater.presetId === "")) return null;
+    return { at, launch: launchOf(startLater, startMode) };
+  })();
+  /** Schedules the card; a refusal keeps it open on the new card with the error. Returns whether it failed. */
+  const scheduleCard = async (task: Task): Promise<boolean> => {
+    if (!startRequest) return false;
+    try {
+      await rpc.call("scheduleStart", { taskId: task.id, at: startRequest.at, launch: startRequest.launch, actor: "owner" });
+      setScheduleError(null);
+      return false;
+    } catch (scheduleFailure) {
+      setCreatedTask(task);
+      setScheduleError(errorMessage(scheduleFailure));
+      return true;
+    }
+  };
 
   const hasOversized = pendingFiles.some(
     (entry) => entry.status === "oversized",
@@ -383,6 +410,7 @@ export function NewTaskDialog({
     labels.data !== undefined &&
     labels.error === null &&
     !hasOversized &&
+    (startLater === null || startRequest !== null) &&
     createdTask === null;
 
   const submit = async () => {
@@ -409,6 +437,7 @@ export function NewTaskDialog({
         setError(result.error.message);
         return;
       }
+      const scheduleFailed = await scheduleCard(result.task);
       const staged = pendingFiles.filter((entry) => entry.status === "staged");
       const failed = await uploadStagedAttachments(staged, {
         taskId: result.task.id,
@@ -418,6 +447,7 @@ export function NewTaskDialog({
         setCreatedTask(result.task);
         return;
       }
+      if (scheduleFailed) return;
       if (createMore) {
         setDraft((current) => ({
           ...current,
@@ -426,6 +456,7 @@ export function NewTaskDialog({
           labelIds: [],
           dueDate: "",
         }));
+        setStartLater(null);
         setPendingFiles([]);
         titleRef.current?.focus();
       } else {
@@ -522,15 +553,35 @@ export function NewTaskDialog({
         ) : null}
         {createdTask ? (
           <div className="min-h-0 flex-auto overflow-y-auto px-4 pt-2">
-            <p role="alert" className="text-sm">
-              Task <span className="font-medium">{createdTask.key}</span> was
-              created, but {failedCount} attachment
-              {failedCount === 1 ? "" : "s"} failed to upload.
-            </p>
-            <p className="mt-1 text-xs text-muted-foreground">
-              Retry the uploads below, remove a file to skip it, or skip them
-              all and open the task.
-            </p>
+            {scheduleError !== null ? (
+              <>
+                <p role="alert" className="text-sm">
+                  Task <a className="font-medium underline" href={taskHref(createdTask.key)}>{createdTask.key}</a> was
+                  created, but its start was not scheduled: {scheduleError}
+                </p>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  Change the time or the launch below and retry. The retry schedules this card; it never creates another one.
+                </p>
+                {startLater !== null ? (
+                  <div className="mt-2">
+                    <StartLaterForm projectId={createdTask.projectId} taskId={createdTask.id} value={startLater} onChange={setStartLater} onReady={setStartMode} disabled={submitting} />
+                  </div>
+                ) : null}
+              </>
+            ) : null}
+            {failedCount > 0 ? (
+              <>
+                <p role="alert" className="text-sm">
+                  Task <span className="font-medium">{createdTask.key}</span> was
+                  created, but {failedCount} attachment
+                  {failedCount === 1 ? "" : "s"} failed to upload.
+                </p>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  Retry the uploads below, remove a file to skip it, or skip them
+                  all and open the task.
+                </p>
+              </>
+            ) : null}
             <div className="mt-3 flex flex-wrap gap-1.5">
               {pendingFiles.map((entry) => (
                 <AttachmentChip
@@ -739,6 +790,12 @@ export function NewTaskDialog({
             />
           </div>
         </div>
+        <div className={cn("shrink-0 px-4 pt-2", createdTask && "hidden")}>
+          <CheckboxField checked={startLater !== null} onCheckedChange={(checked) => setStartLater(checked ? { ...BLANK_START } : null)} label="Start later" />
+          {startLater !== null && effectiveProjectId !== null ? (
+            <div className="mt-2"><StartLaterForm projectId={effectiveProjectId} value={startLater} onChange={setStartLater} onReady={setStartMode} disabled={submitting} /></div>
+          ) : null}
+        </div>
         </>
         ) : null}
         {error || labels.error ? (
@@ -765,9 +822,19 @@ export function NewTaskDialog({
           ) : createdTask ? (
             <>
               <span />
-              <Button size="sm" onClick={() => finish(createdTask)}>
-                Skip attachments and open task
-              </Button>
+              <div className="flex items-center gap-1.5">
+                {scheduleError !== null ? (
+                  <Button size="sm" disabled={submitting || startRequest === null} onClick={async () => {
+                    setSubmitting(true);
+                    try { await scheduleCard(createdTask); } finally { setSubmitting(false); }
+                  }}>
+                    Retry scheduling
+                  </Button>
+                ) : null}
+                <Button size="sm" variant={scheduleError !== null ? "ghost" : "default"} onClick={() => finish(createdTask)}>
+                  {scheduleError !== null ? "Open task without a schedule" : "Skip attachments and open task"}
+                </Button>
+              </div>
             </>
           ) : (
             <>

@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { QueueBlock } from "./queue-block.js";
-import type { CardQueue } from "../../shared/contract.js";
+import { ScheduleBlock } from "./schedule-block.js";
+import type { CardQueue, CardScheduledStart } from "../../shared/contract.js";
 import { ConfirmDeleteDialog, ConfirmDeleteDialogContent } from "@/components/ui/confirm-delete-dialog";
 import { cn } from "@/lib/utils";
 import { THREAD_STATUS_META, formatRelativeTime } from "./meta.js";
@@ -18,7 +19,7 @@ import { StatusIcon } from "../../components/status-icon.js";
 import { useTaskStatuses } from "../../shell/task-statuses.js";
 import { useOpenThread } from "../../components/open-thread";
 
-export function ActivityStatus({ task, queue, activity, advisories, isFetching, error, threads, pullRequests, unavailableThreadIds, onDetach, onError, onStatusChange }: { task: Task; queue?: CardQueue; activity?: TaskActivity; advisories?: TaskAdvisory[]; isFetching: boolean; error: string | null; threads: TaskThread[]; pullRequests?: TaskPullRequest[]; unavailableThreadIds: string[]; onDetach: (thread: TaskThread) => Promise<void>; onError: (message: string) => void; onStatusChange: (status: Task["status"]) => void }) {
+export function ActivityStatus({ task, queue, scheduledStart, activity, advisories, isFetching, error, threads, pullRequests, unavailableThreadIds, onDetach, onError, onStatusChange }: { task: Task; queue?: CardQueue; scheduledStart?: CardScheduledStart; activity?: TaskActivity; advisories?: TaskAdvisory[]; isFetching: boolean; error: string | null; threads: TaskThread[]; pullRequests?: TaskPullRequest[]; unavailableThreadIds: string[]; onDetach: (thread: TaskThread) => Promise<void>; onError: (message: string) => void; onStatusChange: (status: Task["status"]) => void }) {
   const openThread = useOpenThread();
   const [confirm, setConfirm] = useState<TaskThread | null>(null);
   const [choosing, setChoosing] = useState(false);
@@ -72,6 +73,7 @@ export function ActivityStatus({ task, queue, activity, advisories, isFetching, 
         </ConfirmDeleteDialog>
       </div> : null}
       {!task.archivedAt ? <div className="mt-2 border-t border-border pt-2"><div className="mb-1 text-2xs text-muted-foreground">Queue</div><QueueBlock taskId={task.id} projectId={task.projectId} queue={queue} /></div> : null}
+      {!task.archivedAt ? <div className="mt-2 border-t border-border pt-2"><div className="mb-1 text-2xs text-muted-foreground">Scheduled start</div><ScheduleBlock taskId={task.id} projectId={task.projectId} taskKey={task.key} start={scheduledStart} /></div> : null}
     </section>
   );
 }

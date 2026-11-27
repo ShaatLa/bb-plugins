@@ -14,11 +14,12 @@ import { resolveRoles } from "../../shared/status-roles.js";
 
 import type { TaskActivity } from "../../shared/task-activity.js";
 import type { CardPause } from "../../shared/pause.js";
-import type { CardQueue } from "../../shared/contract.js";
+import type { CardQueue, CardScheduledStart } from "../../shared/contract.js";
 
 export interface BoardCardMeta {
   pauses?: CardPause[];
   queue?: CardQueue;
+  scheduledStart?: CardScheduledStart;
   blockedBy?: DependencyTask[];
   advisories?: TaskAdvisory[];
   activity?: TaskActivity;
@@ -179,6 +180,7 @@ async function cardMetadata(rpc: TasksRpc, taskIds: string[]) {
     blockedBy: entry.blockedBy,
     pauses: entry.pauses,
     queue: entry.queue,
+    scheduledStart: entry.scheduledStart,
     advisories: entry.advisories,
     attachmentCount: entry.attachmentCount,
   });

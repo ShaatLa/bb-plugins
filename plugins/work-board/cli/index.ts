@@ -84,6 +84,8 @@ import { ACTIVITY_LABELS } from "../shared/task-activity.js";
 import { threadHealthJson } from "../shared/thread-health";
 import { checksCliCommands } from "../checks/cli";
 import { queueCliCommands } from "../queue/cli";
+import { formatStartTime } from "../schedule/when";
+import { launchFromOptions, scheduleCliCommands, startSummary, actorOf as scheduleActor } from "../schedule/cli";
 import { LITERAL_TEXT_FIELDS } from "../checks/config";
 import { planCommands } from "./plan";
 import { planAdvisory } from "../shared/plan";
@@ -1046,6 +1048,11 @@ export function registerTasksCli(
               String(result.limitations),
             ].join("\n");
           }); },
+        }),
+        ...scheduleCliCommands({
+          domain, guard, task: (address) => resolveTask(domain, address), project: (address) => resolveProject(domain, address), fail: (message) => new CliError(message),
+          preset: async (address) => resolvePreset(await listPresets(domain), address),
+          readText: async (ctx, file) => (await readTextOption(bb, ctx, undefined, undefined, file)) ?? "",
         }),
         ...queueCliCommands({ domain, group: groupCommand, guard, task: (address) => resolveTask(domain, address), project: (address) => resolveProject(domain, address), fail: (message) => new CliError(message) }),
         ...checksCliCommands(bb, { group: groupCommand, guard, project: (ctx, address) => requiredProject(domain, ctx, address) }),
@@ -2579,9 +2586,19 @@ export function registerTasksCli(
               description:
                 "File to attach, repeatable; read from the invoking machine, at most 25 MB each",
             },
+            "start-at": {
+              type: "string",
+              placeholder: "time",
+              description:
+                "Schedule the card's start after creating it: an ISO time with an offset or +30m, +2h, +1d (at least 2 minutes ahead). Add --start-gate (builder arguments after `--`) or --start-preset. Nothing is sent to the session before it starts; see `bb work-board schedule --help`",
+            },
+            "start-gate": { type: "boolean", description: "With --start-at: launch through the project's Spawn Gate builder; its arguments go after `--`" },
+            "start-preset": { type: "string", placeholder: "name-or-id", description: "With --start-at: launch from this agent preset" },
+            "start-brief-file": { type: "string", placeholder: "path", description: "With --start-preset: extra brief text for the session, read from this UTF-8 file" },
             machine: MACHINE_OPTION,
             json: JSON_OPTION,
           },
+          passthrough: true,
           constraints: [
             {
               kind: "at-most-one",
@@ -2591,6 +2608,10 @@ export function registerTasksCli(
           run(input, ctx) {
             return guard(async () => {
               rejectExecutors(input.options);
+              const startLaunch = input.options["start-at"]
+                ? await launchFromOptions({ domain, guard, task: (address) => resolveTask(domain, address), project: (address) => resolveProject(domain, address), fail: (message) => new CliError(message), preset: async (address) => resolvePreset(await listPresets(domain), address), readText: async (hostCtx, file) => (await readTextOption(bb, hostCtx, undefined, undefined, file)) ?? "" }, ctx, { gate: input.options["start-gate"], preset: input.options["start-preset"], briefFile: input.options["start-brief-file"] }, input.passthrough, true)
+                : undefined;
+              if (!input.options["start-at"] && (input.options["start-gate"] || input.options["start-preset"] || input.passthrough.length)) throw new CliError("--start-gate, --start-preset and arguments after `--` need --start-at");
               const attachPaths = input.options.attach.map((path) =>
                 resolve(ctx.cwd ?? process.cwd(), path),
               );
@@ -2682,11 +2703,18 @@ export function registerTasksCli(
                   });
                 }
               }
+              // The card stays when its schedule is refused: the error says so and the exit code is nonzero.
+              let scheduled: Awaited<ReturnType<typeof domain.scheduleStart>>["scheduledStart"] | undefined;
+              let scheduleError: string | undefined;
+              if (startLaunch) {
+                try { scheduled = (await domain.scheduleStart({ taskId: task.id, at: input.options["start-at"]!, launch: startLaunch, actor: scheduleActor(ctx) })).scheduledStart; } catch (error) { scheduleError = friendlyError(error); }
+              }
               const stdout = input.options.json
-                ? JSON.stringify({ task, link: taskMarkdownLink(task.key), attachments, failedAttachments })
+                ? JSON.stringify({ task, link: taskMarkdownLink(task.key), attachments, failedAttachments, ...(scheduled ? { scheduledStart: scheduled } : {}), ...(scheduleError ? { scheduleError } : {}) })
                 : [
                     `Created ${task.key}  ${task.title}`,
                     `Link: ${taskMarkdownLink(task.key)}`,
+                    ...(scheduled ? [startSummary(task.key, scheduled)] : []),
                     ...attachments.map(
                       (attachment) =>
                         `Attached ${attachment.fileName}  ${attachment.id}`,
@@ -2700,11 +2728,14 @@ export function registerTasksCli(
                         `Retry with: bb work-board attachment add ${task.key} --file ${entry.path}`,
                     ),
                   ].join("\n");
-              if (failedAttachments.length === 0) return stdout;
+              if (failedAttachments.length === 0 && !scheduleError) return stdout;
               return {
                 exitCode: 1,
                 stdout,
-                stderr: `created ${task.key}, but ${failedAttachments.length} of ${attachPaths.length} attachments failed; see stdout for per-file recovery commands`,
+                stderr: [
+                  ...(failedAttachments.length ? [`created ${task.key}, but ${failedAttachments.length} of ${attachPaths.length} attachments failed; see stdout for per-file recovery commands`] : []),
+                  ...(scheduleError ? [`created ${task.key}, but its start was not scheduled: ${scheduleError}. Schedule it with: bb work-board schedule ${task.key} --at <time> --gate | --preset <name>`] : []),
+                ].join("\n"),
               };
             });
           },
@@ -3069,6 +3100,7 @@ export function registerTasksCli(
                   automaticPause: automatic,
                   task: { ...task, waitingOnOwner: waiting },
                   ...(cardMeta.queue ? { queue: cardMeta.queue } : {}),
+                  ...(cardMeta.scheduledStart ? { scheduledStart: cardMeta.scheduledStart } : {}),
                   link: taskMarkdownLink(task.key),
                   startHint: hint,
                   planning,
@@ -3124,6 +3156,7 @@ export function registerTasksCli(
                   ["Status", task.status],
                   ["Automatic pause", automatic],
                   ...(cardMeta.queue ? [["Queue", cardMeta.queue.position === 1 ? `Current for ${cardMeta.queue.threadId}` : `Queued #${cardMeta.queue.position} for ${cardMeta.queue.threadId}`] as const] : []),
+                  ...(cardMeta.scheduledStart ? [["Scheduled start", `${cardMeta.scheduledStart.state === "scheduled" ? `Scheduled for ${formatStartTime(cardMeta.scheduledStart.at)}` : cardMeta.scheduledStart.state === "launched" ? `Launched ${cardMeta.scheduledStart.threadId}` : `Start ${cardMeta.scheduledStart.state}${cardMeta.scheduledStart.error ? `: ${cardMeta.scheduledStart.error}` : ""}`}, ${cardMeta.scheduledStart.mode === "spawn_gate" ? "Spawn Gate" : "preset"}, set by ${cardMeta.scheduledStart.setter}`] as const] : []),
                   ...pauses.map(pause => ["Paused", `${pause.reason}${pause.until ? `, until ${pause.until}` : ""}`] as const),
                   ["Blocked by", dependencies.blockedBy.map(blocker => `${blocker.key} (${blocker.status}${blocker.status === resolveRoles(project).done ? "; satisfied" : "; waiting for Done"})`).join(", ") || "-"],
                   ["Blocks", dependencies.blocks.map(dependent => `${dependent.key} (${dependent.status})`).join(", ") || "-"],

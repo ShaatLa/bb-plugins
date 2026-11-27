@@ -1190,6 +1190,36 @@ export const MIGRATIONS = [
   `ALTER TABLE task_pauses ADD COLUMN coverage_started_at TEXT;
    ALTER TABLE pause_log ADD COLUMN coverage_started_at TEXT;
    ALTER TABLE pause_log ADD COLUMN pause_started_at TEXT;`,
+  // A card's scheduled start (schedule/): this machine's runtime state like held answers, never exported. At most one active start per card.
+  `CREATE TABLE scheduled_starts (
+     id TEXT PRIMARY KEY,
+     task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+     project_id TEXT NOT NULL,
+     start_at TEXT NOT NULL,
+     mode TEXT NOT NULL CHECK(mode IN ('spawn_gate','preset')),
+     builder_args TEXT, preset_id TEXT, extra_instructions TEXT,
+     setter TEXT NOT NULL,
+     state TEXT NOT NULL CHECK(state IN ('scheduled','launching','launched','refused','unknown','canceled')),
+     launch_id TEXT, policy_error TEXT, attempted_at TEXT, thread_id TEXT, parent_thread_id TEXT,
+     attached INTEGER NOT NULL DEFAULT 0, error TEXT, reason_code TEXT,
+     created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+   );
+   CREATE UNIQUE INDEX one_active_start ON scheduled_starts(task_id) WHERE state IN ('scheduled','launching','unknown');
+   CREATE INDEX scheduled_starts_due ON scheduled_starts(state, start_at);
+   CREATE INDEX scheduled_starts_task ON scheduled_starts(task_id, created_at);
+   CREATE TABLE scheduled_start_log (
+     id INTEGER PRIMARY KEY AUTOINCREMENT, task_id TEXT, task_key TEXT, project_id TEXT, start_id TEXT,
+     at TEXT NOT NULL, event TEXT NOT NULL, actor TEXT, detail TEXT
+   );
+   CREATE INDEX scheduled_start_log_task ON scheduled_start_log(task_id, id);
+   CREATE INDEX scheduled_start_log_project ON scheduled_start_log(project_id, id);
+   CREATE TABLE scheduled_start_notices (
+     notice_id TEXT PRIMARY KEY, start_id TEXT NOT NULL, project_id TEXT NOT NULL, task_id TEXT NOT NULL, task_key TEXT NOT NULL, setter TEXT NOT NULL,
+     kind TEXT NOT NULL, detail TEXT NOT NULL, created_at TEXT NOT NULL,
+     state TEXT NOT NULL CHECK(state IN ('pending','sending','sent','unknown','unknown_on_card','failed_on_card','on_card')),
+     attempts INTEGER NOT NULL DEFAULT 0, recipient TEXT, attempted_at TEXT, next_at TEXT, cursor TEXT, last_error TEXT
+   );
+   CREATE TABLE scheduled_start_settings (project_id TEXT PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE, args TEXT NOT NULL);`,
 ] as const;
 
 /** Approval rows written before the comment id existed: the N-th row is the N-th approving review comment, only where the counts agree. */
