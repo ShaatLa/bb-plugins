@@ -39,5 +39,5 @@ function QueuePlace({ queue, total }: { queue: CardQueue; total?: number }) {
   const open = useOpenThread();
   const n = queue.position;
   const suffix = n % 100 >= 11 && n % 100 <= 13 ? "th" : n % 10 === 1 ? "st" : n % 10 === 2 ? "nd" : n % 10 === 3 ? "rd" : "th";
-  return <span>{total === undefined ? "In the queue of " : `${n}${suffix} of ${total} in the queue of `}<button type="button" className="hover:underline" onClick={() => open(queue.threadId)}>{name}</button></span>;
+  return <span className="min-w-0 truncate">{total === undefined ? "In the queue of " : `${n}${suffix} of ${total} in the queue of `}<button type="button" className="hover:underline" onClick={() => open(queue.threadId)}>{name}</button></span>;
 }
