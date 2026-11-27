@@ -17,7 +17,7 @@ export function QueueBlock({ taskId, projectId, queue }: { taskId: string; proje
   const [error, setError] = useState<string | null>(null);
   return (
     <div className="grid gap-1 text-xs">
-      <div className="flex min-w-0 items-center gap-2">
+      <div className="flex min-w-0 items-start gap-2">
         {queue ? <QueuePlace queue={queue} total={queues.data?.find((item) => item.threadId === queue.threadId)?.entries.length} /> : <span className="text-muted-foreground">Not in a work queue</span>}
         {queue ? (
           <Button asChild size="icon" variant="ghost" className="ml-auto size-6 shrink-0 text-muted-foreground"><button type="button" aria-label="Remove from queue" title="Remove from queue" disabled={busy} onClick={async () => {
@@ -37,7 +37,6 @@ export function QueueBlock({ taskId, projectId, queue }: { taskId: string; proje
 function QueuePlace({ queue, total }: { queue: CardQueue; total?: number }) {
   const name = useThreadName(queue.threadId);
   const open = useOpenThread();
-  const n = queue.position;
-  const suffix = n % 100 >= 11 && n % 100 <= 13 ? "th" : n % 10 === 1 ? "st" : n % 10 === 2 ? "nd" : n % 10 === 3 ? "rd" : "th";
-  return <span className="min-w-0 truncate">{total === undefined ? "In the queue of " : `${n}${suffix} of ${total} in the queue of `}<button type="button" className="hover:underline" onClick={() => open(queue.threadId)}>{name}</button></span>;
+  // The section is titled Queue already, so the place stays short and a long session name wraps instead of being cut.
+  return <span className="min-w-0 [overflow-wrap:anywhere]">{total === undefined ? `#${queue.position}` : `${queue.position} of ${total}`} · <button type="button" className="max-w-full text-left hover:underline" onClick={() => open(queue.threadId)}>{name}</button></span>;
 }

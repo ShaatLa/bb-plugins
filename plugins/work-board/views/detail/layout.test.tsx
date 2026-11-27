@@ -29,7 +29,7 @@ afterEach(() => { cleanup(); TestResizeObserver.all.clear(); });
 const PROJECT_ID = "01HZZZZZZZZZZZZZZZZZZZZZP1";
 const task = makeTask({ id: "01HZZZZZZZZZZZZZZZZZZZZZT5", projectId: PROJECT_ID, number: 5, key: "TSK-5", title: "Ship the rail", position: 1 });
 
-function render(surface: "main" | "side" = "main", withThread = false, queued = false) {
+function render(surface: "main" | "side" = "main", withThread = false, queued = false, queuesPending = false) {
   const options = {
     sdk: { threads: { get: async () => makeThreadResponse({ id: "thr_example", title: "Example worker" }), list: async () => [] } },
     rpc: {
@@ -49,7 +49,7 @@ function render(surface: "main" | "side" = "main", withThread = false, queued = 
       listBbProjects: () => ({ bbProjects: [] }),
       listTaskCardMeta: () => ({ metadata: queued ? [{ taskId: task.id, taskThreads: [], queue: { threadId: "thr_example", position: 2 } }] : [] }),
       queueRemove: () => ({}),
-      queueList: () => ({ queues: [{ projectId: PROJECT_ID, threadId: "thr_example", entries: [1, 2, 3, 4].map((position) => ({ position })) }] }),
+      queueList: () => (queuesPending ? new Promise(() => {}) : { queues: [{ projectId: PROJECT_ID, threadId: "thr_example", entries: [1, 2, 3, 4].map((position) => ({ position })) }] }),
     },
   };
   return surface === "main"
@@ -73,11 +73,17 @@ describe("task view layout", () => {
     fireEvent.click(within(activity).getByRole("button", { name: "Add to queue of …" }));
     expect(await slot.findByRole("dialog", { name: "Add to a work queue" })).toBeTruthy();
   });
+  it("shows the queue place without the total while the queue loads", async () => {
+    const slot = render("main", false, true, true);
+    const activity = await slot.findByRole("region", { name: "Task activity status" });
+    await waitFor(() => expect(activity.textContent).toContain("#2 · Example worker"));
+    expect(callCount(slot, "queueList")).toBeGreaterThan(0);
+  });
   it.each([480, 640])("shows the queue position in the status card at %ipx", async (width) => {
     setWidth(width);
     const slot = render("main", false, true);
     const activity = await slot.findByRole("region", { name: "Task activity status" });
-    await waitFor(() => expect(activity.textContent).toContain("2nd of 4 in the queue of"));
+    await waitFor(() => expect(activity.textContent).toContain("2 of 4 · Example worker"));
     expect(slot.getAllByRole("button", { name: "Remove from queue" })).toHaveLength(1);
     fireEvent.click(within(activity).getByRole("button", { name: "Remove from queue" }));
     await waitFor(() => expect(slot.rpcCalls).toContainEqual(expect.objectContaining({ method: "queueRemove", input: { taskId: task.id, actor: "owner" } })));
