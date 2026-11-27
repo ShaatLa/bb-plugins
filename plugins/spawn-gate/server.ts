@@ -50,7 +50,7 @@ export default async function plugin(bb: BbPluginApi) {
   const settings = bb.settings.define({
     paceThreshold: {
       type: "number", label: "Weekly provider pace threshold", default: defaultPaceThreshold,
-      description: "At this ratio or higher, require a reason if another provider eligible for the role is below pace and has quota remaining.",
+      description: "At this ratio or higher, apply the role's provider pace fallback or refusal policy.",
       experimental_schema: z.number().min(1),
     },
   });

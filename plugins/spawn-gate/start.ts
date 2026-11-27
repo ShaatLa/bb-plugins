@@ -6,7 +6,7 @@ import { z } from "zod";
 import { invalidBranch, isBuilderBranch } from "./branch";
 import type { RecordMetric } from "./metrics";
 import { assessPace, defaultPaceThreshold, paceReport, providerPolicy } from "./pace";
-import { placeOnMachine, requireHeavySlots, resolveMachine } from "./placement";
+import { placeOnMachine, requireHeavySlots, requireProviderReady, resolveMachine } from "./placement";
 import { invalidRemote, isBuilderRemote } from "./remote";
 import { isProcessPath, type ProcessSource, type ResolveProcessSource } from "./process-source";
 
@@ -203,6 +203,7 @@ export function createStart(bb: BbPluginApi, mint: (request: { projectId: string
       reason = "builder_error";
       const env = {
         ...await builderEnvironment(), BB_PROJECT_ID: request.projectId, BB_THREAD_ID: request.parentThreadId,
+        BB_SPAWN_GATE_ORDERED_FALLBACK: "1",
         ...(host ? { BB_SPAWN_HOST_ID: host.id } : {}),
       };
       const python = script.endsWith(".py") ? await executable("python3", env) : undefined;
@@ -215,9 +216,10 @@ export function createStart(bb: BbPluginApi, mint: (request: { projectId: string
       const build = buildSchema.parse(parsed);
       if (build.spawn.parentThreadId !== request.parentThreadId) throw new Error("Builder parent must match the requested parent. Copy parentThreadId from the builder stdin into spawn.parentThreadId");
       const selected = build.spawn.providerId;
-      if (build.providerPolicy && (!selected || !build.providerPolicy.eligible.some(item => item.providerId === selected))) {
+      const eligible = build.providerPolicy?.eligible.find(item => item.providerId === selected);
+      if (build.providerPolicy && (!eligible || (build.providerPolicy.pinned && eligible.model !== build.spawn.model))) {
         reason = "provider_not_allowed";
-        throw new Error("Set spawn.providerId to one of the providers eligible for the requested role. A pace reason cannot override role restrictions.");
+        throw new Error("Set spawn.providerId to an eligible provider and use its listed model for a pin. A pace reason cannot override role restrictions.");
       }
       if (host) {
         reason = "host_error";
@@ -247,11 +249,31 @@ export function createStart(bb: BbPluginApi, mint: (request: { projectId: string
           hostId = (await bb.sdk.environments.get({ environmentId: parent.environmentId })).hostId;
         }
         reason = "over_pace";
-        const { report, summary } = await assessPace(bb, build.providerPolicy, { providerId: selected, model: build.spawn.model },
+        const { report, summary, fallback } = await assessPace(bb, build.providerPolicy, { providerId: selected, model: build.spawn.model },
           hostId ?? undefined, await paceThreshold(), signal);
         providerPace = report;
-        const override = report.overridden ? "\nPace override accepted for the requested provider." : "";
-        build.brief = briefInput.parse(`${build.brief}\n\n## Provider pace\n${summary}${override}`);
+        let overrideNote = "";
+        if (report.override) {
+          const { providerId, pace, threshold, reason } = report.override;
+          const quotedReason = reason.split(/\r\n|[\r\n]/).map(line => `> ${line}`).join("\n");
+          overrideNote = `\nPace override for pinned ${providerId} at ${pace.toFixed(2)} (threshold ${threshold.toFixed(2)}).\n${quotedReason}`;
+        } else if (report.overridden) {
+          overrideNote = "\nPace override accepted for the requested provider.";
+        }
+        let fallbackNote = "";
+        if (fallback && report.fallback) {
+          build.spawn.providerId = fallback.providerId;
+          build.spawn.model = fallback.model;
+          build.spawn.reasoningLevel = fallback.reasoningLevel;
+          delete build.spawn.serviceTier;
+          const { fromProviderId, toProviderId, pace, threshold } = report.fallback;
+          fallbackNote = `\nSelected ${toProviderId} because ${fromProviderId} reached pace ${pace.toFixed(2)} (threshold ${threshold.toFixed(2)}).`;
+        }
+        build.brief = briefInput.parse(`${build.brief}\n\n## Provider pace\n${summary}${overrideNote}${fallbackNote}`);
+      }
+      if (host) {
+        reason = "host_error";
+        await requireProviderReady(bb.sdk, host, build.spawn.providerId, signal);
       }
       signal.throwIfAborted();
       const common = { projectId: request.projectId, parentThreadId: request.parentThreadId, sourceBranch, sourceCommit,
@@ -275,7 +297,11 @@ export function createStart(bb: BbPluginApi, mint: (request: { projectId: string
     queues.set(request.projectId, next);
     try {
       const result = await next;
-      record(request.projectId, mode, "success");
+      const pace = result.dryRun ? undefined : result.providerPace;
+      record(request.projectId, mode, "success", pace?.fallback || pace?.override ? {
+        fallback: pace.fallback, override: pace.override,
+        parentThreadId: request.parentThreadId, sourceCommit, card: builderCard(request.args),
+      } : undefined);
       return result;
     } catch (error) {
       if (tracked) {

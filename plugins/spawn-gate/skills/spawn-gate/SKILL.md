@@ -33,10 +33,11 @@ on the bb server. Pass `--requires-heavy-lease` for a child that will need a
 heavy Slots lease.
 
 When the builder supplies its role's eligible providers, the admission and
-dry-run show their weekly pace and usage sources. If start refuses an ahead-of-
-pace provider, choose the suggested eligible alternative or give an explicit
-reason through the builder's request interface. A reason only waives the pace
-check. The role's provider list still applies.
+dry-run show their weekly pace and usage sources. For Work Board roles with
+multiple eligible providers, Spawn Gate switches an over-pace choice to the
+first eligible alternative with confirmed room. See `providerPace.fallback`
+for the decision. If start refuses, use the diagnostic to check quota or give an
+explicit reason through the builder's request interface when supported.
 
 ## Instruction mode and existing mint integrations
 

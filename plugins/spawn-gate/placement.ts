@@ -80,12 +80,15 @@ export async function placeOnMachine(sdk: Sdk, host: Host, project: Project, spa
       throw new Error(`The project source on "${name}" needs a Git checkout with a commit before bb can create a worktree.`);
     }
   }
-  if (!spawn.providerId) {
+}
+
+export async function requireProviderReady(sdk: Sdk, { id: hostId, name }: Host, providerId: string | undefined, signal: AbortSignal) {
+  if (!providerId) {
     throw new Error(`Set spawn.providerId in the builder so Spawn Gate can verify provider readiness on "${name}".`);
   }
   const { providers } = await sdk.system.providerStates({ hostId, signal }).catch(() => ({ providers: [] }));
-  const state = providers.find(provider => provider.providerId === spawn.providerId);
+  const state = providers.find(provider => provider.providerId === providerId);
   if (state?.status !== "ready") {
-    throw new Error(`Provider "${spawn.providerId}" is not ready on "${name}" (${state?.status ?? "unavailable"}). Install or sign in to the provider on that machine, or configure pooled credentials if supported.`);
+    throw new Error(`Provider "${providerId}" is not ready on "${name}" (${state?.status ?? "unavailable"}). Install or sign in to the provider on that machine, or configure pooled credentials if supported.`);
   }
 }

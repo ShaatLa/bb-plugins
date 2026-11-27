@@ -29,7 +29,7 @@ class Refusal(Exception):
 
 class Arguments(argparse.ArgumentParser):
     def error(self, _message):
-        raise Refusal("invalid_arguments", "Pass --card <key> and --role <role>, once each.")
+        raise Refusal("invalid_arguments", "Pass --card <key> and --role <role>, once each, and optionally --provider <id> [--model <id>] [--reason <text>].")
 
 
 def bb(*args):
@@ -83,7 +83,7 @@ def plugin_scope(description, config, parent):
     return f"plugins/{plugin}/", owner
 
 
-def role_route(config, role, excluded):
+def role_route(config, role, excluded, provider, model, reason):
     candidates = config["roles"].get(role)
     if not isinstance(candidates, list) or not 1 <= len(candidates) <= 16 or any(
         not isinstance(item, dict) or set(item) - {"providerId", "model", "reasoningLevel"}
@@ -96,14 +96,26 @@ def role_route(config, role, excluded):
     eligible = [item for item in candidates if item["providerId"] != excluded]
     if not eligible:
         raise Refusal("no_eligible_provider", "Configure an eligible reviewer provider distinct from the author's.")
-    return eligible[0], {"eligible": [{"providerId": item["providerId"], "model": item["model"]} for item in eligible]}
+    policy = {"eligible": [{"providerId": item["providerId"], "model": item["model"]} for item in eligible]}
+    if provider:
+        for item in eligible:
+            if item["providerId"] == provider and (model is None or item["model"] == model):
+                policy["pinned"] = True
+                if reason:
+                    policy["reason"] = reason
+                return item, policy
+        choices = ", ".join(f'{item["providerId"]} ({item["model"]})' for item in eligible)
+        raise Refusal("provider_not_allowed", f"Choose an eligible provider and model for {role}: {choices}.")
+    if len(eligible) > 1 and os.environ.get("BB_SPAWN_GATE_ORDERED_FALLBACK") == "1":
+        policy = {"eligible": eligible, "orderedFallback": True}
+    return eligible[0], policy
 
 
 def quote(text):
     return "\n".join(f"> {line}" for line in text.splitlines())
 
 
-def assemble(card, config, request, role):
+def assemble(card, config, request, role, provider, model, reason):
     task, plan = card["task"], card.get("plan")
     parent = request["parentThreadId"]
     if card["project"]["linkedBbProjectId"] != request["projectId"]:
@@ -124,9 +136,9 @@ def assemble(card, config, request, role):
         comments = sorted(card["comments"], key=lambda comment: (comment["createdAt"], comment["id"]), reverse=True)
         for comment in comments:
             match = REVIEW_RANGE.match(comment["body"].lstrip())
-            provider = (comment.get("provider") or {}).get("id")
-            if match and comment.get("kind") == "agent" and comment.get("threadId") and provider:
-                excluded = provider
+            author_provider = (comment.get("provider") or {}).get("id")
+            if match and comment.get("kind") == "agent" and comment.get("threadId") and author_provider:
+                excluded = author_provider
                 review = (
                     f"Review only the Git diff for `{match[1]}..{match[2]}`.\n"
                     "Use earlier ranges and findings on the card only as historical context.\n"
@@ -140,7 +152,7 @@ def assemble(card, config, request, role):
         excluded = parent_thread["providerId"]
     if reuse_parent and not parent_thread.get("environmentId"):
         raise Refusal("missing_parent_environment", "Launch from a parent thread with an attached BB environment.")
-    execution, policy = role_route(config, role, excluded)
+    execution, policy = role_route(config, role, excluded, provider, model, reason)
     key, title = task["key"], " ".join(task["title"].split())
     brief = (
         f"{key} · {role} · {title}\n\n"
@@ -166,7 +178,22 @@ def main():
     parser = Arguments(allow_abbrev=False, add_help=False)
     parser.add_argument("--card", required=True, action="append")
     parser.add_argument("--role", required=True, action="append")
+    parser.add_argument("--provider", action="append")
+    parser.add_argument("--model", action="append")
+    parser.add_argument("--reason", action="append")
     args = parser.parse_args()
+    for option in (args.provider, args.model, args.reason):
+        if option is not None and (len(option) != 1 or not option[0].strip()):
+            parser.error(None)
+    provider = args.provider[0] if args.provider else None
+    model = args.model[0] if args.model else None
+    reason = args.reason[0].strip() if args.reason else None
+    if (model is not None or reason is not None) and not provider:
+        parser.error(None)
+    if reason and len(reason.encode("utf-16-le")) // 2 > 2000:
+        raise Refusal("invalid_arguments", "Use at most 2,000 characters for --reason.")
+    if provider and os.environ.get("BB_SPAWN_GATE_ORDERED_FALLBACK") != "1":
+        raise Refusal("invalid_arguments", "Upgrade Spawn Gate before using provider pins.")
     if len(args.card) != 1 or len(args.role) != 1 or not TASK_KEY.fullmatch(args.card[0]):
         parser.error(None)
     role = args.role[0]
@@ -182,7 +209,8 @@ def main():
     ):
         raise Refusal("invalid_request", "Run through Spawn Gate with a project and parent thread.")
     config = read_config(request["projectId"])
-    print(json.dumps(assemble(bb("work-board", "show", args.card[0], "--with-plan"), config, request, role)))
+    card = bb("work-board", "show", args.card[0], "--with-plan")
+    print(json.dumps(assemble(card, config, request, role, provider, model, reason)))
 
 
 if __name__ == "__main__":

@@ -253,7 +253,8 @@ fi
     ],
   };
   const saveCard = () => writeFile(cardPath, JSON.stringify(card));
-  const launch = (role: string, dryRun = true) => f.start({ ...f.request, args: ["--card", task.key, "--role", role], dryRun });
+  const launch = (role: string, dryRun = true, ...options: string[]) =>
+    f.start({ ...f.request, args: ["--card", task.key, "--role", role, ...options], dryRun });
   await saveCard();
   await expect(launch("impl")).rejects.toThrow('{"reasonCode": "scope_not_allowed"}');
   registerWorkBoardOwnerTool(f.bb);
@@ -263,6 +264,7 @@ fi
   expect(JSON.parse(registration as string)).toMatchObject({ changed: true, oldOwner: null, newOwner: parent });
   expect(await launch("impl")).toMatchObject({ build: {
     brief: expect.stringContaining("> agent-admission example"),
+    providerPolicy: { eligible: models, orderedFallback: true },
     spawn: { providerId: "codex", environment: { type: "host", workspace: { type: "managed-worktree" } } },
   } });
   const review = await launch("review");
@@ -274,6 +276,7 @@ fi
     spawn: { providerId: "claude-code" },
     providerPolicy: { eligible: [models[1]] },
   } });
+  expect(review).not.toMatchObject({ build: { providerPolicy: { orderedFallback: true } } });
   expect(review).not.toMatchObject({ build: { brief: expect.stringContaining(previousHead) } });
   expect(review).not.toMatchObject({ build: { brief: expect.stringContaining("Branch example-review.") } });
   expect(await launch("check", false)).toMatchObject({ dryRun: false, threadId: "thr_child" });
@@ -309,6 +312,18 @@ fi
   ]);
 
   task.description = "Scope: plugins/example/"; await saveCard();
+  await writeFile(configPath, JSON.stringify(config));
+  const pin = await launch("impl", true, "--provider", "claude-code", "--model", "claude-model", "--reason", "  Exact model required.  ");
+  expect(pin).toMatchObject({ build: {
+    spawn: models[1], providerPolicy: { eligible: models, pinned: true, reason: "Exact model required." },
+  } });
+  expect(pin).not.toMatchObject({ build: { providerPolicy: { orderedFallback: true } } });
+  for (const options of [["--provider", "unknown"], ["--provider", "claude-code", "--model", "codex-model"]]) {
+    await expect(launch("impl", true, ...options)).rejects.toThrow("Choose an eligible provider and model for impl: codex (codex-model), claude-code (claude-model).");
+  }
+  await expect(launch("review", true, "--provider", "codex")).rejects.toThrow("Choose an eligible provider and model for review: claude-code (claude-model).");
+  await expect(launch("impl", true, "--reason", "No pin")).rejects.toThrow('{"reasonCode": "invalid_arguments"}');
+
   const reused = { type: "reuse", environmentId: "env_example" };
   await writeFile(configPath, JSON.stringify({ ...config, environment: "reuse-parent" }));
   for (const role of ["impl", "review", "check", "plan-review"]) {
@@ -495,11 +510,15 @@ it("counts coded and uncoded builder exits without retaining free-form diagnosti
   expect(f.mint).not.toHaveBeenCalled();
 });
 
-it("checks the actual weekly pace against role-eligible providers before mint, and shows sources in the admitted brief", async () => {
-  const f = await fixture();
+it("checks weekly pace before mint and uses the configured order for opted-in fallbacks", async () => {
+  const f = await machineFixture();
   const observedAt = Date.now() - 1000;
-  const hostId = "host_example";
-  const eligible = [{ providerId: "codex" }, { providerId: "claude-code" }, { providerId: "antigravity", model: "gemini-4-argon" }];
+  const hostId = f.host.id;
+  const eligible = [
+    { providerId: "codex" },
+    { providerId: "claude-code", model: "claude-sonnet-example", reasoningLevel: "medium" },
+    { providerId: "antigravity", model: "gemini-4-argon" },
+  ];
   const window = (label: string, usedPercent: number, elapsed: number, kind = "weekly") => ({
     kind, label, usedPercent, resetsAt: new Date(observedAt + (1 - elapsed) * 604_800_000).toISOString(), model: null,
   });
@@ -508,7 +527,6 @@ it("checks the actual weekly pace against role-eligible providers before mint, a
     "claude-code": [window("Weekly limit", 64, 0.65)],
     antigravity: [window("7d", 90, 0.5, "custom"), window("7d · Argon", 0, 0.5, "custom")],
   };
-  f.harness.sdk.stub("projects.get", async () => ({ gitRemoteUrl: f.repo, sources: [{ isDefault: true, hostId: "host_default" }] }));
   f.harness.sdk.stub("threads.get", async () => makeThreadResponse({ projectId: "proj_example", environmentId: "env_parent" }));
   f.harness.sdk.stub("environments.get", async () => ({ hostId }));
   f.harness.sdk.stub("providers.list", async options => {
@@ -558,6 +576,85 @@ it("checks the actual weekly pace against role-eligible providers before mint, a
   const preview = await f.start({ ...f.request, dryRun: true });
   expect(preview.providerPace).toMatchObject({ overridden: false, providers: [ {}, {}, { pace: null } ] });
   expect(f.spawn).toHaveBeenCalledTimes(1);
+
+  const ordered = { eligible, orderedFallback: true };
+  const machine = { ...f.request, machine: hostId };
+  const commit = await f.write("Fallback launch.", undefined, ordered);
+  windows["claude-code"] = [window("Weekly limit", 64, 0.65)];
+  windows.antigravity = [window("7d · Argon", 0, 0.5, "custom")];
+  await expect(f.start(machine)).rejects.toThrow('Provider "claude-code" is not ready');
+  expect(f.mint).toHaveBeenCalledTimes(1);
+
+  f.harness.sdk.stub("system.providerStates", async () => ({ providers: [{ providerId: "claude-code", status: "ready" }] }));
+  const fallback = { fromProviderId: "codex", toProviderId: "claude-code", pace: expect.closeTo(52 / 31), threshold: 1.25 };
+  expect(await f.start({ ...machine, dryRun: true })).toMatchObject({
+    providerPace: { fallback },
+    build: { spawn: { providerId: "claude-code", model: "claude-sonnet-example", reasoningLevel: "medium" } },
+  });
+  expect(await f.report({ events: true })).not.toHaveProperty("fallbacks");
+  expect(await f.start(machine)).toMatchObject({ providerPace: { fallback } });
+  expect(f.mint).toHaveBeenLastCalledWith(expect.objectContaining({
+    brief: expect.stringContaining("Selected claude-code because codex reached pace 1.68 (threshold 1.25)."),
+  }));
+  expect(f.spawn).toHaveBeenLastCalledWith(expect.objectContaining({
+    providerId: "claude-code", model: "claude-sonnet-example", reasoningLevel: "medium",
+  }));
+  const report = await f.report({ events: true });
+  expect(report.projects[0]).toMatchObject({ starts: 2 });
+  expect(report.fallbacks).toMatchObject([{ ...fallback, sourceCommit: commit }]);
+  expect(report.events?.some(event => event.reason === "success")).toBe(false);
+  expect(report.events?.[0].reason).toBe("host_error");
+
+  windows["claude-code"] = [window("Weekly limit", 80, 0.5)];
+  windows.antigravity = [window("7d · Argon", 90, 0.5, "custom")];
+  await expect(f.start(f.request)).rejects.toThrow("claude-code: at or above the pace threshold; antigravity: at or above the pace threshold");
+  delete windows["claude-code"];
+  delete windows.antigravity;
+  await expect(f.start(f.request)).rejects.toThrow("claude-code: no usable reading");
+  expect(f.mint).toHaveBeenCalledTimes(2);
+
+  await f.write("Explicit override.", undefined, { ...ordered, reason: "Stay on the requested provider." });
+  expect(await f.start({ ...f.request, dryRun: true })).toMatchObject({
+    providerPace: { overridden: true },
+    build: { spawn: { providerId: "codex" } },
+  });
+  windows.codex = [window("Weekly limit", 20, 0.5)];
+  await f.write("Under pace.", undefined, ordered);
+  const underPace = await f.start({ ...f.request, dryRun: true });
+  expect(underPace).toMatchObject({ providerPace: { overridden: false }, build: { spawn: { providerId: "codex" } } });
+  expect(underPace.providerPace).not.toHaveProperty("fallback");
+
+  const pinned = { eligible, pinned: true };
+  await f.write("Pinned under pace.", undefined, pinned);
+  expect(await f.start(f.request)).toMatchObject({ providerPace: { overridden: false } });
+  expect(f.spawn).toHaveBeenLastCalledWith(expect.objectContaining({ providerId: "codex" }));
+
+  windows.codex = [window("Weekly limit", 52, 0.31)];
+  windows["claude-code"] = [window("Weekly limit", 0, 0.5)];
+  await expect(f.start(f.request)).rejects.toThrow("Pinned provider codex meets or exceeds pace 1.25");
+  await f.write("Pinned single provider.", undefined, { ...pinned, eligible: eligible.slice(0, 1) });
+  await expect(f.start(f.request)).rejects.toThrow("Give an explicit reason");
+  expect(f.mint).toHaveBeenCalledTimes(3);
+
+  const reason = "Stay on exact model.";
+  const pinnedCommit = await f.write("Pinned override.", undefined, { ...pinned, reason: `  ${reason}  ` });
+  const override = { providerId: "codex", reason, pace: expect.closeTo(52 / 31), threshold: 1.25 };
+  expect(await f.start({ ...f.request, dryRun: true })).toMatchObject({
+    providerPace: { overridden: true, override }, build: { spawn: { providerId: "codex" } },
+  });
+  expect(await f.report({ events: true })).not.toHaveProperty("overrides");
+  const started = await f.start(f.request);
+  expect(started).toMatchObject({ providerPace: { overridden: true, override } });
+  expect(started.providerPace).not.toHaveProperty("fallback");
+  expect(f.mint).toHaveBeenLastCalledWith(expect.objectContaining({
+    brief: expect.stringContaining("Pace override for pinned codex at 1.68 (threshold 1.25).\n> Stay on exact model."),
+  }));
+  expect(f.spawn).toHaveBeenLastCalledWith(expect.objectContaining({ providerId: "codex" }));
+  const finalReport = await f.report({ events: true });
+  expect(finalReport.projects[0]).toMatchObject({ starts: 4 });
+  expect(finalReport.overrides).toMatchObject([{ ...override, sourceCommit: pinnedCommit }]);
+  expect(finalReport.fallbacks).toEqual(report.fallbacks);
+  expect(finalReport.events?.filter(event => event.reason === "over_pace")).toHaveLength(6);
 });
 
 it("uses the weekly quota of available pooled accounts even without local provider usage", async () => {

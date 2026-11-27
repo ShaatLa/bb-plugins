@@ -7,11 +7,13 @@ export const defaultPaceThreshold = 1.25;
 
 const providerId = z.string().regex(/^[a-z0-9][a-z0-9_-]{0,99}$/);
 const model = z.string().min(1).max(1000);
-const candidate = z.object({ providerId, model: model.optional() }).strict();
+const candidate = z.object({ providerId, model: model.optional(), reasoningLevel: model.optional() }).strict();
 export const providerPolicy = z.object({
   eligible: z.array(candidate).min(1).max(16)
     .refine(items => new Set(items.map(item => item.providerId)).size === items.length, "List each eligible provider once"),
   reason: z.string().max(2000).optional(),
+  orderedFallback: z.boolean().optional(),
+  pinned: z.boolean().optional(),
 }).strict();
 
 const usageWindow = z.object({
@@ -44,7 +46,15 @@ const poolStatus = z.object({
     familyWeekly: z.record(z.string(), poolWindow.nullable()),
   })),
 });
+export const paceFallback = z.object({
+  fromProviderId: providerId, toProviderId: providerId, pace: z.number(), threshold: z.number(),
+});
+export const paceOverride = z.object({
+  providerId, pace: z.number(), threshold: z.number(), reason: z.string().min(1).max(2000),
+});
 export const paceReport = z.object({
+  override: paceOverride.optional(),
+  fallback: paceFallback.optional(),
   threshold: z.number(),
   overridden: z.boolean(),
   providers: z.array(z.object({
@@ -154,24 +164,48 @@ export async function assessPace(bb: BbPluginApi, policy: z.infer<typeof provide
         .catch(() => null)
       : null,
   ]);
-  const readings = await Promise.all(policy.eligible.map(candidate => {
+  const readings = await Promise.all(policy.eligible.map(async candidate => {
     const item = candidate.providerId === selected.providerId ? selected : candidate;
     const source = sources.find(source => source.id === item.providerId)?.pluginId ?? null;
-    return (source && pool ? pooledReading(item, pool) : undefined) ?? sample(bb, item, hostId, source, deadline);
+    const reading = (source && pool ? pooledReading(item, pool) : undefined) ?? await sample(bb, item, hostId, source, deadline);
+    return { ...reading, candidate };
   }));
   const providers = readings.map(({ row }) => row);
-  const chosen = providers.find(row => row.providerId === selected.providerId);
-  const alternatives = readings.filter(({ row, room }) => room && row.providerId !== selected.providerId)
-    .sort((a, b) => (a.row.pace ?? Infinity) - (b.row.pace ?? Infinity));
-  const alternative = alternatives[0]?.row.providerId;
-  const overPace = chosen?.pace != null && chosen.pace >= threshold && alternative !== undefined;
-  const report: Report = { threshold, providers, overridden: overPace && !!policy.reason?.trim() };
+  const pace = providers.find(row => row.providerId === selected.providerId)?.pace;
+  const alternatives = readings.filter(({ row }) => row.providerId !== selected.providerId);
+  const withRoom = alternatives.filter(({ row, room }) => room && row.pace !== null && row.pace < threshold);
+  const ordered = policy.orderedFallback && alternatives.length > 0;
+  const report: Report = { threshold, providers, overridden: false };
   const summary = providers.map(row => {
     const pace = row.pace === null ? "unknown" : row.pace.toFixed(2);
     return `${row.providerId}: ${pace} (${row.source ?? "no usage source"}${row.window ? ` · ${row.window}` : ""})`;
   }).join("; ");
-  if (overPace && !report.overridden) {
-    throw new Error(`Provider pace meets or exceeds ${threshold.toFixed(2)} for ${selected.providerId} while ${alternative} has room. Use ${alternative} or give an explicit reason in the launch request. ${summary}`);
+  if (pace == null || pace < threshold || (!policy.pinned && !ordered && !withRoom.length)) return { report, summary };
+  const reason = policy.reason?.trim();
+  if (reason) {
+    report.overridden = true;
+    if (policy.pinned) report.override = { providerId: selected.providerId, pace, threshold, reason };
+    return { report, summary };
   }
-  return { report, summary };
+  if (policy.pinned) {
+    throw new Error(`Pinned provider ${selected.providerId} meets or exceeds pace ${threshold.toFixed(2)}. Give an explicit reason in the launch request. ${summary}`);
+  }
+
+  if (ordered) {
+    const next = withRoom[0];
+    if (next) {
+      const fallback = next.candidate;
+      report.fallback = { fromProviderId: selected.providerId, toProviderId: fallback.providerId, pace, threshold };
+      return { report, summary, fallback };
+    }
+    const skipped = alternatives.map(({ row }) => {
+      const reason = row.pace === null ? "no usable reading (including stale usage)"
+        : row.pace >= threshold ? "at or above the pace threshold" : "insufficient quota room";
+      return `${row.providerId}: ${reason}`;
+    }).join("; ");
+    throw new Error(`Provider pace meets or exceeds ${threshold.toFixed(2)} for ${selected.providerId}. No eligible alternative has room (${skipped}). Give an explicit reason in the launch request. ${summary}`);
+  }
+
+  const alternate = withRoom.sort((a, b) => (a.row.pace ?? Infinity) - (b.row.pace ?? Infinity))[0].row.providerId;
+  throw new Error(`Provider pace meets or exceeds ${threshold.toFixed(2)} for ${selected.providerId} while ${alternate} has room. Use ${alternate} or give an explicit reason in the launch request. ${summary}`);
 }

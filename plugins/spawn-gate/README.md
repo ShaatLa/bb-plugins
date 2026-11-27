@@ -188,12 +188,14 @@ each provider's pace and source in the admitted brief and `start` result.
 Antigravity uses the weekly pool for the candidate's model.
 
 Pace is the share used divided by the share of the window elapsed at the
-measurement. If the selected provider is at or above the threshold and an
-eligible alternative is below 1.0 with quota remaining, start refuses before
-minting. Choose the suggested provider or give a reason through the builder's
-request interface. A reason only overrides the pace refusal. Unknown, stale,
-expired or exhausted readings cannot establish room. The same check runs
-during dry-run.
+measurement. When a Work Board role has multiple eligible providers and the
+preferred provider reaches the threshold, Spawn Gate selects the first alternative
+in role order with confirmed room (pace below 1.0 and quota remaining). If no
+alternative qualifies, start refuses before minting. Other Script builders can
+opt into this behavior. Without the opt-in, start refuses when an eligible
+alternative has room and suggests that provider. A caller-supplied reason can
+override a pace refusal. Unknown, stale, expired or exhausted readings cannot
+establish room. The same check runs during dry-run.
 
 When Account Pooler routes Codex or Claude Code, Spawn Gate uses the lowest
 measured weekly pace among available accounts with room, or the lowest known
@@ -239,7 +241,11 @@ appear as `builder:<reasonCode>`. See [START-CONTRACT.md](START-CONTRACT.md).
 Pass `--events` or RPC `events: true` to also list individual refusals in the
 same window, newest first. Events include timestamp, project, operation,
 reason, parent thread, card, builder source commit and a structured stderr
-diagnostic when available. Events and totals have no automatic expiry.
+diagnostic when available. The optional `fallbacks` list records successful
+pace fallback starts with the originally selected and realized provider,
+measured pace and threshold. The optional `overrides` list records successful
+over-pace pinned launches and their caller-supplied reasons. Events and totals
+have no automatic expiry.
 Earlier counts are preserved without reconstructing missing events.
 
 ## Mint RPC

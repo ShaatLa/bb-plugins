@@ -57,6 +57,19 @@ without enforcing it on other launch paths.
 bb agent-spawn-gate start --project proj_example --parent-thread thr_example --dry-run -- --card EXA-1 --role impl
 ```
 
+Specify `--provider ID` after `--` to keep a launch on an eligible provider.
+Use `--model ID` with it to require that provider's configured model for the
+role. For example:
+
+```sh
+bb agent-spawn-gate start --dry-run -- --card EXA-1 --role impl --provider claude-code --model claude-sonnet-example
+```
+
+A pinned launch keeps its provider even if another has room. If the pin
+reaches the pace threshold, add `--reason "why this provider is needed"` to
+approve the override for that request. Keep credentials out of the reason.
+It appears in the admitted brief and, for real starts, in `report --events`.
+
 The task must be open, its blockers must be Done, and its Work Board project
 must be linked to the launch project. Add one line to the description such as
 `Scope: plugins/example/`. Trailing whitespace on that line is allowed. For

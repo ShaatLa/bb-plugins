@@ -32,7 +32,7 @@ export function registerGateCli(bb: BbPluginApi, { start, report, configGet, con
     ].join("\n"),
     report: [
       reportUsage,
-      "Reads all projects unless --project is passed. Dates are inclusive UTC, defaulting to seven days ending at --to (today if omitted). --events includes individual refusals.",
+      "Reads all projects unless --project is passed. Dates are inclusive UTC, defaulting to seven days ending at --to (today if omitted). --events includes individual refusals, provider pace fallbacks and pinned overrides.",
       "Example: bb agent-spawn-gate report --project proj_example --from 2025-01-01 --to 2025-01-07 --events",
     ].join("\n"),
     instructions: [instructionsUsage, "Read current launch instructions for an Instruction-mode project."].join("\n"),

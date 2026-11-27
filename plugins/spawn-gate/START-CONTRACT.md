@@ -24,6 +24,7 @@ Builder execution:
 - On every start, fetch `branch` from the configured builder `remote` at depth 1. A blank `remote` uses the project's Git remote. A blank `branch` uses the selected remote's default branch. Run the repository-relative `script` in a clean plugin-owned checkout at that commit. Fetch, authentication and checkout failures abort. `sourceBranch` and `sourceCommit` identify the fetched builder branch and commit.
 - The configured script is repository-relative, must stay within that checkout, and runs with cwd at the checkout root. .py scripts use python3; other scripts must be executable with an appropriate shebang.
 - stdin: one JSON object {version:1,projectId,parentThreadId}. The plugin resolves the server-installed bb CLI, adds its directory to builder PATH, sets BB_CLI to its absolute path, and resolves/logs the actual python3 executable for .py builders. It also sets BB_PROJECT_ID and BB_THREAD_ID to these resolved IDs for builder bb read commands. No caller cwd is required.
+- Servers supporting ordered provider fallback set `BB_SPAWN_GATE_ORDERED_FALLBACK=1`. Builders intended to run against older servers should emit the new policy fields only when this variable is set.
 - stdout: exactly one JSON object, UTF-8. The combined stdout/stderr limit is 1 MiB. All logs go to stderr. Exit nonzero, invalid JSON, unsupported version, unknown fields or invalid spawn values abort before mint/spawn.
 - On nonzero exit, write a JSON object with exactly one field on the first stderr line, e.g. `{"reasonCode":"missing_required_sections"}`. Codes match `^[a-z][a-z0-9_]{0,39}$`. Use a fixed code per refusal reason and write human-readable details on following lines. For compatibility, Spawn Gate checks the last nonempty line if the first has no valid code. The report counts valid codes as `builder:<reasonCode>` and uncoded failures as `builder_error`. The caller still receives the failure diagnostic.
 - For the refusal journal, the first stderr line may use the same bounded JSON format, even when the builder exits zero. The journal stores only that structured diagnostic. It saves a card reference only when builder arguments contain a valid task key in `--card EXA-1` or `--card=EXA-1`. It discards raw stderr, arguments, stdout and briefs.
@@ -86,12 +87,27 @@ Optional builder output field for role-aware provider admission:
   falling back to the lowest known pace among available accounts. Provider
   pace describes pool capacity. Account Pooler selects the session account.
 - The native `paceThreshold` setting defaults to 1.25 and accepts a ratio of
-  at least 1.0. The selected provider reaching it causes a refusal when an
-  eligible alternative has room. These refusals are tracked as `over_pace`.
+  at least 1.0. Without opt-in the selected provider reaching it causes a
+  refusal when an eligible alternative has room.
+- Set `orderedFallback: true` to use the first alternative with room in
+  `eligible` order when the selected provider reaches the threshold. This
+  applies to lists with at least two providers. If no candidate has room,
+  refuse. The replacement uses its own optional `model` and `reasoningLevel`
+  and the provider's default service tier. A nonblank `reason` keeps the
+  originally selected provider. Pace refusals are tracked as `over_pace`.
+- Set `pinned: true` for an explicit provider pin. The spawn must match the
+  eligible entry's provider and model. The gate keeps that provider and
+  requires a nonblank `reason` when its known pace reaches the threshold,
+  including for single-provider lists. Successful pinned overrides expose
+  `providerPace.override` and include the reason in the admission brief and
+  `report --events` under `overrides`.
 - A successful result includes `providerPace: {threshold,overridden,providers}`
   when the builder supplied the policy. Provider rows identify the source,
   window, percentage used, elapsed share and pace. Missing values are null.
   The admitted brief and the dry-run's brief include a Provider pace section.
+  On a switch, that section names both providers and the pace threshold.
+  `providerPace.fallback` carries the same decision as structured data.
+  `report --events` exposes successful switches in the `fallbacks` list.
 - Builders omitting `providerPolicy` retain v1 behavior. The legacy mint
   payload has no provider choice or eligible set.
 
