@@ -48,8 +48,11 @@ test("renders summary, capacity cells, lease progress, queue and SDK thread navi
   const cells = within(pool).getByRole("img");
   expect(cells.children).toHaveLength(4);
   expect(cells.querySelectorAll('[data-held="true"]')).toHaveLength(1);
-  expect(within(pool).getByRole("progressbar").getAttribute("aria-valuenow")).toBe("60000");
-  expect(pool.textContent).toContain("1m of 2m · expires in 1m");
+  const progress = within(pool).getByRole("progressbar");
+  expect(progress.getAttribute("aria-valuenow")).toBe("60000");
+  expect(progress.getAttribute("aria-valuetext")).toBe("1m of 2m, renews automatically");
+  expect(pool.textContent).toContain("1m of 2m · renews automatically");
+  expect(pool.textContent).not.toMatch(/expires? in|expired/);
   expect(pool.textContent).toContain("Transferred to QA checks from Manager");
   expect(within(pool).getByText("Port 41001")).toBeTruthy();
   fireEvent.click(within(pool).getByRole("button", { name: "Manager" }));
@@ -96,9 +99,26 @@ test("shows display name once, in-use model, expiry warning and fallback thread 
   expect(await slot.findByText("Work machine")).toBeTruthy();
   expect(slot.getAllByText("Work machine")).toHaveLength(1);
   expect(slot.getByText("In use")).toBeTruthy();
-  expect(slot.getAllByText(/expiry warning sent/)[0].className).toContain("text-amber");
+  const pool = slot.getByRole("region", { name: "Heavy jobs" });
+  expect(within(pool).getByText("expires in 1m · expiry warning sent").className).toContain("text-amber");
+  expect(within(pool).getByRole("progressbar").getAttribute("aria-valuetext")).toBe("1m of 2m, expires in 1m, expiry warning sent");
   fireEvent.click(within(slot.getByRole("region", { name: "Heavy jobs" })).getAllByRole("button", { name: "thread" })[0]);
   expect(slot.inspection.navigateCalls).toContainEqual(expect.objectContaining({ method: "toThread", threadId: "holder" }));
+});
+
+test.each([
+  [60_000, "expires in 1m"],
+  [-60_000, "expired 1m ago"],
+])("shows expiry in amber for a missed heartbeat on the lease's home host (%s ms left)", async (remaining, text) => {
+  const heartbeatIntervalMs = 120_000;
+  const lease = { ...fixture.pools[0].leases[0], homeHostId: "home", grantedAt: at - 180_000,
+    estMs: 240_000, lastHeartbeatAt: at - heartbeatIntervalMs, expiresAt: at + remaining };
+  const slot = render(() => ({ ok: true, data: { ...fixture,
+    hostSettings: { ...fixture.hostSettings, home: { ...DEFAULT_SETTINGS, heartbeatIntervalMs } },
+    pools: [{ ...fixture.pools[0], leases: [lease] }] } }));
+  expect((await slot.findByText(text)).className).toContain("text-amber");
+  expect(slot.getByRole("progressbar").getAttribute("aria-valuetext")).toBe(`3m of 4m, ${text}`);
+  expect(slot.queryByText("renews automatically")).toBeNull();
 });
 
 test("human activity is collapsed by default, newest first and capped at 15", async () => {
@@ -504,11 +524,11 @@ test("marks a lease past its estimate in amber with the overrun", async () => {
   const lease = { ...fixture.pools[0].leases[0], grantedAt: at - 9_240_000, estMs: 3_600_000, expiresAt: at + 4_440_000 };
   const slot = render(() => ({ ok: true, data: { ...fixture, pools: [{ ...fixture.pools[0], leases: [lease, { ...lease, id: "lease-2" , grantedAt: at - 60_000 }] }] } }));
   const [late, onTime] = await slot.findAllByRole("progressbar");
-  expect(late.getAttribute("aria-valuetext")).toBe("2h 34m of 1h, over estimate");
+  expect(late.getAttribute("aria-valuetext")).toBe("2h 34m of 1h, over estimate, renews automatically");
   expect(late.firstElementChild!.className).toContain("bg-amber-500");
   expect(slot.getByText("1h 34m over estimate ·").className).toContain("text-amber");
-  expect(late.parentElement!.textContent).toContain("2h 34m of 1h · 1h 34m over estimate · expires in 1h 14m");
-  expect(onTime.getAttribute("aria-valuetext")).toBe("1m of 1h");
+  expect(late.parentElement!.textContent).toContain("2h 34m of 1h · 1h 34m over estimate · renews automatically");
+  expect(onTime.getAttribute("aria-valuetext")).toBe("1m of 1h, renews automatically");
   expect(onTime.firstElementChild!.className).not.toContain("bg-amber-500");
 });
 

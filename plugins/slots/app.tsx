@@ -7,7 +7,7 @@ import { LoadingSkeleton, Skeleton } from "./components/ui/skeleton";
 import { plural } from "./lib/plural";
 import { cn } from "./lib/utils";
 import type { AuditEvent, PoolSnapshot, StatusView } from "./contract";
-import { presenceText } from "./contract";
+import { DEFAULT_SETTINGS, presenceText } from "./contract";
 import { SlotsSettings } from "./settings";
 import { useStatus } from "./use-status";
 
@@ -137,12 +137,18 @@ function StatusContent({ view, now }: { view: StatusView; now: number }) {
       <div role="img" aria-label={`${pool.leases.length} of ${plural(pool.capacity, "slot")} in use`} className="flex flex-wrap gap-1.5">{Array.from({ length: Math.max(pool.capacity, pool.leases.length) }, (_, index) => <span data-held={index < pool.leases.length} key={index} className={cn("h-2.5 w-6 rounded-sm border", index < pool.leases.length ? "border-emerald-600 bg-emerald-600" : "border-border bg-muted")} />)}</div>
       {pool.leases.length === 0 && pool.mode?.admitting !== false ? <p className={empty}>{pool.capacity === 0 ? "No slots configured" : pool.capacity === 1 ? "Slot free" : `All ${plural(pool.capacity, "slot")} free`}</p> : <ul className="divide-y divide-border">{pool.leases.map(lease => {
         const elapsed = Math.max(0, now - lease.grantedAt), over = elapsed > lease.estMs;
+        const heartbeatInterval = (view.hostSettings[lease.homeHostId ?? lease.hostId] ?? DEFAULT_SETTINGS).heartbeatIntervalMs;
+        const warned = lease.warnedAt !== null;
+        const renewalLate = warned || now - lease.lastHeartbeatAt >= heartbeatInterval;
+        const renewalText = !renewalLate ? "renews automatically" : lease.expiresAt > now
+          ? `expires in ${duration(lease.expiresAt - now)}`
+          : `expired ${duration(now - lease.expiresAt)} ago`;
         const ports = view.ports.filter(port => port.hostId === lease.hostId && port.threadId === lease.holderThreadId);
         return <li key={lease.id} className="space-y-2 py-3 first:pt-0 last:pb-0 text-sm">
           <div className="font-medium"><ThreadLink id={lease.holderThreadId} titles={view.titles} /></div>
           <p className="break-words">{lease.job}</p>
-          <div role="progressbar" aria-label={`${lease.job} elapsed`} aria-valuemin={0} aria-valuemax={lease.estMs} aria-valuenow={Math.min(elapsed, lease.estMs)} aria-valuetext={`${duration(elapsed)} of ${duration(lease.estMs)}${over ? ", over estimate" : ""}`} className="h-1.5 overflow-hidden rounded-full bg-muted"><div className={cn("h-full", over ? "bg-amber-500" : "bg-foreground/60")} style={{ width: `${Math.min(100, elapsed / lease.estMs * 100)}%` }} /></div>
-          <p className="text-xs text-muted-foreground tabular-nums">{duration(elapsed)} of {duration(lease.estMs)} · {over && <span className={warning}>{duration(elapsed - lease.estMs)} over estimate · </span>}<span className={cn(lease.warnedAt !== null && warning)}>{lease.expiresAt > now ? `expires in ${duration(lease.expiresAt - now)}` : `expired ${duration(now - lease.expiresAt)} ago`}{lease.warnedAt !== null && " · expiry warning sent"}</span></p>
+          <div role="progressbar" aria-label={`${lease.job} elapsed`} aria-valuemin={0} aria-valuemax={lease.estMs} aria-valuenow={Math.min(elapsed, lease.estMs)} aria-valuetext={`${duration(elapsed)} of ${duration(lease.estMs)}${over ? ", over estimate" : ""}, ${renewalText}${warned ? ", expiry warning sent" : ""}`} className="h-1.5 overflow-hidden rounded-full bg-muted"><div className={cn("h-full", over ? "bg-amber-500" : "bg-foreground/60")} style={{ width: `${Math.min(100, elapsed / lease.estMs * 100)}%` }} /></div>
+          <p className="text-xs text-muted-foreground tabular-nums">{duration(elapsed)} of {duration(lease.estMs)} · {over && <span className={warning}>{duration(elapsed - lease.estMs)} over estimate · </span>}<span className={cn(renewalLate && warning)}>{renewalText}{warned && " · expiry warning sent"}</span></p>
           {lease.holderThreadId !== lease.ownerThreadId && <p className="text-xs text-muted-foreground">Transferred to <ThreadLink id={lease.holderThreadId} titles={view.titles} /> from <ThreadLink id={lease.ownerThreadId} titles={view.titles} /></p>}
           {ports.map(port => <span key={port.port} className={cn(badge, "inline-block text-muted-foreground")}>Port {port.port}</span>)}
         </li>;
