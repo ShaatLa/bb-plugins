@@ -11,7 +11,17 @@ vi.mock("../shell/task-statuses", () => ({ useTaskStatuses: () => ({ label: (sta
 const entry = (n: number, position = n) => ({ taskId: `task${n}`, key: `EXA-${n}`, title: `Card ${n}`, status: "todo", position });
 afterEach(() => { cleanup(); state.queues = []; state.calls = []; state.failure = false; state.error = ""; state.refresh.mockReset(); });
 it("hides the trigger when there are no queues", () => { render(<QueueMenu projectId="proj_example" />); expect(screen.queryByText(/Queues/)).toBeNull(); });
-it("exposes an initial read error", async () => { state.error = "Read failed"; render(<QueueMenu projectId="proj_example" />); fireEvent.pointerDown(screen.getByRole("button", { name: "Queues · 0" }), { button: 0, ctrlKey: false }); expect((await screen.findByRole("alert")).textContent).toBe("Read failed"); });
+it("exposes an initial read error and retries on opening", async () => {
+  state.error = "Read failed";
+  const { rerender } = render(<QueueMenu projectId="proj_example" />);
+  fireEvent.pointerDown(screen.getByRole("button", { name: "Queues · 0" }), { button: 0, ctrlKey: false });
+  expect((await screen.findByRole("alert")).textContent).toBe("Read failed");
+  expect(state.refresh).toHaveBeenCalledOnce();
+  state.error = "";
+  state.queues = [{ threadId: "thr_retry", entries: [entry(1)] }];
+  rerender(<QueueMenu projectId="proj_example" />);
+  expect(await screen.findByText(/EXA-1 · Card 1/)).toBeTruthy();
+});
 it("lists queues in a portal, moves and removes cards, and shows refusals", async () => {
   state.queues = [{ threadId: "thr_first", entries: [entry(1), entry(2)] }, { threadId: "thr_second", entries: [entry(3, 1)] }];
   const { container } = render(<QueueMenu projectId="proj_example" />);
