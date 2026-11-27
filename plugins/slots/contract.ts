@@ -36,7 +36,7 @@ export interface HostSettings {
   tools?: string[];
 }
 export interface Settings extends HostSettings {
-  primaryHostId?: string; machineTools?: Record<string, string[]>;
+  primaryHostId?: string; preferHost?: string; machineTools?: Record<string, string[]>;
   deviceHosts?: Record<string, string>; modelHoldMinutes?: number;
   /** Complete host overrides; omitted hosts use the top-level defaults. */
   hosts: Record<string, HostSettings>;

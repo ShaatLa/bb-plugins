@@ -123,6 +123,8 @@ the read-only check of which machines take leases.
 **Placement.** `slots-run` uses the project's `placement` setting (`auto` by
 default), preferring this machine, then connected configured machines with room.
 Set it with `bb slots config set placement local --project proj_example`.
+Set the native `preferHost` setting to a configured host ID to try it first for portable heavy runs.
+Use `--local` only when the command needs something available only on this Mac, such as local state, a running service, or a path outside the worktree; run test suites, type checks, and builds without it so they can move to another machine.
 Use `--local` or `--anywhere` to override, and `--needs go,docker` to require
 installed tools. Set the inventory with `bb plugin config slots set machineTools
 'host_example=go,docker;host_other=node,bun'`. `--spill` remains an alias for

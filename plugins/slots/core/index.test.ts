@@ -361,6 +361,33 @@ describe("Slots deterministic engine", () => {
     expect((off.send({ type: "acquire", threadId: "x", hostId: "h", pool: "heavy", job: "suite", estMs: minute, spill: true } as Input).result as { data: { kind: string } }).data.kind).toBe("queued");
   });
 
+  it("prefers an eligible configured host and falls back for local, unavailable or unknown hosts", () => {
+    for (const scenario of ["preferred", "full", "gate", "tools", "disconnected", "unknown", "local", "empty"]) {
+      const remote = { ...structuredClone(DEFAULT_SETTINGS), hosts: undefined, capacities: { heavy: scenario === "full" ? 0 : 1, "local-model": 0 }, gated: false, connected: scenario !== "disconnected", tools: [] };
+      const h = harness({ preferHost: scenario === "unknown" ? "typo" : scenario === "empty" ? "" : "r", hosts: { r: remote } as unknown as Settings["hosts"] });
+      h.sample(scenario === "gate" ? 5 : 50, 1, "r");
+      h.open();
+      const result = h.send({ type: "acquire", threadId: "a", hostId: "h", pool: "heavy", job: "suite", estMs: minute, place: scenario === "local" ? "local" : "auto", needs: scenario === "tools" ? ["go"] : [] } as Input).result;
+      if (scenario === "local") { h.open(); expect(h.state.leases[0]?.hostId).toBe("h"); }
+      else expect(result, scenario).toMatchObject({ ok: true, data: { kind: "leased", lease: { hostId: scenario === "preferred" ? "r" : "h" } } });
+    }
+  });
+
+  it("uses current preference when granting queued requests", () => {
+    const remote = { ...structuredClone(DEFAULT_SETTINGS), hosts: undefined, capacities: { heavy: 0, "local-model": 0 }, gated: false, connected: true };
+    const h = harness({ capacities: { heavy: 0, "local-model": 1 }, hosts: { r: remote } as unknown as Settings["hosts"] });
+    h.sample(50, 1, "r"); h.open();
+    h.send({ type: "acquire", threadId: "a", hostId: "h", pool: "heavy", job: "suite", estMs: minute, place: "auto" } as Input);
+    expect(h.state.requests).toHaveLength(1);
+    h.settings.preferHost = "r"; h.settings.hosts.r.capacities.heavy = 1;
+    h.send({ type: "tick" });
+    expect(h.state.leases[0]?.hostId).toBe("r");
+    h.settings.hosts.r.connected = false;
+    h.settings.capacities.heavy = 1;
+    h.send({ type: "acquire", threadId: "b", hostId: "h", pool: "heavy", job: "suite", estMs: minute, place: "auto" } as Input);
+    expect(h.state.leases.find(l => l.holderThreadId === "b")?.hostId).toBe("h");
+  });
+
   it("honors placement and tool constraints when joining uses", () => {
     const remote = { ...structuredClone(DEFAULT_SETTINGS), hosts: undefined, capacities: { heavy: 1, "local-model": 0 }, gated: false, connected: true, tools: ["go"] };
     const h = harness({ capacities: { heavy: 1, "local-model": 1 }, hosts: { r: remote } as unknown as Settings["hosts"] });

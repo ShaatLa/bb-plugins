@@ -16,6 +16,8 @@ sh -c "$(bb slots wrapper)" slots-run --est 20m --job "..." -- <command>
 By default the project placement setting decides whether portable heavy work may
 run on another configured machine. `--anywhere` permits placement, `--local`
 keeps it here. `--spill` and `--spill auto` are aliases of `--anywhere`.
+Set the native `preferHost` setting to a configured host ID to try it first for portable heavy runs.
+Use `--local` only when the command needs something available only on this Mac, such as local state, a running service, or a path outside the worktree; run test suites, type checks, and builds without it so they can move to another machine.
 Use `--needs go,docker,chrome,playwright,node,bun` to require installed tools.
 A remote run copies the worktree and returns output and exit code, and the files
 the command created or changed come back into your worktree (ignored directories

@@ -765,6 +765,19 @@ it("lets threads on a configured machine lease its heavy capacity, reports lease
   expect(status.stdout).toContain("heavy · Work laptop · 1/3 slots held"); // the fake names every host "Work laptop"
 });
 
+it("applies the native preferred host setting and its unset default", async () => {
+  const h = await setup();
+  h.harness.sdk.stub("hosts.list", async () => [makeHostResponse({ id: "local" }), makeHostResponse({ id: "host_example", status: "connected" })] as never);
+  await h.configure({ remoteHosts: "host_example=1", gateSamples: 1 });
+  await h.harness.behavior.setSettings({ preferHost: " host_example " });
+  await h.samplerPass(async () => (await h.view()).gates.host_example?.latest?.passed === true);
+  const acquire = (threadId: string) => h.invoke("acquire", { threadId, pool: "heavy", job: "suite", estMs: 60000, place: "auto" }, true);
+  expect(await acquire("a")).toMatchObject({ ok: true, data: { lease: { hostId: "host_example" } } });
+  await h.invoke("release", { threadId: "a", all: true });
+  await h.harness.behavior.setSettings({ preferHost: null });
+  expect(await acquire("b")).toMatchObject({ ok: true, data: { lease: { hostId: "local" } } });
+});
+
 it("reads and writes one project placement field and persists queued constraints", async () => {
   const h = await setup();
   h.harness.sdk.stub("projects.list", async () => [{ id: "proj_example", name: "Example" }]);

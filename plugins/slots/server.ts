@@ -80,15 +80,15 @@ export async function register(bb: BbPluginApi, overrides: Partial<Runtime> = {}
     awayMinutes: { type: "number", label: "Away after minutes", description: `Minutes without keyboard or mouse input before a machine counts as away.`, default: 10, experimental_schema: z.number().int().min(1).max(1440) },
     grantMode: { type: "select", label: "Grant mode", description: `Automatic grants follow queue order and passing checks; manual grants wait for the manager.`, options: ["auto", "manual"], experimental_optionLabels: { auto: "Automatic", manual: "Manual (manager grants)" }, default: "auto" },
   } satisfies Record<string, PluginSettingDescriptor>;
-  const nativeSettings = bb.settings.define({ machineTools: descriptors.machineTools });
-  let nativeTools = (await nativeSettings.get()).machineTools;
-  nativeSettings.onChange(next => { nativeTools = next.machineTools; bb.realtime.publish(SLOTS_CHANGED, { at: runtime.now() }); });
+  const nativeSettings = bb.settings.define({ machineTools: descriptors.machineTools, preferHost: { type: "string", label: "Preferred heavy host", description: "Configured host ID to try first for portable heavy work; empty keeps the default order.", default: "" } });
+  let native = await nativeSettings.get();
+  nativeSettings.onChange(next => { native = next; bb.realtime.publish(SLOTS_CHANGED, { at: runtime.now() }); });
   const defaults = Object.fromEntries(SETTING_KEYS.map(key => [key, descriptors[key].default])) as SettingValues;
   const store = runtime.store ?? new DiskStore(dirname(bb.storage.database().name));
   const rawConfig = await store.loadConfig();
   const configSchema = z.object({ version: z.literal(1), values: z.partialRecord(z.enum(SETTING_KEYS), z.union([z.number(), z.string()])) }).strict();
   let explicit = rawConfig === undefined ? {} : configSchema.parse(rawConfig).values;
-  const readValues = () => ({ ...defaults, ...explicit, machineTools: nativeTools }) as Awaited<ReturnType<typeof effectiveValues>>;
+  const readValues = () => ({ ...defaults, ...explicit, machineTools: native.machineTools }) as Awaited<ReturnType<typeof effectiveValues>>;
   function effectiveValues() { return Object.fromEntries(SETTING_KEYS.map(key => [key, descriptors[key].default])) as {
     watchPolicy: "off" | "warn"; watchCores: number; watchWindowSeconds: number; idleLeaseMinutes: number;
     heavyCapacity: number; heavyCapacityWithModel: number; remoteHostsWithModel: string; deviceHosts: string; modelHoldMinutes: number; localModelCapacity: number; memFreeMinPct: number; loadMax: number; gateSamples: number;
@@ -109,7 +109,7 @@ export async function register(bb: BbPluginApi, overrides: Partial<Runtime> = {}
     for (const key of unset) delete next[key];
     resolveSettings({ ...readValues(), ...next, ...Object.fromEntries(unset.map(key => [key, defaults[key]])) } as ReturnType<typeof readValues>);
     if (patch.machineTools !== undefined || unset.includes("machineTools")) {
-      nativeTools = (await nativeSettings.experimental_set({ machineTools: unset.includes("machineTools") ? null : String(patch.machineTools) })).machineTools;
+      native = await nativeSettings.experimental_set({ machineTools: unset.includes("machineTools") ? null : String(patch.machineTools) });
       delete next.machineTools;
     }
     await store.saveConfig(next);
@@ -148,7 +148,7 @@ export async function register(bb: BbPluginApi, overrides: Partial<Runtime> = {}
       observerGateHoldMs: values.observerGateHoldMinutes * 60000,
       withModel: values.heavyCapacityWithModel < 0 ? Math.min(values.heavyCapacity, cores) : Math.min(values.heavyCapacityWithModel, cores),
       ...(values.heavyCapacityAway < 0 ? {} : { heavyAway: Math.min(values.heavyCapacityAway, cores) }), ...(values.loadMaxAway < 0 ? {} : { loadMaxAway: Math.min(values.loadMaxAway, cores) }), deviceHosts: parseDeviceHosts(values.deviceHosts), modelHoldMinutes: values.modelHoldMinutes,
-      primaryHostId: localHostId || undefined, machineTools: parseMachineTools(values.machineTools),
+      primaryHostId: localHostId || undefined, preferHost: native.preferHost.trim() || undefined, machineTools: parseMachineTools(values.machineTools),
       portRange: { from: values.portFrom, to: values.portTo }, grantMode: values.grantMode as Settings["grantMode"], hosts: {},
     };
     // Other machines reuse these settings with their own heavy capacity; their check is their latest probe reading.
