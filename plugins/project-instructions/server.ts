@@ -5,10 +5,10 @@ import { cliCommand, defineCli, defineRpcContract, type BbPluginApi } from "@get
 import { z } from "zod";
 import {
   CONFIG_KEYS, DEFAULT_SKILLS_DIR, DOC_SKILL, GRACE_MS, ROOT_CAP, SOURCE_STATES, STATUS_TTL_MS, computeStatus, configKey, evaluateSkills, newSyncState, parseConfigValue, realProbes, scanSkill, skillNames, skillsRootOf, sourceGet, sourceOf, syncLinks,
-  type Limits, type ProjectConfig, type Probes, type Source, type Status,
+  type Limits, type ProjectConfig, type Probes, type Source, type SourceResult, type Status,
 } from "./core";
 
-const projectId = z.string().min(1).max(200);
+import { projectId, statusMethods, storedSyncHistory, type StoredSyncHistory } from "./status-contract";
 const configGet = z.object({ projectId, key: z.string().min(1).optional() }).strict();
 const configSet = z.object({ projectId, key: z.string().min(1), value: z.unknown() }).strict();
 const checkInput = z.object({ projectId }).strict();
@@ -26,6 +26,7 @@ export const rpcContract = defineRpcContract({
   "config.set": { input: configSet, output: z.unknown() },
   check: { input: checkInput, output: z.unknown() },
   "source.get": { input: sourceInput, output: sourceResult },
+  ...statusMethods,
 });
 
 /** The plugin's own directory (the one with its package.json), whether this runs from source or from dist/. */
@@ -38,6 +39,15 @@ function pluginDir() {
 
 type Env = { now?: () => number; linkedDir?: string; graceMs?: number; probes?: Probes; limits?: Partial<Limits> };
 const MAX_SKIPPED = 50;
+const syncKey = (id: string) => "sync:project:" + id;
+const sameSource = (a: ProjectConfig, b: ProjectConfig) => a.clonePath === b.clonePath && a.branch === b.branch;
+
+function syncOutcome(r: SourceResult): StoredSyncHistory["lastAttempt"]["outcome"] {
+  if (r.synced) return "updated";
+  if (r.state === "fresh") return "up_to_date";
+  if (r.state === "error" || r.state === "unreachable" || r.state === "missing" || r.reason?.startsWith("sync failed:")) return "failed";
+  return "blocked";
+}
 
 export default async function plugin(bb: BbPluginApi, env: Env = {}) {
   const now = env.now ?? Date.now, graceMs = env.graceMs ?? GRACE_MS;
@@ -45,6 +55,10 @@ export default async function plugin(bb: BbPluginApi, env: Env = {}) {
   const configs = new Map<string, ProjectConfig>();
   const memo = new Map<string, { at: number; key: string; status: Status }>();
   const lastReason = new Map<string, string>();
+  const sourceRevisions = new Map<string, number>();
+  const syncHistory = new Map<string, StoredSyncHistory>();
+  const historyWrites = new Map<string, Promise<void>>();
+  let configWrites: Promise<unknown> = Promise.resolve();
 
   const enabledSources = () => [...configs].flatMap(([id, c]) => { const s = c.enabled ? sourceOf(c) : null; return s ? [[id, s] as const] : []; });
   /** Names this project shares with another enabled project, mapped to that project. */
@@ -100,30 +114,69 @@ export default async function plugin(bb: BbPluginApi, env: Env = {}) {
     if (!Object.hasOwn(value, key)) throw new Error("Unknown key. Valid keys: " + CONFIG_KEYS.join(", "));
     return value[key as keyof typeof value];
   };
-  const setConfig = async ({ projectId: id, key, value: raw }: z.infer<typeof configSet>) => {
-    const value = parseConfigValue(key, raw), next = { ...configs.get(id), [key]: value } as ProjectConfig;
-    if (key === "enabled" && value === true) {
-      const source = sourceOf(next);
-      if (!source) throw new Error("Set clonePath, branch and rootFile before enabling");
-      const clashes = clashesOf(id, source);
-      if (clashes.size) throw new Error("Not enabled: skills also in another enabled project: " + [...clashes].map(([n, p]) => `${n} (${p})`).join(", "));
-    }
-    await bb.storage.kv.set(configKey(id), next);
-    configs.set(id, next); memo.delete(id);
-    bb.log.info(`Project ${id}: ${key} set to ${JSON.stringify(value)}`);
-    syncAll();
-    return value;
+  const setConfig = ({ projectId: id, key, value: raw }: z.infer<typeof configSet>) => {
+    const value = parseConfigValue(key, raw);
+    // One queue also keeps skill clash checks consistent across projects.
+    const write = configWrites.then(async () => {
+      const current = configs.get(id) ?? {};
+      const next = { ...current, [key]: value };
+      if (key === "enabled" && value === true) {
+        const source = sourceOf(next);
+        if (!source) throw new Error("Set clonePath, branch and rootFile before enabling");
+        const clashes = clashesOf(id, source);
+        if (clashes.size) throw new Error("Not enabled: skills also in another enabled project: " + [...clashes].map(([n, p]) => `${n} (${p})`).join(", "));
+      }
+      await bb.storage.kv.set(configKey(id), next);
+      configs.set(id, next);
+      memo.delete(id);
+      if (!sameSource(current, next)) sourceRevisions.set(id, (sourceRevisions.get(id) ?? 0) + 1);
+      bb.log.info(`Project ${id}: ${key} set to ${JSON.stringify(value)}`);
+      syncAll();
+      return value;
+    });
+    configWrites = write.catch(() => {});
+    return write;
   };
-  const check = ({ projectId: id }: z.infer<typeof checkInput>) => {
+
+  const diagnose = (id: string) => {
     const c = configs.get(id) ?? {}, source = sourceOf(c), st = computeStatus(c);
     const skills = source ? evaluateSkills(source, linkedDir, now(), clashesOf(id, source), graceMs) : null;
     return {
-      projectId: id, config: effective(c), enabled: c.enabled ?? false,
-      source: st.ok ? { ok: true, rootPath: st.rootPath, rootLength: st.text.length, cap: ROOT_CAP, branch: st.branch } : { ok: false, reason: st.reason, rootPath: st.rootPath ?? null, rootLength: st.length ?? null, cap: ROOT_CAP },
-      skills: skills && { selectable: st.ok ? skills.selectable : [], skipped: skills.skipped.slice(0, MAX_SKIPPED), moreSkipped: Math.max(0, skills.skipped.length - MAX_SKIPPED) },
-      note: !c.enabled ? "Not enabled: nothing is injected and no skill is linked yet." : st.ok ? null : "The source status failed, so no skill of this project is offered either.",
+      report: {
+        projectId: id, config: effective(c), enabled: c.enabled ?? false,
+        source: st.ok ? { ok: true as const, rootPath: st.rootPath, rootLength: st.text.length, cap: ROOT_CAP, branch: st.branch } : { ok: false as const, reason: st.reason, rootPath: st.rootPath ?? null, rootLength: st.length ?? null, cap: ROOT_CAP },
+        skills: skills && { selectable: st.ok ? skills.selectable : [], skipped: skills.skipped.slice(0, MAX_SKIPPED), moreSkipped: Math.max(0, skills.skipped.length - MAX_SKIPPED) },
+        note: !c.enabled ? "Not enabled: nothing is injected and no skill is linked yet." : st.ok ? null : "The source status failed, so no skill of this project is offered either.",
+      },
+      preview: st.ok ? st.text : null,
     };
   };
+  const check = ({ projectId: id }: z.infer<typeof checkInput>) => diagnose(id).report;
+
+  const statusProjects = async () => {
+    const projects = new Map((await bb.sdk.projects.list()).map(project => [project.id, project.name]));
+    return [...new Set([...projects.keys(), ...configs.keys()])].map(id => {
+      const c = configs.get(id);
+      return {
+        id, name: projects.get(id) ?? id, available: projects.has(id), configured: c !== undefined,
+        enabled: c?.enabled ?? false, allowSync: c?.allowSync ?? false,
+      };
+    }).sort((a, b) => a.name.localeCompare(b.name) || a.id.localeCompare(b.id));
+  };
+
+  const statusDetail = async (id: string) => {
+    if (!(await bb.sdk.projects.list()).some(project => project.id === id)) throw new Error("Project unavailable");
+    const { report, preview } = diagnose(id);
+    const { enabled, config, source, skills } = report;
+    const history = syncHistory.get(id);
+    return {
+      enabled, allowSync: config.allowSync, rootFile: config.rootFile, source, preview,
+      skills: skills && { ...skills, selectable: enabled ? skills.selectable : [] },
+      sync: history && sameSource(history, configs.get(id) ?? {})
+        ? { lastAttempt: history.lastAttempt, lastUpdate: history.lastUpdate } : null,
+    };
+  };
+
   const checkText = (r: ReturnType<typeof check>) => [
     `Project ${r.projectId}: ${r.enabled ? "enabled" : "not enabled"}, allowSync ${r.config.allowSync}`,
     r.source.ok ? `Root: ${r.source.rootPath} (${r.source.rootLength} of ${r.source.cap} characters, branch ${r.source.branch})` : `Root NOT injected: ${r.source.reason}`,
@@ -132,12 +185,41 @@ export default async function plugin(bb: BbPluginApi, env: Env = {}) {
   ].join("\n");
 
   const syncState = newSyncState();
+  const recordSync = (id: string, clonePath: string, branch: string, result: SourceResult) => {
+    const at = now();
+    const previous = syncHistory.get(id);
+    const record: StoredSyncHistory = {
+      clonePath, branch,
+      lastAttempt: { at, outcome: syncOutcome(result), reason: result.reason?.slice(0, 300) ?? null },
+      lastUpdate: result.synced ? { at, ...result.synced }
+        : previous && sameSource(previous, { clonePath, branch }) ? previous.lastUpdate : null,
+    };
+    syncHistory.set(id, record);
+
+    // Persistence is ordered, but never extends the caller's sync deadline.
+    const write = (historyWrites.get(id) ?? Promise.resolve())
+      .then(() => bb.storage.kv.set(syncKey(id), record))
+      .catch(error => { bb.log.warn(`Project ${id}: could not save sync history: ${String(error)}`); })
+      .finally(() => { if (historyWrites.get(id) === write) historyWrites.delete(id); });
+    historyWrites.set(id, write);
+  };
   const source = async ({ projectId: id, sync }: z.infer<typeof sourceInput>) => {
-    const r = await sourceGet(id, configs.get(id) ?? {}, env.probes ?? realProbes, { sync, state: syncState, limits: env.limits, log: line => bb.log.info(line) });
+    const c = configs.get(id) ?? {}, revision = sourceRevisions.get(id);
+    const r = await sourceGet(id, c, env.probes ?? realProbes, { sync, state: syncState, limits: env.limits, log: line => bb.log.info(line) });
     if (r.state !== "not_configured" && r.state !== "disabled") bb.log.info(`source.get ${id}: probed, state ${r.state}`);
+    if (sync && c.enabled && c.allowSync && c.clonePath && c.branch && revision === sourceRevisions.get(id)) {
+      recordSync(id, c.clonePath, c.branch, r);
+    }
     return r;
   };
-  bb.rpc.register(rpcContract, { "config.get": i => getConfig(configGet.parse(i)), "config.set": i => setConfig(configSet.parse(i)), check: i => check(checkInput.parse(i)), "source.get": i => source(sourceInput.parse(i)) });
+  bb.rpc.register(rpcContract, {
+    "config.get": i => getConfig(configGet.parse(i)),
+    "config.set": i => setConfig(configSet.parse(i)),
+    check: i => check(checkInput.parse(i)),
+    "source.get": i => source(sourceInput.parse(i)),
+    "status.projects": statusProjects,
+    "status.detail": ({ projectId }) => statusDetail(projectId),
+  });
 
   const project = { type: "string", description: "Project id" } as const, json = { type: "boolean", description: "Return JSON" } as const;
   bb.cli.register(defineCli({ name: "project-instructions", summary: "Inject a project's process root and skills from one local git clone", commands: {
@@ -164,7 +246,15 @@ export default async function plugin(bb: BbPluginApi, env: Env = {}) {
 
   for (const key of await bb.storage.kv.list("config:project:")) {
     const c = await bb.storage.kv.get<ProjectConfig>(key);
-    if (c) configs.set(key.slice("config:project:".length), c);
+    if (!c) continue;
+    const id = key.slice("config:project:".length);
+    configs.set(id, c);
+    try {
+      const history = storedSyncHistory.safeParse(await bb.storage.kv.get(syncKey(id)));
+      if (history.success && sameSource(history.data, c)) syncHistory.set(id, history.data);
+    } catch (error) {
+      bb.log.warn(`Project ${id}: could not read sync history: ${String(error)}`);
+    }
   }
   syncAll();
 }

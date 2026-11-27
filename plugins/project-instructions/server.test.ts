@@ -594,3 +594,128 @@ it("updates the tracking ref when the tip is already local, so the synced clone 
   expect(git(s.o.clone, "rev-parse", "refs/remotes/origin/main")).toBe(s.tip());
   expect(await source(s.h)).toMatchObject({ state: "fresh", head: s.tip() });
 });
+
+it("keeps concurrent writes to separate fields and continues after a rejected edit", async () => {
+  const h = await setup();
+  const projectId = "proj_example";
+  const clonePath = makeClone();
+  const results = await Promise.allSettled([
+    h.set(projectId, "clonePath", clonePath),
+    h.set(projectId, "enabled", true),
+    h.set(projectId, "branch", "main"),
+  ]);
+  expect(results.map(result => result.status)).toEqual(["fulfilled", "rejected", "fulfilled"]);
+  expect(await h.rpc("config.get", { projectId })).toMatchObject({ clonePath, branch: "main", enabled: false });
+  expect(await h.host.bb.storage.kv.get("config:project:" + projectId)).toMatchObject({ clonePath, branch: "main" });
+});
+
+const registry = [
+  { id: "proj_example", name: "Example" },
+  { id: "proj_disabled", name: "Disabled example" },
+  { id: "proj_empty", name: "New example" },
+];
+
+it("reports configured projects, root preview, and skills from the CLI checks", async () => {
+  const rec = recording(), h = await setup(rec.probes);
+  h.host.harness.sdk.stub("projects.list", async () => registry);
+  const clone = makeClone("<b>Instructions</b>", ["example-check"]);
+  writeSkill(clone, "example-invalid", fm("example-invalid", null));
+  await h.configure("proj_example", { clonePath: clone });
+  await h.configure("proj_disabled", { clonePath: makeClone("x".repeat(ROOT_CAP + 1)), enabled: false });
+  await h.set("proj_orphan", "branch", "main");
+  h.old();
+
+  expect(await h.rpc("status.projects", {})).toEqual([
+    { ...registry[1], available: true, configured: true, enabled: false, allowSync: false },
+    { ...registry[0], available: true, configured: true, enabled: true, allowSync: false },
+    { ...registry[2], available: true, configured: false, enabled: false, allowSync: false },
+    { id: "proj_orphan", name: "proj_orphan", available: false, configured: true, enabled: false, allowSync: false },
+  ]);
+
+  const projectId = "proj_example";
+  const cli = await h.host.harness.behavior.runCli(["check", "--project", projectId, "--json"]);
+  const report = JSON.parse(cli.stdout!);
+  const detail = await h.rpc("status.detail", { projectId });
+  expect(detail).toMatchObject({
+    source: report.source,
+    skills: report.skills,
+    preview: "<b>Instructions</b>",
+    rootFile: "ROOT.md",
+    sync: null,
+  });
+  expect(detail.skills.selectable).toEqual(["example-check"]);
+  expect(detail.skills.skipped).toEqual([expect.objectContaining({ name: "example-invalid" })]);
+
+  expect(await h.rpc("status.detail", { projectId: "proj_disabled" })).toMatchObject({
+    enabled: false, preview: null, source: { ok: false, rootLength: ROOT_CAP + 1, cap: ROOT_CAP },
+  });
+  await h.set("proj_example", "enabled", false);
+  expect(await h.rpc("status.detail", { projectId })).toMatchObject({
+    enabled: false, preview: "<b>Instructions</b>", skills: { selectable: [] },
+  });
+  expect(await h.rpc("status.detail", { projectId: "proj_empty" })).toMatchObject({
+    enabled: false, rootFile: null, source: { ok: false }, preview: null, skills: null, sync: null,
+  });
+  await expect(h.rpc("status.detail", { projectId: "proj_orphan" })).rejects.toThrow(/unavailable/i);
+  expect(rec.calls).toEqual([]);
+});
+
+it("persists the latest sync result and the last fast-forward separately", async () => {
+  const s = await syncSetup();
+  s.h.host.harness.sdk.stub("projects.list", async () => registry);
+  const projectId = "proj_example", detail = () => s.h.rpc("status.detail", { projectId });
+  const before = s.head();
+  s.o.push("2\n");
+  const updated = await s.sync();
+  const after = s.tip();
+  expect(updated).toMatchObject({ state: "fresh", synced: { from: before, to: after } });
+  const historyAfterUpdate = (await detail()).sync;
+  expect(historyAfterUpdate).toMatchObject({
+    lastAttempt: { outcome: "updated", reason: null },
+    lastUpdate: { from: before, to: after },
+  });
+
+  s.h.advance(1_000);
+  expect(await source(s.h)).toMatchObject({ state: "fresh", synced: null });
+  expect((await detail()).sync).toEqual(historyAfterUpdate);
+  expect(await s.sync()).toMatchObject({ state: "fresh", synced: null });
+  expect((await detail()).sync).toMatchObject({
+    lastAttempt: { outcome: "up_to_date", at: historyAfterUpdate.lastAttempt.at + 1_000 },
+    lastUpdate: historyAfterUpdate.lastUpdate,
+  });
+
+  s.h.advance(1_000);
+  git(s.o.clone, "remote", "set-url", "origin", join(tmp(), "missing.git"));
+  const failed = await s.sync();
+  expect(failed).toMatchObject({ state: "unreachable", synced: null });
+  const history = (await detail()).sync;
+  expect(history).toMatchObject({
+    lastAttempt: { outcome: "failed", reason: failed.reason },
+    lastUpdate: historyAfterUpdate.lastUpdate,
+  });
+
+  const next = await s.h.host.harness.lifecycle.reload(bb => plugin(bb, { linkedDir: s.h.linkedDir }));
+  next.harness.sdk.stub("projects.list", async () => registry);
+  expect(await next.harness.behavior.callRpc("status.detail", { projectId })).toMatchObject({ sync: history });
+  await next.harness.behavior.callRpc("config.set", { projectId, key: "clonePath", value: makeClone() });
+  expect(await next.harness.behavior.callRpc("status.detail", { projectId })).toMatchObject({ sync: null });
+});
+
+it("ignores a completed sync for a source changed while the call was in flight", async () => {
+  let pause!: () => void, resume!: () => void;
+  const started = new Promise<void>(resolve => { pause = resolve; });
+  const waiting = new Promise<void>(resolve => { resume = resolve; });
+  const rec = recording({ when: args => args[0] === "ls-remote", run: () => { pause(); return waiting; } });
+  const s = await syncSetup(rec.probes);
+  s.h.host.harness.sdk.stub("projects.list", async () => registry);
+  const sync = s.sync();
+  await started;
+  try {
+    await s.h.set("proj_example", "branch", "example/other");
+    await s.h.set("proj_example", "branch", "main");
+  } finally {
+    resume();
+  }
+  expect(await sync).toMatchObject({ state: "fresh" });
+  expect(await s.h.rpc("status.detail", { projectId: "proj_example" })).toMatchObject({ sync: null });
+});

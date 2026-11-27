@@ -6,7 +6,11 @@ Instructions form a directed graph: the plugin injects only the **root** file. T
 
 ## Configuration
 
-Per project, one field at a time:
+In bb, open **Settings → Plugins → Project Instructions** and choose a project. Save each field individually. **Check source** runs the same diagnostics as the CLI.
+
+Open **Project Instructions** in the sidebar to see the configured projects, root file and preview, selectable and skipped skills, and the last sync result. Sync history records requests made with sync allowed and preserves the last successful fast-forward. **Refresh** reads diagnostics and recorded results without contacting the remote.
+
+The CLI also edits one field at a time:
 
 ```sh
 bb project-instructions config set clonePath /abs/path/to/clone --project proj_example
@@ -52,7 +56,7 @@ A skill is selected only if it passes the checks bb itself applies (frontmatter 
 
 ## Freshness
 
-The plugin reads the clone on every thread configuration, so whatever updates the clone (a fetch and checkout on a schedule, say) reaches the next thread with no copy. The plugin does not update the clone.
+The plugin reads the clone on every thread configuration, so whatever updates the clone (a fetch and checkout on a schedule, say) reaches the next thread with no copy. A caller may also request a fast-forward when sync is allowed.
 
 ## Source for other plugins
 
