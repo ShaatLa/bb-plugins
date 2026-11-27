@@ -76,6 +76,12 @@ Optional builder output field for role-aware provider admission:
 - Set `reason` only when the caller gave an explicit reason. Omit it otherwise.
   An empty or whitespace-only reason does not waive a refusal. Neither a
   reason nor any pace result can open a provider excluded by the role.
+- When installed, Tokenomos `limits.get` v1 supplies fresh applicable pace,
+  forecast and room for the launch host. Unknown pace cannot trigger a
+  refusal, and unknown room cannot establish an alternate. Missing or stale
+  observations use the checks below. Provider rows retain the concrete
+  `source`, name its category in `sourceKind`, and may include
+  `forecastPercent` and `forecast`.
 - Spawn Gate reads `provider-usage.v1.listResources` and `getResource` from
   each eligible provider's usage plugin for the target host. It compares the
   highest pace among applicable weekly windows, observed within the last hour

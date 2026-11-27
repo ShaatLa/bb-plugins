@@ -180,6 +180,16 @@ files. The selected execution host is available to the builder as
 
 ## Weekly provider pace
 
+When Tokenomos can supply a fresh, matching reading, Spawn Gate uses its
+weekly pace, forecast and room. A fresh reading with unknown pace or room
+keeps those values unknown. Unavailable readings use the Account Pooler
+or provider usage calculation below. Spawn Gate still checks the launch
+host, model and Pooler account eligibility before using a reading.
+
+`report --events` includes `paceReadings` for successful starts with readings.
+Each entry identifies the provider and whether its reading came from
+`tokenomos`, `account-pool` or `provider`.
+
 A role-aware Script builder supplies `providerPolicy` in its v1 output. The
 policy lists the providers eligible for the requested role and, optionally, an
 explicit reason supplied by the caller. Spawn Gate enforces the list, reads the

@@ -1,6 +1,6 @@
 import { defineRpcContract, type BbPluginApi } from "@get-bb/plugin-sdk";
 import { z } from "zod";
-import { paceFallback, paceOverride } from "./pace";
+import { paceFallback, paceOverride, paceSource } from "./pace";
 
 const operation = z.enum(["start", "dry-run", "dispatch"]);
 type Operation = z.infer<typeof operation>;
@@ -35,6 +35,7 @@ const paceEventFields = {
 };
 const fallbackEvent = paceFallback.extend(paceEventFields);
 const overrideEvent = paceOverride.extend(paceEventFields);
+const paceReadingEvent = z.object({ ...paceEventFields, providers: z.array(paceSource) });
 const reportOutput = z.object({
   from: z.iso.date(),
   to: z.iso.date(),
@@ -43,6 +44,7 @@ const reportOutput = z.object({
   events: z.array(refusalEvent).optional(),
   fallbacks: z.array(fallbackEvent).optional(),
   overrides: z.array(overrideEvent).optional(),
+  paceReadings: z.array(paceReadingEvent).optional(),
 });
 
 const reportTag = (projectId?: string) => projectId ? `report:${projectId}` : "report";
@@ -56,6 +58,7 @@ type RefusalEvent = z.infer<typeof refusalEvent>;
 type FallbackEvent = z.infer<typeof fallbackEvent>;
 type OverrideEvent = z.infer<typeof overrideEvent>;
 type MetricDetails = Partial<Pick<RefusalEvent, "parentThreadId" | "card" | "sourceCommit" | "stderr">> & {
+  paceReadings?: z.infer<typeof paceSource>[];
   fallback?: z.infer<typeof paceFallback>;
   override?: z.infer<typeof paceOverride>;
 };
@@ -77,7 +80,12 @@ export async function createMetrics(bb: BbPluginApi, db: ReturnType<BbPluginApi[
     fromProviderId TEXT NOT NULL, toProviderId TEXT, pace REAL NOT NULL, threshold REAL NOT NULL, overrideReason TEXT,
     CHECK ((toProviderId IS NULL) <> (overrideReason IS NULL))
   );
-  CREATE INDEX IF NOT EXISTS gate_pace_decisions_timestamp ON gate_pace_decisions(timestamp);`);
+  CREATE INDEX IF NOT EXISTS gate_pace_decisions_timestamp ON gate_pace_decisions(timestamp);
+  CREATE TABLE IF NOT EXISTS gate_pace_readings (
+    timestamp TEXT NOT NULL, projectId TEXT NOT NULL, parentThreadId TEXT, card TEXT, sourceCommit TEXT,
+    providers TEXT NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS gate_pace_readings_timestamp ON gate_pace_readings(timestamp);`);
   const key = "metrics-coverage-start";
   let coverageStartedAt = await bb.storage.kv.get<string>(key);
   if (!coverageStartedAt) {
@@ -108,14 +116,22 @@ export async function createMetrics(bb: BbPluginApi, db: ReturnType<BbPluginApi[
     SELECT timestamp, projectId, parentThreadId, card, sourceCommit, fromProviderId AS providerId, pace, threshold, overrideReason AS reason
     FROM gate_pace_decisions WHERE overrideReason IS NOT NULL AND timestamp BETWEEN ? AND ? AND (? IS NULL OR projectId = ?)
     ORDER BY timestamp DESC, rowid DESC`);
+  const insertReadings = db.prepare(`INSERT INTO gate_pace_readings
+    (timestamp, projectId, parentThreadId, card, sourceCommit, providers) VALUES (?, ?, ?, ?, ?, ?)`);
+  const readingEvents = db.prepare<[string, string, string | null, string | null],
+    Omit<z.infer<typeof paceReadingEvent>, "providers"> & { providers: string }>(`
+    SELECT timestamp, projectId, parentThreadId, card, sourceCommit, providers
+    FROM gate_pace_readings WHERE timestamp BETWEEN ? AND ? AND (? IS NULL OR projectId = ?)
+    ORDER BY timestamp DESC, rowid DESC`);
   const recordMetric = db.transaction((projectId: string, operation: Operation, reason: string, {
     parentThreadId = null, card = null, sourceCommit = null, stderr = null,
-    fallback, override,
+    fallback, override, paceReadings,
   }: MetricDetails) => {
     const timestamp = new Date().toISOString();
     increment.run(timestamp.slice(0, 10), projectId, operation, reason);
     if (reason !== "success") insertEvent.run(timestamp, projectId, operation, reason, parentThreadId, card, sourceCommit, stderr);
     if (reason === "success" && operation === "start") {
+      if (paceReadings?.length) insertReadings.run(timestamp, projectId, parentThreadId, card, sourceCommit, JSON.stringify(paceReadings));
       if (fallback) insertDecision.run(timestamp, projectId, parentThreadId, card, sourceCommit,
         fallback.fromProviderId, fallback.toProviderId, fallback.pace, fallback.threshold, null);
       if (override) insertDecision.run(timestamp, projectId, parentThreadId, card, sourceCommit,
@@ -158,11 +174,14 @@ export async function createMetrics(bb: BbPluginApi, db: ReturnType<BbPluginApi[
     const eventRange = [`${from}T00:00:00.000Z`, `${to}T23:59:59.999Z`, projectId ?? null, projectId ?? null] as const;
     const fallbacks = events ? fallbackEvents.all(...eventRange) : [];
     const overrides = events ? overrideEvents.all(...eventRange) : [];
+    const paceReadings = events ? readingEvents.all(...eventRange).map(({ providers, ...event }) =>
+      paceReadingEvent.parse({ ...event, providers: JSON.parse(providers) })) : [];
     return {
       from, to, coverageStartedAt, projects: [...projects.values()],
       ...(events ? { events: refusalEvents.all(...eventRange) } : {}),
       ...(fallbacks.length ? { fallbacks } : {}),
       ...(overrides.length ? { overrides } : {}),
+      ...(paceReadings.length ? { paceReadings } : {}),
     };
   };
   return { record, report };

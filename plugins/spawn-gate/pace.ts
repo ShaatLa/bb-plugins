@@ -33,7 +33,29 @@ const measurement = z.object({
     z.object({ status: z.enum(["error", "not_installed", "unauthenticated", "expired"]) }),
   ]),
 });
+const tokenomosId = "tokenomos";
 const poolId = "account-pool";
+const observationSource = z.object({ pluginId: z.string(), resourceId: z.string() });
+const nullableNumber = z.number().nonnegative().nullable();
+const forecast = z.object({
+  method: z.enum(["previous-window", "recent-spend", "window-average"]).nullable(),
+  reason: z.enum(["exhausted", "no-reset", "too-early", "no-previous-window"]).nullable(),
+});
+const tokenomosLimits = z.object({
+  version: z.literal(1),
+  accounts: z.array(z.object({
+    providerId, host: z.object({ id: z.string() }).nullable(),
+    source: observationSource.nullable(), sources: z.array(observationSource),
+    status: z.string(), observedAt: nullableNumber, stale: z.boolean(),
+    windows: z.array(usageWindow.omit({ resetsAt: true }).extend({
+      key: z.string(), resetsAt: nullableNumber, asOf: z.number().nonnegative(),
+      elapsedShare: z.number().min(0).max(1).nullable(), forecastPercent: nullableNumber,
+      pace: nullableNumber, room: z.boolean().nullable(), stale: z.boolean(), forecast,
+    })),
+  })),
+});
+type Limits = z.infer<typeof tokenomosLimits>;
+type LimitWindow = Limits["accounts"][number]["windows"][number];
 const poolRouting = z.object({ claude: z.boolean(), codex: z.boolean() });
 const poolWindow = z.object({
   utilization: z.number().nonnegative().nullable(), resetAt: z.number().nullable(),
@@ -43,7 +65,7 @@ const poolStatus = z.object({
   accepting: z.boolean(), routing: poolRouting,
   parent: z.object({ mode: z.string(), availability: poolRouting }).nullable(),
   accounts: z.array(z.object({
-    provider: z.string(), enabled: z.boolean(), status: z.string(),
+    id: z.string().optional(), provider: z.string(), enabled: z.boolean(), status: z.string(),
     limitWindows: z.array(poolWindow.extend({ windowMinutes: z.number().nullable() })),
     familyWeekly: z.record(z.string(), poolWindow.nullable()),
   })),
@@ -54,13 +76,18 @@ export const paceFallback = z.object({
 export const paceOverride = z.object({
   providerId, pace: z.number(), threshold: z.number(), reason: z.string().min(1).max(2000),
 });
+export const paceSource = z.object({
+  providerId, sourceKind: z.enum([tokenomosId, poolId, "provider"]),
+});
 export const paceReport = z.object({
   override: paceOverride.optional(),
   fallback: paceFallback.optional(),
   threshold: z.number(),
   overridden: z.boolean(),
   providers: z.array(z.object({
-    providerId, source: z.string().nullable(), window: z.string().nullable(),
+    ...paceSource.partial({ sourceKind: true }).shape,
+    source: z.string().nullable(), window: z.string().nullable(),
+    forecastPercent: nullableNumber.optional(), forecast: forecast.optional(),
     usedPercent: z.number().nullable(), elapsedShare: z.number().nullable(), pace: z.number().nullable(),
   })),
 });
@@ -79,6 +106,7 @@ function unknownReading(item: Candidate, source: string | null) {
 
 function score(item: Candidate, source: string, weekly: PaceWindow[]) {
   const unknown = unknownReading(item, source);
+  const sourceKind: z.infer<typeof paceSource>["sourceKind"] = source === poolId ? poolId : "provider";
   const now = Date.now();
   const rows = weekly.flatMap(({ label, usedPercent, resetAt, observedAt }) => {
     const elapsedMs = weekMs - (resetAt - observedAt);
@@ -86,7 +114,10 @@ function score(item: Candidate, source: string, weekly: PaceWindow[]) {
       !Number.isFinite(usedPercent) || resetAt <= now || elapsedMs < 0) return [];
     const elapsedShare = elapsedMs / weekMs;
     const pace = elapsedShare < minElapsedShare ? null : usedPercent / 100 / elapsedShare;
-    return [{ ...unknown.row, window: label, usedPercent, elapsedShare, pace }];
+    return [{
+      ...unknown.row, sourceKind,
+      window: label, usedPercent, elapsedShare, pace,
+    }];
   }).sort((a, b) => (b.pace ?? -1) - (a.pace ?? -1) || b.usedPercent - a.usedPercent);
   const row = rows[0];
   if (!row) return unknown;
@@ -95,7 +126,33 @@ function score(item: Candidate, source: string, weekly: PaceWindow[]) {
   return { row, room };
 }
 
-function pooledReading(item: Candidate, pool: z.infer<typeof poolStatus>) {
+function tokenomosReading(item: Candidate, limits: Limits | null, hostId: string | undefined,
+  pluginId: string, resourceId: string, windowsFor: (windows: LimitWindow[]) => LimitWindow[]) {
+  if (!limits || !hostId) return;
+  const accounts = limits.accounts.filter(account => account.providerId === item.providerId &&
+    (!account.host || account.host.id === hostId) &&
+    account.sources.some(source => source.pluginId === pluginId && source.resourceId === resourceId));
+  if (accounts.length !== 1) return;
+  const [account] = accounts;
+  const { observedAt, source } = account;
+  const now = Date.now();
+  if (account.status !== "ok" || account.stale || !source || observedAt === null ||
+    observedAt > now || now - observedAt > maxAgeMs ||
+    !account.sources.some(item => item.pluginId === source.pluginId && item.resourceId === source.resourceId)) return;
+  const windows = windowsFor(account.windows);
+  if (!windows.length || new Set(windows.map(window => window.key)).size !== windows.length ||
+    windows.some(window => window.stale || window.asOf !== observedAt ||
+      window.resetsAt === null || window.resetsAt <= now || window.elapsedShare === null)) return;
+  const [window] = windows.sort((a, b) => (b.pace ?? -1) - (a.pace ?? -1) || b.usedPercent - a.usedPercent);
+  const row: Report["providers"][number] = {
+    providerId: item.providerId, source: tokenomosId, sourceKind: tokenomosId, window: window.label,
+    usedPercent: window.usedPercent, elapsedShare: window.elapsedShare, pace: window.pace,
+    forecastPercent: window.forecastPercent, forecast: window.forecast,
+  };
+  return { row, room: windows.every(window => window.room === true && window.pace !== null && window.usedPercent < 100) };
+}
+
+function pooledReading(item: Candidate, pool: z.infer<typeof poolStatus>, limits: Limits | null, hostId: string | undefined) {
   const provider = item.providerId === "claude-code" ? "claude" : item.providerId;
   if ((provider !== "claude" && provider !== "codex") || !pool.routing[provider]) return;
   // A nested server's local accounts do not describe the parent pool.
@@ -118,6 +175,12 @@ function pooledReading(item: Candidate, pool: z.infer<typeof poolStatus>) {
     const weekly = account.limitWindows.filter(window => window.windowMinutes === 10_080)
       .map(window => ({ ...window, label: "Weekly limit" }));
     const windows = familyWindow ? [...weekly, { ...familyWindow, label: `Weekly · ${family}` }] : weekly;
+    const tokenomos = account.id && tokenomosReading(item, limits, hostId, poolId, account.id, all => {
+      const general = all.filter(window => window.kind === "weekly" && window.model === null && !window.key.startsWith("weekly:"));
+      const scoped = provider === "claude" ? all.filter(window => window.kind === "weekly" && window.key === `weekly:${family}`) : [];
+      return general.length < weekly.length || (familyWindow && !scoped.length) ? [] : [...general, ...scoped];
+    });
+    if (tokenomos) return [tokenomos];
     return [score(item, poolId, windows.map(window => ({
       label: window.label, usedPercent: (window.utilization ?? NaN) * 100,
       observedAt: window.observedAt, resetAt: window.resetAt ?? NaN,
@@ -127,7 +190,7 @@ function pooledReading(item: Candidate, pool: z.infer<typeof poolStatus>) {
   return readings.find(reading => reading.room) ?? readings[0] ?? unknown;
 }
 
-function applies(window: Window, { providerId, model }: Candidate) {
+function applies(window: Pick<Window, "kind" | "label" | "model">, { providerId, model }: Candidate) {
   if (providerId === "antigravity") {
     // Antigravity publishes these weekly buckets as custom windows to preserve its labels.
     return window.label === (/argon/i.test(model ?? "") ? "7d · Argon" : "7d");
@@ -139,7 +202,7 @@ function applies(window: Window, { providerId, model }: Candidate) {
   return normalized === family || normalized?.split(/[-_.\s]+/).includes(family);
 }
 
-async function sample(bb: BbPluginApi, item: Candidate, hostId: string | undefined, source: string | null, signal: AbortSignal) {
+async function sample(bb: BbPluginApi, item: Candidate, hostId: string | undefined, source: string | null, limits: Limits | null, signal: AbortSignal) {
   const unknown = unknownReading(item, source);
   if (!hostId || !source) return unknown;
   try {
@@ -148,6 +211,9 @@ async function sample(bb: BbPluginApi, item: Candidate, hostId: string | undefin
       (resource.scope.kind === "shared" || resource.scope.kind === "host" && resource.scope.hostId === hostId));
     if (matches.length !== 1) return unknown;
     const [resource] = matches;
+    const tokenomos = tokenomosReading(item, limits, hostId, source, resource.id,
+      windows => windows.filter(window => applies({ ...window, label: window.key }, item)));
+    if (tokenomos) return tokenomos;
     const reading = await bb.sdk.plugins.callRpc({ pluginId: source, method: "provider-usage.v1.getResource",
       input: { resourceId: resource.id, refresh: false }, outputSchema: measurement, signal });
     const { observedAt } = reading;
@@ -163,17 +229,21 @@ async function sample(bb: BbPluginApi, item: Candidate, hostId: string | undefin
 export async function assessPace(bb: BbPluginApi, policy: z.infer<typeof providerPolicy>, selected: Candidate,
   hostId: string | undefined, threshold: number, signal: AbortSignal) {
   const deadline = AbortSignal.any([signal, AbortSignal.timeout(15_000)]);
-  const [sources, pool] = await Promise.all([
+  const [sources, pool, limits] = await Promise.all([
     hostId ? bb.sdk.providers.list({ hostId, capability: "usage" }).catch(() => []) : [],
     hostId && policy.eligible.some(item => item.providerId === "codex" || item.providerId === "claude-code")
       ? bb.sdk.plugins.callRpc({ pluginId: poolId, method: "status.get", input: null, outputSchema: poolStatus, signal: deadline })
         .catch(() => null)
       : null,
+    hostId ? bb.sdk.plugins.callRpc({
+      pluginId: tokenomosId, method: "limits.get", input: { hostId }, outputSchema: tokenomosLimits,
+      signal: AbortSignal.any([deadline, AbortSignal.timeout(3000)]),
+    }).catch(() => null) : null,
   ]);
   const readings = await Promise.all(policy.eligible.map(async candidate => {
     const item = candidate.providerId === selected.providerId ? selected : candidate;
     const source = sources.find(source => source.id === item.providerId)?.pluginId ?? null;
-    const reading = (source && pool ? pooledReading(item, pool) : undefined) ?? await sample(bb, item, hostId, source, deadline);
+    const reading = (source && pool ? pooledReading(item, pool, limits, hostId) : undefined) ?? await sample(bb, item, hostId, source, limits, deadline);
     return { ...reading, candidate };
   }));
   const providers = readings.map(({ row }) => row);
@@ -184,10 +254,14 @@ export async function assessPace(bb: BbPluginApi, policy: z.infer<typeof provide
   const report: Report = { threshold, providers, overridden: false };
   const summary = providers.map(row => {
     let pace = row.pace?.toFixed(2) ?? "unknown";
-    if (row.pace === null && row.usedPercent !== null && row.elapsedShare !== null) {
+    if (row.sourceKind === tokenomosId && row.pace === null && row.forecast?.reason) {
+      pace = `unknown forecast: ${row.forecast.reason}`;
+    } else if (row.sourceKind !== tokenomosId && row.pace === null && row.usedPercent !== null && row.elapsedShare !== null) {
       pace = `too early to measure: ${row.usedPercent}% used after ${(100 * row.elapsedShare).toFixed(2)}% of the window`;
     }
-    return `${row.providerId}: ${pace} (${row.source ?? "no usage source"}${row.window ? ` · ${row.window}` : ""})`;
+    const projection = row.forecastPercent == null ? "" : `; ${row.forecastPercent.toFixed(1)}% forecast at reset`;
+    const source = row.sourceKind === "provider" ? `provider · ${row.source}` : row.source;
+    return `${row.providerId}: ${pace}${projection} (${source ?? "no usage source"}${row.window ? ` · ${row.window}` : ""})`;
   }).join("; ");
   if (pace == null || pace < threshold || (!policy.pinned && !ordered && !withRoom.length)) return { report, summary };
   const reason = policy.reason?.trim();

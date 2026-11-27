@@ -298,8 +298,9 @@ export function createStart(bb: BbPluginApi, mint: (request: { projectId: string
     try {
       const result = await next;
       const pace = result.dryRun ? undefined : result.providerPace;
-      record(request.projectId, mode, "success", pace?.fallback || pace?.override ? {
+      record(request.projectId, mode, "success", pace ? {
         fallback: pace.fallback, override: pace.override,
+        paceReadings: pace.providers.flatMap(({ providerId, sourceKind }) => sourceKind ? [{ providerId, sourceKind }] : []),
         parentThreadId: request.parentThreadId, sourceCommit, card: builderCard(request.args),
       } : undefined);
       return result;

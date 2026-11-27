@@ -6,6 +6,7 @@ import { afterEach, expect, it, vi } from "vitest";
 import { createFakePluginHost, makeThreadResponse } from "@get-bb/plugin-sdk/testing";
 import { registerGateCli } from "./cli";
 import { createMetrics } from "./metrics";
+import { assessPace } from "./pace";
 import { type ProcessSource, type ResolveProcessSource } from "./process-source";
 import { builderEnvironment, createStart } from "./start";
 import { registerWorkBoardOwnerTool } from "./work-board-owners";
@@ -560,7 +561,7 @@ it("checks weekly pace before mint and uses the configured order for opted-in fa
   });
   const calls: string[] = [];
   f.harness.sdk.stub("plugins.callRpc", async ({ pluginId, method }: { pluginId: string; method: string }) => {
-    if (pluginId === "account-pool") throw new Error("Account Pooler not installed");
+    if (pluginId === "account-pool" || pluginId === "tokenomos") throw new Error("Plugin not installed");
     const providerId = pluginId.replace(/^provider-/, "");
     calls.push(providerId);
     return method.endsWith("listResources")
@@ -591,7 +592,7 @@ it("checks weekly pace before mint and uses the configured order for opted-in fa
     { providerId: "antigravity", source: "antigravity", window: "7d · Argon", pace: 0 },
   ] });
   expect(f.mint).toHaveBeenCalledWith(expect.objectContaining({
-    brief: expect.stringContaining("antigravity: 0.00 (antigravity · 7d · Argon)"),
+    brief: expect.stringContaining("antigravity: 0.00 (provider · antigravity · 7d · Argon)"),
   }));
   expect(f.spawn).toHaveBeenCalledTimes(1);
 
@@ -783,3 +784,119 @@ it("uses the weekly quota of available pooled accounts even without local provid
   expect(f.mint).not.toHaveBeenCalled();
   expect(f.spawn).not.toHaveBeenCalled();
 });
+
+it("uses fresh Tokenomos windows, preserves nulls, and falls back per eligible account", async () => {
+  const f = await fixture();
+  const hostId = "host_example";
+  const observedAt = Date.now() - 60_000;
+  const week = 604_800_000;
+  const resetsAt = observedAt + week * (1 - 0.011805555555555555);
+  const window = {
+    key: "Weekly limit", label: "Weekly limit", kind: "weekly", model: null as string | null,
+    usedPercent: 1, resetsAt, asOf: observedAt, elapsedShare: 0.011805555555555555,
+    forecastPercent: 40.76447105788423 as number | null, pace: 0.4076447105788423 as number | null,
+    room: true as boolean | null, stale: false,
+    forecast: { method: "previous-window" as string | null, reason: null as string | null },
+  };
+  const poolWindow = {
+    windowMinutes: 10_080, utilization: 0.52, observedAt, status: null,
+    resetAt: observedAt + Math.round(week * 0.69),
+  };
+  const poolAccount = {
+    id: "pool-example", provider: "claude", enabled: true, status: "ready",
+    limitWindows: [poolWindow], familyWeekly: {} as Record<string, typeof poolWindow>,
+  };
+  const account = (providerId: string, pluginId: string, resourceId: string) => {
+    const source = { pluginId, resourceId };
+    return {
+      providerId, host: null as { id: string } | null, source, sources: [source],
+      status: "ok", observedAt, stale: false, windows: [{ ...window }],
+    };
+  };
+  const claude = account("claude-code", "account-pool", poolAccount.id);
+  const codex = account("codex", "provider-codex", "resource-example");
+  claude.sources.push({ pluginId: "provider-claude", resourceId: "native-example" });
+  claude.source = claude.sources[1];
+  let limitsAvailable = true;
+  const accounts = [claude, codex];
+  const calls = vi.fn(async ({ pluginId, method, input }: { pluginId: string; method: string; input: unknown }) => {
+    if (pluginId === "tokenomos") {
+      expect(input).toEqual({ hostId });
+      if (!limitsAvailable) throw new Error("Tokenomos unavailable");
+      return { version: 1, now: observedAt + 60_000, accounts };
+    }
+    if (pluginId === "account-pool") {
+      return { accepting: true, routing: { claude: true, codex: false }, parent: null, accounts: [poolAccount] };
+    }
+    if (method.endsWith("listResources")) {
+      return { resources: [{ id: "resource-example", providerId: "codex", scope: { kind: "host", hostId } }] };
+    }
+    return { observedAt, usage: { status: "ok", windows: [{
+      label: "Weekly limit", kind: "weekly", model: null, usedPercent: 60,
+      resetsAt: new Date(observedAt + week / 2).toISOString(),
+    }] } };
+  });
+  f.harness.sdk.stub("plugins.callRpc", calls);
+  f.harness.sdk.stub("threads.get", async () => makeThreadResponse({ projectId: "proj_example", environmentId: "env_parent" }));
+  f.harness.sdk.stub("environments.get", async () => ({ hostId }));
+  f.harness.sdk.stub("providers.list", async () => [
+    { id: "codex", pluginId: "provider-codex" }, { id: "claude-code", pluginId: "provider-claude" },
+  ]);
+  const eligible = [{ providerId: "codex" }, { providerId: "claude-code", model: "claude-sonnet-example" }];
+  const ordered = { eligible, orderedFallback: true };
+  const preview = () => f.start({ ...f.request, dryRun: true });
+  await f.write("Tokenomos reading.", undefined, ordered);
+  expect(await preview()).toMatchObject({
+    providerPace: { providers: [
+      { sourceKind: "tokenomos", pace: window.pace, forecastPercent: window.forecastPercent },
+      { sourceKind: "tokenomos", pace: window.pace, forecastPercent: window.forecastPercent },
+    ] },
+    build: { brief: expect.stringContaining("40.8% forecast at reset (tokenomos · Weekly limit)") },
+  });
+  expect(calls.mock.calls.filter(([call]) => call.pluginId === "tokenomos")).toHaveLength(1);
+  expect((await f.report({ events: true })).paceReadings).toBeUndefined();
+
+  Object.assign(codex.windows[0], { pace: 5, forecastPercent: 500, room: false });
+  expect(await f.start(f.request)).toMatchObject({
+    providerPace: { fallback: { fromProviderId: "codex", toProviderId: "claude-code", pace: 5 } },
+  });
+  expect(f.spawn).toHaveBeenLastCalledWith(expect.objectContaining({ providerId: "claude-code" }));
+  expect((await f.report({ events: true })).paceReadings).toMatchObject([{ providers: [
+    { providerId: "codex", sourceKind: "tokenomos" }, { providerId: "claude-code", sourceKind: "tokenomos" },
+  ] }]);
+
+  Object.assign(claude.windows[0], { pace: null, forecastPercent: null, room: null,
+    forecast: { method: null, reason: "no-previous-window" } });
+  await expect(preview()).rejects.toThrow("no-previous-window");
+  await f.write("Pinned Tokenomos reading.", undefined, { eligible, pinned: true });
+  await expect(preview()).rejects.toThrow("Pinned provider codex");
+  Object.assign(codex.windows[0], { pace: null, forecastPercent: null, room: null,
+    forecast: { method: null, reason: "no-previous-window" } });
+  expect(await preview()).toMatchObject({
+    providerPace: { overridden: false, providers: [{ sourceKind: "tokenomos", pace: null }, {}] },
+    build: { spawn: { providerId: "codex" }, brief: expect.stringContaining("unknown forecast: no-previous-window") },
+  });
+
+  claude.windows[0] = { ...window };
+  claude.windows.push({ ...window, key: "weekly:fable", model: "fable", pace: 9, room: false });
+  expect((await preview()).providerPace?.providers[1]).toMatchObject({ sourceKind: "tokenomos", pace: window.pace });
+  poolAccount.familyWeekly.sonnet = { ...poolWindow, utilization: 1 };
+  expect((await preview()).providerPace?.providers[1]).toMatchObject({ source: "account-pool", pace: null });
+  delete poolAccount.familyWeekly.sonnet;
+  claude.windows[0].stale = true;
+  expect((await preview()).providerPace?.providers).toMatchObject([
+    { sourceKind: "tokenomos", pace: null }, { sourceKind: "account-pool", pace: expect.closeTo(52 / 31) },
+  ]);
+  codex.host = { id: "host_other" };
+  expect((await preview()).providerPace?.providers).toMatchObject([
+    { sourceKind: "provider", pace: 1.2 }, { sourceKind: "account-pool", pace: expect.closeTo(52 / 31) },
+  ]);
+  limitsAvailable = false;
+  expect((await preview()).providerPace?.providers).toMatchObject([
+    { sourceKind: "provider" }, { sourceKind: "account-pool" },
+  ]);
+  calls.mockClear();
+  const unresolved = await assessPace(f.bb, ordered, eligible[0], undefined, 1.25, new AbortController().signal);
+  expect(unresolved.report.providers).toMatchObject([{ source: null, pace: null }, { source: null, pace: null }]);
+  expect(calls).not.toHaveBeenCalled();
+}, 15_000);
