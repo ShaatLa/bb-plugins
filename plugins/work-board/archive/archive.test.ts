@@ -2107,7 +2107,7 @@ it("restores the switch and current status, keeping replayed approvals outside t
   const project = source.store.tasks.createProject({ name: "Example", prefix: "EXA", color: "blue" });
   source.store.tasks.updateProject(project.id, { doneRequiresReview: "on" });
   const task = source.store.tasks.createTask({ projectId: project.id, title: "Card", status: "in_review" });
-  const approve = (f: typeof source) => f.store.tasks.createComment({ taskId: task.id, kind: "agent", authorName: "Reviewer", body: "Reviewed", evidence: { kind: "review", verdict: "approve", head: "a".repeat(40), thread: "thr_example" } });
+  const approve = (f: typeof source) => f.store.tasks.createComment({ taskId: task.id, kind: "agent", authorName: "Reviewer", body: "Reviewed", evidence: { kind: "review", verdict: "approve", head: "a".repeat(40), thread: "thr_example", recordedByThread: "thr_example" } });
   const gate = (f: typeof source) => f.store.tasks.reviewGateRefusal(f.store.tasks.getTask(task.id)!, "done");
   const old = approve(source);
   source.store.tasks.updateTask(task.id, { status: "in_progress" });

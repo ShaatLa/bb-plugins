@@ -36,8 +36,9 @@ function fixture(repositories = ["owner/repo"]) {
     db.prepare("INSERT OR REPLACE INTO git_pr_snapshots(project_id, identity, payload, last_attempt_at) VALUES (?, ?, ?, 0)").run(project.id, prIdentity(snapshot), JSON.stringify(snapshot));
   };
   const comment = (evidence: Record<string, unknown>) => store.tasks.createComment({ taskId: task.id, kind: "agent", authorName: "Reviewer", body: "Reviewed", evidence: evidence as never });
-  const approve = (number: number | undefined, head: string, thread: string, verdict = "approve") =>
-    comment({ kind: "review", ...(number ? { pr: number } : {}), head, verdict, thread });
+  /** Recorded by the reviewer itself unless `extra` says otherwise (`{ recordedByThread: "thr_x" }`, `null` as the panel writes it, `{}` as an older record). */
+  const approve = (number: number | undefined, head: string, thread: string, verdict = "approve", extra: Record<string, unknown> = { recordedByThread: thread }) =>
+    comment({ kind: "review", ...(number ? { pr: number } : {}), head, verdict, thread, ...extra });
   const merge = (number: number, head = H1) => comment({ kind: "merge", pr: number, head, merge: H2 });
   const gate = (authors?: { failed: boolean; byIdentity: Map<string, string[]> }, mover: string | null = MOVER) =>
     store.tasks.reviewGate(store.tasks.getTask(task.id)!, "done", undefined, undefined, { mover, authors })!;
@@ -106,7 +107,7 @@ describe("Done gate: card without a delivered PR (path B)", () => {
 
   it("logs a QA pass as an approval", () => {
     const f = fixture();
-    f.comment({ kind: "qa", head: H1, verdict: "pass", thread: "thr_qa" });
+    f.comment({ kind: "qa", head: H1, verdict: "pass", thread: "thr_qa", recordedByThread: "thr_qa" });
     expect(f.gate().refusal).toBeNull();
   });
 });
@@ -136,7 +137,7 @@ describe("Done gate: card that delivers PRs (path A)", () => {
     f.approve(12, H1, "thr_author");
     recordPrAuthors(f.db, f.project.id, identity, ["thr_author"]);
     expect(f.gate().refusal).toContain("approved only by an author thread");
-    expect(f.gate().refusal).toContain("--kind review --pr 12 --head <sha>");
+    expect(f.gate().refusal).toContain(`--kind review --pr 12 --head ${H1} --verdict approve --thread <its own id>`);
   });
 
   it("names the PR that lacks an approval when two are delivered", () => {
@@ -252,6 +253,114 @@ describe("Done gate: card that delivers PRs (path A)", () => {
     f.addSnapshot(12);
     f.approve(12, H1, "thr_reviewer");
     expect(f.gate({ failed: true, byIdentity: new Map() }).refusal).toContain("could not resolve the PR's author threads; retry, or the owner can move the card");
+  });
+});
+
+describe("Done gate: an approval counts only when its reviewer recorded it", () => {
+  const proxy = (thread: string, by = MOVER) => ({ recordedByThread: by, thread });
+  const ASK = "thr_reader must record its own review";
+
+  it("path A: a proxy record is refused with the reader and the recorder named; the reader's own record passes, even next to the proxy", () => {
+    const f = fixture();
+    f.addLink(12); f.addSnapshot(12);
+    f.approve(12, H1, "thr_reader", "approve", { recordedByThread: MOVER });
+    const refused = f.gate();
+    const refusal = refused.refusal!;
+    expect(refusal).toContain(`- owner/repo#12 (head 1111111): the approval for thr_reader was recorded by ${MOVER}; ${ASK}`);
+    expect(refusal).toContain(`For #12: ask thr_reader to run, in its own session: bb work-board comment EXA-1 --kind review --pr 12 --head ${H1} --verdict approve --thread thr_reader --body "...".`);
+    expect(refusal).toMatch(/\nOtherwise the owner can move the card\.$/);
+    expect(refusal).not.toContain("project manager");
+    expect(JSON.stringify(refused.decision.detail)).toContain('"recordedByThread":"thr_mover","selfRecorded":false');
+    f.approve(12, H1, "thr_reader");
+    const passed = f.gate();
+    expect(passed.refusal).toBeNull();
+    expect(JSON.stringify(passed.decision.detail)).toContain('"recordedByThread":"thr_reader","selfRecorded":true');
+  });
+
+  it("path B: the same three cases", () => {
+    const f = fixture();
+    f.approve(undefined, H1, "thr_reader", "approve", { recordedByThread: MOVER });
+    const refusal = f.gate().refusal!;
+    expect(refusal).toContain(`- the approval for thr_reader was recorded by ${MOVER}; ${ASK}`);
+    expect(refusal).toContain(`Ask thr_reader to run, in its own session: bb work-board comment EXA-1 --kind review --head ${H1} --verdict approve --thread thr_reader --body "...".`);
+    expect(refusal).not.toContain("--pr");
+    f.approve(undefined, H1, "thr_reader");
+    const passed = f.gate();
+    expect(passed.refusal).toBeNull();
+    expect(passed.decision.detail).toMatchObject({ approval: { thread: "thr_reader", selfRecorded: true }, approvals: [{ selfRecorded: false }, { selfRecorded: true }] });
+  });
+
+  it("a qa pass follows the same rule", () => {
+    const f = fixture();
+    f.comment({ kind: "qa", head: H1, verdict: "pass", thread: "thr_qa", recordedByThread: MOVER });
+    expect(f.gate().refusal).toContain("the approval for thr_qa was recorded by thr_mover; thr_qa must record its own review");
+    f.comment({ kind: "qa", head: H1, verdict: "pass", thread: "thr_qa", recordedByThread: "thr_qa" });
+    expect(f.gate().refusal).toBeNull();
+  });
+
+  it("a record without a recorder, or with a null one, does not count but stays readable", () => {
+    const f = fixture();
+    f.approve(undefined, H1, "thr_old", "approve", {}); // an older record: no field at all
+    f.approve(undefined, H1, "thr_panel", "approve", { recordedByThread: null }); // the panel writes null
+    const refusal = f.gate().refusal!;
+    expect(refusal).toContain("the approval for thr_old was recorded by an unknown thread; thr_old must record its own review");
+    expect(refusal).toContain("the approval for thr_panel was recorded by an unknown thread; thr_panel must record its own review");
+    const rows = f.db.prepare<[], { evidence: string }>("SELECT evidence FROM comments WHERE evidence IS NOT NULL ORDER BY rowid").all();
+    expect(rows.map((row) => JSON.parse(row.evidence).thread)).toEqual(["thr_old", "thr_panel"]);
+    expect(f.store.tasks.listComments(f.task.id).map((comment) => comment.evidence?.kind)).toEqual(["review", "review"]);
+  });
+
+  it("with no approval at all the refusal asks an independent reviewer and no longer says the manager can record it", () => {
+    const f = fixture();
+    f.addLink(12); f.addSnapshot(12);
+    const refusal = f.gate().refusal!;
+    expect(refusal).toContain("no approval at this head from a thread other than you or the PR's authors");
+    expect(refusal).toContain("For #12: ask an independent reviewer thread (not you, not this PR's authors) to review head");
+    expect(refusal).not.toContain("project manager");
+    const b = fixture();
+    expect(b.gate().refusal).toContain("Ask an independent reviewer thread (not you) to review the work");
+  });
+
+  it("a proxy approval naming the mover or a PR author cannot count, and no one is asked to record it", () => {
+    const f = fixture();
+    const identity = f.addLink(12); f.addSnapshot(12);
+    f.approve(12, H1, MOVER, "approve", { recordedByThread: "thr_manager" });
+    expect(f.gate().refusal).toContain(`the approval for ${MOVER} cannot count: ${MOVER} is you; ask an independent reviewer`);
+    expect(f.gate().refusal).toContain("For #12: ask an independent reviewer thread");
+    expect(f.gate().refusal).not.toContain("ask thr_mover to run");
+    recordPrAuthors(f.db, f.project.id, identity, ["thr_author"]);
+    f.approve(12, H1, "thr_author", "approve", { recordedByThread: MOVER });
+    expect(f.gate().refusal).toContain("the approval for thr_author cannot count: thr_author is an author thread of this PR; ask an independent reviewer");
+    const b = fixture();
+    b.approve(undefined, H1, MOVER, "approve", { recordedByThread: "thr_manager" });
+    expect(b.gate().refusal).toContain(`- the approval for ${MOVER} cannot count: ${MOVER} is you; ask an independent reviewer`);
+    expect(b.gate().refusal).toContain("Ask an independent reviewer thread (not you)");
+  });
+
+  it("two PRs: one line and one remedy each; a self-recorded PR gets none", () => {
+    const f = fixture();
+    f.addLink(1); f.addLink(2);
+    f.addSnapshot(1); f.addSnapshot(2, { headSha: H2 });
+    f.approve(1, H1, "thr_reader", "approve", { recordedByThread: MOVER });
+    const refusal = f.gate().refusal!;
+    expect(refusal).toContain(`owner/repo#1 (head 1111111): the approval for thr_reader was recorded by ${MOVER}`);
+    expect(refusal).toContain("owner/repo#2 (head 2222222): no approval at this head");
+    expect(refusal).toContain("For #1: ask thr_reader to run");
+    expect(refusal).toContain("For #2: ask an independent reviewer thread");
+    expect(refusal.match(/^For #/gm)).toHaveLength(2);
+    f.approve(1, H1, "thr_reader");
+    const onlyTwo = f.gate().refusal!;
+    expect(onlyTwo).not.toContain("owner/repo#1 (head");
+    expect(onlyTwo).not.toContain("For #1");
+    expect(onlyTwo).toContain("For #2: ask an independent reviewer thread");
+  });
+
+  it("the owner still moves a card whose only records are proxies", async () => {
+    const f = fixture();
+    f.approve(undefined, H1, "thr_reader", "approve", { recordedByThread: MOVER });
+    expect(f.gate().refusal).toBeTruthy();
+    await f.harness.callRpc("updateTask", { taskId: f.task.id, status: "done" }); // no agentThreadId: the owner's move
+    expect(f.store.tasks.getTask(f.task.id)!.status).toBe("done");
   });
 });
 

@@ -51,12 +51,34 @@ export interface GateResult {
 interface EvidenceRow {
   id: string;
   createdAt: string;
-  evidence: { kind: string; pr?: number; head?: string; verdict?: string; thread?: string };
+  evidence: { kind: string; pr?: number; head?: string; verdict?: string; thread?: string; recordedByThread?: string | null };
 }
 
 const short = (sha: string) => sha.slice(0, 7);
 const same = (left: string | undefined, right: string) => left?.toLowerCase() === right.toLowerCase();
 const OWNER_MOVE = "the owner can still move the card on the board";
+/** An approval counts only when the reviewer it names ran the command itself; a record without `recordedByThread` (older, or from the panel) has an unknown recorder and does not count. */
+const selfRecorded = (evidence: { thread?: string; recordedByThread?: string | null }) => Boolean(evidence.thread) && evidence.recordedByThread === evidence.thread;
+const recordedBy = (evidence: { recordedByThread?: string | null }) => evidence.recordedByThread ?? "an unknown thread";
+const command = (key: string, head: string, thread: string, pr?: number) =>
+  `bb work-board comment ${key} --kind review ${pr ? `--pr ${pr} ` : ""}--head ${head} --verdict approve --thread ${thread} --body "..."`;
+
+/** Why approvals recorded by another thread do not count, and the first reader named that could still qualify by recording its own review. */
+function proxyReasons(rows: EvidenceRow["evidence"][], ineligible: (thread: string) => string | null) {
+  const reasons = new Set<string>();
+  let reader: { thread: string; head: string } | undefined;
+  for (const row of rows) {
+    if (selfRecorded(row)) continue;
+    const thread = row.thread!;
+    const why = ineligible(thread);
+    if (why) reasons.add(`the approval for ${thread} cannot count: ${thread} is ${why}; ask an independent reviewer`);
+    else {
+      reader ??= { thread, head: row.head! };
+      reasons.add(`the approval for ${thread} was recorded by ${recordedBy(row)}; ${thread} must record its own review`);
+    }
+  }
+  return { reasons: [...reasons], reader };
+}
 
 /**
  * The Done rule for an agent move (see skills/work-board/references/pr-ci.md). A card that delivers PRs needs an approval at each PR's gate head from a
@@ -126,7 +148,7 @@ export function evaluateReviewGate(db: Database, input: GateInput): GateResult {
   const lines: string[] = [];
   const clauses: string[] = [];
   const prDetails: unknown[] = [];
-  let remedyPr: number | null = null;
+  const remedies: string[] = [];
   if (entries.size && input.authors?.failed) problems.push("could not resolve the PR's author threads; retry, or the owner can move the card");
   for (const entry of problems.length ? [] : entries.values()) {
     const name = `${entry.repository}#${entry.number}`;
@@ -147,7 +169,8 @@ export function evaluateReviewGate(db: Database, input: GateInput): GateResult {
     const approvals = head === null ? [] : evidence.filter((row) =>
       (row.evidence.kind === "review" && row.evidence.verdict === "approve" || row.evidence.kind === "qa" && row.evidence.verdict === "pass")
       && row.evidence.pr === entry.number && same(row.evidence.head, head!));
-    const qualifying = approvals.filter((row) => row.evidence.thread !== mover && !authors.has(row.evidence.thread!));
+    const ineligible = (thread: string) => thread === mover ? "you" : authors.has(thread) ? "an author thread of this PR" : null;
+    const qualifying = approvals.filter((row) => selfRecorded(row.evidence) && !ineligible(row.evidence.thread!));
     prDetails.push({
       identity: entry.identity, number: entry.number, headSource, gateHead: head,
       snapshot: snapshot ? { state: snapshot.state, observedAt: snapshot.observedAt, stale } : null,
@@ -155,26 +178,27 @@ export function evaluateReviewGate(db: Database, input: GateInput): GateResult {
       mergeCommentId: headSource === "merge_evidence" ? mergeRecord!.id : null,
       mergeCommentIds: entry.merges.map((row) => row.id),
       authors: [...authors].map(([thread, source]) => ({ thread, source })), authorsKnown: authors.size,
-      approvals: approvals.map((row) => ({ commentId: row.id, thread: row.evidence.thread, head: row.evidence.head, verdict: row.evidence.verdict })),
+      approvals: approvals.map((row) => ({ commentId: row.id, thread: row.evidence.thread, head: row.evidence.head, verdict: row.evidence.verdict,
+        recordedByThread: row.evidence.recordedByThread ?? null, selfRecorded: selfRecorded(row.evidence) })),
       qualifying: qualifying.map((row) => row.id),
     });
     if (head === null) {
       lines.push(`- PR state for ${name} is unknown or stale; run bb work-board sync --project ${prefix} and retry, or ${OWNER_MOVE}`);
     } else if (!qualifying.length) {
-      remedyPr ??= entry.number;
-      const others = [...new Set(approvals.map((row) => row.evidence.thread!))];
-      lines.push(others.length
-        ? `- ${name} (head ${short(head)}): approved only by ${others.some((thread) => authors.has(thread)) ? "an author thread" : "you"} (${others.join(", ")})`
-        : `- ${name} (head ${short(head)}): no approval at this head from a thread other than you or the PR's authors`);
+      const { reasons, reader } = proxyReasons(approvals.map((row) => row.evidence), ineligible);
+      const own = [...new Set(approvals.filter((row) => selfRecorded(row.evidence)).map((row) => row.evidence.thread!))];
+      if (own.length) reasons.unshift(`approved ${reasons.length ? "" : "only "}by ${own.some((thread) => authors.has(thread)) ? "an author thread" : "you"} (${own.join(", ")})`);
+      lines.push(`- ${name} (head ${short(head)}): ${reasons.join("; ") || "no approval at this head from a thread other than you or the PR's authors"}`);
+      remedies.push(reader
+        ? `For #${entry.number}: ask ${reader.thread} to run, in its own session: ${command(task.key, head, reader.thread, entry.number)}.`
+        : `For #${entry.number}: ask an independent reviewer thread (not you, not this PR's authors) to review head ${head} and record it from its own session: ${command(task.key, head, "<its own id>", entry.number)}.`);
     } else {
       const first = qualifying[0]!;
       clauses.push(`#${entry.number} ${first.evidence.verdict}@${short(head)} by ${first.evidence.thread}${authors.size === 0 ? " (no author known)" : ""}`);
     }
   }
   const header = `${task.key} cannot move to ${input.targetLabel}: this project requires a review before Done.`;
-  const remedy = (pr: string) =>
-    `Ask a reviewer thread to review that head and record it: bb work-board comment ${task.key} --kind review ${pr}--head <sha> --verdict approve --thread <reviewer thread> --body "...".\n` +
-    `The project manager or the owner can record it too, and ${OWNER_MOVE}.`;
+  const remedy = (lines: string[]) => `${lines.join("\n")}\nOtherwise the owner can move the card.`;
   const decision = (path: "A" | "B", result: "passed" | "refused", extra: Record<string, unknown>): GateDecision =>
     ({ at: new Date(now).toISOString(), taskId: task.id, mover: mover ?? "", path, result, detail: { ...detail, ...extra } });
 
@@ -184,7 +208,7 @@ export function evaluateReviewGate(db: Database, input: GateInput): GateResult {
       return { refusal: text, clause: null, decision: decision("A", "refused", { prs: prDetails, problems }) };
     }
     if (lines.length)
-      return { refusal: `${header}\n${lines.join("\n")}\n${remedy(remedyPr ? `--pr ${remedyPr} ` : "")}`, clause: null, decision: decision("A", "refused", { prs: prDetails }) };
+      return { refusal: `${header}\n${lines.join("\n")}\n${remedy(remedies)}`, clause: null, decision: decision("A", "refused", { prs: prDetails }) };
     return { refusal: null, clause: `review: ${clauses.join("; ")}`, decision: decision("A", "passed", { prs: prDetails }) };
   }
 
@@ -195,16 +219,25 @@ export function evaluateReviewGate(db: Database, input: GateInput): GateResult {
   const approvals = db.prepare<[string, number], { logId: number; commentId: string; createdAt: string; evidence: string }>(
     `SELECT l.id AS logId, c.id AS commentId, c.created_at AS createdAt, c.evidence FROM task_review_log l JOIN comments c ON c.id=l.comment_id
      WHERE l.task_id=? AND l.kind='approval' AND l.id > ? ORDER BY l.id`,
-  ).all(task.id, last?.id ?? 0).map((row) => ({ ...row, thread: JSON.parse(row.evidence).thread as string }));
+  ).all(task.id, last?.id ?? 0).map(({ evidence, ...row }) => {
+    const parsed = JSON.parse(evidence) as EvidenceRow["evidence"];
+    return { ...row, evidence: parsed, thread: parsed.thread!, recordedByThread: parsed.recordedByThread ?? null, selfRecorded: selfRecorded(parsed) };
+  });
   // Order is the review-log id alone: the log is written in transaction order, so a same-millisecond approval still follows the status row.
-  const found = approvals.find((row) => row.thread !== mover) ?? null;
+  const found = approvals.find((row) => row.selfRecorded && row.thread !== mover) ?? null;
   const extra = {
-    prs: [], lastInProgress: last, approval: found && { commentId: found.commentId, createdAt: found.createdAt, thread: found.thread, logId: found.logId },
+    prs: [], lastInProgress: last,
+    approval: found && { commentId: found.commentId, createdAt: found.createdAt, thread: found.thread, logId: found.logId, recordedByThread: found.recordedByThread, selfRecorded: true },
+    approvals: approvals.map((row) => ({ commentId: row.commentId, logId: row.logId, thread: row.thread, recordedByThread: row.recordedByThread, selfRecorded: row.selfRecorded })),
   };
   if (found) return { refusal: null, clause: `review: approve by ${found.thread}`, decision: decision("B", "passed", extra) };
   const since = input.progressLabel ? `since the card last entered ${input.progressLabel}` : "on this card";
+  const { reasons, reader } = proxyReasons(approvals.map((row) => row.evidence), (thread) => thread === mover ? "you" : null);
   return {
-    refusal: `${header}\n- no approving review from a thread other than you ${since}\n${remedy("")}`,
+    refusal: `${header}\n${reasons.length ? reasons.map((reason) => `- ${reason}`).join("\n") : `- no approving review from a thread other than you ${since}`}\n${remedy([
+      reader
+        ? `Ask ${reader.thread} to run, in its own session: ${command(task.key, reader.head, reader.thread)}.`
+        : `Ask an independent reviewer thread (not you) to review the work and record it from its own session: ${command(task.key, "<sha>", "<its own id>")}.`])}`,
     clause: null, decision: decision("B", "refused", extra),
   };
 }

@@ -1120,6 +1120,24 @@ describe("evidence index", () => {
     expect(tasksRpcContract.createComment.output.parse(result).comment.evidence?.recordedByThread).toBeNull();
   });
 
+  it("warns when a review or qa is recorded for another thread, and stays quiet otherwise", async () => {
+    const { harness, task } = setup();
+    const previous = process.env.BB_THREAD_ID;
+    process.env.BB_THREAD_ID = "thr_me";
+    try {
+      const run = (...args: string[]) => harness.runCli(["comment", task.key, "--body", "Reviewed", "--head", "a".repeat(40), "--verdict", "approve", ...args]);
+      const proxy = await run("--kind", "review", "--thread", "thr_other");
+      expect(proxy.stdout).toContain("Commented on");
+      expect(proxy.stdout).toContain("Note: recorded by thr_me for thr_other; the Done gate counts it only when thr_other records it itself.");
+      expect(JSON.parse((await run("--kind", "review", "--thread", "thr_other", "--json")).stdout)).toMatchObject({ comment: { evidence: { thread: "thr_other", recordedByThread: "thr_me" } } });
+      expect((await run("--kind", "review", "--thread", "thr_other", "--json")).stdout).not.toContain("Note:");
+      expect((await run("--kind", "review", "--thread", "thr_me")).stdout).not.toContain("Note:");
+      expect((await harness.runCli(["comment", task.key, "--body", "QA", "--kind", "qa", "--head", "a".repeat(40), "--verdict", "pass", "--thread", "thr_other"])).stdout).toContain("Note: recorded by thr_me for thr_other");
+    } finally {
+      if (previous === undefined) delete process.env.BB_THREAD_ID; else process.env.BB_THREAD_ID = previous;
+    }
+  });
+
   it("flags self-review and only the newest uncovered approval", () => {
     const entries = [
       { kind: "review", pr: 12, head: "a".repeat(40), verdict: "approve", thread: "thr_author" },

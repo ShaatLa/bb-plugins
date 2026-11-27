@@ -160,7 +160,7 @@ describe("Done after review", () => {
     await expect(refused).rejects.not.toThrow(/--status/);
     tasks.updateTask(f.task.id, { status: "backlog" });
     tasks.updateTask(f.task.id, { status: "todo" });
-    tasks.createComment({ taskId: f.task.id, authorName: "Reviewer", kind: "agent", body: "Reviewed", evidence: { kind: "review", verdict: "approve", head: "a".repeat(40), thread: "thr_reviewer" } });
+    tasks.createComment({ taskId: f.task.id, authorName: "Reviewer", kind: "agent", body: "Reviewed", evidence: { kind: "review", verdict: "approve", head: "a".repeat(40), thread: "thr_reviewer", recordedByThread: "thr_reviewer" } });
     const log = () => f.bb.storage.database().prepare("SELECT * FROM task_review_log WHERE task_id=? ORDER BY id").all(f.task.id);
     const before = log();
     await move();

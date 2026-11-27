@@ -3723,9 +3723,14 @@ ${activity.diagnostics?.inactiveSessions.map((session) => `@thread:${session.thr
                 notify: input.options.notify,
                 awaitDelivery: true,
               });
+              const recorder = ctx.threadId ?? process.env.BB_THREAD_ID ?? null;
+              const proxy =
+                evidence && (evidence.kind === "review" || evidence.kind === "qa") && evidence.thread !== recorder
+                  ? `\nNote: recorded by ${recorder ?? "no thread"} for ${evidence.thread}; the Done gate counts it only when ${evidence.thread} records it itself.`
+                  : "";
               return input.options.json
                 ? JSON.stringify({ comment })
-                : `Commented on ${task.key}  ${comment.id}`;
+                : `Commented on ${task.key}  ${comment.id}${proxy}`;
             });
           },
         }),

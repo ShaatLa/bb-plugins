@@ -1025,7 +1025,7 @@ describe("review history", () => {
       db.prepare("UPDATE tasks SET status='in_progress' WHERE id=?").run(f.pending);
       db.prepare("UPDATE tasks SET status='in_review' WHERE id=?").run(f.parent);
       const approve = db.prepare("INSERT INTO comments(id,task_id,kind,author_name,body,created_at,evidence) VALUES (?,?,'agent','Reviewer','Review',CURRENT_TIMESTAMP,?)");
-      const evidence = (verdict: string) => JSON.stringify({ kind: "review", head: "a".repeat(40), verdict, thread: "thr_example" });
+      const evidence = (verdict: string) => JSON.stringify({ kind: "review", head: "a".repeat(40), verdict, thread: "thr_example", recordedByThread: "thr_example" });
       approve.run("older", f.parent, evidence("approve"));
       approve.run("newer", f.pending, evidence("approve"));
       const store = createTasksStore(db);
@@ -1057,7 +1057,7 @@ describe("review history", () => {
       const task = store.createTask({ projectId: project.id, title: "Task", status: "in_progress" });
       const gate = (target = "done") => store.reviewGateRefusal(store.getTask(task.id)!, target);
       const move = (status: string) => store.updateTask(task.id, { status });
-      const review = (verdict: "approve" | "changes") => store.createComment({ taskId: task.id, authorName: "Reviewer", kind: "agent", body: "Reviewed", evidence: { kind: "review", verdict, head: "a".repeat(40), thread: "thr_example" } });
+      const review = (verdict: "approve" | "changes") => store.createComment({ taskId: task.id, authorName: "Reviewer", kind: "agent", body: "Reviewed", evidence: { kind: "review", verdict, head: "a".repeat(40), thread: "thr_example", recordedByThread: "thr_example" } });
       expect(gate()).toBeNull();
       store.updateProject(project.id, { doneRequiresReview: "on", statuses: [...DEFAULT_TASK_STATUSES, { id: "in_testing", name: "QA" }, { id: "shipped", name: "Shipped" }], workflowPolicy: { ...getWorkflowPolicy(project), doneStatus: "shipped" } });
       expect(gate("shipped")).toContain("cannot move to Shipped");
