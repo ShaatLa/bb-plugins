@@ -2,6 +2,8 @@ import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import { z } from "zod";
 
 const weekMs = 7 * 24 * 60 * 60 * 1000;
+// Once 4% of the week has elapsed, a 1-point usage change moves pace by at most 0.25.
+const minElapsedShare = 0.04;
 const maxAgeMs = 60 * 60 * 1000;
 export const defaultPaceThreshold = 1.25;
 
@@ -79,15 +81,18 @@ function score(item: Candidate, source: string, weekly: PaceWindow[]) {
   const unknown = unknownReading(item, source);
   const now = Date.now();
   const rows = weekly.flatMap(({ label, usedPercent, resetAt, observedAt }) => {
-    const elapsedShare = 1 - (resetAt - observedAt) / weekMs;
-    if (observedAt > now || now - observedAt > maxAgeMs || !Number.isFinite(elapsedShare) ||
-      resetAt <= now || elapsedShare < 0 || (elapsedShare === 0 && usedPercent > 0)) return [];
-    const pace = usedPercent === 0 ? 0 : usedPercent / 100 / elapsedShare;
-    return Number.isFinite(pace) ? [{ ...unknown.row, window: label, usedPercent, elapsedShare, pace }] : [];
-  }).sort((a, b) => b.pace - a.pace);
+    const elapsedMs = weekMs - (resetAt - observedAt);
+    if (observedAt > now || now - observedAt > maxAgeMs || !Number.isFinite(elapsedMs) ||
+      !Number.isFinite(usedPercent) || resetAt <= now || elapsedMs < 0) return [];
+    const elapsedShare = elapsedMs / weekMs;
+    const pace = elapsedShare < minElapsedShare ? null : usedPercent / 100 / elapsedShare;
+    return [{ ...unknown.row, window: label, usedPercent, elapsedShare, pace }];
+  }).sort((a, b) => (b.pace ?? -1) - (a.pace ?? -1) || b.usedPercent - a.usedPercent);
   const row = rows[0];
   if (!row) return unknown;
-  return { row, room: rows.length === weekly.length && row.pace < 1 && weekly.every(window => window.usedPercent < 100) };
+  const room = rows.length === weekly.length && rows.every(window =>
+    window.usedPercent < 100 && (window.pace === null ? window.usedPercent < minElapsedShare * 100 : window.pace < 1));
+  return { row, room };
 }
 
 function pooledReading(item: Candidate, pool: z.infer<typeof poolStatus>) {
@@ -117,7 +122,8 @@ function pooledReading(item: Candidate, pool: z.infer<typeof poolStatus>) {
       label: window.label, usedPercent: (window.utilization ?? NaN) * 100,
       observedAt: window.observedAt, resetAt: window.resetAt ?? NaN,
     })))];
-  }).sort((a, b) => (a.row.pace ?? Infinity) - (b.row.pace ?? Infinity));
+  }).sort((a, b) => (a.row.pace ?? Infinity) - (b.row.pace ?? Infinity) ||
+    Number(b.row.elapsedShare !== null) - Number(a.row.elapsedShare !== null));
   return readings.find(reading => reading.room) ?? readings[0] ?? unknown;
 }
 
@@ -173,11 +179,14 @@ export async function assessPace(bb: BbPluginApi, policy: z.infer<typeof provide
   const providers = readings.map(({ row }) => row);
   const pace = providers.find(row => row.providerId === selected.providerId)?.pace;
   const alternatives = readings.filter(({ row }) => row.providerId !== selected.providerId);
-  const withRoom = alternatives.filter(({ row, room }) => room && row.pace !== null && row.pace < threshold);
+  const withRoom = alternatives.filter(({ row, room }) => room && (row.pace === null || row.pace < threshold));
   const ordered = policy.orderedFallback && alternatives.length > 0;
   const report: Report = { threshold, providers, overridden: false };
   const summary = providers.map(row => {
-    const pace = row.pace === null ? "unknown" : row.pace.toFixed(2);
+    let pace = row.pace?.toFixed(2) ?? "unknown";
+    if (row.pace === null && row.usedPercent !== null && row.elapsedShare !== null) {
+      pace = `too early to measure: ${row.usedPercent}% used after ${(100 * row.elapsedShare).toFixed(2)}% of the window`;
+    }
     return `${row.providerId}: ${pace} (${row.source ?? "no usage source"}${row.window ? ` · ${row.window}` : ""})`;
   }).join("; ");
   if (pace == null || pace < threshold || (!policy.pinned && !ordered && !withRoom.length)) return { report, summary };
@@ -199,8 +208,8 @@ export async function assessPace(bb: BbPluginApi, policy: z.infer<typeof provide
       return { report, summary, fallback };
     }
     const skipped = alternatives.map(({ row }) => {
-      const reason = row.pace === null ? "no usable reading (including stale usage)"
-        : row.pace >= threshold ? "at or above the pace threshold" : "insufficient quota room";
+      const reason = row.elapsedShare === null ? "no usable reading (including stale usage)"
+        : row.pace !== null && row.pace >= threshold ? "at or above the pace threshold" : "insufficient quota room";
       return `${row.providerId}: ${reason}`;
     }).join("; ");
     throw new Error(`Provider pace meets or exceeds ${threshold.toFixed(2)} for ${selected.providerId}. No eligible alternative has room (${skipped}). Give an explicit reason in the launch request. ${summary}`);

@@ -188,7 +188,10 @@ each provider's pace and source in the admitted brief and `start` result.
 Antigravity uses the weekly pool for the candidate's model.
 
 Pace is the share used divided by the share of the window elapsed at the
-measurement. When a Work Board role has multiple eligible providers and the
+measurement. Before 4% of a weekly window has elapsed, usage is too coarse to
+report or enforce a numeric pace. During that period, a fresh reading establishes
+room only when more than 96% of quota remains. When a Work Board role has multiple
+eligible providers and the
 preferred provider reaches the threshold, Spawn Gate selects the first alternative
 in role order with confirmed room (pace below 1.0 and quota remaining). If no
 alternative qualifies, start refuses before minting. Other Script builders can

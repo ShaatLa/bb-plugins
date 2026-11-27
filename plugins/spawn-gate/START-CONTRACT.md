@@ -79,7 +79,10 @@ Optional builder output field for role-aware provider admission:
 - Spawn Gate reads `provider-usage.v1.listResources` and `getResource` from
   each eligible provider's usage plugin for the target host. It compares the
   highest pace among applicable weekly windows, observed within the last hour
-  with a current reset. Room means below 1.0 with quota remaining.
+  with a current reset. Before 4% of a weekly window has elapsed at the
+  observation time, the reported pace is null and a fresh reading has room
+  only when more than 96% of the quota remains. After that point, room means
+  pace below 1.0 with quota remaining. All applicable windows must have room.
 - For Codex and Claude Code routed through Account Pooler, Spawn Gate reads
   `account-pool`'s `status.get` instead. It scores each ready account using
   its applicable weekly windows and excludes accounts with a blocked or

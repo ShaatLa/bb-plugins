@@ -311,10 +311,14 @@ fi
     "builder:wrong_project",
   ]);
 
-  task.description = "Scope: plugins/example/"; await saveCard();
+  task.description = "Scope: plugins/example/\nFix the test."; await saveCard();
   await writeFile(configPath, JSON.stringify(config));
-  const pin = await launch("impl", true, "--provider", "claude-code", "--model", "claude-model", "--reason", "  Exact model required.  ");
+  const pinOptions = ["--provider", "claude-code", "--model", "claude-model", "--reason", "  Exact model required.  "];
+  const cardAndPlan = "## Card (in_progress)\n> Scope: plugins/example/\n> Fix the test.\n\n" +
+    "## Plan v1 (approved)\n> Use the fixture.\n> agent-admission example";
+  const pin = await launch("impl", true, ...pinOptions);
   expect(pin).toMatchObject({ build: {
+    brief: expect.stringContaining(cardAndPlan),
     spawn: models[1], providerPolicy: { eligible: models, pinned: true, reason: "Exact model required." },
   } });
   expect(pin).not.toMatchObject({ build: { providerPolicy: { orderedFallback: true } } });
@@ -336,6 +340,11 @@ fi
   expect(f.spawn).toHaveBeenCalledTimes(1);
   expect(await launch("review", false)).toMatchObject({ dryRun: false, threadId: "thr_child" });
   expect(f.spawn).toHaveBeenLastCalledWith(expect.objectContaining({ environment: reused }));
+  expect(await launch("impl", false, ...pinOptions)).toMatchObject({ dryRun: false, threadId: "thr_child" });
+  expect(f.mint).toHaveBeenLastCalledWith(expect.objectContaining({ brief: expect.stringContaining(cardAndPlan) }));
+  expect(f.spawn).toHaveBeenLastCalledWith(expect.objectContaining({
+    ...models[1], prompt: expect.stringContaining(cardAndPlan),
+  }));
   vi.stubEnv("EXAMPLE_PARENT_JSON", '{"thread":{"providerId":"codex","environmentId":null}}');
   await expect(launch("review")).rejects.toThrow('{"reasonCode": "missing_parent_environment"}');
   await writeFile(configPath, JSON.stringify({ ...config, environment: "other" }));
@@ -655,6 +664,42 @@ it("checks weekly pace before mint and uses the configured order for opted-in fa
   expect(finalReport.overrides).toMatchObject([{ ...override, sourceCommit: pinnedCommit }]);
   expect(finalReport.fallbacks).toEqual(report.fallbacks);
   expect(finalReport.events?.filter(event => event.reason === "over_pace")).toHaveLength(6);
+
+  const firstHour = 1 / 168;
+  await f.write("Early alternative.", undefined, ordered);
+  windows["claude-code"] = [window("Weekly limit", 2, firstHour)];
+  const early = await f.start({ ...f.request, dryRun: true });
+  expect(early).toMatchObject({
+    providerPace: { fallback, providers: [
+      { providerId: "codex" },
+      { providerId: "claude-code", pace: null, usedPercent: 2, elapsedShare: expect.closeTo(firstHour) },
+      { providerId: "antigravity" },
+    ] },
+    build: { brief: expect.stringContaining("too early to measure: 2% used after 0.60% of the window") },
+  });
+
+  windows["claude-code"] = [window("Weekly limit", 3, firstHour)];
+  expect(await f.start(f.request)).toMatchObject({ providerPace: { fallback } });
+  expect(f.spawn).toHaveBeenLastCalledWith(expect.objectContaining({ providerId: "claude-code" }));
+  expect((await f.report({ events: true })).fallbacks).toHaveLength(2);
+
+  windows["claude-code"] = [window("Weekly limit", 4, firstHour)];
+  await expect(f.start(f.request)).rejects.toThrow("claude-code: insufficient quota room");
+  windows["claude-code"] = [window("Weekly limit", 4, 0.04)];
+  await expect(f.start(f.request)).rejects.toThrow("claude-code: insufficient quota room");
+  windows["claude-code"] = [window("Weekly limit", 3, 0.04)];
+  expect((await f.start({ ...f.request, dryRun: true })).providerPace?.providers[1].pace).toBeCloseTo(0.75);
+
+  windows.codex = [window("Weekly limit", 2, firstHour)];
+  expect(await f.start({ ...f.request, dryRun: true })).toMatchObject({
+    providerPace: { overridden: false, providers: [{ providerId: "codex", pace: null }, {}, {}] },
+    build: { spawn: { providerId: "codex" } },
+  });
+  await f.write("Early pin.", undefined, pinned);
+  expect(await f.start({ ...f.request, dryRun: true })).toMatchObject({
+    providerPace: { overridden: false, providers: [{ providerId: "codex", pace: null }, {}, {}] },
+    build: { spawn: { providerId: "codex" } },
+  });
 });
 
 it("uses the weekly quota of available pooled accounts even without local provider usage", async () => {
@@ -706,6 +751,14 @@ it("uses the weekly quota of available pooled accounts even without local provid
   expect((await f.start(dryRun)).providerPace?.providers[1]).toMatchObject({
     source: "account-pool", usedPercent: 95,
   });
+
+  claude.limitWindows = [window(0.02, 1 / 168)];
+  claude.familyWeekly.sonnet = window(0.64, 0.5);
+  expect((await f.start(dryRun)).providerPace?.providers[1]).toMatchObject({
+    window: "Weekly · sonnet", usedPercent: 64, pace: expect.closeTo(1.28),
+  });
+  claude.familyWeekly.sonnet = window(0.3, 0.5);
+  await expect(f.start(dryRun)).rejects.toThrow("Use claude-code or give an explicit reason");
 
   pool.routing.claude = false;
   expect((await f.start(dryRun)).providerPace?.providers[1]).toMatchObject({
