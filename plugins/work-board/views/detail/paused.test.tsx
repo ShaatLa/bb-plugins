@@ -16,6 +16,12 @@ it("shows the latest time, matched actor and elapsed bar", () => {
   expect(container.textContent).not.toContain("paused by");
   rerender(<PausedBlock pauses={[pause]} details={[row]} names={new Map([["thr_example", "Example thread"]])} />);
   expect(container.textContent).toContain("paused by Example thread");
+  // The end time sits in the header, not in the "paused by" line, which is its own line under the reason.
+  const header = container.querySelector('section[aria-label="Paused"] > div')!;
+  expect(header.textContent).toMatch(/Paused · 4 h left\s*until \d{1,2}:\d{2}/);
+  const meta = [...container.querySelectorAll("li > div")].find(el => el.textContent?.startsWith("paused by"));
+  expect(meta?.textContent).not.toMatch(/until/i);
+  expect(meta?.previousElementSibling?.textContent).toBe("Waiting");
   expect(container.querySelector('[style*="width: 50%"]')).toBeTruthy();
   rerender(<PausedBlock pauses={[pause, { ...pause, until: "2026-11-01T15:00:00.000Z" }]} details={[row, row]} />);
   expect(screen.getByText("Paused · 5 h left")).toBeTruthy();

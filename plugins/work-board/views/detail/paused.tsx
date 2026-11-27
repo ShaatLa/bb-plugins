@@ -59,8 +59,13 @@ export function PausedBlock({ pauses, details, names, questions = [], resume, ex
     setBusy(true);
     try { await action(); setMenu(false); } catch (error) { onError?.(error instanceof Error ? error.message : String(error)); } finally { setBusy(false); }
   };
+  const latestUntil = pauses.some(pause => !pause.until) ? null : pauses.map(pause => pause.until!).sort((x, y) => Date.parse(y) - Date.parse(x))[0] ?? null;
   return <section aria-label="Paused" className="mb-2 rounded-md border border-border px-3 py-2 text-xs">
-    <div className="mb-1 flex items-center gap-1 text-warning"><HugeiconsIcon icon={PauseCircleIcon} aria-hidden className="size-3" />{pauseHeading(pauses, now)}</div>
+    <div className="mb-1 flex items-center gap-1 text-warning">
+      <HugeiconsIcon icon={PauseCircleIcon} aria-hidden className="size-3" />{pauseHeading(pauses, now)}
+      {/* The end time sits on the header's right edge; with several timed pauses, the latest one. */}
+      {latestUntil && <span className="ml-auto text-muted-foreground">until <time dateTime={latestUntil} title={new Date(latestUntil).toLocaleString()}>{clock(latestUntil, now)}</time></span>}
+    </div>
     <ul className="space-y-2">{pauses.map((pause, index) => {
       const matches = details?.filter(row => row.signal === pause.signal && row.reason === pause.reason && (row.until === null || pause.until === null ? row.until === pause.until : Date.parse(row.until) === Date.parse(pause.until))) ?? [];
       const row = matches.length === 1 ? matches[0] : undefined;
@@ -68,7 +73,7 @@ export function PausedBlock({ pauses, details, names, questions = [], resume, ex
       return <li key={`${pause.signal}-${index}`} className="break-words">
         {elapsed !== null && Number.isFinite(elapsed) && <div aria-hidden="true" className="mb-1 h-1 rounded bg-muted"><div className="h-full rounded bg-warning" style={{ width: `${elapsed}%` }} /></div>}
         <div><Reason pause={pause} questions={questions} /></div>
-        {row && <div className="text-muted-foreground">{pause.until && <>Until <time dateTime={pause.until} title={new Date(pause.until).toLocaleString()}>{clock(pause.until, now)}</time> · </>}{row.source === "auto" ? "paused automatically" : `paused by ${row.threadId === "owner" ? "the owner" : names?.get(row.threadId) ?? row.threadId}`} at <time dateTime={row.startedAt} title={new Date(row.startedAt).toLocaleString()}>{clock(row.startedAt, now)}</time></div>}
+        {row && <div className="mt-1.5 text-muted-foreground">{row.source === "auto" ? "paused automatically" : `paused by ${row.threadId === "owner" ? "the owner" : names?.get(row.threadId) ?? row.threadId}`} at <time dateTime={row.startedAt} title={new Date(row.startedAt).toLocaleString()}>{clock(row.startedAt, now)}</time></div>}
       </li>;
     })}</ul>
     {canResume && <div className="mt-2 flex items-start gap-2"><Button size="sm" variant="outline" className="h-7" disabled={busy} onClick={() => resume && void run(resume)}>Resume now</Button>{manual && <DropdownMenu open={menu} onOpenChange={setMenu}>
