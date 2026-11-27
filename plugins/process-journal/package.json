@@ -1,6 +1,6 @@
 {
   "name": "bb-plugin-process-journal",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "type": "module",
   "keywords": [
     "bb-plugin"
@@ -13,7 +13,10 @@
     "name": "Process Journal",
     "description": "Record process failures and track evidence that fixes worked.",
     "branding": {
-      "icon": "BookOpen"
+      "icon": "./assets/book-open.svg",
+      "experimental_icons": {
+        "book-open": "./assets/book-open.svg"
+      }
     },
     "server": "./server.ts",
     "app": "./app.tsx",

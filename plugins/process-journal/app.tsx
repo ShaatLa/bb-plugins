@@ -367,5 +367,5 @@ function ProposalDetail({ project, id, stamp, refresh }: { project: Projects[num
 }
 
 export default definePluginApp(app => {
-  app.slots.navPanel({ id: "process-journal", path: "process-journal", title: "Process Journal", icon: "BookOpen", component: Journal });
+  app.slots.navPanel({ id: "process-journal", path: "process-journal", title: "Process Journal", icon: "process-journal/book-open", component: Journal });
 });
