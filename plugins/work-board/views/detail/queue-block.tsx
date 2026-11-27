@@ -20,7 +20,7 @@ export function QueueBlock({ taskId, projectId, queue }: { taskId: string; proje
       <div className="flex min-w-0 items-start gap-2">
         {queue ? <QueuePlace queue={queue} total={queues.data?.find((item) => item.threadId === queue.threadId)?.entries.length} /> : <span className="text-muted-foreground">Not in a work queue</span>}
         {queue ? (
-          <Button asChild size="icon" variant="ghost" className="ml-auto size-6 shrink-0 text-muted-foreground"><button type="button" aria-label="Remove from queue" title="Remove from queue" disabled={busy} onClick={async () => {
+          <Button asChild size="icon" variant="ghost" className="-my-1 ml-auto size-6 shrink-0 text-muted-foreground"><button type="button" aria-label="Remove from queue" title="Remove from queue" disabled={busy} onClick={async () => {
             setBusy(true); setError(null);
             try { await rpc.call("queueRemove", { taskId, actor: "owner" }); } catch (cause) { setError(errorMessage(cause)); } finally { setBusy(false); }
           }}><Icon name="Trash2" className="size-3.5" /></button></Button>
