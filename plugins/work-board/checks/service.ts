@@ -527,26 +527,33 @@ function createService(bb: BbPluginApi) {
       state.error = code >= 2 ? result.output : null;
       history.result(trackerId, link, tickId, now, report.items, refreshFailed ? "refresh" : code >= 2 ? "script" : undefined);
 
-      const candidateChanged = result.snapshot !== null && (!committed || !result.snapshot.equals(committed));
-      const answerWithoutCandidate = config.snapshots && result.snapshot === null && [...report.items.values()].includes("ANSWER");
       const lastReport = state.lastReport?.manager === manager ? state.lastReport : undefined;
       const previous = lastReport?.changes;
-      // An unknown baseline (a report saved without its item hashes, as imported state may be) with the same fingerprint has the same items, so they are not compared.
       const sameUnknown = !!lastReport && !previous && lastReport.fingerprint === report.fingerprint;
       const waitingChanged = code < 2 && !sameUnknown && report.changes.waiting !== (previous?.waiting ?? "");
       const knownItems = new Set(previous?.noteworthy);
-      const newItem = !sameUnknown && report.changes.noteworthy.some((id) => !knownItems.has(id));
+      const newAnswer = [...report.items].some(([id, kind]) => kind === "ANSWER" && !sameUnknown && !knownItems.has(id));
+      const oldActions = previous?.actions;
+      const actionsAdded = !sameUnknown && report.changes.actions.some((id) => !(oldActions ?? []).includes(id));
+      const actionsRemoved = !!oldActions && oldActions.some((id) => !report.changes.actions.includes(id));
+      const upgrade = !!previous && !oldActions && (!!report.changes.noteworthy.length || !!report.changes.waiting || !!previous.noteworthy.length || !!previous.waiting);
       const changedFailure = state.lastFailure?.manager !== manager || state.lastFailure?.fingerprint !== report.fingerprint;
       const changedDiagnostic = code === 1 && !report.items.size && lastReport?.fingerprint !== report.fingerprint;
-      // An unknown baseline (a report saved without its item hashes, as imported state may be): a different fingerprint is news, and an empty Waiting list is never suppressed.
       const fingerprintChanged = !!lastReport && !previous && code < 2 && lastReport.fingerprint !== report.fingerprint;
-      const notify = !!newWorktrees || (code >= 2 ? changedFailure : waitingChanged || newItem || candidateChanged || answerWithoutCandidate || changedDiagnostic || fingerprintChanged || resendStale);
+      const reasons = [actionsAdded && "actions-added", actionsRemoved && "actions-removed", waitingChanged && "waiting", newAnswer && "answer", changedDiagnostic && "diagnostic", !!newWorktrees && "worktrees", resendStale && "live-return", result.snapshot !== null && !committed && "first-candidate", fingerprintChanged && "unknown-baseline", upgrade && "upgrade-baseline"].filter((reason): reason is string => !!reason);
+      const hasItems = [...report.items.values()].some((kind) => kind === "ANSWER" || kind === "WAIT" || kind.startsWith("ACTION"));
+      const remind = code < 2 && !reasons.length && hasItems && !!lastReport && config.reminderHours > 0 && now - lastReport.at >= config.reminderHours * 3600_000;
+      const notify = code >= 2 ? changedFailure || !!newWorktrees : reasons.length > 0 || remind;
+      if (code < 2) state.lastDecision = { at: now, decision: remind ? "remind" : notify ? "deliver" : hasItems ? "skip-unchanged" : "quiet", reasons: remind ? [] : reasons };
       // Any run below 2 ends a failure streak, even when it sends nothing: the same failure after a quiet success notifies again.
       if (code < 2) state.lastFailure = undefined;
       let delivery: Outcome = { status: "none" };
       if (notify) {
         // A report already being sent from an unknown baseline always says when the Waiting list is empty.
-        const body = (waitingChanged || fingerprintChanged || (!!lastReport && !previous && code < 2)) && !report.changes.waiting ? `${output.trimEnd()}\nSTATE Waiting list is clear.\n` : output;
+        let body = (waitingChanged || fingerprintChanged || (!!lastReport && !previous && code < 2)) && !report.changes.waiting ? `${output.trimEnd()}\nSTATE Waiting list is clear.\n` : output;
+        // Only a run below 2 shows what the Actions are; a failed run proves nothing about them.
+        if (code < 2 && (actionsRemoved || (upgrade && !report.changes.actions.length && !!previous?.noteworthy.length)) && !report.changes.actions.length) body = `${body.trimEnd()}\nSTATE Actions list is clear.\n`;
+        if (remind) body = `${body.trimEnd()}\nSTATE Unchanged since ${new Date(lastReport!.at).toISOString().slice(11, 16)} UTC; reminder every ${config.reminderHours} h.\n`;
         // The pending paths are saved with the report and published into the live state only after the commit.
         const staged: State = { ...state, pendingWorktrees: newWorktrees };
         db.transaction(() => {
@@ -558,7 +565,7 @@ function createService(bb: BbPluginApi) {
         delivery = await processPending(trackerId, link, state, tickId);
         controller.signal.throwIfAborted();
       } else {
-        if (code !== 0 || report.changes.waiting || result.snapshot !== null) history.suppress(tickId);
+        if (code !== 0 || hasItems || result.snapshot !== null) history.suppress(tickId);
         // Nothing staged: no stale-status line is current, so there is nothing to resend.
         if (consume) consumeRollback(trackerId, rollback!);
       }
@@ -719,7 +726,7 @@ function createService(bb: BbPluginApi) {
     return {
       trackerId, prefix, bbProjectId: link, config: effectiveConfig(draft), enabledChangedAt: draft.enabledChangedAt, enabledPrevious: draft.enabledPrevious,
       manager: configuredManager(db, trackerId), draining, ownedByOtherTracker: other ?? null,
-      lastRun: state.lastRun ?? null, nextRun: draft.enabled || draining ? state.nextRun ?? Date.now() : null, tickId: state.tickId ?? null,
+      lastDecision: state.lastDecision, lastRun: state.lastRun ?? null, nextRun: draft.enabled || draining ? state.nextRun ?? Date.now() : null, tickId: state.tickId ?? null,
       exitCode: state.exitCode ?? null, error: state.error ?? null,
       // A report that cannot be delivered is the current problem, whatever the last run did; an unknown outcome blocks until Retry.
       failureStage: pending && state.deliveryError ? ("delivery" as const) : state.failureStage ?? null,

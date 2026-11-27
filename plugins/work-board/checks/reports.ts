@@ -18,7 +18,7 @@ export function reportContents(exitCode: number, output: string, options: { drop
   let dropped = 0;
   for (const line of output.trimEnd().split(/\r?\n/)) {
     kept.push(line);
-    if (summaryLine.test(line)) continue;
+    if (summaryLine.test(line) || /^STATE Unchanged since \d{2}:\d{2} UTC; reminder every \d+ h\.$/.test(line)) continue;
     const entry = /^(ANSWER|ACTION|WAIT|STATE) (\S.*)$/.exec(line);
     if (!entry) {
       // A blank line is no diagnostic: empty output and output that is only worktree lines fingerprint alike.
@@ -35,13 +35,14 @@ export function reportContents(exitCode: number, output: string, options: { drop
     if (subtype === "provider-idle") stable = stable.replace(/\b\d+(?=%| h\b)/g, "#");
     items.set(hash(JSON.stringify([tag, stable])), kind);
   }
-  const noteworthy: string[] = [], waiting: string[] = [];
+  const noteworthy: string[] = [], actions: string[] = [], waiting: string[] = [];
   const comparisonItems: string[] = [];
   for (const [id, kind] of items) {
     // Worktree delivery is tracked by path until a scan observes it cleared, not by item.
     if (kind === archivedWorktreeKind) continue;
     comparisonItems.push(id);
     if (kind === "ANSWER" || kind.startsWith("ACTION")) noteworthy.push(id);
+    if (kind.startsWith("ACTION")) actions.push(id);
     if (kind === "WAIT") waiting.push(id);
   }
   const filtered = kept.map((line) => line.replace(summaryLine, (match: string, threads, cards, actions) => `${match.slice(0, match.indexOf(":"))}: ${threads} threads, ${cards} cards checked, ${Math.max(0, Number(actions) - dropped)} actions`)).join("\n").trimEnd();
@@ -49,7 +50,7 @@ export function reportContents(exitCode: number, output: string, options: { drop
   return {
     items, body, dropped, diagnostics: diagnostics.length,
     fingerprint: hash(JSON.stringify([exitCode, comparisonItems.sort(), diagnostics])),
-    changes: { noteworthy, waiting: waiting.length ? hash(JSON.stringify(waiting.sort())) : "" },
+    changes: { noteworthy, actions, waiting: waiting.length ? hash(JSON.stringify(waiting.sort())) : "" },
   };
 }
 export type ReportChanges = ReturnType<typeof reportContents>["changes"];

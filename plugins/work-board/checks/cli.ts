@@ -35,6 +35,7 @@ export function checksCliCommands(bb: BbPluginApi, host: ChecksCliHost) {
           ["Draining", String(status.draining)],
           ["Manager", status.manager ?? "(unset)"],
           ["Last run", when(status.lastRun)],
+          ["Last decision", status.lastDecision ? `${status.lastDecision.decision === "skip-unchanged" ? "skipped (unchanged)" : status.lastDecision.decision === "deliver" ? `staged (${status.lastDecision.reasons.join(", ")})` : status.lastDecision.decision === "remind" ? "reminder staged" : "quiet"} · ${when(status.lastDecision.at)}` : "-"],
           ["Next run", when(status.nextRun)],
           ["Exit", String(status.exitCode ?? "-")],
           ["Failure stage", status.failureStage ?? "-"],

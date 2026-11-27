@@ -115,6 +115,8 @@ describe("settings", () => {
     const f = await make();
     for (const bad of [0, 301, 1.5]) await expect(setKey(f, "timeoutSeconds", bad)).rejects.toThrow(/Invalid value/);
     for (const good of [1, 300]) expect((await setKey(f, "timeoutSeconds", good)).value).toBe(good);
+    for (const bad of [-1, 169, 1.5]) await expect(setKey(f, "reminderHours", bad)).rejects.toThrow(/Invalid value/);
+    for (const good of [0, 168]) { expect((await setKey(f, "reminderHours", good)).value).toBe(good); expect(await getKey(f, "reminderHours")).toBe(good); }
     for (const bad of [0, 1441]) await expect(setKey(f, "intervalMinutes", bad)).rejects.toThrow(/Invalid value/);
     for (const bad of ["", "-x", "a b", "x".repeat(201), ".hidden"]) await expect(setKey(f, "branch", bad)).rejects.toThrow(/Invalid value/);
     expect((await setKey(f, "branch", "release/1.0_a-b")).value).toBe("release/1.0_a-b");
@@ -142,7 +144,7 @@ describe("settings", () => {
     const f = await make();
     await f.enable();
     await Promise.all([setKey(f, "intervalMinutes", 20), setKey(f, "timeoutSeconds", 60), setKey(f, "snapshots", true), setKey(f, "args", ["a"])]);
-    expect(f.service.status(f.tracker.id).config).toEqual({ enabled: true, remote: null, branch: "main", script: "checks/run.sh", args: ["a"], intervalMinutes: 20, timeoutSeconds: 60, snapshots: true });
+    expect(f.service.status(f.tracker.id).config).toEqual({ enabled: true, remote: null, branch: "main", script: "checks/run.sh", args: ["a"], intervalMinutes: 20, reminderHours: 2, timeoutSeconds: 60, snapshots: true });
     // The owner turns it off; an edit that raced with it changes only its own field.
     await f.harness.callRpc("updateChecksEnabled", { projectId: f.tracker.id, enabled: false });
     await setKey(f, "branch", "dev");

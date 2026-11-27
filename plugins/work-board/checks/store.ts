@@ -13,6 +13,7 @@ export interface State {
   bbProjectId?: string;
   tickId?: string;
   lastRun?: number;
+  lastDecision?: { at: number; decision: "deliver" | "remind" | "skip-unchanged" | "quiet"; reasons: string[] };
   nextRun?: number;
   exitCode?: number | null;
   /** The most recent execution failure: a refresh or the script. A delivery that cannot complete is `deliveryError`, kept apart. */

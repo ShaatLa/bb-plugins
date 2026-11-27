@@ -429,6 +429,77 @@ describe("manager", () => {
 });
 
 describe("restart and manual runs", () => {
+
+  it("keeps the delivery receipt and reminder clock unchanged until a staged report is accepted", async () => {
+    const f = await make({ reminderHours: 2 });
+    await f.tick();
+    // Moved an hour back, so an acceptance that left the old time would be caught.
+    const shift = (ms: number) => { const state = f.state(); state.lastReport.at -= ms; f.db.prepare("UPDATE checks_state SET value = ? WHERE tracker_id = ?").run(JSON.stringify(state), f.tracker.id); return state.lastReport.at; };
+    const previous = shift(3600_000);
+    const receipt = f.service.status(f.tracker.id).lastDelivery;
+    f.output("ACTION idle EXA-2", 1);
+    f.threads.updateRejection = Object.assign(new Error("forbidden"), { status: 403 });
+    await f.tick();
+    expect(f.delivery()?.report_id).toBeTruthy();
+    expect(f.state().lastReport.at).toBe(previous);
+    expect(f.service.status(f.tracker.id).lastDelivery).toEqual(receipt);
+    expect(f.service.status(f.tracker.id).lastDecision).toMatchObject({ decision: "deliver", reasons: expect.arrayContaining(["actions-added"]) });
+    expect((await f.harness.runCli(["checks", "status", "--project", "CHK"])).stdout).toMatch(/Last decision\s+staged \(actions-added[,)]/);
+    await f.tick();
+    expect(f.state().lastReport.at).toBe(previous);
+    expect(f.service.status(f.tracker.id).lastDelivery).toEqual(receipt);
+    f.threads.updateRejection = undefined;
+    await f.tick();
+    expect(f.service.status(f.tracker.id).lastDelivery?.reportId).not.toBe(receipt?.reportId);
+    const accepted = f.state().lastReport.at;
+    expect(accepted).toBeGreaterThan(previous + 3_000_000);
+    // The reminder counts from the acceptance: not due just before two hours from it, due at two hours.
+    shift(2 * 3600_000 - 60_000);
+    await f.tick();
+    expect(f.service.status(f.tracker.id).lastDecision?.decision).toBe("skip-unchanged");
+    shift(60_000);
+    await f.tick();
+    expect(f.service.status(f.tracker.id).lastDecision?.decision).toBe("remind");
+  });
+
+  it("fires a reminder from the persisted delivery time after restart", async () => {
+    const f = await make({ reminderHours: 2 });
+    await f.tick();
+    const state = f.state(); state.lastReport.at -= 2 * 3600_000;
+    f.db.prepare("UPDATE checks_state SET value = ? WHERE tracker_id = ?").run(JSON.stringify(state), f.tracker.id);
+    const next = await f.harness.lifecycle.reload(async (bb) => {
+      const { createStore, registerTasksApi } = await import("../api");
+      const { registerChecks } = await import("./rpc");
+      registerTasksApi(bb, createStore(bb)); registerChecks(bb);
+    });
+    fixtures.splice(fixtures.indexOf(f), 1, { ...f, dispose: () => next.harness.dispose() } as Fixture);
+    const { checksService } = await import("./service");
+    const service = checksService(next.bb);
+    await service.scheduledTick(f.tracker.id);
+    expect(service.status(f.tracker.id).lastDecision?.decision).toBe("remind");
+    expect(f.sent()).toContain("reminder every 2 h");
+    const saved = JSON.parse(next.bb.storage.database().prepare<[string], { value: string }>("SELECT value FROM checks_state WHERE tracker_id = ?").get(f.tracker.id)!.value);
+    expect(saved.lastReport.at).toBeGreaterThan(state.lastReport.at);
+  });
+
+  it("retains the delivered baseline and reminder clock across a restart", async () => {
+    const f = await make();
+    f.output("ACTION idle EXA-1", 1);
+    await f.tick();
+    const last = f.state().lastReport.at;
+    const next = await f.harness.lifecycle.reload(async (bb) => {
+      const { createStore, registerTasksApi } = await import("../api");
+      const { registerChecks } = await import("./rpc");
+      registerTasksApi(bb, createStore(bb)); registerChecks(bb);
+    });
+    const { checksService } = await import("./service");
+    const service = checksService(next.bb);
+    await service.scheduledTick(f.tracker.id);
+    expect(service.status(f.tracker.id).lastDecision?.decision).toBe("skip-unchanged");
+    expect(JSON.parse(next.bb.storage.database().prepare<[string], { value: string }>("SELECT value FROM checks_state WHERE tracker_id = ?").get(f.tracker.id)!.value).lastReport.at).toBe(last);
+    fixtures.splice(fixtures.indexOf(f), 1, { ...f, dispose: () => next.harness.dispose() } as Fixture);
+  });
+
   it("retries a pending report before any rerun, across a restart", async () => {
     const f = await make();
     f.threads.threads.set(MANAGER, { archived: true });

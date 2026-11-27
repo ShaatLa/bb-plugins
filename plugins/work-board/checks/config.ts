@@ -41,6 +41,7 @@ export const FIELD_SCHEMAS = {
   script: z.string().min(1).max(1000).refine((s) => !s.startsWith("/") && !s.split("/").includes(".."), "script must be repository-relative, with no .. segment"),
   args: z.array(z.string().max(10000)).max(100),
   intervalMinutes: z.number().int().min(1).max(1440),
+  reminderHours: z.number().int().min(0).max(168),
   timeoutSeconds: z.number().int().min(1).max(300),
   snapshots: z.boolean(),
 } as const;
@@ -59,6 +60,7 @@ export const completeSchema = z.object({
   script: FIELD_SCHEMAS.script,
   args: FIELD_SCHEMAS.args.default([]),
   intervalMinutes: FIELD_SCHEMAS.intervalMinutes.default(DEFAULT_INTERVAL_MINUTES),
+  reminderHours: FIELD_SCHEMAS.reminderHours.default(2),
   timeoutSeconds: FIELD_SCHEMAS.timeoutSeconds.default(DEFAULT_TIMEOUT_SECONDS),
   snapshots: FIELD_SCHEMAS.snapshots.default(false),
 });
@@ -74,15 +76,16 @@ export interface ChecksDraft {
   script: string | null;
   args: string[] | null;
   intervalMinutes: number | null;
+  reminderHours: number | null;
   timeoutSeconds: number | null;
   snapshots: boolean | null;
 }
 
-const COLUMNS: Record<CheckField, string> = { remote: "remote", branch: "branch", script: "script", args: "args", intervalMinutes: "interval_minutes", timeoutSeconds: "timeout_seconds", snapshots: "snapshots" };
+const COLUMNS: Record<CheckField, string> = { remote: "remote", branch: "branch", script: "script", args: "args", intervalMinutes: "interval_minutes", reminderHours: "reminder_hours", timeoutSeconds: "timeout_seconds", snapshots: "snapshots" };
 
 interface ConfigRow {
   enabled: number; enabled_changed_at: string | null; enabled_previous: number | null; remote: string | null; branch: string | null; script: string | null;
-  args: string | null; interval_minutes: number | null; timeout_seconds: number | null; snapshots: number | null;
+  args: string | null; reminder_hours: number | null; interval_minutes: number | null; timeout_seconds: number | null; snapshots: number | null;
 }
 
 export function readDraft(db: Database, trackerId: string): ChecksDraft {
@@ -96,6 +99,7 @@ export function readDraft(db: Database, trackerId: string): ChecksDraft {
     script: row?.script ?? null,
     args: row?.args == null ? null : (JSON.parse(row.args) as string[]),
     intervalMinutes: row?.interval_minutes ?? null,
+    reminderHours: row?.reminder_hours ?? null,
     timeoutSeconds: row?.timeout_seconds ?? null,
     snapshots: row?.snapshots == null ? null : row.snapshots === 1,
   };
@@ -109,6 +113,7 @@ export const effectiveConfig = (draft: ChecksDraft) => ({
   script: draft.script,
   args: draft.args ?? [],
   intervalMinutes: draft.intervalMinutes ?? DEFAULT_INTERVAL_MINUTES,
+  reminderHours: draft.reminderHours ?? 2,
   timeoutSeconds: draft.timeoutSeconds ?? DEFAULT_TIMEOUT_SECONDS,
   snapshots: draft.snapshots ?? false,
 });
@@ -118,7 +123,7 @@ export function completeConfig(draft: ChecksDraft): { ok: true; config: ChecksCo
   const parsed = completeSchema.safeParse({
     remote: draft.remote,
     branch: draft.branch ?? undefined, script: draft.script ?? undefined, args: draft.args ?? undefined,
-    intervalMinutes: draft.intervalMinutes ?? undefined, timeoutSeconds: draft.timeoutSeconds ?? undefined, snapshots: draft.snapshots ?? undefined,
+    intervalMinutes: draft.intervalMinutes ?? undefined, reminderHours: draft.reminderHours ?? undefined, timeoutSeconds: draft.timeoutSeconds ?? undefined, snapshots: draft.snapshots ?? undefined,
   });
   if (parsed.success) return { ok: true, config: parsed.data };
   const missing = ["branch", "script"].filter((field) => draft[field as "branch" | "script"] === null);
