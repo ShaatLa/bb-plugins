@@ -16,6 +16,8 @@ interface DeliverCommentInput {
   replyHint?: boolean;
   /** Checked right before the transport call; a notice that went stale is dropped and counts as not delivered. */
   wanted?: () => boolean;
+  /** The key to name in the header instead of the card's current one, for a message whose text was fixed earlier. */
+  taskKey?: string;
 }
 
 function steerPrompt(
@@ -177,7 +179,7 @@ export async function deliverCommentToLatestAgent(
       ...links.map((link) => link.threadId),
     ]),
   ];
-  const prompt = () => steerPrompt(task.key, input.authorName, typeof input.body === "function" ? input.body() : input.body, input.replyHint);
+  const prompt = () => steerPrompt(input.taskKey ?? task.key, input.authorName, typeof input.body === "function" ? input.body() : input.body, input.replyHint);
   const at: { threadId?: string } = {};
   try {
     const threadId = await firstReachable(bb, candidates, at);

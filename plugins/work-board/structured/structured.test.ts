@@ -1395,55 +1395,37 @@ describe("superseding an owner check", () => {
     expect((await harness.runCli(["question", "list", task.key])).stderr).toContain(`Question ${latest.id} is superseded by`);
   });
 
-  it("drops an answer delivery when the check is superseded before dispatch", async () => {
+  it("sends a claimed answer as it was claimed when the check is superseded during delivery", async () => {
     const { harness, structured, task } = setup();
     const { question: old } = await structured.handlers.createQuestion(checkInput(task.id, "Does the menu open?"));
     harness.sdk.stub("threads.get", async ({ threadId }) => {
-      // The replacement commits while the answer notice is on its way.
+      // The replacement commits while the claimed answer is on its way.
       await structured.handlers.createQuestion(checkInput(task.id, "Does the menu open twice?", [], { questionId: old.id, revision: 2 }));
       return makeThreadResponse({ id: threadId, status: "idle" });
     });
     harness.sdk.stub("threads.send", async () => {});
     const result = await confirm(structured, old);
-    expect(result.notification).toBe("none");
-    expect(harness.sdk.callsTo("threads.send")).toEqual([]);
+    expect(result.notification).toBe("sent");
+    expect(harness.sdk.callsTo("threads.send")).toHaveLength(1);
   });
 
-  it("delivers a withdrawal that a replacement overtakes, naming the successor known at dispatch", async () => {
+  it("sends a withdrawal as it was claimed, and names a successor committed before the claim", async () => {
     const { harness, structured, task } = setup();
     harness.sdk.stub("threads.send", async () => {});
     harness.sdk.stub("threads.get", async ({ threadId }) => makeThreadResponse({ id: threadId, status: "idle" }));
     const { question: old } = await structured.handlers.createQuestion(checkInput(task.id, "Does the dialog close?"));
     const answered = (await confirm(structured, old)).question;
-    let successor = "";
+    // The replacement commits while the withdrawal is on its way: the claimed text is not changed.
+    let during = "";
     harness.sdk.stub("threads.get", async ({ threadId }) => {
-      // The replacement commits after the withdrawal is saved and before it reaches the thread.
-      if (!successor) successor = (await structured.handlers.createQuestion(checkInput(task.id, "Does the dialog close twice?", [], { questionId: old.id, revision: answered.revision + 1 }))).question.id;
+      if (!during) during = (await structured.handlers.createQuestion(checkInput(task.id, "Does the dialog close twice?", [], { questionId: old.id, revision: answered.revision + 1 }))).question.id;
       return makeThreadResponse({ id: threadId, status: "idle" });
     });
     const result = await structured.handlers.answerQuestion({ questionId: old.id, revision: answered.revision, selectedOptionIds: [], answerText: null, authorName: "Owner" });
     expect(result.notification).toBe("sent");
     const sent = JSON.stringify(harness.sdk.callsTo("threads.send").at(-1));
     expect(sent).toContain("Answer withdrawn");
-    expect(sent).toContain(`This check is superseded by ${successor}: act on that question.`);
-  });
-
-  it.each([false, true])("builds the withdrawal text after the queue read, so a replacement during it is named (queued row: %s)", async (queued) => {
-    const { harness, structured, task } = setup();
-    harness.sdk.stub("threads.send", async () => {});
-    harness.sdk.stub("threads.queuedMessages.update", async () => ({ ok: true }) as never);
-    harness.sdk.stub("threads.get", async ({ threadId }) => makeThreadResponse({ id: threadId, status: "idle" }));
-    const { question: old } = await structured.handlers.createQuestion(checkInput(task.id, "Does the toast fade?"));
-    const answered = (await confirm(structured, old)).question;
-    let successor = "";
-    harness.sdk.stub("threads.queuedMessages.list", async ({ threadId }) => {
-      if (!successor) successor = (await structured.handlers.createQuestion(checkInput(task.id, "Does the toast fade twice?", [], { questionId: old.id, revision: answered.revision + 1 }))).question.id;
-      return queued ? [makeQueueEntry({ id: "queued_1", threadId, originPluginId: "work-board", state: "queued", content: [{ type: "text", text: "[bb message from plugin:work-board]\n\nEarlier", mentions: [] }] })] : [];
-    });
-    await structured.handlers.answerQuestion({ questionId: old.id, revision: answered.revision, selectedOptionIds: [], answerText: null, authorName: "Owner" });
-    const delivered = JSON.stringify(harness.sdk.callsTo(queued ? "threads.queuedMessages.update" : "threads.send").at(-1));
-    expect(delivered).toContain("Answer withdrawn");
-    expect(delivered).toContain(`This check is superseded by ${successor}: act on that question.`);
+    expect(sent).not.toContain("superseded by");
   });
 
   it("points a changed answered decision to a fresh decision question, never --supersedes", async () => {
@@ -1571,7 +1553,7 @@ describe("owner check readiness", () => {
     const second = await ask("Does save work?", evidence);
     const answer = async (check: typeof first, option: number) => {
       await structured.handlers.answerQuestion({ questionId: check.id, revision: 1, selectedOptionIds: [check.options[option]!.id], authorName: "You" });
-      return JSON.stringify(harness.sdk.callsTo("threads.send").at(-1));
+      return JSON.stringify(harness.sdk.callsTo("threads.send").at(-1)) ?? "";
     };
     const reminder = "confirmed the last open check";
     expect(await answer(first, 0)).not.toContain(reminder);

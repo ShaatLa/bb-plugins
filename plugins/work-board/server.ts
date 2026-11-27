@@ -18,6 +18,7 @@ import { registerLifecycle } from "./lifecycle";
 import { TASK_LINK_INSTRUCTIONS } from "./shared/task-link";
 import { registerMentions } from "./mentions";
 import { planDebtService } from "./plan-debt/service";
+import { checkOutbox } from "./structured/check-outbox";
 import { autoArchiveTasks } from "./lifecycle/task-archive";
 import { sweepPauseSignals } from "./pause/signals";
 import { samplePauses } from "./pause/sample";
@@ -58,6 +59,8 @@ export default async function plugin(bb: BbPluginApi) {
   registerPublicApi(bb, store.tasks);
   registerMentions(bb, store);
   planDebtService(bb, store.tasks).register();
+  // Check answers held for the agent: a per-minute safety timer, and a drain at startup for batches left by a restart.
+  checkOutbox(bb, store).register();
   // Read when a provider session starts, so only threads started or resumed after install see it.
   bb.agents.contributeInstructions(({ projectId }) =>
     store.tasks.listProjects().some((project) => project.linkedBbProjectId === projectId)

@@ -12,6 +12,7 @@ import { touchAttention } from "../attention/ledger";
 import { endPauses } from "../pause/store";
 import { planningOn, READINESS_HINT } from "../shared/project-settings";
 import { defaultTaskThreadId, deliverCommentToLatestAgent, notifyThread } from "../steer";
+import { checkOutbox } from "./check-outbox";
 import { errorMessage } from "../shared/errors";
 import { planReviewThread, wakeReviewer } from "../plans/delivery";
 import { openDecisionIds, reviewBinding, type ReviewBinding } from "../plans/pause";
@@ -37,6 +38,7 @@ import {
 export function createStructuredStore(bb: BbPluginApi, store: TasksApiStore) {
   const db = bb.storage.database();
   const prepareReceipt = receiptGate(bb, store);
+  const outbox = checkOutbox(bb, store);
   const changed = (taskId: string) => {
     const task = store.tasks.getTask(taskId)!;
     bb.realtime.publish("tasks:changed", { taskId, projectId: task.projectId });
@@ -206,6 +208,8 @@ export function createStructuredStore(bb: BbPluginApi, store: TasksApiStore) {
   const syncDecisionLabel = (taskId: string) => {
     // The held checks come first: the attention ledger and the label below read them.
     refreshCheckFlow(db, taskId);
+    // With no open check left, the answers held for the agent are due, whichever write closed the last one.
+    outbox.release(taskId);
     const unanswered = db.prepare<[string], { id: string }>(`SELECT q.id FROM task_questions q WHERE q.task_id=? AND ${UNANSWERED_QUESTION} LIMIT 1`).get(taskId);
     if (!unanswered) endPauses(db, taskId, "signal_cleared", "system", { signal: "owner_question" });
     // An open owner question changes the stale-status observation (no_active_thread), so the ledger is updated in this write.
@@ -373,6 +377,8 @@ export function createStructuredStore(bb: BbPluginApi, store: TasksApiStore) {
             throw new Error(`Question ${questionId} is now at revision ${target.revision} (${stateOf(target)}), not ${revision}; read it with \`bb work-board question list ${key}\` and supersede the revision you mean to replace.`);
           db.prepare<[string, string]>("UPDATE task_questions SET payload = ? WHERE id = ?")
             .run(JSON.stringify(questionSchema.parse({ ...target, supersededBy: question.id, supersededAt: now })), target.id);
+          // The agent never saw an answer that was still waiting to be sent; the replacement is asked in its place.
+          outbox.dropUnsent(target.id);
         } else if (question.kind === "check") {
           // Two checks may share a prompt and differ in their step targets, so a duplicate is saved and only warned about.
           const prompt = normalizedPrompt(question.prompt);
@@ -392,6 +398,7 @@ export function createStructuredStore(bb: BbPluginApi, store: TasksApiStore) {
       });
       if ((input.smoke || receipt.record) && question.kind === "check") bb.realtime.publish("comments:changed", { taskId: question.taskId });
       changed(question.taskId);
+      outbox.kick();
       const planWake = await announce(wake);
       return { question, ...(planWake ? { planWake } : {}), ...(warnings.length ? { warnings } : {}) };
     },
@@ -401,6 +408,7 @@ export function createStructuredStore(bb: BbPluginApi, store: TasksApiStore) {
       let notice = "";
       let comment: ReturnType<typeof store.tasks.createComment> | undefined;
       let wake: Wake = null;
+      let outcome: "held" | "due" | "none" | undefined;
       const question = store.transaction(() => {
         const current = getQuestion(input.questionId);
         assertQuestionCurrent(current);
@@ -464,15 +472,15 @@ export function createStructuredStore(bb: BbPluginApi, store: TasksApiStore) {
           `**Question:** ${next.prompt}`,
           answer ? `**Answer:** ${answer}` : withdrawn ? `**Answer withdrawn** (was: ${previous})` : "**Answer:** (cleared)",
           `Question ID: ${next.id}; revision: ${next.revision}`,
-          ...(next.kind === "check" && next.beyondDesign && isQuestionOpen(current) &&
-            // Confirmed alone: a multiple-choice answer that also reports a problem is not a confirmation.
-            verdictOf(next) === "confirmed" &&
-            !listQuestions(next.taskId).some(q => q.kind === "check" && isQuestionOpen(q))
-            ? ["The owner confirmed the last open check. If this card's work goes to a PR, run the full review and the tests once now, then open it."] : []),
         ].join("\n\n");
         for (const id of attachmentIds) db.prepare<[string, string]>(
           "UPDATE attachments SET task_id = NULL, comment_id = ? WHERE id = ?",
         ).run(comment.id, id);
+        // A check answer goes through the outbox, written with the answer; a decision is sent directly below.
+        if (next.kind === "check") {
+          const attachmentLines = store.tasks.listAttachmentsForComment(comment.id).map(a => `Attachment: ${a.fileName} (${a.sizeBytes} bytes) — \`bb work-board attachment get ${a.id} --out <path>\``);
+          outcome = outbox.record({ question: next, previous: current, commentId: comment.id, authorName: input.authorName, block: notice, attachmentLines });
+        }
         return next;
       });
       const commentId = comment?.id ?? answerCommentId(question);
@@ -481,9 +489,19 @@ export function createStructuredStore(bb: BbPluginApi, store: TasksApiStore) {
       changed(question.taskId);
       if (!comment) return { ...result, question, notification: "unchanged" as const };
       bb.realtime.publish("comments:changed", { taskId: question.taskId });
+      // Registered before any await, so a drain started by someone else cannot send the answer unseen.
+      const delivered = outcome === "due" ? outbox.watch(comment.id) : undefined;
       const planWake = await announce(wake);
       // Its own message, after the answer's delivery below and outside it: the reminder has its own receipts.
       const remind = () => (debtEvent ? planDebtService(bb, store.tasks).drain() : undefined);
+      if (outcome === "held") return { ...result, question, notification: "held" as const, ...(planWake ? { planWake } : {}) };
+      if (outcome === "none") { await remind(); return { ...result, question, notification: "none" as const, ...(planWake ? { planWake } : {}) }; }
+      if (delivered) {
+        await outbox.drain().catch((error: unknown) => bb.log.warn(`check answer delivery failed: ${errorMessage(error)}`));
+        const sent = delivered();
+        await remind();
+        return { ...result, question, notification: sent ? ("sent" as const) : sent === undefined ? ("none" as const) : ("failed" as const), ...(planWake ? { planWake } : {}) };
+      }
       const threadId = question.askedByThread ?? defaultTaskThreadId(store.tasks, question.taskId, comment.id);
       if (!threadId) { await remind(); return { ...result, question, notification: "none" as const, ...(planWake ? { planWake } : {}) }; }
       const key = taskKey(question.taskId);
@@ -587,6 +605,7 @@ export function createStructuredStore(bb: BbPluginApi, store: TasksApiStore) {
         db.prepare<[string, string]>(
           "UPDATE task_questions SET payload = ? WHERE id = ?",
         ).run(JSON.stringify(next), next.id);
+        outbox.dropUnsent(next.id);
         syncDecisionLabel(next.taskId);
         wake = decisionTransition(next.taskId, before);
         store.tasks.createComment({
@@ -599,6 +618,7 @@ export function createStructuredStore(bb: BbPluginApi, store: TasksApiStore) {
       });
       changed(question.taskId);
       bb.realtime.publish("comments:changed", { taskId: question.taskId });
+      outbox.kick();
       const planWake = await announce(wake);
       return { question, ...(planWake ? { planWake } : {}), ...(receipt.warnings.length ? { warnings: receipt.warnings } : {}) };
     },
@@ -626,6 +646,7 @@ export function createStructuredStore(bb: BbPluginApi, store: TasksApiStore) {
       });
       changed(question.taskId);
       bb.realtime.publish("comments:changed", { taskId: question.taskId });
+      outbox.kick();
       const planWake = await announce(wake);
       return { question, ...(planWake ? { planWake } : {}) };
     },
@@ -643,11 +664,13 @@ export function createStructuredStore(bb: BbPluginApi, store: TasksApiStore) {
         const before = openDecisionIds(db, question.taskId).length;
         const result = db.prepare<[string]>("DELETE FROM task_questions WHERE id = ?")
           .run(question.id).changes > 0;
+        outbox.dropUnsent(question.id);
         syncDecisionLabel(question.taskId);
         wake = decisionTransition(question.taskId, before);
         return result;
       });
       changed(question.taskId);
+      outbox.kick();
       const planWake = await announce(wake);
       return { deleted, ...(planWake ? { planWake } : {}) };
     },

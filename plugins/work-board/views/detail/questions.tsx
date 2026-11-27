@@ -500,6 +500,7 @@ export function QuestionsSection({
   const [multiple, setMultiple] = useState(false);
   const [kind, setKind] = useState<"decision" | "check">("decision");
   const [saving, setSaving] = useState(false);
+  const [heldNote, setHeldNote] = useState(false);
   const [editing, setEditing] = useState<TaskQuestion | null>(null);
   const [reopen, setReopen] = useState(false);
   useEffect(() => {
@@ -590,6 +591,7 @@ export function QuestionsSection({
               throw error;
             }
             query.refresh();
+            setHeldNote(result.notification === "held");
             if (result.notification === "failed")
               onError(
                 "Answer saved, but the agent could not be notified. Notify its thread manually.",
@@ -685,6 +687,7 @@ export function QuestionsSection({
           {round.chains.map(renderCheck)}
         </div>
       ))}
+      {heldNote && shownRounds.length ? <p role="status" className="text-xs text-muted-foreground">Approve held: it goes to the agent with the other check answers.</p> : null}
       {earlierCount ? (
         <details>
           <DisclosureSummary className="text-sm text-muted-foreground">

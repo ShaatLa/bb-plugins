@@ -1155,6 +1155,30 @@ export const MIGRATIONS = [
   );`,
   `CREATE TABLE task_idempotency (project_id TEXT NOT NULL, key TEXT NOT NULL, task_id TEXT NOT NULL, created_at TEXT NOT NULL, PRIMARY KEY (project_id, key));`,
   `ALTER TABLE checks_config ADD COLUMN reminder_hours INTEGER;`,
+  // Owner check answers waiting to be sent to an agent: this machine's delivery state, not card content, so it is not exported.
+  `CREATE TABLE check_answer_claims (
+    claim_id TEXT PRIMARY KEY,
+    task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+    thread_id TEXT NOT NULL,
+    body TEXT NOT NULL,
+    task_key TEXT NOT NULL,
+    claimed_at TEXT NOT NULL,
+    attempts INTEGER NOT NULL DEFAULT 0,
+    attempted_at TEXT
+  );
+  CREATE TABLE check_answer_outbox (
+    question_id TEXT NOT NULL,
+    revision INTEGER NOT NULL,
+    task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+    thread_id TEXT NOT NULL,
+    comment_id TEXT,
+    state TEXT NOT NULL CHECK(state IN ('held','due','sending')),
+    claim_id TEXT REFERENCES check_answer_claims(claim_id),
+    payload TEXT NOT NULL,
+    held_at TEXT,
+    PRIMARY KEY (question_id, revision)
+  );
+  CREATE INDEX check_answer_outbox_task ON check_answer_outbox(task_id, thread_id, state);`,
 ] as const;
 
 /** Approval rows written before the comment id existed: the N-th row is the N-th approving review comment, only where the counts agree. */

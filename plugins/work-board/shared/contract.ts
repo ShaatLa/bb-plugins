@@ -1198,7 +1198,7 @@ export const tasksRpcContract = {
         commentId: idSchema.nullable(),
         attachmentIds: z.array(idSchema),
         notification: z
-          .enum(["sent", "failed", "none", "unchanged"])
+          .enum(["sent", "failed", "none", "unchanged", "held"])
           .optional(),
         planWake: planWakeSchema.optional(),
       })
