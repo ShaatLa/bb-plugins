@@ -2417,12 +2417,14 @@ export function createTasksStore(db: PluginDatabase, log: (message: string) => v
     return thread;
   }
 
+  const nextLinkTime = (previous?: string) => new Date(Math.max(Date.now(), previous ? Date.parse(previous) + 1 : 0)).toISOString();
+
   function upsertTaskThread(input: UpsertTaskThreadInput): TaskThread {
     requireTask(input.taskId);
     const previous = getTaskThreadByThreadId(input.taskId, input.threadId);
     if (!previous) endPauses(db, input.taskId, "takeover", input.threadId);
     const id = createUlid();
-    const timestamp = nowIso();
+    const timestamp = nextLinkTime(previous?.updatedAt);
     db.prepare<
       [
         string,
@@ -2516,12 +2518,19 @@ export function createTasksStore(db: PluginDatabase, log: (message: string) => v
     id: string,
     liveStatus: TaskThreadLiveStatus,
   ): TaskThread {
-    if (!db.prepare<[string]>("SELECT 1 FROM task_threads WHERE id = ?").get(id)) throw new Error(`Task thread not found: ${id}`);
-    const at = nowIso();
+    const previous = getTaskThread(id);
+    if (!previous) throw new Error(`Task thread not found: ${id}`);
+    const at = nextLinkTime(previous.updatedAt);
     db.prepare<[TaskThreadLiveStatus, string, TaskThreadLiveStatus, TaskThreadLiveStatus, string, string]>(
       "UPDATE task_threads SET live_status = ?, updated_at = ?, last_working_at = CASE WHEN ? IN ('starting','working') AND live_status <> ? THEN ? ELSE last_working_at END WHERE id = ?",
     ).run(liveStatus, at, liveStatus, liveStatus, at, id);
     return requireTaskThread(id);
+  }
+
+  function setLinkLiveStatusIf(id: string, expected: { liveStatus: TaskThreadLiveStatus; updatedAt: string }, next: TaskThreadLiveStatus): TaskThread | undefined {
+    const changed = db.prepare("UPDATE task_threads SET live_status=?, updated_at=? WHERE id=? AND live_status=? AND updated_at=?")
+      .run(next, nextLinkTime(expected.updatedAt), id, expected.liveStatus, expected.updatedAt).changes;
+    return changed ? requireTaskThread(id) : undefined;
   }
 
   function deleteTaskThread(id: string): boolean {
@@ -2756,6 +2765,7 @@ export function createTasksStore(db: PluginDatabase, log: (message: string) => v
   const createCommentHooked = touching(createComment, (comment) => (comment.evidence ? [comment.taskId] : []));
   const upsertTaskThreadHooked = touching(upsertTaskThread, (thread) => [thread.taskId]);
   const updateTaskThreadStatusHooked = touching(updateTaskThreadStatus, (thread) => [thread.taskId]);
+  const setLinkLiveStatusIfHooked = touching(setLinkLiveStatusIf, (thread) => thread ? [thread.taskId] : []);
   const deleteTaskThreadTransaction = db.transaction((id: string): boolean => {
     const taskId = getTaskThread(id)?.taskId;
     const removed = deleteTaskThread(id);
@@ -2853,6 +2863,7 @@ export function createTasksStore(db: PluginDatabase, log: (message: string) => v
     listTaskThreadsForTasks,
     listTaskActivity,
     updateTaskThreadStatus: updateTaskThreadStatusHooked,
+    setLinkLiveStatusIf: setLinkLiveStatusIfHooked,
     deleteTaskThread: deleteTaskThreadHooked,
     createPreset,
     getPreset,

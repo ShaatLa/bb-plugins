@@ -5,9 +5,10 @@ import type { TasksApiStore } from "../api";
 import { createActivityReads, MAX_SDK_READS, type AcceptedTurn, type ActivityReads } from "./shared-reads.js";
 import { epicTasksInWork } from "../attention/observe";
 import { evaluateTaskActivity, type TaskActivity, type TaskActivitySession } from "../shared/task-activity";
+import { capacityWait } from "../attention/capacity-wait";
 
 type Thread = Awaited<ReturnType<BbPluginApi["sdk"]["threads"]["list"]>>[number];
-type Snapshot = { thread: Thread | null; known: boolean; turnId: string | null; claimKey: string | null; requestId: string | null; dispatchTaskId: string | null; interactionIds: string[]; dispatchUnavailable: boolean; pending: boolean; queue: Set<string>; complete: boolean };
+type Snapshot = { thread: Thread | null; known: boolean; turnId: string | null; claimKey: string | null; requestId: string | null; dispatchTaskId: string | null; interactionIds: string[]; dispatchUnavailable: boolean; pending: boolean; queue: Set<string>; capacity: string | null; complete: boolean };
 
 // Services are created per call, so sampling state lives per plugin host and is shared by all of them.
 const readsByHost = new WeakMap<object, ActivityReads<Thread>>();
@@ -32,7 +33,7 @@ export function activityService(bb: BbPluginApi, store: TasksApiStore) {
     // The up-to-50 large request events die here; callers cache only this task id or null.
     return matching ? dispatchedTask(matching.data, accepted.requestId) : null;
   };
-  const invalidate = (threadId: string) => { for (const cache of [reads.threads, reads.accepted, reads.interactions, reads.queues]) cache.delete(threadId); };
+  const invalidate = (threadId: string) => { for (const cache of [reads.threads, reads.accepted, reads.interactions, reads.queues, reads.capacity]) cache.delete(threadId); };
   const active = (thread: Pick<Thread, "status" | "runtime" | "archivedAt" | "deletedAt">) => thread.status === "active" && thread.runtime.displayStatus === "active" && thread.archivedAt == null && thread.deletedAt == null;
   return {
     async start(taskId: string, threadId: string): Promise<void> {
@@ -109,7 +110,7 @@ export function activityService(bb: BbPluginApi, store: TasksApiStore) {
       threadIds.forEach((id, index) => {
         const result = settledThreads[index]!;
         // Snapshots are built per call from the shared thread DTO; they are never shared between consumers.
-        snapshots.set(id, { thread: result.status === "fulfilled" ? result.value : null, known: result.status === "fulfilled", turnId: null, claimKey: null, requestId: null, dispatchTaskId: null, interactionIds: [], dispatchUnavailable: false, pending: false, queue: new Set(), complete: result.status === "fulfilled" });
+        snapshots.set(id, { thread: result.status === "fulfilled" ? result.value : null, known: result.status === "fulfilled", turnId: null, claimKey: null, requestId: null, dispatchTaskId: null, interactionIds: [], dispatchUnavailable: false, pending: false, queue: new Set(), capacity: null, complete: result.status === "fulfilled" });
       });
       const work = [...snapshots.entries()].filter(([, snapshot]) => snapshot.thread && snapshot.thread.archivedAt == null && snapshot.thread.deletedAt == null);
       const worker = async () => {
@@ -117,12 +118,14 @@ export function activityService(bb: BbPluginApi, store: TasksApiStore) {
           const [id, snapshot] = item;
           const executing = active(snapshot.thread!);
           // Each read is shared (in flight and for a short TTL) and goes through the global read limiter; one failure never discards the others.
-          const [accepted, pending, queue] = await Promise.allSettled([
+          const [accepted, pending, queue, capacity] = await Promise.allSettled([
             executing ? reads.accepted.get(id, () => reads.limit(() => readAccepted(id))) : null,
             executing ? reads.interactions.get(id, () => reads.limit(async () => (await bb.sdk.threads.interactions.list({ threadId: id })).filter((interaction) => interaction.status === "pending").map((interaction) => ({ id: interaction.id, turnId: interaction.turnId ?? null })))) : [],
             queuesByThread.has(id) ? reads.queues.get(id, () => reads.limit(async () => (await bb.sdk.threads.queuedMessages.list({ threadId: id })).map((row) => row.id))) : [],
+            !executing && snapshot.thread!.queuedWork === "waiting" ? reads.capacity.get(id, () => reads.limit(async () => (await capacityWait(bb, [id])).get(id) ?? null)) : null,
           ]);
-          if (accepted.status === "rejected" || pending.status === "rejected" || queue.status === "rejected") snapshot.complete = false;
+          if (accepted.status === "rejected" || pending.status === "rejected" || queue.status === "rejected" || capacity.status === "rejected") snapshot.complete = false;
+          if (capacity.status === "fulfilled") snapshot.capacity = capacity.value;
           const turn = accepted.status === "fulfilled" ? accepted.value : null;
           snapshot.turnId = turn?.turnId ?? null;
           snapshot.claimKey = turn?.claimKey ?? null;
@@ -182,12 +185,13 @@ export function activityService(bb: BbPluginApi, store: TasksApiStore) {
             history.add(id);
           }
           const queueIds = (queuesByThread.get(link.threadId)?.get(id) ?? []).filter((queueId) => snapshot.queue.has(queueId));
-          const queued = snapshot.complete && queueIds.length > 0;
+          const queued = snapshot.complete && (queueIds.length > 0 || snapshot.capacity !== null);
           const state = executing ? (snapshot.pending ? "waiting-owner" : "working") : snapshot.thread?.status === "error" ? "error" : queued ? "queued" : "attached";
           const focusedTaskId = explicit ? (claim!.turn_id === snapshot.claimKey ? claim!.task_id : null) : snapshot.dispatchTaskId;
           const explanation = !snapshot.known ? "Session data is unavailable; execution cannot be verified."
             : executing ? (snapshot.pending ? "The attached session has a pending owner interaction." : "The attached session is actively executing.")
             : state === "error" ? "The attached session reports an error."
+            : queued && snapshot.capacity !== null ? `Waiting for a free session slot: ${snapshot.capacity}`
             : queued ? "A dispatched request is queued; the attached session is not actively executing."
             : "The session is attached but is not actively executing.";
           sessions.push({ threadId: link.threadId, title: link.title, role: link.presetName === "Parent thread" ? "parent" : "worker", state,

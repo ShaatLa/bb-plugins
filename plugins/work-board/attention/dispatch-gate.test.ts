@@ -5,6 +5,7 @@ import { setPauseMode, startManualPause } from "../pause/store";
 import { notifyThread } from "../steer";
 import { goLive, setup } from "./fixtures";
 import { registerDispatchGate } from "./dispatch-gate";
+import { syncCapacityWaits } from "./capacity-wait";
 
 type Fixture = ReturnType<typeof setup>;
 const THREAD = "thr_example";
@@ -280,5 +281,224 @@ it("holds an attempt carrying a reminder when the gate cannot read its database,
     expect(await g.queued([g.rowOf(user)])).toEqual({ action: "proceed" });
     expect(await g.inline("hello", null)).toEqual({ action: "proceed" });
   } finally { prepare.mockRestore(); }
+  await f.dispose();
+});
+
+async function managerBatch(f: Fixture, count = 1) {
+  await goLive(f);
+  const cards = Array.from({ length: count }, (_, n) => f.card(`Card ${n}`));
+  f.makeEligible();
+  await f.service.drain();
+  const row = f.threads.rows.find(r => r.threadId === "thr_manager" && r.content[0]!.text.includes("work-board-attention:"))!;
+  expect(row).toBeDefined();
+  return { cards, row };
+}
+
+it("rechecks every dispatch and withdraws a mixed batch when a card clears", async () => {
+  const f = setup();
+  const { cards, row } = await managerBatch(f, 2);
+  registerDispatchGate(f.bb);
+  const hook = f.harness.registrations.hooks["message.dispatch"]!;
+  const context = makeMessageDispatchHookContext({ thread: { id: "thr_manager" }, queuedMessages: [{ id: row.id, content: text(row.content[0]!.text), originPluginId: "work-board", senderThreadId: null }] });
+  expect(await hook(context)).toMatchObject({ action: "wait", reason: "checking linked sessions" });
+  await vi.waitFor(() => expect(f.harness.recheckCount).toBeGreaterThan(0));
+  expect(await hook(context)).toEqual({ action: "proceed" });
+  f.store.tasks.updateTask(cards[0]!.id, { status: "done" });
+  const before = f.harness.recheckCount;
+  expect(await hook(context)).toMatchObject({ action: "wait", reason: "checking linked sessions" });
+  await vi.waitFor(() => expect(f.harness.recheckCount).toBeGreaterThan(before));
+  expect(await hook(context)).toMatchObject({ action: "wait", reason: "removing a stale Work Board notice" });
+  await vi.waitFor(() => expect(f.threads.rows).not.toContain(row));
+  expect(f.db.prepare("SELECT state FROM attention_withdrawals").all()).toEqual([{ state: "done" }, { state: "done" }]);
+  await f.service.drain();
+  expect(f.threads.rows.some(r => r.threadId === "thr_manager" && r.content[0]!.text.includes(cards[1]!.key))).toBe(true);
+  await f.dispose();
+});
+
+it("rejects a stale inline batch after a freshness check", async () => {
+  const f = setup();
+  const { cards, row } = await managerBatch(f);
+  registerDispatchGate(f.bb);
+  const hook = f.harness.registrations.hooks["message.dispatch"]!;
+  const context = makeMessageDispatchHookContext({ thread: { id: "thr_manager" }, input: { text: row.content[0]!.text }, originPluginId: "work-board" });
+  f.store.tasks.updateTask(cards[0]!.id, { status: "done" });
+  const before = f.harness.recheckCount;
+  expect(await hook(context)).toMatchObject({ action: "wait" });
+  await vi.waitFor(() => expect(f.harness.recheckCount).toBeGreaterThan(before));
+  expect(await hook(context)).toMatchObject({ action: "reject" });
+  await f.dispose();
+});
+
+it("keeps a stale batch waiting when deletion fails, even if its pause ends", async () => {
+  const f = setup();
+  const { cards, row } = await managerBatch(f);
+  registerDispatchGate(f.bb);
+  const hook = f.harness.registrations.hooks["message.dispatch"]!;
+  const context = makeMessageDispatchHookContext({ thread: { id: "thr_manager" }, queuedMessages: [{ id: row.id, content: text(row.content[0]!.text), originPluginId: "work-board", senderThreadId: null }] });
+  startManualPause(f.db, cards[0]!.id, "Waiting", 60_000, "thr_example");
+  f.threads.deleteFail = true;
+  expect(await hook(context)).toMatchObject({ action: "wait" });
+  await vi.waitFor(() => expect(f.harness.recheckCount).toBeGreaterThan(0));
+  expect(await hook(context)).toMatchObject({ action: "wait", reason: "removing a stale Work Board notice" });
+  await vi.waitFor(() => expect(f.threads.deletes).toBe(1));
+  expect(f.db.prepare("SELECT state FROM attention_withdrawals").all()).toEqual([{ state: "pending" }]);
+  f.db.prepare("UPDATE task_pauses SET applied=0").run();
+  const before = f.harness.recheckCount;
+  expect(await hook(context)).toMatchObject({ action: "wait" });
+  await vi.waitFor(() => expect(f.harness.recheckCount).toBeGreaterThan(before));
+  expect(await hook(context)).toMatchObject({ action: "wait", reason: "removing a stale Work Board notice" });
+  await vi.waitFor(() => expect(f.threads.deletes).toBe(2));
+  f.threads.deleteFail = false;
+  await f.service.recover(f.tracker.id);
+  expect(f.threads.rows).not.toContain(row);
+  expect(f.db.prepare("SELECT state FROM attention_withdrawals").all()).toEqual([{ state: "done" }]);
+  await f.dispose();
+});
+
+it("fails toward notification when a freshness read fails", async () => {
+  const f = setup();
+  const { cards, row } = await managerBatch(f);
+  f.store.tasks.upsertTaskThread({ taskId: cards[0]!.id, threadId: "thr_worker", title: "Worker", presetName: "Agent", liveStatus: "idle" });
+  f.harness.sdk.stub("threads.list", async () => { throw new Error("offline"); });
+  registerDispatchGate(f.bb);
+  const hook = f.harness.registrations.hooks["message.dispatch"]!;
+  const context = makeMessageDispatchHookContext({ thread: { id: "thr_manager" }, queuedMessages: [{ id: row.id, content: text(row.content[0]!.text), originPluginId: "work-board", senderThreadId: null }] });
+  const before = f.harness.recheckCount;
+  expect(await hook(context)).toMatchObject({ action: "wait" });
+  await vi.waitFor(() => expect(f.harness.recheckCount).toBeGreaterThan(before));
+  expect(await hook(context)).toEqual({ action: "proceed" });
+  await f.dispose();
+});
+
+it("withdraws when a linked session begins waiting just before delivery", async () => {
+  const f = setup();
+  const { cards, row } = await managerBatch(f);
+  f.store.tasks.upsertTaskThread({ taskId: cards[0]!.id, threadId: "thr_worker", title: "Worker", presetName: "Agent", liveStatus: "idle" });
+  let waiting = false;
+  f.harness.sdk.stub("threads.list", async () => [makeThreadResponse({ id: "thr_worker", status: "idle", queuedWork: waiting ? "waiting" : "none" } as never)] as never);
+  f.harness.sdk.stub("threads.queuedMessages.list", async ({ threadId }) => threadId === "thr_worker" ? [{ state: "waiting", waitingOn: { kind: "plugin", pluginId: "concurrency-limit", reason: "full" } }] as never : f.threads.rows.filter(r => r.threadId === threadId) as never);
+  registerDispatchGate(f.bb);
+  const hook = f.harness.registrations.hooks["message.dispatch"]!;
+  const context = makeMessageDispatchHookContext({ thread: { id: "thr_manager" }, queuedMessages: [{ id: row.id, content: text(row.content[0]!.text), originPluginId: "work-board", senderThreadId: null }] });
+  const before = f.harness.recheckCount;
+  expect(await hook(context)).toMatchObject({ action: "wait" });
+  await vi.waitFor(() => expect(f.harness.recheckCount).toBeGreaterThan(before));
+  expect(await hook(context)).toEqual({ action: "proceed" });
+  waiting = true;
+  const second = f.harness.recheckCount;
+  expect(await hook(context)).toMatchObject({ action: "wait", reason: "checking linked sessions" });
+  await vi.waitFor(() => expect(f.harness.recheckCount).toBeGreaterThan(second));
+  expect(f.occurrences()).toHaveLength(0);
+  expect(await hook(context)).toMatchObject({ action: "wait", reason: "removing a stale Work Board notice" });
+  await vi.waitFor(() => expect(f.threads.rows).not.toContain(row));
+  await f.dispose();
+});
+
+it.each(["missing", "delivered", "unreadable"] as const)("recovers a pending withdrawal whose message is %s", async mode => {
+  const f = setup();
+  const { row } = await managerBatch(f);
+  const attempt = f.attempts().find(a => a.batch_id && row.content[0]!.text.includes(a.batch_id));
+  const ids = f.db.prepare<[string], { occurrence_id: string }>("SELECT occurrence_id FROM attention_attempt_items WHERE attempt_id=?").all(attempt.attempt_id);
+  for (const id of ids) f.db.prepare("INSERT INTO attention_withdrawals VALUES (?,?,'pending',?,'stale batch')").run(attempt.attempt_id, id.occurrence_id, new Date().toISOString());
+  if (mode === "delivered") f.threads.dispatchRow(row);
+  else f.threads.rows.splice(f.threads.rows.indexOf(row), 1);
+  if (mode === "unreadable") f.threads.eventsFail = true;
+  await f.service.recover(f.tracker.id);
+  const rows = f.db.prepare("SELECT state FROM attention_withdrawals").all();
+  expect(rows).toEqual(mode === "delivered" ? [] : [{ state: mode === "missing" ? "done" : "pending" }]);
+  if (mode === "missing") {
+    await f.service.drain();
+    expect(f.threads.rows.some(r => r.threadId === "thr_manager")).toBe(true);
+  }
+  await f.dispose();
+});
+
+it.each(["failed", "archived"] as const)("a pending lifecycle thread prevents a notice until it is %s", async terminal => {
+  const f = setup();
+  await goLive(f);
+  await registerLifecycle(f.bb, f.store);
+  const task = f.card("Pending");
+  f.store.tasks.upsertTaskThread({ taskId: task.id, threadId: "thr_worker", title: "Worker", presetName: "Agent", liveStatus: "idle" });
+  const pending = makeThreadResponse({ id: "thr_worker", status: "pending" });
+  await f.harness.emitThreadEvent("thread.created", { thread: pending });
+  expect(f.occurrences()).toHaveLength(0);
+  f.makeEligible();
+  await f.service.drain();
+  expect(f.threads.rows.filter(r => r.threadId === "thr_manager")).toHaveLength(0);
+  if (terminal === "failed") await f.harness.emitThreadEvent("thread.failed", { thread: makeThreadResponse({ id: "thr_worker", status: "error" }), error: "failed" });
+  else {
+    f.threads.threads.set("thr_worker", { archived: true });
+    await f.harness.emitThreadEvent("thread.archived", { thread: makeThreadResponse({ id: "thr_worker", status: "pending", archivedAt: 1 } as never) });
+  }
+  expect(f.occurrences().some(o => o.signal === "no_active_thread")).toBe(true);
+  await f.dispose();
+});
+
+it("does not restore a link archived while the capacity read is in flight", async () => {
+  const f = setup();
+  await goLive(f);
+  await registerLifecycle(f.bb, f.store);
+  const task = f.card("Example");
+  const link = f.store.tasks.upsertTaskThread({ taskId: task.id, threadId: "thr_worker", title: "Worker", presetName: "Agent", liveStatus: "idle" });
+  let release!: () => void;
+  const barrier = new Promise<void>(resolve => { release = resolve; });
+  f.harness.sdk.stub("threads.list", async () => { await barrier; return [makeThreadResponse({ id: "thr_worker", status: "idle", queuedWork: "waiting" } as never)] as never; });
+  f.harness.sdk.stub("threads.queuedMessages.list", async () => [{ state: "waiting", waitingOn: { kind: "plugin", pluginId: "concurrency-limit", reason: "full" } }] as never);
+  const pass = syncCapacityWaits(f.bb, f.store.tasks);
+  f.threads.threads.set("thr_worker", { archived: true });
+  await f.harness.emitThreadEvent("thread.archived", { thread: makeThreadResponse({ id: "thr_worker", status: "idle", archivedAt: 1 } as never) });
+  release();
+  await pass;
+  expect(f.store.tasks.getTaskThread(link.id)).toBeUndefined();
+  expect(f.occurrences().some(o => o.signal === "no_active_thread")).toBe(true);
+  await f.dispose();
+});
+
+it("withdraws an entirely stale multi-card batch without reclaiming any card", async () => {
+  const f = setup();
+  const { cards, row } = await managerBatch(f, 2);
+  for (const card of cards) f.store.tasks.updateTask(card.id, { status: "done" });
+  registerDispatchGate(f.bb);
+  const hook = f.harness.registrations.hooks["message.dispatch"]!;
+  const ctx = makeMessageDispatchHookContext({ thread: { id: "thr_manager" }, queuedMessages: [{ id: row.id, content: text(row.content[0]!.text), originPluginId: "work-board", senderThreadId: null }] });
+  expect(await hook(ctx)).toMatchObject({ action: "wait" });
+  await vi.waitFor(() => expect(f.harness.recheckCount).toBeGreaterThan(0));
+  expect(await hook(ctx)).toMatchObject({ action: "wait", reason: "removing a stale Work Board notice" });
+  await vi.waitFor(() => expect(f.threads.rows).not.toContain(row));
+  expect(f.db.prepare("SELECT state FROM attention_withdrawals").all()).toEqual([{ state: "done" }, { state: "done" }]);
+  await f.service.drain();
+  expect(f.threads.rows.filter(r => r.threadId === "thr_manager")).toHaveLength(0);
+  await f.dispose();
+});
+
+it("does not reuse a single-batch proof for a dispatch with two batches", async () => {
+  const f = setup();
+  const { cards, row } = await managerBatch(f);
+  f.store.tasks.upsertTaskThread({ taskId: cards[0]!.id, threadId: "thr_worker", title: "Worker", presetName: "Agent", liveStatus: "idle" });
+  f.threads.dispatchRow(row);
+  f.card("Second");
+  f.makeEligible();
+  await f.service.drain();
+  const second = f.threads.rows.find(r => r.threadId === "thr_manager" && r.id !== row.id)!;
+  expect(second).toBeDefined();
+  let waiting = false;
+  let release!: () => void;
+  let block = false;
+  const barrier = new Promise<void>(resolve => { release = resolve; });
+  f.harness.sdk.stub("threads.list", async () => { if (block) await barrier; return [makeThreadResponse({ id: "thr_worker", status: "idle", queuedWork: waiting ? "waiting" : "none" } as never)] as never; });
+  f.harness.sdk.stub("threads.queuedMessages.list", async () => [{ state: "waiting", waitingOn: { kind: "plugin", pluginId: "concurrency-limit", reason: "full" } }] as never);
+  registerDispatchGate(f.bb);
+  const hook = f.harness.registrations.hooks["message.dispatch"]!;
+  const item = (r: typeof row) => ({ id: r.id, content: text(r.content[0]!.text), originPluginId: "work-board", senderThreadId: null });
+  const context = (rows: typeof row[]) => makeMessageDispatchHookContext({ thread: { id: "thr_manager" }, queuedMessages: rows.map(item) });
+  expect(await hook(context([row]))).toMatchObject({ action: "wait" });
+  await vi.waitFor(() => expect(f.harness.recheckCount).toBeGreaterThan(0));
+  block = true;
+  expect(await hook(context([row, second]))).toMatchObject({ action: "wait", reason: "checking linked sessions" });
+  waiting = true;
+  release();
+  await vi.waitFor(() => expect(f.harness.recheckCount).toBeGreaterThan(1));
+  expect(await hook(context([row, second]))).toMatchObject({ action: "wait", reason: "removing a stale Work Board notice" });
+  await vi.waitFor(() => expect(f.threads.rows).not.toContain(row));
   await f.dispose();
 });

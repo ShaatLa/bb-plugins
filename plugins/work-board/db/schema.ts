@@ -1148,6 +1148,11 @@ export const MIGRATIONS = [
    CREATE TABLE queue_rollout (id INTEGER PRIMARY KEY CHECK(id=1), at TEXT NOT NULL);
    INSERT INTO queue_rollout(id, at) VALUES (1, strftime('%Y-%m-%dT%H:%M:%fZ','now'));
    CREATE TABLE queue_trial_scans (project_id TEXT PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE, at TEXT NOT NULL);`,
+  `CREATE TABLE attention_withdrawals (
+    attempt_id TEXT NOT NULL REFERENCES attention_attempts(attempt_id) ON DELETE CASCADE,
+    occurrence_id TEXT NOT NULL, state TEXT NOT NULL CHECK(state IN ('pending','done')),
+    at TEXT NOT NULL, reason TEXT NOT NULL, PRIMARY KEY (attempt_id, occurrence_id)
+  );`,
 ] as const;
 
 /** Approval rows written before the comment id existed: the N-th row is the N-th approving review comment, only where the counts agree. */

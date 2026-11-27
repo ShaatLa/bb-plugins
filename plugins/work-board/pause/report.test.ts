@@ -164,3 +164,25 @@ it("judges a notice against the real episode start before the window", async () 
   expect(arm.totalUnflaggedMs).toBe(30 * 60_000);
   await harness.dispose();
 });
+
+it("excludes withdrawn pairs and counts a later delivered attempt once", async () => {
+  const { bb, harness } = createFakePluginHost({ pluginId: "work-board" });
+  const store = createStore(bb);
+  const project = store.tasks.createProject({ name: "Example", prefix: "EXA", color: "blue" });
+  const task = store.tasks.createTask({ projectId: project.id, title: "Example", status: "in_progress" });
+  const db = bb.storage.database();
+  const end = Date.now(), start = end - 3_600_000, at = new Date(start + 1_000).toISOString();
+  setPauseMode(db, project.id, "ab");
+  db.prepare("UPDATE pause_log SET at=? WHERE project_id=? AND event='mode'").run(new Date(start).toISOString(), project.id);
+  db.prepare("INSERT INTO manager_attention(id,tracker_id,task_id,task_key,kind,signal,first_seen_at,eligible_at,created_rev,rev) VALUES ('o',?,?,'EXA-1','stale-status','no_active_thread',?,?,1,1)").run(project.id, task.id, at, at);
+  for (const id of ["a", "b"]) {
+    db.prepare("INSERT INTO attention_attempts(attempt_id,tracker_id,kind,generation,batch_id,recipient_thread_id,recipient_source,started_at,outcome,accepted_at,rev) VALUES (?,?,'stale-status',1,?,'thr_example','manager',?,'queued',?,1)").run(id, project.id, id, at, at);
+    db.prepare("INSERT INTO attention_attempt_items VALUES (?, 'o')").run(id);
+  }
+  db.prepare("INSERT INTO attention_withdrawals VALUES ('a','o','pending',?,'stale batch')").run(at);
+  const notices = () => pauseReport(db, project.id, new Date(start).toISOString(), new Date(end).toISOString(), end).arms[pauseArm(task.id)].notices;
+  expect(notices()).toBe(1);
+  db.prepare("UPDATE attention_withdrawals SET state='done'").run();
+  expect(notices()).toBe(1);
+  await harness.dispose();
+});

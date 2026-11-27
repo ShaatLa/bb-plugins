@@ -80,3 +80,17 @@ it("retires pending occurrences when attention leaves live mode", async () => {
   expect(f.occurrences(true)[0].retired_reason).toBe("mode off");
   await f.dispose();
 });
+
+it("reconciles an open occurrence from a withdrawn manager batch", async () => {
+  const f = setup();
+  await goLive(f);
+  const task = f.card("Example");
+  f.makeEligible();
+  await f.service.drain();
+  const attempt = f.attempts()[0];
+  const occurrence = f.occurrences()[0];
+  f.db.prepare("INSERT INTO attention_withdrawals VALUES (?,?,'done',?,'stale batch')").run(attempt.attempt_id, occurrence.id, new Date().toISOString());
+  setPauseMode(f.db, f.tracker.id, "on");
+  expect(f.occurrences().find(o => o.task_id === task.id).executor_state).toBe("pending");
+  await f.dispose();
+});

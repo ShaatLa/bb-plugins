@@ -13,6 +13,24 @@ const later = (ms = 1_100) => vi.setSystemTime(Date.now() + ms);
 // Legacy scenarios mutate SDK state between calls and expect fresh samples each time.
 const uncached = <T extends { metadata: (...args: never[]) => Promise<unknown> }>(service: T): T => ({ ...service, metadata: async (...args: never[]) => { later(); return service.metadata(...args); } });
 
+it("shows a capacity wait on a linked session without a dispatch queue", async () => {
+  const { bb, harness } = createFakePluginHost({ pluginId: "work-board" });
+  try {
+    const store = createStore(bb);
+    const project = store.tasks.createProject({ name: "Example", prefix: "EXA", color: "blue" });
+    const task = store.tasks.createTask({ projectId: project.id, title: "Task" });
+    store.tasks.upsertTaskThread({ taskId: task.id, threadId: "thr_worker", title: "Worker", presetName: "Attached", liveStatus: "starting" });
+    const thread = makeThreadResponse({ id: "thr_worker", status: "pending", queuedWork: "waiting" } as never);
+    harness.sdk.stub("threads.list", async () => [thread] as never);
+    let wait = true;
+    harness.sdk.stub("threads.queuedMessages.list", async () => wait ? [{ state: "waiting", waitingOn: { kind: "plugin", pluginId: "concurrency-limit", reason: "full" } }] as never : []);
+    const service = uncached(activityService(bb, store));
+    expect((await service.metadata([task.id])).get(task.id)).toMatchObject({ state: "queued", sessions: [{ state: "queued", diagnostics: { explanation: "Waiting for a free session slot: full" } }] });
+    wait = false;
+    expect((await service.metadata([task.id])).get(task.id)?.state).toBe("attached");
+  } finally { await harness.dispose(); }
+});
+
 it("follows live attached sessions on every linked card without requiring request scope", async () => {
   const host = createFakePluginHost({ pluginId: "work-board" });
   try {

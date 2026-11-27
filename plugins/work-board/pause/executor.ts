@@ -11,7 +11,7 @@ export function treatment(db: Database, projectId: string, taskId: string): bool
 export function transitionExecutors(db: Database, projectId: string): void {
   const at = new Date().toISOString();
   const grace = new Date(Date.now() + 600_000).toISOString();
-  const rows = db.prepare<[string], { id: string; task_id: string; executor_state: string | null }>(`SELECT o.id,o.task_id,o.executor_state FROM manager_attention o WHERE o.tracker_id=? AND o.cleared_at IS NULL AND o.kind='stale-status' AND o.signal<>'no_merge_or_outcome' AND NOT EXISTS (SELECT 1 FROM attention_attempt_items i JOIN attention_attempts a ON a.attempt_id=i.attempt_id WHERE i.occurrence_id=o.id AND a.outcome IN ('claimed','sending','appended','queued','inline','unknown'))`).all(projectId);
+  const rows = db.prepare<[string], { id: string; task_id: string; executor_state: string | null }>(`SELECT o.id,o.task_id,o.executor_state FROM manager_attention o WHERE o.tracker_id=? AND o.cleared_at IS NULL AND o.kind='stale-status' AND o.signal<>'no_merge_or_outcome' AND NOT EXISTS (SELECT 1 FROM attention_attempt_items i JOIN attention_attempts a ON a.attempt_id=i.attempt_id WHERE i.occurrence_id=o.id AND a.outcome IN ('claimed','sending','appended','queued','inline','unknown') AND NOT EXISTS (SELECT 1 FROM attention_withdrawals w WHERE w.attempt_id=i.attempt_id AND w.occurrence_id=i.occurrence_id AND w.state='done'))`).all(projectId);
   for (const row of rows) {
     if (treatment(db, projectId, row.task_id)) {
       if (row.executor_state === null) db.prepare<[string]>("UPDATE manager_attention SET executor_state='pending' WHERE id=? AND executor_state IS NULL").run(row.id);

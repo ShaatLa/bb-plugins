@@ -8,6 +8,8 @@ import { isSideChatShapedThread } from "../shared/side-chat";
 import { bumpRev, CURRENT_KEY_SQL, onAttentionChanged, onTrackerDirty, scanTracker } from "./ledger";
 import { completeTransition, configuredManager, getModeRow, kindState, normalizeLegacyModes, requestMode, type AttentionMode, type KindState } from "./modes";
 import { ATTENTION_KIND, PILOT_SIGNALS } from "./observe";
+import { capacityCandidates, checkCapacityCandidates } from "./capacity-wait";
+import { createTasksStore } from "../db/store";
 
 type Database = ReturnType<BbPluginApi["storage"]["database"]>;
 
@@ -180,7 +182,9 @@ function createService(bb: BbPluginApi) {
        AND o.signal IN (${PILOT_SIGNALS.map((signal) => `'${signal}'`).join(", ")})
        AND COALESCE(o.executor_state,'') NOT IN ('pending','sending')
        AND NOT EXISTS (SELECT 1 FROM attention_unknown u WHERE u.tracker_id=o.tracker_id AND u.kind=o.kind AND u.task_id=o.task_id AND u.signal=o.signal)
+       AND NOT EXISTS (SELECT 1 FROM attention_withdrawals w WHERE w.occurrence_id=o.id AND w.state='pending')
        AND NOT EXISTS (SELECT 1 FROM attention_attempt_items i JOIN attention_attempts a ON a.attempt_id=i.attempt_id WHERE i.occurrence_id=o.id AND a.attempt_id IS NOT ?
+         AND NOT EXISTS (SELECT 1 FROM attention_withdrawals w WHERE w.attempt_id=i.attempt_id AND w.occurrence_id=i.occurrence_id AND w.state='done')
          AND (a.outcome IN ('claimed', 'sending', 'appended', 'queued', 'inline') OR (a.outcome='unknown' AND COALESCE(a.disposition, '')<>'retry')))
        ORDER BY ${upcoming ? "o.eligible_at" : "o.created_rev"}`,
     ).all(trackerId, ATTENTION_KIND, new Date(at).toISOString(), except);
@@ -246,6 +250,23 @@ function createService(bb: BbPluginApi) {
 
   /** Settle attempts nothing is currently driving, from evidence in the recipient's queue and accepted-input history. */
   async function recover(trackerId: string, throttleLate = false, withLate = true): Promise<void> {
+    for (const listed of attemptsWhere(trackerId, "EXISTS (SELECT 1 FROM attention_withdrawals w WHERE w.attempt_id=attention_attempts.attempt_id AND w.state='pending')")) {
+      await withAttemptLock(listed.attempt_id, async () => {
+        const attempt = reload(listed.attempt_id);
+        if (!attempt) return;
+        try {
+          const found = await search(attempt);
+          if (found.receipt?.outcome === "queued" || found.receipt?.outcome === "appended") {
+            await bb.sdk.threads.queuedMessages.delete({ threadId: attempt.recipient_thread_id, queuedMessageId: found.receipt.queuedMessageId });
+            db.prepare("UPDATE attention_withdrawals SET state='done' WHERE attempt_id=? AND state='pending'").run(attempt.attempt_id);
+          } else if (found.receipt) {
+            db.prepare("DELETE FROM attention_withdrawals WHERE attempt_id=? AND state='pending'").run(attempt.attempt_id);
+          } else if (found.complete && !found.stale && !found.error) {
+            db.prepare("UPDATE attention_withdrawals SET state='done' WHERE attempt_id=? AND state='pending'").run(attempt.attempt_id);
+          }
+        } catch (error) { warn(error); }
+      });
+    }
     for (const listed of attemptsWhere(trackerId, "outcome IN ('claimed', 'sending') ")) {
       if (inflight.has(listed.attempt_id)) continue;
       await withAttemptLock(listed.attempt_id, async () => {
@@ -316,6 +337,10 @@ function createService(bb: BbPluginApi) {
     // Only a verified, usable manager receives claims; otherwise the open occurrences stay pending and the lookup is retried next pass.
     const lookup = await lookupManager(configuredManager(db, trackerId));
     if (lookup.status !== "usable") return;
+    try {
+      const ids = new Set(db.prepare<[string], { id: string }>(`SELECT l.id FROM task_threads l JOIN manager_attention o ON o.task_id=l.task_id WHERE o.tracker_id=? AND o.signal='no_active_thread' AND o.cleared_at IS NULL`).all(trackerId).map(row => row.id));
+      await checkCapacityCandidates(bb, createTasksStore(db), capacityCandidates(bb, trackerId).filter(row => ids.has(row.id)));
+    } catch (error) { warn(error); }
     const recipient = { threadId: lookup.threadId };
     const claimed = claim(trackerId, recipient, row.effective_generation);
     if (!claimed) return;
@@ -406,6 +431,9 @@ function createService(bb: BbPluginApi) {
 
   /** Startup and the ten-minute pass: rescan every active tracker, settle attempts, drain. */
   async function reconcileAll(): Promise<void> {
+    // Resolve interrupted withdrawals even when attention was switched off after they began.
+    for (const { tracker_id } of db.prepare<[], { tracker_id: string }>("SELECT DISTINCT a.tracker_id FROM attention_attempts a JOIN attention_withdrawals w ON w.attempt_id=a.attempt_id WHERE w.state='pending'").all())
+      await recover(tracker_id, false, false).catch(warn);
     for (const trackerId of activeTrackerIds()) {
       try { db.transaction(() => scanTracker(db, trackerId))(); } catch (error) { warn(error); }
     }

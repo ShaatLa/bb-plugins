@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { deliverWithReceipt, historyLimits, receiptPolling } from "../steer";
 import { attentionMarker } from "./service";
 import { goLive, MANAGER, setup } from "./fixtures";
+import { makeThreadResponse } from "@get-bb/plugin-sdk/testing";
 
 const fixtures: ReturnType<typeof setup>[] = [];
 const live = async () => { const f = setup(); fixtures.push(f); await goLive(f); return f; };
@@ -45,6 +46,37 @@ describe("recipient", () => {
 });
 
 describe("claims", () => {
+  it("clears a newly waiting card before claim, and notifies if the read fails", async () => {
+    const f = await live();
+    const task = f.card("Wait");
+    const link = f.store.tasks.upsertTaskThread({ taskId: task.id, threadId: "thr_worker", title: "Worker", presetName: "Attached", liveStatus: "idle" });
+    f.harness.sdk.stub("threads.list", async () => [makeThreadResponse({ id: "thr_worker", status: "idle", queuedWork: "waiting" } as never)] as never);
+    f.harness.sdk.stub("threads.queuedMessages.list", async () => [{ state: "waiting", waitingOn: { kind: "plugin", pluginId: "concurrency-limit", reason: "full" } }] as never);
+    f.makeEligible();
+    await f.service.drain();
+    expect(f.store.tasks.getTaskThread(link.id)?.liveStatus).toBe("starting");
+    expect(f.occurrences()).toHaveLength(0);
+    expect(f.attempts()).toHaveLength(0);
+    f.store.tasks.updateTaskThreadStatus(link.id, "idle");
+    f.harness.sdk.stub("threads.list", async () => { throw new Error("offline"); });
+    f.makeEligible();
+    await f.service.drain();
+    expect(f.attempts()).toHaveLength(1);
+  });
+
+  it("keeps a pending linked session active until it fails or is detached", async () => {
+    const f = await live();
+    const task = f.card("Pending");
+    const link = f.store.tasks.upsertTaskThread({ taskId: task.id, threadId: "thr_worker", title: "Worker", presetName: "Attached", liveStatus: "starting" });
+    expect(f.occurrences()).toHaveLength(0);
+    await f.service.drain();
+    expect(f.attempts()).toHaveLength(0);
+    f.store.tasks.updateTaskThreadStatus(link.id, "failed");
+    expect(f.occurrences().map(row => row.signal)).toContain("no_active_thread");
+    f.store.tasks.updateTaskThreadStatus(link.id, "starting");
+    f.store.tasks.deleteTaskThread(link.id);
+    expect(f.occurrences().map(row => row.signal)).toContain("no_active_thread");
+  });
   it("claims once for two overlapping drains", async () => {
     const f = await live();
     f.card("Once");

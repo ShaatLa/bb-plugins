@@ -64,7 +64,7 @@ export function pauseReport(db: Database, projectId: string, since?: string, unt
     arms[sample.arm].cardDays += periods.reduce((sum, p) => sum + overlap(kept, p), 0) / DAY;
     arms[sample.arm].owner.cardDays += periods.reduce((sum, p) => sum + overlap(owned, p), 0) / DAY;
   }
-  const notices = db.prepare<[string], Notice>(`SELECT o.task_id,o.id AS occurrence_id,o.signal,a.accepted_at,o.cleared_at,o.first_seen_at,a.recipient_thread_id FROM attention_attempt_items i JOIN attention_attempts a ON a.attempt_id=i.attempt_id JOIN manager_attention o ON o.id=i.occurrence_id WHERE a.tracker_id=? AND a.outcome IN ('appended','queued','inline') AND a.accepted_at IS NOT NULL`).all(projectId);
+  const notices = db.prepare<[string], Notice>(`SELECT o.task_id,o.id AS occurrence_id,o.signal,a.accepted_at,o.cleared_at,o.first_seen_at,a.recipient_thread_id FROM attention_attempt_items i JOIN attention_attempts a ON a.attempt_id=i.attempt_id JOIN manager_attention o ON o.id=i.occurrence_id WHERE a.tracker_id=? AND a.outcome IN ('appended','queued','inline') AND a.accepted_at IS NOT NULL AND NOT EXISTS (SELECT 1 FROM attention_withdrawals w WHERE w.attempt_id=i.attempt_id AND w.occurrence_id=i.occurrence_id)`).all(projectId);
   for (const n of notices) {
     const at = ms(n.accepted_at);
     if (!within(at, periods)) continue;

@@ -58,6 +58,7 @@ export function createActivityReads<Thread>(ttlMs = SAMPLE_TTL_MS) {
     accepted: createSharedCache<AcceptedTurn | null>(ttlMs),
     interactions: createSharedCache<PendingInteraction[]>(ttlMs),
     queues: createSharedCache<string[]>(ttlMs),
+    capacity: createSharedCache<string | null>(ttlMs),
     // An accepted request never changes, so its small parsed attribution (including null) is kept until evicted.
     dispatches: createSharedCache<string | null>(Infinity),
   };
