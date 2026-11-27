@@ -232,7 +232,8 @@ describe('public limits.get', () => {
     const t=await open({ codex:true });
     try {
       seedPrevious(t.db);
-      const asOf=NOW-M, forecastPercent=1+40/((START-H)-(START-L))*(RESET-asOf);
+      // The previous pace (40% over that window) weighs as two days of observed time against 1% in the 2 h since the reset.
+      const asOf=NOW-M, prevPace=40/((START-H)-(START-L)), PRIOR=2*24*H, forecastPercent=1+(1+prevPace*PRIOR)/(asOf-START+PRIOR)*(RESET-asOf);
       expect(await t.get()).toEqual({ version:1,now:NOW,accounts:[
         { accountId:'claude-code\u0000acct-example',providerId:'claude-code',label:'Claude Code',plan:'Max 5x',host:null,source:provider,sources:[provider,pool],
           status:'ok',message:null,observedAt:asOf,stale:false,
@@ -243,10 +244,54 @@ describe('public limits.get', () => {
           source:{ pluginId:'account-pool',resourceId:'pool-acct-example-2' },sources:[{ pluginId:'account-pool',resourceId:'pool-acct-example-2' }],
           status:'unauthenticated',message:'sign in again',observedAt:null,stale:false,windows:[] },
       ] });
-      expect(forecastPercent).toBeCloseTo(40.76,1);
+      expect(forecastPercent).toBeCloseTo(42.5,1);
       // Another machine's account is left out unless that machine is asked for; shared ones always come.
       expect((await t.get({ hostId:'host_other' })).accounts.map(a => a.providerId)).toEqual(['claude-code']);
     } finally { await t.close(); }
+  });
+
+  describe('weighs a fresh burst against the previous window\'s pace (10% a day)', () => {
+    // A previous week at 70%, read 1 h before its reset: 70% over 7 days less an hour.
+    const seed=(db:Parameters<typeof seedPrevious>[0]) => db.prepare("INSERT INTO cursor(name,value) VALUES ('limits-windows',?)")
+      .run(JSON.stringify({ 'claude-code\u0000acct-example\u0000Weekly limit':{ last:{ startsAt:START-L,resetsAt:START,observedAt:START-H,usedPercent:70 } } }));
+    const read=async (used:number,hoursIn:number,o:Opts={},extra?:(db:Parameters<typeof seedPrevious>[0]) => void) => {
+      const t=await open({ observedAt:START+hoursIn*H,windows:() => [weekly(used)],...o });
+      try { seed(t.db); extra?.(t.db); vi.setSystemTime(START+hoursIn*H+M); return (await t.get()).accounts[0]!.windows[0]!; }
+      finally { await t.close(); }
+    };
+    it('5% at 1% elapsed stays near the previous pace, not 500%', async () => {
+      const w=await read(5,0.01*24*7); // 1.68 h
+      expect(w.forecast.method).toBe('previous-window');
+      expect(w.forecastPercent!).toBeGreaterThan(74); expect(w.forecastPercent!).toBeLessThan(95);
+      expect(w).toMatchObject({ room:true,runsOutAt:null });
+    });
+    it('a sustained heavy burst still raises it and runs out', async () => {
+      const w=await read(60,24);
+      expect(w.forecast.method).toBe('previous-window');
+      expect(w.forecastPercent!).toBeGreaterThan(150);
+      expect(w).toMatchObject({ room:false,runsOutAt:expect.any(Number) });
+    });
+    it('leaves windows shorter than a week as they are', async () => {
+      const fiveHour={ kind:'five-hour',id:'primary',label:'Five-hour limit',usedPercent:5,resetsAt:new Date(NOW+5*H-10*M).toISOString(),model:null };
+      const t=await open({ windows:() => [fiveHour] });
+      try { expect((await t.get()).accounts[0]!.windows[0]).toMatchObject({ forecast:{ method:'window-average' },forecastPercent:expect.any(Number) }); }
+      finally { await t.close(); }
+    });
+    it('does not switch method or jump at 5% used, even with attributable recent spend', async () => {
+      const spend=(db:Parameters<typeof seedPrevious>[0]) => {
+        const insert=db.prepare("INSERT INTO usage_hourly(hour,provider,model,tier,band,project_id,thread_id,calls,fresh_in) VALUES (?,'claude-code','claude-sonnet-5-5','standard',0,'p','a',1,1000000)");
+        for (let ts=START-8*24*H; ts<START+2*H; ts+=6*H) insert.run(Math.floor(ts/H)*H);
+        db.prepare("INSERT INTO usage_raw(key,ts,provider,model,fresh_in) VALUES ('r',?,'claude-code','claude-sonnet-5-5',1000000)").run(START+30*M);
+        db.prepare("INSERT INTO cursor(name,value) VALUES ('backfill-progress','{\"done\":true}')").run();
+        db.prepare("INSERT INTO source_status(source,state) VALUES ('claude-file','ok'),('bb-events','ok')").run();
+      };
+      const [four,six]=[await read(4,2,{ outside:true },spend),await read(6,2,{ outside:true },spend)];
+      expect([four.forecast.method,six.forecast.method]).toEqual(['previous-window','previous-window']);
+      // The two extra points count once and with the weight of their 2 hours: the blend's own step, not a switch of method.
+      const asOf=START+2*H, step=2+2/(2*H+2*24*H)*(RESET-asOf);
+      expect(six.forecastPercent!-four.forecastPercent!).toBeCloseTo(step,6);
+      expect(six.pace!).toBeLessThan(1);
+    });
   });
 
   it('says there is no previous window when it has not watched a reset, and claims no room', async () => {

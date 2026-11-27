@@ -144,8 +144,11 @@ output: { version: 1, now: number, accounts: {
 
 How the forecast is made:
 
-- **Early in a window of a week or longer**, before 5% of it is gone or 5% used, it is the account's own pace over the previous window: its last reading there ÷ the time that reading covered. Tokenomos keeps the last reading of each window. The previous one counts only when it covers at least half its window and is the window right before this one. After an install or update there is no such reading until Tokenomos has watched a reset: `reason: "no-previous-window"`.
-- **Recent spend** (the last week's API-equivalent spend per hour ÷ this window's spend per 1%) is used only when the spend is the account's alone and complete. The conditions:
+- **In a window of a week or longer with a reading of the previous window** (`"previous-window"`), all through the window, it is that window's pace blended with the burn since the reset. The pace is the last reading there ÷ the time that reading covered:
+  - `rate = (usedPercent + previous pace × 2 days) / (elapsed + 2 days)`;
+  - at the reset this is last week's pace; a sustained burst gains weight as the week goes on, with no switch at any threshold.
+  Tokenomos keeps the last reading of each window. The previous one counts only when it covers at least half its window and is the window right before this one. After an install or update there is no such reading until Tokenomos has watched a reset; early in the window that gives `reason: "no-previous-window"`.
+- **Without that reading, recent spend** (the last week's API-equivalent spend per hour ÷ this window's spend per 1%) is used only when the spend is the account's alone and complete. The conditions:
   - the provider has one account;
   - usage outside bb is counted;
   - the provider's sources are healthy and the backfill is done;

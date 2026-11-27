@@ -126,6 +126,16 @@ export function historyComplete(db: Database, provider: string, asOf: number) {
   return ok === sources.length && degraded === 0 && backfilled && first !== null && first <= asOf - RECENT;
 }
 
+/** How much observed time the previous window's pace counts for against the burn since the reset (owner decision: 2 days). */
+export const PRIOR_MS = 2 * 24 * HOUR;
+/**
+ * Percent per ms early and through a long window: the previous window's pace weighs as PRIOR_MS of observed time, the
+ * burn since the reset as the time it covers. At the reset it is last week's pace; a sustained burst gains weight as the
+ * week goes on, with no switch at any threshold.
+ */
+export const blendedPace = (prevPace: number, usedPercent: number, elapsedMs: number) =>
+  (usedPercent + prevPace * PRIOR_MS) / (Math.max(0, elapsedMs) + PRIOR_MS);
+
 export type ForecastMethod = 'previous-window' | 'recent-spend' | 'window-average';
 export type NoForecast = 'exhausted' | 'no-reset' | 'too-early' | 'no-previous-window';
 

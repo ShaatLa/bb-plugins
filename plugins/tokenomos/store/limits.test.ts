@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { MIGRATIONS } from './schema.js';
 import { createStore } from './write.js';
 import type { UsageRow } from '../contract.js';
-import { exactSpend, historyComplete, isHeavy, parseHeavy, previousPace, recentRate, track, windowLength, windowPace, windowUsage, DEFAULT_HEAVY_MODELS, type Tracked } from './limits.js';
+import { blendedPace, exactSpend, PRIOR_MS, historyComplete, isHeavy, parseHeavy, previousPace, recentRate, track, windowLength, windowPace, windowUsage, DEFAULT_HEAVY_MODELS, type Tracked } from './limits.js';
 
 const HOUR = 3_600_000, DAY = 24 * HOUR, now = +new Date(2026, 10, 18, 12);
 const heavy = parseHeavy(DEFAULT_HEAVY_MODELS);
@@ -145,5 +145,14 @@ describe('limit windows', () => {
     db.prepare("UPDATE source_status SET state='ok'").run();
     db.prepare("INSERT INTO thread_source(thread_id,source,state) VALUES ('t','bb-events','degraded')").run();
     expect(historyComplete(db, 'claude-code', now)).toBe(false);
+  });
+
+  it('blends the previous window\'s pace with the burn since the reset', () => {
+    const prev = 10 / DAY, forecast = (used: number, elapsed: number) => used + blendedPace(prev, used, elapsed) * (7 * DAY - elapsed);
+    expect(PRIOR_MS).toBe(2 * DAY);
+    expect(blendedPace(prev, 0, 0)).toBe(prev); // at the reset: last week's pace
+    expect(forecast(5, 2 * HOUR)).toBeCloseTo(88, 0); // 5% in 2 h: not the 420% the window average says
+    expect(forecast(60, DAY)).toBeCloseTo(220, 0); // a heavy first day still shows
+    expect(blendedPace(prev, 50, 100 * DAY) * DAY).toBeCloseTo((50 / 100 + 0.2) / (1 + 0.02), 2); // late: near its own average
   });
 });

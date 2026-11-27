@@ -8,7 +8,7 @@ import { watchlist, wakeCost } from './store/context';
 import { prune } from './store/prune.js';
 import { REFERENCE_MODELS, SETTINGS, type SettingKey } from './settings.js';
 import { resolveModel } from './pricing/price.js';
-import { DEFAULT_HEAVY_MODELS, exactSpend, historyComplete, parseHeavy, previousPace, RECENT, recentRate, steadyAt, track, windowLength, windowPace, windowUsage, type Tracked } from './store/limits.js';
+import { blendedPace, DEFAULT_HEAVY_MODELS, exactSpend, historyComplete, parseHeavy, previousPace, RECENT, recentRate, track, windowLength, windowPace, windowUsage, type Tracked } from './store/limits.js';
 import { createLimitCollector, windowKey, type CollectorState, type LimitAccount } from './ingest/usage-limits.js';
 
 export type Settings = { rawRetentionDays: number; rollupRetentionDays: number; referenceModel: string; includeOutsideBb: boolean; priceOverrides: string; contextWatchTokens?:number; heavyModels?: string; heavyTargetPercent?: number; language?: string };
@@ -112,8 +112,8 @@ export function registerRpc(bb: BbPluginApi, db: Database, settings: SettingsHan
   };
   /**
    * Limit windows with pace and forecast, everything derived as of `asOf`, when the percent was measured. A long window
-   * early in its period projects the account's own previous-window pace. The last week's spend converts to percent only
-   * when it is the account's alone and complete: the provider's only account, usage outside bb counted, healthy and
+   * with its previous window's reading projects that pace blended with the burn since the reset. Without one, the last
+   * week's spend converts to percent only when it is the account's alone and complete: the provider's only account, usage outside bb counted, healthy and
    * complete history, all priced, at least 3% used. Otherwise a steady window projects its own average.
    */
   const computeLimits = async (hostId?: string) => {
@@ -134,8 +134,9 @@ export function registerRpc(bb: BbPluginApi, db: Database, settings: SettingsHan
         if (usage && startsAt !== null && length !== null && length >= RECENT) {
           const recent = recentRate(db, a.providerId, asOf, w.model, heavy, o.overrides);
           usage.recentUsdPerHour = recent.usdPerHour;
-          const prev = steadyAt(w.usedPercent, startsAt, length, asOf) ? null : previousPace(t[`${a.accountId}\0${windowKey(w)}`], startsAt, length);
-          if (prev !== null) { rate = prev; method = 'previous-window'; }
+          // With the previous window's pace known it is the only method all through the window: no switch, no jump.
+          const prev = previousPace(t[`${a.accountId}\0${windowKey(w)}`], startsAt, length);
+          if (prev !== null) { rate = blendedPace(prev, w.usedPercent, asOf - startsAt); method = 'previous-window'; }
           else if (w.usedPercent >= 3 && perProvider.get(a.providerId) === 1 && o.includeOutsideBb && !recent.partial && historyComplete(db, a.providerId, asOf)) {
             const s = exactSpend(db, a.providerId, startsAt, asOf, w.model, heavy, o.overrides, rawFloor);
             if (s && !s.partial && s.usd > 0) {

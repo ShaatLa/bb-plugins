@@ -1,6 +1,6 @@
 {
   "name": "bb-plugin-tokenomos",
-  "version": "0.7.0",
+  "version": "0.7.1",
   "description": "Token usage and API-equivalent cost across Claude, Codex, local and Antigravity threads in BB.",
   "private": true,
   "license": "MIT",
