@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup } from "@testing-library/react";
+import { cleanup, fireEvent } from "@testing-library/react";
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
@@ -71,8 +71,8 @@ it("sends Resume and Extend to the pause RPCs as the owner", async () => {
   const spy = (method: string) => async (input: unknown) => { calls.push({ method, input: input as Record<string, unknown> }); return host.harness.callRpc(method, input); };
   const rpc = { ...host.rpc, pauseTask: spy("pauseTask"), resumeTask: spy("resumeTask") };
   const slot = renderSlot(app.navPanels[0]!, { subPath: "task/EXA-1" }, { rpc });
-  (await slot.findByText("Extend ▾")).click();
-  (await slot.findByText("+1 h")).click();
+  fireEvent.keyDown(await slot.findByText("Extend ▾"), { key: "ArrowDown" });
+  fireEvent.click(await slot.findByRole("menuitem", { name: "+1 h" }));
   await vi.waitFor(() => expect(calls.find(call => call.method === "pauseTask")).toBeTruthy());
   const extended = calls.find(call => call.method === "pauseTask")!.input;
   expect(extended).toMatchObject({ taskId: host.task.id, reason: "Waiting", actor: "owner" });

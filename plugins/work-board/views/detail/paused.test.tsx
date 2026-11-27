@@ -27,9 +27,11 @@ it("resumes and extends, disclosing automatic pauses in the Extend menu", async 
   time();
   const resume = vi.fn().mockResolvedValue(undefined), extend = vi.fn().mockResolvedValue(undefined);
   render(<PausedBlock pauses={[pause, { signal: "background", reason: "Running", until }, { signal: "owner_question", reason: "waiting", until: null, targets: [] }]} resume={resume} extend={extend} />);
-  fireEvent.click(screen.getByText("Extend ▾"));
+  fireEvent.keyDown(screen.getByText("Extend ▾"), { key: "ArrowDown" });
   expect(screen.getByText("Also ends the automatic pause.")).toBeTruthy();
-  fireEvent.click(screen.getByText("+1 h"));
+  // The menu floats over the card (a portal), so the block keeps its height.
+  expect(screen.getByRole("menu").closest('section[aria-label="Paused"]')).toBeNull();
+  fireEvent.click(screen.getByRole("menuitem", { name: "+1 h" }));
   expect(extend).toHaveBeenCalledWith("Waiting", 5 * 3600000);
   await vi.waitFor(() => expect(screen.getByText("Resume now")).not.toHaveProperty("disabled", true));
   fireEvent.click(screen.getByText("Resume now"));
@@ -64,9 +66,9 @@ it("matches same-reason pauses by deadline and identifies owner and automatic ac
 it("disables extension at the eight hour limit", () => {
   time();
   render(<PausedBlock pauses={[{ ...pause, until: "2026-11-01T18:00:00.000Z" }]} />);
-  fireEvent.click(screen.getByText("Extend ▾"));
-  expect((screen.getByText("+1 h") as HTMLButtonElement).disabled).toBe(true);
-  expect((screen.getByText("8 h from now") as HTMLButtonElement).disabled).toBe(true);
+  fireEvent.keyDown(screen.getByText("Extend ▾"), { key: "ArrowDown" });
+  expect(screen.getByRole("menuitem", { name: "+1 h" }).getAttribute("aria-disabled")).toBe("true");
+  expect(screen.getByRole("menuitem", { name: "8 h from now" }).getAttribute("aria-disabled")).toBe("true");
 });
 it("hides the resolved question id and uses its link when found", () => {
   const reason = "waiting on owner question q_example";
@@ -89,8 +91,8 @@ it("caps an extension at eight hours from now", async () => {
   time();
   const extend = vi.fn().mockResolvedValue(undefined);
   render(<PausedBlock pauses={[{ ...pause, until: "2026-11-01T16:00:00.000Z" }]} extend={extend} resume={vi.fn()} />);
-  fireEvent.click(screen.getByText("Extend ▾"));
-  fireEvent.click(screen.getByText("+4 h"));
+  fireEvent.keyDown(screen.getByText("Extend ▾"), { key: "ArrowDown" });
+  fireEvent.click(screen.getByRole("menuitem", { name: "+4 h" }));
   // Six hours are left: +4 h would be ten, so the call asks for the eight-hour maximum.
   expect(extend).toHaveBeenCalledWith("Waiting", 8 * 3600000);
 });

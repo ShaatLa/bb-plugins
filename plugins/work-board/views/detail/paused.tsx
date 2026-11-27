@@ -8,6 +8,7 @@ import { placeChecks } from "../../shared/check-flow";
 import { taskHref } from "../../shared/task-link";
 import { useNowTick } from "../activity/time";
 import { Button } from "@/components/ui/button";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 
 export const questionAnchor = (questionId: string) => `wb-question-${questionId}`;
 const LINK = "text-primary underline underline-offset-2";
@@ -70,7 +71,14 @@ export function PausedBlock({ pauses, details, names, questions = [], resume, ex
         {row && <div className="text-muted-foreground">{pause.until && <>Until <time dateTime={pause.until} title={new Date(pause.until).toLocaleString()}>{clock(pause.until, now)}</time> · </>}{row.source === "auto" ? "paused automatically" : `paused by ${row.threadId === "owner" ? "the owner" : names?.get(row.threadId) ?? row.threadId}`} at <time dateTime={row.startedAt} title={new Date(row.startedAt).toLocaleString()}>{clock(row.startedAt, now)}</time></div>}
       </li>;
     })}</ul>
-    {canResume && <div className="mt-2 flex items-start gap-2"><Button size="sm" variant="outline" className="h-7" disabled={busy} onClick={() => resume && void run(resume)}>Resume now</Button>{manual && <div><Button size="sm" variant="outline" className="h-7" disabled={busy} aria-expanded={menu} onClick={() => setMenu(!menu)}>Extend ▾</Button>{menu && <div className="mt-1 rounded-md border bg-popover p-1">{[["+1 h", 3600000], ["+4 h", 14400000], ["8 h from now", MAX_PAUSE_MS]] .map(([label, extra]) => { const duration = Math.min(MAX_PAUSE_MS, label === "8 h from now" ? MAX_PAUSE_MS : remaining + Number(extra)); return <button className="block w-full rounded px-2 py-1 text-left hover:bg-muted disabled:opacity-50" type="button" key={label} disabled={busy || duration <= remaining} onClick={() => extend && void run(() => extend(manual.reason, Math.max(60000, Math.floor(duration))))}>{label}</button>; })}{pauses.some(p => p.signal === "background") && <div className="px-2 py-1 text-muted-foreground">Also ends the automatic pause.</div>}</div>}</div>}</div>}
+    {canResume && <div className="mt-2 flex items-start gap-2"><Button size="sm" variant="outline" className="h-7" disabled={busy} onClick={() => resume && void run(resume)}>Resume now</Button>{manual && <DropdownMenu open={menu} onOpenChange={setMenu}>
+      {/* A popover over the card, so opening it never changes the block's height. */}
+      <DropdownMenuTrigger asChild><Button size="sm" variant="outline" className="h-7" disabled={busy}>Extend ▾</Button></DropdownMenuTrigger>
+      <DropdownMenuContent align="start">
+        {[["+1 h", 3600000], ["+4 h", 14400000], ["8 h from now", MAX_PAUSE_MS]].map(([label, extra]) => { const duration = Math.min(MAX_PAUSE_MS, label === "8 h from now" ? MAX_PAUSE_MS : remaining + Number(extra)); return <DropdownMenuItem key={label} disabled={busy || duration <= remaining} onSelect={() => extend && void run(() => extend(manual.reason, Math.max(60000, Math.floor(duration))))}>{label}</DropdownMenuItem>; })}
+        {pauses.some(p => p.signal === "background") && <div className="px-2 py-1 text-xs text-muted-foreground">Also ends the automatic pause.</div>}
+      </DropdownMenuContent>
+    </DropdownMenu>}</div>}
   </section>;
 }
 
