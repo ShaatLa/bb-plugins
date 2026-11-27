@@ -157,6 +157,10 @@ describe('updates',()=>{
   expect(updates(db)).toHaveLength(2);
   expect(rows(db).find(r=>r.kind==='mine')).toMatchObject({status:'answered',answer:'answer'});
  });
+ it('tells the open chat at once about another thread\'s message that joins a running turn',()=>{
+  const db=setup(); applyEvents(db,'t',[req(1),start(),accept(),ev(4,'item/completed','x',{item:{type:'commandExecution',command:'ls'}})],'p',100,true,true);
+  expect(applyEvents(db,'t',[req(5,'s',{initiator:'agent',senderThreadId:'thr_s',input:text('[bb message from thread:thr_s] hold')}),accept(6,'s')],'p',100,true,true)).toBe(true);
+ });
  it('gives a steer\'s reply to the steer when the owner\'s full answer came before it and little work followed',()=>{
   const db=setup(), long='Full answer. '.repeat(40); const tool=(seq:number)=>ev(seq,'item/completed','x',{item:{type:'commandExecution',command:'ls'}});
   applyEvents(db,'t',[req(1),start(),accept(),tool(4),req(5,'s',{initiator:'agent',senderThreadId:'thr_s',input:text('[bb message from thread:thr_s] released')}),accept(6,'s'),message(7,long),tool(8),message(9,'steer reply'),done(10)],'p',100,true,true);

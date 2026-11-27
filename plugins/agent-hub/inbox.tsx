@@ -778,7 +778,8 @@ function InboxChat({ onBulkRead, bbChat = false, search: searchProp, onSearch, t
   async function sendQueued(row: typeof queue[number]) {
     const text = queueText(row).trim(), optimisticId = Date.now() + Math.random();
     dropped.current.add(row.id); setSentNow(old => [...old, row.id]);
-    if (text) setOptimistic(old => [...old, { threadId: row.threadId, text, id: optimisticId, seenIds: pages.flatMap(page => page.items.map(item => item.id)) }]);
+    // Another thread's, a plugin's or bb's row is recorded with bb's header as an incoming message, never as the owner's bubble.
+    if (text && landsInChat(row)) setOptimistic(old => [...old, { threadId: row.threadId, text, id: optimisticId, seenIds: pages.flatMap(page => page.items.map(item => item.id)) }]);
     const restore = () => { dropped.current.delete(row.id); setSentNow(old => old.filter(id => id !== row.id)); setOptimistic(old => old.filter(b => b.id !== optimisticId)); };
     // A 404 means bb already sent or deleted the row: it stays out of the queue, and the chat shows what bb recorded.
     await queueAction(async () => { try { const result = await sdk.threads.queuedMessages.send({ threadId: row.threadId, queuedMessageId: row.id, mode: 'auto' }); if (result.delivery === 'queued') restore(); } catch (e) { if ((e as { status?: number }).status === 404) setOptimistic(old => old.filter(b => b.id !== optimisticId)); else restore(); throw e; } }, true);

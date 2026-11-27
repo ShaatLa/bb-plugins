@@ -824,6 +824,17 @@ it('renders queued messages and sends or deletes them through the SDK', async ()
   fireEvent.click(slot.getByRole('button', { name:'Send queued message 1 now' })); await waitFor(() => expect(sendNow).toHaveBeenCalledWith({ threadId:'thr_one', queuedMessageId:'q1', mode:'auto' }));
   fireEvent.click(await slot.findByRole('button', { name:'Delete queued message 1' })); await waitFor(() => expect(remove).toHaveBeenCalledWith({ threadId:'thr_one', queuedMessageId:'q1' }));
 });
+it('sends another thread\'s queued message without an owner bubble and keeps the working robot', async () => {
+  const thread = { id:'thr_one', title:'One', projectId:'pr_one', parentThreadId:null, parentNotifications:'all', archivedAt:null, pinnedAt:null, sectionId:null, isUnread:false, status:'active', runtimeStatus:'active', queuedWork:'none', hasPendingInteraction:false, indicator:'runtime', activity:{ workflows:0, backgroundAgents:0, backgroundCommands:0, planMode:false }, environment:{ id:'env', path:'/x' } };
+  // bb's row holds the text without the [bb message from …] header it adds on delivery.
+  const row = { id:'q1', threadId:'thr_one', senderThreadId:'thr_two', content:[{ type:'text', text:'Please hold the release.', mentions:[] }], createdAt:1, updatedAt:1 };
+  const sendNow = vi.fn(() => Promise.resolve({ ok:true, delivery:'steered' }));
+  const { slot, recipients } = setup({ sidebarThreads: { threads:[thread], projects:[] }, queuedMessages: { list: () => Promise.resolve([row]), send:sendNow } }); fireEvent.click(await recipients.findByRole('option'));
+  fireEvent.click(await slot.findByRole('button', { name:'Send queued message 1 now' })); await waitFor(() => expect(sendNow).toHaveBeenCalled());
+  await waitFor(() => expect(slot.container.querySelector('[data-queue-row="q1"]')).toBeNull());
+  expect(slot.queryByRole('list', { name:'Sending' })).toBeNull();
+  expect(slot.getByLabelText('The agent is working')).toBeTruthy();
+});
 it('drops a queued row bb already sent: deleting it answers 404 quietly and rereads the queue', async () => {
   const row = { id:'q1', threadId:'thr_one', content:[{ type:'text', text:'Already sent', mentions:[] }], createdAt:1, updatedAt:1 };
   let rows = [row];
