@@ -28,6 +28,7 @@ import {
 } from "../../shell/routes.js";
 import { QueuePanel } from "../../components/queue-panel.js";
 import { LockChips } from "../../components/lock-chips.js";
+import { QueueMenu } from "../../components/queue-menu.js";
 import { ManagerQuickSet } from "../../components/manager-quick-set.js";
 import { BoardView } from "../board/index.js";
 import { DetailView } from "../detail/index.js";
@@ -429,7 +430,7 @@ function ThreadBoardContent({ threadId, target = null }: { threadId: string; tar
             <div className="min-w-0 truncate text-sm font-medium">
               {project?.name ?? "Project board"}
             </div>
-            {project ? <ManagerQuickSet projectId={project.id} className="ml-6" /> : null}
+            {project ? <><ManagerQuickSet projectId={project.id} className="ml-6" /><QueueMenu projectId={project.id} /></> : null}
             <span aria-hidden className="ml-auto" />
             {project ? <LockChips projectId={project.id} /> : null}
             <OpenInTasksButton

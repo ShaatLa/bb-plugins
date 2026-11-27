@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { loadPluginApp, renderSlot } from "@get-bb/plugin-sdk/testing/app";
 import { makeThreadResponse } from "@get-bb/plugin-sdk/testing";
@@ -695,3 +695,12 @@ function boardRpc() {
     listBbProjects: () => ({ bbProjects: [] }),
   };
 }
+it("places the queue after the manager in the embedded board header", async () => {
+  const slot = renderSlot(taskTab(app), { threadId: "thr_example", environment: null }, {
+    sdk: { threads: { get: async () => makeThreadResponse({ id: "thr_example", projectId: "proj_thread" }), list: async () => [] } },
+    rpc: { ...boardRpc(), getAttentionSettings: () => ({ manager: null, linkedBbProjectId: null }), queueList: () => ({ queues: [{ projectId: PROJECT_ID, threadId: "thr_example", entries: [{ taskId: "task_example", key: "EXA-1", title: "Example", status: "todo", position: 1 }] }] }) },
+  });
+  const queue = await slot.findByRole("button", { name: "Queue: current EXA-1 Example" });
+  const header = queue.closest("header")!;
+  expect((await within(header).findByText("Manager")).compareDocumentPosition(queue) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+});

@@ -12,13 +12,13 @@ it("refreshes a closed trigger when the first queue appears", async () => {
   let queues: ReturnType<typeof queue>[] = [];
   const slot = renderSlot(panel, { subPath: first }, { sdk: { threads: { list: async () => [] } }, rpc: { listProjects: () => ({ projects }), listFolders: () => ({ folders: [] }), listTasks: () => ({ tasks: [] }), queueList: () => ({ queues }) } });
   await slot.findByText("Project 0");
-  expect(slot.queryByText("Queues · 1")).toBeNull();
+  expect(slot.queryByText("EXA-1 · Example")).toBeNull();
   queues = [queue(first)];
   await slot.emitRealtime("tasks:changed", { projectId: first, taskId: "task_example" });
-  await slot.findByText("Queues · 1");
+  await slot.findByText("EXA-1 · Example");
   queues = [];
   await slot.emitRealtime("tasks:changed", { projectId: first, taskId: "task_example" });
-  await waitFor(() => expect(slot.queryByText("Queues · 1")).toBeNull());
+  await waitFor(() => expect(slot.queryByText("EXA-1 · Example")).toBeNull());
 });
 it("drops a late read after switching projects", async () => {
   const releases: Array<() => void> = [];
@@ -28,5 +28,5 @@ it("drops a late read after switching projects", async () => {
   slot.lifecycle.rerender(<panel.component subPath={second} />);
   await slot.findByText("Project 1");
   await act(async () => { releases.forEach((release) => release()); });
-  expect(slot.queryByText("Queues · 1")).toBeNull();
+  expect(slot.queryByText("EXA-1 · Example")).toBeNull();
 });

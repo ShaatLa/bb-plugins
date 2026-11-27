@@ -1463,3 +1463,14 @@ describe("resuming the panel", () => {
     expect(slot.navigateCalls).not.toContainEqual(expect.objectContaining({ options: expect.objectContaining({ subPath: expect.stringContaining("GONE") }) }));
   });
 });
+it("places the queue after the manager in both board headers", async () => {
+  const rpc = seededRpc({ getAttentionSettings: () => ({ manager: null, linkedBbProjectId: null }), queueList: () => ({ queues: [{ projectId: PROJECT_ID, threadId: "thr_example", entries: [{ taskId: "task_example", key: "EXA-1", title: "Example", status: "todo", position: 1 }] }] }) });
+  for (const registration of [tasksRegistration, { component: navTab(app, "kanban").component }]) {
+    const slot = renderSlot(registration, { subPath: PROJECT_ID }, { rpc, sdk: { threads: { list: async () => [] } } });
+    const queue = await slot.findByRole("button", { name: "Queue: current EXA-1 Example" });
+    const header = queue.closest("header")!;
+    const manager = await within(header).findByText("Manager");
+    expect(manager.compareDocumentPosition(queue) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    slot.lifecycle.unmount();
+  }
+});
