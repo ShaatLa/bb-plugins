@@ -19,6 +19,10 @@ keeps it here. `--spill` and `--spill auto` are aliases of `--anywhere`.
 Set the native `preferHost` setting to a configured host ID to try it first for portable heavy runs.
 Use `--local` only when the command needs something available only on this Mac, such as local state, a running service, or a path outside the worktree; run test suites, type checks, and builds without it so they can move to another machine.
 Use `--needs go,docker,chrome,playwright,node,bun` to require installed tools.
+Add `--git` for remote commands that read Git HEAD, status or diffs against
+HEAD. The mirror gets a detached checkout with the local commit and its
+immediate parents, the local index and working files. If the snapshot cannot
+be copied or validated, the wrapper retries locally before starting the command.
 A remote run copies the worktree and returns output and exit code, and the files
 the command created or changed come back into your worktree (ignored directories
 included), so reports, screenshots, coverage and build output need no `--local`.

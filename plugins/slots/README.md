@@ -129,6 +129,19 @@ Use `--local` or `--anywhere` to override, and `--needs go,docker` to require
 installed tools. Set the inventory with `bb plugin config slots set machineTools
 'host_example=go,docker;host_other=node,bun'`. `--spill` remains an alias for
 `--anywhere`. Commands with absolute path arguments outside the worktree stay local.
+
+Add `--git` when a remote command reads Git HEAD, status or diffs against HEAD.
+The mirror receives a detached checkout with the local commit and any immediate
+parents available locally. The shallow snapshot supports `HEAD^` and excludes
+older history, branches, tags and remote refs. It carries the local index and
+working files, including staged changes, unstaged changes and nonignored
+untracked files. This works from a linked worktree and needs no credentials
+for origin. An unsupported checkout, a snapshot that exceeds the
+upload limit or a status mismatch triggers a local retry before the command
+starts. Git metadata is disposable and stays out of the returned files.
+Git attributes stored outside the worktree and local filters such as Git LFS
+can change status and cause a local retry.
+
 **Files from a remote run.** When a remote command ends with a known exit code (including a
 non-zero one) the files it created or changed come back into the worktree, ignored directories
 included. The other machine keeps only the uploaded files plus `node_modules/` between runs, so

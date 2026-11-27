@@ -5,7 +5,7 @@ import { gzipSync } from "node:zlib";
 import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { spawn, spawnSync } from "node:child_process";
+import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { setTimeout as sleep } from "node:timers/promises";
 
 // A remote-run test uploads the whole worktree; on a loaded machine that exceeds the 5 s default.
@@ -234,7 +234,11 @@ const FAKE_BB = `#!/bin/sh
 printf '%s\\n' "$*" >> "$LOG"
 for a; do last=$a; done
 case "$1 $2" in
-  "slots acquire") echo "use use-1 lease lease-2 renew 30 host host_example" ;;
+  "slots acquire")
+    case " $* " in
+      *" --place local "*) echo "use use-1 lease lease-2 renew 30" ;;
+      *) echo "use use-1 lease lease-2 renew 30 host host_example" ;;
+    esac ;;
   "file write") cat > "$last" ;;
   "file read") [ -z "$READ_FAIL" ] || case $last in *.ret.[0-9]*) exit 1 ;; esac; cat "$last" ;;
   "file remove") rm -f "$last" ;;
@@ -247,6 +251,9 @@ case "$1 $2" in
         printf 'nonce=%s\\nstatus=%s\\ncount=%s\\nbytes=%s\\nparts=1\\ndel=%s\\n' "$n" "\${FORGE_STATUS:-packed}" 100 "\${FORGE_BYTES:-1000000}" "$d" > "$r.meta"
       fi
       exit 0
+    fi
+    if [ -n "$FAKE_HIDE_UNTRACKED" ]; then
+      export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=status.showUntrackedFiles GIT_CONFIG_VALUE_0=no
     fi
     HOME="$FAKE_HOME" "$@"; rc=$?; echo "Terminal $id exited with code $rc."; exit "$rc" ;;
 esac
@@ -266,7 +273,7 @@ async function world(setup: Record<string, string> = {}) {
   const log = join(dir, "log");
   const env = (extra: Record<string, string> = {}) => ({ ...process.env, PATH: `${bin}:${process.env.PATH}`, LOG: log, FAKE_HOME: home, REPO: repo, SLOTS_RUN_UPLOAD_DIR: dir,
     SLOTS_RUN_TRASH: join(bin, "trash"), SLOTS_RUN_TEST_STEP: "0.01", ...extra });
-  const args = (command: string) => [join(import.meta.dirname, "slots-run.sh"), "--anywhere", "--est", "1m", "--job", "t", "--", "sh", "-c", command];
+  const args = (command: string, options: string[] = []) => [join(import.meta.dirname, "slots-run.sh"), "--anywhere", ...options, "--est", "1m", "--job", "t", "--", "sh", "-c", command];
   const sh = (command: string, extra: Record<string, string> = {}) => spawnSync("sh", args(command), { cwd: repo, encoding: "utf8", timeout: 60000, env: env(extra) });
   const start = (command: string, extra: Record<string, string> = {}) => spawn("sh", args(command), { cwd: repo, detached: true, env: env(extra), stdio: "ignore" });
   const key = createHash("sha1").update(repo).digest("hex").slice(0, 16);
@@ -275,6 +282,71 @@ async function world(setup: Record<string, string> = {}) {
 const exists = (p: string) => stat(p).then(() => true, () => false);
 const waitFor = async (p: string, tries = 1000) => { for (let i = 0; i < tries; i++) { if (await exists(p)) return; await sleep(10); } throw new Error("timeout waiting for " + p); };
 const exited = (c: ReturnType<typeof spawn>) => new Promise<number | null>(resolve => { if (c.exitCode !== null) resolve(c.exitCode); else c.once("exit", resolve); });
+
+it("runs with a clean detached Git snapshot and its parent, returning files without Git metadata", async () => {
+  const w = await world();
+  const git = (...args: string[]) => execFileSync("git", args, { cwd: w.repo, encoding: "utf8" });
+  git("remote", "add", "origin", "https://example.test/owner/repo");
+  await writeFile(join(w.repo, "edit.txt"), "parent version\n");
+  git("add", "edit.txt");
+  git("-c", "user.email=test@example.test", "-c", "user.name=Example", "commit", "-qm", "second commit");
+  git("rm", "edit.txt");
+  git("-c", "user.email=test@example.test", "-c", "user.name=Example", "commit", "-qm", "third commit");
+  const commits = git("rev-parse", "HEAD", "HEAD^");
+  const script = 'git rev-parse HEAD HEAD^ && git status --porcelain && git show HEAD^:edit.txt && git rev-list --count HEAD && test -z "$(git remote)" && : > .git/remote-only && mkdir -p out && echo report > out/new.txt';
+  const result = spawnSync("sh", w.args(script, ["--git"]), { cwd: w.repo, env: w.env(), encoding: "utf8" });
+  expect(result.status, result.stderr).toBe(0);
+  expect(result.stdout).toBe(commits + "parent version\n2\n");
+  expect(result.stderr).toContain("running on host_example");
+  expect(await w.read("out/new.txt")).toBe("report\n");
+  expect(await exists(join(w.repo, ".git", "remote-only"))).toBe(false);
+  expect(await exists(join(w.mirror + "-git", ".git"))).toBe(false);
+  const plain = w.sh('test ! -e .git && ! git rev-parse HEAD >/dev/null 2>&1');
+  expect(plain.status, plain.stderr).toBe(0);
+});
+
+it("preserves staged and unstaged changes from a linked worktree with a split index", async () => {
+  const w = await world();
+  const worktree = join(w.dir, "linked");
+  execFileSync("git", ["worktree", "add", "-q", "--detach", worktree], { cwd: w.repo });
+  const git = (...args: string[]) => execFileSync("git", args, { cwd: worktree, encoding: "utf8" });
+  await writeFile(join(worktree, "edit.txt"), Buffer.from([0, 1, 2]));
+  git("add", "edit.txt");
+  git("update-index", "--split-index");
+  await writeFile(join(worktree, "edit.txt"), Buffer.from([3, 0, 4]));
+  await rm(join(worktree, "pkg", "a.txt"));
+  await writeFile(join(worktree, "-untracked"), "untracked");
+  const expected = git("rev-parse", "HEAD") + git("status", "--porcelain") + git("diff", "--cached", "--binary");
+  const script = "git rev-parse HEAD && git status --porcelain && git diff --cached --binary";
+  const result = spawnSync("sh", w.args(script, ["--git"]), { cwd: worktree, env: w.env(), encoding: "utf8" });
+  expect(result.status, result.stderr).toBe(0);
+  expect(result.stderr).toContain("running on host_example");
+  expect(result.stdout).toBe(expected);
+});
+
+it("retries locally when a Git snapshot cannot be made", async () => {
+  const w = await world();
+  const unborn = join(w.dir, "unborn");
+  execFileSync("git", ["init", "-q", unborn]);
+  const result = spawnSync("sh", w.args("printf '%s' \"$PWD\"", ["--git"]), { cwd: unborn, env: w.env(), encoding: "utf8" });
+  expect(result.status, result.stderr).toBe(0);
+  expect(result.stdout).toBe(unborn);
+  expect(result.stderr).toContain("retrying locally");
+  expect(await w.log()).not.toContain("terminal run");
+});
+
+it("retries locally before running the command when the mirror status differs", async () => {
+  const w = await world({ "untracked.txt": "untracked" });
+  const git = (...args: string[]) => execFileSync("git", args, { cwd: w.repo, encoding: "utf8" });
+  git("config", "status.showUntrackedFiles", "normal");
+  const result = spawnSync("sh", w.args("printf '%s' \"$PWD\"", ["--git"]), {
+    cwd: w.repo, env: w.env({ FAKE_HIDE_UNTRACKED: "1" }), encoding: "utf8",
+  });
+  expect(result.status, result.stderr + result.stdout).toBe(0);
+  expect(result.stdout).toContain("Git HEAD, parents or status differ from the local snapshot");
+  expect(result.stdout.endsWith(w.repo)).toBe(true);
+  expect(result.stderr).toContain("retrying locally");
+});
 
 it.each([0, 3, 124, 130])("brings back new, changed and ignored files after the command exits %i", async code => {
   const w = await world();
