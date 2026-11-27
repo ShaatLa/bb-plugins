@@ -3,11 +3,13 @@ import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, 
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { createFakePluginHost } from "@get-bb/plugin-sdk/testing";
+import { expect, vi } from "vitest";
 import { createStore, registerTasksApi } from "../api";
 import { registerTasksCli } from "../cli";
 import { createFakeThreads, MANAGER } from "../attention/fixtures";
 import { getChecksEnvironment } from "../global-settings";
 import { registerChecks } from "./rpc";
+import { runs as activeRuns } from "./ownership";
 import { checksService } from "./service";
 
 export const BB_PROJECT = "proj_example";
@@ -130,7 +132,12 @@ export async function setup(options: { settings?: Record<string, string> } = {})
   registerTasksCli(bb, store, { name: "Work Board", version: "test" });
   await getChecksEnvironment(bb); // defines the global settings
   const db = bb.storage.database();
-  const service = checksService(bb);
+  const base = checksService(bb);
+  // A test that fails leaves its tick running. Remember each started run so dispose can wait for it, and so its late rejection
+  // (the abort, or a publish on the then-stale handle) is not an unhandled error.
+  const inFlight = new Set<Promise<unknown>>();
+  const track = <A extends unknown[], R>(fn: (...args: A) => Promise<R>) => (...args: A) => { const p = fn(...args); inFlight.add(p.then(() => undefined, () => undefined)); return p; };
+  const service = { ...base, scheduledTick: track(base.scheduledTick), manualRun: track(base.manualRun), runDue: track(base.runDue) };
   const tracker = store.tasks.createProject({ name: "Checks", prefix: "CHK", color: "blue", linkedBbProjectId: BB_PROJECT });
   const setManager = (manager: string | null) => db.prepare("INSERT INTO attention_manager(tracker_id, manager, changed_at, previous) VALUES (?, ?, ?, NULL) ON CONFLICT(tracker_id) DO UPDATE SET manager=excluded.manager").run(tracker.id, manager, new Date().toISOString());
   setManager(MANAGER);
@@ -144,6 +151,8 @@ export async function setup(options: { settings?: Record<string, string> } = {})
     if (candidate === null) rmSync(join(io, "cand.txt"), { force: true }); else writeFileSync(join(io, "cand.txt"), candidate);
   };
   const runs = () => { try { return readFileSync(join(io, "runs.log"), "utf8").trim().split("\n").length; } catch { return 0; } };
+  /** Resolves once the script has logged `count` runs: it really started, however slow the checkout refresh was. */
+  const started = (count = 1) => vi.waitFor(() => expect(runs()).toBeGreaterThanOrEqual(count), { timeout: 30_000, interval: 20 });
   const configure = (fields: Record<string, unknown> = {}) => {
     for (const [key, value] of Object.entries({ branch: "main", script: "checks/run.sh", ...fields })) service.setField(tracker.id, key as never, value);
   };
@@ -179,6 +188,24 @@ export async function setup(options: { settings?: Record<string, string> } = {})
     },
     remove(path: string) { sourceGit(worktrees.source, "worktree", "remove", "--force", path); },
   };
-  return { ...host, worktrees, bb, store, db, service, tracker, threads, repo, pushes, control, harness, setManager, script, standard, output, runs, io, configure, enable, tick, state, delivery, attempts, sent, other, dispose: () => harness.dispose() };
+  /** Fails with a clear error instead of waiting forever for work that is stuck, for example a tick held at a gate the test never released. */
+  const bounded = <T>(what: string, work: Promise<T>, ms = 30_000) => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const deadline = new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error(`Teardown: ${what} did not finish within ${ms} ms. A test that holds a gate (getGateOnce, sendGate) must release it in a finally.`)), ms); });
+    return Promise.race([work, deadline]).finally(() => clearTimeout(timer));
+  };
+  /** Aborts the service, then waits until no run of this tracker is left: the module-level run lock must be free for the next fixture. */
+  const dispose = async () => {
+    try {
+      await bounded("harness.dispose()", harness.dispose());
+      await bounded("the in-flight checks runs", Promise.all(inFlight));
+      await vi.waitFor(() => expect([...activeRuns.values()]).not.toContain(tracker.id), { timeout: 30_000, interval: 10 });
+    } catch (error) {
+      // A stuck run is reported, and must not hold the shared lock against the next test.
+      for (const [link, id] of [...activeRuns]) if (id === tracker.id) activeRuns.delete(link);
+      throw error;
+    }
+  };
+  return { ...host, worktrees, bb, store, db, service, tracker, threads, repo, pushes, control, harness, setManager, script, standard, output, runs, started, io, configure, enable, tick, state, delivery, attempts, sent, other, dispose };
 }
 export type Fixture = Awaited<ReturnType<typeof setup>>;

@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { receiptPolling } from "../steer";
 import { BB_PROJECT, cleanTempDirs, setup, type Fixture } from "./fixtures";
 
@@ -162,9 +162,10 @@ describe("settings", () => {
     let release!: () => void;
     f.threads.getGateOnce = new Promise((resolve) => { release = resolve; });
     const waiting = f.tick(); // delivers the pending report, held at the manager lookup
-    await new Promise((resolve) => setTimeout(resolve, 50));
-    f.service.setEnabled(f.tracker.id, false);
-    release();
+    try {
+      await vi.waitFor(() => expect(f.threads.getGateOnce).toBeUndefined(), { timeout: 30_000, interval: 20 }); // the lookup took the gate and is held there
+      f.service.setEnabled(f.tracker.id, false);
+    } finally { release(); } // a failed assertion must not leave the tick held at the gate
     await waiting;
     expect(f.runs()).toBe(1);
     expect(f.delivery()?.report_id).toBeNull();

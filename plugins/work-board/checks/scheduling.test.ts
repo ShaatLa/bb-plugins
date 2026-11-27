@@ -4,6 +4,8 @@ import { receiptPolling } from "../steer";
 import { checksTuning } from "./service";
 import { cleanTempDirs, createRepo, executable, MANAGER, setup, type Fixture } from "./fixtures";
 
+vi.setConfig({ testTimeout: 120_000, hookTimeout: 120_000 }); // real git and shell processes: a loaded machine needs more than the default
+
 const fixtures: Fixture[] = [];
 const make = async (fields: Record<string, unknown> = {}) => {
   const f = await setup(); fixtures.push(f); f.standard(); await f.enable(fields); return f;
@@ -30,7 +32,7 @@ describe("scheduling", () => {
   it("recovers due ticks through the watchdog service when the cron dispatcher stalls", async () => {
     const f = await make();
     const { controller, done } = (f.harness as unknown as { runService(name: string): { controller: AbortController; done: Promise<void> } }).runService("checks-due");
-    await new Promise<void>((resolve, reject) => { const stop = Date.now() + 8000; const poll = () => (f.runs() >= 1 ? resolve() : Date.now() > stop ? reject(new Error("service never ran")) : setTimeout(poll, 50)); poll(); });
+    await f.started();
     controller.abort();
     await done;
     expect(f.runs()).toBe(1);
@@ -88,7 +90,7 @@ describe("scheduling", () => {
     const go = `${f.io}/go`;
     f.script(`echo run >> "${f.io}/runs.log"; while [ ! -e "${go}" ]; do sleep 0.1; done`);
     const first = f.tick();
-    await new Promise((resolve) => setTimeout(resolve, 700));
+    await f.started();
     await f.tick(); // coalesced into the active run
     await expect(f.service.manualRun(f.tracker.id)).rejects.toThrow(/already running/);
     expect(f.runs()).toBe(1);
@@ -171,19 +173,20 @@ describe("scheduling", () => {
     await f.tick();
     expect(f.state()).toMatchObject({ exitCode: 2, failureStage: "script", error: expect.stringContaining("timed out") });
     f.db.prepare("UPDATE checks_state SET value = json_set(value, '$.lastFailure', json('null'))").run();
+    f.configure({ timeoutSeconds: 120 }); // only the first step is about the timeout; a loaded machine needs time to write 1.5 MB
     f.script("head -c 1500000 /dev/zero | tr '\\0' a");
     await f.tick(); // the first failure is delivered; a different failure notifies again
     expect(f.state()).toMatchObject({ exitCode: 2, failureStage: "script", error: expect.stringContaining("exceeds 1 MB") });
     expect(ticks(f).map((t) => t.script_failed)).toEqual([1, 1]);
   });
 
-  it("cancels the running script on shutdown", { timeout: 30_000 }, async () => {
+  it("cancels the running script on shutdown", async () => {
     const f = await make();
     f.script(`echo $$ > "${f.io}/pid"; sleep 30`);
     const running = f.tick().catch((error) => error);
     // Under load the checkout refresh can take seconds: wait until the script has started instead of a fixed delay.
     const { readFileSync } = await import("node:fs");
-    await vi.waitFor(() => expect(readFileSync(`${f.io}/pid`, "utf8").trim()).not.toBe(""), { timeout: 20_000, interval: 50 });
+    await vi.waitFor(() => expect(readFileSync(`${f.io}/pid`, "utf8").trim()).not.toBe(""), { timeout: 60_000, interval: 50 });
     await f.dispose();
     expect(String(await running)).toMatch(/abort|shutdown|Error/i);
     const pid = Number(readFileSync(`${f.io}/pid`, "utf8"));

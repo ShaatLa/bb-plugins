@@ -4,6 +4,8 @@ import { QUEUED_NOTICE_SEPARATOR } from "../steer";
 import { checksTuning } from "./service";
 import { cleanTempDirs, MANAGER, setup, type Fixture } from "./fixtures";
 
+vi.setConfig({ testTimeout: 120_000, hookTimeout: 120_000 }); // real git and shell processes: a loaded machine needs more than the default
+
 const fixtures: Fixture[] = [];
 const make = async (fields: Record<string, unknown> = {}) => {
   const f = await setup(); fixtures.push(f); f.standard(); f.output("ACTION idle EXA-1", 1); await f.enable(fields); return f;
@@ -174,10 +176,11 @@ describe("definite failure and uncertainty", () => {
     let release!: () => void;
     f.threads.getGateOnce = new Promise((resolve) => { release = resolve; });
     const running = f.tick();
-    await vi.waitFor(() => expect(f.delivery()?.report_id).toBeTruthy());
-    // Held at the manager lookup: what a restart here would read.
-    expect(f.state()).toMatchObject({ exitCode: 2, failureStage: "script", error: "boom\n" });
-    release();
+    try {
+      await vi.waitFor(() => expect(f.delivery()?.report_id).toBeTruthy(), { timeout: 30_000, interval: 20 });
+      // Held at the manager lookup: what a restart here would read.
+      expect(f.state()).toMatchObject({ exitCode: 2, failureStage: "script", error: "boom\n" });
+    } finally { release(); } // a failed assertion must not leave the tick held at the gate
     await running;
     expect(f.state()).toMatchObject({ failureStage: "script", error: "boom\n" });
   });
@@ -538,9 +541,9 @@ describe("restart and manual runs", () => {
   it("refuses a manual run while another run is active", async () => {
     const f = await make();
     const go = `${f.io}/go`;
-    f.script(`while [ ! -e "${go}" ]; do sleep 0.1; done; echo done`);
+    f.script(`echo run >> "${f.io}/runs.log"; while [ ! -e "${go}" ]; do sleep 0.1; done; echo done`);
     const first = f.service.manualRun(f.tracker.id);
-    await new Promise((resolve) => setTimeout(resolve, 600));
+    await f.started();
     await expect(f.service.manualRun(f.tracker.id)).rejects.toThrow(/already running/);
     await f.tick(); // a due tick coalesces into the active run
     expect(f.state().tickId).toBeUndefined();

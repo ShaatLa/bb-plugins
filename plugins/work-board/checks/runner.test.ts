@@ -1,9 +1,11 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { CheckoutRefreshError, command, execute, refreshCheckout, type ScriptRun } from "./runner";
 import { binDir, cleanTempDirs, createRepo, executable, tempDir } from "./fixtures";
+
+vi.setConfig({ testTimeout: 120_000, hookTimeout: 120_000 }); // real git and shell processes: a loaded machine needs more than the default
 
 afterEach(() => { vi.unstubAllEnvs(); cleanTempDirs(); });
 const signal = () => new AbortController().signal;
@@ -65,16 +67,18 @@ describe("checkout", () => {
   it("removes a lock the cancelled fetch created, after the exit, and keeps one that existed", async () => {
     const root = tempDir(); const lock = join(root, "shallow.lock");
     const hang = 'process.on("SIGTERM", () => {}); setInterval(() => {}, 1000);';
-    const cancel = async (script: string) => {
+    const cancel = async (before: string) => {
+      const started = join(root, "started"); rmSync(started, { force: true });
       const controller = new AbortController();
-      const running = command(process.execPath, ["-e", script], root, controller.signal, { timeoutMs: 30_000, shallowLock: lock, killGraceMs: 200 });
-      setTimeout(() => controller.abort(new Error("shutdown")), 700);
+      const running = command(process.execPath, ["-e", `${before} process.on("SIGTERM", () => {}); require('node:fs').writeFileSync('started', ''); setInterval(() => {}, 1000);`], root, controller.signal, { timeoutMs: 30_000, shallowLock: lock, killGraceMs: 200 });
+      await vi.waitFor(() => expect(existsSync(started)).toBe(true), { timeout: 20_000, interval: 20 });
+      controller.abort(new Error("shutdown"));
       await expect(running).rejects.toThrow(/shutdown/);
     };
-    await cancel(`require('node:fs').writeFileSync('shallow.lock', 'new'); ${hang}`);
+    await cancel("require('node:fs').writeFileSync('shallow.lock', 'new');");
     expect(existsSync(lock)).toBe(false);
     writeFileSync(lock, "existing");
-    await cancel(hang);
+    await cancel("");
     expect(readFileSync(lock, "utf8")).toBe("existing");
   });
 
@@ -159,18 +163,47 @@ describe("execution", () => {
   });
 
   it("ends the whole process group on a timeout", async () => {
-    const repo = createRepo(); repo.commit({ "checks/run.sh": executable('sleep 30 &\necho $! > "$PWD/child.pid"\nwait') });
+    const repo = createRepo(); repo.commit({ "checks/run.sh": executable('sleep 300 &\necho $! > "$PWD/child.pid"\nwait') });
     const dir = tempDir();
-    await expect(run(dir, repo, { timeoutSeconds: 1 })).rejects.toThrow(/timed out/);
-    const pid = Number(readFileSync(join(checkout(dir), "child.pid"), "utf8"));
-    await vi.waitFor(() => expect(() => process.kill(pid, 0)).toThrow(/ESRCH|kill/));
+    const pidFile = join(checkout(dir), "child.pid");
+    const realSetTimeout = setTimeout;
+    let pid = NaN, running: ReturnType<typeof run> | undefined, done = false;
+    const sleep = (ms: number) => new Promise<void>((resolve) => realSetTimeout(resolve, ms)); // on the real timer; the fake one is for the command's timeout
+    // The timeout is a fake timer: it cannot fire before the script has started its helper, however slow the machine is.
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      let early: unknown;
+      running = run(dir, repo, { timeoutSeconds: 5 });
+      running.then(() => { done = true; }, (error) => { done = true; early = error; });
+      const started = () => { try { return Number(readFileSync(pidFile, "utf8").trim()); } catch { return NaN; } };
+      const deadline = Date.now() + 60_000; // the real clock: Date is not faked
+      while (!(started() > 0)) {
+        if (early) throw early; // the run failed before the helper started: report that, not a missing file
+        if (Date.now() > deadline) throw new Error("The script did not write child.pid within 60 s.");
+        await sleep(20);
+      }
+      pid = started();
+      vi.advanceTimersByTime(5000);
+      await expect(running).rejects.toThrow(/timed out/);
+    } finally {
+      // A run the test did not finish must end here, or its script outlives the test: let the command's own timeout fire and kill the group.
+      try {
+        const end = Date.now() + 30_000;
+        while (running && !done && Date.now() < end) { vi.advanceTimersByTime(5000); await sleep(20); }
+        if (running && !done) throw new Error("Cleanup: the run did not settle within 30 s.");
+        await running?.catch(() => undefined); // settled already: returns at once
+      } finally { vi.useRealTimers(); }
+    }
+    await vi.waitFor(() => expect(() => process.kill(pid, 0)).toThrow(/ESRCH|kill/), { timeout: 30_000, interval: 20 });
   });
 
   it("cancels a running script on shutdown", async () => {
-    const repo = createRepo(); repo.commit({ "checks/run.sh": executable("sleep 30") });
+    const repo = createRepo(); repo.commit({ "checks/run.sh": executable('echo x > "$PWD/started"; sleep 30') });
     const controller = new AbortController();
-    const running = execute(tempDir(), "tracker_example", base(repo), controller.signal);
-    setTimeout(() => controller.abort(new Error("shutdown")), 800);
+    const dir = tempDir();
+    const running = execute(dir, "tracker_example", base(repo), controller.signal);
+    await vi.waitFor(() => expect(existsSync(join(checkout(dir), "started"))).toBe(true), { timeout: 20_000, interval: 20 });
+    controller.abort(new Error("shutdown"));
     await expect(running).rejects.toThrow(/shutdown/);
   });
 
