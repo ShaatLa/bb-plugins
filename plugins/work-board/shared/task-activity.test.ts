@@ -45,3 +45,17 @@ it("reads Paused over every idle state, and Working, waiting and failure win ove
   expect(run([], false, false).state).toBe("abandoned");
   expect(run([session("queued")], false, false).state).toBe("queued");
 });
+
+it("reads Working from tasks in work instead of Abandoned, attached or none, and leaves the card's own busier states", () => {
+  const run = (sessions: TaskActivitySession[], extra: Partial<Parameters<typeof evaluateTaskActivity>[0]> = {}) => evaluateTaskActivity({ sessions, hasLostSession: true, hasWorked: true, terminal: false, complete: true, tasksInWork: ["EXA-2", "EXA-3"], ...extra });
+  expect(run([])).toMatchObject({ state: "working", workingCount: 0, attachedCount: 0, diagnostics: { explanation: "Its tasks are in work: EXA-2, EXA-3." } });
+  expect(run([], { hasWorked: false, hasLostSession: false }).state).toBe("working");
+  expect(run([session("attached")]).state).toBe("working");
+  expect(run([], { tasksInWork: ["A-1", "A-2", "A-3", "A-4", "A-5", "A-6", "A-7"] }).diagnostics?.explanation).toBe("Its tasks are in work: A-1, A-2, A-3, A-4, A-5 and 2 more.");
+  expect(run([], { tasksInWork: [] }).state).toBe("abandoned");
+  expect(run([], { terminal: true }).state).toBeNull();
+  expect(run([session("waiting-owner")]).state).toBe("waiting-owner");
+  expect(run([session("queued")]).state).toBe("queued");
+  expect(run([session("error")]).state).toBe("error");
+  expect(run([], { paused: true }).state).toBe("paused");
+});

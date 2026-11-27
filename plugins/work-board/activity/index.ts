@@ -3,6 +3,7 @@ import { dispatchedTask } from "./dispatch.js";
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import type { TasksApiStore } from "../api";
 import { createActivityReads, MAX_SDK_READS, type AcceptedTurn, type ActivityReads } from "./shared-reads.js";
+import { epicTasksInWork } from "../attention/observe";
 import { evaluateTaskActivity, type TaskActivity, type TaskActivitySession } from "../shared/task-activity";
 
 type Thread = Awaited<ReturnType<BbPluginApi["sdk"]["threads"]["list"]>>[number];
@@ -162,6 +163,7 @@ export function activityService(bb: BbPluginApi, store: TasksApiStore) {
         if (!focusedKeys.has(taskId)) focusedKeys.set(taskId, store.tasks.getTask(taskId)?.key ?? null);
         return focusedKeys.get(taskId)!;
       };
+      const tasksInWork = epicTasksInWork(db, ids);
       return new Map(ids.map((id) => {
         const taskLinks = linksByTask.get(id) ?? [];
         const sessions: TaskActivitySession[] = [];
@@ -193,7 +195,7 @@ export function activityService(bb: BbPluginApi, store: TasksApiStore) {
         }
         const task = taskData.get(id);
         const status = task?.status;
-        return [id, evaluateTaskActivity({ sessions, hasWorked: history.has(id), hasLostSession: inactiveSessions.length > 0 || lost.has(id), terminal: status === "done" || status === "canceled", paused: pauseReasons.has(id), pauseReason: pauseReasons.get(id), inactiveSessions, complete: discoveryComplete && taskLinks.every((link) => snapshots.get(link.threadId)?.complete && !snapshots.get(link.threadId)?.dispatchUnavailable) })];
+        return [id, evaluateTaskActivity({ sessions, hasWorked: history.has(id), hasLostSession: inactiveSessions.length > 0 || lost.has(id), terminal: status === "done" || status === "canceled", paused: pauseReasons.has(id), pauseReason: pauseReasons.get(id), inactiveSessions, tasksInWork: tasksInWork.get(id), complete: discoveryComplete && taskLinks.every((link) => snapshots.get(link.threadId)?.complete && !snapshots.get(link.threadId)?.dispatchUnavailable) })];
       }));
     },
   };

@@ -107,3 +107,14 @@ it("reports In Progress without live sessions with last attachment and activity,
   f.harness.sdk.stub("threads.list", async () => { throw new Error("offline"); });
   expect(await f.read(task.id)).toEqual([]);
 });
+
+it("does not report an In Progress epic without sessions while one of its tasks is in work", async () => {
+  const f = fixture();
+  const epic = f.store.tasks.createTask({ projectId: f.project.id, title: "Epic", type: "epic", status: "in_progress" });
+  const child = f.store.tasks.createTask({ projectId: f.project.id, title: "Child", status: "todo", epicId: epic.id });
+  expect(await f.read(epic.id)).toMatchObject([{ kind: "no-live-session" }]);
+  f.store.tasks.updateTask(child.id, { status: "in_progress" });
+  expect(await f.read(epic.id)).toEqual([]);
+  f.store.tasks.updateTask(child.id, { status: "done" });
+  expect(await f.read(epic.id)).toMatchObject([{ kind: "no-live-session" }]);
+});

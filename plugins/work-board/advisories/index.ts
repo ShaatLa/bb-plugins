@@ -6,6 +6,7 @@ import type { TaskAdvisory } from "../shared/task-advisories";
 import { createGitSyncStore } from "../git-sync/store";
 import { observationTtl, prLinkSchema, prSnapshotSchema } from "../shared/git-sync";
 import { getWorkflowPolicy } from "../shared/workflow-policy";
+import { epicTasksInWork } from "../attention/observe";
 import { openPlanDebts } from "../plan-debt/store";
 
 const deliverySnapshot = prSnapshotSchema.pick({ repository: true, number: true, url: true, state: true, mergeSha: true, mergedAt: true, observedAt: true, updatedAt: true, coverage: true });
@@ -46,11 +47,12 @@ export function taskAdvisories(bb: BbPluginApi, tasks: ReturnType<TasksApiStore[
   }
   const inProgress = new Map(db.prepare<[], { id: string; policy: string | null }>("SELECT id, workflow_policy AS policy FROM projects").all()
     .map((row) => [row.id, getWorkflowPolicy({ workflowPolicy: row.policy ? JSON.parse(row.policy) : null }).inProgressStatus]));
+  const epicsInWork = epicTasksInWork(db, [...tasks.keys()]);
   const debts = openPlanDebts(db, [...tasks.keys()]);
   for (const [id, task] of tasks) {
     const warnings: TaskAdvisory[] = (blockers.get(id) ?? []).flatMap(predecessor => merged.get(predecessor.id) ?? []);
     const activity = activities.get(id), checked = Date.parse(activity?.diagnostics?.checkedAt ?? "");
-    if (task.status === inProgress.get(task.projectId) && !blockers.get(id)?.length && activity?.diagnostics?.complete && activity.attachedCount === 0 && checked <= now && now - checked < 60_000) {
+    if (task.status === inProgress.get(task.projectId) && !blockers.get(id)?.length && activity?.diagnostics?.complete && activity.attachedCount === 0 && !epicsInWork.has(id) && checked <= now && now - checked < 60_000) {
       const last = [...(threads.get(id) ?? [])].sort((a, b) => b.attachedAt.localeCompare(a.attachedAt) || b.id.localeCompare(a.id))[0];
       warnings.push({ kind: "no-live-session", checkedAt: activity.diagnostics.checkedAt, validUntil: new Date(checked + 60_000).toISOString(), lastActivityAt: task.lastActivityAt, lastAttachment: last ? { threadId: last.threadId, title: last.title, attachedAt: last.attachedAt, updatedAt: last.updatedAt } : null });
     }

@@ -158,9 +158,12 @@ export function touchAttention(db: Database, taskIds: readonly string[]): void {
   if (!taskIds.length) return;
   if (!anyAttentionActive(db)) return;
   const ids = JSON.stringify([...new Set(taskIds)]);
-  const affected = db.prepare<[string, string], { id: string }>(
-    "SELECT id FROM tasks WHERE id IN (SELECT value FROM json_each(?)) UNION SELECT d.task_id FROM task_dependencies d WHERE d.blocking_task_id IN (SELECT value FROM json_each(?))",
-  ).all(ids, ids).map((row) => row.id);
+  // A card entering or leaving work changes its epic's signal, so the current effective epics are recomputed too; a sub-task's own epic is null.
+  const affected = db.prepare<[string, string, string], { id: string }>(
+    `SELECT id FROM tasks WHERE id IN (SELECT value FROM json_each(?))
+     UNION SELECT d.task_id FROM task_dependencies d WHERE d.blocking_task_id IN (SELECT value FROM json_each(?))
+     UNION SELECT COALESCE(t.epic_id, par.epic_id) FROM tasks t LEFT JOIN tasks par ON par.id=t.parent_task_id WHERE t.id IN (SELECT value FROM json_each(?)) AND COALESCE(t.epic_id, par.epic_id) IS NOT NULL`,
+  ).all(ids, ids, ids).map((row) => row.id);
   const at = Date.now();
   const touched = new Set<string>();
   // A card moved to another tracker leaves its old tracker's ledger.

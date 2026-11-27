@@ -86,8 +86,8 @@ describe("C1.6 moving a family", () => {
     requestMode(f.db, { trackerId: other.id, mode: "live" });
     const epic = f.card("Epic", "todo", { type: "epic" });
     const member = f.card("Member", "in_progress", { epicId: epic.id });
-    // The started member moved its epic to In progress, so both cards are tracked.
-    expect(f.occurrences().map((o) => o.task_id).sort()).toEqual([epic.id, member.id].sort());
+    // The epic has a task in work, so only the member is tracked.
+    expect(f.occurrences().map((o) => o.task_id).sort()).toEqual([member.id]);
     const moved = f.store.tasks.moveTaskToProject(epic.id, other.id);
     expect(moved.moved.map((entry) => entry.task.id)).toContain(member.id);
     expect(f.occurrences()).toHaveLength(0);

@@ -6,7 +6,7 @@ import { recordPlanDebtEvent, syncPlanDebt, syncProjectPlanDebt } from "../plan-
 import { prIdentity, prLinkSchema } from "../shared/git-sync";
 import { createClosureStore } from "../closure/store";
 import { leaveQueue, onStatusChange as queueStatusChange } from "../queue/store";
-import { prSettled, projectPolicies, queuedWaiting, staleRows, staleStatusObservations as observeStaleStatus } from "../attention/observe";
+import { epicTasksInWork, prSettled, projectPolicies, queuedWaiting, staleRows, staleStatusObservations as observeStaleStatus } from "../attention/observe";
 import { closeTaskOccurrences, markTrackerDirty, touchAttention } from "../attention/ledger";
 import { endPauses } from "../pause/store";
 import { recordPrAuthors } from "../review-gate/authors";
@@ -1040,6 +1040,11 @@ export function createTasksStore(db: PluginDatabase, log: (message: string) => v
     return task.epicId ?? (task.parentTaskId ? getTask(task.parentTaskId)?.epicId ?? null : null);
   }
 
+  /** The effective epic of a card by id, read without loading the card; null for a missing id. */
+  function effectiveEpicOf(taskId: string): string | null {
+    return db.prepare<[string], { epic_id: string | null }>("SELECT COALESCE(t.epic_id, par.epic_id) AS epic_id FROM tasks t LEFT JOIN tasks par ON par.id=t.parent_task_id WHERE t.id=?").get(taskId)?.epic_id ?? null;
+  }
+
   /** Moves the epic of a started card from Backlog or Todo to In progress, with one system comment; skips anything unusable. */
   function startEpicOf(task: Task, project: Project): void {
     const epicId = effectiveEpicId(task);
@@ -1173,6 +1178,7 @@ export function createTasksStore(db: PluginDatabase, log: (message: string) => v
     const policies = projectPolicies(db);
     const rows = staleRows(db, taskIds, projectId, nowMs);
     const waiting = queuedWaiting(db, rows);
+    const inWork = epicTasksInWork(db, rows.filter((row) => row.type === "epic").map((row) => row.id));
     const result = new Map<string, string[]>();
     // The planning status is read from the live project, so a settings edit that made it invalid counts at once.
     const planning = new Map(listProjects().map((project) => [project.id, planningStatusOf(project)]));
@@ -1182,7 +1188,7 @@ export function createTasksStore(db: PluginDatabase, log: (message: string) => v
       if (waiting.has(row.id)) continue;
       const flags: string[] = [];
       // A card held behind an unfinished predecessor, or waiting on an open owner question, is waiting, not abandoned. Planning is active work like In progress.
-      if (!row.paused && (row.status === policy.inProgressStatus || (planning.get(row.project_id) ?? null) === row.status) && !row.active && !row.held && !row.waiting_owner) flags.push("no_active_thread");
+      if (!row.paused && (row.status === policy.inProgressStatus || (planning.get(row.project_id) ?? null) === row.status) && !row.active && !row.held && !row.waiting_owner && !inWork.has(row.id)) flags.push("no_active_thread");
       // Testing after the merge (a check on a shared environment) is expected, so a merged PR satisfies it; review gets a grace.
       if (!row.paused && (row.status === policy.reviewStatus || row.status === policy.testingStatus) && !prSettled(row, policy, nowMs) && (row.unknown_pr || row.project_uses_prs)) flags.push(row.unknown_pr ? "pr_state_unavailable" : "no_open_pr");
       if (row.status === policy.doneStatus && !row.merge_evidence && !row.outcome && !row.legacy_outcome) flags.push("no_merge_or_outcome");
@@ -2721,10 +2727,13 @@ export function createTasksStore(db: PluginDatabase, log: (message: string) => v
 
   // Manager-attention hooks. A source write recomputes the ledger of the cards it touched inside its own transaction;
   // project-wide changes (policy, labels, relinks) only ask for the debounced scan.
-  const touching = <A extends unknown[], R>(fn: (...args: A) => R, ids: (result: R, ...args: A) => readonly string[]) => {
+  // `taskArg` marks a write whose first argument is the task id: its effective epic before the write is recomputed too,
+  // because the epic a task leaves loses a task in work.
+  const touching = <A extends unknown[], R>(fn: (...args: A) => R, ids: (result: R, ...args: A) => readonly string[], taskArg = false) => {
     const run = db.transaction((...args: A): R => {
+      const oldEpic = taskArg ? effectiveEpicOf(args[0] as string) : null;
       const result = fn(...args);
-      touchAttention(db, ids(result, ...args));
+      touchAttention(db, [...ids(result, ...args), ...(oldEpic ? [oldEpic] : [])]);
       return result;
     });
     return (...args: A): R => run(...args);
@@ -2737,10 +2746,10 @@ export function createTasksStore(db: PluginDatabase, log: (message: string) => v
       return result;
     };
   const createTaskHooked = touching(createTask, (task) => [task.id]);
-  const updateTaskHooked = touching(updateTask, (task) => [task.id]);
-  const moveTaskToProjectHooked = touching(moveTaskToProject, (result, id) => [id, ...result.moved.map((entry) => entry.task.id)]);
-  const updatePositionHooked = touching(updatePosition, (task) => [task.id]);
-  const setTaskArchivedHooked = touching(setTaskArchived, (tasks) => tasks.map((task) => task.id));
+  const updateTaskHooked = touching(updateTask, (task) => [task.id], true);
+  const moveTaskToProjectHooked = touching(moveTaskToProject, (result, id) => [id, ...result.moved.map((entry) => entry.task.id)], true);
+  const updatePositionHooked = touching(updatePosition, (task) => [task.id], true);
+  const setTaskArchivedHooked = touching(setTaskArchived, (tasks) => tasks.map((task) => task.id), true);
   const archiveCompletedTasksHooked = touching(archiveCompletedTasks, (tasks) => tasks.map((task) => task.id));
   const addTaskLabelHooked = touching(addTaskLabel, (_label, taskId) => [taskId]);
   const removeTaskLabelHooked = touching(removeTaskLabel, (_removed, taskId) => [taskId]);
@@ -2757,8 +2766,9 @@ export function createTasksStore(db: PluginDatabase, log: (message: string) => v
   const deleteTaskTransaction = db.transaction((id: string): boolean => {
     // A deleted card has nothing left to observe, so its occurrences close first and the cards it blocked are recomputed after.
     const blocked = db.prepare<[string], { task_id: string }>("SELECT task_id FROM task_dependencies WHERE blocking_task_id=?").all(id).map((row) => row.task_id);
+    const epic = effectiveEpicOf(id);
     const removed = deleteTask(id);
-    if (removed) { closeTaskOccurrences(db, id, "deleted"); touchAttention(db, blocked); }
+    if (removed) { closeTaskOccurrences(db, id, "deleted"); touchAttention(db, epic ? [...blocked, epic] : blocked); }
     return removed;
   });
   const deleteTaskHooked = (id: string): boolean => deleteTaskTransaction(id);

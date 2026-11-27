@@ -52,14 +52,14 @@ describe("ledger", () => {
 });
 
 describe("scope", () => {
-  it("retires a pending occurrence of an epic once it is labelled ongoing, while its member stays in scope", async () => {
+  it("retires a pending occurrence of an epic once it is labelled ongoing", async () => {
     const f = await make();
     const epic = f.card("Epic", "in_progress", { type: "epic" });
-    const member = f.card("Member", "in_progress", { epicId: epic.id });
-    expect(f.occurrences().map((o) => o.task_id).sort()).toEqual([epic.id, member.id].sort());
+    f.card("Member", "todo", { epicId: epic.id });
+    expect(f.occurrences().map((o) => o.task_id)).toEqual([epic.id]);
     const label = f.store.tasks.createLabel({ projectId: f.tracker.id, name: "ongoing", color: "blue" });
     f.store.tasks.addTaskLabel(epic.id, label.id);
-    expect(f.occurrences().map((o) => o.task_id)).toEqual([member.id]);
+    expect(f.occurrences()).toHaveLength(0);
     expect(f.occurrences(true).find((o) => o.task_id === epic.id)).toMatchObject({ retired_reason: "ongoing" });
   });
 

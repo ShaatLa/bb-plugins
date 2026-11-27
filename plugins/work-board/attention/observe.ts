@@ -1,6 +1,6 @@
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import { UNANSWERED_QUESTION } from "../db/waiting-on-owner";
-import { getWorkflowPolicy, startsFromStatus, type WorkflowPolicy } from "../shared/workflow-policy";
+import { getWorkflowPolicy, isClosedStatus, startsFromStatus, type WorkflowPolicy } from "../shared/workflow-policy";
 
 type Database = ReturnType<BbPluginApi["storage"]["database"]>;
 
@@ -90,6 +90,32 @@ export function staleRows(db: Database, taskIds?: readonly string[], projectId?:
     .all(new Date(nowMs).toISOString(), ...(ids === null ? [projectId ?? null, projectId ?? null] : [ids, projectId ?? null, projectId ?? null]));
 }
 
+/**
+ * The tasks in work of each epic, as card keys: unarchived, neither Backlog, Todo nor closed. A sub-task belongs to the epic
+ * of its parent (the effective epic), so it counts even when the parent itself is not started. Epics with none are absent.
+ */
+export function epicTasksInWork(db: Database, epicIds?: readonly string[], projectId?: string): Map<string, string[]> {
+  const ids = epicIds ? JSON.stringify(epicIds) : null;
+  const columns = "p.prefix || '-' || c.number AS key, c.number, c.status, c.project_id";
+  const open = "c.archived_at IS NULL AND c.status NOT IN ('backlog','todo')";
+  const rows = db.prepare<(string | null)[], { epic_id: string; key: string; status: string; project_id: string }>(`
+      WITH e(id) AS (SELECT t.id FROM tasks t WHERE t.type='epic' AND ${ids === null ? "(? IS NULL OR t.project_id=?)" : "t.id IN (SELECT value FROM json_each(?)) AND (? IS NULL OR t.project_id=?)"})
+      SELECT c.epic_id AS epic_id, ${columns} FROM tasks c JOIN e ON e.id=c.epic_id JOIN projects p ON p.id=c.project_id WHERE ${open}
+      UNION ALL
+      SELECT par.epic_id AS epic_id, ${columns} FROM tasks c JOIN tasks par ON par.id=c.parent_task_id JOIN e ON e.id=par.epic_id JOIN projects p ON p.id=c.project_id
+      WHERE c.epic_id IS NULL AND ${open}
+      ORDER BY 3`)
+    .all(...(ids === null ? [projectId ?? null, projectId ?? null] : [ids, projectId ?? null, projectId ?? null]));
+  const policies = projectPolicies(db);
+  const result = new Map<string, string[]>();
+  for (const row of rows) {
+    const policy = policies.get(row.project_id);
+    if (!policy || isClosedStatus({ workflowPolicy: policy }, row.status)) continue;
+    result.set(row.epic_id, [...(result.get(row.epic_id) ?? []), row.key]);
+  }
+  return result;
+}
+
 export function projectPolicies(db: Database): Map<string, WorkflowPolicy> {
   const rows = db.prepare<[], { id: string; workflow_policy: string | null }>("SELECT id, workflow_policy FROM projects").all();
   return new Map(rows.map((row) => [row.id, getWorkflowPolicy({ workflowPolicy: row.workflow_policy == null ? null : JSON.parse(row.workflow_policy) })]));
@@ -129,6 +155,7 @@ export function staleStatusObservations(db: Database, taskIds?: readonly string[
   const result: CardObservation[] = [];
   const rows = staleRows(db, taskIds, projectId, nowMs);
   const waiting = queuedWaiting(db, rows);
+  const inWork = epicTasksInWork(db, rows.filter((row) => row.type === "epic").map((row) => row.id));
   for (const row of rows) {
     const policy = policies.get(row.project_id);
     if (!policy) continue;
@@ -145,7 +172,7 @@ export function staleStatusObservations(db: Database, taskIds?: readonly string[
       scopeReason: row.archived ? "archived" : row.ongoing ? "ongoing" : row.held ? "blocked" : queuedWaiting ? "queued" : "status_changed",
       doneScope: !row.archived && row.status === policy.doneStatus && !row.ongoing,
       signals: {
-        no_active_thread: valid(!row.paused && row.status === policy.inProgressStatus && !row.active && !row.held && !row.waiting_owner),
+        no_active_thread: valid(!row.paused && row.status === policy.inProgressStatus && !row.active && !row.held && !row.waiting_owner && !inWork.has(row.id)),
         no_open_pr: !row.paused && prUnresolved && unknownPr ? { present: false, validity: "unknown" } : valid(!row.paused && Boolean(row.project_uses_prs) && prUnresolved),
         pr_state_unavailable: valid(!row.paused && prUnresolved && unknownPr),
         closed_unmerged_pr: row.paused ? valid(false) : Boolean(row.closed_known) ? valid(true) : unknownPr ? { present: false, validity: "unknown" } : valid(false),

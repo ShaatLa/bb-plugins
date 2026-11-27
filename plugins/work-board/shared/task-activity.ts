@@ -45,6 +45,8 @@ export const taskActivitySchema = z.object({
 export type TaskActivitySession = z.infer<typeof taskActivitySessionSchema>;
 export type TaskActivity = z.infer<typeof taskActivitySchema>;
 
+const tasksInWorkText = (keys: string[]) => keys.length > 5 ? `${keys.slice(0, 5).join(", ")} and ${keys.length - 5} more` : keys.join(", ");
+
 /** Live execution of any attached session determines activity; idle attachment is not work. */
 export function evaluateTaskActivity(input: {
   sessions: TaskActivitySession[];
@@ -57,6 +59,8 @@ export function evaluateTaskActivity(input: {
   /** The first pause reason, for the explanation. */
   pauseReason?: string;
   inactiveSessions?: z.infer<typeof inactiveSessionSchema>[];
+  /** Keys of an epic's tasks that are in work; they outrank the idle states (attached, abandoned, none). */
+  tasksInWork?: string[];
 }): TaskActivity {
   const { sessions, hasWorked, hasLostSession, terminal, complete } = input;
   const workingCount = sessions.filter((session) => session.state === "working").length;
@@ -68,9 +72,10 @@ export function evaluateTaskActivity(input: {
     : paused ? "paused"
     : sessions.some((session) => session.state === "queued") ? "queued"
     : hasFailure ? "error"
+    : input.tasksInWork?.length && !terminal ? "working"
     : sessions.length ? "attached"
     : complete && hasWorked && hasLostSession && !terminal ? "abandoned" : null;
-  const explanation = state === "working" ? "An attached session is actively executing."
+  const explanation = state === "working" ? (workingCount ? "An attached session is actively executing." : `Its tasks are in work: ${tasksInWorkText(input.tasksInWork!)}.`)
     : state === "waiting-owner" ? "An attached session has a pending owner interaction."
     : state === "paused" ? `The card is paused${input.pauseReason ? `: ${input.pauseReason}` : ""}.`
     : state === "queued" ? "A dispatched request for this task is still in a session's queue."

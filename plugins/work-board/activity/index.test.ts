@@ -392,3 +392,29 @@ it("uses the links a caller already read, with the same result as reading them i
     expect((await service.metadata([task.id], true, [])).get(task.id)?.sessions ?? []).toHaveLength(0);
   } finally { await host.harness.dispose(); }
 });
+
+it("shows an epic whose session is gone as Working while one of its tasks is in work, and Abandoned again when none is", async () => {
+  const host = createFakePluginHost({ pluginId: "work-board" });
+  try {
+    const store = createStore(host.bb);
+    const project = store.tasks.createProject({ name: "Activity", prefix: "ACT", color: "blue" });
+    const epic = store.tasks.createTask({ projectId: project.id, title: "Epic", type: "epic", status: "in_progress" });
+    const child = store.tasks.createTask({ projectId: project.id, title: "Child", status: "backlog", epicId: epic.id });
+    store.tasks.upsertTaskThread({ taskId: epic.id, threadId: "thr_epic", title: "Epic worker", presetName: "Attached", liveStatus: "idle" });
+    const thread = makeThreadResponse({ id: "thr_epic", status: "active", runtime: { displayStatus: "active" } });
+    host.harness.sdk.stub("threads.list", async () => [thread] as never);
+    host.harness.sdk.stub("threads.events.list", async () => [] as never);
+    host.harness.sdk.stub("threads.interactions.list", async () => [] as never);
+    host.harness.sdk.stub("threads.queuedMessages.list", async () => [] as never);
+    const service = uncached(activityService(host.bb, store));
+    expect((await service.metadata([epic.id])).get(epic.id)?.state).toBe("working");
+    host.harness.sdk.stub("threads.list", async () => []);
+    expect((await service.metadata([epic.id])).get(epic.id)?.state).toBe("abandoned");
+    for (const status of ["in_review", "in_progress"] as const) {
+      store.tasks.updateTask(child.id, { status });
+      expect((await service.metadata([epic.id])).get(epic.id)).toMatchObject({ state: "working", workingCount: 0, diagnostics: { explanation: `Its tasks are in work: ${child.key}.` } });
+    }
+    store.tasks.updateTask(child.id, { status: "done" });
+    expect((await service.metadata([epic.id])).get(epic.id)?.state).toBe("abandoned");
+  } finally { await host.harness.dispose(); }
+});
