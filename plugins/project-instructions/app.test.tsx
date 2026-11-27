@@ -5,6 +5,7 @@ import { loadPluginApp, renderSlot } from "@get-bb/plugin-sdk/testing/app";
 import { rpcContract } from "./server";
 import type { ConfigValues, ProjectStatus, StatusProject } from "./status-contract";
 
+HTMLElement.prototype.scrollIntoView = vi.fn();
 afterEach(cleanup);
 const app = await loadPluginApp(() => import("./app"));
 const example: StatusProject = { id: "proj_example", name: "Example", available: true, configured: true, enabled: true, allowSync: true };
@@ -75,6 +76,7 @@ it("saves one field at a time, keeps an invalid draft and refreshes the source c
     { projectId: "proj_example", key: "branch", value: "example/process" },
   ]);
   await waitFor(() => expect(detail).toHaveBeenCalledTimes(2));
-  fireEvent.change(view.getByRole("combobox", { name: "Project" }), { target: { value: "proj_other" } });
+  fireEvent.keyDown(view.getByRole("combobox", { name: "Project" }), { key: "Enter" });
+  fireEvent.keyDown(await view.findByRole("option", { name: newProject.name }), { key: "Enter" });
   await waitFor(() => expect(callsTo("status.detail").at(-1)).toEqual({ projectId: "proj_other" }));
 });

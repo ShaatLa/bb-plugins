@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { definePluginApp, UrlLink, useRpc } from "@get-bb/plugin-sdk/app";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "./components/ui/select";
 import type { rpcContract } from "./server";
 import { fieldValues, type ConfigValues, type ProjectStatus, type StatusProject } from "./status-contract";
 
@@ -258,9 +259,12 @@ function Settings() {
     {current && <>
       <label className="flex flex-wrap items-center gap-2 text-sm font-medium">
         Project
-        <select className={input} value={current.id} onChange={event => setSelected(event.target.value)}>
-          {projects?.map(project => <option key={project.id} value={project.id}>{project.name}</option>)}
-        </select>
+        <Select value={current.id} onValueChange={setSelected}>
+          <SelectTrigger aria-label="Project" className="w-56 max-w-full"><SelectValue /></SelectTrigger>
+          <SelectContent>
+            {projects?.map(project => <SelectItem key={project.id} value={project.id}>{project.name}</SelectItem>)}
+          </SelectContent>
+        </Select>
       </label>
       <ProjectSettings key={current.id} projectId={current.id} revision={revision} />
     </>}
