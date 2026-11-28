@@ -83,18 +83,14 @@ function Journal({ subPath }: PluginNavPanelProps) {
   const current = route && (route.projectId ? projects?.find(p => p.id === route.projectId) : projects?.[0]);
   const unavailable = !route || Boolean(projects && route.projectId && !current);
   return <main ref={viewport} tabIndex={0} className="h-full min-h-0 w-full min-w-0 overflow-y-auto bg-surface-recessed-solid">
-    <header className="sticky top-0 z-10 flex min-h-11 flex-wrap items-center gap-x-3 gap-y-1 border-b border-border-hairline bg-background px-4 py-1.5">
-      <h1 className="flex items-center gap-2 text-sm font-semibold">
-        <Icon name="process-journal/book-open" className="size-4 shrink-0 text-muted-foreground" />
-        Process Journal
-      </h1>
-      {current && <label className={control}>Project
+    {current && <header className="sticky top-0 z-10 flex min-h-11 items-center border-b border-border-hairline bg-background px-4 py-1.5">
+      <label className={control}>Project
         <select className={`${input} font-medium text-foreground`} value={current.id} onChange={event =>
           navigate.toPluginPanel("process-journal", { subPath: event.target.value })}>
           {projects?.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
         </select>
-      </label>}
-    </header>
+      </label>
+    </header>}
     {error && <p className="p-4 text-sm text-destructive" role="alert">{error} <button className={button} onClick={refresh}>Retry</button></p>}
     {!projects && !error && <p className="p-4 text-sm text-muted-foreground">Loading projects…</p>}
     {unavailable && <div className={`${panel} m-4`}>
