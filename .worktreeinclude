@@ -1,0 +1,3 @@
+# Untracked local agent files bb copies from the source checkout into each new worktree.
+.bb/AGENTS.md
+.bb/skills/
