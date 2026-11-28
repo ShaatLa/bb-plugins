@@ -24,7 +24,7 @@ bb process-journal config get --project proj_example
 | `catchUpMinutes`, `scheduleEnabled` | Frequency for checking missed runs and the schedule's independent enable switch. |
 | `scheduleCoveredThrough` | Optional local `YYYY-MM-DD` of the last occurrence covered by an earlier workflow. The journal starts after this date. |
 
-The schedule queues the configured manager once for the most recent eligible local date. An active run blocks later dispatches until it has an outcome. Review its status under **Scheduled reviews**, which flags unfinished runs once another occurrence is due. The manager submits results from the assigned thread with stable keys and finishes the run. Use the local CLI to close an abandoned run with a reason.
+The schedule queues the configured manager once for the most recent eligible local date. An active run blocks later dispatches until it has an outcome. **Review runs** shows each automatic review’s status and outcome and flags unfinished runs once another occurrence is due. The manager submits results from the assigned thread with stable keys and finishes the run. Use the local CLI to close an abandoned run with a reason.
 
 ## Lifecycle
 

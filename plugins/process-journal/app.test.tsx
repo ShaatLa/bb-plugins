@@ -153,3 +153,28 @@ it("reports an unavailable project without querying another project's proposal",
   expect(rpc.list).not.toHaveBeenCalled();
   expect(rpc["proposal.detail"]).not.toHaveBeenCalled();
 });
+
+it("explains automatic review runs and shows their outcomes separately from the proposal digest", async () => {
+  const rpc = {
+    ...fixture(),
+    "run.list": vi.fn().mockReturnValueOnce({ items: [], nextOffset: null }).mockReturnValue({
+      items: [{
+        id: "run_example", projectId, managerId, skill: "process-journal", occurrence: "2026-11-27",
+        createdAt: now, status: "completed", finishedAt: now + 1000, delayed: false,
+        note: "Reviewed two open proposals.",
+      }],
+      nextOffset: null,
+    }),
+  };
+  const screen = renderSlot(app.navPanels[0], { subPath: projectId }, { experimental_rpcContract: rpcContract, rpc });
+  fireEvent.click(await screen.findByRole("button", { name: "Review runs" }));
+  const runs = within(screen.getByRole("region", { name: "Review runs" }));
+  expect(runs.getByText(/automatic proposal reviews/)).toBeTruthy();
+  expect(await runs.findByText("No review runs to show.")).toBeTruthy();
+  expect(screen.queryByRole("region", { name: "Weekly digest" })).toBeNull();
+  fireEvent.change(screen.getByRole("combobox", { name: "Manager" }), { target: { value: managerId } });
+  expect(await runs.findByText("Completed")).toBeTruthy();
+  expect(runs.getByText("Reviewed two open proposals.")).toBeTruthy();
+  expect(runs.getByText("run_example")).toBeTruthy();
+  expect(rpc["run.list"]).toHaveBeenLastCalledWith(expect.objectContaining({ projectId, managerId }));
+});

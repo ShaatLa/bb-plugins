@@ -20,10 +20,14 @@ const detailHeading = "text-base font-semibold leading-snug";
 const detailText = "max-w-[72ch] leading-relaxed [overflow-wrap:anywhere]";
 const detailCallout = "space-y-1 rounded-md bg-muted/45 p-3";
 const control = "flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground";
+const cardSurface = "min-w-0 rounded-lg border border-border bg-card px-3 py-2.5 text-sm shadow-2xs";
 const property = "inline-flex min-w-0 items-center gap-1 rounded-md border border-border px-1.5 py-0.5 text-xs text-muted-foreground";
 const statusColor: Record<State, string> = {
   proposed: "text-muted-foreground", applied: "text-blue-500", measuring: "text-amber-500",
   kept: "text-emerald-500", reverted: "text-rose-500", withdrawn: "text-muted-foreground",
+};
+const runStatusLabel: Record<Data<"run.list">["items"][number]["status"], string> = {
+  pending: "Pending", sent: "Awaiting outcome", uncertain: "Delivery uncertain", completed: "Completed", failed: "Failed",
 };
 const statusLabel = (state: State) => state[0]!.toUpperCase() + state.slice(1);
 const message = (error: unknown) => error instanceof Error ? error.message : "The request failed";
@@ -131,7 +135,7 @@ function Workspace({ project, projects, routeProposal, stamp, refresh }: {
         if (active) setList(data);
       }, cause => { if (active) setError(message(cause)); });
     }
-    rpc.call("digest", target).then(data => { if (active) setDigest(data); },
+    if (view !== "runs") rpc.call("digest", target).then(data => { if (active) setDigest(data); },
       cause => { if (active) setError(message(cause)); });
     return () => { active = false; };
   }, [rpc, view, project.id, manager, range, state, offset, stamp, routeProposal]);
@@ -166,7 +170,7 @@ function Workspace({ project, projects, routeProposal, stamp, refresh }: {
   function proposalCard(row: ProposalRow) {
     const p = row.proposal, late = row.overdue;
     return <JournalLink key={p.id} projectId={project.id} proposalId={p.id}
-      className="block min-w-0 rounded-lg border border-border bg-card px-3 py-2.5 text-left shadow-2xs transition-colors hover:border-input hover:bg-state-hover focus-visible:outline focus-visible:outline-ring">
+      className={`${cardSurface} block text-left transition-colors hover:border-input hover:bg-state-hover focus-visible:outline focus-visible:outline-ring`}>
       <strong className="block break-words text-sm font-medium leading-snug">{p.title}</strong>
       <span className="mt-1 block break-words text-xs leading-snug text-muted-foreground">{row.entry.title}</span>
       <span className="mt-2 flex flex-wrap items-center gap-1.5">
@@ -187,7 +191,7 @@ function Workspace({ project, projects, routeProposal, stamp, refresh }: {
         {(["board", "history", "runs"] as const).map(next =>
           <button className={`rounded-sm px-2.5 py-1 text-xs font-medium focus-visible:outline focus-visible:outline-ring ${view === next ? "bg-background text-foreground shadow-2xs" : "text-muted-foreground hover:text-foreground"}`} key={next} type="button"
             aria-pressed={view === next} onClick={() => { setView(next); reset(); }}>
-            {next === "runs" ? "Scheduled reviews" : next === "history" ? "History" : "Board"}
+            {next === "runs" ? "Review runs" : next === "history" ? "History" : "Board"}
           </button>)}
       </nav>
       <div className="flex min-w-0 flex-wrap items-center gap-3">
@@ -202,7 +206,7 @@ function Workspace({ project, projects, routeProposal, stamp, refresh }: {
         </label>}
       </div>
     </div>
-    <section aria-label="Weekly digest" className="flex flex-wrap items-center gap-x-4 gap-y-1 border-b border-border-hairline bg-background px-4 py-2 text-xs">
+    {view !== "runs" && <section aria-label="Weekly digest" className="flex flex-wrap items-center gap-x-4 gap-y-1 border-b border-border-hairline bg-background px-4 py-2 text-xs">
       <h2 className="font-medium text-muted-foreground">Weekly digest</h2>
       <dl className="flex flex-wrap items-center gap-x-3 gap-y-1">
         {(["applied", "kept", "reverted", "overdue"] as const).map(key => <div key={key} className="flex items-center gap-1.5">
@@ -210,18 +214,24 @@ function Workspace({ project, projects, routeProposal, stamp, refresh }: {
           <dd className={`font-medium tabular-nums ${key === "overdue" && digest?.overdue ? "text-destructive" : ""}`}>{digest?.[key] ?? "…"}</dd>
         </div>)}
       </dl>
-    </section>
+    </section>}
     {error && <p role="alert" className="px-4 pt-2 text-sm text-destructive">{error} <button className={button} onClick={refresh}>Retry</button></p>}
-    {view === "runs" ? <section className={`${panel} mx-4 my-3`}>
-      <h2 className="mb-3 text-lg font-semibold">Scheduled reviews</h2>
-      {!runs && !error && <p>Loading reviews…</p>}
-      {runs?.items.length === 0 && <p>No scheduled reviews on this page.</p>}
-      <ul className="space-y-2">{runs?.items.map(run =>
-        <li className="rounded border border-border p-2 text-sm" key={run.id}>
-          <strong>{run.occurrence}</strong> · {name(run.managerId)} · {run.status}{run.delayed ? " · overdue, awaiting outcome" : ["pending", "sent", "uncertain"].includes(run.status) && " · awaiting outcome"}
-          <p className="break-all text-xs text-muted-foreground">{run.id}</p>
-          {run.note && <Markdown content={run.note} />}
-        </li>)}</ul>
+    {view === "runs" ? <section className="mx-auto max-w-5xl space-y-3 px-4 pb-5 pt-3" aria-label="Review runs">
+      <p className="text-sm text-muted-foreground">See when this project’s automatic proposal reviews ran and how they ended.</p>
+      {!runs && !error && <p className="py-2 text-sm text-muted-foreground">Loading review runs…</p>}
+      {runs?.items.length === 0 && <p className="py-2 text-sm text-muted-foreground">No review runs to show.</p>}
+      {!!runs?.items.length && <ul className="space-y-2">{runs.items.map(run =>
+        <li className={`${cardSurface} space-y-1.5`} key={run.id}>
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <time className="font-medium tabular-nums" dateTime={run.occurrence}>{run.occurrence}</time>
+            <span className={`${property} ${run.delayed || run.status === "failed" ? "border-destructive/30 text-destructive" : ""}`}>
+              {runStatusLabel[run.status]}{run.delayed && " · overdue"}
+            </span>
+          </div>
+          <p className="text-xs text-muted-foreground">{name(run.managerId)}</p>
+          {run.note && <div className={detailText}><Markdown content={run.note} /></div>}
+          <code className="block break-all text-xs text-muted-foreground">{run.id}</code>
+        </li>)}</ul>}
       <Pages offset={offset} next={runs?.nextOffset} setOffset={setOffset} />
     </section> : view === "board" ?
       <div className="flex min-w-0 items-start gap-3 overflow-x-auto p-4 focus-visible:outline focus-visible:-outline-offset-2 focus-visible:outline-ring"
