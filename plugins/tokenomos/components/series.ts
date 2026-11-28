@@ -15,8 +15,8 @@ const shade = (n: number, i: number) => (i === 0 ? seriesColor(n) : `color-mix(i
 export type Slot = { id: string; color: string; label: string; title: string; group?: string; groupLabel?: string; rest?: boolean };
 /** A cost with the number of calls behind it, as a bucket series carries it. */
 export type CallCost = Cost & { calls: number };
-export type Row = { start: number; label: string; title: string; total: number; costs: Record<string, CallCost>; disp: Record<string, number> } & Record<string, unknown>;
-// `disp`: drawn segment heights (see `spread`); the real values stay under the slot ids.
+export type Row = { start: number; label: string; title: string; total: number; costs: Record<string, CallCost>; disp: Record<string, number>; order: string[] } & Record<string, unknown>;
+// `disp`: drawn segment heights (see `spread`); the real values stay under the slot ids. `order`: see `columnOrder`.
 export type ChartModel = { slots: Slot[]; rows: Row[]; metric: Shown; totalCost: Record<string, CallCost> };
 
 const zero = (): CallCost => ({ usd: null, tokens: { freshIn: 0, cacheRead: 0, cacheWrite: 0, output: 0 }, estimated: false, partial: false, calls: 0 });
@@ -112,7 +112,7 @@ export function buildChart(summary: SummaryOutput, by: By, range: Range, t: T, c
       costs[id] = addCost(costs[id] ?? zero(), cost);
       totalCost[id] = addCost(totalCost[id] ?? zero(), cost);
     }
-    const row: Row = { start: bucket.start, label: bucketLabel(range, bucket.start, t), title: bucketTitle(range, bucket.start, t), total: 0, costs, disp: {} };
+    const row: Row = { start: bucket.start, label: bucketLabel(range, bucket.start, t), title: bucketTitle(range, bucket.start, t), total: 0, costs, disp: {}, order: [] };
     for (const [id, cost] of Object.entries(costs)) { row[id] = value(cost); row.total += value(cost); }
     return row;
   });
@@ -123,21 +123,30 @@ export function buildChart(summary: SummaryOutput, by: By, range: Range, t: T, c
   }
   // A series that is zero in this metric would only add an empty legend entry.
   const shown = slots.filter((s) => rows.some((r) => Number(r[s.id]) > 0));
-  return { slots: shown.length ? shown : slots, rows, metric, totalCost };
+  const drawn = shown.length ? shown : slots;
+  for (const row of rows) row.order = columnOrder(drawn, row);
+  return { slots: drawn, rows, metric, totalCost };
 }
 
 /**
- * A column's series for its hover card, largest first by the column's own values: providers by their total, the models
- * of each provider by value, each "Other" bucket last in its list. Provider series form one flat list. Ties keep the stack order.
+ * A column's series bottom to top, which is also its hover card's order top to bottom: largest first by the column's
+ * own values, providers by their total, the models of each provider by value, each "Other" bucket last in its list.
+ * Provider series form one flat list. Ties keep the slot order; series that are zero in this column come last.
  */
-export function tipOrder(model: ChartModel, row: Row): Slot[] {
-  const v = (s: Slot) => Number(row[s.id]);
+function columnOrder(slots: Slot[], row: Row): string[] {
+  const v = (s: Slot) => Number(row[s.id]) || 0;
   const lists = new Map<string | undefined, Slot[]>();
-  for (const s of model.slots) {
-    if (!row.costs[s.id] || !(v(s) > 0)) continue;
+  for (const s of slots) {
+    if (v(s) <= 0) continue;
     const key = s.groupLabel === undefined ? undefined : s.group;
     lists.set(key, [...(lists.get(key) ?? []), s]);
   }
   const sum = (l: Slot[]) => l.reduce((n, s) => n + v(s), 0);
-  return [...lists.values()].map((l) => l.sort((a, b) => Number(!!a.rest) - Number(!!b.rest) || v(b) - v(a))).sort((a, b) => sum(b) - sum(a)).flat();
+  const ranked = [...lists.values()].map((l) => l.sort((a, b) => Number(!!a.rest) - Number(!!b.rest) || v(b) - v(a))).sort((a, b) => sum(b) - sum(a)).flat();
+  return [...ranked, ...slots.filter((s) => v(s) <= 0)].map((s) => s.id);
+}
+
+/** A column's non-zero series for its hover card, in the column's order. */
+export function tipOrder(model: ChartModel, row: Row): Slot[] {
+  return row.order.map((id) => model.slots.find((s) => s.id === id)!).filter((s) => Number(row[s.id]) > 0);
 }

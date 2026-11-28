@@ -116,6 +116,21 @@ async function page(subPath = "week/provider", over: Record<string, (input: any)
   return { app, slot };
 }
 
+const usageDay = (usd: Record<string, number>, i: number) => ({ start: Date.UTC(2026, 10, 1) + i * STEP.week, series: Object.fromEntries(Object.entries(usd).map(([k, v]) => [k, { ...cost(v), calls: 1 }])) });
+// Over the range opus leads Claude Code. On the second day sonnet beats opus, Claude's Other beats both, and Codex leads;
+// the third day has no Codex.
+function reordered() {
+  return {
+    ...summary({ range: "week", by: "model" }),
+    buckets: [
+      usageDay({ "claude-opus-4": 1000, "claude-sonnet-4": 1, "other:claude-code": 1, "gpt-5": 1 }, 0),
+      usageDay({ "claude-opus-4": 50, "claude-sonnet-4": 60, "other:claude-code": 100, "gpt-5": 500 }, 1),
+      usageDay({ "claude-opus-4": 5, "claude-sonnet-4": 7 }, 2),
+    ],
+    breakdown: ["claude-opus-4", "claude-sonnet-4", "other:claude-code", "gpt-5"].map((k) => ({ key: k, label: k, provider: k === "gpt-5" ? "codex" : "claude-code", cost: cost(1), calls: 1 })),
+  };
+}
+
 describe("registration", () => {
   it("registers the page and the settings section", async () => {
     const app = await loadPluginApp(() => import("./app"));
@@ -409,6 +424,30 @@ describe.each(LANGS)("page (%s)", (lang) => {
     }
   });
 
+  it("stacks each column largest first from the bottom and highlights the hovered series", async () => {
+    vi.stubGlobal("ResizeObserver", class { observe() {} disconnect() {} });
+    const rect = vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue({ x: 0, y: 0, top: 0, left: 0, right: 800, bottom: 320, width: 800, height: 320, toJSON() {} } as DOMRect);
+    try {
+      const data = reordered(), row = buildChart(data as never, "model", "week", makeT("en")).rows[1]!;
+      const { slot } = await open("week/model", { summary: () => data });
+      const segs = await waitFor(() => {
+        const found = [...slot.container.querySelectorAll(`[data-seg^="${row.start}:"]`)];
+        return found.length === 4 ? found : Promise.reject(new Error("no column"));
+      });
+      // Bottom up: a larger y is lower on the screen.
+      const num = (el: Element, a: string) => Number(el.getAttribute(a));
+      const bottomUp = segs.sort((a, b) => num(b, "y") - num(a, "y"));
+      expect(bottomUp.map((el) => el.getAttribute("data-seg")!.split(":")[1])).toEqual(row.order);
+      const low = bottomUp[0]!;
+      fireEvent.mouseMove(low.closest(".relative")!, { clientX: num(low, "x") + 2, clientY: num(low, "y") + num(low, "height") / 2 });
+      const tip = await slot.findByRole("tooltip");
+      expect(norm(tip.querySelector(".bg-muted"))).toContain("gpt-5");
+    } finally {
+      rect.mockRestore();
+      vi.unstubAllGlobals();
+    }
+  });
+
   it("remembers the last range and metric and opens with them", async () => {
     localStorage.clear();
     const first = await page("week/provider", {}, lang);
@@ -652,22 +691,24 @@ describe("helpers", () => {
     expect(byModel.rows).toHaveLength(7);
   });
 
-  it("lists the hovered column largest first: providers by their total, models by value, each Other last", () => {
-    const base = summary({ range: "week", by: "model" });
-    // Over the range opus leads Claude Code; on the second day sonnet beats opus, Claude's Other beats both, and Codex leads.
-    const day = (usd: Record<string, number>, i: number) => ({ start: base.from + i * STEP.week, series: Object.fromEntries(Object.entries(usd).map(([k, v]) => [k, { ...cost(v), calls: 1 }])) });
-    const m = {
-      ...base,
-      buckets: [day({ "claude-opus-4": 1000, "claude-sonnet-4": 1, "other:claude-code": 1, "gpt-5": 1 }, 0), day({ "claude-opus-4": 50, "claude-sonnet-4": 60, "other:claude-code": 100, "gpt-5": 500 }, 1)],
-      breakdown: ["claude-opus-4", "claude-sonnet-4", "other:claude-code", "gpt-5"].map((k) => ({ key: k, label: k, provider: k === "gpt-5" ? "codex" : "claude-code", cost: cost(1), calls: 1 })),
-    };
-    const byModel = buildChart(m as never, "model", "week", en);
-    const order = (model: typeof byModel, i: number) => tipOrder(model, model.rows[i]!).map((s) => s.label);
-    expect(byModel.slots.map((s) => s.label)).toEqual(["claude-opus-4", "claude-sonnet-4", "Other", "gpt-5"]); // the stack keeps the range order
-    expect(order(byModel, 0)).toEqual(["claude-opus-4", "claude-sonnet-4", "Other", "gpt-5"]);
-    expect(order(byModel, 1)).toEqual(["gpt-5", "claude-sonnet-4", "claude-opus-4", "Other"]);
-    const p = { ...base, buckets: [day({ "claude-code": 10, codex: 20, acme: 30 }, 0)], breakdown: [] };
-    expect(order(buildChart(p as never, "provider", "week", en), 0)).toEqual(["Codex", "Claude Code", "Other"]);
+  it("orders each column largest first: providers by their total, models by value, each Other last", () => {
+    const byModel = buildChart(reordered() as never, "model", "week", en);
+    const labels = (ids: string[]) => ids.map((id) => byModel.slots.find((s) => s.id === id)!.label);
+    expect(byModel.slots.map((s) => s.label)).toEqual(["claude-opus-4", "claude-sonnet-4", "Other", "gpt-5"]); // the legend keeps the range order
+    // Each column bottom to top, the column's zero series last; the hover card lists the same order top to bottom without them.
+    expect(byModel.rows.map((r) => labels(r.order))).toEqual([
+      ["claude-opus-4", "claude-sonnet-4", "Other", "gpt-5"],
+      ["gpt-5", "claude-sonnet-4", "claude-opus-4", "Other"],
+      ["claude-sonnet-4", "claude-opus-4", "Other", "gpt-5"],
+    ]);
+    expect(byModel.rows.map((r) => tipOrder(byModel, r).map((s) => s.label))).toEqual([
+      ["claude-opus-4", "claude-sonnet-4", "Other", "gpt-5"],
+      ["gpt-5", "claude-sonnet-4", "claude-opus-4", "Other"],
+      ["claude-sonnet-4", "claude-opus-4"],
+    ]);
+    const p = { ...summary({ range: "week", by: "provider" }), buckets: [usageDay({ "claude-code": 10, codex: 20, acme: 30 }, 0)], breakdown: [] };
+    const byProvider = buildChart(p as never, "provider", "week", en);
+    expect(tipOrder(byProvider, byProvider.rows[0]!).map((s) => s.label)).toEqual(["Codex", "Claude Code", "Other"]);
   });
 
   it("draws small segments at a minimum height, keeps order and the column total", () => {

@@ -17,7 +17,7 @@ const tipValue = (metric: Shown, v: number, t: T) => (metric === "usd" ? fmtUsd(
 const unitLabel = (metric: Shown, t: T) => (metric === "usd" ? "~$" : metric === "calls" ? t("chart.unitCalls") : t("chart.unitTokens"));
 const heading = (metric: Shown, t: T) => t(metric === "usd" ? "chart.spend" : metric === "calls" ? "chart.calls" : "chart.tokens");
 
-type SegmentProps = { x?: number; y?: number; width?: number; height?: number; fill?: string; payload?: Row };
+type SegmentProps = { x?: number; y?: number; width?: number; height?: number; payload?: Row };
 /** Where each drawn segment sits, by column start, so the hover card can find the column and segment under the cursor. */
 type Geo = Map<number, { x: number; w: number; segs: Map<string, [number, number]> }>;
 
@@ -30,27 +30,31 @@ function record(geo: Geo, payload: Row | undefined, id: string, x: number, y: nu
 }
 
 /**
- * A segment inside its provider's block: models are 1px apart, and each provider block has a thin
- * border-colored frame with a 4px gap to the next block. The block's bottom segment draws the whole frame,
- * sized from the block's drawn heights (`disp`), so its rounded corners are never cut.
- */
-/**
  * The hovered segment (`start:slotId`). The hover card sets it and restyles the two affected rects directly, so
  * hovering never re-renders the chart; a rect Recharts remounts on a data refresh reads it and keeps the highlight.
  */
 type Hover = { key: string | null };
 const HIGHLIGHT = "0.8";
 
-function segment(slots: Slot[], index: number, geo: Geo, hover: Hover) {
-  const slot = slots[index]!, group = slot.group;
+/**
+ * The segment at position `pos` of a column, counted from the bottom: the column's `order` names its series, so every
+ * column stacks largest first. Models are 1px apart, and each provider block has a thin border-colored frame with a
+ * 4px gap to the next block. The block's bottom segment draws the whole frame, sized from the block's drawn heights
+ * (`disp`), so its rounded corners are never cut.
+ */
+function segment(slots: Slot[], pos: number, geo: Geo, hover: Hover) {
+  const byId = new Map(slots.map((s) => [s.id, s]));
   return function GroupedSegment(props: SegmentProps) {
-    const { x = 0, y = 0, width = 0, height = 0, fill, payload } = props;
+    const { x = 0, y = 0, width = 0, height = 0, payload } = props;
+    const slot = payload && byId.get(payload.order[pos]!);
+    if (!payload || !slot) return <g />;
     record(geo, payload, slot.id, x, y, width, height);
     if (height <= 0 || width <= 0) return <g />;
-    const value = (s: Slot) => payload?.disp[s.id] ?? 0;
-    const shown = (s: Slot) => s.group === group && value(s) > 0;
-    const top = !slots.slice(index + 1).some(shown), bottom = !slots.slice(0, index).some(shown);
-    const own = value(slot), sum = slots.filter(shown).reduce((n, s) => n + value(s), 0), block = own > 0 ? (sum / own) * height : height;
+    const order = payload.order, group = slot.group, fill = `var(--color-${slot.id})`;
+    const value = (id: string) => payload.disp[id] ?? 0;
+    const shown = (id: string) => byId.get(id)?.group === group && value(id) > 0;
+    const top = !order.slice(pos + 1).some(shown), bottom = !order.slice(0, pos).some(shown);
+    const own = value(slot.id), sum = order.filter(shown).reduce((n, id) => n + value(id), 0), block = own > 0 ? (sum / own) * height : height;
     // Insets shrink with the whole provider block, not this segment (a 16 px block keeps half its fill); a sliver
     // too thin for its inset grows into the block (down from the top edge, else up), so it shows 2 px of fill.
     const k = Math.min(1, block / 16), inTop = (top ? 4 : 0.5) * k, inBottom = (bottom ? 4 : 0.5) * k;
@@ -270,7 +274,8 @@ export function UsageChart({ summary, by, metric, stale }: { summary: SummaryOut
   const config = useMemo<ChartConfig>(() => Object.fromEntries(slots.map((s) => [s.id, { label: s.title, color: s.color }])), [slots]);
   const geo = useMemo<Geo>(() => new Map(), [slots]);
   const hover = useMemo<Hover>(() => ({ key: null }), [slots]);
-  const bars = useMemo(() => slots.map((s, i) => ({ shape: segment(slots, i, geo, hover), value: (r: Row) => r.disp[s.id] })), [slots, geo, hover]);
+  // One stacked bar per position, bottom up; each column's `order` decides which series fills it.
+  const bars = useMemo(() => slots.map((_, k) => ({ shape: segment(slots, k, geo, hover), value: (r: Row) => r.disp[r.order[k]!] ?? 0 })), [slots, geo, hover]);
   // Columns that left the range are dropped from the hover geometry.
   useEffect(() => { for (const start of geo.keys()) if (!model.rows.some((r) => r.start === start)) geo.delete(start); }, [geo, model]);
   const empty = model.rows.every((r) => r.total === 0);
@@ -288,7 +293,7 @@ export function UsageChart({ summary, by, metric, stale }: { summary: SummaryOut
             <CartesianGrid vertical={false} />
             <XAxis dataKey="label" tickLine={false} axisLine={false} interval={interval} tickMargin={6} />
             <YAxis tickLine={false} axisLine={false} width={model.metric === "usd" ? 56 : 44} tickFormatter={(v: number) => axisTick(model.metric, v, t)} />
-            {slots.map((s, i) => <Bar key={s.id} dataKey={bars[i]!.value} stackId="usage" fill={`var(--color-${s.id})`} maxBarSize={76} shape={bars[i]!.shape} isAnimationActive={false} />)}
+            {bars.map((b, k) => <Bar key={k} dataKey={b.value} stackId="usage" maxBarSize={76} shape={b.shape} isAnimationActive={false} />)}
           </BarChart>
         </ChartContainer>
         <HoverTip geo={geo} hover={hover} model={model} />
