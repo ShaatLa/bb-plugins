@@ -1,7 +1,7 @@
 import { afterEach, describe, it, expect } from 'vitest';
 import Database from 'better-sqlite3';
 import { migrations } from './schema';
-import { applyEvents, asksOwner, cap, chatQuestion, failRequest, restatesOnly, type Event } from './ingest';
+import { applyEvents, asksOwner, cap, chatQuestion, failRequest, type Event } from './ingest';
 const databases: Database.Database[] = [];
 const setup = () => { const db = new Database(':memory:'); migrations.forEach(m => db.exec(m)); databases.push(db); return db; };
 afterEach(() => databases.splice(0).forEach(db => db.close()));
@@ -256,19 +256,6 @@ describe('asksOwner',()=>{
   ['Для публикации примера нужна ваша команда «опубликовать пример».',true],['Макет проверяют. Когда проверка закончится, нужна ваша команда «показать пример».',false],['**После проверки нужна ваша команда «показать пример».**',false],['Ready for your review once CI passes.',false],['EXA-1 is back to you: CI is green.',true],['We need your go-ahead to publish the example.',true],['Awaiting your approval on EXA-1.',true],['I assigned it to you.',true],['Merging is your call.',true],['When both approve, I need your command to merge.',false],
   ['Потом EXA-2 придёт к вам с вопросом о проверке. Пока пример готовится.',false],['Вашу приёмку EXA-3 я сверил по учебной карточке.',false],
  ] as const)('%j → %s',(text,expected)=>expect(asksOwner(text)).toBe(expected));
-});
-describe('restatesOnly',()=>{
- const shown='EXA-2 awaits your review; PR #12 awaits your three checks on EXA-3. Agent Hub question `ans_abc1234`.';
- it.each([
-  ['Nothing new. Still waiting:\n- [EXA-2](/task/EXA-2) awaits your review;\n- PR #12 awaits your checks on [EXA-3](/task/EXA-3).',true],
-  ['EXA-2 awaits your review. EXA-4 is ready for your review.',false],
-  ['Ready for your review.',false],
-  ['Lead finished EXA-2, merged.',false],
-  ['EXA-2: shall I merge?',true],
-  ['Everything else awaits your answers on the cards.',true],
-  ['Awaiting your answer:\n\n- EXA-2\n- PR #12',true],
-  ['Two new cards await your answer:\n- EXA-2\n- EXA-4\n\nEXA-4 is new.',false],
- ] as const)('%j → %s',(text,expected)=>expect(restatesOnly(text,shown)).toBe(expected));
 });
 
 describe('questions asked in chat', () => {

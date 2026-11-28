@@ -42,7 +42,7 @@ For example, send this message body:
 
 As a safety net, a turn that answers while sub-sessions it started itself are still running is deferred automatically, and once the last of them reports, the plugin keeps waiting if sub-sessions started by the turns their reports woke (a later wave) still run, otherwise your latest report answers the question; explicit `agent_hub_defer`/`agent_hub_resolve` calls always win.
 
-With `handoffWarnings` enabled (default), a live top-level completion that misses the matching explicit channel receives an `[agent-hub]` plugin warning in the same thread. Archived threads and backfilled completions never warn. The warning-triggered reply never warns again and stays read without push unless you call `agent_hub_report` or `agent_hub_ask`. Existing handoff guessing and **Asked in chat** filing remain as a safety net.
+With `handoffWarnings` enabled (default), a live top-level completion that asks the owner a question in chat without the matching explicit channel receives an `[agent-hub]` plugin warning in the same thread. Archived threads and backfilled completions never warn. The warning-triggered reply never warns again and stays read without push unless you call `agent_hub_report` or `agent_hub_ask`. Nothing warns about a missed `agent_hub_report`, so call it yourself on every handoff; handoff guessing and **Asked in chat** filing remain as a safety net.
 
 To link the owner to a conversation in Agent Hub, use `/plugins/agent-hub/agent-hub?thread=<thread id>`.
 

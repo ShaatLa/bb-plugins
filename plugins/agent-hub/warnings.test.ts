@@ -5,7 +5,6 @@ import { createNotifier } from './notify';
 import { migrations } from './schema';
 const cleanup: (() => Promise<void>)[] = [];
 afterEach(async () => {for (const f of cleanup.splice(0)) await f();});
-const handoff = '[agent-hub] Your last reply hands work to the owner but did not call `agent_hub_report`. Call `agent_hub_report` now and restate the handoff in this turn’s final message: that message becomes the report the owner sees as needing them.';
 const question = '[agent-hub] Your last reply asks the owner a question in chat. Call `agent_hub_ask` now with that question (add options and recommended if you have them), then end the turn without waiting; the answer arrives as a new message.';
 function setup() {
  const send=vi.fn(async () => ({ok:true,delivery:'sent'}));
@@ -24,37 +23,33 @@ function setup() {
   events.push(e('item/completed',{item:{type:'agentMessage',text}}),e('turn/completed',{status:'completed'}));
   await driver.schedule('thr_example');
  }
- async function control() {await turn(); expect(send).toHaveBeenCalledExactlyOnceWith({threadId:'thr_example',originPluginId:'agent-hub',mode:'queue-if-active',input:[{type:'text',text:handoff,mentions:[]}]}); send.mockClear();}
+ async function control() {await turn('Shall I continue?'); expect(send).toHaveBeenCalledExactlyOnceWith({threadId:'thr_example',originPluginId:'agent-hub',mode:'queue-if-active',input:[{type:'text',text:question,mentions:[]}]}); send.mockClear();}
  return {...host,db,send,driver,turn,control,notifier};
 }
-it.each([{originPluginId:'example'}, {senderThreadId:'thr_sender'}, {initiator:'agent',input:[{type:'text',text:'[example] Continue'}]}, {input:[{type:'text',text:'[example] Continue'}]}])('warns once for live handoff trigger %j, including first discovery',async trigger => {
- const s=setup(); await s.turn(undefined,trigger); expect(s.send).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({input:[{type:'text',text:handoff,mentions:[]}]}));
+it.each([{originPluginId:'example'}, {senderThreadId:'thr_sender'}, {initiator:'agent',input:[{type:'text',text:'[example] Continue'}]}, {input:[{type:'text',text:'[example] Continue'}]}])('warns once for a live chat question from trigger %j, including first discovery',async trigger => {
+ const s=setup(); await s.turn('Shall I continue?',trigger); expect(s.send).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({input:[{type:'text',text:question,mentions:[]}]}));
  s.send.mockClear(); await s.driver.schedule('thr_example'); expect(s.send).not.toHaveBeenCalled();
 });
-it.each(['agent_hub_report','agent_hub_ask','bb work-board question add EXA-1 --kind check'])('honors explicit handoff channel %s',async tool => {const s=setup(); await s.control(); await s.turn(undefined,undefined,tool); expect(s.send).not.toHaveBeenCalled();});
+// A handoff without agent_hub_report is not nudged: guessing a handoff from prose misfired on replies that needed nothing.
+it.each(['Ready for your review.','EXA-1 awaits your decision.','Deploy done, nothing needed from you.'])('sends no warning for a reply that hands work over without agent_hub_report: %s',async text => {const s=setup(); await s.control(); await s.turn(text); expect(s.send).not.toHaveBeenCalled();});
 it.each([{}, {originPluginId:'example'}])('warns about a chat question for trigger %j',async trigger => {const s=setup(); await s.control(); await s.turn('Shall I continue?',trigger); expect(s.send).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({input:[{type:'text',text:question,mentions:[]}]}));});
 it.each(['agent_hub_ask','bb work-board question add EXA-1 --kind decision'])('honors explicit question channel %s',async tool => {const s=setup(); await s.control(); await s.turn('Shall I continue?',undefined,tool); expect(s.send).not.toHaveBeenCalled();});
 it.each(['Ready for your review.','Shall I continue?'])('keeps warning replies quiet without looping: %s',async text => {
  const s=setup(); await s.control(); s.db.prepare('UPDATE items SET read_at=1,notify_state=0').run();
- await s.turn(text,{originPluginId:'agent-hub',input:[{type:'text',text:handoff}]});
+ await s.turn(text,{originPluginId:'agent-hub',input:[{type:'text',text:question}]});
  expect(s.send).not.toHaveBeenCalled(); expect(s.db.prepare('SELECT count(*) AS n FROM items WHERE read_at IS NULL OR notify_state<>0').get()).toEqual({n:0});
 });
 it('allows an explicit report from a warning reply',async () => {
  const s=setup(); await s.control(); s.db.prepare('UPDATE items SET read_at=1,notify_state=0').run();
- await s.turn(undefined,{originPluginId:'agent-hub',input:[{type:'text',text:handoff}]},'agent_hub_report');
+ await s.turn(undefined,{originPluginId:'agent-hub',input:[{type:'text',text:question}]},'agent_hub_report');
  expect(s.send).not.toHaveBeenCalled(); expect(s.db.prepare('SELECT count(*) AS n FROM items WHERE read_at IS NULL AND notify_state=1').get()).toEqual({n:1});
 });
-it('does not warn when a reply only restates items already shown to the owner, and warns for a new one',async () => {
- const s=setup(); await s.turn('EXA-1 is ready for your review.'); s.send.mockClear();
- await s.turn('Nothing new; EXA-1 still awaits your review.'); expect(s.send).not.toHaveBeenCalled();
- await s.turn('EXA-1 still awaits your review. EXA-2 is ready for your review.'); expect(s.send).toHaveBeenCalledOnce();
-});
-it.each(['sub-thread','archived','backfill','disabled','owner-handoff'])('does not warn for %s',async mode => {
+it.each(['sub-thread','archived','backfill','disabled'])('does not warn about a chat question for %s',async mode => {
  const s=setup(); await s.control();
  if(mode==='sub-thread') s.harness.sdk.stub('threads.get',async ({threadId}) => makeThreadResponse({id:threadId,parentThreadId:'thr_parent'}));
  if(mode==='archived') {s.db.prepare('INSERT INTO archived_threads VALUES (?)').run('thr_example'); s.harness.sdk.stub('threads.get',async ({threadId}) => makeThreadResponse({id:threadId,archivedAt:1}));}
  if(mode==='disabled') await s.notifier.settings.experimental_set({handoffWarnings:false});
- await s.turn(undefined,mode==='owner-handoff' ? {} : undefined,undefined,mode==='backfill'); expect(s.send).not.toHaveBeenCalled();
+ await s.turn('Shall I continue?',undefined,undefined,mode==='backfill'); expect(s.send).not.toHaveBeenCalled();
 });
 
 it.each([['bb work-board question add EXA-1',true],['example-tracker ask',false],['agent_hub_ask',false]])('uses project channel fragments for %s',async (tool,warn) => {
@@ -64,17 +59,17 @@ it.each([['bb work-board question add EXA-1',true],['example-tracker ask',false]
 });
 it('keeps a reply to a warning sent before the rename quiet too', async () => {
  const s=setup(); await s.control();
- await s.turn('Ready for your review.',{originPluginId:'answers',input:[{type:'text',text:handoff.replace('[agent-hub]','[answers]')}]});
+ await s.turn('Shall I continue?',{originPluginId:'answers',input:[{type:'text',text:question.replace('[agent-hub]','[answers]')}]});
  expect(s.send).not.toHaveBeenCalled();
 });
 it.each(['agent_hub_ask','bb work-board question add EXA-1 --kind decision'])('sends no question warning when the turn used %s but ingest missed that event',async tool => {
  const s=setup(); await s.control(); await s.turn('Which one do you want?',undefined,tool,false,true); expect(s.send).not.toHaveBeenCalled();
 });
-it.each([['agent-hub',true],['example',false]])('extends a queued row from %s with the handoff warning only when it is ours: %s',async (origin,merges) => {
+it.each([['agent-hub',true],['example',false]])('extends a queued row from %s with the question warning only when it is ours: %s',async (origin,merges) => {
  const s=setup(); const row={id:'q1',content:[{type:'text',text:'Earlier notice',mentions:[]}],originPluginId:origin,state:'queued',editable:true,updatedAt:42};
  s.harness.sdk.stub('threads.queuedMessages.list',async () => [row] as never);
  s.harness.sdk.stub('threads.queuedMessages.update',async () => row as never);
- await s.turn();
+ await s.turn('Shall I continue?');
  expect(s.send.mock.calls.length).toBe(merges ? 0 : 1);
- expect(s.harness.sdk.callsTo('threads.queuedMessages.update')).toEqual(merges ? [[{threadId:'thr_example',queuedMessageId:'q1',expectedUpdatedAt:42,input:[{type:'text',text:'Earlier notice\n\n---\n\n'+handoff,mentions:[]}]}]] : []);
+ expect(s.harness.sdk.callsTo('threads.queuedMessages.update')).toEqual(merges ? [[{threadId:'thr_example',queuedMessageId:'q1',expectedUpdatedAt:42,input:[{type:'text',text:'Earlier notice\n\n---\n\n'+question,mentions:[]}]}]] : []);
 });
