@@ -63,7 +63,6 @@ function JournalLink({ projectId, proposalId, ...props }: Omit<ComponentPropsWit
 
 function Journal({ subPath }: PluginNavPanelProps) {
   const rpc = useRpc<typeof rpcContract>();
-  const navigate = useBbNavigate();
   const viewport = useRef<HTMLElement>(null);
   const [projects, setProjects] = useState<Projects>();
   const route = readRoute(subPath);
@@ -83,14 +82,6 @@ function Journal({ subPath }: PluginNavPanelProps) {
   const current = route && (route.projectId ? projects?.find(p => p.id === route.projectId) : projects?.[0]);
   const unavailable = !route || Boolean(projects && route.projectId && !current);
   return <main ref={viewport} tabIndex={0} className="h-full min-h-0 w-full min-w-0 overflow-y-auto bg-surface-recessed-solid">
-    {current && <header className="sticky top-0 z-10 flex min-h-11 items-center border-b border-border-hairline bg-background px-4 py-1.5">
-      <label className={control}>Project
-        <select className={`${input} font-medium text-foreground`} value={current.id} onChange={event =>
-          navigate.toPluginPanel("process-journal", { subPath: event.target.value })}>
-          {projects?.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
-        </select>
-      </label>
-    </header>}
     {error && <p className="p-4 text-sm text-destructive" role="alert">{error} <button className={button} onClick={refresh}>Retry</button></p>}
     {!projects && !error && <p className="p-4 text-sm text-muted-foreground">Loading projects…</p>}
     {unavailable && <div className={`${panel} m-4`}>
@@ -98,15 +89,16 @@ function Journal({ subPath }: PluginNavPanelProps) {
       <JournalLink className="mt-2 inline-block underline">Back to Process Journal</JournalLink>
     </div>}
     {!unavailable && projects?.length === 0 && <p className="p-4 text-sm text-muted-foreground">Enable Process Journal for a project with <code>bb process-journal config</code>.</p>}
-    {current && <Workspace key={current.id} project={current}
+    {current && projects && <Workspace key={current.id} project={current} projects={projects}
       routeProposal={route?.proposalId} stamp={stamp} refresh={refresh} />}
   </main>;
 }
 
-function Workspace({ project, routeProposal, stamp, refresh }: {
-  project: Projects[number]; routeProposal?: string; stamp: number; refresh: () => void;
+function Workspace({ project, projects, routeProposal, stamp, refresh }: {
+  project: Projects[number]; projects: Projects; routeProposal?: string; stamp: number; refresh: () => void;
 }) {
   const rpc = useRpc<typeof rpcContract>();
+  const navigate = useBbNavigate();
   const [manager, setManager] = useState("");
   const [view, setView] = useState<"board" | "history" | "runs">("board");
   const [range, setRange] = useState<Range>("quarter");
@@ -140,14 +132,26 @@ function Workspace({ project, routeProposal, stamp, refresh }: {
     return () => { active = false; };
   }, [rpc, view, project.id, manager, range, state, offset, stamp, routeProposal]);
 
-  if (routeProposal) return <div className="mx-auto max-w-5xl px-3 pb-5 pt-2 sm:px-4">
-    <JournalLink projectId={project.id}
-      className="mb-2 inline-flex min-h-8 items-center gap-1.5 rounded-md px-2 text-sm font-medium text-muted-foreground hover:bg-state-hover hover:text-foreground focus-visible:outline focus-visible:outline-ring">
+  const toolbar = <header className="sticky top-0 z-10 flex min-h-11 flex-wrap items-center gap-x-3 gap-y-1 border-b border-border-hairline bg-background px-4 py-1.5">
+    {routeProposal && <JournalLink projectId={project.id}
+      className="inline-flex min-h-8 items-center gap-1.5 rounded-md px-2 text-sm font-medium hover:bg-state-hover focus-visible:outline focus-visible:outline-ring">
       <Icon name="ArrowLeft" className="size-4 shrink-0" />
       {view === "history" ? "Back to history" : "Back to board"}
-    </JournalLink>
-    <ProposalDetail key={routeProposal} project={project} id={routeProposal} stamp={stamp} refresh={refresh} />
-  </div>;
+    </JournalLink>}
+    <label className={control}>Project
+      <select className={`${input} font-medium text-foreground`} value={project.id} onChange={event =>
+        navigate.toPluginPanel("process-journal", { subPath: event.target.value })}>
+        {projects.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+      </select>
+    </label>
+  </header>;
+
+  if (routeProposal) return <>
+    {toolbar}
+    <div className="mx-auto max-w-5xl px-3 pb-5 pt-3 sm:px-4">
+      <ProposalDetail key={routeProposal} project={project} id={routeProposal} stamp={stamp} refresh={refresh} />
+    </div>
+  </>;
 
   const reset = () => {
     setOffset(0);
@@ -172,6 +176,7 @@ function Workspace({ project, routeProposal, stamp, refresh }: {
   }
 
   return <>
+    {toolbar}
     <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2 border-b border-border-hairline bg-background px-4 py-2">
       <nav className="flex max-w-full flex-wrap items-center rounded-md bg-muted p-0.5" aria-label="Journal views">
         {(["board", "history", "runs"] as const).map(next =>

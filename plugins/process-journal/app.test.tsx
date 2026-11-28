@@ -94,7 +94,13 @@ it("shows five stable columns and pages only the selected status", async () => {
   expect(viewport.scrollTop).toBe(0);
   expect(await screen.findByRole("heading", { name: "Timeline" })).toBeTruthy();
   expect(screen.queryByRole("region", { name: "Status columns" })).toBeNull();
-  expect(screen.getByRole("link", { name: "Back to board" }).getAttribute("href")).toBe(`/plugins/process-journal/process-journal/${projectId}`);
+  const back = screen.getByRole("link", { name: "Back to board" });
+  expect(back.getAttribute("href")).toBe(`/plugins/process-journal/process-journal/${projectId}`);
+  expect(back.closest("header")?.classList.contains("sticky")).toBe(true);
+  fireEvent.click(back);
+  expect(screen.inspection.navigateCalls.at(-1)).toEqual({
+    method: "toPluginPanel", path: "process-journal", options: { subPath: projectId },
+  });
   rpc.list.mockClear();
   viewport.scrollTop = 480;
   screen.rerender(<Journal subPath={projectId} />);
