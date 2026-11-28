@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { cleanup, fireEvent, waitFor, within } from "@testing-library/react";
 import { loadPluginApp, renderSlot } from "@get-bb/plugin-sdk/testing/app";
 import type { Cost } from "./contract";
-import { buildChart, spread } from "./components/series";
+import { buildChart, spread, tipOrder } from "./components/series";
 import { pickColumn, pickSegment } from "./components/usage-chart";
 import { accountName, bucketLabel, fmtCost, fmtPlan, fmtSpan, fmtTokens, fmtUsd, parseSubPath, toSubPath } from "./components/format";
 import { delta } from "./components/kpis";
@@ -650,6 +650,24 @@ describe("helpers", () => {
     expect(byModel.slots[2]!.title).toBe("Claude Code · Other");
     expect(buildChart(m as never, "model", "week", ru).slots[2]!.title).toBe("Claude Code · Другое");
     expect(byModel.rows).toHaveLength(7);
+  });
+
+  it("lists the hovered column largest first: providers by their total, models by value, each Other last", () => {
+    const base = summary({ range: "week", by: "model" });
+    // Over the range opus leads Claude Code; on the second day sonnet beats opus, Claude's Other beats both, and Codex leads.
+    const day = (usd: Record<string, number>, i: number) => ({ start: base.from + i * STEP.week, series: Object.fromEntries(Object.entries(usd).map(([k, v]) => [k, { ...cost(v), calls: 1 }])) });
+    const m = {
+      ...base,
+      buckets: [day({ "claude-opus-4": 1000, "claude-sonnet-4": 1, "other:claude-code": 1, "gpt-5": 1 }, 0), day({ "claude-opus-4": 50, "claude-sonnet-4": 60, "other:claude-code": 100, "gpt-5": 500 }, 1)],
+      breakdown: ["claude-opus-4", "claude-sonnet-4", "other:claude-code", "gpt-5"].map((k) => ({ key: k, label: k, provider: k === "gpt-5" ? "codex" : "claude-code", cost: cost(1), calls: 1 })),
+    };
+    const byModel = buildChart(m as never, "model", "week", en);
+    const order = (model: typeof byModel, i: number) => tipOrder(model, model.rows[i]!).map((s) => s.label);
+    expect(byModel.slots.map((s) => s.label)).toEqual(["claude-opus-4", "claude-sonnet-4", "Other", "gpt-5"]); // the stack keeps the range order
+    expect(order(byModel, 0)).toEqual(["claude-opus-4", "claude-sonnet-4", "Other", "gpt-5"]);
+    expect(order(byModel, 1)).toEqual(["gpt-5", "claude-sonnet-4", "claude-opus-4", "Other"]);
+    const p = { ...base, buckets: [day({ "claude-code": 10, codex: 20, acme: 30 }, 0)], breakdown: [] };
+    expect(order(buildChart(p as never, "provider", "week", en), 0)).toEqual(["Codex", "Claude Code", "Other"]);
   });
 
   it("draws small segments at a minimum height, keeps order and the column total", () => {

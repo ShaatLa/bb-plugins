@@ -11,8 +11,8 @@ const PROVIDER_SLOT: Record<string, number> = { "claude-code": 1, codex: 2, "loc
 const SHADES = [100, 70, 48, 32];
 const shade = (n: number, i: number) => (i === 0 ? seriesColor(n) : `color-mix(in oklab, ${seriesColor(n)} ${SHADES[Math.min(i, SHADES.length - 1)]}%, var(--card))`);
 
-/** A chart series. `group` is the provider a model belongs to; `title` names it outside its legend group. */
-export type Slot = { id: string; color: string; label: string; title: string; group?: string; groupLabel?: string };
+/** A chart series. `group` is the provider a model belongs to; `title` names it outside its legend group; `rest` marks an "Other" bucket. */
+export type Slot = { id: string; color: string; label: string; title: string; group?: string; groupLabel?: string; rest?: boolean };
 /** A cost with the number of calls behind it, as a bucket series carries it. */
 export type CallCost = Cost & { calls: number };
 export type Row = { start: number; label: string; title: string; total: number; costs: Record<string, CallCost>; disp: Record<string, number> } & Record<string, unknown>;
@@ -86,7 +86,7 @@ export function buildChart(summary: SummaryOutput, by: By, range: Range, t: T, c
       names.set(n, n === OTHER_SLOT ? t("series.other") : providerName(k, t));
     }
     // Each provider is its own block; no group label, so the legend lists providers flat.
-    slots = [...names].sort(([a], [b]) => a - b).map(([n, label]) => ({ id: `s${n}`, color: seriesColor(n), label, title: label, group: `s${n}` }));
+    slots = [...names].sort(([a], [b]) => a - b).map(([n, label]) => ({ id: `s${n}`, color: seriesColor(n), label, title: label, group: `s${n}`, rest: n === OTHER_SLOT }));
   } else {
     // Models stack grouped by provider (provider order as in the provider view), costliest first, the provider's rest last.
     const weight = (k: string) => summary.buckets.reduce((sum, b) => sum + (b.series[k] ? value(b.series[k]) : 0), 0);
@@ -99,7 +99,7 @@ export function buildChart(summary: SummaryOutput, by: By, range: Range, t: T, c
       seen.set(group, index + 1);
       const label = k.startsWith("other:") ? t("series.other") : labels.get(k) ?? k;
       slotOf.set(k, `m${i}`);
-      slots.push({ id: `m${i}`, color: shade(rank(group), index), label, title: k.startsWith("other:") ? `${groupLabel} · ${label}` : label, group, groupLabel });
+      slots.push({ id: `m${i}`, color: shade(rank(group), index), label, title: k.startsWith("other:") ? `${groupLabel} · ${label}` : label, group, groupLabel, rest: k.startsWith("other:") });
     });
   }
 
@@ -124,4 +124,20 @@ export function buildChart(summary: SummaryOutput, by: By, range: Range, t: T, c
   // A series that is zero in this metric would only add an empty legend entry.
   const shown = slots.filter((s) => rows.some((r) => Number(r[s.id]) > 0));
   return { slots: shown.length ? shown : slots, rows, metric, totalCost };
+}
+
+/**
+ * A column's series for its hover card, largest first by the column's own values: providers by their total, the models
+ * of each provider by value, each "Other" bucket last in its list. Provider series form one flat list. Ties keep the stack order.
+ */
+export function tipOrder(model: ChartModel, row: Row): Slot[] {
+  const v = (s: Slot) => Number(row[s.id]);
+  const lists = new Map<string | undefined, Slot[]>();
+  for (const s of model.slots) {
+    if (!row.costs[s.id] || !(v(s) > 0)) continue;
+    const key = s.groupLabel === undefined ? undefined : s.group;
+    lists.set(key, [...(lists.get(key) ?? []), s]);
+  }
+  const sum = (l: Slot[]) => l.reduce((n, s) => n + v(s), 0);
+  return [...lists.values()].map((l) => l.sort((a, b) => Number(!!a.rest) - Number(!!b.rest) || v(b) - v(a))).sort((a, b) => sum(b) - sum(a)).flat();
 }

@@ -6,7 +6,7 @@ import { Button } from "./ui/button";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "./ui/table";
 import { cn } from "../lib/utils";
 import { fmtCost, fmtInt, fmtMetric, fmtTokens, fmtUsd, totalTokens, type By, type Metric, type Shown } from "./format";
-import { buildChart, type ChartModel, type Row, type Slot } from "./series";
+import { buildChart, tipOrder, type ChartModel, type Row, type Slot } from "./series";
 import { useT, type T } from "./i18n";
 import { Card, Muted } from "./shared";
 import type { SummaryOutput } from "./types";
@@ -103,8 +103,8 @@ function TipBody({ tip, model, t }: { tip: Tip; model: ChartModel; t: T }) {
   const row = model.rows.find((r) => r.start === tip.start);
   if (!row) return null;
   const id = tip.seg, cost = row.costs[id];
-  // Every segment of the column, top to bottom as drawn; the hovered one is highlighted.
-  const items = model.slots.filter((s) => row.costs[s.id] && Number(row[s.id]) > 0).reverse();
+  // Every segment of the column, largest first; the hovered one is highlighted.
+  const items = tipOrder(model, row);
   const amount = (s: Slot) => (model.metric === "usd" ? fmtCost(row.costs[s.id]!, t) ?? t("noPrice") : tipValue(model.metric, Number(row[s.id]), t));
   return (
     <>
