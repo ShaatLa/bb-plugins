@@ -9,7 +9,7 @@ declare const __BB_PLUGIN_ID__: string | undefined;
 
 const pickerTrigger = "inline-flex min-w-0 max-w-full items-center justify-between rounded-md border border-input bg-background text-sm font-normal text-foreground hover:bg-state-hover focus-visible:outline focus-visible:outline-2 focus-visible:outline-ring disabled:opacity-50";
 const compactPicker = "h-7 w-12 shrink-0 gap-1 px-1.5";
-const overlayScope = {
+export const overlayScope = {
   "data-bb-portaled-overlay": "",
   "data-bb-plugin-root": "",
   "data-bb-plugin": typeof __BB_PLUGIN_ID__ === "string" ? __BB_PLUGIN_ID__ : undefined,

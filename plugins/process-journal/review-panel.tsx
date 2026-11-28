@@ -21,7 +21,8 @@ export function ReviewPanel({ className, summary, rounds, date }: {
     <h3 className="text-base font-semibold">Independent review</h3>
     <dl className="flex flex-wrap gap-x-5 gap-y-2 text-sm">
       <div><dt className="text-xs text-muted-foreground">Reviewer</dt>
-        <dd className="break-all">{summary.reviewerId ?? "Unassigned"}</dd></div>
+        <dd className="min-w-0 break-words">{summary.reviewerId
+          ? <Markdown className="[&_p]:m-0" content={`@thread:${summary.reviewerId}`} /> : "Unassigned"}</dd></div>
       {(Object.keys(stageNames) as ReviewStage[]).map(stage => <div key={stage}>
         <dt className="text-xs text-muted-foreground">{stageNames[stage]}</dt>
         <dd>{summary[stage] ? labels[summary[stage].status] : "Not submitted"}</dd>
@@ -40,9 +41,8 @@ export function ReviewPanel({ className, summary, rounds, date }: {
           <Icon name="ChevronDown" aria-hidden className="size-3.5 shrink-0 text-muted-foreground motion-safe:transition-transform group-open:rotate-180" />
         </summary>
         <div className="space-y-3 break-words border-t border-border-hairline p-3">
-          <p className="text-xs text-muted-foreground">
-            {round.submittedBy} submitted {date(round.submittedAt)} · Reviewer {round.reviewerId}
-          </p>
+          <Markdown className="text-xs text-muted-foreground [&_p]:m-0"
+            content={`@thread:${round.submittedBy} submitted ${date(round.submittedAt)} · Reviewer @thread:${round.reviewerId}`} />
           {status === "pending" && round.delivery !== "sent" &&
             <p className="text-sm text-muted-foreground">Delivery · {round.delivery}</p>}
           {round.feedback && <div className="rounded-md bg-muted/35 p-2.5">

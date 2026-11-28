@@ -340,11 +340,12 @@ it("shows the pinned review evidence and disables Keep while the verdict is pend
     }) },
   });
   const panel = within(await screen.findByRole("region", { name: "Independent review" }));
-  expect(panel.getAllByText("thr_reviewer").length).toBeGreaterThan(0);
+  expect(panel.getByText("@thread:thr_reviewer")).toBeTruthy();
   const trigger = panel.getByText("Result v1 · Awaiting reviewer").closest("summary")!;
   expect(trigger.parentElement?.hasAttribute("open")).toBe(false);
   fireEvent.click(trigger);
   expect(trigger.parentElement?.hasAttribute("open")).toBe(true);
+  expect(panel.getByText(/@thread:thr_example submitted .* · Reviewer @thread:thr_reviewer/)).toBeTruthy();
   expect(panel.getByText("The observed checklist improved")).toBeTruthy();
   expect(panel.getByText("The checklist was followed")).toBeTruthy();
   expect(panel.getByText("https://example.com/report").getAttribute("href")).toBe("https://example.com/report");
@@ -363,10 +364,13 @@ it.each(["proposed", "applied", "kept"] as const)("offers only the eligible date
   if (state === "kept") {
     expect(screen.queryByRole("button", { name: "Edit deadline" })).toBeNull();
   } else {
-    fireEvent.click(screen.getByRole("button", { name: "Edit deadline" }));
-    const editor = within(screen.getByRole("form", { name: "Edit proposal dates" }));
-    expect(editor.getByLabelText("Deadline")).toBeTruthy();
-    expect(editor.queryByLabelText("Measurement check")).toBeNull();
+    const trigger = screen.getByRole("button", { name: "Edit deadline" });
+    expect(trigger.querySelector('[data-icon="Edit"]')).toBeTruthy();
+    fireEvent.click(trigger);
+    const editor = within(await documentScreen.findByRole("dialog", { name: "Deadline calendar" }));
+    expect(editor.getByLabelText("Deadline time")).toBeTruthy();
+    expect(editor.queryByRole("button", { name: "Measurement check" })).toBeNull();
+    expect(editor.queryByRole("button", { name: "Save dates" })).toBeNull();
   }
 });
 
@@ -381,16 +385,19 @@ it("saves gap and overlap times as epoch values in one revision-checked proposal
     const screen = renderSlot(app.navPanels[0], { subPath: `${projectId}/${proposal.id}` }, { experimental_rpcContract: rpcContract, rpc: {
       ...rpc, projects: () => [local], "proposal.detail": () => ({ ...rpc["proposal.detail"](), proposal: initial, links: [linkedCard] }),
     } });
-    fireEvent.click(await screen.findByRole("button", { name: "Edit deadline" }));
-    const editor = within(screen.getByRole("form", { name: "Edit proposal dates" }));
-    expect(editor.queryByLabelText("Measurement check")).toBeNull();
-    fireEvent.click(editor.getByRole("button", { name: "Edit measurement check" }));
+    const trigger = await screen.findByRole("button", { name: "Edit deadline" });
+    fireEvent.click(trigger);
+    const editor = within(await documentScreen.findByRole("dialog", { name: "Deadline calendar" }));
     expect(editor.getByText(/America\/New_York/)).toBeTruthy();
-    fireEvent.change(editor.getByLabelText("Deadline"), { target: { value: "2026-11-01T01:30" } });
-    fireEvent.change(editor.getByLabelText("Measurement check"), { target: { value: "2026-03-08T02:30" } });
+    fireEvent.click(editor.getByRole("button", { name: "November 1, 2026" }));
+    fireEvent.change(editor.getByLabelText("Deadline time"), { target: { value: "01:30" } });
+    fireEvent.click(editor.getByRole("button", { name: "Measurement check" }));
+    fireEvent.click(editor.getByRole("button", { name: "March 8, 2026" }));
+    fireEvent.change(editor.getByLabelText("Measurement check time"), { target: { value: "02:30" } });
     expect(editor.getByText("Resolves to 2026-03-08 03:00.")).toBeTruthy();
-    expect(editor.getByText(/next Work Board reconciliation/)).toBeTruthy();
-    fireEvent.click(editor.getByRole("button", { name: "Save dates" }));
+    expect(editor.getByText(/next reconciliation/)).toBeTruthy();
+    expect(rpc["proposal.update"]).not.toHaveBeenCalled();
+    fireEvent.click(trigger);
     await waitFor(() => expect(rpc["proposal.update"]).toHaveBeenCalledExactlyOnceWith({
       projectId, proposalId: proposal.id, revision: proposal.revision, patch: {
         checkAt: Date.parse("2026-03-08T07:00:00Z"), deadlineAt: Date.parse("2026-11-01T05:30:00Z"),
@@ -399,7 +406,7 @@ it("saves gap and overlap times as epoch values in one revision-checked proposal
   } finally { clock.mockRestore(); }
 });
 
-it("retains a stale draft and omits the untouched high-precision check on a fresh save", async () => {
+it("keeps invalid drafts, rejects stale revisions and preserves an untouched check", async () => {
   const clock = vi.spyOn(Date, "now").mockReturnValue(Date.parse("2026-03-01T00:00:00Z"));
   try {
     const rpc = fixture();
@@ -407,23 +414,30 @@ it("retains a stale draft and omits the untouched high-precision check on a fres
     const screen = renderSlot(app.navPanels[0], { subPath: `${projectId}/${proposal.id}` }, { experimental_rpcContract: rpcContract, rpc: {
       ...rpc, "proposal.detail": () => ({ ...rpc["proposal.detail"](), proposal: current }),
     } });
-    fireEvent.click(await screen.findByRole("button", { name: "Edit deadline" }));
-    const editor = within(screen.getByRole("form", { name: "Edit proposal dates" }));
-    const deadline = editor.getByLabelText("Deadline") as HTMLInputElement;
-    fireEvent.change(deadline, { target: { value: "2026-04-01T10:00" } });
-    fireEvent.click(editor.getByRole("button", { name: "Save dates" }));
-    expect((await editor.findByRole("alert")).textContent).toContain("must be before");
+    const trigger = await screen.findByRole("button", { name: "Edit deadline" });
+    fireEvent.click(trigger);
+    const getEditor = async () => within(await documentScreen.findByRole("dialog", { name: "Deadline calendar" }));
+    let editor = await getEditor();
+    fireEvent.click(editor.getByRole("button", { name: "April 1, 2026" }));
+    fireEvent.change(editor.getByLabelText("Deadline time"), { target: { value: "10:00" } });
+    fireEvent.click(trigger);
+    expect((await screen.findByRole("alert")).textContent).toContain("must be before");
     expect(rpc["proposal.update"]).not.toHaveBeenCalled();
-    fireEvent.change(deadline, { target: { value: "2026-04-06T10:00" } });
+    fireEvent.click(trigger);
+    editor = await getEditor();
+    expect(editor.getByRole("button", { name: "April 1, 2026", pressed: true })).toBeTruthy();
+    fireEvent.click(editor.getByRole("button", { name: "April 6, 2026" }));
     current = { ...current, revision: current.revision + 1, deadlineAt: Date.parse("2026-04-07T13:30:55.123Z") };
     await screen.behavior.emitRealtime("journal:changed", { projectId });
-    expect((await editor.findByText("Proposal dates changed. Reload before saving.")).textContent).toBeTruthy();
-    expect(deadline.value).toBe("2026-04-06T10:00");
-    expect((editor.getByRole("button", { name: "Save dates" }) as HTMLButtonElement).disabled).toBe(true);
-    fireEvent.click(editor.getByRole("button", { name: "Reload dates" }));
-    await waitFor(() => expect(deadline.value).toBe("2026-04-07T13:30"));
-    fireEvent.change(deadline, { target: { value: "2026-04-08T10:00" } });
-    fireEvent.click(editor.getByRole("button", { name: "Save dates" }));
+    fireEvent.click(trigger);
+    expect((await screen.findByRole("alert")).textContent).toContain("Proposal dates changed");
+    expect(rpc["proposal.update"]).not.toHaveBeenCalled();
+    fireEvent.click(trigger);
+    editor = await getEditor();
+    expect(editor.getByRole("button", { name: "April 7, 2026", pressed: true })).toBeTruthy();
+    fireEvent.click(editor.getByRole("button", { name: "April 8, 2026" }));
+    fireEvent.change(editor.getByLabelText("Deadline time"), { target: { value: "10:00" } });
+    fireEvent.click(trigger);
     await waitFor(() => expect(rpc["proposal.update"]).toHaveBeenCalledExactlyOnceWith({
       projectId, proposalId: proposal.id, revision: current.revision, patch: { deadlineAt: Date.parse("2026-04-08T10:00:00Z") },
     }));
