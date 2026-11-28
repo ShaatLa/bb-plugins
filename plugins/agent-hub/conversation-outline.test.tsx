@@ -23,7 +23,7 @@ it('names the outline button in a hover tooltip', () => {
   const slot=renderSlot({component:ConversationOutline},{threadId:'thr_example',onJump:()=>{}},{sdk:{threads:{conversationOutline:vi.fn()}}} as any);
   expect(slot.getByRole('button',{name:'Thread table of contents'}).getAttribute('title')).toBe('Table of contents');
 });
-it('lists the newest message first, one line per entry with the full line on hover, and closes on Escape', async () => {
+it('lists the newest message first, one line per entry that opens in full on hover or focus, and closes on Escape', async () => {
   const long='A long question that runs well past one line of the list, so it is cut';
   const conversationOutline=vi.fn(async()=>({items:[{id:'thr_example:user-seed:2',role:'user',preview:'Old one'},{id:'thr_example:user-seed:5',role:'user',preview:long}],maxSeq:5})), onJump=vi.fn();
   const slot=renderSlot({component:ConversationOutline},{threadId:'thr_example',onJump},{sdk:{threads:{conversationOutline}}} as any);
@@ -32,6 +32,8 @@ it('lists the newest message first, one line per entry with the full line on hov
   const list=slot.getByRole('dialog'), entries=list.querySelectorAll('button');
   expect(Array.from(entries).map(b=>b.textContent)).toEqual([long,'Old one']);
   expect(entries[0]!.className).toContain('truncate'); expect(entries[0]!.getAttribute('title')).toBe(long);
+  // jsdom does not apply :hover styles, so the classes are the contract.
+  expect(entries[0]!.className.split(' ')).toEqual(expect.arrayContaining(['hover:whitespace-normal','focus-visible:whitespace-normal']));
   fireEvent.keyDown(list,{key:'Escape'});
   expect(slot.queryByRole('dialog')).toBeNull();
   fireEvent.click(slot.getByRole('button',{name:'Thread table of contents'}));
