@@ -46,15 +46,21 @@ it("opens the existing proposal URL as its own page with the entry, observations
   expect(await screen.findByRole("region", { name: "Proposal detail" })).toBeTruthy();
   expect(screen.queryByRole("region", { name: "Status columns" })).toBeNull();
   expect(rpc.list).not.toHaveBeenCalled();
-  expect(await screen.findByRole("heading", { name: entry.title })).toBeTruthy();
-  expect(await screen.findByRole("heading", { name: "Timeline" })).toBeTruthy();
-  expect(screen.getAllByText("0 misses")).toHaveLength(2);
-  expect(screen.getByText(/Verified evidence/)).toBeTruthy();
+  const failure = within(await screen.findByRole("region", { name: "Process failure" }));
+  expect(failure.getByRole("heading", { name: entry.title })).toBeTruthy();
+  expect(failure.getByRole("heading", { name: "Process gap" })).toBeTruthy();
+  const fix = within(screen.getByRole("region", { name: "Fix hypothesis" }));
+  expect(fix.getByRole("heading", { name: "Rollback condition" })).toBeTruthy();
+  const metrics = within(screen.getByRole("region", { name: "Metric history" }));
+  expect(metrics.getAllByText("0 misses")).toHaveLength(2);
+  expect(metrics.getByText(/Verified evidence/)).toBeTruthy();
+  const timeline = within(screen.getByRole("region", { name: "Timeline" }));
+  expect(timeline.getByRole("textbox", { name: "Comment" })).toBeTruthy();
   fireEvent.change(screen.getByRole("combobox", { name: "Assigned manager" }), { target: { value: other } });
   await waitFor(() => expect(rpc["proposal.update"]).toHaveBeenCalledWith(expect.objectContaining({
     projectId, proposalId: proposal.id, revision: 4, patch: { managerId: other },
   })));
-  fireEvent.click(screen.getByRole("button", { name: "Keep" }));
+  fireEvent.click(within(screen.getByRole("region", { name: "Decision" })).getByRole("button", { name: "Keep" }));
   fireEvent.change(screen.getByRole("textbox", { name: "Reason" }), { target: { value: "The metric met its target" } });
   fireEvent.click(screen.getByRole("button", { name: "Confirm keep" }));
   await waitFor(() => expect(rpc["proposal.transition"]).toHaveBeenCalledWith(expect.objectContaining({

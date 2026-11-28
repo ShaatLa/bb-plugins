@@ -15,6 +15,10 @@ type BoardState = typeof boardStates[number];
 const input = "min-w-0 max-w-full rounded-md border border-border bg-background px-2 py-1 text-sm focus-visible:outline focus-visible:outline-2 focus-visible:outline-ring";
 const button = input + " hover:bg-muted disabled:opacity-50";
 const panel = "min-w-0 rounded-lg border border-border bg-card p-4";
+const detailPanel = `${panel} space-y-3 text-sm shadow-2xs @sm:p-5`;
+const detailHeading = "text-base font-semibold leading-snug";
+const detailText = "max-w-[72ch] leading-relaxed [overflow-wrap:anywhere]";
+const detailCallout = "space-y-1 rounded-md bg-muted/45 p-3";
 const control = "flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground";
 const property = "inline-flex min-w-0 items-center gap-1 rounded-md border border-border px-1.5 py-0.5 text-xs text-muted-foreground";
 const statusColor: Record<State, string> = {
@@ -340,8 +344,8 @@ function ProposalDetail({ project, id, stamp, refresh }: { project: Projects[num
       setDecision(""); setReason(""); setOverride(false);
     });
   };
-  return <section className="min-w-0 rounded-lg border border-border bg-card px-4 pb-6 pt-5 shadow-2xs sm:px-7 sm:pt-7" aria-label="Proposal detail">
-    <header className="space-y-3">
+  return <section className="@container space-y-3" aria-label="Proposal detail">
+    <header className={detailPanel}>
       <h2 className="break-words text-2xl font-semibold leading-tight">{p.title}</h2>
       <div className="flex flex-wrap items-center gap-2">
         <span className="inline-flex items-center gap-1.5 rounded-full border border-border bg-secondary px-2.5 py-0.5 text-xs font-medium">
@@ -379,73 +383,63 @@ function ProposalDetail({ project, id, stamp, refresh }: { project: Projects[num
     </p>}
     {error && <p role="alert" className="mt-2 text-sm text-destructive">{error}</p>}
 
-    <div className="mt-5 space-y-5 text-sm">
-      <section className="space-y-1.5">
-        <h3 className="font-semibold">{entry.title}</h3>
-        <Markdown content={entry.failure} />
-        <h4 className="mt-2 font-medium">Process gap</h4>
-        <Markdown content={entry.gap} />
-        <EvidenceLinks links={entry.links} />
-      </section>
-      <section className="space-y-1.5 border-t border-border-hairline pt-4">
-        <h3 className="font-semibold">Fix hypothesis</h3>
-        <Markdown content={p.hypothesis} />
-        <h4 className="mt-2 font-medium">Rollback condition</h4>
-        <Markdown content={p.rollbackCondition} />
-        <EvidenceLinks links={p.links} />
-        {detail.links.map(link => <div key={link.taskId} className="mt-2">
-          <a href={cardPath(link.key)} className="underline">{link.key}</a> · {link.status}{link.dueDate && ` · Due ${link.dueDate}`}
-          {link.conflict && <div className="flex flex-wrap items-center gap-2 text-destructive">
-            Deadline conflict
-            <button className={button} disabled={busy} onClick={() => void mutate(() =>
-              rpc.call("fix.resolveDeadline", { ...edit, taskId: link.taskId, prefer: "journal" }))}>Use journal date</button>
-            <button className={button} disabled={busy || !link.dueDate} onClick={() => void mutate(() =>
-              rpc.call("fix.resolveDeadline", { ...edit, taskId: link.taskId, prefer: "card" }))}>Use card date</button>
-          </div>}
-        </div>)}
-      </section>
-      <section className="space-y-1.5 border-t border-border-hairline pt-4">
-        <h3 className="font-semibold">Metric history</h3>
-        <Markdown content={p.metric.definition} />
-        {(p.metric.baseline !== undefined || p.metric.target !== undefined) && <dl className="my-2 grid grid-cols-2 gap-2">
-          <div><dt>Baseline</dt><dd>{p.metric.baseline ?? "Unset"} {p.metric.baseline !== undefined && p.metric.unit}</dd></div>
-          <div><dt>Target</dt><dd>{p.metric.target ?? "Unset"} {p.metric.target !== undefined && p.metric.unit}</dd></div>
+    <div className="grid min-w-0 items-start gap-3 @[48rem]:grid-cols-[minmax(0,2fr)_minmax(0,1fr)]">
+      <div className="min-w-0 space-y-3">
+        <section className={detailPanel} aria-label="Process failure">
+          <h3 className={detailHeading}>Process failure</h3>
+          <div className={`${detailText} space-y-1`}>
+            <h4 className="font-medium">{entry.title}</h4>
+            <Markdown content={entry.failure} />
+          </div>
+          <div className={detailCallout}>
+            <h4 className="font-medium">Process gap</h4>
+            <div className={detailText}><Markdown content={entry.gap} /></div>
+          </div>
+          <EvidenceLinks links={entry.links} />
+        </section>
+        <section className={detailPanel} aria-label="Fix hypothesis">
+          <h3 className={detailHeading}>Fix hypothesis</h3>
+          <div className={detailText}><Markdown content={p.hypothesis} /></div>
+          <div className={detailCallout}>
+            <h4 className="font-medium">Rollback condition</h4>
+            <div className={detailText}><Markdown content={p.rollbackCondition} /></div>
+          </div>
+          <EvidenceLinks links={p.links} />
+          {detail.links.map(link => <div key={link.taskId} className="rounded-md border border-border-hairline p-2.5">
+            <a href={cardPath(link.key)} className="underline">{link.key}</a> · {link.status}{link.dueDate && ` · Due ${link.dueDate}`}
+            {link.conflict && <div className="mt-1 flex flex-wrap items-center gap-2 text-destructive">
+              Deadline conflict
+              <button className={button} disabled={busy} onClick={() => void mutate(() =>
+                rpc.call("fix.resolveDeadline", { ...edit, taskId: link.taskId, prefer: "journal" }))}>Use journal date</button>
+              <button className={button} disabled={busy || !link.dueDate} onClick={() => void mutate(() =>
+                rpc.call("fix.resolveDeadline", { ...edit, taskId: link.taskId, prefer: "card" }))}>Use card date</button>
+            </div>}
+          </div>)}
+        </section>
+      </div>
+      <section className={detailPanel} aria-label="Metric history">
+        <h3 className={detailHeading}>Metric history</h3>
+        <div className={detailText}><Markdown content={p.metric.definition} /></div>
+        {(p.metric.baseline !== undefined || p.metric.target !== undefined) && <dl className="grid grid-cols-2 gap-2">
+          {([["baseline", "Baseline"], ["target", "Target"]] as const).map(([key, label]) => <div className="min-w-0 rounded-md border border-border-hairline bg-muted/35 p-2.5" key={key}>
+            <dt className="text-xs text-muted-foreground">{label}</dt>
+            <dd className="break-words text-base font-semibold tabular-nums">
+              {p.metric[key] ?? "Unset"} {p.metric[key] !== undefined && p.metric.unit}
+            </dd>
+          </div>)}
         </dl>}
-        {!observations.length && <p className="text-muted-foreground">No observations on this page.</p>}
-        <ul className="space-y-2">{observations.map(event => <li key={event.seq}>
-          <p className="text-xs text-muted-foreground">{date(event.at)} · {event.message}</p>
-          {event.observation?.value !== undefined && <strong>{event.observation.value} {event.unit}</strong>}
-          {event.observation?.note && <Markdown content={event.observation.note} />}
-          <EvidenceLinks links={event.observation?.evidence} />
-        </li>)}</ul>
+        {!observations.length ? <p className="text-muted-foreground">No observations on this page.</p> :
+          <ul className="space-y-2">{observations.map(event => <li key={event.seq} className={`${detailText} rounded-md border border-border-hairline p-2.5`}>
+            <p className="text-xs text-muted-foreground">{date(event.at)} · {event.message}</p>
+            {event.observation?.value !== undefined && <strong>{event.observation.value} {event.unit}</strong>}
+            {event.observation?.note && <Markdown content={event.observation.note} />}
+            <EvidenceLinks links={event.observation?.evidence} />
+          </li>)}</ul>}
       </section>
-      <section className="border-t border-border-hairline pt-4">
-        <h3 className="font-semibold">Timeline</h3>
-        <ol className="mt-2 divide-y divide-border-hairline">{timeline.map(event => <li key={event.seq} className="space-y-0.5 py-2">
-          <p className="text-xs text-muted-foreground">{date(event.at)} · {names.get(event.actor) ?? event.actor}</p>
-          {event.state && <strong className="flex items-center gap-1.5 text-sm font-medium"><StatusMark state={event.state} />{statusLabel(event.state)}</strong>}
-          {event.state && isOpen(event.state) && event.deadlineAt !== undefined &&
-            <p className="text-xs text-muted-foreground">Deadline · {date(event.deadlineAt)}</p>}
-          {event.checkAt != null && <p className="text-xs text-muted-foreground">Measurement check · {date(event.checkAt)}</p>}
-          <Markdown content={event.message} />
-        </li>)}</ol>
-        {cursor != null && <button className={button} disabled={busy} onClick={() => {
-          setBusy(true);
-          rpc.call("proposal.detail", { ...ref, before: cursor }).then(data => {
-            setExtra(previous => [...previous, ...data.events]); setCursor(data.nextBefore);
-          }, cause => setError(message(cause))).finally(() => setBusy(false));
-        }}>Older timeline entries</button>}
-      </section>
-      <form className="border-t border-border-hairline pt-4" onSubmit={event => {
-        event.preventDefault();
-        void mutate(async () => { await rpc.call("proposal.comment", { ...ref, body: comment }); setComment(""); });
-      }}>
-        <label className="block font-medium" htmlFor="proposal-comment">Comment</label>
-        <textarea id="proposal-comment" className={`${input} my-1 w-full`} required maxLength={8000} value={comment}
-          onChange={event => setComment(event.target.value)} />
-        <button className={button} disabled={busy || !comment.trim()}>Post comment</button>
-      </form>
-      {(p.state === "measuring" || p.state === "applied") && <form className="border-t border-border-hairline pt-4" onSubmit={close}>
+    </div>
+    {(p.state === "measuring" || p.state === "applied") && <section className={detailPanel} aria-label="Decision">
+      <h3 className={detailHeading}>Decision</h3>
+      <form onSubmit={close}>
         <div className="flex gap-2">
           {p.state === "measuring" && <button type="button" className={button} aria-pressed={decision === "kept"}
             disabled={!detail.measured} onClick={() => { setDecision("kept"); setOverride(false); }}>Keep</button>}
@@ -463,8 +457,37 @@ function ProposalDetail({ project, id, stamp, refresh }: { project: Projects[num
             {decision === "kept" ? "Confirm keep" : "Record rollback decision"}
           </button>
         </div>}
-      </form>}
-    </div>
+      </form>
+    </section>}
+    <section className={detailPanel} aria-label="Timeline">
+      <h3 className={detailHeading}>Timeline</h3>
+      <ol className="space-y-2">{timeline.map(event => <li key={event.seq} className="space-y-1.5 rounded-md border border-border-hairline bg-muted/20 p-3">
+        <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
+          <span className="min-w-0 break-words text-xs font-medium">{names.get(event.actor) ?? event.actor}</span>
+          <time className="text-xs text-muted-foreground" dateTime={new Date(event.at).toISOString()}>{date(event.at)}</time>
+        </div>
+        {event.state && <strong className="flex items-center gap-1.5 text-sm font-medium"><StatusMark state={event.state} />{statusLabel(event.state)}</strong>}
+        {event.state && isOpen(event.state) && event.deadlineAt !== undefined &&
+          <p className="text-xs text-muted-foreground">Deadline · {date(event.deadlineAt)}</p>}
+        {event.checkAt != null && <p className="text-xs text-muted-foreground">Measurement check · {date(event.checkAt)}</p>}
+        <div className={detailText}><Markdown content={event.message} /></div>
+      </li>)}</ol>
+      {cursor != null && <button className={button} disabled={busy} onClick={() => {
+        setBusy(true);
+        rpc.call("proposal.detail", { ...ref, before: cursor }).then(data => {
+          setExtra(previous => [...previous, ...data.events]); setCursor(data.nextBefore);
+        }, cause => setError(message(cause))).finally(() => setBusy(false));
+      }}>Older timeline entries</button>}
+      <form className="space-y-2 border-t border-border-hairline pt-3" onSubmit={event => {
+        event.preventDefault();
+        void mutate(async () => { await rpc.call("proposal.comment", { ...ref, body: comment }); setComment(""); });
+      }}>
+        <label className="block font-medium" htmlFor="proposal-comment">Comment</label>
+        <textarea id="proposal-comment" className={`${input} block min-h-20 w-full resize-y`} required maxLength={8000} value={comment}
+          onChange={event => setComment(event.target.value)} />
+        <button className={button} disabled={busy || !comment.trim()}>Post comment</button>
+      </form>
+    </section>
   </section>;
 }
 
