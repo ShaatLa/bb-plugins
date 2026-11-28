@@ -1,6 +1,6 @@
 {
   "name": "bb-plugin-process-journal",
-  "version": "0.7.5",
+  "version": "0.7.6",
   "type": "module",
   "keywords": [
     "bb-plugin"
@@ -29,6 +29,7 @@
     "@dnd-kit/sortable": "10.0.0",
     "@dnd-kit/utilities": "3.2.2",
     "@js-temporal/polyfill": "^0.5.1",
+    "@radix-ui/react-popover": "1.1.19",
     "@radix-ui/react-select": "2.4.1",
     "zod": "^4.6.5"
   },

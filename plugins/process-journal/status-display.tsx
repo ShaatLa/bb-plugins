@@ -16,11 +16,20 @@ export function displayName(state: State, columns: BoardColumnDisplay[]) {
   return columns.find(column => column.id === state)?.name || defaultStatusName(state);
 }
 
-export function StatusMark({ state, display }: { state: State; display?: BoardColumnDisplay }) {
-  const value = display?.color;
+function statusColor(state: State, value?: BoardColumnDisplay["color"]) {
   const className = !value || value === "default" ? defaultColor[state] : "";
   const color = value === "black" ? "var(--foreground)" : value === "slategray" ? "darkgray"
     : value === "default" ? undefined : value;
+  return { className, color };
+}
+
+export function StatusColorDot({ state, value }: { state: State; value: BoardColumnDisplay["color"] }) {
+  const { className, color } = statusColor(state, value);
+  return <span aria-hidden className={`size-3.5 shrink-0 rounded-full bg-current ${className}`} style={{ color }} />;
+}
+
+export function StatusMark({ state, display }: { state: State; display?: BoardColumnDisplay }) {
+  const { className, color } = statusColor(state, display?.color);
   if (display && display.icon !== "default") return <span aria-hidden="true" className={`shrink-0 ${className}`} style={{ color }}>
     <Icon name={display.icon} className="size-3.5" />
   </span>;

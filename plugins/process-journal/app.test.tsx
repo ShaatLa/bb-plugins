@@ -283,8 +283,16 @@ it("autosaves ordered status edits and keeps a conflicting draft until reload", 
   await waitFor(() => expect(configSet).toHaveBeenCalledExactlyOnceWith({
     projectId, key: "boardDisplay", value: { expectedRevision: 0, columns: named },
   }));
-  await selectOption(screen.getByRole("combobox", { name: "Measuring icon" }), "Clock");
-  await selectOption(screen.getByRole("combobox", { name: "Measuring color" }), "Blue");
+  const icon = statuses.getByRole("combobox", { name: "Measuring icon" });
+  await selectOption(icon, "Clock");
+  expect(icon.querySelector('[data-icon="Clock"]')).toBeTruthy();
+
+  const color = statuses.getByRole("button", { name: "Measuring color" });
+  fireEvent.click(color);
+  const palette = within(await documentScreen.findByRole("dialog", { name: "Measuring color" }));
+  expect(palette.getByRole("button", { name: "Default", pressed: true })).toBeTruthy();
+  fireEvent.click(palette.getByRole("button", { name: "Blue" }));
+  expect((color.querySelector("span") as HTMLElement).style.color).toBe("steelblue");
   fireEvent.click(screen.getByRole("checkbox", { name: "Show Measuring on board" }));
   const rows = within(screen.getByRole("region", { name: "Statuses" })).getByRole("list");
   rows.getBoundingClientRect = () => new DOMRect(0, 0, 640, 220);

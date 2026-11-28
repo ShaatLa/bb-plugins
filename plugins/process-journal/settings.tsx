@@ -4,33 +4,27 @@ import { closestCenter, DndContext, KeyboardSensor, PointerSensor, useSensor, us
 import { arrayMove, SortableContext, sortableKeyboardCoordinates, useSortable, verticalListSortingStrategy } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import type { z } from "zod";
-import { boardColors, boardDisplayResultSchema, boardDisplaySchema, boardDisplayWriteSchema, boardIcons,
+import { boardDisplayResultSchema, boardDisplaySchema, boardDisplayWriteSchema, boardIcons,
   type BoardColumnDisplay } from "./board-display-contract";
 import type { methods, rpcContract } from "./contract";
-import { JournalCheckbox, JournalSelect } from "./controls";
+import { JournalCheckbox, JournalSelect, StatusColorPicker } from "./controls";
 import { ScheduleSettings } from "./schedule-settings";
 import { defaultColumns, defaultStatusName, StatusMark } from "./status-display";
 
 const focus = "focus-visible:outline focus-visible:outline-2 focus-visible:outline-ring";
 const input = `h-8 min-w-0 rounded-md border border-input bg-background px-2.5 text-sm ${focus} disabled:opacity-50`;
 const button = `${input} shrink-0 hover:bg-state-hover`;
-const rowGrid = "grid-cols-[2rem_1.25rem_minmax(0,1fr)_minmax(0,1fr)] items-center gap-x-2 px-3 @min-[40rem]:grid-cols-[2rem_1.25rem_minmax(0,2fr)_minmax(0,1fr)_minmax(0,1fr)_5rem]";
+const rowGrid = "grid-cols-[2rem_minmax(0,1fr)_minmax(0,1fr)] items-center gap-x-2 px-3 @min-[40rem]:grid-cols-[2rem_minmax(0,1fr)_3rem_3rem_5rem]";
 const stayInList: Modifier = ({ transform, activeNodeRect, containerNodeRect }) => {
   const y = activeNodeRect && containerNodeRect
     ? Math.max(containerNodeRect.top - activeNodeRect.top, Math.min(transform.y, containerNodeRect.bottom - activeNodeRect.bottom))
     : transform.y;
   return { ...transform, x: 0, y };
 };
-const colorLabel: Record<BoardColumnDisplay["color"], string> = {
-  default: "Default", slateblue: "Indigo", steelblue: "Blue", lightseagreen: "Teal", mediumseagreen: "Green",
-  goldenrod: "Yellow", sandybrown: "Orange", indianred: "Red", palevioletred: "Pink", mediumpurple: "Purple",
-  slategray: "Gray", black: "Monochrome",
-};
 const iconLabel: Record<BoardColumnDisplay["icon"], string> = {
   default: "Default", Circle: "Circle", Check: "Check", X: "Cross", Clock: "Clock", Search: "Search", Flag: "Flag",
   Pause: "Pause", Star: "Star",
 };
-const colors = boardColors.map(value => ({ value, label: colorLabel[value] }));
 const icons = boardIcons.map(value => ({ value, label: iconLabel[value] }));
 const message = (error: unknown) => error instanceof Error ? error.message : "The request failed";
 
@@ -167,7 +161,7 @@ function StatusEditor({ projectId }: { projectId: string }) {
     {loaded && <div className="space-y-3">
       <div className="@container rounded-lg border border-border bg-card">
         <div aria-hidden="true" className={`${rowGrid} hidden border-b border-border-hairline bg-muted/25 py-2 text-xs font-medium text-muted-foreground @min-[40rem]:grid`}>
-          <span className="col-start-3">Name</span><span>Icon</span><span>Color</span><span className="text-center">On board</span>
+          <span className="col-start-2">Name</span><span className="text-center">Icon</span><span className="text-center">Color</span><span className="text-center">On board</span>
         </div>
         <DndContext sensors={sensors} collisionDetection={closestCenter} modifiers={[stayInList]} onDragEnd={move}>
           <SortableContext items={draft} strategy={verticalListSortingStrategy}>
@@ -205,21 +199,21 @@ function StatusRow({ column, busy, edit, commitName }: {
         <circle cx="4" cy="13" r="1" /><circle cx="8" cy="13" r="1" />
       </svg>
     </button>
-    <span className="grid place-items-center"><StatusMark state={column.id} display={column} /></span>
     <input className={`${input} col-span-2 w-full @min-[40rem]:col-span-1`} aria-label={`${original} name`} disabled={busy} value={column.name}
       onChange={event => edit(column.id, { name: event.target.value })} onBlur={commitName}
       onKeyDown={event => { if (event.key === "Enter" && !event.nativeEvent.isComposing) event.currentTarget.blur(); }} />
-    <div className="col-start-3 grid min-w-0 gap-1 @min-[40rem]:col-start-auto">
+    <div className="col-start-2 grid min-w-0 gap-1 @min-[40rem]:col-start-auto">
       <span className="text-xs text-muted-foreground @min-[40rem]:hidden">Icon</span>
-      <JournalSelect label={`${original} icon`} disabled={busy} value={column.icon} options={icons}
+      <JournalSelect label={`${original} icon`} disabled={busy || isDragging} value={column.icon} options={icons}
+        renderIcon={icon => <StatusMark state={column.id} display={{ ...column, icon }} />}
         onChange={icon => edit(column.id, { icon })} />
     </div>
     <div className="grid min-w-0 gap-1">
       <span className="text-xs text-muted-foreground @min-[40rem]:hidden">Color</span>
-      <JournalSelect label={`${original} color`} disabled={busy} value={column.color} options={colors}
+      <StatusColorPicker label={`${original} color`} state={column.id} disabled={busy || isDragging} value={column.color}
         onChange={color => edit(column.id, { color })} />
     </div>
-    <label className="col-span-2 col-start-3 flex min-h-8 w-fit cursor-pointer items-center gap-2 text-xs text-muted-foreground @min-[40rem]:col-span-1 @min-[40rem]:col-start-auto @min-[40rem]:justify-self-center"
+    <label className="col-span-2 col-start-2 flex min-h-8 w-fit cursor-pointer items-center gap-2 text-xs text-muted-foreground @min-[40rem]:col-span-1 @min-[40rem]:col-start-auto @min-[40rem]:justify-self-center"
       title="Show on board">
       <JournalCheckbox aria-label={`Show ${original} on board`} disabled={busy} checked={column.visible}
         onChange={event => edit(column.id, { visible: event.target.checked })} />
