@@ -1,4 +1,4 @@
-import { Markdown } from "@get-bb/plugin-sdk/app";
+import { experimental_Icon as Icon, Markdown } from "@get-bb/plugin-sdk/app";
 import type { Proposal, ReviewRound, ReviewStage, ReviewSummary } from "./contract";
 
 const stageNames: Record<ReviewStage, string> = { hypothesis: "Hypothesis", result: "Result" };
@@ -34,11 +34,12 @@ export function ReviewPanel({ className, summary, rounds, date }: {
       const { experiment, stage } = round.snapshot;
       const current = summary[stage];
       const status = current?.version === round.version ? current.status : round.status;
-      return <details key={`${stage}:${round.version}`} className="rounded-md border border-border-hairline p-3">
-        <summary className="cursor-pointer text-sm font-medium">
-          {stageNames[stage]} v{round.version} · {labels[status]}
+      return <details key={`${stage}:${round.version}`} className="group rounded-md border border-input bg-background">
+        <summary className="flex min-h-8 cursor-pointer list-none items-center justify-between gap-2 rounded-md px-2.5 py-1.5 text-sm hover:bg-state-hover focus-visible:outline focus-visible:outline-2 focus-visible:outline-ring [&::-webkit-details-marker]:hidden">
+          <span>{stageNames[stage]} v{round.version} · {labels[status]}</span>
+          <Icon name="ChevronDown" aria-hidden className="size-3.5 shrink-0 text-muted-foreground motion-safe:transition-transform group-open:rotate-180" />
         </summary>
-        <div className="mt-2 space-y-3 break-words">
+        <div className="space-y-3 break-words border-t border-border-hairline p-3">
           <p className="text-xs text-muted-foreground">
             {round.submittedBy} submitted {date(round.submittedAt)} · Reviewer {round.reviewerId}
           </p>

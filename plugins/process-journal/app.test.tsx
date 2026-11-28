@@ -317,8 +317,10 @@ it("shows the pinned review evidence and disables Keep while the verdict is pend
   });
   const panel = within(await screen.findByRole("region", { name: "Independent review" }));
   expect(panel.getAllByText("thr_reviewer").length).toBeGreaterThan(0);
-  expect(panel.getByText("Result v1 · Awaiting reviewer")).toBeTruthy();
-  fireEvent.click(panel.getByText("Result v1 · Awaiting reviewer"));
+  const trigger = panel.getByText("Result v1 · Awaiting reviewer").closest("summary")!;
+  expect(trigger.parentElement?.hasAttribute("open")).toBe(false);
+  fireEvent.click(trigger);
+  expect(trigger.parentElement?.hasAttribute("open")).toBe(true);
   expect(panel.getByText("The observed checklist improved")).toBeTruthy();
   expect(panel.getByText("The checklist was followed")).toBeTruthy();
   expect(panel.getByText("https://example.com/report").getAttribute("href")).toBe("https://example.com/report");
