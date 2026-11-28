@@ -1,12 +1,15 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { TaskStatusesProvider } from "./task-statuses.js";
 import type { PluginNavPanelProps } from "@get-bb/plugin-sdk/app";
 import { BoardView } from "../views/board/index.js";
+import { DetailView } from "../views/detail/index.js";
+import { PlanView } from "../views/plan/plan-view.js";
+import { OpenInTasksButton } from "../components/open-in-tasks-button.js";
 import { useProjects } from "./data.js";
 import { TasksRefreshProvider } from "./refresh.js";
-import { parseTasksRoute } from "./routes.js";
+import { TasksNavigationContext, parseTasksRoute, tasksRouteToSubPath, useTasksNavigation, type TasksNavigation } from "./routes.js";
 import { loadKanbanChoice, loadLastProjectId, storeKanbanChoice } from "./view-preference.js";
-import { resolveKanbanProject, type KanbanChoice } from "./kanban-project.js";
+import { mergeKanbanChoice, resolveKanbanProject, type KanbanChoice, type KanbanOpen, type KanbanPatch } from "./kanban-project.js";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { Icon } from "@/components/ui/icon";
 import { DialogScope } from "@/components/ui/dialog";
@@ -39,19 +42,31 @@ export const KANBAN_TAB = {
 
 function KanbanPanelContent({ subPath }: PluginNavPanelProps) {
   const projects = useProjects();
+  const mainNavigation = useTasksNavigation();
   const [choice, setChoice] = useState<KanbanChoice | null>(loadKanbanChoice);
   const { shown: project, next, main } = resolveKanbanProject({ route: parseTasksRoute(subPath), stored: choice, last: projects.data ? loadLastProjectId() : null, projects: projects.data });
+  // Every write merges into the current value, in state and in storage, so a follow never erases an open task and an open never erases the project.
+  const write = (patch: KanbanPatch) => {
+    setChoice((current) => mergeKanbanChoice(current, patch));
+    storeKanbanChoice(patch);
+  };
   // The panel follows the main area when its project changes; the write waits for the effect, the render already shows it.
   useEffect(() => {
-    if (!next) return;
-    setChoice(next);
-    storeKanbanChoice(next);
+    if (next) write(next);
   }, [next?.projectId, next?.followed]);
-  const pick = (projectId: string) => {
-    const picked = { projectId, followed: main?.id ?? null };
-    setChoice(picked);
-    storeKanbanChoice(picked);
-  };
+  const mainId = useRef<string | null>(null);
+  mainId.current = main?.id ?? null;
+  const open = choice?.open ?? null;
+  const showOpen = (next: KanbanOpen | null) => write({ open: next });
+  // Tasks, plans and projects open inside the panel; the other views (all, active, archive, manage) belong to the main area.
+  const navigation = useMemo<TasksNavigation>(() => ({
+    go: (route, options) => {
+      if (route.kind === "task" || route.kind === "plan") write({ open: { kind: route.kind, taskKey: route.taskKey } });
+      else if (route.kind === "project") write({ projectId: route.projectId, followed: mainId.current, open: null });
+      else mainNavigation.go(route, options);
+    },
+  }), [mainNavigation]);
+  const pick = (projectId: string) => write({ projectId, followed: mainId.current });
 
   if (projects.error) {
     return <div className="space-y-3 p-4 text-sm"><p role="alert">{projects.error}</p><Button variant="outline" onClick={projects.refresh}>Retry</Button></div>;
@@ -59,27 +74,44 @@ function KanbanPanelContent({ subPath }: PluginNavPanelProps) {
   if (!project) {
     return <p role="status" className="p-4 text-sm text-muted-foreground">{projects.data === undefined ? "Loading projects…" : "Create a project to open its kanban board."}</p>;
   }
+  const taskDetail = (taskKey: string) => (
+    <div className="min-h-0 flex-1 overflow-y-auto">
+      <DetailView taskKey={taskKey} onBack={() => showOpen(null)} backLabel="Back to board" headerActions={<OpenInTasksButton label={`Open ${taskKey} in Tasks`} subPath={tasksRouteToSubPath({ kind: "task", taskKey })} />} />
+    </div>
+  );
+  const planDetail = (taskKey: string) => (
+    <div className="flex min-h-0 flex-1 flex-col">
+      <header className="flex h-10 shrink-0 items-center gap-2 border-b border-border px-3">
+        <Button variant="ghost" size="sm" className="h-7 gap-1 px-2" onClick={() => showOpen({ kind: "task", taskKey })}><Icon name="ArrowLeft" className="size-3.5" />Back to {taskKey}</Button>
+      </header>
+      <div className="min-h-0 flex-1"><PlanView key={taskKey} taskKey={taskKey} surface="panel" /></div>
+    </div>
+  );
   return (
-    <section aria-label="Project kanban" className="flex h-full min-h-0 flex-col">
-      <header className="flex shrink-0 items-center gap-2 border-b border-border-hairline px-4 py-2 text-sm font-medium"><DropdownMenu>
-        <DropdownMenuTrigger asChild>
-          <button type="button" aria-label="Board project" className="flex min-w-0 items-center gap-2 rounded-md px-1.5 py-0.5 font-medium hover:bg-state-hover">
-            <span aria-hidden className="size-3 shrink-0 rounded-sm" style={{ backgroundColor: project.color }} />
-            <span className="truncate">{project.name}</span>
-            <Icon name="ChevronDown" className="size-3.5 shrink-0 text-muted-foreground" />
-          </button>
-        </DropdownMenuTrigger>
-        <DropdownMenuContent align="start" className="max-h-80 overflow-y-auto">
-          {projects.data?.map((item) => (
-            <DropdownMenuItem key={item.id} disabled={item.id === project.id} onSelect={() => pick(item.id)}>
-              <span aria-hidden className="size-3 shrink-0 rounded-sm" style={{ backgroundColor: item.color }} />
-              <span className="truncate">{item.name}</span>
-            </DropdownMenuItem>
-          ))}
-        </DropdownMenuContent>
-      </DropdownMenu><ManagerQuickSet projectId={project.id} className="ml-6" /><QueueMenu projectId={project.id} /><span aria-hidden className="ml-auto" /><LockChips projectId={project.id} /></header>
-      <div className="min-h-0 flex-1"><BoardView key={project.id} projectId={project.id} /></div>
-    </section>
+    <TasksNavigationContext.Provider value={navigation}>
+      <section aria-label="Project kanban" className="flex h-full min-h-0 flex-col">
+        {open ? (open.kind === "plan" ? planDetail(open.taskKey) : taskDetail(open.taskKey)) : <>
+          <header className="flex shrink-0 items-center gap-2 border-b border-border-hairline px-4 py-2 text-sm font-medium"><DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <button type="button" aria-label="Board project" className="flex min-w-0 items-center gap-2 rounded-md px-1.5 py-0.5 font-medium hover:bg-state-hover">
+                <span aria-hidden className="size-3 shrink-0 rounded-sm" style={{ backgroundColor: project.color }} />
+                <span className="truncate">{project.name}</span>
+                <Icon name="ChevronDown" className="size-3.5 shrink-0 text-muted-foreground" />
+              </button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="start" className="max-h-80 overflow-y-auto">
+              {projects.data?.map((item) => (
+                <DropdownMenuItem key={item.id} disabled={item.id === project.id} onSelect={() => pick(item.id)}>
+                  <span aria-hidden className="size-3 shrink-0 rounded-sm" style={{ backgroundColor: item.color }} />
+                  <span className="truncate">{item.name}</span>
+                </DropdownMenuItem>
+              ))}
+            </DropdownMenuContent>
+          </DropdownMenu><ManagerQuickSet projectId={project.id} className="ml-6" /><QueueMenu projectId={project.id} /><span aria-hidden className="ml-auto" /><LockChips projectId={project.id} /></header>
+          <div className="min-h-0 flex-1"><BoardView key={project.id} projectId={project.id} /></div>
+        </>}
+      </section>
+    </TasksNavigationContext.Provider>
   );
 }
 

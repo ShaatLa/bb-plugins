@@ -153,20 +153,13 @@ it.each(["side", "kanban"])(
         name: `Open sub-task ${child.key}: ${child.title}`,
       }),
     );
-    if (surface === "side") {
-      await slot.findByRole("group", { name: question.prompt });
-      expect(slot.navigateCalls).toEqual([]);
-      fireEvent.click(
-        slot.getByRole("button", { name: "Back to project board" }),
-      );
-      await slot.findByRole("list", { name: `Sub-tasks of ${parent.key}` });
-    } else {
-      expect(slot.navigateCalls).toContainEqual({
-        method: "toPluginPanel",
-        path: "work-board",
-        options: { subPath: `task/${child.key}` },
-      });
-    }
+    // Both side boards open the child in their own tab, with no main-area navigation.
+    await slot.findByRole("group", { name: question.prompt });
+    expect(slot.navigateCalls).toEqual([]);
+    fireEvent.click(
+      slot.getByRole("button", { name: surface === "side" ? "Back to project board" : "Back to board" }),
+    );
+    await slot.findByRole("list", { name: `Sub-tasks of ${parent.key}` });
     await structured.handlers.answerQuestion({
       questionId: question.id,
       revision: question.revision,

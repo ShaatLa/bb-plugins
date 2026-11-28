@@ -4,6 +4,8 @@ import { PlanCard } from "../plan/card.js";
 import { useActivityPoll, useAdvisoryRecheck } from "../../shell/activity-poll.js";
 import { ActivityStatus } from "./activity-status.js";
 import { TaskSessions } from "./sessions.js";
+import { QueueBlock } from "./queue-block.js";
+import { ScheduleBlock } from "./schedule-block.js";
 import { PausedBlock, pauseDetailsFor } from "./paused.js";
 import { isActiveThread } from "./meta.js";
 import { DependenciesSection } from "./dependencies";
@@ -23,11 +25,9 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import SmilePlusIcon from "@hugeicons/core-free-icons/SmilePlusIcon";
 import type { Task, TaskThread } from "../../shared/contract.js";
 import { errorMessage } from "../../shared/errors.js";
-import type { DelegationRpcContract } from "../../delegate/contract.js";
 import {
   experimental_copyToClipboard,
   useBbNavigate,
-  useRpc,
   useSdk,
   useRealtime,
 } from "@get-bb/plugin-sdk/app";
@@ -327,7 +327,6 @@ function TaskDetail({
   const { ref: layoutRef, wide } = useWideDetail();
   const questionsRef = useRef<HTMLDivElement>(null);
   const questions = useTasksQuery(async client => (await client.call("listQuestions", { taskId: task.id })).questions, ["tasks:changed"], [task.id], { relevantTaskIds: [task.id] });
-  const delegationRpc = useRpc<DelegationRpcContract>();
   const navigation = useTasksNavigation();
   const { toasts, push, dismiss } = useDetailToasts();
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -604,8 +603,12 @@ function TaskDetail({
       : saverRef.current.getDraft(task.id) ?? task.description;
   const parentTask = parent.data ?? null;
   const activityStatus = <>
-    <ActivityStatus key={task.id} queue={activity.data?.queue} scheduledStart={activity.data?.scheduledStart} task={task} onStatusChange={(status) => void updateTask({ status })} activity={activity.data?.activity} advisories={activity.data?.advisories} isFetching={activity.isFetching} error={activity.error} />
-    <TaskSessions key={task.id} task={task} threads={threads.data ?? []} pullRequests={pullRequests.data?.pullRequests} unavailableThreadIds={pullRequests.data?.unavailableThreadIds ?? []} onError={push} onDetach={async (thread) => { await delegationRpc.call("taskThreadsDetach", { taskId: task.id, threadId: thread.threadId }); threads.refresh(); }} />
+    <ActivityStatus key={task.id} task={task} onStatusChange={(status) => void updateTask({ status })} activity={activity.data?.activity} advisories={activity.data?.advisories} isFetching={activity.isFetching} error={activity.error} />
+    <TaskSessions key={task.id} task={task} threads={threads.data ?? []} pullRequests={pullRequests.data?.pullRequests} unavailableThreadIds={pullRequests.data?.unavailableThreadIds ?? []} />
+    {!task.archivedAt ? <>
+      <QueueBlock key={`queue-${task.id}`} taskId={task.id} projectId={task.projectId} queue={activity.data?.queue} />
+      <ScheduleBlock key={`start-${task.id}`} taskId={task.id} projectId={task.projectId} taskKey={task.key} start={activity.data?.scheduledStart} />
+    </> : null}
     <PausedBlock key={task.id} pauses={shownPauses(activity.data?.pauses, activity.data?.blockedBy)} details={pauseDetailsFor(pauseDetails, task.id)} names={pauseDetails.data?.names} questions={questions.data} resume={async () => { await rpc.call("resumeTask", { taskId: task.id, actor: "owner" }); await pauseDetails.refresh(); }} extend={async (reason, durationMs) => { await rpc.call("pauseTask", { taskId: task.id, reason, durationMs, actor: "owner" }); await pauseDetails.refresh(); }} onError={push} />
     {!task.archivedAt ? <div className="mb-4">
       <DispatchControl taskId={task.id} projectId={task.projectId} threads={threads.data ?? []} presets={presets.data} onError={push} align="start" className="w-full" />

@@ -63,36 +63,47 @@ const rail = () => document.querySelector('aside[aria-label="Task details"]');
 const callCount = (slot: ReturnType<typeof render>, method: string) => slot.rpcCalls.filter((call) => call.method === method).length;
 
 describe("task view layout", () => {
-  it.each([480, 640])("keeps Queue and Start in the status card and Sessions in its own section at %ipx", async (width) => {
+  it.each([480, 640])("shows Status and Activity in the status card, and Queue and Start as their own sections at %ipx", async (width) => {
     setWidth(width);
-    const slot = render();
+    const slot = render("main", true, false, false, task, [{ signal: "owner_question", reason: "waiting", until: null, targets: [] }]);
     const activity = await slot.findByRole("region", { name: "Task activity status" });
-    expect(within(activity).getByText("Queue")).toBeTruthy();
-    expect(within(activity).getByRole("button", { name: "Add to queue" }).title).toBe("Add to queue");
-    expect(slot.getAllByRole("button", { name: "Add to queue" })).toHaveLength(1);
-    // Each empty section is one row: its label, a muted None and its add icon, all inside its card.
-    for (const [label, add] of [["Queue", "Add to queue"], ["Start", "Schedule a start"]]) {
-      expect(within(activity).getByText(label!)).toBeTruthy();
-      expect(within(activity).getByRole("button", { name: add! }).title).toBe(add);
-    }
-    expect(within(activity).getAllByText("None")).toHaveLength(2);
-    expect(within(activity).queryByText("Sessions")).toBeNull();
+    expect(within(activity).getByText("Status")).toBeTruthy();
+    expect(within(activity).getByText("Activity")).toBeTruthy();
+    for (const label of ["Queue", "Start", "Sessions"]) expect(within(activity).queryByText(label)).toBeNull();
+    expect(within(activity).queryByRole("button", { name: "Add to queue" })).toBeNull();
     const sessions = slot.getByRole("region", { name: "Sessions" });
-    expect(within(sessions).getByRole("button", { name: "Send to another thread" }).title).toBe("Send to another thread");
-    expect(within(sessions).getAllByText("None")).toHaveLength(1);
+    const queue = slot.getByRole("region", { name: "Queue" });
+    const start = slot.getByRole("region", { name: "Start" });
+    const paused = await slot.findByRole("region", { name: "Paused" });
+    // Each empty section is a header with its icon on the right, and a muted None below.
+    expect(within(queue).getByRole("button", { name: "Add to queue" }).title).toBe("Add to queue");
+    expect(within(start).getByRole("button", { name: "Schedule a start" }).title).toBe("Schedule a start");
+    for (const section of [queue, start]) expect(within(section).getAllByText("None")).toHaveLength(1);
+    expect(slot.getAllByRole("button", { name: "Add to queue" })).toHaveLength(1);
     expect(activity.compareDocumentPosition(sessions) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    expect(sessions.compareDocumentPosition(slot.getByRole("button", { name: "Send to thread…" })) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    fireEvent.click(within(activity).getByRole("button", { name: "Add to queue" }));
+    expect(sessions.nextElementSibling).toBe(queue);
+    expect(queue.nextElementSibling).toBe(start);
+    expect(start.nextElementSibling).toBe(paused);
+    expect(paused.compareDocumentPosition(slot.getByRole("button", { name: "Open thread Example worker" })) & Node.DOCUMENT_POSITION_PRECEDING).toBeTruthy();
+    fireEvent.click(within(queue).getByRole("button", { name: "Add to queue" }));
     expect(await slot.findByRole("dialog", { name: "Add to a work queue" })).toBeTruthy();
   });
-  it.each(["main", "side"] as const)("orders the status card, Sessions and Paused in the %s view", async (surface) => {
+  it("keeps Sessions with its add icon and one None, before the dispatch control", async () => {
+    const slot = render();
+    const sessions = await slot.findByRole("region", { name: "Sessions" });
+    expect(within(sessions).getByRole("button", { name: "Send to another thread" }).title).toBe("Send to another thread");
+    expect(within(sessions).getAllByText("None")).toHaveLength(1);
+    expect(sessions.compareDocumentPosition(slot.getByRole("button", { name: "Send to thread…" })) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+  it.each(["main", "side"] as const)("orders the status card, Sessions, Queue, Start and Paused in the %s view", async (surface) => {
     const slot = render(surface, true, false, false, task, [{ signal: "owner_question", reason: "waiting", until: null, targets: [] }]);
     const paused = await slot.findByRole("region", { name: "Paused" });
     const activity = slot.getByRole("region", { name: "Task activity status" });
     const sessions = slot.getByRole("region", { name: "Sessions" });
     expect(activity.compareDocumentPosition(sessions) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    expect(sessions.compareDocumentPosition(paused) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    expect(sessions.nextElementSibling).toBe(paused);
+    expect(sessions.nextElementSibling).toBe(slot.getByRole("region", { name: "Queue" }));
+    expect(slot.getByRole("region", { name: "Queue" }).nextElementSibling).toBe(slot.getByRole("region", { name: "Start" }));
+    expect(slot.getByRole("region", { name: "Start" }).nextElementSibling).toBe(paused);
   });
   it("breaks a long unbroken preset name inside the Sessions card", async () => {
     const slot = render("main", true, false, false, task, [], `Preset${"x".repeat(80)}`);
@@ -100,29 +111,32 @@ describe("task view layout", () => {
     const line = await within(sessions).findByText(/^Preset(x{80}) · attached/);
     expect(line.className).toContain("[overflow-wrap:anywhere]");
   });
-  it("hides Queue, Start, add and detach on an archived task", async () => {
+  it("renders neither Queue nor Start on an archived task, and Sessions has no add and no detach", async () => {
     const slot = render("main", true, false, false, { ...task, archivedAt: "2026-07-16T00:00:00.000Z" });
     const sessions = await slot.findByRole("region", { name: "Sessions" });
-    const activity = slot.getByRole("region", { name: "Task activity status" });
     await within(sessions).findByRole("button", { name: "Open thread Example worker" });
-    expect(within(activity).queryByText("Queue")).toBeNull();
-    expect(within(activity).queryByText("Start")).toBeNull();
+    expect(slot.queryByRole("region", { name: "Queue" })).toBeNull();
+    expect(slot.queryByRole("region", { name: "Start" })).toBeNull();
+    expect(slot.queryByRole("button", { name: "Add to queue" })).toBeNull();
+    expect(slot.queryByRole("button", { name: "Schedule a start" })).toBeNull();
     expect(within(sessions).queryByRole("button", { name: "Send to another thread" })).toBeNull();
     expect(within(sessions).queryByRole("button", { name: /^Unassign/ })).toBeNull();
   });
   it("shows the queue place without the total while the queue loads", async () => {
     const slot = render("main", false, true, true);
-    const activity = await slot.findByRole("region", { name: "Task activity status" });
-    await waitFor(() => expect(activity.textContent).toContain("#2 · Example worker"));
+    const queue = await slot.findByRole("region", { name: "Queue" });
+    await waitFor(() => expect(queue.textContent).toContain("#2 · Example worker"));
     expect(callCount(slot, "queueList")).toBeGreaterThan(0);
   });
-  it.each([480, 640])("shows the queue position in the status card at %ipx", async (width) => {
+  it.each([480, 640])("shows the queue position on one truncated line in the Queue section at %ipx", async (width) => {
     setWidth(width);
     const slot = render("main", false, true);
-    const activity = await slot.findByRole("region", { name: "Task activity status" });
-    await waitFor(() => expect(activity.textContent).toContain("2 of 4 · Example worker"));
+    const queue = await slot.findByRole("region", { name: "Queue" });
+    await waitFor(() => expect(queue.textContent).toContain("2 of 4 · Example worker"));
+    const place = within(queue).getByTitle("2 of 4 · Example worker");
+    expect(within(place).getByRole("button", { name: "Example worker" }).className).toContain("truncate");
     expect(slot.getAllByRole("button", { name: "Remove from queue" })).toHaveLength(1);
-    fireEvent.click(within(activity).getByRole("button", { name: "Remove from queue" }));
+    fireEvent.click(within(queue).getByRole("button", { name: "Remove from queue" }));
     await waitFor(() => expect(slot.rpcCalls).toContainEqual(expect.objectContaining({ method: "queueRemove", input: { taskId: task.id, actor: "owner" } })));
   });
   it.each(["main", "side"] as const)("shows the rail beside the content at 640px in the %s view", async (surface) => {

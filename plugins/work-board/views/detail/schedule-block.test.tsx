@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { ScheduleBlock } from "./schedule-block";
 
@@ -10,6 +10,8 @@ const opened: string[] = [];
 vi.mock("@get-bb/plugin-sdk/app", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@get-bb/plugin-sdk/app")>()),
   experimental_Icon: () => null,
+  experimental_useProviders: () => ({ status: "ready", providers: [{ id: "codex", logoUrl: "/logo/codex" }] }),
+  experimental_ProviderIcon: ({ provider }: { provider: { id: string; logoUrl?: string } }) => <span data-testid="provider-icon" data-provider={provider.id} data-logo={provider.logoUrl ?? ""} />,
   experimental_ProviderModelPicker: ({ value, onChange, className }: { value: { providerId: string; model: string; reasoningLevel: string }; onChange: (value: unknown) => void; className?: string }) => (
     <div data-testid="picker" className={className}>
       <button type="button" onClick={() => onChange({ ...value, providerId: "codex", model: "gpt-5", reasoningLevel: "high" })}>Pick codex gpt-5</button>
@@ -44,12 +46,17 @@ beforeEach(() => {
 afterEach(cleanup);
 const block = (start?: Record<string, unknown>) => render(<ScheduleBlock taskId="t1" projectId="proj_t" taskKey="EXA-1" start={start as never} />);
 
-it("shows the scheduled start with its mode, args and setter, and cancels it", async () => {
+const TIME = new Date(AT).toLocaleString([], { dateStyle: "medium", timeStyle: "short" });
+
+it("shows a Spawn Gate start as its time and Spawn Gate only, with the setter in the tooltip, and cancels it", async () => {
   block({ at: AT, mode: "spawn_gate", state: "scheduled", setter: "thr_setter" });
-  expect((await screen.findByText(/· Spawn Gate$/)).textContent).toContain("Spawn Gate");
-  expect(screen.getByText(/--card EXA-1 --role impl · set by/)).toBeTruthy();
-  expect(screen.getByText("Name of thr_setter").getAttribute("title")).toBe("thr_setter");
-  expect(screen.getByText(/set by/).textContent).toMatch(/set by Name of thr_setter$/);
+  const section = await screen.findByRole("region", { name: "Start" });
+  await screen.findByText("Spawn Gate");
+  expect(screen.getByText(TIME)).toBeTruthy();
+  // Neither the builder's args nor the setter are on the card; the row's tooltip carries who set it.
+  expect(section.textContent).not.toContain("--card");
+  expect(section.textContent).not.toContain("set by");
+  expect(screen.getByTitle("set by Name of thr_setter")).toBeTruthy();
   const cancel = screen.getByRole("button", { name: "Cancel scheduled start" });
   expect(cancel.title).toBe("Cancel scheduled start");
   fireEvent.click(cancel);
@@ -103,19 +110,42 @@ it("needs a provider and model in a project without Spawn Gate, and sends the ag
   expect((screen.getByRole("button", { name: "Schedule" }) as HTMLButtonElement).disabled).toBe(true);
   fireEvent.click(screen.getByRole("button", { name: "Pick codex gpt-5" }));
   fireEvent.change(screen.getByLabelText("Permission mode"), { target: { value: "full" } });
+  expect(screen.queryByLabelText("Brief")).toBeNull();
+  fireEvent.click(screen.getByRole("button", { name: "+ Brief" }));
   fireEvent.change(screen.getByLabelText("Brief"), { target: { value: "Run the checks." } });
   fireEvent.click(screen.getByRole("button", { name: "Schedule" }));
   await waitFor(() => expect(calls.find(([method]) => method === "scheduleStart")?.[1]).toMatchObject({ taskId: "t1", actor: "owner", launch: { kind: "agent", providerId: "codex", model: "gpt-5", reasoningLevel: "high", permissionMode: "full", brief: "Run the checks." } }));
 });
 
-it("shows an agent start as provider, model and reasoning on one line, and keeps Spawn Gate's form for a gate project", async () => {
-  handlers.getScheduledStart = () => ({ scheduledStart: info({ mode: "preset", builderArgs: undefined, brief: "Night run", agent: { providerId: "codex", model: "gpt-5", reasoningLevel: "high" } }) });
+it("shows an agent start in two lines: the time, then the provider icon, model and reasoning, with no brief, setter or permissions", async () => {
+  handlers.getScheduledStart = () => ({ scheduledStart: info({ mode: "preset", builderArgs: undefined, brief: "Night run\nsecond line", agent: { providerId: "codex", model: "gpt-5", reasoningLevel: "high", permissionMode: "full" } }) });
   block();
-  expect((await screen.findByText(/· codex · gpt-5 · high$/)).textContent).toContain("codex · gpt-5 · high");
-  expect(screen.getByText(/Night run · set by/)).toBeTruthy();
+  const section = await screen.findByRole("region", { name: "Start" });
+  await screen.findByText("gpt-5 · high");
+  expect(screen.getByText(TIME)).toBeTruthy();
+  const icon = screen.getByTestId("provider-icon");
+  expect(icon.getAttribute("data-provider")).toBe("codex");
+  expect(icon.getAttribute("data-logo")).toBe("/logo/codex");
+  expect(section.textContent).not.toMatch(/Night run|set by|full|Full/);
+  expect(screen.getByTitle("set by Name of thr_setter · Night run")).toBeTruthy();
+  expect(section.querySelectorAll("[data-schedule-block] > div:nth-child(2) > div > div")).toHaveLength(2);
   fireEvent.click(screen.getByRole("button", { name: "Change scheduled start" }));
   expect(await screen.findByLabelText("Launch arguments")).toBeTruthy();
   expect(screen.queryByTestId("picker")).toBeNull();
+});
+
+it("falls back to the provider id for its icon when the host does not list the provider", async () => {
+  handlers.getScheduledStart = () => ({ scheduledStart: info({ mode: "preset", builderArgs: undefined, agent: { providerId: "other", model: "m1" } }) });
+  block();
+  await screen.findByText("m1");
+  expect(screen.getByTestId("provider-icon").getAttribute("data-provider")).toBe("other");
+  expect(screen.getByTestId("provider-icon").getAttribute("data-logo")).toBe("");
+});
+
+it("shows a legacy preset start as Preset <name>", async () => {
+  handlers.getScheduledStart = () => ({ scheduledStart: info({ mode: "preset", builderArgs: undefined, presetId: "p1", presetName: "Night worker" }) });
+  block();
+  expect(await screen.findByText("Preset Night worker")).toBeTruthy();
 });
 
 it("keeps a legacy preset start when only its time is changed, and replaces it only by choosing an agent", async () => {
@@ -146,21 +176,45 @@ it("keeps a legacy preset start when only its time is changed, and replaces it o
   await waitFor(() => expect(calls.find(([method]) => method === "changeScheduledStart")?.[1]).toMatchObject({ launch: { kind: "agent", providerId: "codex", model: "gpt-5" } }));
 });
 
-it("shows the empty Start row with its add icon, and fits its form inside a narrow card", async () => {
+it("shows the empty Start section with its add icon, and a form without hint texts that fits a narrow card", async () => {
   handlers.getScheduledStart = () => ({ scheduledStart: null });
   block();
-  expect(await screen.findByText("None")).toBeTruthy();
+  const section = await screen.findByRole("region", { name: "Start" });
+  expect(within(section).getByText("None")).toBeTruthy();
   const add = screen.getByRole("button", { name: "Schedule a start" });
   expect(add.title).toBe("Schedule a start");
   fireEvent.click(add);
   const form = await screen.findByLabelText("Start time").then((field) => field.closest("[data-start-later]")!);
-  // Nothing keeps a fixed width: every field fills the card and may shrink, labels wrap with their fields, hints break anywhere.
+  // One field per line, none with a fixed width.
   expect(form.className).toMatch(/\bw-full\b.*\bmin-w-0\b/);
-  expect(screen.getByLabelText("Start time").className).toMatch(/\bw-full\b.*\bmin-w-0\b/);
-  expect(screen.getByLabelText("Start time").closest("label")!.className).toContain("flex-wrap");
-  expect(screen.getByText("your time zone").className).toContain("[overflow-wrap:anywhere]");
-  expect(screen.getByText(/Nothing is sent to the session before it starts/).className).toContain("[overflow-wrap:anywhere]");
-  expect(screen.getByLabelText("Launch arguments").className).toMatch(/\bw-full\b.*\bmin-w-0\b/);
+  for (const field of [screen.getByLabelText("Start time"), screen.getByLabelText("Launch arguments")]) expect(field.className).toMatch(/\bw-full\b.*\bmin-w-0\b/);
+  expect(form.querySelector("label")).toBeNull();
+  for (const hint of [/your time zone/, /Nothing is sent to the session/, /Launch arguments \(/, /builder checks these arguments/, /default environment/, /Agent: provider/]) expect(screen.queryByText(hint)).toBeNull();
+  expect(screen.getByLabelText("Launch arguments").title).toBe("{key} is the card key");
+  expect((screen.getByLabelText("Launch arguments") as HTMLInputElement).placeholder).toBe("--card {key} --role impl");
+  expect(screen.getByRole("button", { name: "Check" })).toBeTruthy();
+});
+
+it("keeps the agent form to the picker, the permissions and a brief behind + Brief, and opens it when the start has a brief", async () => {
+  handlers.getScheduledStart = () => ({ scheduledStart: null });
+  handlers.scheduleOptions = () => ({ mode: "preset", defaultArgs: "", presets: [] });
+  block();
+  fireEvent.click(await screen.findByRole("button", { name: "Schedule a start" }));
+  const form = await screen.findByLabelText("Start time").then((field) => field.closest("[data-start-later]")!);
+  expect(form.querySelector("label")).toBeNull();
+  expect(within(form as HTMLElement).getByTestId("picker").className).toMatch(/\bw-full\b.*\bmin-w-0\b/);
+  expect(screen.getByLabelText("Permission mode").className).toMatch(/\bw-full\b.*\bmin-w-0\b/);
+  for (const hint of [/Agent: provider/, /default environment/, /Nothing is sent/, /your time zone/]) expect(screen.queryByText(hint)).toBeNull();
+  expect(screen.queryByLabelText("Brief")).toBeNull();
+  fireEvent.click(screen.getByRole("button", { name: "+ Brief" }));
+  expect(screen.getByLabelText("Brief").className).toMatch(/\bw-full\b.*\bmin-w-0\b/);
+  expect(screen.queryByRole("button", { name: "+ Brief" })).toBeNull();
+  cleanup();
+  handlers.getScheduledStart = () => ({ scheduledStart: info({ mode: "preset", builderArgs: undefined, brief: "Old brief", agent: { providerId: "codex", model: "gpt-5" } }) });
+  block();
+  fireEvent.click(await screen.findByRole("button", { name: "Change scheduled start" }));
+  expect((await screen.findByLabelText("Brief") as HTMLTextAreaElement).value).toBe("Old brief");
+  expect(screen.queryByRole("button", { name: "+ Brief" })).toBeNull();
 });
 
 it("shows a launched session, and a refused or unknown start with its error and the resolve command", async () => {
@@ -202,5 +256,5 @@ it("parses an edited args field, keeping quoted arguments whole", async () => {
 it("reads the owner as the owner, not as an id", async () => {
   handlers.getScheduledStart = () => ({ scheduledStart: info({ setter: "owner" }) });
   block();
-  expect((await screen.findByText(/set by the owner/)).textContent).toContain("set by the owner");
+  expect(await screen.findByTitle("set by the owner")).toBeTruthy();
 });

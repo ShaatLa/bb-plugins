@@ -91,4 +91,21 @@ describe("kanban panel choice", () => {
     expect(loadKanbanChoice()).toBeNull();
     expect(() => storeKanbanChoice({ projectId: PROJECT_A, followed: PROJECT_A })).not.toThrow();
   });
+  it("round-trips an open task or plan, and every write merges into what is stored", () => {
+    storeKanbanChoice({ projectId: PROJECT_A, followed: PROJECT_A });
+    storeKanbanChoice({ open: { kind: "task", taskKey: "EXA-1" } });
+    expect(loadKanbanChoice()).toEqual({ projectId: PROJECT_A, followed: PROJECT_A, open: { kind: "task", taskKey: "EXA-1" } });
+    storeKanbanChoice({ projectId: "proj_other", followed: "proj_other" });
+    expect(loadKanbanChoice()).toEqual({ projectId: "proj_other", followed: "proj_other", open: { kind: "task", taskKey: "EXA-1" } });
+    storeKanbanChoice({ open: { kind: "plan", taskKey: "EXA-1" } });
+    expect(loadKanbanChoice()?.open).toEqual({ kind: "plan", taskKey: "EXA-1" });
+    storeKanbanChoice({ open: null });
+    expect(loadKanbanChoice()).toEqual({ projectId: "proj_other", followed: "proj_other" });
+  });
+  it.each([
+    [{ kind: "board", taskKey: "EXA-1" }], [{ kind: "task" }], [{ kind: "task", taskKey: "no key" }], [{ kind: "task", taskKey: 5 }], ["EXA-1"], [null], [[]],
+  ])("ignores a malformed open %j and keeps the rest", (open) => {
+    session.setItem(KEY, JSON.stringify({ projectId: PROJECT_A, followed: null, open }));
+    expect(loadKanbanChoice()).toEqual({ projectId: PROJECT_A, followed: null });
+  });
 });

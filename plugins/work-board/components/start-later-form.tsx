@@ -36,22 +36,22 @@ export function localOf(iso: string): string {
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
 }
 
-/** Every field fills the card and may shrink below its content, so nothing runs past the side panel's edge; a label and its field stack when the panel is narrow. */
-const FIELD = "h-7 w-full min-w-0 flex-1 basis-40 rounded-md border border-input bg-transparent px-2 text-xs focus:outline-none focus:ring-1 focus:ring-ring disabled:opacity-50";
-const ROW = "flex flex-wrap items-center gap-x-2 gap-y-1";
-const HINT = "text-muted-foreground [overflow-wrap:anywhere]";
+/** Every field fills the card and may shrink below its content, so nothing runs past the side panel's edge. */
+const FIELD = "h-7 w-full min-w-0 rounded-md border border-input bg-transparent px-2 text-xs focus:outline-none focus:ring-1 focus:ring-ring disabled:opacity-50";
 
 /**
- * The one "Start later" form of the new-task dialog and the task page. It asks only what the project's launch needs: a time, then
- * either the Spawn Gate builder's arguments (with a Check that runs its dry run), or, where Work Board spawns the session itself, a
- * provider, model and options from the host's picker with an optional brief. A policy that
- * cannot be read disables it: nothing is scheduled on a guess. `taskId` is unset before the card exists, so there is nothing to check yet.
+ * The one "Start later" form of the new-task dialog and the task page: one field per line, no hint texts. It asks only what the
+ * project's launch needs: a time, then either the Spawn Gate builder's arguments (with a Check that runs its dry run), or, where
+ * Work Board spawns the session itself, a provider, model and options from the host's picker, the permissions and an optional brief.
+ * A policy that cannot be read disables it: nothing is scheduled on a guess. `taskId` is unset before the card exists, so there is nothing to check yet.
  */
 export function StartLaterForm({ projectId, taskId, value, onChange, onReady, disabled }: { projectId: string; taskId?: string; value: StartLaterValue; onChange: (value: StartLaterValue) => void; onReady?: (mode: "spawn_gate" | "preset" | null) => void; disabled?: boolean }) {
   const rpc = useTasksRpc();
   const options = useTasksQuery<Options>(async (client) => client.call("scheduleOptions", { projectId }), ["projects:changed"], [projectId]);
   const [check, setCheck] = useState<{ ok: boolean; text: string } | null>(null);
   const [checking, setChecking] = useState(false);
+  // The brief stays behind "+ Brief" unless the start already has one.
+  const [briefOpen, setBriefOpen] = useState(value.brief !== "");
   const mode = options.data?.mode ?? null;
   const set = (patch: Partial<StartLaterValue>) => { setCheck(null); onChange({ ...value, ...patch }); };
   // Reported once the policy is read (null when it could not be); the owner keeps the last answer while a form reloads, so Save does not flicker.
@@ -59,42 +59,34 @@ export function StartLaterForm({ projectId, taskId, value, onChange, onReady, di
   if (options.isLoading || !options.data) return <p className="text-xs text-muted-foreground">{options.error ? `Could not read how this project launches sessions: ${options.error}` : "Reading the project's launch settings…"}</p>;
   return (
     <div className="grid w-full min-w-0 gap-2 text-xs" data-start-later>
-      <label className={ROW}><span className="w-16 shrink-0 text-muted-foreground">Start at</span>
-        <input type="datetime-local" aria-label="Start time" className={FIELD} value={value.at} disabled={disabled} onChange={(event) => set({ at: event.target.value })} />
-        <span className={HINT}>your time zone</span>
-      </label>
+      <input type="datetime-local" aria-label="Start time" className={FIELD} value={value.at} disabled={disabled} onChange={(event) => set({ at: event.target.value })} />
       {mode === null ? <p role="alert" className="text-destructive [overflow-wrap:anywhere]">{options.data.error ?? "Could not read the launch policy"}. Nothing can be scheduled until it can be read.</p> : null}
       {mode === "spawn_gate" ? (
-        <label className="grid min-w-0 gap-1"><span className={HINT}>Launch arguments (the project's Spawn Gate builder; {"{key}"} is the card key)</span>
-          <input aria-label="Launch arguments" className={`${FIELD} font-mono`} value={value.args} placeholder={options.data.defaultArgs} disabled={disabled} onChange={(event) => set({ args: event.target.value })} />
-        </label>
+        <input aria-label="Launch arguments" title="{key} is the card key" className={`${FIELD} font-mono`} value={value.args} placeholder={options.data.defaultArgs} disabled={disabled} onChange={(event) => set({ args: event.target.value })} />
       ) : null}
       {mode === "preset" ? (
         <>
           {value.keepPreset ? (
-            <div className={ROW}>
-              <span className={HINT}>Preset {value.keepPreset.name}, kept</span>
+            <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+              <span className="text-muted-foreground [overflow-wrap:anywhere]">Preset {value.keepPreset.name}, kept</span>
               <Button type="button" size="sm" variant="ghost" className="h-6 px-2 text-xs" disabled={disabled} onClick={() => set({ keepPreset: undefined })}>Use an agent instead</Button>
             </div>
           ) : (<>
-          <div className="grid min-w-0 gap-1"><span className={HINT}>Agent: provider, model and reasoning</span>
             <ProviderModelPicker
               value={{ providerId: value.providerId, model: value.model, reasoningLevel: value.reasoningLevel, ...(value.serviceTier ? { serviceTier: value.serviceTier } : {}) }}
               onChange={(picked) => set({ providerId: picked.providerId, model: picked.model, reasoningLevel: picked.reasoningLevel, ...(picked.serviceTier ? { serviceTier: picked.serviceTier } : { serviceTier: "" }) })}
               disabled={disabled} className="h-7 w-full min-w-0 max-w-full" />
-          </div>
-          <label className={ROW}><span className="w-16 shrink-0 text-muted-foreground">Permissions</span>
             <select aria-label="Permission mode" className={FIELD} value={value.permissionMode} disabled={disabled} onChange={(event) => set({ permissionMode: event.target.value as PresetPermissionMode })}>
               {PRESET_PERMISSION_MODES.map((mode) => <option key={mode} value={mode}>{PERMISSION_LABELS[mode]}</option>)}
             </select>
-          </label>
           </>)}
-          <label className="grid min-w-0 gap-1"><span className={HINT}>Brief for the session (optional)</span>
+          {briefOpen ? (
             <textarea aria-label="Brief" className="min-h-14 w-full min-w-0 rounded-md border border-input bg-transparent px-2 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-ring" value={value.brief} disabled={disabled} onChange={(event) => set({ brief: event.target.value })} />
-          </label>
+          ) : (
+            <Button type="button" size="sm" variant="ghost" className="h-6 justify-start px-1 text-xs text-muted-foreground" disabled={disabled} onClick={() => setBriefOpen(true)}>+ Brief</Button>
+          )}
         </>
       ) : null}
-      {mode === "preset" ? <p className={HINT}>Runs in the project's default environment. A project that launches through Spawn Gate lets the gate choose the agent.</p> : null}
       {mode === "spawn_gate" && taskId ? (
         <div className="flex flex-wrap items-center gap-2">
           <Button type="button" size="sm" variant="outline" className="h-6 px-2 text-xs" disabled={disabled || checking} onClick={async () => {
@@ -104,8 +96,6 @@ export function StartLaterForm({ projectId, taskId, value, onChange, onReady, di
           {check ? <span role={check.ok ? "status" : "alert"} className={`min-w-0 [overflow-wrap:anywhere] ${check.ok ? "text-muted-foreground" : "text-destructive"}`}>{check.text}</span> : null}
         </div>
       ) : null}
-      {mode === "spawn_gate" && !taskId ? <p className={HINT}>The builder checks these arguments when the card is created.</p> : null}
-      <p className={HINT}>Nothing is sent to the session before it starts.</p>
     </div>
   );
 }

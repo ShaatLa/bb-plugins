@@ -506,6 +506,121 @@ describe("kanban side panel", () => {
     });
   });
 
+  describe("tasks open in the panel", () => {
+    const other = { ...project, id: OTHER_PROJECT_ID, name: "Other Board", prefix: "OTH", color: "red" };
+    const first = makeTask({ id: "01HZZZZZZZZZZZZZZZZZZZZZT1", title: "First card" });
+    const parent = makeTask({ id: "01HZZZZZZZZZZZZZZZZZZZZZT2", key: "TSK-2", number: 2, title: "Parent card", position: 1 });
+    const child = makeTask({ id: "01HZZZZZZZZZZZZZZZZZZZZZT3", key: "TSK-3", number: 3, title: "Child card", parentTaskId: parent.id, position: 2 });
+    const foreign = makeTask({ id: "01HZZZZZZZZZZZZZZZZZZZZZO1", projectId: OTHER_PROJECT_ID, key: "OTH-1", number: 1, title: "Foreign card" });
+    const everyTask = [first, parent, child, foreign];
+    const rpc = () => seededRpc({
+      listProjects: () => ({ projects: [project, other] }),
+      listTasks: (input: { projectId?: string; parentTaskId?: string } | null) => ({ tasks: everyTask.filter((task) => (input?.projectId ? task.projectId === input.projectId : true) && (input?.parentTaskId ? task.parentTaskId === input.parentTaskId : true)) }),
+      getTaskByKey: (input: { taskKey: string }) => ({ task: everyTask.find((task) => task.key === input.taskKey) ?? null }),
+      listTaskDependencies: () => ({ blockedBy: [], blocks: [] }),
+      listLabels: () => ({ labels: [] }),
+      listAttachments: () => ({ attachments: [] }),
+      listTaskThreads: () => ({ taskThreads: [] }),
+      listTaskPullRequests: () => ({ pullRequests: [], unavailableThreadIds: [] }),
+      listQuestions: () => ({ questions: [] }),
+      listComments: () => ({ comments: [] }),
+      listBbProjects: () => ({ bbProjects: [] }),
+      listTaskCardMeta: () => ({ metadata: [] }),
+    });
+    const openPanel = (subPath: string) => renderSlot({ component: kanbanTab.component }, { subPath }, { rpc: rpc() });
+    const rerender = (slot: ReturnType<typeof openPanel>, subPath: string) => slot.lifecycle.rerender(<kanbanTab.component subPath={subPath} />);
+    const region = (slot: ReturnType<typeof openPanel>) => slot.findByRole("region", { name: "Project kanban" });
+    const shown = async (slot: ReturnType<typeof openPanel>, name: string) => { await waitFor(() => expect(within(slot.getByRole("region", { name: "Project kanban" })).getByRole("button", { name: "Board project" }).textContent).toContain(name)); };
+    const openFirst = async (slot: ReturnType<typeof openPanel>) => {
+      fireEvent.click(await within(await region(slot)).findByText("First card"));
+      return slot.findByRole("textbox", { name: "Task title" });
+    };
+    const stored = () => JSON.parse(window.sessionStorage.getItem("bb-work-board:kanban-project") ?? "null");
+
+    it("opens a clicked card in the tab, with no main-area navigation, and Back returns to the board of the same project", async () => {
+      const slot = openPanel(PROJECT_ID);
+      await openFirst(slot);
+      expect(slot.navigateCalls).toEqual([]);
+      expect(within(await region(slot)).queryByRole("button", { name: "Board project" })).toBeNull();
+      expect(stored()).toMatchObject({ open: { kind: "task", taskKey: "TSK-1" } });
+      fireEvent.click(await slot.findByRole("button", { name: "Back to board" }));
+      await shown(slot, "Tasks Plugin");
+      expect(await slot.findByText("First card")).toBeTruthy();
+      expect(stored().open).toBeUndefined();
+      expect(slot.navigateCalls).toEqual([]);
+    });
+
+    it("opens the task in the main area from the arrow beside the task", async () => {
+      const slot = openPanel(PROJECT_ID);
+      await openFirst(slot);
+      fireEvent.click(await slot.findByRole("button", { name: "Open TSK-1 in Tasks" }));
+      expect(slot.navigateCalls).toContainEqual({ method: "toPluginPanel", path: "work-board", options: { subPath: "task/TSK-1" } });
+    });
+
+    it("keeps an open task when the main area changes project, and Back shows the followed project's board", async () => {
+      const slot = openPanel(PROJECT_ID);
+      await openFirst(slot);
+      rerender(slot, OTHER_PROJECT_ID);
+      await waitFor(() => expect(stored()).toMatchObject({ projectId: OTHER_PROJECT_ID, followed: OTHER_PROJECT_ID, open: { kind: "task", taskKey: "TSK-1" } }));
+      expect(slot.getByRole("textbox", { name: "Task title" })).toBeTruthy();
+      fireEvent.click(await slot.findByRole("button", { name: "Back to board" }));
+      await shown(slot, "Other Board");
+      expect(await slot.findByText("Foreign card")).toBeTruthy();
+    });
+
+    it("restores an open task after a remount, also when the main area changed project meanwhile", async () => {
+      const slot = openPanel(PROJECT_ID);
+      await openFirst(slot);
+      slot.lifecycle.unmount();
+      const again = openPanel(PROJECT_ID);
+      expect(await again.findByRole("textbox", { name: "Task title" })).toBeTruthy();
+      again.lifecycle.unmount();
+      // The route changed while the tab was away: the task stays open, and Back shows the followed project.
+      const moved = openPanel(OTHER_PROJECT_ID);
+      expect(await moved.findByRole("textbox", { name: "Task title" })).toBeTruthy();
+      fireEvent.click(await moved.findByRole("button", { name: "Back to board" }));
+      await shown(moved, "Other Board");
+    });
+
+    it("opens a sub-task clicked on a board card in the tab", async () => {
+      const slot = openPanel(PROJECT_ID);
+      fireEvent.click(await within(await region(slot)).findByRole("button", { name: /Sub-tasks/ }));
+      fireEvent.click(await slot.findByRole("button", { name: "Open sub-task TSK-3: Child card" }));
+      await waitFor(() => expect(stored()).toMatchObject({ open: { kind: "task", taskKey: "TSK-3" } }));
+      expect(slot.navigateCalls).toEqual([]);
+      expect(await slot.findByRole("button", { name: "Back to board" })).toBeTruthy();
+    });
+
+    it("keeps a stored open task when mounted on the project the panel already follows", async () => {
+      window.sessionStorage.setItem("bb-work-board:kanban-project", JSON.stringify({ projectId: PROJECT_ID, followed: PROJECT_ID, open: { kind: "task", taskKey: "TSK-1" } }));
+      const slot = openPanel(PROJECT_ID);
+      await slot.findByRole("textbox", { name: "Task title" });
+      expect(stored()).toMatchObject({ open: { kind: "task", taskKey: "TSK-1" } });
+    });
+
+    it("shows a plan in the panel, and Back from it stores its task, so a remount shows the task and Back from that shows the board", async () => {
+      window.sessionStorage.setItem("bb-work-board:kanban-project", JSON.stringify({ projectId: PROJECT_ID, followed: PROJECT_ID, open: { kind: "plan", taskKey: "TSK-1" } }));
+      const slot = openPanel(PROJECT_ID);
+      fireEvent.click(await slot.findByRole("button", { name: "Back to TSK-1" }));
+      await waitFor(() => expect(stored()).toMatchObject({ open: { kind: "task", taskKey: "TSK-1" } }));
+      slot.lifecycle.unmount();
+      const again = openPanel(PROJECT_ID);
+      expect(await again.findByRole("textbox", { name: "Task title" })).toBeTruthy();
+      fireEvent.click(await again.findByRole("button", { name: "Back to board" }));
+      await shown(again, "Tasks Plugin");
+      again.lifecycle.unmount();
+      const board = openPanel(PROJECT_ID);
+      await shown(board, "Tasks Plugin");
+      expect(stored().open).toBeUndefined();
+    });
+
+    it("ignores a malformed open value and shows the board", async () => {
+      window.sessionStorage.setItem("bb-work-board:kanban-project", JSON.stringify({ projectId: PROJECT_ID, followed: PROJECT_ID, open: { kind: "task", taskKey: "not a key" } }));
+      const slot = openPanel(PROJECT_ID);
+      await shown(slot, "Tasks Plugin");
+    });
+  });
+
   it("shows a useful empty state without projects", async () => {
     const slot = renderSlot({ component: kanbanTab.component }, { subPath: "all" }, { rpc: emptyRpc });
     await slot.findByText("Create a project to open its kanban board.");

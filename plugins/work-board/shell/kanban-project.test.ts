@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { resolveKanbanProject, type KanbanChoice } from "./kanban-project.js";
+import { mergeKanbanChoice, resolveKanbanProject, type KanbanChoice } from "./kanban-project.js";
 import type { TasksRoute } from "./routes.js";
 
 const projects = [{ id: "pa", prefix: "AAA" }, { id: "pb", prefix: "BBB" }, { id: "pc", prefix: "CCC" }];
@@ -59,5 +59,27 @@ describe("kanban panel project", () => {
   it("neither resolves nor writes while projects load or when there are none", () => {
     expect(resolveKanbanProject({ route: project("pa"), stored: { projectId: "pb", followed: "pb" }, last: null, projects: undefined })).toEqual({ shown: null, next: null, main: null });
     expect(run(project("pa"), null, null, [])).toEqual({ shown: null, next: null, main: null });
+  });
+});
+
+describe("kanban panel stored value merge", () => {
+  const open = { kind: "task" as const, taskKey: "AAA-1" };
+  it("keeps open on a follow or pick write", () => {
+    expect(mergeKanbanChoice({ projectId: "pa", followed: "pa", open }, { projectId: "pb", followed: "pb" })).toEqual({ projectId: "pb", followed: "pb", open });
+    expect(mergeKanbanChoice({ projectId: "pa", followed: "pa", open }, { projectId: "pb", followed: null })).toEqual({ projectId: "pb", followed: null, open });
+  });
+  it("keeps projectId and followed on an open or back write", () => {
+    expect(mergeKanbanChoice({ projectId: "pb", followed: "pa" }, { open })).toEqual({ projectId: "pb", followed: "pa", open });
+    expect(mergeKanbanChoice({ projectId: "pb", followed: "pa", open }, { open: null })).toEqual({ projectId: "pb", followed: "pa" });
+    expect(mergeKanbanChoice({ projectId: "pb", followed: "pa", open }, { open: { kind: "plan", taskKey: "AAA-1" } })).toEqual({ projectId: "pb", followed: "pa", open: { kind: "plan", taskKey: "AAA-1" } });
+  });
+  it("starts from nothing stored, and a project write can close the open task", () => {
+    expect(mergeKanbanChoice(null, { open })).toEqual({ projectId: null, followed: null, open });
+    expect(mergeKanbanChoice({ projectId: "pa", followed: "pa", open }, { projectId: "pb", followed: "pa", open: null })).toEqual({ projectId: "pb", followed: "pa" });
+  });
+  it("is unaffected by an open task in what the panel resolves", () => {
+    const stored = { projectId: "pb", followed: "pa", open } as KanbanChoice;
+    expect(run(project("pa"), stored)).toMatchObject({ shown: { id: "pb" }, next: null });
+    expect(run(project("pc"), stored)).toMatchObject({ shown: { id: "pc" }, next: { projectId: "pc", followed: "pc" } });
   });
 });

@@ -31,6 +31,7 @@ import { LockChips } from "../../components/lock-chips.js";
 import { QueueMenu } from "../../components/queue-menu.js";
 import { ManagerQuickSet } from "../../components/manager-quick-set.js";
 import { BoardView } from "../board/index.js";
+import { OpenInTasksButton } from "../../components/open-in-tasks-button.js";
 import { DetailView } from "../detail/index.js";
 import { PlanView } from "../plan/plan-view.js";
 import { PRIORITY_LABELS } from "../list/lib.js";
@@ -135,32 +136,6 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function taskDetailSubPath(taskKey: string): string {
   return tasksRouteToSubPath({ kind: "task", taskKey });
-}
-
-function OpenInTasksButton({
-  label,
-  subPath,
-}: {
-  label: string;
-  subPath?: string;
-}) {
-  const navigate = useBbNavigate();
-  return (
-    <Button
-      className="size-6 shrink-0"
-      size="icon"
-      variant="ghost"
-      aria-label={label}
-      onClick={() =>
-        navigate.toPluginPanel(
-          PANEL_PATH,
-          subPath === undefined ? {} : { subPath },
-        )
-      }
-    >
-      <Icon name="ArrowUpRight" className="size-4" />
-    </Button>
-  );
 }
 
 function CardShell({

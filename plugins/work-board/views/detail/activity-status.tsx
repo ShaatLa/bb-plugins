@@ -1,6 +1,3 @@
-import { QueueBlock } from "./queue-block.js";
-import { ScheduleBlock } from "./schedule-block.js";
-import type { CardQueue, CardScheduledStart } from "../../shared/contract.js";
 import { TaskAdvisories } from "../../components/task-advisories";
 import type { TaskAdvisory } from "../../shared/task-advisories";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
@@ -11,7 +8,7 @@ import { TaskActivityIndicator } from "../../components/task-activity.js";
 import { StatusIcon } from "../../components/status-icon.js";
 import { useTaskStatuses } from "../../shell/task-statuses.js";
 
-export function ActivityStatus({ task, queue, scheduledStart, activity, advisories, isFetching, error, onStatusChange }: { task: Task; queue?: CardQueue; scheduledStart?: CardScheduledStart; activity?: TaskActivity; advisories?: TaskAdvisory[]; isFetching: boolean; error: string | null; onStatusChange: (status: Task["status"]) => void }) {
+export function ActivityStatus({ task, activity, advisories, isFetching, error, onStatusChange }: { task: Task; activity?: TaskActivity; advisories?: TaskAdvisory[]; isFetching: boolean; error: string | null; onStatusChange: (status: Task["status"]) => void }) {
   const workflow = useTaskStatuses(task.projectId);
   return (
     <section aria-label="Task activity status" className="mb-2 rounded-md border border-border px-3 py-2 text-xs">
@@ -39,15 +36,6 @@ export function ActivityStatus({ task, queue, scheduledStart, activity, advisori
       </div>
       <TaskAdvisories items={advisories} />
       {error ? <p role="status" className="mt-2 text-warning">Could not refresh activity. Status may be out of date.</p> : null}
-      {/* One row per section: the label, its content, and the icon at the right end, so every row ends in the same place. */}
-      {!task.archivedAt ? (
-        <div className="mt-1 grid grid-cols-[4rem_minmax(0,1fr)_auto] items-start gap-x-2 gap-y-1">
-          <span className="py-1 text-muted-foreground">Queue</span>
-          <QueueBlock taskId={task.id} projectId={task.projectId} queue={queue} />
-          <span className="py-1 text-muted-foreground">Start</span>
-          <ScheduleBlock taskId={task.id} projectId={task.projectId} taskKey={task.key} start={scheduledStart} />
-        </div>
-      ) : null}
     </section>
   );
 }

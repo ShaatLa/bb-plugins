@@ -1,9 +1,26 @@
 import type { TasksRoute } from "./routes.js";
 
-/** What the right Kanban panel remembers: the project it shows and the main area's project as it last saw it. */
-export interface KanbanChoice {
+/** The project the right Kanban panel shows and the main area's project as it last saw it. */
+export interface KanbanProject {
   projectId: string | null;
   followed: string | null;
+}
+/** A task or plan open in the panel in place of the board. */
+export interface KanbanOpen {
+  kind: "task" | "plan";
+  taskKey: string;
+}
+/** What the right Kanban panel remembers for the app session. */
+export interface KanbanChoice extends KanbanProject {
+  open?: KanbanOpen;
+}
+/** One write: a project or follow change, or an open or back change (`open: null` closes). */
+export type KanbanPatch = Partial<KanbanProject> & { open?: KanbanOpen | null };
+
+/** A write merges into the current value, so a project write keeps `open` and an open write keeps the project. */
+export function mergeKanbanChoice(current: KanbanChoice | null, patch: KanbanPatch): KanbanChoice {
+  const merged = { ...current, ...patch };
+  return { projectId: merged.projectId ?? null, followed: merged.followed ?? null, ...(merged.open ? { open: merged.open } : {}) };
 }
 
 interface Input<P extends { id: string; prefix: string }> {
@@ -27,7 +44,7 @@ export function mainAreaProject<P extends { id: string; prefix: string }>(route:
  * The panel follows the main area when its project changes and keeps its own pick otherwise.
  * `next` is the value to store (null when nothing changes); nothing is resolved while projects load.
  */
-export function resolveKanbanProject<P extends { id: string; prefix: string }>({ route, stored, last, projects }: Input<P>): { shown: P | null; next: KanbanChoice | null; main: P | null } {
+export function resolveKanbanProject<P extends { id: string; prefix: string }>({ route, stored, last, projects }: Input<P>): { shown: P | null; next: KanbanProject | null; main: P | null } {
   if (!projects?.length) return { shown: null, next: null, main: null };
   const main = mainAreaProject(route, projects);
   const mainId = main?.id ?? null;
@@ -35,6 +52,6 @@ export function resolveKanbanProject<P extends { id: string; prefix: string }>({
   const changed = (stored?.followed ?? null) !== mainId;
   // A changed main project wins; otherwise the stored pick, then the fallbacks. A write stores what is shown, never a deleted id.
   const shown = (changed ? main : null) ?? byId(stored?.projectId) ?? main ?? byId(last) ?? projects[0] ?? null;
-  const next: KanbanChoice | null = changed && shown ? { projectId: shown.id, followed: mainId } : null;
+  const next: KanbanProject | null = changed && shown ? { projectId: shown.id, followed: mainId } : null;
   return { shown, next, main };
 }

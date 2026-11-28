@@ -1,6 +1,6 @@
 import { migrateBrowserPreferences } from "./migrate-preferences.js";
 import type { TaskViewMode } from "./routes.js";
-import type { KanbanChoice } from "./kanban-project.js";
+import { mergeKanbanChoice, type KanbanChoice, type KanbanOpen, type KanbanPatch } from "./kanban-project.js";
 
 export const VIEW_PREFERENCE_STORAGE_KEY = "bb-work-board:view-preferences";
 // 2: the board became the default view, and choices saved while the toggle drove the side panel (before 0.54.0) are dropped.
@@ -43,23 +43,34 @@ export function storeLastRoute(subPath: string): void {
 const KANBAN_PROJECT_STORAGE_KEY = "bb-work-board:kanban-project";
 
 const idOrNull = (value: unknown) => value === null || typeof value === "string";
+const TASK_KEY = /^[A-Za-z][A-Za-z0-9]{0,9}-\d+$/;
 
-/** The right Kanban panel's project choice for this app session; unreadable or malformed storage reads as nothing stored. */
+/** A malformed `open` reads as nothing open; the rest of the value stays. */
+function readOpen(value: unknown): KanbanOpen | undefined {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const { kind, taskKey } = value as Record<string, unknown>;
+  return (kind === "task" || kind === "plan") && typeof taskKey === "string" && TASK_KEY.test(taskKey) ? { kind, taskKey } : undefined;
+}
+
+/** The right Kanban panel's choice for this app session; unreadable or malformed storage reads as nothing stored. */
 export function loadKanbanChoice(): KanbanChoice | null {
   try {
     const raw = window.sessionStorage.getItem(KANBAN_PROJECT_STORAGE_KEY);
     const parsed: unknown = raw === null ? null : JSON.parse(raw);
     if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return null;
-    const { projectId, followed } = parsed as Record<string, unknown>;
-    return idOrNull(projectId) && idOrNull(followed) ? { projectId: projectId as string | null, followed: followed as string | null } : null;
+    const { projectId, followed, open } = parsed as Record<string, unknown>;
+    if (!idOrNull(projectId) || !idOrNull(followed)) return null;
+    const read = readOpen(open);
+    return { projectId: projectId as string | null, followed: followed as string | null, ...(read ? { open: read } : {}) };
   } catch {
     return null;
   }
 }
 
-export function storeKanbanChoice(choice: KanbanChoice): void {
+/** Merges the patch into what is stored, so no writer erases another's part. */
+export function storeKanbanChoice(patch: KanbanPatch): void {
   try {
-    window.sessionStorage.setItem(KANBAN_PROJECT_STORAGE_KEY, JSON.stringify(choice));
+    window.sessionStorage.setItem(KANBAN_PROJECT_STORAGE_KEY, JSON.stringify(mergeKanbanChoice(loadKanbanChoice(), patch)));
   } catch {}
 }
 

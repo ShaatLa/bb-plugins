@@ -312,12 +312,10 @@ it("saves a project workflow in compact settings and uses it in the list, board 
       "New In Review task",
       "New Done task",
     ]);
+    // A card in the right Kanban tab opens in the tab, not in the main area.
     fireEvent.click(board.getByText(task.title));
-    expect(board.navigateCalls).toContainEqual({
-      method: "toPluginPanel",
-      path: "work-board",
-      options: { subPath: `task/${task.key}` },
-    });
+    await board.findByRole("button", { name: "Back to board" });
+    expect(board.navigateCalls).toEqual([]);
     board.lifecycle.unmount();
     const detail = renderSlot(
       app.navPanels[0]!,
