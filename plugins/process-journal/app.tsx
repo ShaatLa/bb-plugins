@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState, type ComponentPropsWithoutRef, type FormEvent, type ReactNode } from "react";
+import { useCallback, useEffect, useRef, useState, type ComponentPropsWithoutRef, type FormEvent, type ReactNode } from "react";
 import { definePluginApp, Markdown, useBbNavigate, useRealtime, useRpc, type PluginNavPanelProps } from "@get-bb/plugin-sdk/app";
 import type { z } from "zod";
 import type { methods, rpcContract } from "./contract";
@@ -52,12 +52,16 @@ function JournalLink({ projectId, proposalId, ...props }: Omit<ComponentPropsWit
 function Journal({ subPath }: PluginNavPanelProps) {
   const rpc = useRpc<typeof rpcContract>();
   const navigate = useBbNavigate();
+  const viewport = useRef<HTMLElement>(null);
   const [projects, setProjects] = useState<Projects>();
   const route = readRoute(subPath);
   const [error, setError] = useState("");
   const [stamp, setStamp] = useState(0);
   const refresh = useCallback(() => setStamp(at => at + 1), []);
   useRealtime("journal:changed", refresh);
+  useEffect(() => {
+    if (viewport.current) viewport.current.scrollTop = 0;
+  }, [subPath]);
   useEffect(() => {
     let active = true;
     rpc.call("projects", {}).then(data => { if (active) { setProjects(data); setError(""); } },
@@ -66,25 +70,27 @@ function Journal({ subPath }: PluginNavPanelProps) {
   }, [rpc, stamp]);
   const current = route && (route.projectId ? projects?.find(p => p.id === route.projectId) : projects?.[0]);
   const unavailable = !route || Boolean(projects && route.projectId && !current);
-  return <main className="mx-auto max-w-[95rem] space-y-4 p-4 md:p-6">
-    <header className="flex flex-wrap items-center justify-between gap-3">
-      <h1 className="text-2xl font-semibold tracking-tight">Process Journal</h1>
-      {current && <label className="flex items-center gap-2 text-sm">Project
-        <select className={input} value={current.id} onChange={event =>
-          navigate.toPluginPanel("process-journal", { subPath: event.target.value })}>
-          {projects?.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
-        </select>
-      </label>}
-    </header>
-    {error && <p role="alert">{error} <button className={button} onClick={refresh}>Retry</button></p>}
-    {!projects && !error && <p>Loading projects…</p>}
-    {unavailable && <div className={panel}>
-      <p role="alert">{route ? "This project is unavailable in Process Journal." : "This Process Journal link is invalid."}</p>
-      <JournalLink className="mt-2 inline-block underline">Back to Process Journal</JournalLink>
-    </div>}
-    {!unavailable && projects?.length === 0 && <p className="text-muted-foreground">Enable Process Journal for a project with <code>bb process-journal config</code>.</p>}
-    {current && <Workspace key={current.id} project={current}
-      routeProposal={route?.proposalId} stamp={stamp} refresh={refresh} />}
+  return <main ref={viewport} tabIndex={0} className="h-full min-h-0 w-full min-w-0 overflow-y-auto">
+    <div className="mx-auto max-w-[95rem] space-y-4 p-4 md:p-6">
+      <header className="flex flex-wrap items-center justify-between gap-3">
+        <h1 className="text-2xl font-semibold tracking-tight">Process Journal</h1>
+        {current && <label className="flex items-center gap-2 text-sm">Project
+          <select className={input} value={current.id} onChange={event =>
+            navigate.toPluginPanel("process-journal", { subPath: event.target.value })}>
+            {projects?.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+          </select>
+        </label>}
+      </header>
+      {error && <p role="alert">{error} <button className={button} onClick={refresh}>Retry</button></p>}
+      {!projects && !error && <p>Loading projects…</p>}
+      {unavailable && <div className={panel}>
+        <p role="alert">{route ? "This project is unavailable in Process Journal." : "This Process Journal link is invalid."}</p>
+        <JournalLink className="mt-2 inline-block underline">Back to Process Journal</JournalLink>
+      </div>}
+      {!unavailable && projects?.length === 0 && <p className="text-muted-foreground">Enable Process Journal for a project with <code>bb process-journal config</code>.</p>}
+      {current && <Workspace key={current.id} project={current}
+        routeProposal={route?.proposalId} stamp={stamp} refresh={refresh} />}
+    </div>
   </main>;
 }
 

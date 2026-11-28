@@ -88,12 +88,17 @@ it("shows five stable columns and pages only the selected status", async () => {
     method: "toPluginPanel", path: "process-journal", options: { subPath: `${projectId}/${proposal.id}` },
   });
   const Journal = app.navPanels[0].component;
+  const viewport = screen.getByRole("main");
+  viewport.scrollTop = 320;
   screen.rerender(<Journal subPath={`${projectId}/${proposal.id}`} />);
+  expect(viewport.scrollTop).toBe(0);
   expect(await screen.findByRole("heading", { name: "Timeline" })).toBeTruthy();
   expect(screen.queryByRole("region", { name: "Status columns" })).toBeNull();
   expect(screen.getByRole("link", { name: "Back to board" }).getAttribute("href")).toBe(`/plugins/process-journal/process-journal/${projectId}`);
   rpc.list.mockClear();
+  viewport.scrollTop = 480;
   screen.rerender(<Journal subPath={projectId} />);
+  expect(viewport.scrollTop).toBe(0);
   await waitFor(() => expect(rpc.list).toHaveBeenCalledWith(expect.objectContaining({ state: "measuring", offset: 25 })));
   rpc.list.mockClear();
   fireEvent.click(screen.getByRole("checkbox", { name: "Overdue only" }));
