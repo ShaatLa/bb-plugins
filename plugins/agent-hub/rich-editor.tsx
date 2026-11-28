@@ -159,6 +159,9 @@ export function RichEditor({ value, onChange, onSend, onCancel, onPasteFiles, di
       const [node, index] = position(root, at), selection = window.getSelection(), range = document.createRange();
       range.setStart(node, index); range.collapse(true);
       if (selection && 'removeAllRanges' in selection) { selection.removeAllRanges(); selection.addRange(range); }
+      // A caret put back by hand is not scrolled to, as a typed one is: keep its line inside the scrolled editor (Enter in a long message).
+      const line = range.getClientRects?.()[0], box = root.getBoundingClientRect();
+      if (at >= value.length) root.scrollTop = root.scrollHeight; else if (line && line.bottom > box.bottom) root.scrollTop += line.bottom - box.bottom; else if (line && line.top < box.top) root.scrollTop -= box.top - line.top;
     }
     caret.current = null;
   });

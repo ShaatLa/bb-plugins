@@ -410,3 +410,25 @@ it.each(['newline','send'])('touch Enter follows %s and Shift+Enter stays a newl
  onSend.mockClear();fireEvent.keyDown(box,{key:'Enter',shiftKey:true});expect(onSend).not.toHaveBeenCalled();expect(onChange).toHaveBeenCalled();
  } finally {window.matchMedia=old;}
 });
+it('clears an attach error on the next edit', async () => {
+  const slot = renderSlot({ component: () => { const [value, setValue] = useState(''); return <><Composer label="Reply" value={value} onChange={setValue} attachments={[]} onAttachments={() => {}} projectId="p" onSend={() => {}} /><button type="button" onClick={() => setValue('typed')}>Type</button></>; } }, {}, { sdk: { projects: { attachments: { upload: () => Promise.reject(new Error('HTTP 400: HEIC images are not supported. Convert the image to JPEG or PNG before attaching it.')) } } } } as any);
+  fireEvent.change(slot.container.querySelector('input[type=file]')!, { target:{ files:[new File(['x'], 'photo.heic', { type:'image/heic' })] } });
+  expect((await slot.findByRole('alert')).textContent).toBe('photo.heic: HEIC images are not supported. Convert the image to JPEG or PNG before attaching it.');
+  fireEvent.click(slot.getByRole('button', { name:'Type' }));
+  expect(slot.queryByRole('alert')).toBeNull();
+});
+it('keeps the editor focused when Send is pressed, so a phone keyboard does not swallow the tap', () => {
+  const onSend = vi.fn();
+  const slot = renderSlot({ component: () => <Composer label="Reply" value="Hello" onChange={() => {}} attachments={[]} onAttachments={() => {}} projectId={null} onSend={onSend} /> }, {});
+  const send = slot.getByRole('button', { name:'Send' });
+  expect(fireEvent.pointerDown(send)).toBe(false);
+  fireEvent.click(send); expect(onSend).toHaveBeenCalledOnce();
+});
+it('clears an attach error when only attachments are sent', async () => {
+  const onSend = vi.fn();
+  const slot = renderSlot({ component: () => <Composer label="Reply" value="" onChange={() => {}} attachments={[{ type: 'localFile', path: 'a.txt', name: 'a.txt' }]} onAttachments={() => {}} projectId="p" onSend={onSend} /> }, {}, { sdk: { projects: { attachments: { upload: () => Promise.reject(new Error('HTTP 400: HEIC images are not supported.')) } } } } as any);
+  fireEvent.change(slot.container.querySelector('input[type=file]')!, { target:{ files:[new File(['x'], 'photo.heic', { type:'image/heic' })] } });
+  await slot.findByRole('alert');
+  fireEvent.click(slot.getByRole('button', { name:'Send' }));
+  expect(onSend).toHaveBeenCalledOnce(); expect(slot.queryByRole('alert')).toBeNull();
+});

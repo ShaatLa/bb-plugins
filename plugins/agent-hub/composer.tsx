@@ -77,12 +77,16 @@ export function Composer({ label, value, onChange, attachments, onAttachments, p
         const uploaded = await uploadAttachment(sdk, projectId, file);
         if (uploaded.type === 'localImage') { dropPreview(uploaded.path); previews.set(uploaded.path, URL.createObjectURL(file)); }
         onAttachments(old => [...old, uploaded]);
-      } catch (e) { setError(`${file.name}: ${errorText(e)}`); }
+      } catch (e) { setError(`${file.name}: ${errorText(e).replace(/^HTTP \d+: /, '')}`); }
       finally { setUploading(n => n - 1); }
     }
   }
+  // An attach error is about the last attempt: the next edit or a send clears it.
+  useEffect(() => setError(''), [value]);
   const blocked = sendDisabled || pending || uploading > 0 || voiceActive;
-  const submit = (options?: SendOptions) => { if (!blocked) onSend(options); };
+  // Sending, even attachments alone with the text unchanged, also clears the attach error.
+  const submit = (options?: SendOptions) => { if (!blocked) { setError(''); onSend(options); } };
+  const pool = onPool && (() => { setError(''); onPool(); });
   return <form ref={root} data-file-drop className={`group/promptbox relative w-full rounded-xl border border-border bg-background ${className} ${dragging ? 'ring-1 ring-ring' : ''}`} onSubmit={event => event.preventDefault()} onDragOver={event => { if (event.dataTransfer.types.includes('Files')) { event.preventDefault(); event.stopPropagation(); setDragging(true); } }} onDragLeave={event => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setDragging(false); }} onDrop={event => { setDragging(false); if (!event.dataTransfer.files.length) return; event.preventDefault(); event.stopPropagation(); void attach(Array.from(event.dataTransfer.files)); }}>
     {header}
     {(attachments.length > 0 || uploading > 0) && <ul aria-label="Attachments" className="flex flex-wrap gap-1.5 px-3.5 pt-3">
@@ -99,7 +103,7 @@ export function Composer({ label, value, onChange, attachments, onAttachments, p
     {viewed >= 0 && <ImageLightbox isOpen imageSrc={urlOf(images[viewed]!.path) ?? null} imageAlt={images[viewed]!.name} title={images[viewed]!.name} hasMultipleImages={images.length > 1} previousDisabled={viewed === 0} nextDisabled={viewed === images.length - 1} onClose={() => setViewing(null)} onPrevious={() => view(images[viewed - 1]!.path)} onNext={() => view(images[viewed + 1]!.path)} />}
     <input ref={picker} type="file" multiple hidden onChange={event => { void attach(Array.from(event.target.files ?? [])); event.target.value = ''; }} />
     <div className="px-3.5 pt-1.5 pb-2">
-      <RichEditor onHistory={onHistory} insertRef={insertText} editorRef={editor} menuAnchor={root} label={label} value={value} onChange={onChange} onSend={() => { if (poolFirst && onPool && !editMode) { if (!pending && !uploading && !voiceActive) onPool(); } else submit(); }} onCancel={editMode ? onCancel : undefined} onPasteFiles={files => void attach(files)} disabled={pending && !editableWhilePending} autoFocus={autoFocus} placeholder={placeholder} onBlur={onBlur} className="block w-full overflow-y-auto bg-transparent py-1.5 px-0 text-sm leading-relaxed outline-none" />
+      <RichEditor onHistory={onHistory} insertRef={insertText} editorRef={editor} menuAnchor={root} label={label} value={value} onChange={onChange} onSend={() => { if (poolFirst && pool && !editMode) { if (!pending && !uploading && !voiceActive) pool(); } else submit(); }} onCancel={editMode ? onCancel : undefined} onPasteFiles={files => void attach(files)} disabled={pending && !editableWhilePending} autoFocus={autoFocus} placeholder={placeholder} onBlur={onBlur} className="block w-full overflow-y-auto bg-transparent py-1.5 px-0 text-sm leading-relaxed outline-none" />
       <div data-composer-toolbar className="relative flex items-center justify-between gap-3">
         {/* bb's picker triggers carry 4px side padding, cramped next to their hover background here. */}
         <div className="flex min-w-0 items-center gap-1 [&>button[aria-haspopup]]:px-2">
@@ -111,7 +115,7 @@ export function Composer({ label, value, onChange, attachments, onAttachments, p
           <div data-composer-voice className={`group/voice h-8 [&>.relative]:h-full [&_.absolute]:bottom-0 [&_.absolute]:right-0 [&:has(button[aria-label='Transcribing_voice_input'])_.h-7]:opacity-[0.08] ${voiceActive ? 'absolute inset-x-0 bottom-0 z-10 bg-background' : 'relative w-8'}`}>{/* bb's voice input only spins its stop button while it transcribes; a label left of it says so plainly. */}<span aria-hidden data-voice-transcribing className="pointer-events-none absolute inset-x-0 bottom-0 z-[1] hidden h-8 items-center justify-end pr-11 text-xs text-muted-foreground max-md:pointer-coarse:h-10 max-md:pointer-coarse:pr-[52px] group-has-[button[aria-label='Transcribing_voice_input']]/voice:flex"><span className="animate-pulse">Transcribing…</span></span><VoiceInputTextarea aria-label="Voice input" rows={1} value="" onValueChange={transcript => insertText.current(transcript)} onVoiceInputActiveChange={active => { setVoiceActive(active); if (voiceThread) window.dispatchEvent(new CustomEvent(VOICE_BUSY, { detail: { threadId: voiceThread, active } })); }} disabled={pending && !editableWhilePending} className="absolute h-8 w-full opacity-0 pointer-events-none" tabIndex={-1} /></div>
           <div className="flex items-center gap-1">
         {actions}
-        {editMode ? <Button type="button" size="sm" className="ml-1 h-8 px-2" aria-label={sendLabel} disabled={blocked} onClick={() => submit()}><Icon name="CornerDownLeft" aria-hidden /></Button> : onStop && !value.trim() && !attachments.length && !uploading ? <Button type="button" size="sm" className="size-8 px-0" aria-label="Stop" onClick={onStop}><Icon name="Square" aria-hidden className="size-3.5 fill-current [&_*]:stroke-0" /></Button> : <SendButton label={sendLabel} disabled={blocked} onSend={submit} onPool={onPool} poolFirst={poolFirst}><Icon name="ArrowUp" aria-hidden /></SendButton>}
+        {editMode ? <Button type="button" size="sm" className="ml-1 h-8 px-2" aria-label={sendLabel} disabled={blocked} onPointerDown={keepFocus} onClick={() => submit()}><Icon name="CornerDownLeft" aria-hidden /></Button> : onStop && !value.trim() && !attachments.length && !uploading ? <Button type="button" size="sm" className="size-8 px-0" aria-label="Stop" onClick={onStop}><Icon name="Square" aria-hidden className="size-3.5 fill-current [&_*]:stroke-0" /></Button> : <SendButton label={sendLabel} disabled={blocked} onSend={submit} onPool={pool} poolFirst={poolFirst}><Icon name="ArrowUp" aria-hidden /></SendButton>}
           </div>
         </div>
       </div>
@@ -124,6 +128,8 @@ export function Composer({ label, value, onChange, attachments, onAttachments, p
  * bb's split send button: the main part queues; the menu steers, saves a draft held in the
  * thread's queue, or schedules. Children are the main part's content (an icon or a label).
  */
+// A press that took focus from the editor would close a phone's keyboard first, and the layout jump swallows the tap: one tap must send.
+const keepFocus = (event: { preventDefault(): void }) => event.preventDefault();
 // poolFirst: the owner is collecting into a reply pool, so the main button (and Enter) adds to it and Send now moves to the menu.
 export function SendButton({ label, disabled, onSend, onPool, poolFirst = false, children, side = 'top', className = 'size-8 px-0' }: { label: string; disabled?: boolean; onSend: (options?: SendOptions) => void; onPool?: () => void; poolFirst?: boolean; children: ReactNode; side?: 'top' | 'bottom'; className?: string }) {
   const pooling = poolFirst && !!onPool;
@@ -134,8 +140,8 @@ export function SendButton({ label, disabled, onSend, onPool, poolFirst = false,
   useEffect(() => { if (!menu && later === null) return; const outside = (event: PointerEvent) => { if (!box.current?.contains(event.target as Node)) close(); }; document.addEventListener('pointerdown', outside); return () => document.removeEventListener('pointerdown', outside); }, [menu, later !== null]);
   const item = 'flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm hover:bg-state-hover';
   return <div ref={box} className="relative flex shrink-0" onBlur={event => { if (!event.currentTarget.contains(event.relatedTarget as Node)) close(); }} onKeyDown={event => { if (event.key === 'Escape' && menu) { event.stopPropagation(); close(); } }}>
-    {pooling ? <Button type="button" size="sm" className={`rounded-r-none ${className}`} aria-label="Add to reply pool" onClick={() => onPool!()}><Icon name="ListEnd" aria-hidden /></Button>
-      : <Button type="button" size="sm" className={`rounded-r-none ${className}`} aria-label={label} disabled={disabled} onClick={() => onSend()}>{children}</Button>}
+    {pooling ? <Button type="button" size="sm" className={`rounded-r-none ${className}`} aria-label="Add to reply pool" onPointerDown={keepFocus} onClick={() => onPool!()}><Icon name="ListEnd" aria-hidden /></Button>
+      : <Button type="button" size="sm" className={`rounded-r-none ${className}`} aria-label={label} disabled={disabled} onPointerDown={keepFocus} onClick={() => onSend()}>{children}</Button>}
     <Button type="button" size="sm" className="h-8 w-6 rounded-l-none border-l border-background/25 px-0" aria-label="More send options" aria-haspopup="menu" aria-expanded={menu} disabled={disabled && !onPool} onClick={() => menu ? close() : setMenu(true)}><Icon name="ChevronDown" aria-hidden className="size-3.5" /></Button>
     {menu && <div role="menu" className={`absolute right-0 z-20 w-56 rounded-lg border border-border bg-background p-1 shadow-lg ${side === 'top' ? 'bottom-full mb-1' : 'top-full mt-1'}`}>
       {later === null ? <>
