@@ -29,13 +29,19 @@ it does not exist until then.
 ```sh
 # Spawn Gate project: the builder's arguments go after `--`
 bb work-board schedule EXA-1 --at +3h --gate -- --card EXA-1 --role impl
-# A project without Spawn Gate's Script mode: a preset, with an optional brief
-bb work-board schedule EXA-1 --at 2026-11-29T02:00:00+03:00 --preset "Night worker" --brief-file brief.md
+# A project without Spawn Gate's Script mode: any provider and model it lists, with an optional brief
+bb work-board schedule EXA-1 --at 2026-11-29T02:00:00+03:00 --agent codex/gpt-5 --reasoning high --brief-file brief.md
+# or an agent preset (the project's default environment is used for --agent)
+bb work-board schedule EXA-1 --at +3h --preset "Night worker"
 # Create and schedule in one call
 bb work-board create --project EXA --title "Nightly run" --start-at +6h --start-gate
 ```
 
 - `--at` is an ISO time with an offset, or `+30m`, `+2h`, `+1d`, at least 2 minutes ahead.
+- Give exactly one of `--gate`, `--agent <provider>/<model>` and `--preset`. `--agent` takes
+  `--reasoning <level>` and `--permission accept-edits|auto|full` (default `auto`); the model must be
+  one the provider lists (a refusal names its reason code), otherwise use `bb thread spawn` for a
+  one-off. In a Spawn Gate project the gate chooses the agent, so `--agent` is refused there.
 - `--gate` with no arguments uses the project's `scheduledStartArgs` setting, else
   `--card KEY --role impl`. The builder runs as a dry run when you schedule, so
   arguments it refuses are returned at once with their reason code and nothing is stored.

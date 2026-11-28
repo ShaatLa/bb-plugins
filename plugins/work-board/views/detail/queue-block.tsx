@@ -4,11 +4,10 @@ import { useOpenThread } from "../../components/open-thread";
 import { errorMessage } from "../../shared/errors";
 import type { CardQueue } from "../../shared/contract";
 import { useTasksQuery, useTasksRpc } from "../../shell/data";
-import { Button } from "@/components/ui/button";
-import { Icon } from "@/components/ui/icon";
+import { IconButton } from "./icon-button";
 import { ThreadChooserDialog } from "./thread-chooser-dialog";
 
-/** The card's place in an executor's work queue, with the doors to join or leave it. */
+/** The card's place in an executor's work queue as the "Queue" row of the status card: two grid cells, the place and the icon to join or leave. */
 export function QueueBlock({ taskId, projectId, queue }: { taskId: string; projectId: string; queue?: CardQueue }) {
   const rpc = useTasksRpc();
   const queues = useTasksQuery(async (client) => (await client.call("queueList", { projectId })).queues, ["tasks:changed"], [projectId, queue?.threadId], { enabled: !!queue });
@@ -16,21 +15,21 @@ export function QueueBlock({ taskId, projectId, queue }: { taskId: string; proje
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   return (
-    <div className="grid gap-1 text-xs">
-      <div className="flex min-w-0 items-start gap-2">
-        {queue ? <QueuePlace queue={queue} total={queues.data?.find((item) => item.threadId === queue.threadId)?.entries.length} /> : <span className="text-muted-foreground">Not in a work queue</span>}
+    <>
+      <div className="min-w-0 py-1">
+        {queue ? <QueuePlace queue={queue} total={queues.data?.find((item) => item.threadId === queue.threadId)?.entries.length} /> : <span className="text-muted-foreground">None</span>}
+        {error ? <p role="alert" className="text-destructive">{error}</p> : null}
+      </div>
+      <div className="flex items-start">
         {queue ? (
-          <Button asChild size="icon" variant="ghost" className="-my-1 ml-auto size-6 shrink-0 text-muted-foreground"><button type="button" aria-label="Remove from queue" title="Remove from queue" disabled={busy} onClick={async () => {
+          <IconButton label="Remove from queue" icon="Trash2" disabled={busy} onClick={async () => {
             setBusy(true); setError(null);
             try { await rpc.call("queueRemove", { taskId, actor: "owner" }); } catch (cause) { setError(errorMessage(cause)); } finally { setBusy(false); }
-          }}><Icon name="Trash2" className="size-3.5" /></button></Button>
-        ) : (
-          <Button size="sm" variant="ghost" className="h-6 px-1 text-muted-foreground" onClick={() => setChoosing(true)}>Add to queue of …</Button>
-        )}
+          }} />
+        ) : <IconButton label="Add to queue" icon="Plus" onClick={() => setChoosing(true)} />}
+        {choosing ? <ThreadChooserDialog kind="queue" taskId={taskId} projectId={projectId} onClose={() => setChoosing(false)} /> : null}
       </div>
-      {error ? <p role="alert" className="text-destructive">{error}</p> : null}
-      {choosing ? <ThreadChooserDialog kind="queue" taskId={taskId} projectId={projectId} onClose={() => setChoosing(false)} /> : null}
-    </div>
+    </>
   );
 }
 

@@ -67,10 +67,16 @@ describe("task view layout", () => {
     setWidth(width);
     const slot = render();
     const activity = await slot.findByRole("region", { name: "Task activity status" });
-    expect(within(activity).getByText("Not in a work queue")).toBeTruthy();
-    expect(within(activity).getByRole("button", { name: "Add to queue of …" })).toBeTruthy();
-    expect(slot.getAllByText("Not in a work queue")).toHaveLength(1);
-    fireEvent.click(within(activity).getByRole("button", { name: "Add to queue of …" }));
+    expect(within(activity).getByText("Queue")).toBeTruthy();
+    expect(within(activity).getByRole("button", { name: "Add to queue" }).title).toBe("Add to queue");
+    expect(slot.getAllByRole("button", { name: "Add to queue" })).toHaveLength(1);
+    // Each empty section is one row: its label, a muted None and its add icon, all inside the card.
+    for (const [label, add] of [["Sessions", "Send to another thread"], ["Queue", "Add to queue"], ["Start", "Schedule a start"]]) {
+      expect(within(activity).getByText(label!)).toBeTruthy();
+      expect(within(activity).getByRole("button", { name: add! }).title).toBe(add);
+    }
+    expect(within(activity).getAllByText("None")).toHaveLength(3);
+    fireEvent.click(within(activity).getByRole("button", { name: "Add to queue" }));
     expect(await slot.findByRole("dialog", { name: "Add to a work queue" })).toBeTruthy();
   });
   it("shows the queue place without the total while the queue loads", async () => {

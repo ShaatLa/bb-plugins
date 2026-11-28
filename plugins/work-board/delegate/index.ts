@@ -361,6 +361,152 @@ function taskThreadLiveStatus(thread: SdkThread): TaskThreadLiveStatus {
   }
 }
 
+/** What a dispatch launches: the label shown on the card, the preset's own instructions, how it executes and where. */
+export interface DispatchTarget {
+  name: string;
+  instructions: string;
+  execution: { providerId: string; model: string; reasoningLevel?: string | undefined; serviceTier?: string | null | undefined; permissionMode: z.infer<typeof presetPermissionModeSchema> };
+  environment: () => Promise<SpawnEnvironment>;
+  spawnError: (error: unknown) => never;
+}
+
+export function presetTarget(bb: BbPluginApi, preset: Preset): DispatchTarget {
+  return {
+    name: preset.name,
+    instructions: preset.instructions,
+    execution: presetExecutionSchema.parse({ providerId: preset.providerId, model: preset.modelId, reasoningLevel: preset.reasoningLevel, serviceTier: preset.serviceTier, permissionMode: preset.permissionMode }),
+    environment: () => presetSpawnEnvironment(bb, preset),
+    spawnError: (error) => mapSpawnTargetError(error, preset),
+  };
+}
+
+/** A provider, model and its options with no preset: the project's default environment, no instructions of its own. */
+export function agentTarget(agent: { providerId: string; model: string; reasoningLevel?: string | undefined; serviceTier?: string | undefined; permissionMode?: z.infer<typeof presetPermissionModeSchema> | undefined }): DispatchTarget {
+  return {
+    name: `${agent.providerId} · ${agent.model}`,
+    instructions: "",
+    execution: { providerId: agent.providerId, model: agent.model, reasoningLevel: agent.reasoningLevel, serviceTier: agent.serviceTier ?? null, permissionMode: agent.permissionMode ?? "auto" },
+    environment: async () => ({ type: "project-default" }),
+    spawnError: (error) => { throw error; },
+  };
+}
+
+/** Spawns a session for a card from `target`, attaches it and moves the card; the one path under `delegate` and a scheduled start. */
+export async function dispatchToTarget(
+  bb: BbPluginApi,
+  store: TasksApiStore,
+  input: { taskId: string; extraInstructions?: string | undefined; parentThreadId?: string | undefined; parentNotifications?: "auto" | "stuck" | "off" | undefined },
+  target: DispatchTarget,
+): Promise<{ threadId: string }> {
+  const task = requireTask(store.tasks, input.taskId);
+  if (task.archivedAt) throw new Error("Restore the task before dispatching or changing worker links");
+  const project = requireProject(store.tasks, task.projectId);
+  const linkedBbProjectId = requireLinkedBbProject(project);
+  const comments = store.tasks.listComments(task.id);
+  const recentComments = comments.slice(-5);
+  const title = delegatedThreadTitle(task);
+  const execution = target.execution;
+  const planWarning = createPlanStore(bb.storage.database(), store.tasks).advisoryFor(task);
+  const prompt = buildSeedPrompt({
+    blockedBy: createDependencyStore(bb.storage.database(), store.tasks).blockers([task.id]).get(task.id),
+    questions: createStructuredStore(bb, store).listQuestions(task.id),
+    planWarning,
+    task,
+    project,
+    subtasks:
+      task.type === "epic"
+        ? store.tasks.listTasks({ epicId: task.id })
+        : store.tasks.listSubtasks(task.id),
+    epic: taskEpic(store.tasks, task),
+    attachments: collectAttachments(store.tasks, task.id, comments),
+    recentComments,
+    presetInstructions: target.instructions,
+    extraInstructions: input.extraInstructions,
+  });
+
+  const environment = await target.environment();
+  // The server accepts parentNotifications on create, but the SDK typings omit it.
+  const parentLink = {
+    ...(input.parentThreadId
+      ? { parentThreadId: input.parentThreadId }
+      : {}),
+    ...(input.parentThreadId && input.parentNotifications
+      ? { parentNotifications: input.parentNotifications }
+      : {}),
+  };
+  const thread = await bb.sdk.threads
+    .spawn({
+      projectId: linkedBbProjectId,
+      environment,
+      providerId: execution.providerId,
+      model: execution.model,
+      ...(execution.reasoningLevel ? { reasoningLevel: execution.reasoningLevel } : {}),
+      ...(execution.serviceTier === null
+        ? {}
+        : { serviceTier: execution.serviceTier }),
+      permissionMode: execution.permissionMode,
+      title,
+      prompt,
+      ...parentLink,
+    })
+    .catch((error: unknown) => target.spawnError(error));
+
+  let skippedMove = false;
+  let lateClosure: string | null = null;
+  const taskThread = store.transaction(() => {
+    const attached = store.tasks.upsertTaskThread({
+      taskId: task.id,
+      threadId: thread.id,
+      presetName: target.name,
+      title,
+      liveStatus: "starting",
+      linkOrigin: "delegate_spawn",
+      createdForTask: true,
+    });
+
+    // The spawn above took time: the card and the project are read again here, so a card canceled meanwhile stays canceled.
+    const current = store.tasks.getTask(task.id) ?? task;
+    // The card may have changed projects meanwhile; its own project decides the target status.
+    const freshProject = store.tasks.getProject(current.projectId) ?? project;
+    const inProgress = effectiveInProgressStatus(freshProject);
+    if (startsFromStatus(freshProject, current.status) && inProgress && store.tasks.planGate(current, inProgress)) skippedMove = true;
+    else if (startsFromStatus(freshProject, current.status) && inProgress) {
+      store.tasks.updateTask(task.id, { status: inProgress, statusLog: { by: "Work Board", cause: `dispatched to ${target.name}` } });
+    }
+
+    createSystemComment(store.tasks, {
+      taskId: task.id,
+      presetName: target.name,
+      threadId: thread.id,
+      body: `Dispatched to ${target.name}`,
+    });
+    lateClosure = snapshotLateLink(store.tasks, task.id, attached, true, "delegate_spawn");
+    return attached;
+  });
+  await store.closures.lateLink(lateClosure, thread.id);
+
+  if (skippedMove && !planWarning) await noticeSkippedMove(bb, store.tasks, store.tasks.getTask(task.id) ?? task, thread.id);
+  try {
+    const currentThread = await bb.sdk.threads.get({ threadId: thread.id });
+    const currentLiveStatus = taskThreadLiveStatus(currentThread);
+    if (currentLiveStatus !== taskThread.liveStatus) {
+      store.tasks.updateTaskThreadStatus(taskThread.id, currentLiveStatus);
+    }
+  } catch (error) {
+    bb.log.warn(
+      `Could not read delegated thread ${thread.id} after attach: ${errorMessage(
+        error,
+      )}`,
+    );
+  }
+
+  publishThreadsChanged(bb, task.id);
+  // The card may have changed projects during the dispatch: subscribers of its committed project hear about it.
+  publishTasksChanged(bb, task.id, (store.tasks.getTask(task.id) ?? task).projectId);
+  publishCommentsChanged(bb, task.id);
+  return { threadId: thread.id };
+}
+
 export function handlers(
   bb: BbPluginApi,
   store: TasksApiStore,
@@ -445,120 +591,7 @@ export function handlers(
       return { threadId: thread.id };
     },
     async delegate(input) {
-      const task = requireTask(store.tasks, input.taskId);
-      if (task.archivedAt) throw new Error("Restore the task before dispatching or changing worker links");
-      const project = requireProject(store.tasks, task.projectId);
-      const linkedBbProjectId = requireLinkedBbProject(project);
-      const preset = requirePreset(store.tasks, input.presetId);
-      const comments = store.tasks.listComments(task.id);
-      const recentComments = comments.slice(-5);
-      const title = delegatedThreadTitle(task);
-      const execution = presetExecutionSchema.parse({
-        providerId: preset.providerId,
-        model: preset.modelId,
-        reasoningLevel: preset.reasoningLevel,
-        serviceTier: preset.serviceTier,
-        permissionMode: preset.permissionMode,
-      });
-      const planWarning = createPlanStore(bb.storage.database(), store.tasks).advisoryFor(task);
-      const prompt = buildSeedPrompt({
-        blockedBy: createDependencyStore(bb.storage.database(), store.tasks).blockers([task.id]).get(task.id),
-        questions: createStructuredStore(bb, store).listQuestions(task.id),
-        planWarning,
-        task,
-        project,
-        subtasks:
-          task.type === "epic"
-            ? store.tasks.listTasks({ epicId: task.id })
-            : store.tasks.listSubtasks(task.id),
-        epic: taskEpic(store.tasks, task),
-        attachments: collectAttachments(store.tasks, task.id, comments),
-        recentComments,
-        presetInstructions: preset.instructions,
-        extraInstructions: input.extraInstructions,
-      });
-
-      const environment = await presetSpawnEnvironment(bb, preset);
-      // The server accepts parentNotifications on create, but the SDK typings omit it.
-      const parentLink = {
-        ...(input.parentThreadId
-          ? { parentThreadId: input.parentThreadId }
-          : {}),
-        ...(input.parentThreadId && input.parentNotifications
-          ? { parentNotifications: input.parentNotifications }
-          : {}),
-      };
-      const thread = await bb.sdk.threads
-        .spawn({
-          projectId: linkedBbProjectId,
-          environment,
-          providerId: execution.providerId,
-          model: execution.model,
-          reasoningLevel: execution.reasoningLevel,
-          ...(execution.serviceTier === null
-            ? {}
-            : { serviceTier: execution.serviceTier }),
-          permissionMode: execution.permissionMode,
-          title,
-          prompt,
-          ...parentLink,
-        })
-        .catch((error: unknown) => mapSpawnTargetError(error, preset));
-
-      let skippedMove = false;
-      let lateClosure: string | null = null;
-      const taskThread = store.transaction(() => {
-        const attached = store.tasks.upsertTaskThread({
-          taskId: task.id,
-          threadId: thread.id,
-          presetName: preset.name,
-          title,
-          liveStatus: "starting",
-          linkOrigin: "delegate_spawn",
-          createdForTask: true,
-        });
-
-        // The spawn above took time: the card and the project are read again here, so a card canceled meanwhile stays canceled.
-        const current = store.tasks.getTask(task.id) ?? task;
-        // The card may have changed projects meanwhile; its own project decides the target status.
-        const freshProject = store.tasks.getProject(current.projectId) ?? project;
-        const inProgress = effectiveInProgressStatus(freshProject);
-        if (startsFromStatus(freshProject, current.status) && inProgress && store.tasks.planGate(current, inProgress)) skippedMove = true;
-        else if (startsFromStatus(freshProject, current.status) && inProgress) {
-          store.tasks.updateTask(task.id, { status: inProgress, statusLog: { by: "Work Board", cause: `dispatched to ${preset.name}` } });
-        }
-
-        createSystemComment(store.tasks, {
-          taskId: task.id,
-          presetName: preset.name,
-          threadId: thread.id,
-          body: `Dispatched to ${preset.name}`,
-        });
-        lateClosure = snapshotLateLink(store.tasks, task.id, attached, true, "delegate_spawn");
-        return attached;
-      });
-      await store.closures.lateLink(lateClosure, thread.id);
-
-      if (skippedMove && !planWarning) await noticeSkippedMove(bb, store.tasks, store.tasks.getTask(task.id) ?? task, thread.id);
-      try {
-        const currentThread = await bb.sdk.threads.get({ threadId: thread.id });
-        const currentLiveStatus = taskThreadLiveStatus(currentThread);
-        if (currentLiveStatus !== taskThread.liveStatus) {
-          store.tasks.updateTaskThreadStatus(taskThread.id, currentLiveStatus);
-        }
-      } catch (error) {
-        bb.log.warn(
-          `Could not read delegated thread ${thread.id} after attach: ${errorMessage(
-            error,
-          )}`,
-        );
-      }
-
-      publishThreadsChanged(bb, task.id);
-      // The card may have changed projects during the dispatch: subscribers of its committed project hear about it.
-      publishTasksChanged(bb, task.id, (store.tasks.getTask(task.id) ?? task).projectId);
-      publishCommentsChanged(bb, task.id);
-      return { threadId: thread.id };
+      return dispatchToTarget(bb, store, input, presetTarget(bb, requirePreset(store.tasks, input.presetId)));
     },
 
     async taskThreadsAttach(input) {

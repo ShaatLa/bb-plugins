@@ -864,7 +864,7 @@ it("offers a chevron to another thread when a default is remembered, and opens t
 it("opens the chooser from the sessions block when a thread is linked", async () => {
   const slot = renderSlot(app.navPanels[0]!, { subPath: "task/TSK-5" }, { rpc: detailRpc(), sdk: { threads: { list: async () => [] } } });
   expect(await slot.findAllByRole("button", { name: "Open thread Worker" })).toHaveLength(1);
-  fireEvent.click(slot.getByRole("button", { name: "Send to another thread…" }));
+  fireEvent.click(slot.getByRole("button", { name: "Send to another thread" }));
   await slot.findByRole("dialog", { name: "Send to a thread" });
 });
 

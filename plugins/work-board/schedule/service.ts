@@ -1,13 +1,14 @@
 import type { BbPluginApi, PluginRpcHandlers } from "@get-bb/plugin-sdk";
 import type { TasksApiStore } from "../api";
 import { publishCommentsChanged, publishTasksChanged } from "../api";
-import { DelegationError, handlers as delegationHandlers, presetSpawnEnvironment, publishThreadsChanged } from "../delegate";
+import { DelegationError, agentTarget, dispatchToTarget, handlers as delegationHandlers, presetSpawnEnvironment, presetTarget, publishThreadsChanged, type DispatchTarget } from "../delegate";
 import { cardComment, createOnceNotices, type NoticeRow, type Why } from "../notices/once";
 import { managerOf } from "../queue/store";
-import type { tasksRpcContract, ScheduledStartInfo } from "../shared/contract";
+import type { tasksRpcContract, ScheduledStartInfo, StartAgent } from "../shared/contract";
 import { errorMessage } from "../shared/errors";
 import { taskMarkdownLink } from "../shared/task-link";
 import { firstReachable, searchAttentionMarker } from "../steer";
+import { StartRefusal, checkAgent } from "./agent";
 import { PolicyReadError, callStart, isDefiniteRefusal, reasonCodeOf, resolveMode } from "./policy";
 import {
   activeStart, assertMayEdit, cancelStart, cardFacts, changeStart, claimDue, currentStart, insertStart, listLog, markAttached, markerOf, pruneLog, recordOutcome,
@@ -57,13 +58,13 @@ export function toInfo(db: Database, start: ScheduledStart): ScheduledStartInfo 
   const name = start.presetId ? db.prepare<[string], { name: string }>("SELECT name FROM presets WHERE id=?").get(start.presetId)?.name : undefined;
   return {
     id: start.id, taskId: start.taskId, at: start.startAt, mode: start.mode, state: start.state, setter: start.setter,
-    ...(start.builderArgs ? { builderArgs: start.builderArgs } : {}), ...(start.presetId ? { presetId: start.presetId } : {}), ...(name ? { presetName: name } : {}),
+    ...(start.builderArgs ? { builderArgs: start.builderArgs } : {}), ...(start.presetId ? { presetId: start.presetId } : {}), ...(name ? { presetName: name } : {}), ...(start.agent ? { agent: start.agent } : {}),
     ...(start.extraInstructions ? { brief: start.extraInstructions } : {}), ...(start.threadId ? { threadId: start.threadId } : {}), ...(start.parentThreadId ? { parentThreadId: start.parentThreadId } : {}),
     ...(start.error ? { error: start.error } : {}), ...(start.reasonCode ? { reasonCode: start.reasonCode } : {}), ...(start.policyError ? { policyError: start.policyError } : {}),
   };
 }
 
-type LaunchInput = { kind: "gate"; args?: string[] | undefined } | { kind: "preset"; presetId: string; brief?: string | undefined };
+type LaunchInput = { kind: "gate"; args?: string[] | undefined } | { kind: "preset"; presetId: string; brief?: string | undefined } | ({ kind: "agent"; brief?: string | undefined } & StartAgent);
 
 export function scheduleHandlers(bb: BbPluginApi, store: TasksApiStore): Pick<PluginRpcHandlers<typeof tasksRpcContract>, Names> {
   const db = bb.storage.database();
@@ -92,7 +93,11 @@ export function scheduleHandlers(bb: BbPluginApi, store: TasksApiStore): Pick<Pl
       });
       return { mode: "spawn_gate", args };
     }
-    if (mode !== "preset") throw new Error("Spawn Gate launches this project's sessions: schedule with the gate launch, not a preset");
+    if (mode !== "preset") throw new Error("Spawn Gate launches this project's sessions: schedule with the gate launch, not a preset or an agent");
+    if (input.kind === "agent") {
+      const { kind: _kind, brief, ...picked } = input;
+      return { mode: "preset", agent: await checkAgent(bb, bbProjectId, picked), ...(brief?.trim() ? { brief: brief.trim() } : {}) };
+    }
     const preset = store.tasks.getPreset(input.presetId);
     if (!preset) throw new Error(`Preset not found: ${input.presetId}`);
     await presetSpawnEnvironment(bb, preset);
@@ -103,7 +108,7 @@ export function scheduleHandlers(bb: BbPluginApi, store: TasksApiStore): Pick<Pl
     if (!parent) throw new Error(setter === "owner" ? "This project has no manager thread to own a scheduled start" : `Neither ${setter}, its parents nor the project's manager is live, so nothing could own the launched session`);
     return parent;
   }
-  const launchOf = (start: ScheduledStart): LaunchInput => (start.mode === "spawn_gate" ? { kind: "gate", args: start.builderArgs ?? [] } : { kind: "preset", presetId: start.presetId!, ...(start.extraInstructions ? { brief: start.extraInstructions } : {}) });
+  const launchOf = (start: ScheduledStart): LaunchInput => (start.mode === "spawn_gate" ? { kind: "gate", args: start.builderArgs ?? [] } : start.agent ? { kind: "agent", ...start.agent, ...(start.extraInstructions ? { brief: start.extraInstructions } : {}) } : { kind: "preset", presetId: start.presetId!, ...(start.extraInstructions ? { brief: start.extraInstructions } : {}) });
 
   return {
     async scheduleStart({ taskId, at, launch: input, actor }) {
@@ -166,7 +171,7 @@ export function scheduleHandlers(bb: BbPluginApi, store: TasksApiStore): Pick<Pl
         await prepare(input, ctx, await parentFor(actor, ctx.card.projectId), true);
         return { ok: true, mode: ctx.mode };
       } catch (error) {
-        const message = errorMessage(error), code = reasonCodeOf(message);
+        const message = errorMessage(error), code = error instanceof StartRefusal ? error.code : reasonCodeOf(message);
         return { ok: false, error: message, ...(code ? { reasonCode: code } : {}) };
       }
     },
@@ -223,14 +228,18 @@ async function launch(bb: BbPluginApi, store: TasksApiStore, db: Database, start
     return;
   }
 
-  const preset = start.presetId ? store.tasks.getPreset(start.presetId) : undefined;
-  if (!preset) { refuse("the preset no longer exists"); return; }
-  try { await presetSpawnEnvironment(bb, preset); } catch (error) { refuse(errorMessage(error)); return; }
+  let target: DispatchTarget;
+  if (start.agent) target = agentTarget(start.agent);
+  else {
+    const preset = start.presetId ? store.tasks.getPreset(start.presetId) : undefined;
+    if (!preset) { refuse("the preset no longer exists"); return; }
+    try { await presetSpawnEnvironment(bb, preset); target = presetTarget(bb, preset); } catch (error) { refuse(errorMessage(error)); return; }
+  }
   try {
-    const result = await delegationHandlers(bb, store).delegate({
-      taskId: start.taskId, presetId: preset.id, parentThreadId: parent,
+    const result = await dispatchToTarget(bb, store, {
+      taskId: start.taskId, parentThreadId: parent,
       extraInstructions: [start.extraInstructions, markerOf(start.launchId!)].filter(Boolean).join("\n\n"),
-    });
+    }, target);
     recordOutcome(db, start.id, "launching", { state: "launched", threadId: result.threadId });
     markAttached(db, start.id);
   } catch (error) {

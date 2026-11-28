@@ -46,7 +46,7 @@ import { Button } from "@/components/ui/button";
 import { Icon } from "@/components/ui/icon";
 import { cn } from "@/lib/utils";
 import { CheckboxField, DEFAULT_COLOR } from "./shared.js";
-import { BLANK_START, StartLaterForm, isoOf, launchOf, type StartLaterValue } from "../../components/start-later-form.js";
+import { BLANK_START, StartLaterForm, hasLaunch, isoOf, launchOf, type StartLaterValue } from "../../components/start-later-form.js";
 import {
   clearNewTaskDraft,
   hasDraftContent,
@@ -380,7 +380,7 @@ export function NewTaskDialog({
   const startRequest = (() => {
     if (startLater === null || startMode === null) return null;
     const at = isoOf(startLater.at);
-    if (at === null || (startMode === "preset" && startLater.presetId === "")) return null;
+    if (at === null || !hasLaunch(startLater, startMode)) return null;
     return { at, launch: launchOf(startLater, startMode) };
   })();
   /** Schedules the card; a refusal keeps it open on the new card with the error. Returns whether it failed. */

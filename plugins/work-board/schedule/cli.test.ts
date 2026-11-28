@@ -34,6 +34,33 @@ describe("schedule commands", () => {
     expect(refused.stderr).toContain("Only the setter");
   });
 
+  it("takes --agent provider/model with reasoning and permission, refuses a second launch flag, and shows the agent", async () => {
+    const f = fixture();
+    f.world.installed = false;
+    const at = ["schedule", f.task.key, "--at", "+3h"];
+    expect((await f.run([...at, "--agent", "codex/gpt-5", "--preset", "Night worker"])).exitCode).not.toBe(0);
+    expect((await f.run([...at, "--agent", "gpt-5"])).stderr).toContain("provider/model");
+    expect((await f.run([...at, "--preset", "Night worker", "--reasoning", "high"])).stderr).toContain("--agent");
+    expect((await f.run([...at, "--agent", "codex/gpt-5", "--permission", "root"])).stderr).toContain("accept-edits, auto or full");
+    const set = await f.run([...at, "--agent", "codex/gpt-5", "--reasoning", "high", "--permission", "full", "--json"]);
+    expect(set.exitCode).toBe(0);
+    expect(JSON.parse(set.stdout).scheduledStart).toMatchObject({ mode: "preset", agent: { providerId: "codex", model: "gpt-5", reasoningLevel: "high", permissionMode: "full" } });
+    expect((await f.run(["schedule", "show", f.task.key])).stdout).toContain("agent codex/gpt-5, high");
+    expect((await f.run(["show", f.task.key])).stdout).toContain("agent codex/gpt-5, high");
+    expect(JSON.parse((await f.run(["show", f.task.key, "--json"])).stdout).scheduledStart).toMatchObject({ agent: { model: "gpt-5" } });
+    expect((await f.run(["schedule", "change", f.task.key, "--agent", "codex/gpt-5", "--reasoning", "low"])).exitCode).toBe(0);
+    expect((await f.run(["schedule", "log", f.task.key])).stdout).toContain('"reasoningLevel":"low"');
+    expect((await f.run(["schedule", "change", f.task.key, "--agent", "codex/other-model"])).stderr).toContain("model_unknown");
+  });
+
+  it("creates a card with --start-agent", async () => {
+    const f = fixture();
+    f.world.installed = false;
+    const created = await f.run(["create", "--project", f.tracker.prefix, "--title", "Night card", "--start-at", "+3h", "--start-agent", "codex/gpt-5", "--start-reasoning", "high"]);
+    expect(created.exitCode).toBe(0);
+    expect(created.stdout).toContain("agent codex/gpt-5, high");
+  });
+
   it("resolves an unknown start from the command line", async () => {
     const f = fixture();
     await f.schedule("+10m");

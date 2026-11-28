@@ -234,7 +234,7 @@ function taskFailure(error: TasksDomainFailure) {
 
 /** What the card meta carries of a scheduled start. */
 function cardStartOf(start: ScheduledStart) {
-  return { at: start.startAt, mode: start.mode, state: start.state, setter: start.setter, ...(start.threadId ? { threadId: start.threadId } : {}), ...(start.error ? { error: start.error } : {}) };
+  return { at: start.startAt, mode: start.mode, state: start.state, setter: start.setter, ...(start.agent ? { agent: start.agent } : {}), ...(start.threadId ? { threadId: start.threadId } : {}), ...(start.error ? { error: start.error } : {}) };
 }
 
 export function publishTasksChanged(

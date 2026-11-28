@@ -1220,6 +1220,8 @@ export const MIGRATIONS = [
      attempts INTEGER NOT NULL DEFAULT 0, recipient TEXT, attempted_at TEXT, next_at TEXT, cursor TEXT, last_error TEXT
    );
    CREATE TABLE scheduled_start_settings (project_id TEXT PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE, args TEXT NOT NULL);`,
+  // A scheduled start can name an agent (provider, model, options as JSON) instead of a preset; its mode stays 'preset', so the CHECK is unchanged.
+  `ALTER TABLE scheduled_starts ADD COLUMN agent TEXT;`,
 ] as const;
 
 /** Approval rows written before the comment id existed: the N-th row is the N-th approving review comment, only where the counts agree. */

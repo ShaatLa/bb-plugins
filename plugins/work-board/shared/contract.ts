@@ -927,21 +927,27 @@ const queueResultSchema = z.object({ changeId: z.string(), taskId: idSchema, thr
 /** Where a card stands in an executor's work queue; 1 is the current card. */
 export const cardQueueSchema = z.object({ threadId: z.string(), position: z.number().int().positive() }).strict();
 
+/** The provider, model and options of an agent start (no preset); `permissionMode` is `auto` when not given. */
+export const startAgentSchema = z.object({
+  providerId: nonBlankStringSchema, model: nonBlankStringSchema, reasoningLevel: nonBlankStringSchema.optional(), serviceTier: nonBlankStringSchema.optional(), permissionMode: presetPermissionModeSchema.optional(),
+}).strict();
+export type StartAgent = z.infer<typeof startAgentSchema>;
 /** A card's scheduled start (schedule/): a time and what launches at it. */
 export const scheduledStartSchema = z.object({
   id: z.string(), taskId: idSchema, at: z.string(), mode: z.enum(["spawn_gate", "preset"]),
   state: z.enum(["scheduled", "launching", "launched", "refused", "unknown", "canceled"]),
-  setter: z.string(), builderArgs: z.array(z.string()).optional(), presetId: z.string().optional(), presetName: z.string().optional(), brief: z.string().optional(),
+  setter: z.string(), builderArgs: z.array(z.string()).optional(), presetId: z.string().optional(), presetName: z.string().optional(), agent: startAgentSchema.optional(), brief: z.string().optional(),
   threadId: z.string().optional(), parentThreadId: z.string().optional(), error: z.string().optional(), reasonCode: z.string().optional(), policyError: z.string().optional(),
 }).strict();
 /** What the card JSON and the board chips carry of it. */
 export const cardScheduledStartSchema = z.object({
   at: z.string(), mode: z.enum(["spawn_gate", "preset"]), state: z.enum(["scheduled", "launching", "launched", "refused", "unknown", "canceled"]),
-  setter: z.string(), threadId: z.string().optional(), error: z.string().optional(),
+  setter: z.string(), agent: startAgentSchema.optional(), threadId: z.string().optional(), error: z.string().optional(),
 }).strict();
 const startLaunchInputSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("gate"), args: z.array(z.string()).max(64).optional() }).strict(),
   z.object({ kind: z.literal("preset"), presetId: idSchema, brief: z.string().max(20_000).optional() }).strict(),
+  z.object({ kind: z.literal("agent"), brief: z.string().max(20_000).optional(), ...startAgentSchema.shape }).strict(),
 ]);
 const startLogRowSchema = z.object({ id: z.number().int(), taskId: z.string().nullable(), taskKey: z.string().nullable(), projectId: z.string().nullable(), startId: z.string().nullable(), at: z.string(), event: z.string(), actor: z.string().nullable(), detail: z.record(z.string(), z.unknown()) }).strict();
 const scheduleResultSchema = z.object({ scheduledStart: scheduledStartSchema }).strict();

@@ -84,6 +84,7 @@ import { ACTIVITY_LABELS } from "../shared/task-activity.js";
 import { threadHealthJson } from "../shared/thread-health";
 import { checksCliCommands } from "../checks/cli";
 import { queueCliCommands } from "../queue/cli";
+import { describeAgent } from "../schedule/store";
 import { formatStartTime, joinArgs } from "../schedule/when";
 import { launchFromOptions, scheduleCliCommands, startSummary, actorOf as scheduleActor } from "../schedule/cli";
 import { LITERAL_TEXT_FIELDS } from "../checks/config";
@@ -2600,11 +2601,14 @@ export function registerTasksCli(
               type: "string",
               placeholder: "time",
               description:
-                "Schedule the card's start after creating it: an ISO time with an offset or +30m, +2h, +1d (at least 2 minutes ahead). Add --start-gate (builder arguments after `--`) or --start-preset. Nothing is sent to the session before it starts; see `bb work-board schedule --help`",
+                "Schedule the card's start after creating it: an ISO time with an offset or +30m, +2h, +1d (at least 2 minutes ahead). Add --start-gate (builder arguments after `--`), --start-agent provider/model or --start-preset. Nothing is sent to the session before it starts; see `bb work-board schedule --help`",
             },
             "start-gate": { type: "boolean", description: "With --start-at: launch through the project's Spawn Gate builder; its arguments go after `--`" },
             "start-preset": { type: "string", placeholder: "name-or-id", description: "With --start-at: launch from this agent preset" },
-            "start-brief-file": { type: "string", placeholder: "path", description: "With --start-preset: extra brief text for the session, read from this UTF-8 file" },
+            "start-agent": { type: "string", placeholder: "provider/model", description: "With --start-at: launch this provider and model itself (a project without Spawn Gate's Script mode), e.g. codex/gpt-5" },
+            "start-reasoning": { type: "string", placeholder: "level", description: "With --start-agent: the reasoning level" },
+            "start-permission": { type: "string", placeholder: "mode", description: "With --start-agent: accept-edits, auto or full (default auto)" },
+            "start-brief-file": { type: "string", placeholder: "path", description: "With --start-preset or --start-agent: extra brief text for the session, read from this UTF-8 file" },
             machine: MACHINE_OPTION,
             json: JSON_OPTION,
           },
@@ -2619,9 +2623,9 @@ export function registerTasksCli(
             return guard(async () => {
               rejectExecutors(input.options);
               const startLaunch = input.options["start-at"]
-                ? await launchFromOptions({ domain, guard, task: (address) => resolveTask(domain, address), project: (address) => resolveProject(domain, address), fail: (message) => new CliError(message), preset: async (address) => resolvePreset(await listPresets(domain), address), readText: async (hostCtx, file) => (await readTextOption(bb, hostCtx, undefined, undefined, file)) ?? "" }, ctx, { gate: input.options["start-gate"], preset: input.options["start-preset"], briefFile: input.options["start-brief-file"] }, input.passthrough, true)
+                ? await launchFromOptions({ domain, guard, task: (address) => resolveTask(domain, address), project: (address) => resolveProject(domain, address), fail: (message) => new CliError(message), preset: async (address) => resolvePreset(await listPresets(domain), address), readText: async (hostCtx, file) => (await readTextOption(bb, hostCtx, undefined, undefined, file)) ?? "" }, ctx, { gate: input.options["start-gate"], preset: input.options["start-preset"], agent: input.options["start-agent"], reasoning: input.options["start-reasoning"], permission: input.options["start-permission"], briefFile: input.options["start-brief-file"] }, input.passthrough, true)
                 : undefined;
-              if (!input.options["start-at"] && (input.options["start-gate"] || input.options["start-preset"] || input.passthrough.length)) throw new CliError("--start-gate, --start-preset and arguments after `--` need --start-at");
+              if (!input.options["start-at"] && (input.options["start-gate"] || input.options["start-preset"] || input.options["start-agent"] || input.passthrough.length)) throw new CliError("--start-gate, --start-preset, --start-agent and arguments after `--` need --start-at");
               const attachPaths = input.options.attach.map((path) =>
                 resolve(ctx.cwd ?? process.cwd(), path),
               );
@@ -2744,7 +2748,7 @@ export function registerTasksCli(
                 stdout,
                 stderr: [
                   ...(failedAttachments.length ? [`created ${task.key}, but ${failedAttachments.length} of ${attachPaths.length} attachments failed; see stdout for per-file recovery commands`] : []),
-                  ...(scheduleError ? [`created ${task.key}, but its start was not scheduled: ${scheduleError}. Schedule it with: bb work-board schedule ${task.key} --at <time> --gate | --preset <name>`] : []),
+                  ...(scheduleError ? [`created ${task.key}, but its start was not scheduled: ${scheduleError}. Schedule it with: bb work-board schedule ${task.key} --at <time> --gate | --agent <provider/model> | --preset <name>`] : []),
                 ].join("\n"),
               };
             });
@@ -3166,7 +3170,7 @@ export function registerTasksCli(
                   ["Status", task.status],
                   ["Automatic pause", automatic],
                   ...(cardMeta.queue ? [["Queue", cardMeta.queue.position === 1 ? `Current for ${cardMeta.queue.threadId}` : `Queued #${cardMeta.queue.position} for ${cardMeta.queue.threadId}`] as const] : []),
-                  ...(cardMeta.scheduledStart ? [["Scheduled start", `${cardMeta.scheduledStart.state === "scheduled" ? `Scheduled for ${formatStartTime(cardMeta.scheduledStart.at)}` : cardMeta.scheduledStart.state === "launched" ? `Launched ${cardMeta.scheduledStart.threadId}` : `Start ${cardMeta.scheduledStart.state}${cardMeta.scheduledStart.error ? `: ${cardMeta.scheduledStart.error}` : ""}`}, ${cardMeta.scheduledStart.mode === "spawn_gate" ? "Spawn Gate" : "preset"}, set by ${cardMeta.scheduledStart.setter}`] as const] : []),
+                  ...(cardMeta.scheduledStart ? [["Scheduled start", `${cardMeta.scheduledStart.state === "scheduled" ? `Scheduled for ${formatStartTime(cardMeta.scheduledStart.at)}` : cardMeta.scheduledStart.state === "launched" ? `Launched ${cardMeta.scheduledStart.threadId}` : `Start ${cardMeta.scheduledStart.state}${cardMeta.scheduledStart.error ? `: ${cardMeta.scheduledStart.error}` : ""}`}, ${cardMeta.scheduledStart.mode === "spawn_gate" ? "Spawn Gate" : cardMeta.scheduledStart.agent ? describeAgent(cardMeta.scheduledStart.agent) : "preset"}, set by ${cardMeta.scheduledStart.setter}`] as const] : []),
                   ...pauses.map(pause => ["Paused", `${pause.reason}${pause.until ? `, until ${pause.until}` : ""}`] as const),
                   ["Blocked by", dependencies.blockedBy.map(blocker => `${blocker.key} (${blocker.status}${blocker.status === resolveRoles(project).done ? "; satisfied" : "; waiting for Done"})`).join(", ") || "-"],
                   ["Blocks", dependencies.blocks.map(dependent => `${dependent.key} (${dependent.status})`).join(", ") || "-"],

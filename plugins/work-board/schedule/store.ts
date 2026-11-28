@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import { managerOf, zoneOf } from "../queue/store";
+import type { StartAgent } from "../shared/contract";
 import { isClosedStatus } from "../shared/workflow-policy";
 import { cardComment } from "../notices/once";
 import { formatStartTime, withoutFinalPeriod } from "./when";
@@ -9,17 +10,17 @@ type Database = ReturnType<BbPluginApi["storage"]["database"]>;
 export type StartMode = "spawn_gate" | "preset";
 export type StartState = "scheduled" | "launching" | "launched" | "refused" | "unknown" | "canceled";
 export type StartEvent = "scheduled" | "changed" | "canceled" | "launching" | "launched" | "refused" | "unknown" | "reconciled" | "resolved";
-/** What a card's schedule is for: the launch mode with its parameters. */
-export type Launch = { mode: "spawn_gate"; args: string[] } | { mode: "preset"; presetId: string; brief?: string };
+/** What a card's schedule is for: the launch mode with its parameters. A Work Board launch holds a preset or an agent, never both. */
+export type Launch = { mode: "spawn_gate"; args: string[] } | { mode: "preset"; presetId?: string; agent?: StartAgent; brief?: string };
 export interface ScheduledStart {
   id: string; taskId: string; projectId: string; startAt: string; mode: StartMode;
-  builderArgs: string[] | null; presetId: string | null; extraInstructions: string | null;
+  builderArgs: string[] | null; presetId: string | null; agent: StartAgent | null; extraInstructions: string | null;
   setter: string; state: StartState; launchId: string | null; policyError: string | null; attemptedAt: string | null;
   threadId: string | null; parentThreadId: string | null; attached: boolean; error: string | null; reasonCode: string | null;
   createdAt: string; updatedAt: string;
 }
 interface Row {
-  id: string; task_id: string; project_id: string; start_at: string; mode: StartMode; builder_args: string | null; preset_id: string | null; extra_instructions: string | null;
+  id: string; task_id: string; project_id: string; start_at: string; mode: StartMode; builder_args: string | null; preset_id: string | null; agent: string | null; extra_instructions: string | null;
   setter: string; state: StartState; launch_id: string | null; policy_error: string | null; attempted_at: string | null; thread_id: string | null; parent_thread_id: string | null;
   attached: number; error: string | null; reason_code: string | null; created_at: string; updated_at: string;
 }
@@ -30,7 +31,7 @@ export const markerOf = (launchId: string) => `<!-- work-board-scheduled-start:$
 
 export const toStart = (row: Row): ScheduledStart => ({
   id: row.id, taskId: row.task_id, projectId: row.project_id, startAt: row.start_at, mode: row.mode,
-  builderArgs: row.builder_args ? (JSON.parse(row.builder_args) as string[]) : null, presetId: row.preset_id, extraInstructions: row.extra_instructions,
+  builderArgs: row.builder_args ? (JSON.parse(row.builder_args) as string[]) : null, presetId: row.preset_id, agent: row.agent ? (JSON.parse(row.agent) as StartAgent) : null, extraInstructions: row.extra_instructions,
   setter: row.setter, state: row.state, launchId: row.launch_id, policyError: row.policy_error, attemptedAt: row.attempted_at,
   threadId: row.thread_id, parentThreadId: row.parent_thread_id, attached: row.attached === 1, error: row.error, reasonCode: row.reason_code,
   createdAt: row.created_at, updatedAt: row.updated_at,
@@ -58,9 +59,19 @@ export function currentStart(db: Database, taskId: string): ScheduledStart | und
 }
 
 const presetName = (db: Database, id: string | null) => (id ? db.prepare<[string], { name: string }>("SELECT name FROM presets WHERE id=?").get(id)?.name ?? id : "");
-export function describeLaunch(db: Database, start: Pick<ScheduledStart, "mode" | "builderArgs" | "presetId">): string {
-  return start.mode === "spawn_gate" ? `Spawn Gate \`${(start.builderArgs ?? []).join(" ")}\`` : `preset ${presetName(db, start.presetId)}`;
+/** `agent codex/gpt-5, high`: the provider and model, then the reasoning level when there is one. */
+export const describeAgent = (agent: StartAgent) => `agent ${agent.providerId}/${agent.model}${agent.reasoningLevel ? `, ${agent.reasoningLevel}` : ""}`;
+export function describeLaunch(db: Database, start: Pick<ScheduledStart, "mode" | "builderArgs" | "presetId" | "agent">): string {
+  return start.mode === "spawn_gate" ? `Spawn Gate \`${(start.builderArgs ?? []).join(" ")}\`` : start.agent ? describeAgent(start.agent) : `preset ${presetName(db, start.presetId)}`;
 }
+/** A Work Board launch is a preset or an agent, exactly one; the table cannot say so, so every write checks it. */
+function assertTarget(launch: Launch): void {
+  if (launch.mode === "preset" && Boolean(launch.presetId) === Boolean(launch.agent)) throw new Error("A start launches from a preset or an agent, exactly one");
+}
+const launchColumns = (launch: Launch) => [
+  launch.mode, launch.mode === "spawn_gate" ? JSON.stringify(launch.args) : null, launch.mode === "preset" ? launch.presetId ?? null : null,
+  launch.mode === "preset" && launch.agent ? JSON.stringify(launch.agent) : null, launch.mode === "preset" ? launch.brief ?? null : null,
+];
 
 /** One log row and one system comment for an event; call inside the transaction of the change itself. */
 export function recordEvent(db: Database, start: ScheduledStart, key: string, event: StartEvent, actor: string, detail: Record<string, unknown>, comment: string | null, at = new Date().toISOString()): void {
@@ -68,7 +79,7 @@ export function recordEvent(db: Database, start: ScheduledStart, key: string, ev
     .run(start.taskId, key, start.projectId, start.id, at, event, actor, JSON.stringify(detail));
   if (comment) cardComment(db, start.taskId, comment, at);
 }
-const launchDetail = (start: ScheduledStart) => ({ at: start.startAt, mode: start.mode, ...(start.builderArgs ? { args: start.builderArgs } : {}), ...(start.presetId ? { presetId: start.presetId } : {}), parentThreadId: start.parentThreadId });
+const launchDetail = (start: ScheduledStart) => ({ at: start.startAt, mode: start.mode, ...(start.builderArgs ? { args: start.builderArgs } : {}), ...(start.presetId ? { presetId: start.presetId } : {}), ...(start.agent ? { agent: start.agent } : {}), parentThreadId: start.parentThreadId });
 
 /** Who may change, cancel or resolve a start: the setter, the project's manager, the owner. */
 export function assertMayEdit(db: Database, start: ScheduledStart, actor: string): void {
@@ -84,9 +95,10 @@ export function insertStart(db: Database, input: NewStart): ScheduledStart {
     if (card.archived || card.closed) throw new Error(`${card.key} is closed or archived; a closed card cannot be scheduled`);
     const previous = db.prepare<[string], { state: StartState }>("SELECT state FROM scheduled_starts WHERE task_id=? AND state IN ('scheduled','launching','unknown')").get(input.taskId);
     if (previous) throw new Error(previous.state === "unknown" ? `${card.key} has a start whose outcome is unknown: resolve the previous start first (schedule resolve)` : `${card.key} already has a scheduled start: use schedule change or schedule cancel`);
+    assertTarget(input.launch);
     const at = new Date().toISOString(), id = randomUUID();
-    db.prepare<(string | null)[]>("INSERT INTO scheduled_starts(id,task_id,project_id,start_at,mode,builder_args,preset_id,extra_instructions,setter,state,parent_thread_id,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,'scheduled',?,?,?)")
-      .run(id, input.taskId, card.projectId, input.startAt, input.launch.mode, input.launch.mode === "spawn_gate" ? JSON.stringify(input.launch.args) : null, input.launch.mode === "preset" ? input.launch.presetId : null, input.launch.mode === "preset" ? input.launch.brief ?? null : null, input.setter, input.parentThreadId, at, at);
+    db.prepare<(string | null)[]>("INSERT INTO scheduled_starts(id,task_id,project_id,start_at,mode,builder_args,preset_id,agent,extra_instructions,setter,state,parent_thread_id,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,'scheduled',?,?,?)")
+      .run(id, input.taskId, card.projectId, input.startAt, ...launchColumns(input.launch), input.setter, input.parentThreadId, at, at);
     const start = getStart(db, id)!;
     recordEvent(db, start, card.key, "scheduled", input.setter, launchDetail(start), `Start scheduled for ${formatStartTime(start.startAt)} by ${input.setter}: ${describeLaunch(db, start)}`, at);
     return start;
@@ -106,9 +118,11 @@ export function changeStart(db: Database, id: string, actor: string, change: { s
     const card = cardFacts(db, before.taskId)!;
     if (card.archived || card.closed) throw new Error(`${card.key} is closed or archived`);
     const launch = change.launch;
+    if (launch) assertTarget(launch);
     const at = new Date().toISOString();
-    const result = db.prepare<(string | null)[]>("UPDATE scheduled_starts SET start_at=?, mode=?, builder_args=?, preset_id=?, extra_instructions=?, parent_thread_id=?, policy_error=NULL, updated_at=? WHERE id=? AND state='scheduled'")
-      .run(change.startAt ?? before.startAt, launch?.mode ?? before.mode, launch ? (launch.mode === "spawn_gate" ? JSON.stringify(launch.args) : null) : before.builderArgs && JSON.stringify(before.builderArgs), launch ? (launch.mode === "preset" ? launch.presetId : null) : before.presetId, launch ? (launch.mode === "preset" ? launch.brief ?? null : null) : before.extraInstructions, change.parentThreadId, at, id);
+    const columns = launch ? launchColumns(launch) : [before.mode, before.builderArgs && JSON.stringify(before.builderArgs), before.presetId, before.agent && JSON.stringify(before.agent), before.extraInstructions];
+    const result = db.prepare<(string | null)[]>("UPDATE scheduled_starts SET start_at=?, mode=?, builder_args=?, preset_id=?, agent=?, extra_instructions=?, parent_thread_id=?, policy_error=NULL, updated_at=? WHERE id=? AND state='scheduled'")
+      .run(change.startAt ?? before.startAt, ...columns, change.parentThreadId, at, id);
     if (!result.changes) refusedBecause(db, id, "change");
     const start = getStart(db, id)!;
     recordEvent(db, start, card.key, "changed", actor, { ...launchDetail(start), previousAt: before.startAt }, `Scheduled start changed by ${actor}: ${formatStartTime(start.startAt)}, ${describeLaunch(db, start)}`, at);
