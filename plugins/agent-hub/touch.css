@@ -3,6 +3,8 @@
     min-width: 40px;
     min-height: 40px;
     flex-shrink: 0;
+    /* Not shrinking must not push a long button past its container's edge. */
+    max-width: 100%;
   }
   [data-composer-voice] { min-width: 40px; min-height: 40px; }
 }

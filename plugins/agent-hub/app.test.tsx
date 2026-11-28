@@ -926,6 +926,15 @@ it('saves an attachment through the host file API', async () => {
   await waitFor(() => expect(saveFile).toHaveBeenCalledWith({ fileName: 'notes.txt', blob: expect.any(Blob) }));
 });
 
+it('truncates a long attachment name inside its chip and keeps the full name in a tooltip', async () => {
+  const { ItemCard } = await import('./app');
+  const name = 'a-very-long-attachment-file-name-without-any-spaces-that-would-run-past-a-phone-screen.txt';
+  const slot = renderSlot({ component: () => <ItemCard item={{ ...item, attachments: [{ type: 'localFile', path: name, name }] }} chat /> }, {});
+  const label = slot.getByTitle(name);
+  expect(label.className.split(' ')).toContain('truncate');
+  expect(slot.getByRole('link', { name }).className.split(' ')).toEqual(expect.arrayContaining(['min-w-0', 'max-w-full']));
+});
+
 it('copies the agent Markdown and its message link from separate icons', async () => {
   const { ItemCard } = await import('./app');
   const slot = renderSlot({ component: () => <ItemCard item={{ ...item, threadId: 'thr_example', projectId: 'proj_example', answerSeq: 12 }} chat /> }, {});

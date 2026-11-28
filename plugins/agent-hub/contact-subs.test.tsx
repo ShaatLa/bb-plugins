@@ -84,6 +84,19 @@ it('shows bb\'s draft pencil instead of the time or spinner while the Answers co
   expect(await glyph('empty')).toBeUndefined();
   localStorage.removeItem(COMPOSE_KEY);
 });
+it('shows the draft pencil only on the row of the thread whose own composer holds the draft', async () => {
+  localStorage.setItem(COMPOSE_KEY, JSON.stringify({ [child]: { text: 'half typed', files: [] } }));
+  const { slot } = setup(true);
+  const subs = await slot.findByRole('list', { name: 'Sub-sessions of Parent' });
+  expect(within(subs).getByRole('img', { name: 'Draft' }).querySelector('[data-thread-status-glyph]')?.getAttribute('data-thread-status-glyph')).toBe('draft');
+  expect(slot.getByRole('option', { name: /Parent/ }).querySelector('[data-thread-status-glyph="draft"]')).toBeNull();
+  slot.unmount();
+  // Collapsed, the child's draft does not roll up to the parent either.
+  localStorage.removeItem(stored);
+  const collapsed = setup(false).slot;
+  expect((await collapsed.findByRole('button', { name: 'Show sub-sessions' })).getAttribute('aria-expanded')).toBe('false');
+  expect(collapsed.getByRole('option', { name: /Parent/ }).querySelector('[data-thread-status-glyph="draft"]')).toBeNull();
+});
 it('keeps a sub-session that asks the owner visible under its collapsed parent', async () => {
   for (const [asking, fields] of [[[child], {}], [[], { hasPendingInteraction: true }]] as const) {
     const { slot } = setup(false, false, parent, [...asking], fields);
