@@ -441,7 +441,7 @@ function InboxChat({ onBulkRead, bbChat = false, search: searchProp, onSearch, t
   const setDraft: typeof setReplyDraft = update => { if (selectionBar) setSelectionBar(update); else setReplyDraft(update); };
   const [selectionFeedback, setSelectionFeedback] = useTransientText();
   useEffect(() => setSelectionBar(null), [selected]);
-  const quoting = useRef(false); quoting.current = !!draft;
+  const stay = useRef(false);
   // The quote popup's live selection and the spot it was last placed from it; the popup follows it as the chat changes.
   const anchor = useRef<Range | null>(null), placed = useRef<{ top: number; above: number; left: number } | null>(null);
   const scroll = useRef<HTMLDivElement>(null), popup = useRef<HTMLDivElement>(null), selectedRef = useRef(selected); selectedRef.current = selected;
@@ -456,6 +456,9 @@ function InboxChat({ onBulkRead, bbChat = false, search: searchProp, onSearch, t
   // The previous conversation stays on screen until the new one's first page arrives, then both swap in one frame.
   const [historyWindow, setHistoryWindow] = useState<{threadId:string; page:ListResult} | null>(null), [windowLoading, setWindowLoading] = useState(false);
   const activeWindow = historyWindow?.threadId === selected ? historyWindow : null;
+  // Nothing follows new messages while a quote popup is open (the owner writes about this spot) or in a history window: no live
+  // message reaches it, and Load newer appending at its end must not carry the reader past the jump's target.
+  stay.current = !!draft || !!activeWindow;
   const windowRequest = useRef(0), jumpOffset = useRef<number | null>(null);
   const loadedPages = useMemo(() => unbroken(loaded.pages), [loaded.pages]), pages = useMemo(() => activeWindow ? [{...activeWindow.page, items: activeWindow.page.newerCursor ? activeWindow.page.items : [...loadedPages.flatMap(p => p.items), ...activeWindow.page.items]}] : loaded.threadId === selected ? loadedPages : NO_PAGES, [activeWindow, loaded.threadId, selected, loadedPages]);
   // Questions answered here while bb delivers the reply; a failed one comes back with its error.
@@ -516,7 +519,10 @@ function InboxChat({ onBulkRead, bbChat = false, search: searchProp, onSearch, t
       const page = await rpc.call('list', {view:'all',threadId:selected,order:'activity',limit:20,anchor:seq ?? token.replace(/:answer$/, '')});
       if (windowRequest.current !== request) return;
       if (!page.items.length) { setOlder(true); return; }
-      setHistoryWindow({threadId:selected,page}); setJump(token.endsWith(':answer') ? token : page.items[0]!.id);
+      // The anchor ends its page: alone at the bottom the view clamps there, counts as at the end and follows Load newer down.
+      const newer = page.newerCursor ? await rpc.call('list', {view:'all',threadId:selected,order:'activity',limit:20,after:page.newerCursor}).catch(() => null) : null; // without them the jump still lands, and stay keeps it
+      if (windowRequest.current !== request) return;
+      setHistoryWindow({threadId:selected,page:newer ? {items:[...newer.items,...page.items],nextCursor:page.nextCursor,newerCursor:newer.newerCursor} : page}); setJump(token.endsWith(':answer') ? token : page.items[0]!.id);
     })().catch(e => { if (windowRequest.current === request) { setOlder(true); setSearchError(errorText(e)); } }).finally(() => { if (windowRequest.current === request) setWindowLoading(false); });
   }, [selected,pages,rpc,sdk]);
   const loadWindow = async (newer: boolean) => {
@@ -812,8 +818,7 @@ function InboxChat({ onBulkRead, bbChat = false, search: searchProp, onSearch, t
       clearTimeout(settle.current); settle.current = setTimeout(release, pin.current ? 3000 : 0);
     // Older pages render above, so one more shown page (Load earlier, or the reach back over quiet updates) grew the top: keep the place.
     } else if (old.prepend || shownPages > old.shown) node.scrollTop = old.top + node.scrollHeight - old.height;
-    // While a quote popup is open (anchored in the chat) nothing follows new messages: the owner is writing about this spot.
-    else if (old.bottom && !quoting.current) node.scrollTop = followTo(node.scrollTop, node.scrollHeight, node.clientHeight);
+    else if (old.bottom && !stay.current) node.scrollTop = followTo(node.scrollTop, node.scrollHeight, node.clientHeight);
     position.current = { height: node.scrollHeight, top: node.scrollTop, bottom: node.scrollHeight - node.scrollTop - node.clientHeight < AT_BOTTOM, fresh: false, prepend: false, shown: shownPages };
   }, [pages, depth]);
   useEffect(() => {
@@ -864,7 +869,7 @@ function InboxChat({ onBulkRead, bbChat = false, search: searchProp, onSearch, t
         // chat, so above the bottom it shrinks only that far; the rest goes once the reader reaches the bottom.
         const gap = node.scrollHeight - node.scrollTop - node.clientHeight, bottom = gap <= AT_BOTTOM;
         const padding = `${bottom ? box.offsetHeight : Math.max(box.offsetHeight, (parseFloat(column.style.paddingBottom) || 0) - gap)}px`;
-        if (column.style.paddingBottom !== padding) { column.style.paddingBottom = padding; if (bottom && !pin.current && !quoting.current) node.scrollTop = node.scrollHeight - node.clientHeight - gap; }
+        if (column.style.paddingBottom !== padding) { column.style.paddingBottom = padding; if (bottom && !pin.current && !stay.current) node.scrollTop = node.scrollHeight - node.clientHeight - gap; }
       }
       setScrollbar(node.offsetWidth - node.clientWidth);
     };
@@ -902,7 +907,7 @@ function InboxChat({ onBulkRead, bbChat = false, search: searchProp, onSearch, t
       if (pin.current) return;
       const el = gap > AT_BOTTOM ? anchored() : null;
       if (el) node.scrollTop += el.getBoundingClientRect().top - node.getBoundingClientRect().top - anchor!.offset;
-      else if (gap <= AT_BOTTOM && !quoting.current) node.scrollTop = node.scrollHeight - node.clientHeight;
+      else if (gap <= AT_BOTTOM && !stay.current) node.scrollTop = node.scrollHeight - node.clientHeight;
     };
     // Hidden (display: none while bb shows another page) every size reads 0 and the browser may drop the scroll offset, so
     // nothing is noted then; on return the reader's card, or the bottom, is put back.
@@ -910,7 +915,7 @@ function InboxChat({ onBulkRead, bbChat = false, search: searchProp, onSearch, t
     const observer = new ResizeObserver(() => {
       const next = node.clientHeight;
       if (!next && !node.clientWidth) { hidden = true; return; }
-      if (hidden) { hidden = false; if (!pin.current && node.clientWidth === width) { const el = gap > AT_BOTTOM ? anchored() : null; if (el) node.scrollTop += el.getBoundingClientRect().top - node.getBoundingClientRect().top - anchor!.offset; else if (gap <= AT_BOTTOM && !quoting.current) node.scrollTop = node.scrollHeight - next; height = next; content = node.scrollHeight; return; } }
+      if (hidden) { hidden = false; if (!pin.current && node.clientWidth === width) { const el = gap > AT_BOTTOM ? anchored() : null; if (el) node.scrollTop += el.getBoundingClientRect().top - node.getBoundingClientRect().top - anchor!.offset; else if (gap <= AT_BOTTOM && !stay.current) node.scrollTop = node.scrollHeight - next; height = next; content = node.scrollHeight; return; } }
       if (node.clientWidth !== width) {
         width = node.clientWidth; resizedAt.current = Date.now();
         if (!settle) { const measured = cards().map(card => { const style = getComputedStyle(card); return { card, height: card.offsetHeight - parseFloat(style.borderTopWidth) - parseFloat(style.borderBottomWidth) - parseFloat(style.paddingTop) - parseFloat(style.paddingBottom) }; }); for (const { card, height } of measured) { card.style.containIntrinsicSize = `auto ${height}px`; card.style.contentVisibility = 'auto'; } }
@@ -921,7 +926,7 @@ function InboxChat({ onBulkRead, bbChat = false, search: searchProp, onSearch, t
       if (!pin.current) {
         const el = gap > AT_BOTTOM ? anchored() : null;
         if (el) node.scrollTop += el.getBoundingClientRect().top - node.getBoundingClientRect().top - anchor!.offset;
-        else if (gap <= AT_BOTTOM && !quoting.current) node.scrollTop = followTo(node.scrollTop, node.scrollHeight, next);
+        else if (gap <= AT_BOTTOM && !stay.current) node.scrollTop = followTo(node.scrollTop, node.scrollHeight, next);
       }
       height = next; content = node.scrollHeight; if (Date.now() - resizedAt.current >= 500) gap = node.scrollHeight - node.scrollTop - next;
     });

@@ -79,7 +79,7 @@ it('keeps a failed draft and edits made during a pending send', async () => {
 });
 it('jumps directly to a search result without fetching intermediate pages', async () => {
   const old = { ...base, id:'ans_old', question:'Ancient question', answer:'Ancient answer' };
-  const { slot, recipients, list } = setup({ list: input => input.query ? { items:[old], nextCursor:null } : input.anchor ? { items:[old], nextCursor:null, newerCursor:'1|ans_old' } : { items:[base], nextCursor:'1|ans_one' } });
+  const { slot, recipients, list } = setup({ list: input => input.query ? { items:[old], nextCursor:null } : input.anchor ? { items:[old], nextCursor:null, newerCursor:'1|ans_old' } : input.after ? { items:[base], nextCursor:null, newerCursor:'2|ans_one' } : { items:[base], nextCursor:'1|ans_one' } });
   fireEvent.click(await recipients.findByRole('option')); await slot.findByText('Answer one');
   fireEvent.click(slot.getByRole('button', { name:'Search conversation' })); change(slot.getByRole('textbox', { name:'Search conversation' }), { target:{ value:'Ancient' } });
   fireEvent.click(await slot.findByRole('option', { name:/Ancient answer/ }));
@@ -2024,6 +2024,46 @@ it('offers Jump to unread for an unread message older than the loaded history, a
   fireEvent.click(jumpButton());
   await waitFor(() => expect(list).toHaveBeenCalledWith(expect.objectContaining({ anchor:'ans_0' })));
   expect(await slot.findByText('Question 0')).toBeTruthy();
+});
+
+it('opens an older unread message at the top of the history window, with the messages after it below', async () => {
+  const layout = stackLayout(), item = (n: number) => chatItem(n, n === 2 ? null : 1), desc = (from: number, to: number) => Array.from({ length: to - from + 1 }, (_, i) => item(to - i));
+  try {
+    const { slot, recipients, list } = setup({ recipients:[{ ...one, unread:1 }], list: input => input.view === 'unread' ? { items:[item(2)], nextCursor:null } : input.anchor ? { items:desc(0, 2), nextCursor:null, newerCursor:'2|ans_2' } : input.after ? { items:desc(3, 6), nextCursor:null, newerCursor:'6|ans_6' } : input.cursor ? { items:[], nextCursor:null } : { items:desc(7, 9), nextCursor:'7|ans_7' } });
+    fireEvent.click(await recipients.findByRole('option')); await slot.findByRole('list', { name:'History' });
+    await waitFor(() => expect(jumpButton().className).not.toContain('invisible'));
+    fireEvent.click(jumpButton());
+    await waitFor(() => expect(list).toHaveBeenCalledWith(expect.objectContaining({ after:'2|ans_2' })));
+    expect(await slot.findByText('Question 6')).toBeTruthy();
+    // Rows 0-6 are 300 high: the unread row 2 starts at 600. With nothing below it the view clamped at the bottom and followed Load newer down.
+    await waitFor(() => expect(layout.top()).toBe(600));
+  } finally { layout.restore(); }
+});
+
+it('still opens the history window at the target when loading the rows after it fails', async () => {
+  const old = chatItem(0, null), page = Array.from({ length:3 }, (_, n) => chatItem(n + 1, 1)).reverse();
+  const { slot, recipients } = setup({ list: input => { if (input.after) throw new Error('offline'); return input.view === 'unread' ? { items:[old], nextCursor:null } : input.anchor ? { items:[old], nextCursor:null, newerCursor:'1|ans_0' } : input.cursor ? { items:[], nextCursor:null } : { items:page, nextCursor:'1|ans_1' }; } });
+  fireEvent.click(await recipients.findByRole('option')); await slot.findByRole('list', { name:'History' });
+  await waitFor(() => expect(jumpButton().className).not.toContain('invisible'));
+  fireEvent.click(jumpButton());
+  expect(await slot.findByText('Question 0')).toBeTruthy();
+  expect(slot.getByRole('button', { name:'Load newer' })).toBeTruthy();
+});
+it('keeps its place at the end of a history window that stops short of the newest while Load newer appends below', async () => {
+  const layout = stackLayout(), item = (n: number) => chatItem(n, n === 2 ? null : 1), desc = (from: number, to: number) => Array.from({ length: to - from + 1 }, (_, i) => item(to - i));
+  let afters = 0; // the first newer page adds no rows: the jump clamps at the window's end, as a few short messages would
+  try {
+    const { slot, recipients } = setup({ recipients:[{ ...one, unread:1 }], list: input => input.view === 'unread' ? { items:[item(2)], nextCursor:null } : input.anchor ? { items:desc(0, 2), nextCursor:null, newerCursor:'2|ans_2' } : input.after ? (afters++ ? { items:desc(3, 6), nextCursor:null, newerCursor:null } : { items:[], nextCursor:null, newerCursor:'2|ans_2' }) : input.cursor ? { items:[], nextCursor:null } : { items:desc(7, 9), nextCursor:'7|ans_7' } });
+    fireEvent.click(await recipients.findByRole('option')); await slot.findByRole('list', { name:'History' });
+    await waitFor(() => expect(jumpButton().className).not.toContain('invisible'));
+    fireEvent.click(jumpButton());
+    await waitFor(() => expect(layout.top()).toBe(400)); // rows 0-2: the end of the window
+    fireEvent.scroll(layout.scroller()); await new Promise(r => setTimeout(r, 50)); // the view notes it sits at the end
+    fireEvent.click(await slot.findByRole('button', { name:'Load newer' }));
+    expect(await slot.findByText('Question 6')).toBeTruthy();
+    await new Promise(r => setTimeout(r, 50));
+    expect(layout.top()).toBe(400);
+  } finally { layout.restore(); }
 });
 
 // A chat kept by Activity is display:none while another is open: a browser reads its scroll offset as 0 and ignores writes then.
