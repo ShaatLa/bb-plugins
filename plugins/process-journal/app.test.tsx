@@ -374,7 +374,12 @@ it.each(["proposed", "applied", "kept"] as const)("offers only the eligible date
   }
 });
 
-it("saves gap and overlap times as epoch values in one revision-checked proposal edit", async () => {
+it.each([
+  { label: "Deadline", other: "Measurement check", day: "November 1, 2026", time: "01:30",
+    patch: { deadlineAt: Date.parse("2026-11-01T05:30:00Z") }, gap: false },
+  { label: "Measurement check", other: "Deadline", day: "March 8, 2026", time: "02:30",
+    patch: { checkAt: Date.parse("2026-03-08T07:00:00Z") }, gap: true },
+])("saves only the $label field as a revision-checked epoch value", async ({ label, other, day, time, patch, gap }) => {
   const clock = vi.spyOn(Date, "now").mockReturnValue(Date.parse("2026-03-01T00:00:00Z"));
   try {
     const rpc = fixture();
@@ -385,23 +390,22 @@ it("saves gap and overlap times as epoch values in one revision-checked proposal
     const screen = renderSlot(app.navPanels[0], { subPath: `${projectId}/${proposal.id}` }, { experimental_rpcContract: rpcContract, rpc: {
       ...rpc, projects: () => [local], "proposal.detail": () => ({ ...rpc["proposal.detail"](), proposal: initial, links: [linkedCard] }),
     } });
-    const trigger = await screen.findByRole("button", { name: "Edit deadline" });
+    const trigger = await screen.findByRole("button", { name: `Edit ${label.toLowerCase()}` });
     fireEvent.click(trigger);
-    const editor = within(await documentScreen.findByRole("dialog", { name: "Deadline calendar" }));
+    const editor = within(await documentScreen.findByRole("dialog", { name: `${label} calendar` }));
     expect(editor.getByText(/America\/New_York/)).toBeTruthy();
-    fireEvent.click(editor.getByRole("button", { name: "November 1, 2026" }));
-    fireEvent.change(editor.getByLabelText("Deadline time"), { target: { value: "01:30" } });
-    fireEvent.click(editor.getByRole("button", { name: "Measurement check" }));
-    fireEvent.click(editor.getByRole("button", { name: "March 8, 2026" }));
-    fireEvent.change(editor.getByLabelText("Measurement check time"), { target: { value: "02:30" } });
-    expect(editor.getByText("Resolves to 2026-03-08 03:00.")).toBeTruthy();
-    expect(editor.getByText(/next reconciliation/)).toBeTruthy();
+    expect(editor.queryByRole("group", { name: "Date to edit" })).toBeNull();
+    expect(editor.queryByLabelText(`${other} time`)).toBeNull();
+    fireEvent.click(editor.getByRole("button", { name: day }));
+    fireEvent.change(editor.getByLabelText(`${label} time`), { target: { value: time } });
+    if (gap) {
+      expect(editor.getByText("Resolves to 2026-03-08 03:00.")).toBeTruthy();
+      expect(editor.getByText(/next reconciliation/)).toBeTruthy();
+    }
     expect(rpc["proposal.update"]).not.toHaveBeenCalled();
     fireEvent.click(trigger);
     await waitFor(() => expect(rpc["proposal.update"]).toHaveBeenCalledExactlyOnceWith({
-      projectId, proposalId: proposal.id, revision: proposal.revision, patch: {
-        checkAt: Date.parse("2026-03-08T07:00:00Z"), deadlineAt: Date.parse("2026-11-01T05:30:00Z"),
-      },
+      projectId, proposalId: proposal.id, revision: proposal.revision, patch,
     }));
   } finally { clock.mockRestore(); }
 });

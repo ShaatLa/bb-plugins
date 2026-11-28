@@ -10,8 +10,7 @@ import { dateIn, localMinute, timeOn } from "./time";
 type DateField = "deadline" | "check";
 const labels = { deadline: "Deadline", check: "Measurement check" };
 type DateDraft = {
-  revision: number; zone: string; field: DateField;
-  deadline: string; check: string;
+  revision: number; zone: string; field: DateField; value: string;
 };
 
 function resolveLocal(value: string, zone: string) {
@@ -44,7 +43,9 @@ export function ProposalDates({ proposal, timeZone, linked, disabled, refresh, d
 
   function show(field: DateField) {
     setAnchor(field);
-    setDraft(draft && !stale ? { ...draft, field } : { revision: current.revision, zone: timeZone, deadline, check, field });
+    if (draft?.field !== field || stale) {
+      setDraft({ revision: current.revision, zone: timeZone, field, value: field === "deadline" ? deadline : check });
+    }
     setError("");
   }
 
@@ -57,30 +58,31 @@ export function ProposalDates({ proposal, timeZone, linked, disabled, refresh, d
       refresh();
       return;
     }
-    const deadlineChanged = draft.deadline !== deadline;
-    const checkChanged = measuring && draft.check !== check;
-    const deadlineAt = deadlineChanged ? resolveLocal(draft.deadline, timeZone) : current.deadlineAt;
-    const checkAt = checkChanged ? resolveLocal(draft.check, timeZone) : current.checkAt;
-    if (deadlineAt == null || checkChanged && checkAt == null) {
+    const editingDeadline = draft.field === "deadline";
+    if (draft.value === (editingDeadline ? deadline : check)) {
+      setDraft(undefined);
+      return;
+    }
+    const at = resolveLocal(draft.value, timeZone);
+    if (at === undefined) {
       setError("Enter a valid date and time.");
       return;
     }
-    const patch = {
-      ...(deadlineAt === current.deadlineAt ? {} : { deadlineAt }),
-      ...(checkChanged && checkAt != null && checkAt !== current.checkAt ? { checkAt } : {}),
-    };
-    if (Object.values(patch).some(at => at <= Date.now())) {
+    if (at === (editingDeadline ? current.deadlineAt : current.checkAt)) {
+      setDraft(undefined);
+      return;
+    }
+    if (at <= Date.now()) {
       setError("Changed dates must be in the future.");
       return;
     }
+    const deadlineAt = editingDeadline ? at : current.deadlineAt;
+    const checkAt = editingDeadline ? current.checkAt : at;
     if (checkAt != null && checkAt >= deadlineAt) {
       setError("The measurement check must be before the deadline.");
       return;
     }
-    if (!Object.keys(patch).length) {
-      setDraft(undefined);
-      return;
-    }
+    const patch = editingDeadline ? { deadlineAt: at } : { checkAt: at };
     setBusy(true);
     setError("");
     try {
@@ -98,19 +100,13 @@ export function ProposalDates({ proposal, timeZone, linked, disabled, refresh, d
   }
 
   function editor(edit: DateDraft) {
-    const value = edit[edit.field];
+    const { value } = edit;
     const [day, time] = value.split("T");
     const epoch = resolveLocal(value, edit.zone);
     const resolved = epoch === undefined ? value : localMinute(epoch, edit.zone);
-    const setValue = (value: string) => setDraft(latest => latest && { ...latest, [edit.field]: value });
-    const linkedDay = linked && measuring && !!edit.check && edit.check.split("T")[0] !== check.split("T")[0];
+    const setValue = (value: string) => setDraft(latest => latest && { ...latest, value });
+    const linkedDay = linked && edit.field === "check" && !!day && day !== check.split("T")[0];
     return <>
-      {measuring && <div role="group" aria-label="Date to edit" className="flex gap-1 rounded-md bg-muted p-1">
-        {(["deadline", "check"] as const).map(field => <button key={field} type="button"
-          aria-pressed={field === edit.field}
-          className="rounded-sm px-2 py-1 text-xs hover:bg-state-hover aria-pressed:bg-background aria-pressed:text-foreground"
-          onClick={() => setDraft({ ...edit, field })}>{labels[field]}</button>)}
-      </div>}
       <ProposalCalendar key={edit.field} value={day ?? ""} today={today}
         onChange={day => setValue(`${day}T${time ?? localMinute(Date.now(), edit.zone).split("T")[1]}`)} />
       <label className="flex items-center gap-2 text-xs text-muted-foreground">
@@ -125,12 +121,13 @@ export function ProposalDates({ proposal, timeZone, linked, disabled, refresh, d
   }
 
   function field(key: DateField, label: string, at: number | null, editable: boolean) {
+    const value = <span>{at === null ? "Not set" : date(at)}</span>;
     return <div className="min-w-0">
       <dt className="mb-0.5 text-xs text-muted-foreground">{label}</dt>
       <dd className="flex min-h-8 flex-wrap items-center gap-1.5">
-        <span>{at === null ? "Not set" : date(at)}</span>
-        {editable && <Popover.Root open={anchor === key}
+        {editable ? <Popover.Root open={anchor === key}
           onOpenChange={next => { if (next) show(key); else void save(); }}>
+          <Popover.Anchor asChild>{value}</Popover.Anchor>
           <Popover.Trigger type="button" aria-label={`Edit ${label.toLowerCase()}`} title={`Edit ${label.toLowerCase()}`}
             className="grid size-8 shrink-0 place-items-center rounded-md text-muted-foreground hover:bg-state-hover hover:text-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-ring disabled:opacity-50"
             disabled={busy || disabled}>
@@ -153,7 +150,7 @@ export function ProposalDates({ proposal, timeZone, linked, disabled, refresh, d
               {editor(draft)}
             </Popover.Content>
           </Popover.Portal>}
-        </Popover.Root>}
+        </Popover.Root> : value}
       </dd>
     </div>;
   }

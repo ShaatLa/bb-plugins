@@ -28,7 +28,7 @@ export function JournalSelect<T extends string>({ label, value, options, onChang
   }}>
     <Select.Trigger aria-label={label} className={`${pickerTrigger} ${renderIcon ? compactPicker : "h-8 gap-2 px-2.5"}`}>
       {renderIcon && available
-        ? <Select.Value className="flex items-center">{renderIcon(value)}</Select.Value>
+        ? <Select.Value><span className="flex items-center">{renderIcon(value)}</span></Select.Value>
         : <span className="truncate"><Select.Value>{available ? undefined : "Unavailable"}</Select.Value></span>}
       <Select.Icon asChild><Icon name="ChevronDown" className={`${renderIcon ? "size-3" : "size-3.5"} shrink-0 text-muted-foreground`} /></Select.Icon>
     </Select.Trigger>
