@@ -56,6 +56,33 @@ export const boardLinkSchema = z.object({
   taskId: id, key: title, deadlineSource: z.boolean(), status: title, dueDate: z.string().nullable(),
   syncedCheckAt: time.nullable(), syncedDueDate: z.string().nullable(), conflict: z.boolean(),
 });
+export const reviewStage = z.enum(["hypothesis", "result"]);
+const reviewVerdict = z.enum(["approved", "changes_requested"]);
+const generation = z.number().int().nonnegative();
+const hypothesisSnapshot = proposalFields.omit({ links: true }).extend({
+  links: proposalFields.shape.links,
+  entry: entrySchema.pick({ id: true, title: true, failure: true, gap: true, links: true }),
+});
+const reviewedObservation = eventSchema.pick({ seq: true, at: true, unit: true }).extend({ observation: noteSchema });
+const reviewSnapshot = z.discriminatedUnion("stage", [
+  z.object({ stage: z.literal("hypothesis"), experiment: hypothesisSnapshot }),
+  z.object({
+    stage: z.literal("result"), experiment: hypothesisSnapshot, hypothesisVersion: revision.nullable(), hypothesisHash: z.string(),
+    conclusion: text, observations: z.array(reviewedObservation).min(1).max(50),
+  }),
+]);
+export const reviewRoundSchema = scope.extend({
+  proposalId: id, version: revision, generation: revision, reviewerId: managerId, submittedBy: managerId, submittedAt: time,
+  snapshot: reviewSnapshot, hash: z.string(),
+  status: z.enum(["pending", "approved", "changes_requested", "superseded"]),
+  feedback: text.nullable(), verdict: reviewVerdict.nullable(), decidedAt: time.nullable(),
+  delivery: z.enum(["queued", "sending", "sent", "unreachable", "uncertain"]),
+});
+export const reviewSummarySchema = z.object({
+  reviewerId: managerId.nullable(), generation, legacy: z.boolean(),
+  hypothesis: reviewRoundSchema.pick({ version: true, status: true }).nullable(),
+  result: reviewRoundSchema.pick({ version: true, status: true }).nullable(),
+});
 const localTime = z.string().regex(/^(?:[01]\d|2[0-3]):[0-5]\d$/);
 const timezone = z.string().max(80).refine(value => {
   try { Temporal.Now.instant().toZonedDateTimeISO(value); return !/^[+-]/.test(value); }
@@ -111,13 +138,30 @@ export const methods = {
   "proposal.comment": action(proposalRef.extend({ body: text }), eventSchema),
   "proposal.rollback": action(proposalRef.extend({ evidence: text }), eventSchema),
   "proposal.ack": action(proposalRef.extend({ effectId: id, questionId: id }), eventSchema),
+  "review.assign": action(edit.extend({
+    reviewerId: managerId, generation, reason: text,
+  }), reviewSummarySchema),
+  "review.submit": action(edit.extend({
+    generation: revision, baseVersion: generation, submission: z.discriminatedUnion("stage", [
+      z.object({ stage: z.literal("hypothesis") }).strict(),
+      z.object({
+        stage: z.literal("result"), conclusion: text,
+        observationIds: z.array(revision).min(1).max(50).refine(ids => new Set(ids).size === ids.length, "Select distinct observations"),
+      }).strict(),
+    ]),
+  }), reviewRoundSchema),
+  "review.decide": action(proposalRef.extend({
+    stage: reviewStage, version: revision, generation: revision,
+    verdict: reviewVerdict, feedback: text,
+  }), reviewRoundSchema),
   "proposal.detail": action(proposalRef.extend({ before: z.number().int().positive().optional() }), rows.extend({
     events: z.array(eventSchema), nextBefore: z.number().int().nullable(), links: z.array(boardLinkSchema),
     managerReachable: z.boolean(), measured: z.boolean(),
+    review: reviewSummarySchema.optional(), reviewRounds: z.array(reviewRoundSchema).optional(),
   })),
   list: action(scope.extend({ ...pagination, managerId: managerId.optional(), state: state.optional(),
     view, range: historyRange.default("quarter"), overdue: z.boolean().optional(), withTotal: z.boolean().optional(),
-  }), z.object({ items: z.array(rows.extend({ nextAt: time, overdue: z.boolean() })), nextOffset: z.number().int().nullable(), timeZone: timezone, total: z.number().int().nonnegative().optional() })),
+  }), z.object({ items: z.array(rows.extend({ nextAt: time, overdue: z.boolean(), review: reviewSummarySchema.optional() })), nextOffset: z.number().int().nullable(), timeZone: timezone, total: z.number().int().nonnegative().optional() })),
   digest: action(scope.extend({ managerId: managerId.optional() }), z.object({
     applied: z.number(), kept: z.number(), reverted: z.number(), overdue: z.number(),
   })),
@@ -137,3 +181,6 @@ export type Run = z.infer<typeof runSchema>;
 export type Transition = z.infer<typeof transitionSchema>;
 export type Observation = z.infer<typeof noteSchema>;
 export type Input<K extends keyof typeof methods> = z.output<typeof methods[K]["input"]>;
+export type ReviewRound = z.infer<typeof reviewRoundSchema>;
+export type ReviewStage = z.infer<typeof reviewStage>;
+export type ReviewSummary = z.infer<typeof reviewSummarySchema>;

@@ -40,11 +40,23 @@ The schedule queues the configured manager once for the most recent eligible loc
 
 ## Lifecycle
 
-Create an Entry for the failure and its evidence. Record one or more fix proposals with a hypothesis, deadline, success metric and rollback condition. Move a proposal from Proposed to Applied with implementation evidence, then to Measuring with a check time and a later decision deadline. Record an observation before keeping or reverting. An urgent revert from Applied or Measuring requires an explicit override and reason. Record actual rollback evidence separately. Withdraw a superseded proposal with a reason.
+Create an Entry for the failure and its evidence. Record one or more fix proposals with a hypothesis, deadline, success metric and rollback condition. Get independent hypothesis approval in Proposed before applying the fix. Record the implementation evidence in Applied, then move to Measuring with a check time and a later decision deadline. Record an observation before keeping or reverting. An independent review of the measured result is required before Kept. An urgent revert from Applied or Measuring requires an explicit override and reason. Record actual rollback evidence separately. Withdraw a superseded proposal with a reason.
 
 Proposal deadlines and check times use Unix milliseconds in the CLI and RPC. The UI displays them in project time. Stable submission keys are optional for interactive Entries and proposals and required for scheduled run submissions.
 
 A minute sweep runs checks and sends deadline reminders. If the obligation remains open, it reminds the manager and asks that thread to open an Agent Hub question. An unreachable manager or a request without acknowledgment falls back to a stable Agent Hub notice. Threads may have received a message if the plugin was interrupted before recording delivery. Look for its stable reference in the timeline before sending it manually. Notice delivery is tracked separately from question acknowledgment.
+
+### Independent review
+
+The proposal manager assigns an existing independent thread in the same project. Work Board can keep using its own admissions and worktrees. A thread can review multiple proposals. The author, assigned managers, executors and their descendants cannot approve the proposal.
+
+1. The manager runs `review-assign` with `proposalId`, `revision`, `reviewerId`, `generation` (initially zero) and `reason`.
+2. The manager runs `review-submit` with `proposalId`, `revision`, the assignment `generation`, the stage's `baseVersion` (initially zero) and `submission: {"stage":"hypothesis"}`. For a result, use `"stage":"result"` with a `conclusion` and `observationIds` (event sequence numbers from `proposal-detail`).
+3. From the assigned reviewer thread, read `proposal-detail` and record `review-decide` with `proposalId`, `stage`, `version`, `generation`, `verdict` (`approved` or `changes_requested`) and free-text `feedback`. Review feedback can be written in any language.
+
+A hypothesis approval carries into Applied while the snapshot is current. Deadline and check date changes and archiving the reviewer preserve the approval. Reassigning the reviewer reopens the current stage and preserves approved prior stages. Substantive edits require a new approval and supersede any result approval. A result review freezes the selected observations, including qualitative notes and evidence links. New observations stay in the timeline and can be included in a fresh result submission.
+
+On first upgrade, proposals already in Applied or Measuring can use the existing experiment and evidence at result review. The next Kept transition needs result approval. A substantive change to an existing experiment needs hypothesis approval first. A proposal first applied during a later downgrade also needs hypothesis approval after upgrading again. The board shows the current review status and the proposal page shows the reviewer, versions, snapshots and feedback. If a transition lacks its current approval, the CLI returns `review_required` and RPC returns a conflict with that issue.
 
 ### Metrics
 
@@ -65,7 +77,7 @@ A proposal references `example-count` by name. Process Journal launches commands
 
 ### Work Board
 
-Link external evidence on the Entry or proposal. Use `fix-link` for an existing Work Board card or `fix-create` to create a fix card. Retry creation with the original key. A deleted or moved target needs review before you choose a new operation. All designated fix cards must be Done or have a confirmed linked merge to move a Proposed proposal to Applied.
+Link external evidence on the Entry or proposal. Use `fix-link` for an existing Work Board card or `fix-create` to create a fix card. Retry creation with the original key. A deleted or moved target needs review before you choose a new operation. When the next reconciliation sees both an approved hypothesis and completion of every linked fix card (Done or a confirmed PR merge), the proposal moves to Applied. If all the fixes finish while the proposal is still waiting for hypothesis approval, the journal alerts its manager through the normal reminder queue.
 
 Choose at most one deadline-source card per proposal. Its date and the measuring check timestamp synchronize in project time. If both changed independently, choose a date in the proposal details or use `fix-resolve-deadline`. A card date must correspond to a check before the decision deadline.
 

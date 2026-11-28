@@ -7,6 +7,7 @@ import { isOpen, states, type BoardState, type State } from "./states";
 import { cardPath, hiddenColumnsPath, journalPath, proposalPath, settingsPath } from "./paths";
 import { JournalSettings } from "./settings";
 import { defaultColumns, displayName, StatusMark } from "./status-display";
+import { ReviewPanel, reviewBadge } from "./review-panel";
 
 type Data<K extends keyof typeof methods> = z.infer<typeof methods[K]["output"]>;
 type Projects = Data<"projects">;
@@ -178,6 +179,7 @@ function Workspace({ project, projects, routeProposal, routeHidden, stamp, refre
   const name = (threadId: string) => project.managers.find(m => m.id === threadId)?.name ?? threadId;
   function proposalCard(row: ProposalRow) {
     const p = row.proposal, late = row.overdue;
+    const review = reviewBadge(p, row.review);
     return <JournalLink key={p.id} projectId={project.id} proposalId={p.id} hidden={routeHidden}
       className={`${cardSurface} block text-left transition-colors hover:border-input hover:bg-state-hover focus-visible:outline focus-visible:outline-ring`}>
       <strong className="block break-words text-sm font-medium leading-snug">{p.title}</strong>
@@ -185,6 +187,7 @@ function Workspace({ project, projects, routeProposal, routeHidden, stamp, refre
       <span className="mt-2 flex flex-wrap items-center gap-1.5">
         {view === "history" && <span className={property}><StatusMark state={p.state} display={display.find(column => column.id === p.state)} />{label(p.state)}</span>}
         <span className={property}><span className="min-w-0 break-words">{name(p.managerId)}</span></span>
+        {review && <span className={property}>{review}</span>}
         <span className={`${property} ${late ? "border-destructive/30 font-medium text-destructive" : ""}`}>
           <Icon name="Clock" className="size-3 shrink-0" />
           <span>{late ? "Overdue" : isOpen(p.state) ? "Due" : "Closed"} · {when(row.nextAt, project.timeZone)}</span>
@@ -367,6 +370,7 @@ function ProposalDetail({ project, id, columns, stamp, refresh }: { project: Pro
     {loadError ? <p role="alert">{loadError} <button className={button} onClick={refresh}>Retry</button></p> : <p>Loading proposal…</p>}
   </section>;
   const { entry, proposal: p } = detail;
+  const canKeep = detail.measured && detail.review?.result?.status === "approved";
   const edit = { ...ref, revision: p.revision };
   const timeline = [...detail.events, ...extra];
   const observations = timeline.filter(event => event.observation);
@@ -467,22 +471,25 @@ function ProposalDetail({ project, id, columns, stamp, refresh }: { project: Pro
         </dl>}
         {!observations.length ? <p className="text-muted-foreground">No observations on this page.</p> :
           <ul className="space-y-2">{observations.map(event => <li key={event.seq} className={`${detailText} rounded-md border border-border-hairline p-2.5`}>
-            <p className="text-xs text-muted-foreground">{date(event.at)} · {event.message}</p>
+            <p className="text-xs text-muted-foreground">Observation #{event.seq} · {date(event.at)} · {event.message}</p>
             {event.observation?.value !== undefined && <strong>{event.observation.value} {event.unit}</strong>}
             {event.observation?.note && <Markdown content={event.observation.note} />}
             <EvidenceLinks links={event.observation?.evidence} />
           </li>)}</ul>}
       </section>
     </div>
+    {detail.review && <ReviewPanel className={detailPanel} summary={detail.review} rounds={detail.reviewRounds ?? []} date={date} />}
     {(p.state === "measuring" || p.state === "applied") && <section className={detailPanel} aria-label="Decision">
       <h3 className={detailHeading}>Decision</h3>
       <form onSubmit={close}>
         <div className="flex gap-2">
           {p.state === "measuring" && <button type="button" className={button} aria-pressed={decision === "kept"}
-            disabled={!detail.measured} onClick={() => { setDecision("kept"); setOverride(false); }}>Keep</button>}
+            disabled={!canKeep} onClick={() => { setDecision("kept"); setOverride(false); }}>Keep</button>}
           <button type="button" className={button} aria-pressed={decision === "reverted"}
             onClick={() => setDecision("reverted")}>Revert</button>
         </div>
+        {p.state === "measuring" && detail.measured && !canKeep &&
+          <p className="mt-2 text-xs text-muted-foreground">An independent result approval is required to keep this proposal.</p>}
         {decision && <div className="mt-2 space-y-2">
           <label className="block">Reason
             <textarea className={`${input} mt-1 block w-full`} required maxLength={8000} value={reason} onChange={event => setReason(event.target.value)} />
@@ -490,7 +497,7 @@ function ProposalDetail({ project, id, columns, stamp, refresh }: { project: Pro
           {decision === "reverted" && !detail.measured && <label className="flex gap-2">
             <input type="checkbox" checked={override} onChange={event => setOverride(event.target.checked)} /> Urgent rollback before measurement
           </label>}
-          <button className={button} disabled={busy || !reason.trim() || !detail.measured && !override}>
+          <button className={button} disabled={busy || !reason.trim() || (decision === "kept" ? !canKeep : !detail.measured && !override)}>
             {decision === "kept" ? "Confirm keep" : "Record rollback decision"}
           </button>
         </div>}

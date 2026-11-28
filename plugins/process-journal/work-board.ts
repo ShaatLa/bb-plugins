@@ -4,6 +4,7 @@ import { proposalPath } from "./paths";
 import { isOpen, type BoardLink, type Config, type Input, type Proposal } from "./contract";
 import { assertNoSecretsInValue } from "./secret-guard";
 import { JournalError, requireCondition, stableId, type Store } from "./store";
+import type { ReviewIdentity } from "./reviews";
 import { dateIn, minute, timeOn } from "./time";
 
 const task = z.object({
@@ -26,12 +27,14 @@ const pullRequests = z.object({
 });
 
 export function workBoardApi(bb: BbPluginApi) {
-  const call = async <T extends z.ZodType>(method: string, input: Record<string, string | null>, outputSchema: T): Promise<z.output<T>> =>
+  const call = async <T extends z.ZodType>(method: string, input: Record<string, string | boolean | null>, outputSchema: T): Promise<z.output<T>> =>
     outputSchema.parse(await bb.sdk.plugins.callRpc({ pluginId: "work-board", method, input, outputSchema, signal: AbortSignal.timeout(10_000) }));
   return {
     projects: () => call("listProjects", {}, projectList),
     task: (id: string) => call("getTask", { taskId: id }, read),
     byKey: (key: string) => call("getTaskByKey", { taskKey: key }, read),
+    executors: (id: string) => call("listTaskThreads", { taskId: id, reconcile: false },
+      z.object({ taskThreads: z.array(z.object({ threadId: z.string() })) })),
     pullRequests: (id: string) => call("listTaskPullRequests", { taskId: id }, pullRequests),
     create: (input: { projectId: string; idempotencyKey: string; title: string; description: string; dueDate: string | null }) =>
       call("createTask", input, mutation),
@@ -42,7 +45,9 @@ export function workBoardApi(bb: BbPluginApi) {
 type Api = ReturnType<typeof workBoardApi>;
 type FixRequest = Input<"fix.link"> | Input<"fix.create">;
 
-export function createWorkBoard(store: Store, api: Api) {
+export function createWorkBoard(
+  store: Store, api: Omit<Api, "executors">, verifyHypothesis: (p: Proposal) => Promise<ReviewIdentity | undefined>,
+) {
   function boardProject(cfg: Config) {
     requireCondition(cfg.boardProject, "board_unconfigured", "Configure a Work Board project first");
     return cfg.boardProject;
@@ -198,15 +203,25 @@ export function createWorkBoard(store: Store, api: Api) {
         const updated = observed(p, link, { ...link, status, key: card.key });
         await due(p, updated, card, cfg);
       }
-      store.db.transaction(() => {
-        const current = store.proposal(projectId, p.id);
-        if (current.state !== "proposed" || current.revision !== p.revision
-          || store.config(projectId).boardProject !== cfg.boardProject
-          || store.links(projectId, p.id).map(l => l.taskId).join() !== links.map(l => l.taskId).join()
-          || completed.length !== links.length) return;
-        store.changeState(current, { state: "applied", deadlineAt: store.now() + cfg.appliedMinutes * minute,
-          reason: completed.join("\n") }, "Work Board");
-      })();
+      if (p.state !== "proposed" || completed.length !== links.length) continue;
+      try {
+        const identity = await verifyHypothesis(p);
+        store.db.transaction(() => {
+          const current = store.proposal(projectId, p.id);
+          if (current.state !== "proposed" || current.revision !== p.revision
+            || store.config(projectId).boardProject !== cfg.boardProject
+            || store.links(projectId, p.id).map(l => l.taskId).join() !== links.map(l => l.taskId).join()) return;
+          if (store.waitingForHypothesis(current)) {
+            store.queue(projectId, p.id, current.obligation, "manager", store.now(), "review");
+            return;
+          }
+          if (!identity) return;
+          store.changeState(current, { state: "applied", deadlineAt: store.now() + cfg.appliedMinutes * minute,
+            reason: completed.join("\n") }, "Work Board", identity);
+        })();
+      } catch (error) {
+        if (!(error instanceof JournalError) || !["review_required", "reviewer_unverified", "reviewer_conflict", "stale_review"].includes(error.code)) throw error;
+      }
     }
   }
   return {

@@ -65,6 +65,7 @@ export function createSweep(store: Store, transport: Transport) {
   }
   function applicable(p: Proposal, item: Effect, cfg: Config) {
     const now = store.now();
+    if (item.phase === "review") return store.waitingForHypothesis(p);
     const check = item.phase === "check";
     if (check && !checkPending(p)) return false;
     const due = check ? p.checkAt! : p.deadlineAt;
@@ -86,6 +87,7 @@ export function createSweep(store: Store, transport: Transport) {
         }
         if (!p) continue;
         if (item.kind === "metric") enqueue(p, "manual", store.now(), "check");
+        if (item.phase === "review" && store.waitingForHypothesis(p)) enqueue(p, "ownerNotice", store.now(), "review");
         mark(p, "delivery", `Interrupted ${item.kind} · ${item.id}`);
       }
     })();
@@ -94,6 +96,7 @@ export function createSweep(store: Store, transport: Transport) {
   async function dispatchProposal(item: Effect, p: Proposal, cfg: Config) {
     const card = proposalPath(p.projectId, p.id);
     const reference = `[Proposal](${card}) · ${item.id}`;
+    const reviewBlock = "Every linked Work Board fix is Done or merged. The proposal is waiting in Proposed for independent hypothesis approval.";
     if (item.kind === "metric") {
       let value: number | undefined;
       try { value = z.number().parse(await transport.measure(p.metric.command!)); }
@@ -113,8 +116,9 @@ export function createSweep(store: Store, transport: Transport) {
     if (item.kind === "ownerNotice") {
       try {
         const notice = await transport.notice({ projectId: p.projectId, threadId: p.managerId,
-          tickId: item.id, source: "process-journal", title: "Process Journal escalation",
-          markdown: `This proposal still needs attention from its manager. ${reference}` });
+          tickId: item.id, source: "process-journal",
+          title: item.phase === "review" ? "Linked fix is waiting for review" : "Process Journal escalation",
+          markdown: `${item.phase === "review" ? reviewBlock : "This proposal still needs attention from its manager."} ${reference}` });
         store.db.transaction(() => {
           if (current(item)) mark(p, "owner-notice", `Agent Hub notice ${notice} delivered · ${item.id}`);
           store.settle(item.id, "sent");
@@ -122,7 +126,7 @@ export function createSweep(store: Store, transport: Transport) {
       } catch { retry(item); }
       return;
     }
-    const message = {
+    const message = item.phase === "review" ? reviewBlock : {
       wake: "The proposal deadline has arrived. Inspect the details and advance or reschedule it.",
       manual: "The check is due. Record a manual observation and supporting evidence.",
       manager: "This proposal is overdue. Review the outstanding obligation and record the next action.",
@@ -139,9 +143,16 @@ export function createSweep(store: Store, transport: Transport) {
       const fresh = current(item);
       if (!fresh) { store.settle(item.id, result === "sent" ? "sent" : "failed"); return; }
       if (result === "retry") { retry(item); return; }
-      if (result === "obsolete") { store.settle(item.id, "failed"); return; }
-      mark(fresh, item.kind, `${item.kind}: ${result} · ${item.id}`);
-      if (result === "unreachable") enqueue(fresh, "ownerNotice", store.now(), item.phase);
+      if (result === "obsolete") {
+        if (item.phase === "review") store.discard(item.id);
+        else store.settle(item.id, "failed");
+        return;
+      }
+      const kind = item.phase === "review" ? "review-blocked" : item.kind;
+      mark(fresh, kind, item.phase === "review" ? `${reviewBlock} Delivery: ${result} · ${item.id}` : `${kind}: ${result} · ${item.id}`);
+      if (result === "unreachable" || (item.phase === "review" && result === "uncertain")) {
+        enqueue(fresh, "ownerNotice", store.now(), item.phase);
+      }
       store.settle(item.id, result === "unreachable" ? "failed" : result);
     })();
   }
@@ -199,6 +210,7 @@ export function createSweep(store: Store, transport: Transport) {
       try {
         if (item.kind === "run") await dispatchRun(item, cfg);
         else if (p && applicable(p, item, cfg)) await dispatchProposal(item, p, cfg);
+        else if (item.phase === "review") store.discard(item.id);
         else if (p && ["manager", "ownerAsk"].includes(item.kind) && (item.phase === "decision" || checkPending(p))) {
           const due = item.phase === "check" ? p.checkAt! : p.deadlineAt;
           store.settle(item.id, "pending", due + cfg.graceMinutes * minute * (item.kind === "ownerAsk" ? 2 : 1));

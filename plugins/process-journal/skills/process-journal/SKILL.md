@@ -19,6 +19,9 @@ Supply a JSON object in `--input`. Output is JSON. Get the current revision with
 | `list` | Optional `managerId`, `state`, `view` (`board` or `history`), `range` (`week`, `month`, `quarter`), `overdue`, `limit` and `offset`. Follow `nextOffset`. |
 | `proposal-detail` | `proposalId` and optional timeline cursor `before`. |
 | `proposal-update` | `proposalId`, `revision` and `patch`; for example `{"managerId":"thr_example"}`. |
+| `review-assign` | From the proposal manager thread: `proposalId`, `revision`, existing project `reviewerId`, current `generation` (0 initially) and `reason`. |
+| `review-submit` | From the manager: `proposalId`, `revision`, `generation`, `baseVersion` (0 initially) and `submission` with `stage` (`hypothesis` or `result`). For a result, include `conclusion` and `observationIds` from the proposal detail timeline. |
+| `review-decide` | From the reviewer thread: `proposalId`, `stage`, `version`, `generation`, `verdict` (`approved` or `changes_requested`) and free-text `feedback`. |
 | `proposal-transition` | `proposalId`, `revision` and `transition` with `state`, `reason`, future `deadlineAt` for Applied or Measuring, and `checkAt` for Measuring. Use `override:true` only for an urgent revert before measuring. |
 | `proposal-measure` | `proposalId`, `revision`, `observation` with a finite number in `value` or Markdown `note`, and optional `evidence` URLs. |
 | `proposal-comment`, `proposal-rollback` | `proposalId` and `body` or rollback `evidence`, respectively. |
@@ -34,6 +37,10 @@ A proposal object requires `title`, `hypothesis`, `rollbackCondition`, `deadline
 In Process Journal settings, a project can customize status names, icons, colors, order and visibility. **Hidden columns** on Board lists hidden proposals and their counts; History still offers all status filters. Continue using canonical lifecycle IDs in commands and transitions.
 
 Read `bb process-journal config get boardDisplay --project proj_example` for the current display revision and columns. Set the field with JSON `{"expectedRevision":1,"columns":null}` to reset from revision 1, or pass an ordered list containing all five board status IDs with their presentation fields. On a conflict, reload before retrying. Use `withTotal:true` in list input when you need a filtered total across pages.
+
+## Independent review
+
+Before Applied, get an independent hypothesis approval covering the incident, fix, metric and rollback condition. Independent reviewers are existing same-project threads outside the author, manager and executor chains. Once Measuring has evidence, get a result approval before Kept. Submit exact observation IDs, including qualitative notes with links when applicable. Use the submitted snapshot, not the live metric view, when reviewing. Use the latest stage version and generation from the proposal detail. If a substantive edit invalidates a review, submit a new version. Older Applied and Measuring proposals can review the measured result using their existing experiment. Work Board reconciliation applies a completed linked fix only when its hypothesis has a current approval.
 
 ## Escalation and scheduled reviews
 

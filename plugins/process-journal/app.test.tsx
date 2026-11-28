@@ -2,7 +2,7 @@
 import { cleanup, fireEvent, waitFor, within } from "@testing-library/react";
 import { loadPluginApp, renderSlot } from "@get-bb/plugin-sdk/testing/app";
 import { afterEach, expect, it, vi } from "vitest";
-import { methods, rpcContract, type Entry, type Proposal } from "./contract";
+import { methods, rpcContract, type Entry, type Proposal, type ReviewRound, type ReviewSummary } from "./contract";
 import { hiddenColumnsPath, proposalPath } from "./paths";
 import { defaultColumns } from "./status-display";
 import type { BoardColumnDisplay } from "./board-display-contract";
@@ -19,12 +19,14 @@ const proposal: Proposal = { id: "proposal_example", entryId: entry.id, projectI
   rollbackCondition: "Review time exceeds the limit", links: [], metric: { definition: "Count misses", unit: "misses", baseline: 2, target: 0 },
   managerId, state: "measuring", checkAt: now - 10000, deadlineAt: now - 2000, revision: 4, obligation: 3, createdAt: now, updatedAt: now };
 const row = { entry, proposal };
+const review: ReviewSummary = { reviewerId: "thr_reviewer", generation: 1, legacy: false,
+  hypothesis: { version: 1, status: "approved" }, result: { version: 1, status: "approved" } };
 const kept = { ...proposal, id: "proposal_kept", state: "kept" as const, title: "Keep the release checklist", checkAt: null };
 function page(raw: unknown) {
   const input = methods.list.input.parse(raw);
   return {
     items: [
-      { ...row, nextAt: proposal.checkAt!, overdue: true },
+      { ...row, nextAt: proposal.checkAt!, overdue: true, review },
       { ...row, proposal: kept, nextAt: now, overdue: false },
     ].filter(item => !input.state || item.proposal.state === input.state),
     nextOffset: input.state === "measuring" && !input.offset ? 25 : null,
@@ -37,7 +39,7 @@ const fixture = () => ({
   "config.get": vi.fn(() => ({ revision: 0, columns: null as BoardColumnDisplay[] | null })),
   list: vi.fn(page),
   digest: () => ({ applied: 1, kept: 0, reverted: 0, overdue: 1 }),
-  "proposal.detail": vi.fn(() => ({ ...row, nextBefore: null, links: [], managerReachable: true, measured: true,
+  "proposal.detail": vi.fn(() => ({ ...row, nextBefore: null, links: [], managerReachable: true, measured: true, review,
     events: [{ seq: 1, at: now, actor: managerId, kind: "measurement:manual", message: "Manual observation",
       observation: { value: 0, note: "**Verified evidence**" }, unit: "misses" }] })),
   "proposal.update": vi.fn(() => ({ ...proposal, managerId: other, revision: 5 })),
@@ -81,6 +83,7 @@ it("shows five stable columns and pages only the selected status", async () => {
   const measuring = within(columns.getByRole("region", { name: "Measuring" }));
   const card = await measuring.findByRole("link", { name: /Require approval.*Missed approval.*Overdue/ });
   expect(card.getAttribute("href")).toBe(proposalPath(projectId, proposal.id));
+  expect(within(card).getByText("Result · Approved")).toBeTruthy();
   expect(within(columns.getByRole("region", { name: "Kept" })).getByText("Last 3 months")).toBeTruthy();
   expect(await within(columns.getByRole("region", { name: "Kept" })).findByRole("link", { name: /Keep the release checklist/ })).toBeTruthy();
   expect(rpc.list).toHaveBeenCalledWith(expect.objectContaining({ view: "history", range: "quarter", state: "kept" }));
@@ -272,4 +275,32 @@ it("saves settings drafts, keeps them on conflict, and resets using the reloaded
   fireEvent.click(screen.getByRole("button", { name: "Restore defaults" }));
   expect((await screen.findByRole("status")).textContent).toBe("Restored default statuses.");
   expect(configSet).toHaveBeenLastCalledWith({ projectId, key: "boardDisplay", value: { expectedRevision: 1, columns: null } });
+});
+
+it("shows the pinned review evidence and disables Keep while the verdict is pending", async () => {
+  const rpc = fixture();
+  const round: ReviewRound = {
+    projectId, proposalId: proposal.id, version: 1, generation: 1, reviewerId: "thr_reviewer",
+    submittedBy: managerId, submittedAt: now, hash: "example", status: "pending",
+    feedback: null, verdict: null, decidedAt: null, delivery: "sent",
+    snapshot: { stage: "result", hypothesisVersion: 1, hypothesisHash: "example-hash", experiment: { title: proposal.title, links: [],
+      entry: { id: entry.id, title: entry.title, failure: entry.failure, gap: entry.gap, links: entry.links },
+      hypothesis: proposal.hypothesis, metric: proposal.metric, rollbackCondition: proposal.rollbackCondition },
+    conclusion: "The observed checklist improved", observations: [{ seq: 1, at: now,
+      observation: { note: "The checklist was followed", evidence: ["https://example.com/report"] } }] },
+  };
+  const screen = renderSlot(app.navPanels[0], { subPath: `${projectId}/${proposal.id}` }, {
+    experimental_rpcContract: rpcContract, rpc: { ...rpc, "proposal.detail": () => ({
+      ...rpc["proposal.detail"](), review: { ...review, result: { version: 1, status: "pending" } }, reviewRounds: [round],
+    }) },
+  });
+  const panel = within(await screen.findByRole("region", { name: "Independent review" }));
+  expect(panel.getAllByText("thr_reviewer").length).toBeGreaterThan(0);
+  expect(panel.getByText("Result v1 · Awaiting reviewer")).toBeTruthy();
+  fireEvent.click(panel.getByText("Result v1 · Awaiting reviewer"));
+  expect(panel.getByText("The observed checklist improved")).toBeTruthy();
+  expect(panel.getByText("The checklist was followed")).toBeTruthy();
+  expect(panel.getByText("https://example.com/report").getAttribute("href")).toBe("https://example.com/report");
+  const button = within(screen.getByRole("region", { name: "Decision" })).getByRole("button", { name: "Keep" }) as HTMLButtonElement;
+  expect(button.disabled).toBe(true);
 });

@@ -2,21 +2,53 @@ import Database from "better-sqlite3";
 import { afterEach, expect, it, vi } from "vitest";
 import { configSchema, methods, type Proposal } from "./contract";
 import { boardDisplayMigration, createStore, effectId, versionOne } from "./store";
+import { reviewMigration } from "./reviews";
+import { deliverReviews } from "./review-delivery";
 import { createSweep, measureCommand, type Transport } from "./sweep";
 import { createWorkBoard, type workBoardApi } from "./work-board";
 import { boardStates } from "./states";
 import { minute, occurrence, timeOn } from "./time";
 
 const projectId = "proj_example", manager = "thr_example", other = "thr_other";
+const reviewer = "thr_reviewer", replacement = "thr_replacement";
 const database: Database.Database[] = [];
 afterEach(() => { for (const db of database.splice(0)) db.close(); });
 const metric = { definition: "Count missed checks", unit: "checks", baseline: 2, target: 0 };
+const ref = (p: Proposal) => ({ projectId, proposalId: p.id, revision: p.revision });
+function identity(store: ReturnType<typeof createStore>, p: Proposal, reviewerId = reviewer, version?: number) {
+  return { reviewerId, links: store.links(projectId, p.id).map(link => link.taskId).sort(), executors: [], version };
+}
+function hypothesisIdentity(store: ReturnType<typeof createStore>, p: Proposal) {
+  const round = store.reviews.approval(p, "hypothesis");
+  return round ? identity(store, p, round.reviewerId, round.version) : undefined;
+}
+function requestReview(
+  store: ReturnType<typeof createStore>, p: Proposal, stage: "hypothesis" | "result", reviewerId = reviewer,
+) {
+  const current = store.reviews.summary(p);
+  const assigned = current.reviewerId === reviewerId ? current : store.reviews.assign({
+    ...ref(p), reviewerId, generation: current.generation, reason: "Independent project reviewer",
+  }, p.managerId, identity(store, p, reviewerId));
+  return store.reviews.submit({ ...ref(p), generation: assigned.generation, baseVersion: current[stage]?.version ?? 0,
+    submission: stage === "hypothesis" ? { stage } : { stage, conclusion: "The evidence supports the change",
+      observationIds: store.events(projectId, p.id).events.filter(event => event.observation).map(event => event.seq) },
+  }, p.managerId, identity(store, p, reviewerId), hypothesisIdentity(store, p));
+}
+function approve(store: ReturnType<typeof createStore>, p: Proposal, stage: "hypothesis" | "result") {
+  const round = requestReview(store, p, stage);
+  if (round.status === "approved") return identity(store, p, round.reviewerId, round.version);
+  const verified = identity(store, p, round.reviewerId, round.version);
+  store.reviews.decide({ projectId, proposalId: p.id, stage, version: round.version, generation: round.generation,
+    verdict: "approved", feedback: "Evidence checked" }, round.reviewerId, verified, hypothesisIdentity(store, p));
+  return verified;
+}
 function setup() {
   let clock = Date.parse("2026-10-30T12:00:00Z");
   const db = new Database(":memory:");
   database.push(db);
   db.exec(versionOne);
   db.exec(boardDisplayMigration);
+  db.exec(reviewMigration);
   const store = createStore(db, () => clock);
   store.setConfig(projectId, "managers", [manager, other]);
   store.setConfig(projectId, "defaultManager", manager);
@@ -27,9 +59,8 @@ function setup() {
     proposal: { title: "Assign an owner", hypothesis: "Assignment prevents missed checks",
       deadlineAt: clock + 1 * minute, metric, rollbackCondition: "The owner cannot take the check", ...fields },
   }), manager).proposal!;
-  const ref = (p: Proposal) => ({ projectId, proposalId: p.id, revision: p.revision });
   const measuring = (p: Proposal, checkAt = clock + minute, deadlineAt = clock + 8 * minute) => {
-    const applied = store.transition({ ...ref(p), transition: { state: "applied", reason: "Fix deployed", deadlineAt } }, manager);
+    const applied = store.transition({ ...ref(p), transition: { state: "applied", reason: "Fix deployed", deadlineAt } }, manager, approve(store, p, "hypothesis"));
     return store.transition({ ...ref(applied), transition: { state: "measuring", reason: "Check results", checkAt, deadlineAt } }, manager);
   };
   return { db, store, add, ref, measuring, advance: (ms: number) => { clock += ms; }, setTime: (ms: number) => { clock = ms; } };
@@ -50,7 +81,8 @@ it("checks lifecycle, revision, project scope, secret guards and rollback eviden
   expect(() => store.comment(projectId, p.id, manager, "comment", "-----BEGIN PRIVATE KEY-----")).toThrow("detected");
   const observed = store.measure({ ...ref(p), observation: { value: 0, note: "**Verified**" } }, manager);
   expect(() => store.transition({ ...ref(p), transition: { state: "kept", reason: "Pass" } }, "Owner")).toThrow("changed");
-  const kept = store.transition({ ...ref(observed), transition: { state: "kept", reason: "Pass" } }, "Owner");
+  const kept = store.transition({ ...ref(observed), transition: { state: "kept", reason: "Pass" } }, "Owner",
+    approve(store, observed, "result"), hypothesisIdentity(store, observed));
   expect(kept.deadlineAt).toBe(store.now());
   expect(kept.state).toBe("kept");
   expect(() => store.comment(projectId, kept.id, manager, "rollback", "Rolled back")).toThrow("reverted");
@@ -202,7 +234,7 @@ it("recovers a fix create after response loss and applies a proposal once on con
     .mockResolvedValue({ pullRequests: [{ state: "merged", url: "https://example.com/pull/1" }], unavailableThreadIds: [] });
   const board = createWorkBoard(store, { create, task: read, byKey: read, pullRequests: prs,
     projects: vi.fn().mockResolvedValue({ projects: [{ id: card.projectId, linkedBbProjectId: projectId, workflowPolicy: { doneStatus: null } }] }),
-    updateDue: vi.fn() });
+    updateDue: vi.fn() }, async proposal => hypothesisIdentity(store, proposal));
   const request = { ...ref(p), key: "create-fix", deadlineSource: true };
   await expect(board.create(request, manager)).rejects.toThrow("response lost");
   expect((await board.create(request, manager)).taskId).toBe(card.id);
@@ -211,6 +243,18 @@ it("recovers a fix create after response loss and applies a proposal once on con
   await board.reconcile(projectId, store.config(projectId));
   expect(store.proposal(projectId, p.id).state).toBe("proposed");
   expect(store.links(projectId, p.id)[0]?.status).toContain("unavailable");
+  await board.reconcile(projectId, store.config(projectId));
+  expect(store.proposal(projectId, p.id).state).toBe("proposed");
+  expect(store.links(projectId, p.id)[0]?.status).toContain("PR merged");
+  const wire = transport();
+  const sweep = createSweep(store, wire);
+  await sweep.sweep();
+  expect(wire.send).toHaveBeenCalledExactlyOnceWith(projectId, manager,
+    expect.stringContaining("waiting in Proposed for independent hypothesis approval"), expect.any(Function));
+  await board.reconcile(projectId, store.config(projectId));
+  await sweep.sweep();
+  expect(wire.send).toHaveBeenCalledTimes(1);
+  approve(store, store.proposal(projectId, p.id), "hypothesis");
   await board.reconcile(projectId, store.config(projectId));
   await board.reconcile(projectId, store.config(projectId));
   expect(store.proposal(projectId, p.id).state).toBe("applied");
@@ -230,7 +274,7 @@ it("records a guarded due-date conflict and accepts explicit reconciliation", as
     return { ok: false as const, error: { code: "due_date_conflict", currentDueDate: card.dueDate } };
   });
   const board = createWorkBoard(store, { create: vi.fn(), task: read, byKey: read, pullRequests: vi.fn(),
-    projects: vi.fn().mockResolvedValue({ projects: [{ id: card.projectId }] }), updateDue });
+    projects: vi.fn().mockResolvedValue({ projects: [{ id: card.projectId }] }), updateDue }, async proposal => hypothesisIdentity(store, proposal));
   await board.linkExisting({ ...ref(p), deadlineSource: true, taskKey: card.key }, manager);
   await board.reconcile(projectId, store.config(projectId));
   expect(store.links(projectId, p.id)[0]).toMatchObject({ conflict: true, dueDate: "2026-11-03" });
@@ -247,7 +291,7 @@ it.each(["proposed", "applied", "measuring"] as const)("allows withdrawal from %
   const initial = add();
   const deadlineAt = store.now() + 8 * minute;
   const proposal = state === "proposed" ? initial : state === "measuring" ? measuring(initial) :
-    store.transition({ ...ref(initial), transition: { state: "applied", deadlineAt, reason: "Fix deployed" } }, manager);
+    store.transition({ ...ref(initial), transition: { state: "applied", deadlineAt, reason: "Fix deployed" } }, manager, approve(store, initial, "hypothesis"));
   if (state === "applied") {
     expect(() => store.transition({ ...ref(proposal), transition: {
       state: "measuring", reason: "Check", checkAt: deadlineAt, deadlineAt,
@@ -336,7 +380,7 @@ it("keeps observations and concurrent edits when a Work Board date changes", asy
     return { ok: true, task: { ...card } };
   });
   const board = createWorkBoard(store, { create: vi.fn(), task, byKey, pullRequests: vi.fn(),
-    projects: vi.fn().mockResolvedValue({ projects: [{ id: card.projectId }] }), updateDue });
+    projects: vi.fn().mockResolvedValue({ projects: [{ id: card.projectId }] }), updateDue }, async proposal => hypothesisIdentity(store, proposal));
   await board.linkExisting({ ...ref(p), taskKey: card.key, deadlineSource: true }, manager);
   await board.reconcile(projectId, store.config(projectId));
   expect(card.dueDate).toBe("2026-11-02");
@@ -351,7 +395,11 @@ it("keeps observations and concurrent edits when a Work Board date changes", asy
   const edit = store.proposal(projectId, p.id);
   expect(edit).toMatchObject({ checkAt: Date.parse("2026-11-03T09:00:00Z"), title: "An updated proposal title", revision: p.revision + 3 });
   expect(store.measured(projectId, p.id)).toBe(true);
-  expect(store.transition({ ...ref(edit), transition: { state: "kept", reason: "Observed target" } }, "BB client").state).toBe("kept");
+  expect(() => store.transition({ ...ref(edit), transition: { state: "kept", reason: "Observed target" } }, "BB client"))
+    .toThrow("independent approval");
+  approve(store, edit, "hypothesis");
+  expect(store.transition({ ...ref(edit), transition: { state: "kept", reason: "Observed target" } }, "BB client",
+    approve(store, edit, "result"), hypothesisIdentity(store, edit)).state).toBe("kept");
 });
 
 it("uses the mapped Done status, keeps applied proposals on reopen, and rejects invalid links", async () => {
@@ -365,12 +413,17 @@ it("uses the mapped Done status, keeps applied proposals on reopen, and rejects 
   const board = createWorkBoard(store, { create: vi.fn(), task, byKey,
     pullRequests: vi.fn().mockResolvedValue({ pullRequests: [], unavailableThreadIds: [] }),
     projects: vi.fn().mockResolvedValue({ projects: [{ id: card.projectId, workflowPolicy: { doneStatus: "complete" } }] }),
-    updateDue: vi.fn() });
+    updateDue: vi.fn() }, async proposal => hypothesisIdentity(store, proposal));
   const link = { ...ref(p), taskKey: card.key, deadlineSource: true };
   await expect(board.linkExisting(link, manager)).rejects.toThrow("outside");
   await board.linkExisting(link, manager);
   byKey.mockResolvedValueOnce({ task: { ...card, id: "task_other", key: "EXA-2" } });
   await expect(board.linkExisting({ ...link, taskKey: "EXA-2" }, manager)).rejects.toThrow("already has");
+  card.status = "todo";
+  approve(store, p, "hypothesis");
+  await board.reconcile(projectId, store.config(projectId));
+  expect(store.proposal(projectId, p.id).state).toBe("proposed");
+  card.status = "complete";
   await board.reconcile(projectId, store.config(projectId));
   expect(store.proposal(projectId, p.id).state).toBe("applied");
   card.status = "todo";
@@ -470,4 +523,222 @@ it("counts hidden Measuring proposals with the list filters and preserves their 
     total: 1, items: [{ overdue: true, proposal: { id: p.id, state: "measuring", checkAt: p.checkAt, deadlineAt: p.deadlineAt } }],
   });
   expect(store.list({ ...page, withTotal: true, offset: 1 })).toMatchObject({ total: 1, items: [] });
+});
+
+it("gates Applied on the approved content and records changes requested and Russian feedback", () => {
+  const { store, add } = setup();
+  const p = add({ links: ["https://example.com/b", "https://example.com/a"] });
+  const applying = { state: "applied" as const, deadlineAt: store.now() + 20 * minute, reason: "Fix deployed" };
+  expect(() => store.transition({ ...ref(p), transition: applying }, manager)).toThrow("independent approval");
+  const first = requestReview(store, p, "hypothesis");
+  const verdict = { projectId, proposalId: p.id, stage: "hypothesis" as const, version: first.version,
+    generation: first.generation, verdict: "changes_requested" as const, feedback: "Уточните способ измерения" };
+  expect(() => store.reviews.decide(verdict, manager, identity(store, p))).toThrow("assigned reviewer");
+  expect(store.reviews.decide(verdict, reviewer, identity(store, p))).toMatchObject({ feedback: verdict.feedback });
+  expect(() => store.reviews.decide(verdict, reviewer, identity(store, p))).toThrow("no longer pending");
+  const revised = store.update({ ...ref(p), patch: { hypothesis: "Use a named owner and verify the results weekly" } }, manager);
+  const ticket = approve(store, revised, "hypothesis");
+  const rescheduled = store.update({ ...ref(revised), patch: {
+    deadlineAt: store.now() + 8 * minute, links: [...revised.links].reverse(), metric: { ...revised.metric },
+  } }, manager);
+  expect(store.reviews.summary(rescheduled).hypothesis).toEqual({ version: 2, status: "approved" });
+  expect(store.transition({ ...ref(rescheduled), transition: applying }, manager, ticket).state).toBe("applied");
+  expect(store.reviews.approval(rescheduled, "hypothesis")?.version).toBe(2);
+});
+
+it("blocks author descendants and linked executors, and reassigns pending review explicitly", () => {
+  const { store, add } = setup();
+  const p = add();
+  const child = "thr_child", root = "thr_intermediate", executor = "thr_executor";
+  store.reviews.lineage(child, [root]);
+  store.reviews.lineage(root, [manager]);
+  store.reviews.lineage(child, [replacement]);
+  const assign = (reviewerId: string, generation = 0) => ({
+    ...ref(p), reviewerId, generation, reason: "Independent reviewer",
+  });
+  expect(() => store.reviews.assign(assign(child), manager, identity(store, p, child))).toThrow("independent");
+  expect(() => store.reviews.assign(assign(executor), manager, { ...identity(store, p, executor), executors: [executor] }))
+    .toThrow("independent");
+  const first = requestReview(store, p, "hypothesis");
+  expect(() => store.reviews.assign(assign(replacement, first.generation), other, identity(store, p, replacement)))
+    .toThrow("manager thread");
+  const changed = store.reviews.assign(assign(replacement, first.generation), manager, identity(store, p, replacement));
+  expect(changed.hypothesis).toEqual({ version: 2, status: "pending" });
+  expect(store.reviews.rounds(p).find(round => round.version === 1)?.status).toBe("superseded");
+  expect(() => store.reviews.decide({ projectId, proposalId: p.id, stage: "hypothesis", version: first.version,
+    generation: first.generation, verdict: "approved", feedback: "Old reviewer" }, reviewer, identity(store, p)))
+    .toThrow("no longer pending");
+  const second = add();
+  expect(requestReview(store, second, "hypothesis", replacement)).toMatchObject({
+    reviewerId: replacement, proposalId: second.id, version: 1,
+  });
+});
+
+it("pins manual observations and requires a new hypothesis and result after a substantive edit", () => {
+  const { store, add, measuring } = setup();
+  const started = measuring(add());
+  const manual = { note: "The checklist was followed for the full week.", evidence: ["https://example.com/evidence"] };
+  const p = store.measure({ ...ref(started), observation: manual }, manager);
+  const ticket = approve(store, p, "result");
+  const first = store.reviews.approval(p, "result");
+  expect(first?.snapshot).toMatchObject({ stage: "result", observations: [{ observation: manual }] });
+  const additional = store.measure({ ...ref(p), observation: { value: 1 } }, manager);
+  expect(store.reviews.approval(additional, "result")?.snapshot).toEqual(first?.snapshot);
+  const replaced = requestReview(store, additional, "result");
+  expect(replaced).toMatchObject({ version: 2, status: "pending" });
+  expect(replaced.snapshot.stage === "result" && replaced.snapshot.observations).toHaveLength(2);
+  expect(store.reviews.decide({ projectId, proposalId: p.id, stage: "result", version: replaced.version,
+    generation: replaced.generation, verdict: "changes_requested", feedback: "Explain the extra missed check" },
+  reviewer, identity(store, p), hypothesisIdentity(store, additional))).toMatchObject({ status: "changes_requested" });
+  expect(() => store.transition({ ...ref(additional), transition: { state: "kept", reason: "Keep fix" } }, manager,
+    ticket, hypothesisIdentity(store, additional))).toThrow("independent approval");
+  const changed = store.update({ ...ref(additional), patch: { rollbackCondition: "Revert if another checklist is missed" } }, manager);
+  expect(changed.state).toBe("measuring");
+  expect(store.reviews.summary(changed).hypothesis?.status).toBe("superseded");
+  expect(store.reviews.summary(changed).result?.status).toBe("superseded");
+  expect(() => requestReview(store, changed, "result")).toThrow("independent approval");
+  approve(store, changed, "hypothesis");
+  const kept = store.transition({ ...ref(changed), transition: { state: "kept", reason: "Keep fix" } }, manager,
+    approve(store, changed, "result"), hypothesisIdentity(store, changed));
+  expect(kept.state).toBe("kept");
+});
+
+it("sends pending review requests, retries known delivery failures and escalates once", async () => {
+  const { store, add, advance } = setup();
+  const p = add();
+  const request = requestReview(store, p, "hypothesis");
+  const send = vi.fn<Transport["send"]>().mockResolvedValueOnce("retry").mockResolvedValueOnce("unreachable");
+  const wire = transport({ send });
+  await deliverReviews(store, wire, async () => true);
+  expect(store.reviews.latest(p, "hypothesis")?.delivery).toBe("queued");
+  await deliverReviews(store, wire, async () => true);
+  expect(send).toHaveBeenCalledTimes(1);
+  advance(minute);
+  await deliverReviews(store, wire, async () => false);
+  await deliverReviews(store, wire, async () => false);
+  expect(store.reviews.latest(p, "hypothesis")).toMatchObject({ delivery: "unreachable", status: "pending" });
+  expect(wire.notice).toHaveBeenCalledTimes(2);
+  expect(wire.notice).toHaveBeenCalledWith(expect.objectContaining({ threadId: manager, title: "Proposal review is overdue" }));
+  store.reviews.assign({ ...ref(p), reviewerId: replacement, generation: request.generation, reason: "Reviewer archived" },
+    manager, identity(store, p, replacement));
+  const active = transport();
+  await deliverReviews(store, active, async () => true);
+  expect(active.send).toHaveBeenCalledTimes(1);
+  expect(active.send).toHaveBeenCalledWith(projectId, replacement, expect.stringContaining("hypothesis v2"), expect.any(Function));
+});
+
+it("retires pending reviews on emergency revert and rejects a late verdict", () => {
+  const { store, add, measuring } = setup();
+  const m = measuring(add());
+  const p = store.measure({ ...ref(m), observation: { value: 4 } }, manager);
+  const round = requestReview(store, p, "result");
+  const reverted = store.transition({ ...ref(p), transition: { state: "reverted", reason: "Unexpected side effect", override: true } }, other);
+  expect(store.events(projectId, p.id).events[0]).toMatchObject({ actor: other, state: "reverted" });
+  expect(store.reviews.latest(reverted, "result")?.status).toBe("superseded");
+  expect(() => store.reviews.decide({ projectId, proposalId: p.id, stage: "result",
+    version: round.version, generation: round.generation, verdict: "approved", feedback: "Late" },
+  reviewer, identity(store, p), hypothesisIdentity(store, p))).toThrow("no longer pending");
+  expect(store.reviews.pending()).toEqual([]);
+  expect(store.proposal(projectId, p.id).state).toBe("reverted");
+});
+
+it("upgrades existing experiments without changing their proposal bodies or requiring retrospective approval", () => {
+  const { store, add, db, measuring } = setup();
+  const p = measuring(add());
+  const body = db.prepare("SELECT body FROM proposals WHERE project=? AND id=?").get(projectId, p.id);
+  const previous = new Database(":memory:");
+  database.push(previous);
+  previous.exec(versionOne);
+  previous.exec(boardDisplayMigration);
+  const display = createStore(previous).setBoardDisplay(projectId, {
+    expectedRevision: 0,
+    columns: boardStates.map(id => ({ id, name: id, icon: "default", color: "default", visible: id !== "measuring" })),
+  });
+  const rows = db.prepare("SELECT * FROM entries").all() as Record<string, unknown>[];
+  for (const row of rows) previous.prepare("INSERT INTO entries VALUES (@project,@id,@body)").run(row);
+  previous.prepare("INSERT INTO proposals VALUES (@project,@id,@state,@manager,@updated,@deadline,@check_at,@metric_key,@body)")
+    .run(db.prepare("SELECT * FROM proposals WHERE id=?").get(p.id));
+  previous.exec(reviewMigration);
+  const upgraded = createStore(previous, store.now);
+  expect(display.ok).toBe(true);
+  expect(upgraded.boardDisplay(projectId)).toMatchObject({ revision: 1, columns: expect.arrayContaining([
+    expect.objectContaining({ id: "measuring", visible: false }),
+  ]) });
+  expect(previous.prepare("SELECT body FROM proposals WHERE project=? AND id=?").get(projectId, p.id)).toEqual(body);
+  expect(upgraded.reviews.summary(p)).toMatchObject({ legacy: true, hypothesis: null });
+  const measured = upgraded.measure({ ...ref(p), observation: { note: "Verified with the checklist", evidence: ["https://example.com/check"] } }, manager);
+  expect(() => upgraded.transition({ ...ref(measured), transition: { state: "kept", reason: "Keep" } }, manager)).toThrow("independent approval");
+  previous.exec(reviewMigration);
+  expect(upgraded.transition({ ...ref(measured), transition: { state: "kept", reason: "Keep" } }, manager,
+    approve(upgraded, measured, "result")).state).toBe("kept");
+});
+
+it("ignores obsolete delivery callbacks and recovers an interrupted send without repeating it", async () => {
+  const { store, add } = setup();
+  const p = add();
+  const first = requestReview(store, p, "hypothesis");
+  const inFlight = transport({ send: vi.fn<Transport["send"]>(async (_project, _thread, _message, wanted) => {
+    store.reviews.assign({ ...ref(p), reviewerId: replacement, generation: first.generation, reason: "New reviewer" },
+      manager, identity(store, p, replacement));
+    expect(wanted()).toBe(false);
+    return "obsolete";
+  }) });
+  await deliverReviews(store, inFlight, async () => true);
+  const round = store.reviews.latest(p, "hypothesis")!;
+  expect(round).toMatchObject({ version: 2, delivery: "queued", reviewerId: replacement });
+  store.reviews.save({ ...round, delivery: "sending" });
+  store.reviews.recover();
+  const next = transport();
+  await deliverReviews(store, next, async () => true);
+  expect(store.reviews.latest(p, "hypothesis")?.delivery).toBe("uncertain");
+  expect(next.send).not.toHaveBeenCalled();
+  expect(next.notice).toHaveBeenCalledTimes(1);
+});
+
+it("withdraws obsolete review reminders and falls back to a notice when the linked fix is completed again", async () => {
+  const { store, add } = setup();
+  const p = add();
+  const card = { taskId: "task_example", key: "EXA-1", status: "Done", deadlineSource: false,
+    dueDate: null, syncedCheckAt: null, syncedDueDate: null, conflict: false };
+  store.saveLink(p, card);
+  const reminder = () => store.queue(projectId, p.id, p.obligation, "manager", store.now(), "review");
+  const first = reminder();
+  const wire = transport({ send: vi.fn<Transport["send"]>().mockResolvedValue("unreachable") });
+  const sweep = createSweep(store, wire);
+  store.saveLink(p, { ...card, status: "todo" });
+  await sweep.sweep();
+  expect(wire.send).not.toHaveBeenCalled();
+  expect(store.effect(first.id)).toBeUndefined();
+
+  store.saveLink(p, card);
+  expect(reminder().inserted).toBe(1);
+  await sweep.sweep();
+  await sweep.sweep();
+  await sweep.sweep();
+  expect(wire.send).toHaveBeenCalledTimes(1);
+  expect(wire.notice).toHaveBeenCalledOnce();
+  expect(wire.notice).toHaveBeenCalledWith(expect.objectContaining({
+    threadId: manager, title: "Linked fix is waiting for review", markdown: expect.stringContaining("independent hypothesis approval"),
+  }));
+});
+
+it("opens a fresh review on reassignment while preserving the approval of a previous lifecycle stage", () => {
+  const { store, add, measuring } = setup();
+  const p = add();
+  approve(store, p, "hypothesis");
+  const assign = (proposal: Proposal) => ({
+    ...ref(proposal), reviewerId: replacement, reason: "Replacement reviewer", generation: 1,
+  });
+  const changed = store.reviews.assign(assign(p), manager, identity(store, p, replacement));
+  expect(changed.hypothesis).toEqual({ version: 2, status: "pending" });
+  expect(store.reviews.rounds(p).find(round => round.version === 1)).toMatchObject({
+    verdict: "approved", status: "superseded",
+  });
+
+  const applied = measuring(add());
+  const observed = store.measure({ ...ref(applied), observation: { value: 0 } }, manager);
+  approve(store, observed, "result");
+  const next = store.reviews.assign(assign(observed), manager, identity(store, observed, replacement));
+  expect(next.hypothesis).toEqual({ version: 1, status: "approved" });
+  expect(next.result).toEqual({ version: 2, status: "pending" });
 });

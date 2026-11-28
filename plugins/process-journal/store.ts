@@ -4,6 +4,8 @@ import {
   boardDisplaySchema, boardDisplayWriteSchema, configSchema, isOpen, type BoardLink, type Config, type Entry, type Input, type JournalEvent,
   type Observation, type Proposal, type Run, type State, type Transition,
 } from "./contract";
+import { requireCondition } from "./errors";
+import { createReviewStore, type ReviewIdentity } from "./reviews";
 import { assertNoSecretsInValue } from "./secret-guard";
 import { cutoff, occurrence } from "./time";
 
@@ -48,7 +50,7 @@ const nextDeadline = `CASE WHEN p.state='measuring' AND p.check_at IS NOT NULL A
 ) THEN p.check_at ELSE p.deadline END`;
 export const stableId = (...parts: (string | number)[]) => createHash("sha256").update(json(parts)).digest("hex");
 export type EffectKind = "wake" | "metric" | "manual" | "manager" | "ownerAsk" | "ownerNotice" | "run";
-export type EffectPhase = "check" | "decision" | "run";
+export type EffectPhase = "check" | "decision" | "review" | "run";
 export const effectId = (project: string, subject: string, obligation: number, kind: EffectKind, phase: EffectPhase) =>
   stableId(project, subject, obligation, kind, phase);
 export type Effect = {
@@ -56,12 +58,7 @@ export type Effect = {
   next: number; status: "pending" | "sending" | "sent" | "uncertain" | "failed"; tries: number;
 };
 
-export class JournalError extends Error {
-  constructor(readonly code: string, message: string) { super(message); }
-}
-export function requireCondition(value: unknown, code: string, message: string): asserts value {
-  if (!value) throw new JournalError(code, message);
-}
+export { JournalError, requireCondition } from "./errors";
 
 type EventData = Omit<JournalEvent, "seq" | "at">;
 
@@ -164,6 +161,8 @@ export function createStore(db: Database, now: () => number = Date.now) {
     const at = now();
     const p = save({ ...fields, projectId: project, entryId, id, managerId: manager(project, managerId),
       state: "proposed", revision: 1, obligation: 1, checkAt: null, createdAt: at, updatedAt: at });
+    reviews.participant(p, actor);
+    reviews.participant(p, p.managerId);
     event(project, id, { kind: "transition", actor, state: "proposed", deadlineAt: p.deadlineAt, message: "Proposal recorded" }, at);
     return p;
   }
@@ -210,6 +209,7 @@ export function createStore(db: Database, now: () => number = Date.now) {
         .map(key => `${key === "checkAt" ? "Check" : "Deadline"}: ${p[key] === null ? "unset" : new Date(p[key]).toISOString()} → ${new Date(next[key]!).toISOString()}`);
       event(p.projectId, p.id, { kind: "updated", actor, message: [`Updated ${other.join(", ")}`, ...deadlines].join("\n") });
     }
+    reviews.proposalEdited(p, next, actor);
     return save({ ...next, revision: p.revision + 1, updatedAt: now() });
   });
   function measured(project: string, id: string) {
@@ -217,7 +217,7 @@ export function createStore(db: Database, now: () => number = Date.now) {
     return Boolean(db.prepare(`SELECT 1 FROM timeline WHERE project=? AND proposal=? AND kind LIKE 'measurement:%'
       AND json_extract(body,'$.measurementSpec')=? LIMIT 1`).get(project, id, metricIdentity(p)));
   }
-  function changeState(p: Proposal, transition: Transition, actor: string) {
+  function changeState(p: Proposal, transition: Transition, actor: string, identity?: ReviewIdentity, hypothesis?: ReviewIdentity) {
     assertNoSecretsInValue(transition, "decision");
     const { state, reason } = transition;
     const allowed: Record<State, State[]> = {
@@ -229,6 +229,13 @@ export function createStore(db: Database, now: () => number = Date.now) {
     if ((state === "kept" || state === "reverted") && !emergency) {
       requireCondition(measured(p.projectId, p.id), "no_measurement", "Record a measurement before deciding");
     }
+    if (state === "applied") reviews.guard(p, "hypothesis", identity, actor);
+    if (state === "kept") {
+      reviews.guard(p, "result", identity);
+      if (!reviews.summary(p).legacy || hypothesis) reviews.guard(p, "hypothesis", hypothesis);
+    }
+    if (state === "applied" || state === "measuring") reviews.participant(p, actor);
+    if (!isOpen(state)) reviews.retireClosed(p);
     const at = now();
     const deadlineAt = "deadlineAt" in transition ? transition.deadlineAt : at;
     const checkAt = "checkAt" in transition ? transition.checkAt : null;
@@ -241,11 +248,12 @@ export function createStore(db: Database, now: () => number = Date.now) {
       message: emergency ? `Urgent rollback decision: ${reason}` : reason }, at);
     return save({ ...p, state, deadlineAt, checkAt, updatedAt: at, revision: p.revision + 1, obligation: p.obligation + 1 });
   }
-  const transition = db.transaction((i: Input<"proposal.transition">, actor: string) =>
-    changeState(proposal(i.projectId, i.proposalId, i.revision), i.transition, actor));
+  const transition = db.transaction((i: Input<"proposal.transition">, actor: string, identity?: ReviewIdentity, hypothesis?: ReviewIdentity) =>
+    changeState(proposal(i.projectId, i.proposalId, i.revision), i.transition, actor, identity, hypothesis));
   function recordMeasurement(p: Proposal, observation: Observation, actor: string, source: "manual" | "script") {
     requireCondition(p.state === "measuring", "invalid_state", "Measurements require a proposal in Measuring");
     assertNoSecretsInValue(observation, "measurement");
+    if (source === "manual") reviews.participant(p, actor);
     event(p.projectId, p.id, { kind: `measurement:${source}`, actor, message: source === "manual" ? "Manual observation" : "Metric command observation",
       observation, unit: p.metric.unit, measurementSpec: metricIdentity(p) });
     return save({ ...p, revision: p.revision + 1, updatedAt: now() });
@@ -284,7 +292,7 @@ export function createStore(db: Database, now: () => number = Date.now) {
     const count = i.withTotal ? db.prepare(`SELECT COUNT(*) AS total ${from}`).get(args) as { total: number } : undefined;
     return { ...count, timeZone: c.timeZone, items: rows.slice(0, i.limit).map(row => {
       const proposal = parse<Proposal>(row);
-      return { proposal, entry: JSON.parse(row.entry) as Entry, nextAt: row.nextAt,
+      return { proposal, entry: JSON.parse(row.entry) as Entry, nextAt: row.nextAt, review: reviews.summary(proposal),
         overdue: isOpen(proposal.state) && row.nextAt <= at };
     }), nextOffset: rows.length > i.limit ? i.offset + i.limit : null };
   }
@@ -315,6 +323,11 @@ export function createStore(db: Database, now: () => number = Date.now) {
     event(p.projectId, p.id, { kind: "work-board", actor, message: `Check moved to ${new Date(at).toISOString()}` });
     return save({ ...p, checkAt: at, revision: p.revision + 1, obligation: p.obligation + 1, updatedAt: now() });
   }
+  function waitingForHypothesis(p: Proposal) {
+    if (p.state !== "proposed" || reviews.approval(p, "hypothesis")) return false;
+    const cards = links(p.projectId, p.id);
+    return cards.length > 0 && cards.every(card => card.status === "Done" || card.status.endsWith(" · PR merged"));
+  }
   function queue(project: string, subject: string, obligation: number, kind: EffectKind, at: number, phase: EffectPhase) {
     const id = effectId(project, subject, obligation, kind, phase);
     const inserted = db.prepare("INSERT OR IGNORE INTO effects VALUES (?,?,?,?,?,?,?,'pending',0)")
@@ -327,6 +340,7 @@ export function createStore(db: Database, now: () => number = Date.now) {
   const claim = (id: string) => db.prepare("UPDATE effects SET status='sending',tries=tries+1 WHERE id=? AND status='pending'").run(id).changes === 1;
   const settle = (id: string, status: Effect["status"], next = now()) =>
     db.prepare("UPDATE effects SET status=?,next=? WHERE id=? AND status='sending'").run(status, next, id);
+  const discard = (id: string) => db.prepare("DELETE FROM effects WHERE id=? AND status='sending'").run(id);
   const ack = db.transaction((i: Input<"proposal.ack">, actor: string) => {
     const p = proposal(i.projectId, i.proposalId);
     const item = effect(i.effectId);
@@ -391,10 +405,11 @@ export function createStore(db: Database, now: () => number = Date.now) {
     db.prepare("INSERT INTO run_scans VALUES (?,?) ON CONFLICT(project) DO UPDATE SET at=excluded.at").run(project, at);
     return true;
   }
+  const reviews = createReviewStore({ db, now, entry, proposal, links, event, metricIdentity });
   return {
-    db, now, config, configuredProjects, setConfig, boardDisplay, setBoardDisplay: setBoardDisplay.immediate, entry, findProposal, proposal, openProposals, linkedProposals, addEntry, insertProposal,
+    db, now, reviews, config, configuredProjects, setConfig, boardDisplay, setBoardDisplay: setBoardDisplay.immediate, entry, findProposal, proposal, openProposals, linkedProposals, addEntry, insertProposal,
     update, changeState, transition, measure, recordMeasurement, comment, measured, event, events, list, listEntries, digest,
-    links, saveLink, adjustCheck, queue, pending, inFlight, effect, claim, settle, ack, acknowledged,
+    links, saveLink, adjustCheck, waitingForHypothesis, queue, pending, inFlight, effect, claim, settle, discard, ack, acknowledged,
     run, saveRun, stageRun, finishRun, listRuns, scanSchedule,
   };
 }

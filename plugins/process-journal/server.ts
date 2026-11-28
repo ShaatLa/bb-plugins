@@ -1,9 +1,11 @@
-import { cliCommand, defineCli, type BbPluginApi } from "@get-bb/plugin-sdk";
+import { cliCommand, defineCli, experimental_PluginRpcRefusal, type BbPluginApi } from "@get-bb/plugin-sdk";
 import { z } from "zod";
-import { methods, rpcContract, type Config, type Input } from "./contract";
+import { methods, rpcContract, type Config, type Input, type Proposal, type ReviewStage } from "./contract";
 import { SecretDetectedError } from "./secret-guard";
 import { boardDisplayMigration, createStore, JournalError, requireCondition, versionOne } from "./store";
-import { createSweep, measureCommand } from "./sweep";
+import { deliverReviews } from "./review-delivery";
+import { reviewMigration, type ReviewIdentity } from "./reviews";
+import { createSweep, measureCommand, type Transport } from "./sweep";
 import { createWorkBoard, workBoardApi } from "./work-board";
 
 type Caller = { kind: "cli"; threadId?: string } | { kind: "client" } | { kind: "plugin"; pluginId: string };
@@ -13,10 +15,10 @@ const instructions = "Record process failures in Process Journal in the same tur
 
 export default function plugin(bb: BbPluginApi) {
   const db = bb.storage.database();
-  bb.storage.migrate(db, [versionOne, boardDisplayMigration]);
+  bb.storage.migrate(db, [versionOne, boardDisplayMigration, reviewMigration]);
   const store = createStore(db);
   const boardApi = workBoardApi(bb);
-  const board = createWorkBoard(store, boardApi);
+  const board = createWorkBoard(store, boardApi, p => verifyApproval(p, "hypothesis"));
   const publish = (projectId: string) => bb.realtime.publish(changed, { projectId });
   const settings = bb.settings.define({
     metricCommands: { type: "string", label: "Trusted metric commands JSON", default: "{}" },
@@ -28,7 +30,7 @@ export default function plugin(bb: BbPluginApi) {
   async function managerReachable(projectId: string, managerId: string) {
     return thread(managerId).then(t => reachable(t, projectId), () => false);
   }
-  const worker = createSweep(store, {
+  const transport: Transport = {
     measure: async name => measureCommand((await settings.get()).metricCommands, name),
     send: async (project, manager, message, wanted) => {
       let target: Awaited<ReturnType<typeof thread>>;
@@ -54,7 +56,51 @@ export default function plugin(bb: BbPluginApi) {
       });
       return result.id;
     },
-  });
+  };
+  const worker = createSweep(store, transport);
+  const rememberParent = ({ id, parentThreadId }: Awaited<ReturnType<typeof thread>>, former?: string | null) => {
+    store.reviews.lineage(id, [parentThreadId, former].filter((value): value is string => !!value));
+  };
+  bb.events.on("thread.created", ({ thread }) => rememberParent(thread));
+  bb.events.on("experimental_thread.parentChanged", ({ thread, previousParentThreadId }) => rememberParent(thread, previousParentThreadId));
+
+  async function verifyLineage(projectId: string, reviewerId: string, active: boolean) {
+    const target = await thread(reviewerId);
+    requireCondition(target.projectId === projectId && (!active || reachable(target, projectId)),
+      "reviewer_unverified", "Reviewer must be an eligible project thread");
+    // A recorded verdict already has verified ancestry. Archiving may detach the thread.
+    if (!active && target.archivedAt != null) return;
+    const ancestry = await bb.sdk.threads.experimental_listAncestors({ threadIds: [reviewerId] });
+    const lineage = ancestry.threads.find(candidate => candidate.threadId === reviewerId);
+    requireCondition(lineage, "reviewer_unverified", "Reviewer ancestry is unavailable");
+    store.reviews.lineage(reviewerId, lineage.ancestorIds);
+  }
+  async function verifyReviewer(p: Proposal, reviewerId: string, active: boolean): Promise<ReviewIdentity> {
+    const links = store.links(p.projectId, p.id).map(link => link.taskId).sort();
+    try {
+      const [, ...attachments] = await Promise.all([
+        verifyLineage(p.projectId, reviewerId, active),
+        ...links.map(async id => {
+          const { task } = await boardApi.task(id);
+          requireCondition(task?.projectId === store.config(p.projectId).boardProject,
+            "reviewer_unverified", "A linked fix card is unavailable to verify review independence");
+          return boardApi.executors(id);
+        }),
+      ] as const);
+      // The attachment RPC exposes preset names, which cannot establish executor roles.
+      const executors = attachments.flatMap(({ taskThreads }) => taskThreads.map(row => row.threadId));
+      for (const executor of executors) store.reviews.participant(p, executor);
+      return { reviewerId, links, executors };
+    } catch (error) {
+      if (error instanceof JournalError) throw error;
+      throw new JournalError("reviewer_unverified", "Could not verify reviewer and linked-thread ancestry. Try again");
+    }
+  }
+  async function verifyApproval(p: Proposal, stage: ReviewStage) {
+    const approved = store.reviews.approval(p, stage);
+    if (!approved) return;
+    return { ...await verifyReviewer(p, approved.reviewerId, false), version: approved.version };
+  }
   let busy = false;
   async function tick() {
     if (busy) return;
@@ -62,6 +108,8 @@ export default function plugin(bb: BbPluginApi) {
     const before = db.prepare("SELECT total_changes() AS count");
     try {
       const count = (before.get() as { count: number }).count;
+      try { await deliverReviews(store, transport, managerReachable); }
+      catch { bb.log.warn("Process Journal review delivery failed; it will retry"); }
       try { await worker.sweep(); } catch { bb.log.warn("Process Journal sweep failed; it will retry"); }
       for (const { projectId, config } of store.configuredProjects()) {
         if (!config.enabled || !config.boardProject) continue;
@@ -72,11 +120,12 @@ export default function plugin(bb: BbPluginApi) {
     } finally { busy = false; }
   }
   worker.recovery();
+  store.reviews.recover();
   bb.background.schedule("process-journal", "* * * * *", tick);
   bb.background.service("process-journal-startup", { start: async () => { await tick(); } });
   bb.agents.contributeInstructions(({ projectId, threadId }) => {
     const c = store.config(projectId);
-    return c.enabled && c.managers.includes(threadId) ? instructions : null;
+    return c.enabled && c.managers.includes(threadId) ? instructions + " Submit proposals and kept results for independent review." : null;
   });
 
   function verifyProject(projectId: string) {
@@ -173,7 +222,36 @@ export default function plugin(bb: BbPluginApi) {
       return store.update(i, actor);
     }),
     "proposal.measure": (i: Input<"proposal.measure">, caller: Caller) => write(i, caller, actor => store.measure(i, actor)),
-    "proposal.transition": (i: Input<"proposal.transition">, caller: Caller) => write(i, caller, actor => store.transition(i, actor)),
+    "proposal.transition": (i: Input<"proposal.transition">, caller: Caller) => write(i, caller, async actor => {
+      const p = store.proposal(i.projectId, i.proposalId, i.revision);
+      const stage = i.transition.state === "applied" ? "hypothesis" : i.transition.state === "kept" ? "result" : null;
+      const identity = stage ? await verifyApproval(p, stage) : undefined;
+      const hypothesis = stage === "result" && identity ? await verifyApproval(p, "hypothesis") : undefined;
+      return store.transition(i, actor, identity, hypothesis);
+    }),
+    "review.assign": (i: Input<"review.assign">, caller: Caller) => write(i, caller, async actor => {
+      const p = store.proposal(i.projectId, i.proposalId, i.revision);
+      requireCondition(p.managerId === actor, "invalid_actor", "Assign the reviewer from the proposal manager thread");
+      return store.reviews.assign(i, actor, await verifyReviewer(p, i.reviewerId, true));
+    }),
+    "review.submit": (i: Input<"review.submit">, caller: Caller) => write(i, caller, async actor => {
+      const p = store.proposal(i.projectId, i.proposalId, i.revision);
+      requireCondition(p.managerId === actor, "invalid_actor", "Submit a review from the proposal manager thread");
+      const assigned = store.reviews.assignment(p);
+      requireCondition(assigned?.generation === i.generation, "stale_review", "Assign a reviewer or reload the proposal");
+      const identity = await verifyReviewer(p, assigned.reviewerId, true);
+      const hypothesis = i.submission.stage === "result" ? await verifyApproval(p, "hypothesis") : undefined;
+      return store.reviews.submit(i, actor, identity, hypothesis);
+    }),
+    "review.decide": (i: Input<"review.decide">, caller: Caller) => write(i, caller, async actor => {
+      const p = store.proposal(i.projectId, i.proposalId);
+      const assigned = store.reviews.assignment(p);
+      requireCondition(assigned?.generation === i.generation, "stale_review", "Reviewer assignment changed");
+      requireCondition(assigned.reviewerId === actor, "invalid_actor", "Only the assigned reviewer can record a verdict from their thread");
+      const identity = await verifyReviewer(p, actor, true);
+      const hypothesis = i.stage === "result" ? await verifyApproval(p, "hypothesis") : undefined;
+      return store.reviews.decide(i, actor, identity, hypothesis);
+    }),
     "proposal.comment": (i: Input<"proposal.comment">, caller: Caller) =>
       write(i, caller, actor => store.comment(i.projectId, i.proposalId, actor, "comment", i.body)),
     "proposal.rollback": (i: Input<"proposal.rollback">, caller: Caller) =>
@@ -183,7 +261,7 @@ export default function plugin(bb: BbPluginApi) {
       const p = store.proposal(i.projectId, i.proposalId);
       return { proposal: p, entry: store.entry(i.projectId, p.entryId), ...store.events(i.projectId, p.id, i.before),
         links: store.links(i.projectId, p.id), managerReachable: await managerReachable(i.projectId, p.managerId),
-        measured: store.measured(p.projectId, p.id) };
+        measured: store.measured(p.projectId, p.id), review: store.reviews.summary(p), reviewRounds: store.reviews.rounds(p) };
     },
     list: (i: Input<"list">) => store.list(i),
     digest: (i: Input<"digest">) => store.digest(i.projectId, i.managerId),
@@ -195,10 +273,20 @@ export default function plugin(bb: BbPluginApi) {
   };
   bb.rpc.register(rpcContract, Object.fromEntries(
     Object.entries(handlers).map(([key, fn]) => [
-      key, (input: never, context: { experimental_caller: Exclude<Caller, { kind: "cli" }> }) =>
-        fn(input, context.experimental_caller),
+      key, async (input: never, context: { experimental_caller: Exclude<Caller, { kind: "cli" }> }) => {
+        try { return await fn(input, context.experimental_caller); }
+        catch (error) {
+          if (error instanceof JournalError && (error.code === "review_required" || key.startsWith("review."))) {
+            throw new experimental_PluginRpcRefusal({
+              code: ["invalid_actor", "reviewer_conflict"].includes(error.code) ? "forbidden" : "conflict",
+              message: error.message, issues: [{ message: error.code }],
+            });
+          }
+          throw error;
+        }
+      },
     ]),
-  ) as { [K in keyof typeof handlers]: (input: Input<K>, context: {
+  ) as unknown as { [K in keyof typeof handlers]: (input: Input<K>, context: {
     experimental_caller: Exclude<Caller, { kind: "cli" }>;
   }) => ReturnType<typeof handlers[K]> });
 
