@@ -403,7 +403,8 @@ function ProposalDetail({ project, id, columns, stamp, refresh }: { project: Pro
         </span>
         <a className="rounded-md px-1.5 py-0.5 text-xs text-muted-foreground underline hover:text-foreground" href={proposalPath(project.id, id)}>Proposal link</a>
       </div>
-      <dl className="flex flex-wrap items-start gap-x-6 gap-y-3 rounded-md border border-border-hairline bg-muted/25 px-3 py-2.5 text-sm">
+      <ProposalDates proposal={p} timeZone={project.timeZone} linked={detail.links.some(link => link.deadlineSource)}
+        disabled={busy} refresh={refresh} date={date}>
         <div className="min-w-0">
           <dt className="mb-0.5 text-xs text-muted-foreground">Assigned manager</dt>
           <dd>
@@ -413,17 +414,7 @@ function ProposalDetail({ project, id, columns, stamp, refresh }: { project: Pro
             ]} onChange={managerId => void mutate(() => rpc.call("proposal.update", { ...edit, patch: { managerId } }))} />
           </dd>
         </div>
-        <div>
-          <dt className="mb-0.5 text-xs text-muted-foreground">{isOpen(p.state) ? "Deadline" : "Closed"}</dt>
-          <dd className="flex min-h-8 items-center">{date(p.deadlineAt)}</dd>
-        </div>
-        {p.checkAt !== null && <div>
-          <dt className="mb-0.5 text-xs text-muted-foreground">Measurement check</dt>
-          <dd className="flex min-h-8 items-center">{date(p.checkAt)}</dd>
-        </div>}
-      </dl>
-      <ProposalDates proposal={p} timeZone={project.timeZone} linked={detail.links.some(link => link.deadlineSource)}
-        disabled={busy} refresh={refresh} />
+      </ProposalDates>
       {!detail.managerReachable && <p className="text-xs text-destructive">Assigned manager is unavailable.</p>}
     </header>
     {loadError && <p role="alert" className="mt-2 text-sm text-destructive">

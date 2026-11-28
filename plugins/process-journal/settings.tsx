@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState, type FormEvent } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useRpc } from "@get-bb/plugin-sdk/app";
 import { closestCenter, DndContext, KeyboardSensor, PointerSensor, useSensor, useSensors, type DragEndEvent, type Modifier } from "@dnd-kit/core";
 import { arrayMove, SortableContext, sortableKeyboardCoordinates, useSortable, verticalListSortingStrategy } from "@dnd-kit/sortable";
@@ -65,74 +65,106 @@ export function JournalSettings() {
 
 function StatusEditor({ projectId }: { projectId: string }) {
   const rpc = useRpc<typeof rpcContract>();
-  const [stored, setStored] = useState<z.output<typeof boardDisplaySchema>>();
+  const savedDisplay = useRef<z.output<typeof boardDisplaySchema> | undefined>(undefined);
+  const pending = useRef<BoardColumnDisplay[] | null | undefined>(undefined);
+  const writing = useRef(false);
+  const [loaded, setLoaded] = useState(false);
   const [draft, setDraft] = useState<BoardColumnDisplay[]>(defaultColumns);
-  const [busy, setBusy] = useState(true);
+  const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
-  const [notice, setNotice] = useState("");
+  const [retry, setRetry] = useState(false);
   const [conflict, setConflict] = useState(false);
   const [load, setLoad] = useState(0);
   useEffect(() => {
     let active = true;
-    setBusy(true);
+    setLoading(true);
     setError("");
     rpc.call("config.get", { projectId, key: "boardDisplay" }).then(raw => {
       if (!active) return;
       const current = boardDisplaySchema.parse(raw);
-      setStored(current);
+      savedDisplay.current = current;
+      pending.current = undefined;
+      setLoaded(true);
       setDraft(current.columns ?? defaultColumns);
       setConflict(false);
+      setRetry(false);
     }).catch(cause => { if (active) setError(message(cause)); })
-      .finally(() => { if (active) setBusy(false); });
+      .finally(() => { if (active) setLoading(false); });
     return () => { active = false; };
   }, [rpc, projectId, load]);
 
-  const edit = useCallback((id: BoardColumnDisplay["id"], patch: Partial<BoardColumnDisplay>) => {
-    setDraft(columns => columns.map(column => column.id === id ? { ...column, ...patch } : column));
-    setNotice("");
-  }, []);
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 4 } }),
     useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }));
-  function move({ active, over }: DragEndEvent) {
-    if (!over || active.id === over.id || busy) return;
-    setDraft(columns => arrayMove(columns, columns.findIndex(column => column.id === active.id),
-      columns.findIndex(column => column.id === over.id)));
-    setNotice("");
+  function edit(id: BoardColumnDisplay["id"], patch: Partial<BoardColumnDisplay>) {
+    const next = draft.map(column => column.id === id ? { ...column, ...patch } : column);
+    setDraft(next);
+    if (!("name" in patch)) void save(next);
   }
+  function move({ active, over }: DragEndEvent) {
+    if (!over || active.id === over.id) return;
+    const next = arrayMove(draft, draft.findIndex(column => column.id === active.id),
+      draft.findIndex(column => column.id === over.id));
+    setDraft(next);
+    void save(next);
+  }
+
   async function save(columns: BoardColumnDisplay[] | null) {
-    if (!stored || conflict || busy) return;
-    setBusy(true);
-    setError("");
-    setNotice("");
+    if (!savedDisplay.current || conflict || loading) return;
+    pending.current = columns;
+    if (writing.current) return;
+    writing.current = true;
     try {
-      const value = boardDisplayWriteSchema.parse({ expectedRevision: stored.revision, columns });
-      const saved = boardDisplayResultSchema.parse(await rpc.call("config.set", { projectId, key: "boardDisplay", value }));
-      if (!saved.ok) {
-        setConflict(true);
-        setError("Another window changed these statuses. Reload to get the current settings.");
-      } else {
-        const current = { revision: saved.revision, columns: saved.columns };
-        setStored(current);
-        setDraft(current.columns ?? defaultColumns);
-        setNotice(columns === null ? "Restored default statuses." : "Saved status display.");
+      // A full display write uses the revision returned by the previous write.
+      while (pending.current !== undefined) {
+        const next = pending.current;
+        pending.current = undefined;
+        setError("");
+        setRetry(false);
+        const current = savedDisplay.current;
+        const parsed = boardDisplayWriteSchema.safeParse({ expectedRevision: current.revision, columns: next });
+        if (!parsed.success) {
+          setError(parsed.error.issues.map(issue => issue.message).join(". "));
+          continue;
+        }
+        const value = parsed.data;
+        const unchanged = value.columns === null ? current.columns === null :
+          JSON.stringify(value.columns) === JSON.stringify(current.columns ?? defaultColumns);
+        if (unchanged) {
+          setDraft(draft => draft === next ? value.columns ?? defaultColumns : draft);
+          continue;
+        }
+        let result: z.output<typeof boardDisplayResultSchema>;
+        try {
+          result = boardDisplayResultSchema.parse(await rpc.call("config.set", { projectId, key: "boardDisplay", value }));
+        } catch (cause) {
+          if (pending.current === undefined) pending.current = next;
+          setError(message(cause));
+          setRetry(true);
+          break;
+        }
+        if (!result.ok) {
+          pending.current = undefined;
+          setConflict(true);
+          setError("Another window changed these statuses. Reload to get the current settings.");
+          break;
+        }
+        savedDisplay.current = { revision: result.revision, columns: result.columns };
+        setDraft(draft => draft === next ? result.columns ?? defaultColumns : draft);
       }
-    } catch (cause) {
-      setError(cause instanceof Error && "issues" in cause && Array.isArray(cause.issues)
-        ? cause.issues.map(issue => issue.message).join(". ") : message(cause));
     } finally {
-      setBusy(false);
+      writing.current = false;
     }
   }
 
   return <section aria-label="Statuses" className="space-y-3">
     <h2 className="text-sm font-semibold">Statuses</h2>
-    {notice && <p role="status" className="text-sm text-muted-foreground">{notice}</p>}
     {error && <div className="flex flex-wrap items-center justify-between gap-2">
       <p role="alert" className="text-sm text-destructive">{error}</p>
-      {(conflict || !stored) && <button type="button" className={button} disabled={busy} onClick={() => setLoad(value => value + 1)}>Reload</button>}
+      {(conflict || !loaded) && <button type="button" className={button} disabled={loading} onClick={() => setLoad(value => value + 1)}>Reload</button>}
+      {retry && <button type="button" className={button} onClick={() => { if (pending.current !== undefined) void save(pending.current); }}>Retry</button>}
     </div>}
-    {busy && !stored && <p className="text-sm text-muted-foreground">Loading statuses…</p>}
-    {stored && <form className="space-y-3" onSubmit={(event: FormEvent) => { event.preventDefault(); void save(draft); }}>
+    {loading && !loaded && <p className="text-sm text-muted-foreground">Loading statuses…</p>}
+    {loaded && <div className="space-y-3">
       <div className="@container rounded-lg border border-border bg-card">
         <div aria-hidden="true" className={`${rowGrid} hidden border-b border-border-hairline bg-muted/25 py-2 text-xs font-medium text-muted-foreground @min-[40rem]:grid`}>
           <span className="col-start-3">Name</span><span>Icon</span><span>Color</span><span className="text-center">On board</span>
@@ -140,22 +172,23 @@ function StatusEditor({ projectId }: { projectId: string }) {
         <DndContext sensors={sensors} collisionDetection={closestCenter} modifiers={[stayInList]} onDragEnd={move}>
           <SortableContext items={draft} strategy={verticalListSortingStrategy}>
             <ol className="divide-y divide-border-hairline">
-              {draft.map(column => <StatusRow key={column.id} column={column} busy={busy} edit={edit} />)}
+              {draft.map(column => <StatusRow key={column.id} column={column} busy={loading || conflict} edit={edit}
+                commitName={() => void save(draft)} />)}
             </ol>
           </SortableContext>
         </DndContext>
       </div>
       <div className="flex flex-wrap items-center gap-2">
-        <button className={button} type="submit" disabled={busy || conflict}>Save</button>
-        <button className={button} type="button" disabled={busy || conflict} onClick={() => void save(null)}>Restore defaults</button>
+        <button className={button} type="button" disabled={loading || conflict} onClick={() => { setDraft(defaultColumns); void save(null); }}>Restore defaults</button>
       </div>
-    </form>}
+    </div>}
   </section>;
 }
 
 
-function StatusRow({ column, busy, edit }: {
+function StatusRow({ column, busy, edit, commitName }: {
   column: BoardColumnDisplay; busy: boolean; edit: (id: BoardColumnDisplay["id"], patch: Partial<BoardColumnDisplay>) => void;
+  commitName: () => void;
 }) {
   const original = defaultStatusName(column.id);
   const { attributes, listeners, isDragging, setActivatorNodeRef, setNodeRef, transform, transition } = useSortable({
@@ -174,7 +207,8 @@ function StatusRow({ column, busy, edit }: {
     </button>
     <span className="grid place-items-center"><StatusMark state={column.id} display={column} /></span>
     <input className={`${input} col-span-2 w-full @min-[40rem]:col-span-1`} aria-label={`${original} name`} disabled={busy} value={column.name}
-      onChange={event => edit(column.id, { name: event.target.value })} />
+      onChange={event => edit(column.id, { name: event.target.value })} onBlur={commitName}
+      onKeyDown={event => { if (event.key === "Enter" && !event.nativeEvent.isComposing) event.currentTarget.blur(); }} />
     <div className="col-start-3 grid min-w-0 gap-1 @min-[40rem]:col-start-auto">
       <span className="text-xs text-muted-foreground @min-[40rem]:hidden">Icon</span>
       <JournalSelect label={`${original} icon`} disabled={busy} value={column.icon} options={icons}

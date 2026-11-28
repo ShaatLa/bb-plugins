@@ -258,17 +258,31 @@ it("keeps hidden closed statuses filterable in History even when all board colum
   await waitFor(() => expect(rpc.list).toHaveBeenLastCalledWith(expect.objectContaining({ view: "history", state: "kept" })));
 });
 
-it("saves settings drafts, keeps them on conflict, and resets using the reloaded revision", async () => {
+it("autosaves ordered status edits and keeps a conflicting draft until reload", async () => {
   const rpc = fixture();
-  const configSet = vi.fn().mockReturnValueOnce({
-    ok: false, code: "board_display_conflict", current: { revision: 1, columns: null },
-  }).mockReturnValueOnce({ ok: true, revision: 2, columns: null });
+  let finishFirst!: (result: unknown) => void;
+  const configSet = vi.fn().mockReturnValueOnce(new Promise(resolve => { finishFirst = resolve; })).mockReturnValueOnce({
+    ok: false, code: "board_display_conflict", current: { revision: 2, columns: defaultColumns },
+  }).mockReturnValueOnce({ ok: true, revision: 3, columns: null });
   const screen = renderSlot(app.settingsSections[0], {}, {
     experimental_rpcContract: rpcContract, rpc: { ...rpc, "config.set": configSet,
       "config.get": request => methods["config.get"].input.parse(request).key === "boardDisplay" ? rpc["config.get"]() : configSchema.parse({}) },
   });
   const name = await screen.findByRole("textbox", { name: "Measuring name" }) as HTMLInputElement;
+  const statuses = within(screen.getByRole("region", { name: "Statuses" }));
+  expect(statuses.queryByRole("button", { name: "Save" })).toBeNull();
+  fireEvent.change(name, { target: { value: " " } });
+  fireEvent.blur(name);
+  expect((await statuses.findByRole("alert")).textContent).toContain("1–64 characters");
+  expect(configSet).not.toHaveBeenCalled();
   fireEvent.change(name, { target: { value: "Collecting evidence" } });
+  expect(configSet).not.toHaveBeenCalled();
+  name.focus();
+  fireEvent.keyDown(name, { key: "Enter" });
+  const named = defaultColumns.map(column => column.id === "measuring" ? { ...column, name: "Collecting evidence" } : column);
+  await waitFor(() => expect(configSet).toHaveBeenCalledExactlyOnceWith({
+    projectId, key: "boardDisplay", value: { expectedRevision: 0, columns: named },
+  }));
   await selectOption(screen.getByRole("combobox", { name: "Measuring icon" }), "Clock");
   await selectOption(screen.getByRole("combobox", { name: "Measuring color" }), "Blue");
   fireEvent.click(screen.getByRole("checkbox", { name: "Show Measuring on board" }));
@@ -283,19 +297,21 @@ it("saves settings drafts, keeps them on conflict, and resets using the reloaded
   await act(() => new Promise(resolve => setTimeout(resolve, 0)));
   fireEvent.keyDown(grip, { key: "ArrowUp", code: "ArrowUp" });
   fireEvent.keyDown(grip, { key: " ", code: "Space" });
-  fireEvent.click(screen.getByRole("button", { name: "Save" }));
-  expect((await screen.findByRole("alert")).textContent).toMatch(/another window/i);
+  expect(configSet).toHaveBeenCalledTimes(1);
+  await act(async () => { finishFirst({ ok: true, revision: 1, columns: named }); });
+  expect((await statuses.findByRole("alert")).textContent).toMatch(/another window/i);
   expect(name.value).toBe("Collecting evidence");
-  expect(configSet).toHaveBeenCalledWith({ projectId, key: "boardDisplay", value: { expectedRevision: 0, columns: [
+  expect(configSet).toHaveBeenLastCalledWith({ projectId, key: "boardDisplay", value: { expectedRevision: 1, columns: [
     defaultColumns[0], { ...defaultColumns[2], name: "Collecting evidence", visible: false, icon: "Clock", color: "steelblue" },
     defaultColumns[1], ...defaultColumns.slice(3),
   ] } });
-  rpc["config.get"].mockReturnValue({ revision: 1, columns: null });
-  fireEvent.click(screen.getByRole("button", { name: "Reload" }));
+  rpc["config.get"].mockReturnValue({ revision: 2, columns: defaultColumns });
+  fireEvent.click(statuses.getByRole("button", { name: "Reload" }));
   await waitFor(() => expect(name.value).toBe("Measuring"));
-  fireEvent.click(screen.getByRole("button", { name: "Restore defaults" }));
-  expect((await screen.findByText("Restored default statuses.")).getAttribute("role")).toBe("status");
-  expect(configSet).toHaveBeenLastCalledWith({ projectId, key: "boardDisplay", value: { expectedRevision: 1, columns: null } });
+  fireEvent.click(statuses.getByRole("button", { name: "Restore defaults" }));
+  await waitFor(() => expect(configSet).toHaveBeenLastCalledWith({
+    projectId, key: "boardDisplay", value: { expectedRevision: 2, columns: null },
+  }));
 });
 
 it("shows the pinned review evidence and disables Keep while the verdict is pending", async () => {
@@ -337,9 +353,9 @@ it.each(["proposed", "applied", "kept"] as const)("offers only the eligible date
   const screen = renderSlot(app.navPanels[0], { subPath: `${projectId}/${proposal.id}` }, { experimental_rpcContract: rpcContract, rpc });
   await screen.findByRole("heading", { name: proposal.title });
   if (state === "kept") {
-    expect(screen.queryByRole("button", { name: "Edit dates" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Edit deadline" })).toBeNull();
   } else {
-    fireEvent.click(screen.getByRole("button", { name: "Edit dates" }));
+    fireEvent.click(screen.getByRole("button", { name: "Edit deadline" }));
     const editor = within(screen.getByRole("form", { name: "Edit proposal dates" }));
     expect(editor.getByLabelText("Deadline")).toBeTruthy();
     expect(editor.queryByLabelText("Measurement check")).toBeNull();
@@ -357,8 +373,10 @@ it("saves gap and overlap times as epoch values in one revision-checked proposal
     const screen = renderSlot(app.navPanels[0], { subPath: `${projectId}/${proposal.id}` }, { experimental_rpcContract: rpcContract, rpc: {
       ...rpc, projects: () => [local], "proposal.detail": () => ({ ...rpc["proposal.detail"](), proposal: initial, links: [linkedCard] }),
     } });
-    fireEvent.click(await screen.findByRole("button", { name: "Edit dates" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Edit deadline" }));
     const editor = within(screen.getByRole("form", { name: "Edit proposal dates" }));
+    expect(editor.queryByLabelText("Measurement check")).toBeNull();
+    fireEvent.click(editor.getByRole("button", { name: "Edit measurement check" }));
     expect(editor.getByText(/America\/New_York/)).toBeTruthy();
     fireEvent.change(editor.getByLabelText("Deadline"), { target: { value: "2026-11-01T01:30" } });
     fireEvent.change(editor.getByLabelText("Measurement check"), { target: { value: "2026-03-08T02:30" } });
@@ -381,7 +399,7 @@ it("retains a stale draft and omits the untouched high-precision check on a fres
     const screen = renderSlot(app.navPanels[0], { subPath: `${projectId}/${proposal.id}` }, { experimental_rpcContract: rpcContract, rpc: {
       ...rpc, "proposal.detail": () => ({ ...rpc["proposal.detail"](), proposal: current }),
     } });
-    fireEvent.click(await screen.findByRole("button", { name: "Edit dates" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Edit deadline" }));
     const editor = within(screen.getByRole("form", { name: "Edit proposal dates" }));
     const deadline = editor.getByLabelText("Deadline") as HTMLInputElement;
     fireEvent.change(deadline, { target: { value: "2026-04-01T10:00" } });
