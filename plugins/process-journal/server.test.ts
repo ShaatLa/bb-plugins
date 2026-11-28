@@ -54,11 +54,12 @@ it("shares config, authenticated CLI attribution, persisted state and RPC reads"
     expect(await harness.callRpc("config.get", { projectId })).toEqual(configBefore);
     expect(harness.registrations.instructionProvider!({ projectId, threadId })).toMatch(/same turn/);
     expect(harness.registrations.instructionProvider!({ projectId: "proj_other", threadId })).toBeNull();
-    const result = await harness.runCli(["entry-add", "--input", JSON.stringify({
+    const entryInput = {
       title: "Skipped check", failure: "A check was missed", gap: "Checklist had no owner",
       proposal: { title: "Assign owner", hypothesis: "Assignment prevents misses", rollbackCondition: "Owner unavailable",
         deadlineAt: Date.now() + 100_000, metric: { definition: "Count misses" } },
-    })], { projectId, threadId });
+    };
+    const result = await harness.runCli(["entry-add", "--input", JSON.stringify(entryInput)], { projectId, threadId });
     expect(result.exitCode, JSON.stringify(result)).toBe(0);
     const created = JSON.parse(result.stdout!) as { proposal: Proposal };
     const detail = await harness.callRpc("proposal.detail", { projectId, proposalId: created.proposal.id });
@@ -100,11 +101,6 @@ it("shares config, authenticated CLI attribution, persisted state and RPC reads"
         exitCode: 1, body: { error: { code: "reviewer_conflict" } },
       });
     }
-    linkedExecutors = [attached, threadId];
-    expect(await cli("review-assign", { ...assign, reviewerId })).toMatchObject({
-      exitCode: 1, body: { error: { code: "reviewer_conflict" } },
-    });
-    linkedExecutors = [attached];
     expect(await cli("review-assign", { ...assign, reviewerId })).toMatchObject({ exitCode: 0, body: { generation: 1 } });
     expect(await cli("review-submit", { ...ref, generation: 1, baseVersion: 0, submission: { stage: "hypothesis" } }))
       .toMatchObject({ exitCode: 0, body: { version: 1, status: "pending" } });
@@ -141,12 +137,39 @@ it("shares config, authenticated CLI attribution, persisted state and RPC reads"
       ...ref, revision: observed.body.revision, transition: { state: "kept", reason: "The reviewed result met its target" },
     })).toMatchObject({ exitCode: 0, body: { state: "kept" } });
     const persisted = await harness.callRpc("proposal.detail", { projectId, proposalId: created.proposal.id });
+
+    // The manager becomes an executor after the manager-started reviewer has approved.
+    reviewerArchived = false;
+    const second = await cli("entry-add", entryInput);
+    expect(second.exitCode).toBe(0);
+    const secondRef = { proposalId: second.body.proposal.id, revision: second.body.proposal.revision };
+    expect(await cli("fix-link", { ...secondRef, taskKey: card.key })).toMatchObject({ exitCode: 0 });
+    expect(await cli("review-assign", { ...assign, ...secondRef, reviewerId })).toMatchObject({ exitCode: 0 });
+    expect(await cli("review-submit", { ...secondRef, generation: 1, baseVersion: 0, submission: { stage: "hypothesis" } }))
+      .toMatchObject({ exitCode: 0, body: { status: "pending" } });
+    expect(await cli("review-decide", { ...verdict, proposalId: secondRef.proposalId }, reviewerId))
+      .toMatchObject({ exitCode: 0, body: { status: "approved" } });
+    reviewerArchived = true;
+    linkedExecutors = [attached, threadId];
+    expect(await cli("proposal-transition", { ...apply, ...secondRef })).toMatchObject({
+      exitCode: 1, body: { error: { code: "review_required" } },
+    });
+    const secondDetail = { projectId, proposalId: secondRef.proposalId };
+    expect(await harness.callRpc("proposal.detail", secondDetail)).toMatchObject({
+      proposal: { state: "proposed" }, review: { hypothesis: { status: "superseded" } },
+      events: expect.arrayContaining([{ kind: "review", actor: "Work Board",
+        message: `Verified linked fix executor: ${threadId}`, at: expect.any(Number), seq: expect.any(Number) }]),
+    });
+    linkedExecutors = [attached];
     const failed = await harness.runCli(["list", "--project", "bad/project"]);
     expect(JSON.parse(failed.stdout!)).toMatchObject({ ok: false, error: { code: "invalid_input" } });
     const replacement = await harness.lifecycle.reload(plugin);
     try {
       expect(await replacement.harness.callRpc("proposal.detail", { projectId, proposalId: created.proposal.id }))
         .toEqual(persisted);
+      expect(await replacement.harness.callRpc("proposal.detail", secondDetail)).toMatchObject({
+        proposal: { state: "proposed" }, review: { hypothesis: { status: "superseded" } },
+      });
     } finally { await replacement.harness.dispose(); }
   } finally { await harness.dispose(); }
 });

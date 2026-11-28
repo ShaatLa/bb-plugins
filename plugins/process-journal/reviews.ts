@@ -51,6 +51,7 @@ export type ReviewIdentity = { reviewerId: string; links: string[]; executors: s
 type Assignment = { reviewerId: string; generation: number };
 type Work = { round: ReviewRound; next: number; notice: number };
 const hash = (value: unknown) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
+const executorEvidence = (thread: string) => `Verified linked fix executor: ${thread}`;
 
 export function createReviewStore({ db, now, entry, proposal, links, metricIdentity, event }: StoreParts) {
   function experiment(p: Proposal) {
@@ -94,23 +95,37 @@ export function createReviewStore({ db, now, entry, proposal, links, metricIdent
     const insert = db.prepare("INSERT OR IGNORE INTO proposal_review_ancestry VALUES (?,?)");
     for (const parent of new Set(ancestors)) if (child !== parent) insert.run(child, parent);
   }
-  function conflicts(p: Proposal, reviewerId: string, additional?: string, managerExecuted = false) {
+  const recordLinkedExecutors = db.transaction((p: Proposal, executors: string[]) => {
+    if (!executors.length) return;
+    const known = db.prepare(`SELECT 1 FROM timeline WHERE project=? AND proposal=? AND kind='review'
+      AND json_extract(body,'$.actor')='Work Board' AND json_extract(body,'$.message')=? LIMIT 1`);
+    for (const actor of new Set(executors)) {
+      participant(p, actor);
+      const message = executorEvidence(actor);
+      if (!known.get(p.projectId, p.id, message)) {
+        event(p.projectId, p.id, { kind: "review", actor: "Work Board", message });
+      }
+    }
+  });
+  function conflicts(p: Proposal, reviewerId: string, additional?: string) {
     if (reviewerId === p.managerId) return true;
     // The manager is recorded as a participant even when they only assigned the work.
     return !!db.prepare(`WITH RECURSIVE ancestry(thread) AS (
       SELECT @reviewer UNION SELECT a.parent FROM proposal_review_ancestry a JOIN ancestry x ON x.thread=a.child
-    ) SELECT 1 FROM ancestry WHERE (thread <> @manager OR @managerExecuted = 1)
-      AND (thread = @executor OR thread IN (
-        SELECT thread FROM proposal_review_executors WHERE project=@project AND proposal=@proposal
-      ))`)
-      .get({ reviewer: reviewerId, manager: p.managerId, managerExecuted: Number(managerExecuted),
+    ) SELECT 1 FROM ancestry WHERE (thread <> @manager OR EXISTS (
+      SELECT 1 FROM timeline WHERE project=@project AND proposal=@proposal AND kind='review'
+        AND json_extract(body,'$.actor')='Work Board' AND json_extract(body,'$.message')=@managerEvidence
+    )) AND (thread = @executor OR thread IN (
+      SELECT thread FROM proposal_review_executors WHERE project=@project AND proposal=@proposal
+    ))`)
+      .get({ reviewer: reviewerId, manager: p.managerId, managerEvidence: executorEvidence(p.managerId),
         executor: additional ?? "", project: p.projectId, proposal: p.id });
   }
   function independent(p: Proposal, identity: ReviewIdentity, additional?: string) {
     const current = links(p.projectId, p.id).map(link => link.taskId).sort();
     requireCondition(JSON.stringify(current) === JSON.stringify(identity.links), "stale_review", "Linked fix cards changed. Refresh the review and try again");
-    for (const actor of identity.executors) participant(p, actor);
-    requireCondition(!conflicts(p, identity.reviewerId, additional, identity.executors.includes(p.managerId)), "reviewer_conflict",
+    recordLinkedExecutors(p, identity.executors);
+    requireCondition(!conflicts(p, identity.reviewerId, additional), "reviewer_conflict",
       "Choose a reviewer independent of the author, managers and executors");
   }
   function hypothesisApproval(p: Proposal): ReviewRound | null {
@@ -275,6 +290,6 @@ export function createReviewStore({ db, now, entry, proposal, links, metricIdent
     db.prepare(`UPDATE proposal_reviews SET body=json_set(body,'$.delivery','uncertain')
       WHERE json_extract(body,'$.delivery')='sending'`).run();
   }
-  return { assign, submit, decide, summary, rounds, assignment, latest, approval, guard, independent, lineage, participant,
+  return { assign, submit, decide, summary, rounds, assignment, latest, approval, guard, independent, lineage, participant, recordLinkedExecutors,
     proposalEdited, retireClosed, pending, wanted, save, notified, recover };
 }

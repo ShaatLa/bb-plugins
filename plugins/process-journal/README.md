@@ -50,7 +50,7 @@ A minute sweep runs checks and sends deadline reminders. If the obligation remai
 
 ### Independent review
 
-The proposal manager assigns an existing independent thread in the same project. Work Board can keep using its own admissions and worktrees. A thread can review multiple proposals. The author, assigned managers and executors cannot approve the proposal. A child of the current manager can review when otherwise independent. The ancestry checks still exclude descendants of other recorded participants and of verified Work Board executors, including a manager who executed a linked fix.
+The proposal manager assigns an existing independent thread in the same project. Work Board can keep using its own admissions and worktrees. A thread can review multiple proposals. The author, assigned managers and executors cannot approve the proposal. A child of the current manager can review when otherwise independent. The ancestry checks still exclude descendants of other recorded participants and of verified Work Board executors, including a manager whose work on a linked fix was previously verified.
 
 1. The manager runs `review-assign` with `proposalId`, `revision`, `reviewerId`, `generation` (initially zero) and `reason`.
 2. The manager runs `review-submit` with `proposalId`, `revision`, the assignment `generation`, the stage's `baseVersion` (initially zero) and `submission: {"stage":"hypothesis"}`. For a result, use `"stage":"result"` with a `conclusion` and `observationIds` (event sequence numbers from `proposal-detail`).

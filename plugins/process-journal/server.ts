@@ -89,7 +89,7 @@ export default function plugin(bb: BbPluginApi) {
       ] as const);
       // The attachment RPC exposes preset names, which cannot establish executor roles.
       const executors = attachments.flatMap(({ taskThreads }) => taskThreads.map(row => row.threadId));
-      for (const executor of executors) store.reviews.participant(p, executor);
+      store.reviews.recordLinkedExecutors(p, executors);
       return { reviewerId, links, executors };
     } catch (error) {
       if (error instanceof JournalError) throw error;
