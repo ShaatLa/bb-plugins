@@ -1,6 +1,6 @@
 # Process Journal
 
-Record how a process failed, track proposed fixes, and decide what to keep after measuring the effect. In BB, open **Process Journal** to select a project and manager, see Entry columns and their proposal cards, and review three months of proposal history.
+Record how a process failed, track proposed fixes, and decide what to keep after measuring the effect. In BB, open **Process Journal** to select a project and manager. The board groups proposal cards by **Proposed**, **Applied**, **Measuring**, **Kept** and **Reverted**. Kept and Reverted show the last three months. Open a proposal card to see the proposal and its Entry on a dedicated page. **History** also includes Withdrawn proposals.
 
 ## Configure a project
 
