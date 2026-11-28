@@ -136,11 +136,12 @@ function Workspace({ project, projects, routeProposal, stamp, refresh }: {
     return () => { active = false; };
   }, [rpc, view, project.id, manager, range, state, offset, stamp, routeProposal]);
 
+  const backLabel = view === "history" ? "Back to history" : "Back to board";
   const toolbar = <header className="sticky top-0 z-10 flex min-h-11 flex-wrap items-center gap-x-3 gap-y-1 border-b border-border-hairline bg-background px-4 py-1.5">
     {routeProposal && <JournalLink projectId={project.id}
-      className="inline-flex min-h-8 items-center gap-1.5 rounded-md px-2 text-sm font-medium hover:bg-state-hover focus-visible:outline focus-visible:outline-ring">
-      <Icon name="ArrowLeft" className="size-4 shrink-0" />
-      {view === "history" ? "Back to history" : "Back to board"}
+      aria-label={backLabel} title={backLabel}
+      className="inline-flex size-8 shrink-0 items-center justify-center rounded-md hover:bg-state-hover focus-visible:outline focus-visible:outline-ring pointer-coarse:size-10">
+      <Icon name="ArrowLeft" className="size-4" />
     </JournalLink>}
     <label className={control}>Project
       <select className={`${input} font-medium text-foreground`} value={project.id} onChange={event =>

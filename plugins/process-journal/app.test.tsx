@@ -102,6 +102,7 @@ it("shows five stable columns and pages only the selected status", async () => {
   expect(await screen.findByRole("heading", { name: "Timeline" })).toBeTruthy();
   expect(screen.queryByRole("region", { name: "Status columns" })).toBeNull();
   const back = screen.getByRole("link", { name: "Back to board" });
+  expect(back.textContent).not.toContain("Back to board");
   expect(back.getAttribute("href")).toBe(`/plugins/process-journal/process-journal/${projectId}`);
   expect(back.closest("header")?.classList.contains("sticky")).toBe(true);
   fireEvent.click(back);
