@@ -4,6 +4,7 @@ import type { z } from "zod";
 import { boardColors, boardDisplayResultSchema, boardDisplaySchema, boardDisplayWriteSchema, boardIcons,
   type BoardColumnDisplay } from "./board-display-contract";
 import type { methods, rpcContract } from "./contract";
+import { ScheduleSettings } from "./schedule-settings";
 import { defaultColumns, defaultStatusName, StatusMark } from "./status-display";
 
 const input = "min-w-0 rounded-md border border-border bg-background px-2.5 py-1.5 text-sm focus-visible:outline focus-visible:outline-2 focus-visible:outline-ring";
@@ -32,7 +33,7 @@ export function JournalSettings() {
   }, [rpc]);
   if (error) return <p role="alert" className="text-sm text-destructive">{error}</p>;
   if (!projects) return <p className="text-sm text-muted-foreground">Loading projects…</p>;
-  if (!projects.length) return <p className="text-sm text-muted-foreground">Enable Process Journal for a project to edit its statuses.</p>;
+  if (!projects.length) return <p className="text-sm text-muted-foreground">Enable Process Journal for a project to manage its settings.</p>;
   const project = projects.find(candidate => candidate.id === selected) ?? projects[0]!;
   return <div className="space-y-4">
     <label className="flex flex-wrap items-center gap-2 text-sm">
@@ -41,7 +42,10 @@ export function JournalSettings() {
         {projects.map(candidate => <option value={candidate.id} key={candidate.id}>{candidate.name}</option>)}
       </select>
     </label>
-    <StatusEditor key={project.id} projectId={project.id} />
+    <div key={project.id} className="space-y-4">
+      <StatusEditor projectId={project.id} />
+      <ScheduleSettings projectId={project.id} managers={project.managers} />
+    </div>
   </div>;
 }
 

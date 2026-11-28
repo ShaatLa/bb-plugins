@@ -5,6 +5,7 @@ import { boardDisplaySchema, type BoardColumnDisplay } from "./board-display-con
 import type { methods, rpcContract } from "./contract";
 import { isOpen, states, type BoardState, type State } from "./states";
 import { cardPath, hiddenColumnsPath, journalPath, proposalPath, settingsPath } from "./paths";
+import { ProposalDates } from "./proposal-dates";
 import { JournalSettings } from "./settings";
 import { defaultColumns, displayName, StatusMark } from "./status-display";
 import { ReviewPanel, reviewBadge } from "./review-panel";
@@ -42,10 +43,13 @@ function readRoute(subPath: string) {
     const parts = subPath.replace(/^\/+|\/+$/g, "").split("/").map(decodeURIComponent);
     const [projectId, second, third, fourth] = parts;
     if (projectId && second === "board" && third === "hidden" && parts.length <= 4) {
-      return { projectId, proposalId: fourth, hidden: true };
+      return { projectId, proposalId: fourth, hidden: true, runs: false };
+    }
+    if (projectId && second === "review" && third === "runs" && parts.length === 3) {
+      return { projectId, proposalId: undefined, hidden: false, runs: true };
     }
     if (parts.length > 2 || (parts.length === 2 && !projectId)) return null;
-    return { projectId, proposalId: second, hidden: false };
+    return { projectId, proposalId: second, hidden: false, runs: false };
   } catch {
     return null;
   }
@@ -94,18 +98,18 @@ function Journal({ subPath }: PluginNavPanelProps) {
     </div>}
     {!unavailable && projects?.length === 0 && <p className="p-4 text-sm text-muted-foreground">Enable Process Journal for a project with <code>bb process-journal config</code>.</p>}
     {current && projects && <Workspace key={current.id} project={current} projects={projects}
-      routeProposal={route?.proposalId} routeHidden={route?.hidden} stamp={stamp} refresh={refresh} />}
+      routeProposal={route?.proposalId} routeHidden={route?.hidden} routeRuns={route?.runs} stamp={stamp} refresh={refresh} />}
   </main>;
 }
 
-function Workspace({ project, projects, routeProposal, routeHidden, stamp, refresh }: {
-  project: Projects[number]; projects: Projects; routeProposal?: string; routeHidden?: boolean; stamp: number; refresh: () => void;
+function Workspace({ project, projects, routeProposal, routeHidden, routeRuns, stamp, refresh }: {
+  project: Projects[number]; projects: Projects; routeProposal?: string; routeHidden?: boolean; routeRuns?: boolean; stamp: number; refresh: () => void;
 }) {
   const rpc = useRpc<typeof rpcContract>();
   const navigate = useBbNavigate();
   const [manager, setManager] = useState("");
   const [tab, setTab] = useState<"board" | "history" | "runs">("board");
-  const view = routeHidden ? "hidden" : tab;
+  const view = routeRuns ? "runs" : routeHidden ? "hidden" : tab;
   const inBoard = view === "board" || view === "hidden";
   const [columns, setColumns] = useState<BoardColumnDisplay[]>();
   const display = columns ?? defaultColumns;
@@ -201,11 +205,11 @@ function Workspace({ project, projects, routeProposal, routeHidden, stamp, refre
     <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2 border-b border-border-hairline bg-background px-4 py-2">
       <nav className="flex max-w-full flex-wrap items-center rounded-md bg-muted p-0.5" aria-label="Journal views">
         {(["board", "history", "runs"] as const).map(next =>
-          <button className={`rounded-sm px-2.5 py-1 text-xs font-medium focus-visible:outline focus-visible:outline-ring ${(routeHidden ? next === "board" : tab === next) ? "bg-background text-foreground shadow-2xs" : "text-muted-foreground hover:text-foreground"}`} key={next} type="button"
-            aria-pressed={routeHidden ? next === "board" : tab === next} onClick={() => {
+          <button className={`rounded-sm px-2.5 py-1 text-xs font-medium focus-visible:outline focus-visible:outline-ring ${(view === next || view === "hidden" && next === "board") ? "bg-background text-foreground shadow-2xs" : "text-muted-foreground hover:text-foreground"}`} key={next} type="button"
+            aria-pressed={view === next || view === "hidden" && next === "board"} onClick={() => {
               setTab(next);
               reset();
-              if (routeHidden) navigate.toPluginPanel("process-journal", { subPath: project.id });
+              if (routeHidden || routeRuns && next !== "runs") navigate.toPluginPanel("process-journal", { subPath: project.id });
             }}>
             {next === "runs" ? "Review runs" : next === "history" ? "History" : "Board"}
           </button>)}
@@ -417,6 +421,8 @@ function ProposalDetail({ project, id, columns, stamp, refresh }: { project: Pro
           <dd className="py-1">{date(p.checkAt)}</dd>
         </div>}
       </dl>
+      <ProposalDates proposal={p} timeZone={project.timeZone} linked={detail.links.some(link => link.deadlineSource)}
+        disabled={busy} refresh={refresh} />
       {!detail.managerReachable && <p className="text-xs text-destructive">Assigned manager is unavailable.</p>}
     </header>
     {loadError && <p role="alert" className="mt-2 text-sm text-destructive">

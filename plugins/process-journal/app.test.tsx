@@ -1,9 +1,9 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, waitFor, within } from "@testing-library/react";
 import { loadPluginApp, renderSlot } from "@get-bb/plugin-sdk/testing/app";
 import { afterEach, expect, it, vi } from "vitest";
-import { methods, rpcContract, type Entry, type Proposal, type ReviewRound, type ReviewSummary } from "./contract";
-import { hiddenColumnsPath, proposalPath } from "./paths";
+import { configSchema, methods, rpcContract, type Entry, type Proposal, type ReviewRound, type ReviewSummary } from "./contract";
+import { hiddenColumnsPath, proposalPath, reviewRunsPath } from "./paths";
 import { defaultColumns } from "./status-display";
 import type { BoardColumnDisplay } from "./board-display-contract";
 
@@ -254,7 +254,8 @@ it("saves settings drafts, keeps them on conflict, and resets using the reloaded
     ok: false, code: "board_display_conflict", current: { revision: 1, columns: null },
   }).mockReturnValueOnce({ ok: true, revision: 2, columns: null });
   const screen = renderSlot(app.settingsSections[0], {}, {
-    experimental_rpcContract: rpcContract, rpc: { ...rpc, "config.set": configSet },
+    experimental_rpcContract: rpcContract, rpc: { ...rpc, "config.set": configSet,
+      "config.get": request => methods["config.get"].input.parse(request).key === "boardDisplay" ? rpc["config.get"]() : configSchema.parse({}) },
   });
   const name = await screen.findByRole("textbox", { name: "Measuring name" }) as HTMLInputElement;
   fireEvent.change(name, { target: { value: "Collecting evidence" } });
@@ -303,4 +304,136 @@ it("shows the pinned review evidence and disables Keep while the verdict is pend
   expect(panel.getByText("https://example.com/report").getAttribute("href")).toBe("https://example.com/report");
   const button = within(screen.getByRole("region", { name: "Decision" })).getByRole("button", { name: "Keep" }) as HTMLButtonElement;
   expect(button.disabled).toBe(true);
+});
+
+it.each(["proposed", "applied", "kept"] as const)("offers only the eligible date controls for %s", async state => {
+  const rpc = fixture();
+  const draft = { ...proposal, state, checkAt: null };
+  rpc["proposal.detail"].mockImplementation(() => ({
+    ...row, proposal: draft, nextBefore: null, links: [], managerReachable: true, measured: false, review, events: [],
+  }));
+  const screen = renderSlot(app.navPanels[0], { subPath: `${projectId}/${proposal.id}` }, { experimental_rpcContract: rpcContract, rpc });
+  await screen.findByRole("heading", { name: proposal.title });
+  if (state === "kept") {
+    expect(screen.queryByRole("button", { name: "Edit dates" })).toBeNull();
+  } else {
+    fireEvent.click(screen.getByRole("button", { name: "Edit dates" }));
+    const editor = within(screen.getByRole("form", { name: "Edit proposal dates" }));
+    expect(editor.getByLabelText("Deadline")).toBeTruthy();
+    expect(editor.queryByLabelText("Measurement check")).toBeNull();
+  }
+});
+
+it("saves gap and overlap times as epoch values in one revision-checked proposal edit", async () => {
+  const clock = vi.spyOn(Date, "now").mockReturnValue(Date.parse("2026-03-01T00:00:00Z"));
+  try {
+    const rpc = fixture();
+    const local = { ...project, timeZone: "America/New_York" };
+    const initial = { ...proposal, checkAt: Date.parse("2026-03-07T20:00:00.123Z"), deadlineAt: Date.parse("2026-11-02T15:00:00Z") };
+    const linkedCard = { taskId: "task_example", key: "EXA-1", status: "Done", dueDate: "2026-03-07",
+      deadlineSource: true, syncedCheckAt: initial.checkAt, syncedDueDate: "2026-03-07", conflict: false };
+    const screen = renderSlot(app.navPanels[0], { subPath: `${projectId}/${proposal.id}` }, { experimental_rpcContract: rpcContract, rpc: {
+      ...rpc, projects: () => [local], "proposal.detail": () => ({ ...rpc["proposal.detail"](), proposal: initial, links: [linkedCard] }),
+    } });
+    fireEvent.click(await screen.findByRole("button", { name: "Edit dates" }));
+    const editor = within(screen.getByRole("form", { name: "Edit proposal dates" }));
+    expect(editor.getByText(/America\/New_York/)).toBeTruthy();
+    fireEvent.change(editor.getByLabelText("Deadline"), { target: { value: "2026-11-01T01:30" } });
+    fireEvent.change(editor.getByLabelText("Measurement check"), { target: { value: "2026-03-08T02:30" } });
+    expect(editor.getByText("Resolves to 2026-03-08 03:00.")).toBeTruthy();
+    expect(editor.getByText(/next Work Board reconciliation/)).toBeTruthy();
+    fireEvent.click(editor.getByRole("button", { name: "Save dates" }));
+    await waitFor(() => expect(rpc["proposal.update"]).toHaveBeenCalledExactlyOnceWith({
+      projectId, proposalId: proposal.id, revision: proposal.revision, patch: {
+        checkAt: Date.parse("2026-03-08T07:00:00Z"), deadlineAt: Date.parse("2026-11-01T05:30:00Z"),
+      },
+    }));
+  } finally { clock.mockRestore(); }
+});
+
+it("retains a stale draft and omits the untouched high-precision check on a fresh save", async () => {
+  const clock = vi.spyOn(Date, "now").mockReturnValue(Date.parse("2026-03-01T00:00:00Z"));
+  try {
+    const rpc = fixture();
+    let current = { ...proposal, checkAt: Date.parse("2026-04-01T10:30:42.123Z"), deadlineAt: Date.parse("2026-04-05T13:30:55.123Z") };
+    const screen = renderSlot(app.navPanels[0], { subPath: `${projectId}/${proposal.id}` }, { experimental_rpcContract: rpcContract, rpc: {
+      ...rpc, "proposal.detail": () => ({ ...rpc["proposal.detail"](), proposal: current }),
+    } });
+    fireEvent.click(await screen.findByRole("button", { name: "Edit dates" }));
+    const editor = within(screen.getByRole("form", { name: "Edit proposal dates" }));
+    const deadline = editor.getByLabelText("Deadline") as HTMLInputElement;
+    fireEvent.change(deadline, { target: { value: "2026-04-01T10:00" } });
+    fireEvent.click(editor.getByRole("button", { name: "Save dates" }));
+    expect((await editor.findByRole("alert")).textContent).toContain("must be before");
+    expect(rpc["proposal.update"]).not.toHaveBeenCalled();
+    fireEvent.change(deadline, { target: { value: "2026-04-06T10:00" } });
+    current = { ...current, revision: current.revision + 1, deadlineAt: Date.parse("2026-04-07T13:30:55.123Z") };
+    await screen.behavior.emitRealtime("journal:changed", { projectId });
+    expect((await editor.findByText("Proposal dates changed. Reload before saving.")).textContent).toBeTruthy();
+    expect(deadline.value).toBe("2026-04-06T10:00");
+    expect((editor.getByRole("button", { name: "Save dates" }) as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(editor.getByRole("button", { name: "Reload dates" }));
+    await waitFor(() => expect(deadline.value).toBe("2026-04-07T13:30"));
+    fireEvent.change(deadline, { target: { value: "2026-04-08T10:00" } });
+    fireEvent.click(editor.getByRole("button", { name: "Save dates" }));
+    await waitFor(() => expect(rpc["proposal.update"]).toHaveBeenCalledExactlyOnceWith({
+      projectId, proposalId: proposal.id, revision: current.revision, patch: { deadlineAt: Date.parse("2026-04-08T10:00:00Z") },
+    }));
+  } finally { clock.mockRestore(); }
+});
+
+it("uses existing config writes for schedule time, skill, and the enabled flag", async () => {
+  const configSet = vi.fn((request: unknown) => methods["config.set"].input.parse(request).value);
+  const screen = renderSlot(app.settingsSections[0], {}, { experimental_rpcContract: rpcContract, rpc: {
+    projects: () => [project],
+    "config.get": request => methods["config.get"].input.parse(request).key === "boardDisplay" ? { revision: 0, columns: null } : configSchema.parse({
+      enabled: true, defaultManager: managerId, managers: [managerId], scheduleTime: "02:00",
+    }),
+    "config.set": configSet,
+  } });
+  const section = within(await screen.findByRole("region", { name: "Self-compound" }));
+  const enable = await section.findByRole("button", { name: "Enable scheduled runs" }) as HTMLButtonElement;
+  expect(enable.disabled).toBe(true);
+  expect(section.getByText("Release manager")).toBeTruthy();
+  expect(section.getByRole("link", { name: "Review runs" }).getAttribute("href")).toBe(reviewRunsPath(projectId));
+  fireEvent.change(section.getByLabelText("Daily local time"), { target: { value: "03:30" } });
+  fireEvent.click(section.getByRole("button", { name: "Save time" }));
+  await waitFor(() => expect(configSet).toHaveBeenCalledWith({ projectId, key: "scheduleTime", value: "03:30" }));
+  fireEvent.change(section.getByLabelText("Project skill"), { target: { value: "example-compound" } });
+  fireEvent.click(section.getByRole("button", { name: "Save skill" }));
+  await waitFor(() => expect(enable.disabled).toBe(false));
+  expect(section.getByText(/queue the latest eligible run immediately/)).toBeTruthy();
+  fireEvent.click(enable);
+  const disable = await section.findByRole("button", { name: "Disable scheduled runs" }) as HTMLButtonElement;
+  await waitFor(() => expect(disable.disabled).toBe(false));
+  fireEvent.click(disable);
+  expect((await section.findByRole("status")).textContent).toBe("Self-compound disabled.");
+  expect(configSet.mock.calls.map(([call]) => call)).toEqual([
+    { projectId, key: "scheduleTime", value: "03:30" }, { projectId, key: "scheduleSkill", value: "example-compound" },
+    { projectId, key: "scheduleEnabled", value: true }, { projectId, key: "scheduleEnabled", value: false },
+  ]);
+});
+
+it("ignores a late schedule read from another project and explains the missing run manager", async () => {
+  const second = { ...project, id: "proj_other", name: "Other example", managers: [] };
+  let resolveFirst!: (value: unknown) => void;
+  const pending = new Promise(resolve => { resolveFirst = resolve; });
+  const screen = renderSlot(app.settingsSections[0], {}, { experimental_rpcContract: rpcContract, rpc: {
+    projects: () => [project, second],
+    "config.get": request => methods["config.get"].input.parse(request).key === "boardDisplay" ? { revision: 0, columns: null }
+      : methods["config.get"].input.parse(request).projectId === projectId ? pending : configSchema.parse({ scheduleTime: "05:00", scheduleSkill: "example-compound" }),
+  } });
+  fireEvent.change(await screen.findByRole("combobox", { name: "Project" }), { target: { value: second.id } });
+  expect(await screen.findByDisplayValue("05:00")).toBeTruthy();
+  await act(async () => { resolveFirst(configSchema.parse({ scheduleTime: "08:00", defaultManager: managerId })); });
+  expect(screen.queryByDisplayValue("08:00")).toBeNull();
+  expect((screen.getByRole("button", { name: "Enable scheduled runs" }) as HTMLButtonElement).disabled).toBe(true);
+  expect(screen.getByText("Unassigned")).toBeTruthy();
+});
+
+it("opens Review runs directly for the configured project", async () => {
+  const rpc = { ...fixture(), "run.list": vi.fn(() => ({ items: [], nextOffset: null })) };
+  const screen = renderSlot(app.navPanels[0], { subPath: `${projectId}/review/runs` }, { experimental_rpcContract: rpcContract, rpc });
+  expect(await screen.findByText("No review runs to show.")).toBeTruthy();
+  expect(rpc["run.list"]).toHaveBeenCalledWith(expect.objectContaining({ projectId }));
 });

@@ -742,3 +742,42 @@ it("opens a fresh review on reassignment while preserving the approval of a prev
   expect(next.hypothesis).toEqual({ version: 1, status: "approved" });
   expect(next.result).toEqual({ version: 2, status: "pending" });
 });
+
+it("keeps measuring date edits in the journal until Work Board reconciles them", async () => {
+  const { store, add, ref, measuring } = setup();
+  store.setConfig(projectId, "boardProject", "board_example");
+  const at = (day: number) => Date.UTC(2026, 10, day, 9);
+  const p = measuring(add(), at(2), at(9));
+  const card = { projectId: "board_example", id: "task_example", key: "EXA-1", dueDate: "2026-11-02", status: "done" };
+  const read = vi.fn(async () => ({ task: { ...card } }));
+  const updateDue = vi.fn<ReturnType<typeof workBoardApi>["updateDue"]>(async (_id, _expected, date) => {
+    card.dueDate = date!;
+    return { ok: true, task: { ...card } };
+  });
+  const board = createWorkBoard(store, { create: vi.fn(), task: read, byKey: read, pullRequests: vi.fn(),
+    projects: vi.fn().mockResolvedValue({ projects: [{ id: card.projectId }] }), updateDue }, async () => undefined);
+  await board.linkExisting({ ...ref(p), deadlineSource: true, taskKey: card.key }, manager);
+  await board.reconcile(projectId, store.config(projectId));
+  const observed = store.measure({ ...ref(p), observation: { note: "Measurement recorded" } }, manager);
+  const oldWake = store.queue(projectId, p.id, observed.obligation, "wake", store.now(), "decision").id;
+
+  const moved = store.update({ ...ref(observed), patch: { checkAt: at(3) } }, manager);
+  expect(moved.obligation).toBe(observed.obligation + 1);
+  expect(store.measured(projectId, p.id)).toBe(true);
+  expect(store.reviews.approval(moved, "hypothesis")?.status).toBe("approved");
+  expect(updateDue).not.toHaveBeenCalled();
+  const wire = transport();
+  await createSweep(store, wire).sweep();
+  expect(wire.send).not.toHaveBeenCalled();
+  expect(store.effect(oldWake)?.status).toBe("failed");
+  await board.reconcile(projectId, store.config(projectId));
+  expect(updateDue).toHaveBeenCalledExactlyOnceWith(card.id, "2026-11-02", "2026-11-03");
+
+  const revised = store.update({ ...ref(moved), patch: { checkAt: at(4) } }, manager);
+  card.dueDate = "2026-11-05";
+  await board.reconcile(projectId, store.config(projectId));
+  expect(store.links(projectId, p.id)[0]).toMatchObject({ conflict: true, dueDate: "2026-11-05" });
+  expect(updateDue).toHaveBeenCalledTimes(1);
+  expect(store.proposal(projectId, p.id).checkAt).toBe(at(4));
+  expect(() => store.update({ ...ref(revised), patch: { checkAt: at(9) } }, manager)).toThrow(/before the decision deadline/i);
+});

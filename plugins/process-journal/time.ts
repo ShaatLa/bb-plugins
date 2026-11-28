@@ -3,6 +3,7 @@ import type { Config } from "./contract";
 
 export const minute = 60_000;
 const local = (at: number, zone: string) => Temporal.Instant.fromEpochMilliseconds(at).toZonedDateTimeISO(zone);
+export const localMinute = (at: number, zone: string) => local(at, zone).toPlainDateTime().toString({ smallestUnit: "minute" });
 export const dateIn = (at: number, zone: string) => local(at, zone).toPlainDate().toString();
 export function timeOn(date: string, time: string, zone: string) {
   const dt = Temporal.PlainDate.from(date).toPlainDateTime(time);

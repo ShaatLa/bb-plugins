@@ -36,13 +36,15 @@ bb process-journal config get --project proj_example
 | `catchUpMinutes`, `scheduleEnabled` | Frequency for checking missed runs and the schedule's independent enable switch. |
 | `scheduleCoveredThrough` | Optional local `YYYY-MM-DD` of the last occurrence covered by an earlier workflow. The journal starts after this date. |
 
+Use **Settings → Plugins → Process Journal → Self-compound** to set the daily time and the project skill that supplies the launch instructions. Save the skill and configure an effective manager before enabling the schedule. Enabling can queue the most recent eligible run immediately. **Review runs** in the settings opens the selected project's run history.
+
 The schedule queues the configured manager once for the most recent eligible local date. An active run blocks later dispatches until it has an outcome. **Review runs** shows each automatic review’s status and outcome and flags unfinished runs once another occurrence is due. The manager submits results from the assigned thread with stable keys and finishes the run. Use the local CLI to close an abandoned run with a reason.
 
 ## Lifecycle
 
 Create an Entry for the failure and its evidence. Record one or more fix proposals with a hypothesis, deadline, success metric and rollback condition. Get independent hypothesis approval in Proposed before applying the fix. Record the implementation evidence in Applied, then move to Measuring with a check time and a later decision deadline. Record an observation before keeping or reverting. An independent review of the measured result is required before Kept. An urgent revert from Applied or Measuring requires an explicit override and reason. Record actual rollback evidence separately. Withdraw a superseded proposal with a reason.
 
-Proposal deadlines and check times use Unix milliseconds in the CLI and RPC. The UI displays them in project time. Stable submission keys are optional for interactive Entries and proposals and required for scheduled run submissions.
+Proposal deadlines and check times use Unix milliseconds in the CLI and RPC. The UI displays them in project time. On an open proposal, choose **Edit dates** to change the deadline. In Measuring you can also change the check time. A check date tied to a Work Board card reconciles on the next normal pass; diverging updates use the conflict controls on the proposal. Stable submission keys are optional for interactive Entries and proposals and required for scheduled run submissions.
 
 A minute sweep runs checks and sends deadline reminders. If the obligation remains open, it reminds the manager and asks that thread to open an Agent Hub question. An unreachable manager or a request without acknowledgment falls back to a stable Agent Hub notice. Threads may have received a message if the plugin was interrupted before recording delivery. Look for its stable reference in the timeline before sending it manually. Notice delivery is tracked separately from question acknowledgment.
 

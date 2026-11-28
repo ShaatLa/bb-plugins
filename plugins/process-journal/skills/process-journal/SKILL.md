@@ -46,4 +46,8 @@ Before Applied, get an independent hypothesis approval covering the incident, fi
 
 On a deadline message, look up the proposal and record the measure, decision or new deadline. For an owner question, first look in Agent Hub for an existing question matching the stable proposal and effect references. Use `agent_hub_ask` in the manager thread and record the returned ID with `proposal-ack` using `proposalId`, `effectId` and `questionId`. Use the associated Work Board card for owner decisions on project rules.
 
+On the proposal page, use **Edit dates** to update the deadline and the Measuring check in the project's timezone. A linked Work Board due date is handled by the next reconciliation.
+
+Use **Settings → Plugins → Process Journal → Self-compound** to save the daily time, select the named project skill that supplies the launch instructions, and enable or disable scheduled runs. The effective schedule manager and project timezone come from the existing project config.
+
 On a scheduled review, run the named project skill, page through open proposals, and submit any findings with the supplied run ID. Finish the run even if there are no new findings. Keep a failed run's explanation in its outcome so the next occurrence can dispatch.
