@@ -54,11 +54,11 @@ function setup() {
   store.setConfig(projectId, "defaultManager", manager);
   store.setConfig(projectId, "enabled", true);
   store.setConfig(projectId, "graceMinutes", 1);
-  const add = (fields: Partial<Proposal> = {}) => store.addEntry(methods["entry.add"].input.parse({
+  const add = (fields: Partial<Proposal> = {}, actor = manager) => store.addEntry(methods["entry.add"].input.parse({
     projectId, title: "Skipped check", failure: "One check was skipped", gap: "The checklist had no owner",
     proposal: { title: "Assign an owner", hypothesis: "Assignment prevents missed checks",
       deadlineAt: clock + 1 * minute, metric, rollbackCondition: "The owner cannot take the check", ...fields },
-  }), manager).proposal!;
+  }), actor).proposal!;
   const measuring = (p: Proposal, checkAt = clock + minute, deadlineAt = clock + 8 * minute) => {
     const applied = store.transition({ ...ref(p), transition: { state: "applied", reason: "Fix deployed", deadlineAt } }, manager, approve(store, p, "hypothesis"));
     return store.transition({ ...ref(applied), transition: { state: "measuring", reason: "Check results", checkAt, deadlineAt } }, manager);
@@ -548,15 +548,18 @@ it("gates Applied on the approved content and records changes requested and Russ
 
 it("blocks author descendants and linked executors, and reassigns pending review explicitly", () => {
   const { store, add } = setup();
-  const p = add();
+  const author = "thr_author";
+  const p = add({}, author);
   const child = "thr_child", root = "thr_intermediate", executor = "thr_executor";
   store.reviews.lineage(child, [root]);
-  store.reviews.lineage(root, [manager]);
+  store.reviews.lineage(root, [author]);
   store.reviews.lineage(child, [replacement]);
   const assign = (reviewerId: string, generation = 0) => ({
     ...ref(p), reviewerId, generation, reason: "Independent reviewer",
   });
-  expect(() => store.reviews.assign(assign(child), manager, identity(store, p, child))).toThrow("independent");
+  for (const candidate of [manager, author, child]) {
+    expect(() => store.reviews.assign(assign(candidate), manager, identity(store, p, candidate))).toThrow("independent");
+  }
   expect(() => store.reviews.assign(assign(executor), manager, { ...identity(store, p, executor), executors: [executor] }))
     .toThrow("independent");
   const first = requestReview(store, p, "hypothesis");

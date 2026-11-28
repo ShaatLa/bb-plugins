@@ -5,8 +5,10 @@ import plugin from "./server";
 
 it("shares config, authenticated CLI attribution, persisted state and RPC reads", async () => {
   const projectId = "proj_example", threadId = "thr_example";
-  const reviewerId = "thr_reviewer", outsider = "thr_outside", child = "thr_child", unknown = "thr_unknown", attached = "thr_attached";
+  const reviewerId = "thr_reviewer", outsider = "thr_outside", unknown = "thr_unknown";
+  const attached = "thr_attached", executorChild = "thr_executor_child";
   let reviewerArchived = false;
+  let linkedExecutors = [attached];
   const { bb, harness } = createFakePluginHost({ pluginId: "process-journal", sdk: {
     threads: {
       get: async ({ threadId }) => makeThreadResponse({
@@ -15,7 +17,7 @@ it("shares config, authenticated CLI attribution, persisted state and RPC reads"
       }),
       experimental_listAncestors: async ({ threadIds }) => ({
         threads: threadIds.filter(id => id !== unknown && !(id === reviewerId && reviewerArchived)).map(id => ({
-          threadId: id, ancestorIds: id === child ? [threadId] : [],
+          threadId: id, ancestorIds: id === reviewerId ? [threadId] : id === executorChild ? [attached, threadId] : [],
         })),
       }),
     },
@@ -27,7 +29,7 @@ it("shares config, authenticated CLI attribution, persisted state and RPC reads"
       case "listProjects": return { projects: [{ id: card.projectId, linkedBbProjectId: projectId }] };
       case "getTask":
       case "getTaskByKey": return { task: card };
-      case "listTaskThreads": return { taskThreads: [{ threadId: attached, presetName: "Parent thread" }] };
+      case "listTaskThreads": return { taskThreads: linkedExecutors.map(threadId => ({ threadId, presetName: "Parent thread" })) };
       case "listTaskPullRequests": return { pullRequests: [], unavailableThreadIds: [] };
       default: throw new Error(`Unexpected RPC: ${method}`);
     }
@@ -88,14 +90,21 @@ it("shares config, authenticated CLI attribution, persisted state and RPC reads"
         exitCode: 1, body: { error: { code: "reviewer_unverified" } },
       });
     }
-    expect(await cli("review-assign", { ...assign, reviewerId: child })).toMatchObject({
+    expect(await cli("review-assign", { ...assign, reviewerId: threadId })).toMatchObject({
       exitCode: 1, body: { error: { code: "reviewer_conflict" } },
     });
     await set("boardProject", card.projectId);
     expect(await cli("fix-link", { ...ref, taskKey: card.key })).toMatchObject({ exitCode: 0 });
-    expect(await cli("review-assign", { ...assign, reviewerId: attached })).toMatchObject({
+    for (const candidate of [attached, executorChild]) {
+      expect(await cli("review-assign", { ...assign, reviewerId: candidate })).toMatchObject({
+        exitCode: 1, body: { error: { code: "reviewer_conflict" } },
+      });
+    }
+    linkedExecutors = [attached, threadId];
+    expect(await cli("review-assign", { ...assign, reviewerId })).toMatchObject({
       exitCode: 1, body: { error: { code: "reviewer_conflict" } },
     });
+    linkedExecutors = [attached];
     expect(await cli("review-assign", { ...assign, reviewerId })).toMatchObject({ exitCode: 0, body: { generation: 1 } });
     expect(await cli("review-submit", { ...ref, generation: 1, baseVersion: 0, submission: { stage: "hypothesis" } }))
       .toMatchObject({ exitCode: 0, body: { version: 1, status: "pending" } });

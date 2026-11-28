@@ -94,19 +94,23 @@ export function createReviewStore({ db, now, entry, proposal, links, metricIdent
     const insert = db.prepare("INSERT OR IGNORE INTO proposal_review_ancestry VALUES (?,?)");
     for (const parent of new Set(ancestors)) if (child !== parent) insert.run(child, parent);
   }
-  function conflicts(p: Proposal, reviewerId: string, additional?: string) {
+  function conflicts(p: Proposal, reviewerId: string, additional?: string, managerExecuted = false) {
+    if (reviewerId === p.managerId) return true;
+    // The manager is recorded as a participant even when they only assigned the work.
     return !!db.prepare(`WITH RECURSIVE ancestry(thread) AS (
       SELECT @reviewer UNION SELECT a.parent FROM proposal_review_ancestry a JOIN ancestry x ON x.thread=a.child
-    ) SELECT 1 FROM ancestry WHERE thread IN (@manager,@executor)
-      OR thread IN (SELECT thread FROM proposal_review_executors WHERE project=@project AND proposal=@proposal)`)
-      .get({ reviewer: reviewerId, manager: p.managerId,
+    ) SELECT 1 FROM ancestry WHERE (thread <> @manager OR @managerExecuted = 1)
+      AND (thread = @executor OR thread IN (
+        SELECT thread FROM proposal_review_executors WHERE project=@project AND proposal=@proposal
+      ))`)
+      .get({ reviewer: reviewerId, manager: p.managerId, managerExecuted: Number(managerExecuted),
         executor: additional ?? "", project: p.projectId, proposal: p.id });
   }
   function independent(p: Proposal, identity: ReviewIdentity, additional?: string) {
     const current = links(p.projectId, p.id).map(link => link.taskId).sort();
     requireCondition(JSON.stringify(current) === JSON.stringify(identity.links), "stale_review", "Linked fix cards changed. Refresh the review and try again");
     for (const actor of identity.executors) participant(p, actor);
-    requireCondition(!conflicts(p, identity.reviewerId, additional), "reviewer_conflict",
+    requireCondition(!conflicts(p, identity.reviewerId, additional, identity.executors.includes(p.managerId)), "reviewer_conflict",
       "Choose a reviewer independent of the author, managers and executors");
   }
   function hypothesisApproval(p: Proposal): ReviewRound | null {
