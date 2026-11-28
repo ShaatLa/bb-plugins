@@ -7,15 +7,19 @@ import {
   storeViewMode,
   loadLastProjectId,
   storeLastProjectId,
+  loadKanbanChoice,
+  storeKanbanChoice,
 } from "./view-preference.js";
 
 const PROJECT_A = "01HZZZZZZZZZZZZZZZZZZZZZP1";
 
 let storage = createMemoryStorage();
+let session = createMemoryStorage();
 
 beforeEach(() => {
   storage = createMemoryStorage();
-  vi.stubGlobal("window", { localStorage: storage });
+  session = createMemoryStorage();
+  vi.stubGlobal("window", { localStorage: storage, sessionStorage: session });
 });
 
 afterEach(() => {
@@ -66,5 +70,25 @@ describe("view preference storage", () => {
     expect(loadViewMode(PROJECT_A)).toBe("board");
     storeViewMode(PROJECT_A, "list");
     expect(storage.getItem(VIEW_PREFERENCE_STORAGE_KEY)).toBe(future);
+  });
+});
+
+describe("kanban panel choice", () => {
+  const KEY = "bb-work-board:kanban-project";
+  it("round-trips in session storage only", () => {
+    expect(loadKanbanChoice()).toBeNull();
+    storeKanbanChoice({ projectId: PROJECT_A, followed: null });
+    expect(loadKanbanChoice()).toEqual({ projectId: PROJECT_A, followed: null });
+    expect(storage.getItem(KEY)).toBeNull();
+  });
+  it.each(["{not json", "[]", "null", "\"text\"", "{}", JSON.stringify({ projectId: 1, followed: null }), JSON.stringify({ projectId: null })])("reads %s as nothing stored", (raw) => {
+    session.setItem(KEY, raw);
+    expect(loadKanbanChoice()).toBeNull();
+  });
+  it("tolerates storage that throws", () => {
+    const broken = { getItem: () => { throw new Error("denied"); }, setItem: () => { throw new Error("denied"); } };
+    vi.stubGlobal("window", { localStorage: storage, sessionStorage: broken });
+    expect(loadKanbanChoice()).toBeNull();
+    expect(() => storeKanbanChoice({ projectId: PROJECT_A, followed: PROJECT_A })).not.toThrow();
   });
 });

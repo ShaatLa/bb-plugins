@@ -10,7 +10,7 @@ import type { Task } from "../shared/contract.js";
 const app = await loadPluginApp(() => import("../app"));
 const { parseTasksRoute, tasksRouteToSubPath } = await import("./routes.js");
 const { pagerPosition } = await import("./topbar.js");
-const { loadViewMode, loadLastProjectId } = await import("./view-preference.js");
+const { loadViewMode, loadLastProjectId, storeLastProjectId } = await import("./view-preference.js");
 const { querySnapshotStorageKey, resetQuerySnapshotStateForTest, writeQuerySnapshot } =
   await import("./query-snapshot.js");
 
@@ -448,6 +448,62 @@ describe("kanban side panel", () => {
     task.title = "Updated on the board";
     await slot.behavior.emitRealtime("tasks:changed", { taskId: task.id, projectId: PROJECT_ID });
     await slot.findByText("Updated on the board");
+  });
+
+  describe("project picker", () => {
+    const other = { ...project, id: OTHER_PROJECT_ID, name: "Other Board", prefix: "OTH", color: "red" };
+    const twoProjects = () => seededRpc({ listProjects: () => ({ projects: [project, other] }) });
+    const openPanel = (subPath: string, rpc = twoProjects()) => renderSlot({ component: kanbanTab.component }, { subPath }, { rpc });
+    const rerenderPanel = (slot: ReturnType<typeof openPanel>, subPath: string) => slot.lifecycle.rerender(<kanbanTab.component subPath={subPath} />);
+    const picker = (slot: ReturnType<typeof openPanel>) => slot.findByRole("button", { name: "Board project" });
+    const shown = async (slot: ReturnType<typeof openPanel>, name: string) => { await waitFor(() => expect(within(slot.getByRole("region", { name: "Project kanban" })).getByRole("button", { name: "Board project" }).textContent).toContain(name)); };
+    const choose = async (slot: ReturnType<typeof openPanel>, name: string) => {
+      fireEvent.keyDown(await picker(slot), { key: "ArrowDown" });
+      fireEvent.click(await slot.findByRole("menuitem", { name }));
+    };
+
+    it("shows the last project on All tasks and switches only the panel when another is chosen", async () => {
+      storeLastProjectId(PROJECT_ID);
+      const slot = openPanel("all");
+      await shown(slot, "Tasks Plugin");
+      fireEvent.keyDown(await picker(slot), { key: "ArrowDown" });
+      expect((await slot.findByRole("menuitem", { name: "Tasks Plugin" })).getAttribute("aria-disabled")).toBe("true");
+      expect(slot.queryByRole("menuitem", { name: "All tasks" })).toBeNull();
+      fireEvent.click(slot.getByRole("menuitem", { name: "Other Board" }));
+      await shown(slot, "Other Board");
+      expect(slot.navigateCalls).toEqual([]);
+      expect(loadLastProjectId()).toBe(PROJECT_ID);
+    });
+
+    it("follows the main area to another project or task", async () => {
+      const slot = openPanel(PROJECT_ID);
+      await shown(slot, "Tasks Plugin");
+      rerenderPanel(slot, OTHER_PROJECT_ID);
+      await shown(slot, "Other Board");
+      rerenderPanel(slot, "task/TSK-1");
+      await shown(slot, "Tasks Plugin");
+    });
+
+    it("keeps a pick on cross-project views and restores the followed project when the main area returns", async () => {
+      const slot = openPanel(PROJECT_ID);
+      await shown(slot, "Tasks Plugin");
+      await choose(slot, "Other Board");
+      await shown(slot, "Other Board");
+      rerenderPanel(slot, PROJECT_ID);
+      await shown(slot, "Other Board");
+      rerenderPanel(slot, "all");
+      await shown(slot, "Other Board");
+      rerenderPanel(slot, PROJECT_ID);
+      await shown(slot, "Tasks Plugin");
+    });
+
+    it("follows a route change made while the panel was unmounted", async () => {
+      const first = openPanel(PROJECT_ID);
+      await shown(first, "Tasks Plugin");
+      first.lifecycle.unmount();
+      const second = openPanel(OTHER_PROJECT_ID);
+      await shown(second, "Other Board");
+    });
   });
 
   it("shows a useful empty state without projects", async () => {

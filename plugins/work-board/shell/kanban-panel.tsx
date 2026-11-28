@@ -1,10 +1,14 @@
+import { useEffect, useState } from "react";
 import { TaskStatusesProvider } from "./task-statuses.js";
 import type { PluginNavPanelProps } from "@get-bb/plugin-sdk/app";
 import { BoardView } from "../views/board/index.js";
 import { useProjects } from "./data.js";
 import { TasksRefreshProvider } from "./refresh.js";
 import { parseTasksRoute } from "./routes.js";
-import { loadLastProjectId } from "./view-preference.js";
+import { loadKanbanChoice, loadLastProjectId, storeKanbanChoice } from "./view-preference.js";
+import { resolveKanbanProject, type KanbanChoice } from "./kanban-project.js";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
+import { Icon } from "@/components/ui/icon";
 import { DialogScope } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { LockChips } from "../components/lock-chips.js";
@@ -35,12 +39,19 @@ export const KANBAN_TAB = {
 
 function KanbanPanelContent({ subPath }: PluginNavPanelProps) {
   const projects = useProjects();
-  const route = parseTasksRoute(subPath);
-  const project = projects.data?.find((project) =>
-    route.kind === "project" ? project.id === route.projectId :
-    route.kind === "task" || route.kind === "plan" ? project.prefix === route.taskKey.split("-", 1)[0]?.toUpperCase() :
-    project.id === loadLastProjectId(),
-  ) ?? projects.data?.[0];
+  const [choice, setChoice] = useState<KanbanChoice | null>(loadKanbanChoice);
+  const { shown: project, next, main } = resolveKanbanProject({ route: parseTasksRoute(subPath), stored: choice, last: projects.data ? loadLastProjectId() : null, projects: projects.data });
+  // The panel follows the main area when its project changes; the write waits for the effect, the render already shows it.
+  useEffect(() => {
+    if (!next) return;
+    setChoice(next);
+    storeKanbanChoice(next);
+  }, [next?.projectId, next?.followed]);
+  const pick = (projectId: string) => {
+    const picked = { projectId, followed: main?.id ?? null };
+    setChoice(picked);
+    storeKanbanChoice(picked);
+  };
 
   if (projects.error) {
     return <div className="space-y-3 p-4 text-sm"><p role="alert">{projects.error}</p><Button variant="outline" onClick={projects.refresh}>Retry</Button></div>;
@@ -50,7 +61,23 @@ function KanbanPanelContent({ subPath }: PluginNavPanelProps) {
   }
   return (
     <section aria-label="Project kanban" className="flex h-full min-h-0 flex-col">
-      <header className="flex shrink-0 items-center gap-2 border-b border-border-hairline px-4 py-2 text-sm font-medium"><span className="min-w-0 truncate">{project.name}</span><ManagerQuickSet projectId={project.id} className="ml-6" /><QueueMenu projectId={project.id} /><span aria-hidden className="ml-auto" /><LockChips projectId={project.id} /></header>
+      <header className="flex shrink-0 items-center gap-2 border-b border-border-hairline px-4 py-2 text-sm font-medium"><DropdownMenu>
+        <DropdownMenuTrigger asChild>
+          <button type="button" aria-label="Board project" className="flex min-w-0 items-center gap-2 rounded-md px-1.5 py-0.5 font-medium hover:bg-state-hover">
+            <span aria-hidden className="size-3 shrink-0 rounded-sm" style={{ backgroundColor: project.color }} />
+            <span className="truncate">{project.name}</span>
+            <Icon name="ChevronDown" className="size-3.5 shrink-0 text-muted-foreground" />
+          </button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="start" className="max-h-80 overflow-y-auto">
+          {projects.data?.map((item) => (
+            <DropdownMenuItem key={item.id} disabled={item.id === project.id} onSelect={() => pick(item.id)}>
+              <span aria-hidden className="size-3 shrink-0 rounded-sm" style={{ backgroundColor: item.color }} />
+              <span className="truncate">{item.name}</span>
+            </DropdownMenuItem>
+          ))}
+        </DropdownMenuContent>
+      </DropdownMenu><ManagerQuickSet projectId={project.id} className="ml-6" /><QueueMenu projectId={project.id} /><span aria-hidden className="ml-auto" /><LockChips projectId={project.id} /></header>
       <div className="min-h-0 flex-1"><BoardView key={project.id} projectId={project.id} /></div>
     </section>
   );

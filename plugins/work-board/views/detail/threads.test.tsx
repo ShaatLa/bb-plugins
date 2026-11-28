@@ -810,10 +810,14 @@ it.each(["central", "thread"])("groups status, linked sessions and dispatch in t
   expect(region.querySelector("details")).toBeNull();
   expect(region.textContent).not.toContain("turn-evidence");
   expect(region.textContent).not.toContain("req-evidence");
-  expect(within(region).getByText("Sessions")).toBeTruthy();
+  expect(within(region).queryByText("Sessions")).toBeNull();
+  const sessions = slot.getByRole("region", { name: "Sessions" });
+  expect(within(sessions).getByText("Sessions")).toBeTruthy();
+  expect(region.compareDocumentPosition(sessions) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   const rail = region.closest("aside")!;
+  expect(rail.contains(sessions)).toBe(true);
   expect(within(rail).queryByText("Agents")).toBeNull();
-  expect(within(region).getByRole("button", { name: "Open thread Scoped worker" })).toBeTruthy();
+  expect(within(sessions).getByRole("button", { name: "Open thread Scoped worker" })).toBeTruthy();
   expect(slot.queryByText("Agent threads")).toBeNull();
   expect(within(rail).queryByRole("region", { name: "Task dependencies" })).toBeNull();
   const dependencies = slot.getByRole("region", { name: "Task dependencies" });
@@ -825,12 +829,12 @@ it.each(["central", "thread"])("groups status, linked sessions and dispatch in t
   expect(attachmentControls.compareDocumentPosition(dependencies) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   expect(dependencies.className).toContain("border-t");
   expect(dependencies.className).not.toContain("rounded");
-  fireEvent.click(within(region).getByRole("button", { name: "Open thread Scoped worker" }));
+  fireEvent.click(within(sessions).getByRole("button", { name: "Open thread Scoped worker" }));
   expect(slot.navigateCalls).toContainEqual({ method: "toThread", threadId: "thr_scoped" });
   current = { ...activity, state: "attached", workingCount: 0, terminalWarning: false, diagnostics: { ...activity.diagnostics, complete: false, explanation: "Session data unavailable." }, sessions: [{ ...activity.sessions[0]!, state: "attached" }] };
   await slot.behavior.emitRealtime("threads:changed", { taskId: TASK_ID });
   await within(region).findAllByText("Assigned");
-  expect(within(region).getByRole("button", { name: "Open thread Scoped worker" })).toBeTruthy();
+  expect(within(sessions).getByRole("button", { name: "Open thread Scoped worker" })).toBeTruthy();
 });
 
 

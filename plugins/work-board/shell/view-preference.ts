@@ -1,5 +1,6 @@
 import { migrateBrowserPreferences } from "./migrate-preferences.js";
 import type { TaskViewMode } from "./routes.js";
+import type { KanbanChoice } from "./kanban-project.js";
 
 export const VIEW_PREFERENCE_STORAGE_KEY = "bb-work-board:view-preferences";
 // 2: the board became the default view, and choices saved while the toggle drove the side panel (before 0.54.0) are dropped.
@@ -36,6 +37,29 @@ export function loadLastRoute(): string | null {
 export function storeLastRoute(subPath: string): void {
   try {
     window.sessionStorage.setItem(LAST_ROUTE_STORAGE_KEY, subPath);
+  } catch {}
+}
+
+const KANBAN_PROJECT_STORAGE_KEY = "bb-work-board:kanban-project";
+
+const idOrNull = (value: unknown) => value === null || typeof value === "string";
+
+/** The right Kanban panel's project choice for this app session; unreadable or malformed storage reads as nothing stored. */
+export function loadKanbanChoice(): KanbanChoice | null {
+  try {
+    const raw = window.sessionStorage.getItem(KANBAN_PROJECT_STORAGE_KEY);
+    const parsed: unknown = raw === null ? null : JSON.parse(raw);
+    if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+    const { projectId, followed } = parsed as Record<string, unknown>;
+    return idOrNull(projectId) && idOrNull(followed) ? { projectId: projectId as string | null, followed: followed as string | null } : null;
+  } catch {
+    return null;
+  }
+}
+
+export function storeKanbanChoice(choice: KanbanChoice): void {
+  try {
+    window.sessionStorage.setItem(KANBAN_PROJECT_STORAGE_KEY, JSON.stringify(choice));
   } catch {}
 }
 

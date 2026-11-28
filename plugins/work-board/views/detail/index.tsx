@@ -3,6 +3,7 @@ import { CurrentState } from "./current-state";
 import { PlanCard } from "../plan/card.js";
 import { useActivityPoll, useAdvisoryRecheck } from "../../shell/activity-poll.js";
 import { ActivityStatus } from "./activity-status.js";
+import { TaskSessions } from "./sessions.js";
 import { PausedBlock, pauseDetailsFor } from "./paused.js";
 import { isActiveThread } from "./meta.js";
 import { DependenciesSection } from "./dependencies";
@@ -603,7 +604,8 @@ function TaskDetail({
       : saverRef.current.getDraft(task.id) ?? task.description;
   const parentTask = parent.data ?? null;
   const activityStatus = <>
-    <ActivityStatus key={task.id} queue={activity.data?.queue} scheduledStart={activity.data?.scheduledStart} task={task} threads={threads.data ?? []} pullRequests={pullRequests.data?.pullRequests} unavailableThreadIds={pullRequests.data?.unavailableThreadIds ?? []} onError={push} onDetach={async (thread) => { await delegationRpc.call("taskThreadsDetach", { taskId: task.id, threadId: thread.threadId }); threads.refresh(); }} onStatusChange={(status) => void updateTask({ status })} activity={activity.data?.activity} advisories={activity.data?.advisories} isFetching={activity.isFetching} error={activity.error} />
+    <ActivityStatus key={task.id} queue={activity.data?.queue} scheduledStart={activity.data?.scheduledStart} task={task} onStatusChange={(status) => void updateTask({ status })} activity={activity.data?.activity} advisories={activity.data?.advisories} isFetching={activity.isFetching} error={activity.error} />
+    <TaskSessions key={task.id} task={task} threads={threads.data ?? []} pullRequests={pullRequests.data?.pullRequests} unavailableThreadIds={pullRequests.data?.unavailableThreadIds ?? []} onError={push} onDetach={async (thread) => { await delegationRpc.call("taskThreadsDetach", { taskId: task.id, threadId: thread.threadId }); threads.refresh(); }} />
     <PausedBlock key={task.id} pauses={shownPauses(activity.data?.pauses, activity.data?.blockedBy)} details={pauseDetailsFor(pauseDetails, task.id)} names={pauseDetails.data?.names} questions={questions.data} resume={async () => { await rpc.call("resumeTask", { taskId: task.id, actor: "owner" }); await pauseDetails.refresh(); }} extend={async (reason, durationMs) => { await rpc.call("pauseTask", { taskId: task.id, reason, durationMs, actor: "owner" }); await pauseDetails.refresh(); }} onError={push} />
     {!task.archivedAt ? <div className="mb-4">
       <DispatchControl taskId={task.id} projectId={task.projectId} threads={threads.data ?? []} presets={presets.data} onError={push} align="start" className="w-full" />

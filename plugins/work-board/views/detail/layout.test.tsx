@@ -29,7 +29,7 @@ afterEach(() => { cleanup(); TestResizeObserver.all.clear(); });
 const PROJECT_ID = "01HZZZZZZZZZZZZZZZZZZZZZP1";
 const task = makeTask({ id: "01HZZZZZZZZZZZZZZZZZZZZZT5", projectId: PROJECT_ID, number: 5, key: "TSK-5", title: "Ship the rail", position: 1 });
 
-function render(surface: "main" | "side" = "main", withThread = false, queued = false, queuesPending = false) {
+function render(surface: "main" | "side" = "main", withThread = false, queued = false, queuesPending = false, shown = task, pauses: unknown[] = [], presetName = "Worker") {
   const options = {
     sdk: { threads: { get: async () => makeThreadResponse({ id: "thr_example", title: "Example worker" }), list: async () => [] } },
     rpc: {
@@ -38,16 +38,16 @@ function render(surface: "main" | "side" = "main", withThread = false, queued = 
       listFolders: () => ({ folders: [] }),
       listPresets: () => ({ presets: [] }),
       sidebarSummary: () => ({ projects: [] }),
-      getTaskByKey: () => ({ task }),
-      listTasks: (input: unknown) => (input !== null && rpcInput(input).parentTaskId ? { tasks: [] } : { tasks: [task] }),
+      getTaskByKey: () => ({ task: shown }),
+      listTasks: (input: unknown) => (input !== null && rpcInput(input).parentTaskId ? { tasks: [] } : { tasks: [shown] }),
       listLabels: () => ({ labels: [] }),
       listAttachments: () => ({ attachments: [] }),
-      listTaskThreads: () => ({ taskThreads: withThread ? [{ id: "row_example", taskId: task.id, threadId: "thr_example", title: "Example worker", presetName: "Worker", liveStatus: "working", attachedAt: "2026-07-15T00:00:00.000Z", updatedAt: "2026-07-15T00:00:00.000Z" }] : [] }),
+      listTaskThreads: () => ({ taskThreads: withThread ? [{ id: "row_example", taskId: task.id, threadId: "thr_example", title: "Example worker", presetName, liveStatus: "working", attachedAt: "2026-07-15T00:00:00.000Z", updatedAt: "2026-07-15T00:00:00.000Z" }] : [] }),
       listTaskPullRequests: () => ({ pullRequests: [], unavailableThreadIds: [] }),
       listQuestions: () => ({ questions: [] }),
       listComments: () => ({ comments: [] }),
       listBbProjects: () => ({ bbProjects: [] }),
-      listTaskCardMeta: () => ({ metadata: queued ? [{ taskId: task.id, taskThreads: [], queue: { threadId: "thr_example", position: 2 } }] : [] }),
+      listTaskCardMeta: () => ({ metadata: queued || pauses.length ? [{ taskId: task.id, taskThreads: [], ...(queued ? { queue: { threadId: "thr_example", position: 2 } } : {}), ...(pauses.length ? { pauses } : {}) }] : [] }),
       queueRemove: () => ({}),
       queueList: () => (queuesPending ? new Promise(() => {}) : { queues: [{ projectId: PROJECT_ID, threadId: "thr_example", entries: [1, 2, 3, 4].map((position) => ({ position })) }] }),
     },
@@ -63,21 +63,52 @@ const rail = () => document.querySelector('aside[aria-label="Task details"]');
 const callCount = (slot: ReturnType<typeof render>, method: string) => slot.rpcCalls.filter((call) => call.method === method).length;
 
 describe("task view layout", () => {
-  it.each([480, 640])("keeps the unqueued section inside the status card at %ipx", async (width) => {
+  it.each([480, 640])("keeps Queue and Start in the status card and Sessions in its own section at %ipx", async (width) => {
     setWidth(width);
     const slot = render();
     const activity = await slot.findByRole("region", { name: "Task activity status" });
     expect(within(activity).getByText("Queue")).toBeTruthy();
     expect(within(activity).getByRole("button", { name: "Add to queue" }).title).toBe("Add to queue");
     expect(slot.getAllByRole("button", { name: "Add to queue" })).toHaveLength(1);
-    // Each empty section is one row: its label, a muted None and its add icon, all inside the card.
-    for (const [label, add] of [["Sessions", "Send to another thread"], ["Queue", "Add to queue"], ["Start", "Schedule a start"]]) {
+    // Each empty section is one row: its label, a muted None and its add icon, all inside its card.
+    for (const [label, add] of [["Queue", "Add to queue"], ["Start", "Schedule a start"]]) {
       expect(within(activity).getByText(label!)).toBeTruthy();
       expect(within(activity).getByRole("button", { name: add! }).title).toBe(add);
     }
-    expect(within(activity).getAllByText("None")).toHaveLength(3);
+    expect(within(activity).getAllByText("None")).toHaveLength(2);
+    expect(within(activity).queryByText("Sessions")).toBeNull();
+    const sessions = slot.getByRole("region", { name: "Sessions" });
+    expect(within(sessions).getByRole("button", { name: "Send to another thread" }).title).toBe("Send to another thread");
+    expect(within(sessions).getAllByText("None")).toHaveLength(1);
+    expect(activity.compareDocumentPosition(sessions) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(sessions.compareDocumentPosition(slot.getByRole("button", { name: "Send to thread…" })) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     fireEvent.click(within(activity).getByRole("button", { name: "Add to queue" }));
     expect(await slot.findByRole("dialog", { name: "Add to a work queue" })).toBeTruthy();
+  });
+  it.each(["main", "side"] as const)("orders the status card, Sessions and Paused in the %s view", async (surface) => {
+    const slot = render(surface, true, false, false, task, [{ signal: "owner_question", reason: "waiting", until: null, targets: [] }]);
+    const paused = await slot.findByRole("region", { name: "Paused" });
+    const activity = slot.getByRole("region", { name: "Task activity status" });
+    const sessions = slot.getByRole("region", { name: "Sessions" });
+    expect(activity.compareDocumentPosition(sessions) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(sessions.compareDocumentPosition(paused) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(sessions.nextElementSibling).toBe(paused);
+  });
+  it("breaks a long unbroken preset name inside the Sessions card", async () => {
+    const slot = render("main", true, false, false, task, [], `Preset${"x".repeat(80)}`);
+    const sessions = await slot.findByRole("region", { name: "Sessions" });
+    const line = await within(sessions).findByText(/^Preset(x{80}) · attached/);
+    expect(line.className).toContain("[overflow-wrap:anywhere]");
+  });
+  it("hides Queue, Start, add and detach on an archived task", async () => {
+    const slot = render("main", true, false, false, { ...task, archivedAt: "2026-07-16T00:00:00.000Z" });
+    const sessions = await slot.findByRole("region", { name: "Sessions" });
+    const activity = slot.getByRole("region", { name: "Task activity status" });
+    await within(sessions).findByRole("button", { name: "Open thread Example worker" });
+    expect(within(activity).queryByText("Queue")).toBeNull();
+    expect(within(activity).queryByText("Start")).toBeNull();
+    expect(within(sessions).queryByRole("button", { name: "Send to another thread" })).toBeNull();
+    expect(within(sessions).queryByRole("button", { name: /^Unassign/ })).toBeNull();
   });
   it("shows the queue place without the total while the queue loads", async () => {
     const slot = render("main", false, true, true);
@@ -132,15 +163,18 @@ describe("task view layout", () => {
     expect(slot.getAllByRole("region", { name: "Task activity status" })).toHaveLength(1);
   });
 
-  it.each(["main", "side"] as const)("shows session rows in Activity before Details in the narrow %s view", async (surface) => {
+  it.each(["main", "side"] as const)("shows the Sessions section after Activity and before Details in the narrow %s view", async (surface) => {
     setWidth(480);
     const slot = render(surface, true);
     const session = await slot.findByRole("button", { name: "Open thread Example worker" });
     const section = details()!;
     const activity = slot.getByRole("region", { name: "Task activity status" });
-    expect(activity.contains(session)).toBe(true);
-    expect(section.contains(activity)).toBe(false);
-    expect(activity.compareDocumentPosition(section) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    const sessions = slot.getByRole("region", { name: "Sessions" });
+    expect(sessions.contains(session)).toBe(true);
+    expect(activity.contains(session)).toBe(false);
+    expect(section.contains(sessions)).toBe(false);
+    expect(activity.compareDocumentPosition(sessions) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(sessions.compareDocumentPosition(section) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(section.compareDocumentPosition(document.querySelector(".tiptap")!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(slot.queryByText("Agent threads")).toBeNull();
   });
