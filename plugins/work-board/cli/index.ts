@@ -1001,6 +1001,7 @@ export function registerTasksCli(
       commands: {
         pause: cliCommand({
           summary: "Pause an unfinished task while waiting",
+          description: "A turn on a thread linked to the card also ends the pause.",
           positionals: [KEY_POSITIONAL],
           options: { reason: { type: "string", required: true, description: "What the card is waiting for" }, for: { type: "string", required: true, description: "Duration, e.g. 30m, 2h or 3d (at least 1 minute)" }, json: JSON_OPTION },
           run(input, ctx) { return guard(async () => {
@@ -1008,8 +1009,18 @@ export function registerTasksCli(
             const match = /^(\d+)(m|h|d)$/.exec(input.options.for);
             if (!match) throw new CliError("Duration must use minutes, hours or days, e.g. 30m, 2h or 3d");
             const durationMs = Number(match[1]) * { m: 60_000, h: 3_600_000, d: 86_400_000 }[match[2] as "m" | "h" | "d"];
-            const result = await domain.pauseTask({ taskId: task.id, reason: input.options.reason, durationMs, actor: ctx.threadId ?? process.env.BB_THREAD_ID ?? "owner" });
-            return input.options.json ? JSON.stringify(result) : `Paused ${task.key} until ${result.until}`;
+            const caller = ctx.threadId ?? process.env.BB_THREAD_ID;
+            const result = await domain.pauseTask({ taskId: task.id, reason: input.options.reason, durationMs, actor: caller ?? "owner" });
+            // A plain read of the stored links (reconcile: false), the set a turn on a linked thread ends the pause for; a failed read never fails the pause.
+            let ends: { threadId: string; title: string; caller: boolean }[] | null = null;
+            try {
+              const { taskThreads } = tasksRpcContract.listTaskThreads.output.parse(await domain.listTaskThreads(tasksRpcContract.listTaskThreads.input.parse({ taskId: task.id, reconcile: false })));
+              const linked = taskThreads.map(link => ({ threadId: link.threadId, title: link.title, caller: link.threadId === caller }));
+              ends = [...linked.filter(link => link.caller), ...linked.filter(link => !link.caller)];
+            } catch { /* shortcut: the hint is dropped, the pause stands */ }
+            if (input.options.json) return JSON.stringify(ends ? { ...result, endsOnTurnOf: ends } : result);
+            const named = (ends ?? []).map(link => `${link.threadId}${link.caller ? " (you)" : ""}${link.title ? ` "${link.title}"` : ""}`);
+            return `Paused ${task.key} until ${result.until}${named.length ? `. It also ends when a linked thread starts a turn: ${named.join(", ")}.` : ends ? "" : " (could not list linked threads)"}`;
           }); },
         }),
         resume: cliCommand({

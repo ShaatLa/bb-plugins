@@ -1399,6 +1399,54 @@ describe("bb work-board CLI", () => {
     await harness.dispose();
   });
 
+  it("pause names the linked threads whose turn ends it, reads them without reconciling and survives a failed read", async () => {
+    const { bb, harness } = createFakePluginHost({ pluginId: "work-board" });
+    const store = createStore(bb);
+    let failRead = false;
+    const wrapped = { ...store, tasks: { ...store.tasks, listTaskThreads(id: string) { if (failRead) throw new Error("links unavailable"); return store.tasks.listTaskThreads(id); } } };
+    registerTasksCli(bb, wrapped, { name: "tasks", version: "test" });
+    vi.stubEnv("BB_THREAD_ID", "");
+    try {
+      await harness.runCli(["project", "create", "--name", "Pause", "--prefix", "PAU"]);
+      for (let index = 0; index < 4; index++) await harness.runCli(["create", "--project", "PAU", "--title", `Card ${index + 1}`]);
+      const link = (key: string, threadId: string, title: string) => store.tasks.upsertTaskThread({ taskId: store.tasks.getTaskByKey(key)!.id, threadId, title, presetName: "Attached", liveStatus: "working" });
+      const rows = () => bb.storage.database().prepare("SELECT * FROM task_threads ORDER BY id").all();
+      const pause = (key: string, ...extra: string[]) => harness.runCli(["pause", key, "--reason", "waiting", "--for", "2h", ...extra], { threadId: "thr_me" });
+
+      // No linked thread: the text is as before and the JSON lists nothing.
+      expect(stdout(await pause("PAU-1"))).toMatch(/^Paused PAU-1 until \S+$/);
+      expect(JSON.parse(stdout(await pause("PAU-1", "--json")))).toEqual({ ok: true, until: expect.any(String), endsOnTurnOf: [] });
+
+      // The caller goes first and is marked, the others keep their stored order.
+      link("PAU-2", "thr_other", "Other work");
+      link("PAU-2", "thr_me", "My work");
+      const before = rows();
+      expect(stdout(await pause("PAU-2"))).toMatch(/^Paused PAU-2 until \S+\. It also ends when a linked thread starts a turn: thr_me \(you\) "My work", thr_other "Other work"\.$/);
+      expect(JSON.parse(stdout(await pause("PAU-2", "--json"))).endsOnTurnOf).toEqual([{ threadId: "thr_me", title: "My work", caller: true }, { threadId: "thr_other", title: "Other work", caller: false }]);
+      // Reading the links neither discovers nor reconciles anything.
+      expect(rows()).toEqual(before);
+      expect(harness.sdk.callsTo("threads.list")).toEqual([]);
+      expect(harness.sdk.callsTo("threads.get")).toEqual([]);
+
+      // Only other threads: listed without "(you)".
+      link("PAU-3", "thr_other", "Other work");
+      const others = stdout(await pause("PAU-3"));
+      expect(others).toContain('thr_other "Other work".');
+      expect(others).not.toContain("(you)");
+
+      // A failed read never fails the pause: the hint is in the text and the JSON field is absent.
+      failRead = true;
+      expect(stdout(await pause("PAU-4"))).toMatch(/^Paused PAU-4 until \S+ \(could not list linked threads\)$/);
+      expect(JSON.parse(stdout(await pause("PAU-4", "--json")))).toEqual({ ok: true, until: expect.any(String) });
+      failRead = false;
+      expect(JSON.parse(stdout(await harness.runCli(["pause", "log", "PAU-4", "--json"]))).entries.length).toBeGreaterThan(0);
+      expect((await harness.runCli(["pause", "--help"])).stdout).toContain("also ends the pause");
+    } finally {
+      vi.unstubAllEnvs();
+      await harness.dispose();
+    }
+  });
+
   it("creates, updates, lists, and deletes delegation presets", async () => {
     const { bb, harness } = createFakePluginHost({
       pluginId: "work-board",

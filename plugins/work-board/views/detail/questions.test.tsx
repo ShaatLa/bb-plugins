@@ -893,6 +893,9 @@ const refresh = (slot: ReturnType<typeof renderSlot>, task: { id: string; projec
 
 it("moves a confirmed check to Earlier, shows a failed one as a compact card and puts the replacement in its place", async () => {
   const { task, rpc, structured, ask, checks } = await threeChecks();
+  // The agent is told the answer is held; the owner's form shows nothing about it.
+  const save = rpc.answerQuestion!;
+  rpc.answerQuestion = async input => ({ ...(await save(input) as Record<string, unknown>), notification: "held" });
   const slot = renderSlot(app.navPanels[0]!, { subPath: `task/${task.key}` }, { rpc });
   const first = await slot.findByRole("group", { name: "Check one?" });
   expect(within(first).getByLabelText("Approve")).toBeTruthy();
@@ -901,6 +904,8 @@ it("moves a confirmed check to Earlier, shows a failed one as a compact card and
   fireEvent.change(within(first).getByRole("textbox", { name: "Comment (optional)" }), { target: { value: "Looks right" } });
   fireEvent.click(within(first).getByRole("button", { name: "Save answer" }));
   await waitFor(() => expect(slot.getByText("Earlier (1)")).toBeTruthy());
+  // A held Approve shows no status note: batching is internal.
+  expect(slot.queryByText(/Approve held/)).toBeNull();
   // The live list starts at check 2: numbers never move.
   expect(liveOrder(slot)).toEqual(["Check two?", "Check three?"]);
   expect(liveNumbers(slot)).toEqual(["2.", "3."]);
