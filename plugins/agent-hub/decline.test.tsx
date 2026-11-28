@@ -35,6 +35,12 @@ it('leaves a Won’t reply question out of Questions and its badge: the page lis
   expect(list).toHaveBeenCalledWith(expect.objectContaining({ view: 'for_me', answerable: true }));
   expect(slot.queryByText('Choose?')).toBeNull(); expect(slot.queryByLabelText(/pending$/)).toBeNull();
 });
+it('draws no link row above a question\'s form in Questions: the header\'s Open thread already leads to the chat', async () => {
+  const part = (id: string, prompt: string) => ({ id, prompt, options: [{ value: 'a', label: 'A' }], multiSelect: false, allowFreeText: false, required: true });
+  const slot = await questionsSetup({}, { questions: [part('q1', 'First?'), part('q2', 'Second?')] });
+  expect(slot.queryByRole('link', { name: 'Open in Agent Hub' })).toBeNull();
+  expect(slot.getByText('Open thread')).toBeTruthy();
+});
 it('shows the text of a declined question of several parts, whose form is no longer drawn', async () => {
   const part = (id: string, prompt: string) => ({ id, prompt, options: [{ value: 'a', label: 'A' }], multiSelect: false, allowFreeText: false, required: true });
   const slot = await questionsSetup({}, { questions: [part('q1', 'First?'), part('q2', 'Second?')], declinedAt: Date.now() });
