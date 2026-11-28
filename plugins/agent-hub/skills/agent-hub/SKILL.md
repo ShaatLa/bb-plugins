@@ -9,10 +9,10 @@ Agent Hub tracks user messages across threads (except plugin-sent messages and a
 
 ## Rules for agents
 
-Where the plugin can check a rule it does, and the refusal or warning names the fix.
+Where the plugin can check a rule it does, and the refusal names the fix.
 
 - **Later answer.** When the answer will arrive in a later turn (delegated work), call `agent_hub_defer`; without `id` it defers this thread's newest waiting message, and it also defers the owner messages this same turn handles together. When the answer arrives, call `agent_hub_list`, then `agent_hub_resolve` with the listed `id` (required) and put the answer in that turn's final message. An id that is not a waiting or deferred message of this thread is refused.
-- **Owner decisions.** You must ask with `agent_hub_ask`, then end the turn; never put the question in your chat text (a chat question earns an `[agent-hub]` warning). Do not wait in the same turn: the reply arrives as a new user message quoting the question. Several items go one per line as a Markdown list, not inside one paragraph. A decision about a specific Work Board task belongs on that task, where it stays recorded with the card.
+- **Owner decisions.** You must ask with `agent_hub_ask`, then end the turn; never put the question in your chat text. Do not wait in the same turn: the reply arrives as a new user message quoting the question. Several items go one per line as a Markdown list, not inside one paragraph. A decision about a specific Work Board task belongs on that task, where it stays recorded with the card.
   - One question: `question`, plus optional `options` (1–6 unique, up to 200 characters each), `multiSelect` (needs `options`), `recommended` (must equal one option) and `reason` (up to 300 characters, explains `recommended`, so it needs `recommended`). Example: `{question: "Which database?", options: ["SQLite", "Postgres"], recommended: "SQLite", reason: "No server to run"}`.
   - Several related decisions: `questions` (2–10 parts, each with its own `question`, `header`, `options`, `multiSelect`, `recommended`) instead of `question`; `question` is then only the form title and may be left out. Asks in the same turn merge into one form of up to 10 parts. The user answers a form in one go and you get one reply; parts may return Skipped or Your call (decide yourself).
   - `urgency`: `blocking` (its own push, first in lists), `normal` or `low` (no push). `deadlineMinutes` (optional integer 5–10080) answers with `recommended` if the owner does not reply; on a single question it needs `recommended`, and a part without `recommended` defaults to Your call.
@@ -39,10 +39,7 @@ For example, send this message body:
 > {"providerId":"example-provider"}
 > ```
 
-
 As a safety net, a turn that answers while sub-sessions it started itself are still running is deferred automatically, and once the last of them reports, the plugin keeps waiting if sub-sessions started by the turns their reports woke (a later wave) still run, otherwise your latest report answers the question; explicit `agent_hub_defer`/`agent_hub_resolve` calls always win.
-
-With `handoffWarnings` enabled (default), a live top-level completion that asks the owner a question in chat without the matching explicit channel receives an `[agent-hub]` plugin warning in the same thread. Archived threads and backfilled completions never warn. The warning-triggered reply never warns again and stays read without push unless you call `agent_hub_report` or `agent_hub_ask`. Nothing warns about a missed `agent_hub_report`, so call it yourself on every handoff; handoff guessing and **Asked in chat** filing remain as a safety net.
 
 To link the owner to a conversation in Agent Hub, use `/plugins/agent-hub/agent-hub?thread=<thread id>`.
 

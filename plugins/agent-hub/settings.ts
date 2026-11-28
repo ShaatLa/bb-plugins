@@ -5,9 +5,10 @@ export function createPreferences(bb:BbPluginApi) {
  const listeners = new Set<(value:Preferences)=>void>();
  const ready = (async () => {
   const saved = await bb.storage.kv.get(PREFERENCES_KEY);
-  if (saved !== undefined && saved !== null) return preferencesSchema.parse(saved);
+  // handoffWarnings went with the agent warnings; the strict schema would refuse a stored value that still holds it.
+  if (saved !== undefined && saved !== null) { const { handoffWarnings: _removed, ...kept } = saved as Record<string, unknown>; return preferencesSchema.parse(kept); }
   // shortcut: legacy controls stay visible for the migration load; reload once to remove them.
-  const legacy = bb.settings.define({handoffWarnings:{type:'boolean',label:'Warn agents who ask the owner in chat without the Agent Hub tools',default:true},remindHours:{type:'number',label:'Blocking reminder interval (hours; 0 disables)',default:3,experimental_schema:z.number().finite().nonnegative()},notify:{type:'select',label:'Push notifications',options:['off','asked','questions','all'],default:'asked'},quietHours:{type:'string',label:'Quiet hours (HH:MM-HH:MM)',default:'',experimental_schema:quietSchema},groupByProject:{type:'boolean',label:'Group conversations by project',default:false},projectOrder:{type:'string',label:'Project order in contacts (set by dragging project headers)',default:''},chatMode:{type:'select',label:'Conversation view',options:['answers','bb'],default:'answers'}});
+  const legacy = bb.settings.define({remindHours:{type:'number',label:'Blocking reminder interval (hours; 0 disables)',default:3,experimental_schema:z.number().finite().nonnegative()},notify:{type:'select',label:'Push notifications',options:['off','asked','questions','all'],default:'asked'},quietHours:{type:'string',label:'Quiet hours (HH:MM-HH:MM)',default:'',experimental_schema:quietSchema},groupByProject:{type:'boolean',label:'Group conversations by project',default:false},projectOrder:{type:'string',label:'Project order in contacts (set by dragging project headers)',default:''},chatMode:{type:'select',label:'Conversation view',options:['answers','bb'],default:'answers'}});
   const value = preferencesSchema.parse(await legacy.get());
   await bb.storage.kv.set(PREFERENCES_KEY,value);
   return value;

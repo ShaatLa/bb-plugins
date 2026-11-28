@@ -3,9 +3,9 @@ import { createFakePluginHost } from '@get-bb/plugin-sdk/testing';
 import { createPreferences } from './settings';
 import { PREFERENCES_KEY } from './preferences';
 it('migrates all legacy preferences once and preserves later writes on reload',async()=>{
- const h=createFakePluginHost({pluginId:'agent-hub',settings:{notify:'all',quietHours:'23:00-07:00',remindHours:7,handoffWarnings:false,groupByProject:true,projectOrder:'proj_example',chatMode:'bb'}});
+ const h=createFakePluginHost({pluginId:'agent-hub',settings:{notify:'all',quietHours:'23:00-07:00',remindHours:7,groupByProject:true,projectOrder:'proj_example',chatMode:'bb'}});
  const store=createPreferences(h.bb);
- expect(await store.get()).toMatchObject({notify:'all',quietHours:'23:00-07:00',remindHours:7,handoffWarnings:false,groupByProject:true,projectOrder:'proj_example',chatMode:'bb'});
+ expect(await store.get()).toMatchObject({notify:'all',quietHours:'23:00-07:00',remindHours:7,groupByProject:true,projectOrder:'proj_example',chatMode:'bb'});
  await store.experimental_set({notify:'off',remindHours:1});
  expect(await createPreferences(h.bb).get()).toEqual(await h.bb.storage.kv.get(PREFERENCES_KEY));
  expect((await createPreferences(h.bb).get()).notify).toBe('off');
@@ -14,8 +14,8 @@ it('migrates all legacy preferences once and preserves later writes on reload',a
 it('serializes patches, notifies readers and rejects invalid quiet hours',async()=>{
  const h=createFakePluginHost({pluginId:'agent-hub'}),store=createPreferences(h.bb),seen:unknown[]=[];
  store.onChange(p=>seen.push(p));
- await Promise.all([store.experimental_set({notify:'off'}),store.experimental_set({quietHours:'22:00-08:00',remindHours:6,handoffWarnings:false})]);
- expect(await store.get()).toMatchObject({notify:'off',quietHours:'22:00-08:00',remindHours:6,handoffWarnings:false});
+ await Promise.all([store.experimental_set({notify:'off'}),store.experimental_set({quietHours:'22:00-08:00',remindHours:6})]);
+ expect(await store.get()).toMatchObject({notify:'off',quietHours:'22:00-08:00',remindHours:6});
  expect(seen).toHaveLength(2);
  for(const quietHours of ['24:00-01:00','12:00-12:00']) expect(()=>store.experimental_set({quietHours})).toThrow();
  await h.harness.lifecycle.dispose();
@@ -24,5 +24,14 @@ it('adds chat defaults to existing preferences without replacing their values',a
  const h=createFakePluginHost({pluginId:'agent-hub'});
  await h.bb.storage.kv.set(PREFERENCES_KEY,{notify:'off',projectOrder:'proj_example'});
  expect(await createPreferences(h.bb).get()).toMatchObject({notify:'off',projectOrder:'proj_example',showMarkAllRead:false,workingAnimation:'desktop',touchEnter:'newline',groupBackgroundUpdates:true,selectionActions:true});
+ await h.harness.lifecycle.dispose();
+});
+it('loads stored preferences that still hold the removed handoffWarnings, and drops it on the next save',async()=>{
+ const h=createFakePluginHost({pluginId:'agent-hub'});
+ await h.bb.storage.kv.set(PREFERENCES_KEY,{notify:'all',remindHours:5,handoffWarnings:false});
+ const store=createPreferences(h.bb);
+ expect(await store.get()).toMatchObject({notify:'all',remindHours:5});
+ await store.experimental_set({notify:'off'});
+ expect(await h.bb.storage.kv.get(PREFERENCES_KEY)).not.toHaveProperty('handoffWarnings');
  await h.harness.lifecycle.dispose();
 });

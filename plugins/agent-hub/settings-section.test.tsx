@@ -16,7 +16,7 @@ it('registers Answers and renders preferences with validated time fields and res
  const update=vi.fn((patch:unknown)=>prefs={...prefs,...patch as object});
  const slot=renderSlot({component:AgentHubSettings},{},{rpc:{getPreferences:()=>prefs,updatePreferences:update}});
  await slot.findByText('Notifications');
- for(const name of ['Chat','Contacts','Agents']) expect(slot.getByText(name)).toBeTruthy();
+ for(const name of ['Chat','Contacts']) expect(slot.getByText(name)).toBeTruthy(); expect(slot.queryByText('Agents')).toBeNull();
  expect(slot.queryByText('proj_example')).toBeNull();
  expect(slot.getByRole('combobox',{name:'Blocking question reminders'}).textContent).toContain('Every 7 hours');
  fireEvent.keyDown(slot.getByRole('combobox',{name:'Push notifications'}),{key:'Enter'});

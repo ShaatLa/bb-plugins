@@ -8,7 +8,6 @@ export const QUESTION_SQL = "(instr(question,'?')>0 OR instr(question,'？')>0)"
 // Archived threads leave the Inbox, counts and pushes; their items come back if the thread is unarchived.
 export const ACTIVE_THREAD_SQL = "thread_id NOT IN (SELECT thread_id FROM archived_threads)";
 // Explicit asks still reach the owner when a sub-agent calls agent_hub_ask.
-export const CHAT_QUESTION_WARNING = '[agent-hub] Your last reply asks the owner a question in chat. Call `agent_hub_ask` now with that question (add options and recommended if you have them), then end the turn without waiting; the answer arrives as a new message.';
 // In a sub-session the owner still gets explicit asks and replies to the owner's own messages (not the brief it was spawned with, nor a quoted answer to the agent's question); the rest there is background.
 export const OWNER_ITEM_SQL = "(thread_id NOT IN (SELECT thread_id FROM sub_threads) OR (kind='for_me' AND chat_asked=0) OR (kind='mine' AND spawned=0 AND answers_ask=0))";
 export const ATTENTION_SQL = OWNER_ITEM_SQL + " AND thread_id NOT IN (SELECT thread_id FROM archived_threads) AND dismissed_at IS NULL AND declined_at IS NULL AND read_at IS NULL AND snoozed_until IS NULL AND ((kind IN ('mine','update') AND status='answered') OR (kind='for_me' AND status='open') OR (kind='mine' AND status IN ('waiting','deferred') AND failed_at IS NOT NULL))";
@@ -69,7 +68,7 @@ export type Event = { seq: number; type: string; scope?: { kind?: string; turnId
 const RESTATE_WINDOW = 86_400_000;
 const STEER_ANSWER_MIN = 400, STEER_TOOLS_MAX = 3;
 const turnUpdateId = (threadId: string, turn: string) => 'ans_'+createHash('sha256').update(threadId+'|turn-update|'+turn).digest('hex');
-export function applyEvents(db: Database.Database, threadId: string, events: Event[], projectId: string | null = null, now = 0, trackQuestions = true, live = false, onWarning?: (text: string, at: number, turn: string, seq: number) => void, channelCommands: string[] = projectSchema.parse({}).channelCommands): boolean {
+export function applyEvents(db: Database.Database, threadId: string, events: Event[], projectId: string | null = null, now = 0, trackQuestions = true, live = false, channelCommands: string[] = projectSchema.parse({}).channelCommands): boolean {
  // Writes that only move bookkeeping (pending candidate text, turn links, the cursor) are not worth a UI refetch.
  const total = () => (db.prepare('SELECT total_changes() AS n').get() as {n:number}).n, start = total();
  let hidden = 0;
@@ -169,11 +168,9 @@ export function applyEvents(db: Database.Database, threadId: string, events: Eve
     const update = db.prepare('SELECT * FROM turn_updates WHERE thread_id=? AND turn_id=?').get(threadId,turn) as {kind:string|null;source_id:string|null;question:string;answer:string|null;answer_seq:number|null;started_at:number|null;report:number;asked:number}|undefined;
     // A question put to the owner only as text in the reply (no agent_hub_ask, no card question this turn) is filed in Questions
     // as asked in chat, so it is counted and pushed like any other; replying quotes it back into the thread.
+    // Agent Hub no longer warns agents; a turn started by a warning still queued from before stays quiet.
     const warningTriggered = ['agent-hub','answers'].includes(update?.source_id ?? '') && /^\[(?:agent-hub|answers)\]/.test(update?.question ?? ''); // [answers] is the tag before the rename
     const asked = trackQuestions && update?.answer && !update.asked && (!warningTriggered || update.report) ? chatQuestion(update.answer) : null;
-    if (trackQuestions && !warningTriggered && update?.answer && !update.asked && !db.prepare('SELECT 1 FROM archived_threads WHERE thread_id=?').get(threadId)) {
-     if (asked) onWarning?.(CHAT_QUESTION_WARNING, e.createdAt ?? 0, turn, e.seq);
-    }
     if (asked) db.prepare(`INSERT OR IGNORE INTO items(id,kind,thread_id,project_id,status,question,question_seq,chat_asked,notify_state,created_at,updated_at) VALUES (?,'for_me',?,?,'open',?,?,1,?,?,?)`).run('ans_'+createHash('sha256').update(threadId+'|chat-question|'+update!.answer_seq).digest('hex'),threadId,projectId,asked,update!.answer_seq,Number(live),e.createdAt ?? now,now);
     // Only an update that asks the owner something, or one the agent marked a report, is pushed; the rest collapse into a quiet group.
     const asks = trackQuestions && !!update?.answer && (!!update.report || (!warningTriggered && asksOwner(update.answer)));

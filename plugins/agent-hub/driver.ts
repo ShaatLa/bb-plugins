@@ -1,6 +1,5 @@
 import { getProjectConfig } from './project-config';
 import { NOTICE_THREAD } from './contract';
-import { sendOrAppend } from './queued-notice';
 import type { BbPluginApi } from '@get-bb/plugin-sdk';
 import type Database from 'better-sqlite3';
 import { applyEvents, COMPACTED_EVENT, CONTEXT_EVENT, QUIET_SQL, RELEVANT, type Event } from './ingest';
@@ -16,7 +15,7 @@ const oversized = (e: unknown) => {
 type State = { last_seq: number; last_error: string | null; ingested_thread_updated_at: number | null };
 type Thread = Pick<Awaited<ReturnType<BbPluginApi['sdk']['threads']['get']>>, 'projectId' | 'parentThreadId' | 'updatedAt' | 'archivedAt'>;
 const CATCH_UP = [...RELEVANT, CONTEXT_EVENT, COMPACTED_EVENT] as const;
-export function createDriver(bb: BbPluginApi, db: Database.Database, invalidate: () => void, onContext: (threadId: string, compactedAt?: number) => void = () => {}, handoffWarnings: () => Promise<boolean> = async () => true) {
+export function createDriver(bb: BbPluginApi, db: Database.Database, invalidate: () => void, onContext: (threadId: string, compactedAt?: number) => void = () => {}) {
   const startedAt = Date.now();
   const live = new Set<string>();
   const locks = new Map<string, Promise<unknown>>();
@@ -37,13 +36,6 @@ export function createDriver(bb: BbPluginApi, db: Database.Database, invalidate:
     locks.set(id, result);
     void result.finally(() => { if (locks.get(id) === result) locks.delete(id); }).catch(() => {});
     return result;
-  }
-  // A warning is rare and costly to get wrong: before sending one, read the turn's tool calls again, since ingest once missed one.
-  async function usedChannel(id: string, turn: string, seq: number, channelCommands: string[]) {
-    try {
-      const events = await bb.sdk.threads.events.list({threadId:id,types:['item/completed'],order:'desc',limit:'200',beforeSeq:String(seq),signal});
-      return events.some(e => e.scope?.kind === 'turn' && e.scope.turnId === turn && ['agent_hub_ask','answers_ask','agent_hub_report','answers_report',...channelCommands].some(fragment => { const item = (e.data as {item?:{tool?:string;name?:string;command?:string}}|undefined)?.item; return `${item?.tool ?? ''} ${item?.name ?? ''} ${item?.command ?? ''}`.includes(fragment); }));
-    } catch { return false; }
   }
   function remove(id: string) {
     if (id === NOTICE_THREAD) return;
@@ -89,14 +81,7 @@ export function createDriver(bb: BbPluginApi, db: Database.Database, invalidate:
     const {channelCommands} = await getProjectConfig(bb,projectId);
     let changed = false;
     async function apply(events: Event[], baseline?: () => void) {
-      const warnings: {text:string;turn:string;seq:number}[] = [];
-      changed = db.transaction(() => { const result = applyEvents(db,id,events,projectId,Date.now(),questions,live.has(id),(text,at,turn,seq) => {if (at >= startedAt) warnings.push({text,turn,seq});},channelCommands); baseline?.(); return result; })() || changed;
-      for (const {text,turn,seq} of warnings) {
-        if (signal.aborted || thread.archivedAt || db.prepare('SELECT 1 FROM archived_threads WHERE thread_id=?').get(id) || !await handoffWarnings()) continue;
-        if (await usedChannel(id,turn,seq,channelCommands)) {bb.log.warn(`Agent Hub warning skipped: turn ${turn} used a channel its ingest missed`); continue;}
-        try {await sendOrAppend(bb,{threadId:id,text,header:false});}
-        catch (e) {bb.log.warn(`Agent Hub handoff warning: ${String(e)}`);}
-      }
+      changed = db.transaction(() => { const result = applyEvents(db,id,events,projectId,Date.now(),questions,live.has(id),channelCommands); baseline?.(); return result; })() || changed;
     }
     if (!questions) db.transaction(() => {
       db.prepare('INSERT OR IGNORE INTO sub_threads VALUES (?)').run(id);

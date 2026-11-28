@@ -102,8 +102,9 @@ it('keeps a sub-session that asks the owner visible under its collapsed parent',
     const { slot } = setup(false, false, parent, [...asking], fields);
     const subs = await slot.findByRole('list', { name: 'Sub-sessions of Parent' });
     expect(subs.textContent).toContain('Child'); expect(subs.textContent).not.toContain('Quiet');
-    // The sub-session's row and its parent contact both show the question mark.
-    expect(within(subs).getByRole('img', { name: 'Asking you' })).toBeTruthy(); expect(slot.getAllByRole('img', { name: 'Asking you' })).toHaveLength(2);
+    // Only the sub-session's own row shows the question mark: the parent contact carries no copy of it, glyph or status.
+    expect(within(subs).getByRole('img', { name: 'Asking you' })).toBeTruthy(); expect(slot.getAllByRole('img', { name: 'Asking you' })).toHaveLength(1);
+    expect(slot.getByRole('option', { name: /Parent/ }).querySelector('[data-thread-status-glyph="waiting-for-input"]')).toBeNull();
     expect(slot.getByRole('button', { name: 'Show sub-sessions' })).toBeTruthy();
     slot.unmount();
   }
@@ -128,6 +129,11 @@ it('marks a failed sub-session and keeps it at full strength', async () => {
   const subs = await slot.findByRole('list', { name: 'Sub-sessions of Parent' });
   expect(within(subs).getByRole('img', { name: 'Failed' })).toBeTruthy();
   expect(within(subs).getByText('Child').closest('button')!.className.split(' ')).not.toContain('opacity-50');
+});
+it('still rolls a sub-session\'s work up to its parent, without its question', async () => {
+  const { slot } = setup(false, false, parent, [], { hasPendingInteraction: true, status: 'active', runtimeStatus: 'active', indicator: 'runtime' });
+  await slot.findByRole('list', { name: 'Sub-sessions of Parent' });
+  expect(slot.getByRole('option', { name: /Parent/ }).querySelector('[data-thread-status-glyph]')?.getAttribute('data-thread-status-glyph')).toBe('runtime');
 });
 it('shows the question mark, not the working spinner, on a sub-session that asks while it works', async () => {
   const { slot } = setup(false, false, parent, [child], { status: 'active', runtimeStatus: 'active', indicator: 'runtime' });

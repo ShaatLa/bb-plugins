@@ -4,7 +4,6 @@ import plugin, { INSTRUCTIONS, buildReplyMessage } from './server';
 import { ITEMS_TAG, COUNTS_TAG, POOLS_TAG, RECIPIENTS_TAG, RECIPIENTS_THROTTLE_MS, inputs, rpcContract } from './contract';
 import { createDriver } from './driver';
 import { migrations } from './schema';
-import { CHAT_QUESTION_WARNING } from './ingest';
 import Database from 'better-sqlite3';
 const cleanup: (()=>Promise<void>)[]=[];
 afterEach(async()=>{for (const dispose of cleanup.splice(0)) await dispose(); vi.useRealTimers();});
@@ -1077,14 +1076,19 @@ it('stores urgency and keeps low questions visible without a push',async()=>{
  await expect(harness.behavior.callAgentTool('agent_hub_ask',{question:'?',urgency:'urgent'},{threadId:'t'})).rejects.toThrow();
 });
 
-it('replaces the question caught in the reply when the in-chat question warning started the turn',async()=>{
+
+it('replaces the question caught in the reply when a chat-question warning queued before the removal started the turn',async()=>{
  const {harness,db}=setup(), ask=(p:object)=>harness.behavior.callAgentTool('agent_hub_ask',p,{threadId:'t'}), open=()=>db.prepare("SELECT id,question,options,chat_asked FROM items WHERE kind='for_me' AND status='open' ORDER BY created_at").all();
  db.prepare("INSERT INTO items(id,kind,thread_id,status,question,question_seq,chat_asked,notify_state,created_at,updated_at) VALUES ('ans_caught','for_me','t','open','Shall I continue?',5,1,1,1,1)").run();
  db.prepare("UPDATE threads_state SET active_turn_id='other' WHERE thread_id='t'").run();
  db.prepare("INSERT INTO turn_updates(thread_id,turn_id,kind,source_id,question) VALUES ('t','other','plugin','example','[example] Continue')").run();
  const unrelated=await ask({question:'Another topic?'});expect(unrelated).not.toBe('ans_caught');db.prepare('DELETE FROM items WHERE id=?').run(unrelated);
+ // Another Agent Hub message with the same tag is no warning: an ask in its turn leaves the caught question alone.
+ db.prepare("UPDATE threads_state SET active_turn_id='notice' WHERE thread_id='t'").run();
+ db.prepare("INSERT INTO turn_updates(thread_id,turn_id,kind,source_id,question) VALUES ('t','notice','plugin','agent-hub','[agent-hub] Some other notice.')").run();
+ const tagged=await ask({question:'Tagged topic?'});expect(tagged).not.toBe('ans_caught');db.prepare('DELETE FROM items WHERE id=?').run(tagged);
  db.prepare("UPDATE threads_state SET active_turn_id='warned' WHERE thread_id='t'").run();
- db.prepare("INSERT INTO turn_updates(thread_id,turn_id,kind,source_id,question) VALUES ('t','warned','plugin','agent-hub',?)").run(CHAT_QUESTION_WARNING);
+ db.prepare("INSERT INTO turn_updates(thread_id,turn_id,kind,source_id,question) VALUES ('t','warned','plugin','agent-hub',?)").run('[agent-hub] Your last reply asks the owner a question in chat. Call `agent_hub_ask` now with that question, then end the turn without waiting; the answer arrives as a new message.');
  expect(String(await ask({question:'Continue?',options:['Yes','No']})).split('\n')[0]).toBe('ans_caught');
  expect(open()).toEqual([{id:'ans_caught',question:'Continue?',options:'["Yes","No"]',chat_asked:0}]);
  expect(db.prepare("SELECT asked FROM turn_updates WHERE turn_id='warned'").get()).toEqual({asked:1});
