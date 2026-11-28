@@ -121,37 +121,37 @@ export function ProposalDates({ proposal, timeZone, linked, disabled, refresh, d
   }
 
   function field(key: DateField, label: string, at: number | null, editable: boolean) {
-    const value = <span>{at === null ? "Not set" : date(at)}</span>;
+    const row = <dd className="flex min-h-8 flex-wrap items-center gap-1.5">
+      <span>{at === null ? "Not set" : date(at)}</span>
+      {editable && <Popover.Trigger type="button" aria-label={`Edit ${label.toLowerCase()}`} title={`Edit ${label.toLowerCase()}`}
+        className="grid size-8 shrink-0 place-items-center rounded-md text-muted-foreground hover:bg-state-hover hover:text-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-ring disabled:opacity-50"
+        disabled={busy || disabled}>
+        <Icon name="Edit" aria-hidden className="size-3.5" />
+      </Popover.Trigger>}
+    </dd>;
     return <div className="min-w-0">
       <dt className="mb-0.5 text-xs text-muted-foreground">{label}</dt>
-      <dd className="flex min-h-8 flex-wrap items-center gap-1.5">
-        {editable ? <Popover.Root open={anchor === key}
-          onOpenChange={next => { if (next) show(key); else void save(); }}>
-          <Popover.Anchor asChild>{value}</Popover.Anchor>
-          <Popover.Trigger type="button" aria-label={`Edit ${label.toLowerCase()}`} title={`Edit ${label.toLowerCase()}`}
-            className="grid size-8 shrink-0 place-items-center rounded-md text-muted-foreground hover:bg-state-hover hover:text-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-ring disabled:opacity-50"
-            disabled={busy || disabled}>
-            <Icon name="Edit" aria-hidden className="size-3.5" />
-          </Popover.Trigger>
-          {anchor === key && draft && <Popover.Portal>
-            <Popover.Content align="start" sideOffset={4} collisionPadding={8} {...overlayScope} aria-label={`${label} calendar`}
-              className="z-50 max-h-[var(--radix-popover-content-available-height)] w-72 max-w-[calc(100vw-1rem)] space-y-2 overflow-auto rounded-md border border-border bg-popover p-3 text-popover-foreground shadow-lift"
-              onEscapeKeyDown={event => {
+      {editable ? <Popover.Root open={anchor === key}
+        onOpenChange={next => { if (next) show(key); else void save(); }}>
+        <Popover.Anchor asChild>{row}</Popover.Anchor>
+        {anchor === key && draft && <Popover.Portal>
+          <Popover.Content align="start" sideOffset={4} collisionPadding={8} {...overlayScope} aria-label={`${label} calendar`}
+            className="z-50 max-h-[var(--radix-popover-content-available-height)] w-72 max-w-[calc(100vw-1rem)] space-y-2 overflow-auto rounded-md border border-border bg-popover p-3 text-popover-foreground shadow-lift"
+            onEscapeKeyDown={event => {
+              event.preventDefault();
+              setAnchor(undefined);
+              setDraft(undefined);
+            }}
+            onKeyDown={event => {
+              if (event.key === "Enter" && event.target instanceof HTMLInputElement) {
                 event.preventDefault();
-                setAnchor(undefined);
-                setDraft(undefined);
-              }}
-              onKeyDown={event => {
-                if (event.key === "Enter" && event.target instanceof HTMLInputElement) {
-                  event.preventDefault();
-                  void save();
-                }
-              }}>
-              {editor(draft)}
-            </Popover.Content>
-          </Popover.Portal>}
-        </Popover.Root> : value}
-      </dd>
+                void save();
+              }
+            }}>
+            {editor(draft)}
+          </Popover.Content>
+        </Popover.Portal>}
+      </Popover.Root> : row}
     </div>;
   }
 

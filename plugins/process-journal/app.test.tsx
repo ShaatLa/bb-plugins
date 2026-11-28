@@ -391,8 +391,14 @@ it.each([
       ...rpc, projects: () => [local], "proposal.detail": () => ({ ...rpc["proposal.detail"](), proposal: initial, links: [linkedCard] }),
     } });
     const trigger = await screen.findByRole("button", { name: `Edit ${label.toLowerCase()}` });
+    const dateRow = trigger.closest("dd")!;
+    vi.spyOn(dateRow, "getBoundingClientRect").mockReturnValue(
+      { x: 300, y: 200, top: 200, left: 300, right: 480, bottom: 232, width: 180, height: 32, toJSON: () => ({}) },
+    );
     fireEvent.click(trigger);
-    const editor = within(await documentScreen.findByRole("dialog", { name: `${label} calendar` }));
+    const dialog = await documentScreen.findByRole("dialog", { name: `${label} calendar` });
+    await waitFor(() => expect(dialog.parentElement?.style.getPropertyValue("--radix-popper-anchor-width")).toBe("180px"));
+    const editor = within(dialog);
     expect(editor.getByText(/America\/New_York/)).toBeTruthy();
     expect(editor.queryByRole("group", { name: "Date to edit" })).toBeNull();
     expect(editor.queryByLabelText(`${other} time`)).toBeNull();
