@@ -272,12 +272,37 @@ it('offers Copy and Save under the owner\'s own message, like bb', async () => {
   fireEvent.click(slot.getByRole('button', { name:'Save to Agent Hub' }));
   await waitFor(() => expect(save).toHaveBeenCalledWith(expect.objectContaining({ threadId:'thr_one', seq:7, role:'user', text:'Question one' })));
 });
-it('keeps a Won\'t reply question in the chat, read-only, while an open one stays only in the stack', async () => {
-  const ask = { ...base, id:'ans_ask', kind:'for_me' as const, status:'open' as const, question:'Pick one?', answer:null, answerSeq:null, options:['Yes', 'No'], questionSeq:4 };
+it('folds a Won\'t reply question in the chat into one read-only line, while an open one stays only in the stack', async () => {
+  const ask = { ...base, id:'ans_ask', kind:'for_me' as const, status:'open' as const, question:'Pick one?\n\nMore detail', answer:null, answerSeq:null, options:['Yes', 'No'], questionSeq:4 };
   const { slot, recipients } = setup({ list: (input: { view: string }) => ({ items: input.view === 'for_me' ? [] : [{ ...ask, declinedAt:Date.now() }, { ...ask, id:'ans_open', question:'Still open?', questionSeq:5 }, base], nextCursor:null }) }); fireEvent.click(await recipients.findByRole('option'));
-  await slot.findByText('Pick one?');
+  const line = await slot.findByRole('button', { name:/Pick one\?.*You chose Won’t reply/ });
   expect(slot.queryByText('Still open?')).toBeNull();
-  expect(slot.getByText('Won’t reply')).toBeTruthy(); expect(slot.queryByRole('button', { name:'Yes' })).toBeNull();
+  expect(line.getAttribute('aria-expanded')).toBe('false'); expect(slot.queryByText(/More detail/)).toBeNull();
+  fireEvent.click(line);
+  expect(line.getAttribute('aria-expanded')).toBe('true'); expect(await slot.findByText(/More detail/)).toBeTruthy();
+  expect(slot.getByText('Choices: Yes · No')).toBeTruthy(); expect(slot.queryByRole('button', { name:'Yes' })).toBeNull(); expect(slot.queryByRole('button', { name:'Reply' })).toBeNull();
+});
+it('folds a withdrawn question in the chat into one line that opens to its reason', async () => {
+  const ask = { ...base, id:'ans_ask', kind:'for_me' as const, status:'open' as const, question:'Pick one?', answer:null, answerSeq:null, options:null, questionSeq:4, dismissedAt:5, answerSource:'agent' as const, note:'Found it in the docs' };
+  const { slot, recipients } = setup({ list: (input: { view: string }) => ({ items: input.view === 'for_me' ? [] : [ask, base], nextCursor:null }) }); fireEvent.click(await recipients.findByRole('option'));
+  const line = await slot.findByRole('button', { name:/Pick one\?.*Withdrawn by the agent/ });
+  expect(slot.queryByText(/Found it in the docs/)).toBeNull();
+  fireEvent.click(line);
+  expect(await slot.findByText(/Found it in the docs/)).toBeTruthy(); expect(slot.getByText(/Reason:/)).toBeTruthy();
+});
+it('opens a folded form question to its whole text, steps included, and each part\'s choices with their descriptions', async () => {
+  const questions = [{ id:'q1', prompt:'Colour?', options:[{ value:'r', label:'Red', description:'warm' }, { value:'b', label:'Blue' }], multiSelect:false, allowFreeText:false, required:true }, { id:'q2', prompt:'Size?', options:[{ value:'s', label:'S' }, { value:'l', label:'L' }], multiSelect:false, allowFreeText:false, required:true }];
+  const ask = { ...base, id:'ans_ask', kind:'for_me' as const, status:'open' as const, question:'Pick a shirt\n\n1. Colour?\n2. Size?\n\nSteps: open the page, then compare', answer:null, answerSeq:null, options:null, questions, questionSeq:4, declinedAt:3 };
+  const { slot, recipients } = setup({ list: (input: { view: string }) => ({ items: input.view === 'for_me' ? [] : [ask, base], nextCursor:null }) }); fireEvent.click(await recipients.findByRole('option'));
+  fireEvent.click(await slot.findByRole('button', { name:/Pick a shirt.*You chose Won’t reply/ }));
+  expect(await slot.findByText(/Steps: open the page, then compare/)).toBeTruthy();
+  expect(slot.getByText('1. Choices: Red (warm) · Blue')).toBeTruthy(); expect(slot.getByText('2. Choices: S · L')).toBeTruthy();
+});
+it('keeps an answered agent question in the chat as its card, not a folded line', async () => {
+  const ask = { ...base, id:'ans_ask', kind:'for_me' as const, status:'replied' as const, question:'Pick one?', answer:'Yes', answerSeq:6, answerSource:'user' as const, options:['Yes', 'No'], questionSeq:4, declinedAt:3 };
+  const { slot, recipients } = setup({ list: (input: { view: string }) => ({ items: input.view === 'for_me' ? [] : [ask, base], nextCursor:null }) }); fireEvent.click(await recipients.findByRole('option'));
+  await slot.findByText('Pick one?');
+  expect(slot.queryByRole('button', { name:/You chose Won’t reply|Withdrawn by the agent/ })).toBeNull();
 });
 describe('editing a sent message in its bubble', () => {
   const pic = { type:'localImage' as const, path:'/pic.png', name:'pic.png' }, doc = { type:'localFile' as const, path:'/draft.txt', name:'draft.txt' };

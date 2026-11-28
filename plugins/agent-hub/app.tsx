@@ -267,6 +267,29 @@ export function UpdateGroup({ items, reveal, children }: { items: Item[]; reveal
     </div>
   </li>;
 }
+// An agent question closed without an answer (the owner chose Won’t reply, or the agent withdrew it) folds in the chat into one
+// line in the Background updates card's look, its state written as past so it does not read as a button; a click opens it read-only.
+export const closedQuestion = (item: Item) => item.kind === 'for_me' && item.status === 'open' && (item.declinedAt !== null || (item.dismissedAt !== null && item.answerSource === 'agent'));
+function ClosedQuestion({ item, time }: { item: Item; time: ReactNode }) {
+  const [open, setOpen] = useState(false), withdrawn = item.dismissedAt !== null;
+  // The question text already numbers the parts of a form, so each part's choices follow under its number.
+  const parts: [string, string[]][] = item.questions ? item.questions.map((part, i) => [item.questions!.length > 1 ? `${i + 1}. ` : '', (part.options ?? []).map(option => option.description ? `${option.label} (${option.description})` : option.label)]) : [['', item.options ?? []]];
+  return <li className="py-3">
+    <div className="group/card overflow-hidden rounded-xl border border-border bg-surface-raised-solid shadow-lift">
+      <button type="button" aria-expanded={open} onClick={() => setOpen(!open)} className="flex min-h-9 w-full min-w-0 items-center gap-2 px-3 py-1.5 text-left text-xs text-muted-foreground hover:bg-state-hover">
+        <Icon name="MessageSquare" aria-hidden className="size-3.5 shrink-0" /><span className="min-w-0 truncate font-medium text-foreground">{echoLine(item.question) || 'Question'}</span>
+        <span className="shrink-0 whitespace-nowrap">{withdrawn ? 'Withdrawn by the agent' : 'You chose Won’t reply'}</span>{time}<span className="flex-1" />
+        <Icon name="ChevronDown" aria-hidden className={`size-4 shrink-0 transition-transform ${open ? '' : '-rotate-90'}`} />
+      </button>
+      {open && <div className="space-y-2 border-t border-border-hairline bg-background px-3 py-2 text-sm">
+        <div data-agent-body data-item={item.id} data-seq={item.questionSeq ?? undefined}><AgentMarkdown content={item.question} threadId={item.threadId} /></div>
+        {parts.map(([n, options]) => options.length > 0 && <p key={n} className="text-muted-foreground">{n}Choices: {options.join(' · ')}</p>)}
+        {withdrawn && item.note && <p className="whitespace-pre-wrap text-muted-foreground">Reason: <UserText threadId={item.threadId} text={item.note} /></p>}
+        <span className="flex text-muted-foreground opacity-60 transition-opacity hover:opacity-100 focus-within:opacity-100 [@media(hover:none)]:opacity-100"><MessageCopy small link text={messageLink(item.projectId, item.threadId, item.questionSeq)} /></span>
+      </div>}
+    </div>
+  </li>;
+}
 // part: a late answer split from its question (see conversation in inbox.tsx); onJump scrolls to the other part's history id.
 // A question asked without choices still gets a one-tap yes and no, in the language it was asked in.
 export const defaultChoices = (question: string) => /[А-Яа-яЁё]/.test(question) ? ['Да', 'Нет'] : ['Yes', 'No'];
@@ -383,6 +406,7 @@ export function ItemCard({ item, members, late, live = true, chat = false, marka
   const interimReply = interimShown && item.interim && <div className="space-y-1">{/* While the final answer is still owed, a walking robot under the interim reply says the work goes on (where the answer will come); afterwards a clock marks the reply as interim. */}
       {item.status === 'deferred' && robot ? <>{agentBody(item.interim, item.interimSeq)}<span className="flex w-fit px-2 text-muted-foreground opacity-60 transition-opacity hover:opacity-100 has-[[aria-expanded=true]]:opacity-100"><button {...robotProps} title="Interim reply: the agent is still working and will report back"><RobotLoader className="h-8" label="Interim reply, work in progress" /></button></span></> : <>{/* Under "Answered below" that line already says this reply was not the answer, so the clock would only repeat it; once the
         question is settled (the owner marked it answered) the reply is the last word and nothing is owed. */}{part !== 'question' && !answeredHere && item.status !== 'answered' && <span title="Interim reply" className="flex w-fit px-2 text-muted-foreground"><Icon name="Clock" aria-label="Interim reply" className="size-3.5" /></span>}{agentBody(item.interim, item.interimSeq)}</>}</div>;
+  if (chat && !compact && part !== 'answer' && closedQuestion(item)) return <ClosedQuestion item={item} time={time} />;
   return <li ref={card} data-pending-title={item.kind === 'for_me' && item.status === 'open' ? item.question : undefined} data-history-ids={part && group.map(member => part === 'answer' ? `${member.id}:answer` : member.id).join(' ')} className={compact ? 'group space-y-1.5 py-2' : chat ? 'group space-y-3 py-5' : 'group space-y-3 rounded-xl border border-border-seam p-4'}>
     {!chat && <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5 px-2 text-xs text-muted-foreground">
       <h2 className="min-w-0 truncate text-sm font-medium text-foreground">{item.notice ? item.question : item.threadTitle ?? 'Untitled thread'}</h2>
