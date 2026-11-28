@@ -27,7 +27,9 @@ export function JournalSelect<T extends string>({ label, value, options, onChang
     if (choice) onChange(choice.value);
   }}>
     <Select.Trigger aria-label={label} className={`${pickerTrigger} ${renderIcon ? compactPicker : "h-8 gap-2 px-2.5"}`}>
-      <span className="truncate"><Select.Value>{available ? renderIcon?.(value) : "Unavailable"}</Select.Value></span>
+      {renderIcon && available
+        ? <Select.Value className="flex items-center">{renderIcon(value)}</Select.Value>
+        : <span className="truncate"><Select.Value>{available ? undefined : "Unavailable"}</Select.Value></span>}
       <Select.Icon asChild><Icon name="ChevronDown" className={`${renderIcon ? "size-3" : "size-3.5"} shrink-0 text-muted-foreground`} /></Select.Icon>
     </Select.Trigger>
     <Select.Portal>
