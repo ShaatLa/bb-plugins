@@ -929,6 +929,16 @@ it('says why a queued message is held, as bb does', async () => {
   const { slot, recipients } = setup({ queuedMessages: { list: () => Promise.resolve([row]) }, plugins: { list: async () => ({ plugins:[{ id:'concurrency-limit', name:'Concurrency limit', icon:'Gauge' }] }) } }); fireEvent.click(await recipients.findByRole('option'));
   expect(await slot.findByText('Held by Concurrency limit · 14 of 14 running on host Mac')).toBeTruthy();
 });
+it('labels no queued message the owner wrote through Agent Hub, while CLI and other plugins keep their source', async () => {
+  const row = (id: string, at: number, text: string, from: Record<string, string>) => ({ id, threadId:'thr_one', ...from, content:[{ type:'text', text, mentions:[] }], updatedAt:at });
+  // answers is Agent Hub's former plugin id. The plugin list matches the earlier test's, since brands are listed once per page load.
+  const rows = [row('q1', 1, 'Typed by the owner', { origin:'plugin', originPluginId:'agent-hub' }), row('q2', 2, 'Typed before the rename', { origin:'plugin', originPluginId:'answers' }), row('q3', 3, 'Typed in a terminal', { origin:'cli' }), row('q4', 4, 'A held update', { origin:'plugin', originPluginId:'concurrency-limit' })];
+  const { slot, recipients } = setup({ queuedMessages: { list: () => Promise.resolve(rows) }, plugins: { list: async () => ({ plugins:[{ id:'agent-hub', name:'Agent Hub', icon:'MessageQuestion' }, { id:'concurrency-limit', name:'Concurrency limit', icon:'Gauge' }] }) } }); fireEvent.click(await recipients.findByRole('option'));
+  const queued = (id: string) => slot.container.querySelector(`[data-queue-row="${id}"]`)!;
+  await waitFor(() => expect(queued('q3')?.textContent).toMatch(/From\s*CLI/));
+  for (const id of ['q1', 'q2']) { expect(queued(id).textContent).toMatch(/^Typed/); expect(queued(id).textContent).not.toMatch(/From/); expect(within(queued(id) as HTMLElement).queryByRole('img', { name:/^From / })).toBeNull(); }
+  expect(await within(queued('q4') as HTMLElement).findByRole('img', { name:'From Concurrency limit' })).toBeTruthy();
+});
 it('shows a plugin\'s queued message with the plugin icon instead of bb\'s header and the From line', async () => {
   const row = { id:'q1', threadId:'thr_one', originPluginId:'concurrency-limit', content:[{ type:'text', text:'[bb message from plugin:concurrency-limit]\n\n`Needs attention` · 2 to review', mentions:[] }], updatedAt:1 };
   const { slot, recipients } = setup({ queuedMessages: { list: () => Promise.resolve([row]) }, plugins: { list: async () => ({ plugins:[{ id:'concurrency-limit', name:'Concurrency limit', icon:'Gauge' }] }) } }); fireEvent.click(await recipients.findByRole('option'));
