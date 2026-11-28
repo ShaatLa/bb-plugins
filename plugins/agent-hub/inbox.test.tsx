@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, cleanup, fireEvent, waitFor, within } from '@testing-library/react';
 const change = (element: Element, init: { target: { value?: string; files?: File[] } }) => { if (element.getAttribute('contenteditable') !== null) { (element as HTMLElement).dataset.testValue = init.target.value ?? ''; fireEvent.input(element); } else fireEvent.change(element, init); };
 import { renderSlot as sdkRenderSlot } from '@get-bb/plugin-sdk/testing/app';
@@ -2253,4 +2253,56 @@ it('reads a sub-session opened in bb-chat mode by its own unread replies, and ne
   await new Promise(r => setTimeout(r, 50));
   expect(markThreadRead).not.toHaveBeenCalled();
   selectContact(undefined);
+});
+describe('a phone keeps its keyboard through taps in the chat', () => {
+  let target: Element | null = null;
+  beforeEach(() => {
+    vi.stubGlobal('matchMedia', (query: string) => ({ matches: query === '(pointer: coarse)', media: query, onchange: null, addEventListener() {}, removeEventListener() {}, addListener() {}, removeListener() {}, dispatchEvent: () => false }));
+    Object.defineProperty(document, 'elementFromPoint', { configurable: true, value: () => target });
+  });
+  afterEach(() => { vi.unstubAllGlobals(); delete (document as { elementFromPoint?: unknown }).elementFromPoint; });
+  // A real tap, as a phone sends it: returns whether touchend was left uncancelled.
+  const tap = (el: Element) => { target = el; const at = { identifier: 1, clientX: 5, clientY: 5 }; fireEvent.touchStart(el, { touches: [at], changedTouches: [at] }); return fireEvent.touchEnd(el, { touches: [], changedTouches: [at] }); };
+  it('opens a message menu and saves from it with the composer still focused', async () => {
+    const setPinned = vi.fn(() => ({ ok: true }));
+    const { slot, recipients } = setup({ rpc: { setPinned } }); fireEvent.click(await recipients.findByRole('option'));
+    await slot.findByText('Question one');
+    const editor = slot.getByRole('textbox', { name:'Send message' }); editor.focus();
+    expect(tap(slot.getAllByRole('button', { name:'More' })[0]!)).toBe(false);
+    expect(await slot.findByRole('menu')).toBeTruthy(); expect(document.activeElement).toBe(editor);
+    expect(tap(slot.getByRole('menuitem', { name:'Save' }))).toBe(false);
+    await waitFor(() => expect(setPinned).toHaveBeenCalledOnce()); expect(document.activeElement).toBe(editor);
+  });
+  it('keeps the composer focused when Change send time opens after a reorder, and its choice still acts by tap', async () => {
+    const minute = (n: number) => { const d = new Date(Date.now() + n * 60000); d.setSeconds(0, 0); return d.getTime(); };
+    const row = (id: string, sendAt: number) => ({ id, threadId:'thr_one', content:[{ type:'text', text:id, mentions:[] }], updatedAt:7, sendAt, state:'scheduled' });
+    const update = vi.fn(() => Promise.resolve({}));
+    const { slot, recipients } = setup({ queuedMessages:{ list: () => Promise.resolve([row('a', minute(30)), row('b', minute(33)), row('c', minute(40))]), update } }); fireEvent.click(await recipients.findByRole('option'));
+    const editor = slot.getByRole('textbox', { name:'Send message' });
+    fireEvent.keyDown(await slot.findByRole('button', { name:'Reorder queued message 3' }), { key:'ArrowUp' });
+    const yes = within(await slot.findByRole('dialog', { name:'Change send time' })).getByRole('button', { name:/^Yes/ });
+    editor.focus(); await act(async () => {}); expect(document.activeElement).toBe(editor);
+    expect(tap(yes)).toBe(false);
+    await waitFor(() => expect(update).toHaveBeenCalledTimes(1)); expect(document.activeElement).toBe(editor);
+  });
+  it('jumps to unread by a tap with the composer still focused', async () => {
+    const old = chatItem(0, null), page = Array.from({ length:3 }, (_, n) => chatItem(n + 1, 1)).reverse();
+  const { slot, recipients, list } = setup({ list: input => input.view === 'unread' ? { items:[old], nextCursor:null } : input.anchor ? { items:[old], nextCursor:null, newerCursor:'1|ans_0' } : input.cursor ? { items:[], nextCursor:null } : { items:page, nextCursor:'1|ans_1' } });
+    fireEvent.click(await recipients.findByRole('option')); await slot.findByRole('list', { name:'History' });
+    await waitFor(() => expect(jumpButton().className).not.toContain('invisible'));
+    const editor = slot.getByRole('textbox', { name:'Send message' }); editor.focus();
+    expect(tap(jumpButton())).toBe(false);
+    await waitFor(() => expect(list).toHaveBeenCalledWith(expect.objectContaining({ anchor:'ans_0' }))); expect(document.activeElement).toBe(editor);
+  });
+  it('lets an editor opened by a tap take the focus, for a sent message and a queued one', async () => {
+    const row = { id:'q1', threadId:'thr_one', content:[{ type:'text', text:'Queued note', mentions:[] }], updatedAt:7 };
+    const { slot, recipients } = setup({ editMessage: vi.fn(async () => ({ ok:true, operationId:'op', requestSequence:9 })), queuedMessages: { list: () => Promise.resolve([row]), experimental_holdForEdit: () => Promise.resolve({}), experimental_releaseEditHold: () => Promise.resolve({}) } }); fireEvent.click(await recipients.findByRole('option'));
+    await slot.findByText('Question one');
+    slot.getByRole('textbox', { name:'Send message' }).focus();
+    expect(tap(await slot.findByRole('button', { name:'Edit queued message 1' }))).toBe(false);
+    await waitFor(() => expect(document.activeElement).toBe(slot.getByRole('textbox', { name:'Edit queued message' })));
+    slot.getByRole('textbox', { name:'Send message' }).focus();
+    expect(tap(slot.getAllByRole('button', { name:'Edit message' })[0]!)).toBe(false);
+    await waitFor(() => expect(document.activeElement).toBe(slot.getByRole('textbox', { name:'Edit message' })));
+  });
 });
