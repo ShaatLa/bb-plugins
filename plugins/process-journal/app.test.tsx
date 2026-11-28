@@ -3,7 +3,9 @@ import { cleanup, fireEvent, waitFor, within } from "@testing-library/react";
 import { loadPluginApp, renderSlot } from "@get-bb/plugin-sdk/testing/app";
 import { afterEach, expect, it, vi } from "vitest";
 import { methods, rpcContract, type Entry, type Proposal } from "./contract";
-import { proposalPath } from "./paths";
+import { hiddenColumnsPath, proposalPath } from "./paths";
+import { defaultColumns } from "./status-display";
+import type { BoardColumnDisplay } from "./board-display-contract";
 
 afterEach(cleanup);
 const app = await loadPluginApp(() => import("./app"));
@@ -27,10 +29,12 @@ function page(raw: unknown) {
     ].filter(item => !input.state || item.proposal.state === input.state),
     nextOffset: input.state === "measuring" && !input.offset ? 25 : null,
     timeZone: "UTC",
+    ...(input.withTotal ? { total: input.state === "measuring" ? 26 : 1 } : {}),
   };
 }
 const fixture = () => ({
   projects: () => [project],
+  "config.get": vi.fn(() => ({ revision: 0, columns: null as BoardColumnDisplay[] | null })),
   list: vi.fn(page),
   digest: () => ({ applied: 1, kept: 0, reverted: 0, overdue: 1 }),
   "proposal.detail": vi.fn(() => ({ ...row, nextBefore: null, links: [], managerReachable: true, measured: true,
@@ -177,4 +181,95 @@ it("explains automatic review runs and shows their outcomes separately from the 
   expect(runs.getByText("Reviewed two open proposals.")).toBeTruthy();
   expect(runs.getByText("run_example")).toBeTruthy();
   expect(rpc["run.list"]).toHaveBeenLastCalledWith(expect.objectContaining({ projectId, managerId }));
+});
+
+it("opens and pages a hidden Measuring column and returns to its list from detail", async () => {
+  const columns = defaultColumns.map(column => column.id === "measuring"
+    ? { ...column, name: "Collecting evidence", visible: false, icon: "Clock" as const, color: "steelblue" as const } : column);
+  const rpc = fixture();
+  rpc["config.get"].mockReturnValue({ revision: 1, columns });
+  const screen = renderSlot(app.navPanels[0], { subPath: projectId }, { experimental_rpcContract: rpcContract, rpc });
+  const hidden = await screen.findByRole("link", { name: "Hidden columns" });
+  expect(screen.queryByRole("region", { name: "Collecting evidence" })).toBeNull();
+  expect(hidden.getAttribute("href")).toBe(hiddenColumnsPath(projectId));
+  const Journal = app.navPanels[0].component;
+  screen.rerender(<Journal subPath={`${projectId}/board/hidden`} />);
+  const measuring = within(await screen.findByRole("region", { name: "Collecting evidence" }));
+  expect(await measuring.findByText("26 proposals")).toBeTruthy();
+  expect(rpc.list).toHaveBeenCalledWith(expect.objectContaining({ state: "measuring", view: "board", withTotal: true }));
+  fireEvent.click(measuring.getByRole("button", { name: "Next" }));
+  await waitFor(() => expect(rpc.list).toHaveBeenCalledWith(expect.objectContaining({ withTotal: true, offset: 25 })));
+  const card = await measuring.findByRole("link", { name: /Require approval/ });
+  expect(card.getAttribute("href")).toBe(hiddenColumnsPath(projectId, proposal.id));
+  screen.rerender(<Journal subPath={`${projectId}/board/hidden/${proposal.id}`} />);
+  expect((await screen.findByRole("link", { name: "Back to hidden columns" })).getAttribute("href")).toBe(hiddenColumnsPath(projectId));
+  expect(await screen.findByText("Collecting evidence")).toBeTruthy();
+  screen.rerender(<Journal subPath={`${projectId}/board/hidden`} />);
+  await waitFor(() => expect(rpc.list).toHaveBeenLastCalledWith(expect.objectContaining({ state: "measuring", offset: 25 })));
+});
+
+it("updates column order on the project event and falls back to defaults after a display read fails", async () => {
+  const rpc = fixture();
+  const screen = renderSlot(app.navPanels[0], { subPath: projectId }, { experimental_rpcContract: rpcContract, rpc });
+  const board = within(await screen.findByRole("region", { name: "Status columns" }));
+  expect(board.getAllByRole("heading")[0]?.textContent).toBe("Proposed");
+  const first = { ...defaultColumns[4]!, name: "Rolled back", icon: "X" as const, color: "indianred" as const };
+  rpc["config.get"].mockReturnValue({ revision: 1, columns: [first, ...defaultColumns.slice(0, -1)] });
+  await screen.behavior.emitRealtime("journal:changed", { projectId });
+  expect(await board.findByRole("heading", { name: "Rolled back" })).toBeTruthy();
+  expect(board.getAllByRole("heading")[0]?.textContent).toBe("Rolled back");
+  const mark = within(board.getByRole("region", { name: "Rolled back" })).getByRole("heading").previousElementSibling;
+  expect(mark?.querySelector('[data-icon="X"]')).toBeTruthy();
+  expect((mark as HTMLElement).style.color).toBe("indianred");
+  rpc["config.get"].mockImplementationOnce(() => { throw new Error("Display unavailable"); });
+  await screen.behavior.emitRealtime("journal:changed", { projectId });
+  expect(await board.findByRole("heading", { name: "Reverted" })).toBeTruthy();
+  expect(board.getAllByRole("heading")[0]?.textContent).toBe("Proposed");
+});
+
+it("keeps hidden closed statuses filterable in History even when all board columns are hidden", async () => {
+  const rpc = fixture();
+  rpc["config.get"].mockReturnValue({ revision: 1, columns: defaultColumns.map(column => ({
+    ...column, visible: false, name: column.id === "kept" ? "Retained" : column.name,
+  })) });
+  const screen = renderSlot(app.navPanels[0], { subPath: projectId }, { experimental_rpcContract: rpcContract, rpc });
+  expect(await screen.findByText("All board columns are hidden.")).toBeTruthy();
+  expect(screen.getByRole("link", { name: "Open Process Journal settings" }).getAttribute("href"))
+    .toBe("/settings/plugins/process-journal");
+  expect(screen.getByRole("link", { name: "Hidden columns" })).toBeTruthy();
+  fireEvent.click(screen.getByRole("button", { name: "History" }));
+  const status = screen.getByRole("combobox", { name: "Status" });
+  expect(within(status).getByRole("option", { name: "Retained" }).getAttribute("value")).toBe("kept");
+  expect(within(status).getByRole("option", { name: "Withdrawn" }).getAttribute("value")).toBe("withdrawn");
+  fireEvent.change(status, { target: { value: "kept" } });
+  await waitFor(() => expect(rpc.list).toHaveBeenLastCalledWith(expect.objectContaining({ view: "history", state: "kept" })));
+});
+
+it("saves settings drafts, keeps them on conflict, and resets using the reloaded revision", async () => {
+  const rpc = fixture();
+  const configSet = vi.fn().mockReturnValueOnce({
+    ok: false, code: "board_display_conflict", current: { revision: 1, columns: null },
+  }).mockReturnValueOnce({ ok: true, revision: 2, columns: null });
+  const screen = renderSlot(app.settingsSections[0], {}, {
+    experimental_rpcContract: rpcContract, rpc: { ...rpc, "config.set": configSet },
+  });
+  const name = await screen.findByRole("textbox", { name: "Measuring name" }) as HTMLInputElement;
+  fireEvent.change(name, { target: { value: "Collecting evidence" } });
+  fireEvent.change(screen.getByRole("combobox", { name: "Measuring icon" }), { target: { value: "Clock" } });
+  fireEvent.change(screen.getByRole("combobox", { name: "Measuring color" }), { target: { value: "steelblue" } });
+  fireEvent.click(screen.getByRole("checkbox", { name: "Show Measuring on board" }));
+  fireEvent.click(screen.getByRole("button", { name: "Move Measuring up" }));
+  fireEvent.click(screen.getByRole("button", { name: "Save" }));
+  expect((await screen.findByRole("alert")).textContent).toMatch(/another window/i);
+  expect(name.value).toBe("Collecting evidence");
+  expect(configSet).toHaveBeenCalledWith({ projectId, key: "boardDisplay", value: { expectedRevision: 0, columns: [
+    defaultColumns[0], { ...defaultColumns[2], name: "Collecting evidence", visible: false, icon: "Clock", color: "steelblue" },
+    defaultColumns[1], ...defaultColumns.slice(3),
+  ] } });
+  rpc["config.get"].mockReturnValue({ revision: 1, columns: null });
+  fireEvent.click(screen.getByRole("button", { name: "Reload" }));
+  await waitFor(() => expect(name.value).toBe("Measuring"));
+  fireEvent.click(screen.getByRole("button", { name: "Restore defaults" }));
+  expect((await screen.findByRole("status")).textContent).toBe("Restored default statuses.");
+  expect(configSet).toHaveBeenLastCalledWith({ projectId, key: "boardDisplay", value: { expectedRevision: 1, columns: null } });
 });

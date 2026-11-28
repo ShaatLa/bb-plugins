@@ -2,7 +2,7 @@ import { cliCommand, defineCli, type BbPluginApi } from "@get-bb/plugin-sdk";
 import { z } from "zod";
 import { methods, rpcContract, type Config, type Input } from "./contract";
 import { SecretDetectedError } from "./secret-guard";
-import { createStore, JournalError, requireCondition, versionOne } from "./store";
+import { boardDisplayMigration, createStore, JournalError, requireCondition, versionOne } from "./store";
 import { createSweep, measureCommand } from "./sweep";
 import { createWorkBoard, workBoardApi } from "./work-board";
 
@@ -13,7 +13,7 @@ const instructions = "Record process failures in Process Journal in the same tur
 
 export default function plugin(bb: BbPluginApi) {
   const db = bb.storage.database();
-  bb.storage.migrate(db, [versionOne]);
+  bb.storage.migrate(db, [versionOne, boardDisplayMigration]);
   const store = createStore(db);
   const boardApi = workBoardApi(bb);
   const board = createWorkBoard(store, boardApi);
@@ -124,10 +124,19 @@ export default function plugin(bb: BbPluginApi) {
         })),
       })));
     },
-    "config.get": (i: Input<"config.get">) => i.key ? store.config(i.projectId)[i.key] : store.config(i.projectId),
+    "config.get": (i: Input<"config.get">) => {
+      if (i.key === "boardDisplay") return store.boardDisplay(i.projectId);
+      const config = store.config(i.projectId);
+      return i.key ? config[i.key] : config;
+    },
     "config.set": async (i: Input<"config.set">) => {
       await verifyProject(i.projectId);
       const next = methods["config.set"].input.parse(i);
+      if (next.key === "boardDisplay") {
+        const result = store.setBoardDisplay(next.projectId, next.value);
+        if (result.ok) publish(next.projectId);
+        return result;
+      }
       if (next.key === "managers") {
         const ids = z.array(z.string()).max(50).parse(next.value);
         await Promise.all(ids.map(id => validManager(next.projectId, id)));
@@ -229,7 +238,11 @@ export default function plugin(bb: BbPluginApi) {
         requireCondition(action === "set" && key !== undefined && value !== undefined, "usage", "Use config get [key] or config set <key> <value>");
         let data: unknown = value;
         try { data = JSON.parse(value); } catch (error) { if (!(error instanceof SyntaxError)) throw error; }
-        return result(await handlers["config.set"](methods["config.set"].input.parse({ projectId, key, value: data })));
+        const saved = await handlers["config.set"](methods["config.set"].input.parse({ projectId, key, value: data }));
+        if (key === "boardDisplay" && saved && typeof saved === "object" && "ok" in saved && !saved.ok) {
+          return { exitCode: 1, stdout: JSON.stringify(saved) };
+        }
+        return result(saved);
       } catch (error) { return failure(error); }
     } }),
   } }));

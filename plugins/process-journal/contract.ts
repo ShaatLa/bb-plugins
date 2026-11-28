@@ -77,7 +77,8 @@ export const configSchema = z.object({
   scheduleCoveredThrough: z.iso.date().nullable().default(null),
   catchUpMinutes: z.number().int().min(1).max(1440).default(60),
 }).strict();
-const keyName = configSchema.keyof();
+const keyName = z.enum([...configSchema.keyof().options, "boardDisplay"]);
+export { boardDisplaySchema, boardDisplayWriteSchema } from "./board-display-contract";
 const runOutcome = z.enum(["completed", "failed"]);
 export const runSchema = scope.extend({
   id, occurrence: z.iso.date(), managerId, skill: id, createdAt: time,
@@ -115,8 +116,8 @@ export const methods = {
     managerReachable: z.boolean(), measured: z.boolean(),
   })),
   list: action(scope.extend({ ...pagination, managerId: managerId.optional(), state: state.optional(),
-    view, range: historyRange.default("quarter"), overdue: z.boolean().optional(),
-  }), z.object({ items: z.array(rows.extend({ nextAt: time, overdue: z.boolean() })), nextOffset: z.number().int().nullable(), timeZone: timezone })),
+    view, range: historyRange.default("quarter"), overdue: z.boolean().optional(), withTotal: z.boolean().optional(),
+  }), z.object({ items: z.array(rows.extend({ nextAt: time, overdue: z.boolean() })), nextOffset: z.number().int().nullable(), timeZone: timezone, total: z.number().int().nonnegative().optional() })),
   digest: action(scope.extend({ managerId: managerId.optional() }), z.object({
     applied: z.number(), kept: z.number(), reverted: z.number(), overdue: z.number(),
   })),

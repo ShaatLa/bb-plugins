@@ -2,6 +2,18 @@
 
 Record how a process failed, track proposed fixes, and decide what to keep after measuring the effect. In BB, open **Process Journal** to select a project and manager. The board groups proposal cards by **Proposed**, **Applied**, **Measuring**, **Kept** and **Reverted**. Kept and Reverted show the last three months. Open a proposal card to see the proposal and its Entry on a dedicated page. **History** also includes Withdrawn proposals.
 
+## Status display
+
+Open **Settings → Plugins → Process Journal → Statuses** and select an enabled project. Edit column names, icons, colors and order, then save. Hidden columns are available from **Hidden columns** on the board, with a count and paginated proposal list for each. Hidden states also remain available in the **History** filter. Display edits keep every proposal in its existing state with its original deadline.
+
+The keyed CLI read `bb process-journal config get boardDisplay --project proj_example` returns `{revision, columns}`. An unset setting returns revision 0 and null columns. A save takes `{expectedRevision, columns}` with all five canonical IDs (`proposed`, `applied`, `measuring`, `kept`, `reverted`) exactly once, in display order. Each row includes `id`, `name`, `icon`, `color` and `visible`. Use `default` for the built-in icon or color. Use null columns to restore the defaults, passing the revision you read.
+
+```sh
+bb process-journal config set boardDisplay '{"expectedRevision":1,"columns":null}' --project proj_example
+```
+
+On `board_display_conflict`, reload the setting before writing again. The keyed `config.get` and `config.set` RPCs use the same shape. Ordinary keyless config reads retain the existing project configuration. The `list` input optionally accepts `withTotal: true` to include the total across pages under the same filters.
+
 ## Configure a project
 
 Start with the project disabled. Set one field at a time, using BB project and thread IDs.

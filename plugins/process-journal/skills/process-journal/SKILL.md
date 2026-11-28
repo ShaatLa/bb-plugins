@@ -29,6 +29,12 @@ Supply a JSON object in `--input`. Output is JSON. Get the current revision with
 
 A proposal object requires `title`, `hypothesis`, `rollbackCondition`, `deadlineAt` and `metric` with a `definition`. It accepts `managerId`, `links`, and a stable `key`. A metric accepts a `unit`, numeric `baseline` and `target`, or a configured metric `command` name. Include a stable `key` with each scheduled submission. Use the CLI in the run manager thread for its results and owner-question acknowledgments. The RPC caller context identifies a BB client or plugin and does not carry a manager thread.
 
+## Board display
+
+In Process Journal settings, a project can customize status names, icons, colors, order and visibility. **Hidden columns** on Board lists hidden proposals and their counts; History still offers all status filters. Continue using canonical lifecycle IDs in commands and transitions.
+
+Read `bb process-journal config get boardDisplay --project proj_example` for the current display revision and columns. Set the field with JSON `{"expectedRevision":1,"columns":null}` to reset from revision 1, or pass an ordered list containing all five board status IDs with their presentation fields. On a conflict, reload before retrying. Use `withTotal:true` in list input when you need a filtered total across pages.
+
 ## Escalation and scheduled reviews
 
 On a deadline message, look up the proposal and record the measure, decision or new deadline. For an owner question, first look in Agent Hub for an existing question matching the stable proposal and effect references. Use `agent_hub_ask` in the manager thread and record the returned ID with `proposal-ack` using `proposalId`, `effectId` and `questionId`. Use the associated Work Board card for owner decisions on project rules.

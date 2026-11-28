@@ -15,6 +15,18 @@ it("shares config, authenticated CLI attribution, persisted state and RPC reads"
     await set("managers", [threadId]);
     await set("defaultManager", threadId);
     await set("enabled", true);
+    const configBefore = await harness.callRpc("config.get", { projectId });
+    const readDisplay = () => harness.callRpc("config.get", { projectId, key: "boardDisplay" });
+    const setDisplay = (expectedRevision: number) => set("boardDisplay", { expectedRevision, columns: null });
+    expect(await readDisplay()).toEqual({ revision: 0, columns: null });
+    expect(await setDisplay(0)).toEqual({ ok: true, revision: 1, columns: null });
+    expect(await setDisplay(0)).toEqual({
+      ok: false, code: "board_display_conflict", current: { revision: 1, columns: null },
+    });
+    const stale = await harness.runCli(["config", "set", "boardDisplay", '{"expectedRevision":0,"columns":null}'], { projectId });
+    expect(stale.exitCode).toBe(1);
+    expect(JSON.parse(stale.stdout!)).toMatchObject({ ok: false, code: "board_display_conflict" });
+    expect(await harness.callRpc("config.get", { projectId })).toEqual(configBefore);
     expect(harness.registrations.instructionProvider!({ projectId, threadId })).toMatch(/same turn/);
     expect(harness.registrations.instructionProvider!({ projectId: "proj_other", threadId })).toBeNull();
     const result = await harness.runCli(["entry-add", "--input", JSON.stringify({

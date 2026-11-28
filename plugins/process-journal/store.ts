@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import type { Database } from "better-sqlite3";
 import {
-  configSchema, isOpen, type BoardLink, type Config, type Entry, type Input, type JournalEvent,
+  boardDisplaySchema, boardDisplayWriteSchema, configSchema, isOpen, type BoardLink, type Config, type Entry, type Input, type JournalEvent,
   type Observation, type Proposal, type Run, type State, type Transition,
 } from "./contract";
 import { assertNoSecretsInValue } from "./secret-guard";
@@ -28,6 +28,14 @@ CREATE TABLE runs (project TEXT NOT NULL, id TEXT NOT NULL, occurrence TEXT NOT 
 CREATE TABLE run_scans (project TEXT PRIMARY KEY, at INTEGER NOT NULL);
 CREATE TABLE fix_requests (project TEXT NOT NULL, proposal TEXT NOT NULL, request TEXT NOT NULL, board TEXT NOT NULL,
   deadline INTEGER NOT NULL, task TEXT, PRIMARY KEY(project,proposal,request));
+`;
+
+export const boardDisplayMigration = `
+CREATE TABLE IF NOT EXISTS board_display (
+  project TEXT PRIMARY KEY,
+  revision INTEGER NOT NULL,
+  body TEXT
+);
 `;
 
 type Body = { body: string };
@@ -79,6 +87,21 @@ export function createStore(db: Database, now: () => number = Date.now) {
     }
     return next[key as keyof Config];
   }
+  function boardDisplay(project: string) {
+    const row = db.prepare("SELECT revision,body FROM board_display WHERE project=?").get(project) as
+      { revision: number; body: string | null } | undefined;
+    return boardDisplaySchema.parse({ revision: row?.revision ?? 0, columns: row?.body == null ? null : JSON.parse(row.body) });
+  }
+  const setBoardDisplay = db.transaction((project: string, value: unknown) => {
+    assertNoSecretsInValue(value, "board display");
+    const { expectedRevision, columns } = boardDisplayWriteSchema.parse(value);
+    const current = boardDisplay(project);
+    if (current.revision !== expectedRevision) return { ok: false, code: "board_display_conflict", current } as const;
+    const revision = expectedRevision + 1;
+    db.prepare(`INSERT INTO board_display VALUES (?,?,?) ON CONFLICT(project) DO UPDATE
+      SET revision=excluded.revision,body=excluded.body`).run(project, revision, columns === null ? null : json(columns));
+    return { ok: true, revision, columns } as const;
+  });
   function entry(project: string, id: string) {
     const row = db.prepare("SELECT body FROM entries WHERE project=? AND id=?").get(project, id);
     requireCondition(row, "entry_missing", "Entry does not exist in this project");
@@ -253,10 +276,13 @@ export function createStore(db: Database, now: () => number = Date.now) {
     if (i.overdue) clauses.push(`(${nextDeadline})<=@at`);
     if (i.view === "history") clauses.push("EXISTS(SELECT 1 FROM timeline t WHERE t.project=p.project AND t.proposal=p.id AND t.kind='transition' AND t.at>=@after)");
     const order = i.overdue ? "nextAt,p.id" : "p.updated DESC,p.id";
-    const rows = db.prepare(`SELECT p.body, e.body AS entry, ${nextDeadline} AS nextAt FROM proposals p JOIN entries e
-      ON e.project=p.project AND e.id=json_extract(p.body,'$.entryId') WHERE ${clauses.join(" AND ")}
-      ORDER BY ${order} LIMIT @page OFFSET @offset`).all({ ...i, at, after, page: i.limit + 1 }) as (Body & { entry: string; nextAt: number })[];
-    return { timeZone: c.timeZone, items: rows.slice(0, i.limit).map(row => {
+    const from = `FROM proposals p JOIN entries e
+      ON e.project=p.project AND e.id=json_extract(p.body,'$.entryId') WHERE ${clauses.join(" AND ")}`;
+    const args = { ...i, at, after, page: i.limit + 1 };
+    const rows = db.prepare(`SELECT p.body, e.body AS entry, ${nextDeadline} AS nextAt ${from}
+      ORDER BY ${order} LIMIT @page OFFSET @offset`).all(args) as (Body & { entry: string; nextAt: number })[];
+    const count = i.withTotal ? db.prepare(`SELECT COUNT(*) AS total ${from}`).get(args) as { total: number } : undefined;
+    return { ...count, timeZone: c.timeZone, items: rows.slice(0, i.limit).map(row => {
       const proposal = parse<Proposal>(row);
       return { proposal, entry: JSON.parse(row.entry) as Entry, nextAt: row.nextAt,
         overdue: isOpen(proposal.state) && row.nextAt <= at };
@@ -366,7 +392,7 @@ export function createStore(db: Database, now: () => number = Date.now) {
     return true;
   }
   return {
-    db, now, config, configuredProjects, setConfig, entry, findProposal, proposal, openProposals, linkedProposals, addEntry, insertProposal,
+    db, now, config, configuredProjects, setConfig, boardDisplay, setBoardDisplay: setBoardDisplay.immediate, entry, findProposal, proposal, openProposals, linkedProposals, addEntry, insertProposal,
     update, changeState, transition, measure, recordMeasurement, comment, measured, event, events, list, listEntries, digest,
     links, saveLink, adjustCheck, queue, pending, inFlight, effect, claim, settle, ack, acknowledged,
     run, saveRun, stageRun, finishRun, listRuns, scanSchedule,

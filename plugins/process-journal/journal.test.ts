@@ -1,9 +1,10 @@
 import Database from "better-sqlite3";
 import { afterEach, expect, it, vi } from "vitest";
 import { configSchema, methods, type Proposal } from "./contract";
-import { createStore, effectId, versionOne } from "./store";
+import { boardDisplayMigration, createStore, effectId, versionOne } from "./store";
 import { createSweep, measureCommand, type Transport } from "./sweep";
 import { createWorkBoard, type workBoardApi } from "./work-board";
+import { boardStates } from "./states";
 import { minute, occurrence, timeOn } from "./time";
 
 const projectId = "proj_example", manager = "thr_example", other = "thr_other";
@@ -15,6 +16,7 @@ function setup() {
   const db = new Database(":memory:");
   database.push(db);
   db.exec(versionOne);
+  db.exec(boardDisplayMigration);
   const store = createStore(db, () => clock);
   store.setConfig(projectId, "managers", [manager, other]);
   store.setConfig(projectId, "defaultManager", manager);
@@ -409,4 +411,63 @@ it("rejects command timeouts, oversized output, nonzero exits and relative execu
   ]) {
     await expect(measureCommand(JSON.stringify({ example: settings }), "example")).rejects.toThrow();
   }
+});
+
+it("applies display revisions by project and keeps the existing config body readable", () => {
+  const { db, store } = setup();
+  const baseline = db.prepare("SELECT body FROM config WHERE project=?").get(projectId);
+  const defaults = boardStates.map(id => ({ id, name: id, visible: true, icon: "default", color: "default" }));
+  const renamed = defaults.map(column => column.id === "measuring" ? { ...column, name: "  Collecting evidence  ", visible: false } : column);
+  const first = store.boardDisplay(projectId), second = store.boardDisplay(projectId);
+  expect(first).toEqual({ revision: 0, columns: null });
+  expect(store.setBoardDisplay(projectId, { expectedRevision: first.revision, columns: renamed })).toMatchObject({
+    ok: true, revision: 1,
+  });
+  const saved = store.boardDisplay(projectId);
+  expect(saved.columns?.[2]).toMatchObject({ id: "measuring", name: "Collecting evidence", visible: false });
+  for (const columns of [defaults, null]) {
+    expect(store.setBoardDisplay(projectId, { expectedRevision: second.revision, columns })).toEqual({
+      ok: false, code: "board_display_conflict", current: saved,
+    });
+  }
+  expect(store.boardDisplay("proj_other")).toEqual({ revision: 0, columns: null });
+  expect(db.prepare("SELECT body FROM config WHERE project=?").get(projectId)).toEqual(baseline);
+  db.exec(boardDisplayMigration);
+  const reloaded = createStore(db).boardDisplay(projectId);
+  expect(reloaded).toEqual(saved);
+  expect(store.setBoardDisplay(projectId, { expectedRevision: reloaded.revision, columns: null }))
+    .toEqual({ ok: true, revision: 2, columns: null });
+  expect(store.setBoardDisplay(projectId, { expectedRevision: 0, columns: defaults })).toMatchObject({ ok: false });
+});
+
+it("validates fixed status IDs, palette, Unicode names and stored text", () => {
+  const { store } = setup();
+  const defaults = boardStates.map(id => ({ id, name: id, visible: true, icon: "default", color: "default" }));
+  const replace = (value: Record<string, unknown>) => [{ ...defaults[0], ...value }, ...defaults.slice(1)];
+  for (const columns of [
+    defaults.slice(1), replace({ id: "applied" }), replace({ id: "unknown" }),
+    replace({ icon: "UnknownIcon" }), replace({ color: "#fff" }), replace({ name: " " }),
+    replace({ name: "a".repeat(65) }), replace({ name: "  ＡＰＰＬＩＥＤ " }),
+    replace({ name: "Status\n" }), replace({ name: "Sta\u202etus" }), replace({ visible: null }),
+  ]) {
+    expect(() => store.setBoardDisplay(projectId, { expectedRevision: 0, columns })).toThrow();
+  }
+  expect(() => store.setBoardDisplay(projectId, { expectedRevision: 0, columns: replace({ name: "-----BEGIN PRIVATE KEY-----" }) }))
+    .toThrow("detected");
+  expect(store.boardDisplay(projectId).revision).toBe(0);
+});
+
+it("counts hidden Measuring proposals with the list filters and preserves their deadlines", () => {
+  const { store, add, measuring, advance } = setup();
+  const p = measuring(add());
+  measuring(add({ managerId: other }));
+  advance(2 * minute);
+  const columns = boardStates.map(id => ({ id, name: id, icon: "default", color: "default", visible: id !== "measuring" }));
+  store.setBoardDisplay(projectId, { expectedRevision: 0, columns });
+  const page = methods.list.input.parse({ projectId, state: "measuring", managerId: manager, overdue: true, limit: 1 });
+  expect(store.list(page)).not.toHaveProperty("total");
+  expect(store.list({ ...page, withTotal: true })).toMatchObject({
+    total: 1, items: [{ overdue: true, proposal: { id: p.id, state: "measuring", checkAt: p.checkAt, deadlineAt: p.deadlineAt } }],
+  });
+  expect(store.list({ ...page, withTotal: true, offset: 1 })).toMatchObject({ total: 1, items: [] });
 });

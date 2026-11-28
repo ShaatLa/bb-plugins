@@ -1,17 +1,18 @@
 import { useCallback, useEffect, useRef, useState, type ComponentPropsWithoutRef, type FormEvent, type ReactNode } from "react";
 import { definePluginApp, experimental_Icon as Icon, Markdown, useBbNavigate, useRealtime, useRpc, type PluginNavPanelProps } from "@get-bb/plugin-sdk/app";
 import type { z } from "zod";
+import { boardDisplaySchema, type BoardColumnDisplay } from "./board-display-contract";
 import type { methods, rpcContract } from "./contract";
-import { isOpen, openStates, states, type State } from "./states";
-import { cardPath, journalPath, proposalPath } from "./paths";
+import { isOpen, states, type BoardState, type State } from "./states";
+import { cardPath, hiddenColumnsPath, journalPath, proposalPath, settingsPath } from "./paths";
+import { JournalSettings } from "./settings";
+import { defaultColumns, displayName, StatusMark } from "./status-display";
 
 type Data<K extends keyof typeof methods> = z.infer<typeof methods[K]["output"]>;
 type Projects = Data<"projects">;
 type Detail = Data<"proposal.detail">;
 type ProposalRow = Data<"list">["items"][number];
 type Range = "week" | "month" | "quarter";
-const boardStates = [...openStates, "kept", "reverted"] as const;
-type BoardState = typeof boardStates[number];
 const input = "min-w-0 max-w-full rounded-md border border-border bg-background px-2 py-1 text-sm focus-visible:outline focus-visible:outline-2 focus-visible:outline-ring";
 const button = input + " hover:bg-muted disabled:opacity-50";
 const panel = "min-w-0 rounded-lg border border-border bg-card p-4";
@@ -22,24 +23,13 @@ const detailCallout = "space-y-1 rounded-md bg-muted/45 p-3";
 const control = "flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground";
 const cardSurface = "min-w-0 rounded-lg border border-border bg-card px-3 py-2.5 text-sm shadow-2xs";
 const property = "inline-flex min-w-0 items-center gap-1 rounded-md border border-border px-1.5 py-0.5 text-xs text-muted-foreground";
-const statusColor: Record<State, string> = {
-  proposed: "text-muted-foreground", applied: "text-blue-500", measuring: "text-amber-500",
-  kept: "text-emerald-500", reverted: "text-rose-500", withdrawn: "text-muted-foreground",
-};
 const runStatusLabel: Record<Data<"run.list">["items"][number]["status"], string> = {
   pending: "Pending", sent: "Awaiting outcome", uncertain: "Delivery uncertain", completed: "Completed", failed: "Failed",
 };
-const statusLabel = (state: State) => state[0]!.toUpperCase() + state.slice(1);
 const message = (error: unknown) => error instanceof Error ? error.message : "The request failed";
 const when = (at: number, zone: string) => new Intl.DateTimeFormat("en", {
   timeZone: zone, dateStyle: "medium", timeStyle: "short",
 }).format(at);
-
-function StatusMark({ state }: { state: State }) {
-  return <span aria-hidden="true" className={`inline-flex size-3.5 shrink-0 items-center justify-center rounded-full border border-current ${statusColor[state]} ${state === "proposed" ? "border-dashed" : ""}`}>
-    {state !== "proposed" && <span className="size-1.5 rounded-full bg-current" />}
-  </span>;
-}
 
 function EvidenceLinks({ links }: { links: string[] | undefined }) {
   if (!links?.length) return null;
@@ -49,20 +39,25 @@ function EvidenceLinks({ links }: { links: string[] | undefined }) {
 function readRoute(subPath: string) {
   try {
     const parts = subPath.replace(/^\/+|\/+$/g, "").split("/").map(decodeURIComponent);
-    if (parts.length > 2 || (parts.length === 2 && !parts[0])) return null;
-    const [projectId, proposalId] = parts;
-    return { projectId, proposalId };
+    const [projectId, second, third, fourth] = parts;
+    if (projectId && second === "board" && third === "hidden" && parts.length <= 4) {
+      return { projectId, proposalId: fourth, hidden: true };
+    }
+    if (parts.length > 2 || (parts.length === 2 && !projectId)) return null;
+    return { projectId, proposalId: second, hidden: false };
   } catch {
     return null;
   }
 }
 
-function JournalLink({ projectId, proposalId, ...props }: Omit<ComponentPropsWithoutRef<"a">, "href" | "onClick"> & {
-  projectId?: string; proposalId?: string;
+function JournalLink({ projectId, proposalId, hidden, ...props }: Omit<ComponentPropsWithoutRef<"a">, "href" | "onClick"> & {
+  projectId?: string; proposalId?: string; hidden?: boolean;
 }) {
   const navigate = useBbNavigate();
-  const subPath = projectId ? [projectId, ...(proposalId ? [proposalId] : [])].map(encodeURIComponent).join("/") : "";
-  return <a {...props} href={projectId && proposalId ? proposalPath(projectId, proposalId) : journalPath(projectId)} onClick={event => {
+  const href = projectId && hidden ? hiddenColumnsPath(projectId, proposalId)
+    : projectId && proposalId ? proposalPath(projectId, proposalId) : journalPath(projectId);
+  const subPath = href.slice(journalPath().length + 1);
+  return <a {...props} href={href} onClick={event => {
     if (event.defaultPrevented || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
     event.preventDefault();
     navigate.toPluginPanel("process-journal", { subPath });
@@ -98,17 +93,23 @@ function Journal({ subPath }: PluginNavPanelProps) {
     </div>}
     {!unavailable && projects?.length === 0 && <p className="p-4 text-sm text-muted-foreground">Enable Process Journal for a project with <code>bb process-journal config</code>.</p>}
     {current && projects && <Workspace key={current.id} project={current} projects={projects}
-      routeProposal={route?.proposalId} stamp={stamp} refresh={refresh} />}
+      routeProposal={route?.proposalId} routeHidden={route?.hidden} stamp={stamp} refresh={refresh} />}
   </main>;
 }
 
-function Workspace({ project, projects, routeProposal, stamp, refresh }: {
-  project: Projects[number]; projects: Projects; routeProposal?: string; stamp: number; refresh: () => void;
+function Workspace({ project, projects, routeProposal, routeHidden, stamp, refresh }: {
+  project: Projects[number]; projects: Projects; routeProposal?: string; routeHidden?: boolean; stamp: number; refresh: () => void;
 }) {
   const rpc = useRpc<typeof rpcContract>();
   const navigate = useBbNavigate();
   const [manager, setManager] = useState("");
-  const [view, setView] = useState<"board" | "history" | "runs">("board");
+  const [tab, setTab] = useState<"board" | "history" | "runs">("board");
+  const view = routeHidden ? "hidden" : tab;
+  const inBoard = view === "board" || view === "hidden";
+  const [columns, setColumns] = useState<BoardColumnDisplay[]>();
+  const display = columns ?? defaultColumns;
+  const hiddenColumns = display.filter(column => !column.visible);
+  const label = (state: State) => displayName(state, display);
   const [range, setRange] = useState<Range>("quarter");
   const [state, setState] = useState<State | "">("");
   const [overdue, setOverdue] = useState(false);
@@ -118,6 +119,14 @@ function Workspace({ project, projects, routeProposal, stamp, refresh }: {
   const [digest, setDigest] = useState<Data<"digest">>();
   const [runs, setRuns] = useState<Data<"run.list">>();
   const [error, setError] = useState("");
+
+  useEffect(() => {
+    let active = true;
+    rpc.call("config.get", { projectId: project.id, key: "boardDisplay" }).then(raw => {
+      if (active) setColumns(boardDisplaySchema.parse(raw).columns ?? defaultColumns);
+    }).catch(() => { if (active) setColumns(defaultColumns); });
+    return () => { active = false; };
+  }, [rpc, project.id, stamp]);
 
   useEffect(() => {
     if (routeProposal) return;
@@ -140,9 +149,9 @@ function Workspace({ project, projects, routeProposal, stamp, refresh }: {
     return () => { active = false; };
   }, [rpc, view, project.id, manager, range, state, offset, stamp, routeProposal]);
 
-  const backLabel = view === "history" ? "Back to history" : "Back to board";
+  const backLabel = routeHidden ? "Back to hidden columns" : view === "history" ? "Back to history" : "Back to board";
   const toolbar = <header className="sticky top-0 z-10 flex min-h-11 flex-wrap items-center gap-x-3 gap-y-1 border-b border-border-hairline bg-background px-4 py-1.5">
-    {routeProposal && <JournalLink projectId={project.id}
+    {routeProposal && <JournalLink projectId={project.id} hidden={routeHidden}
       aria-label={backLabel} title={backLabel}
       className="inline-flex size-8 shrink-0 items-center justify-center rounded-md hover:bg-state-hover focus-visible:outline focus-visible:outline-ring pointer-coarse:size-10">
       <Icon name="ArrowLeft" className="size-4" />
@@ -158,7 +167,7 @@ function Workspace({ project, projects, routeProposal, stamp, refresh }: {
   if (routeProposal) return <>
     {toolbar}
     <div className="mx-auto max-w-5xl px-3 pb-5 pt-3 sm:px-4">
-      <ProposalDetail key={routeProposal} project={project} id={routeProposal} stamp={stamp} refresh={refresh} />
+      <ProposalDetail key={routeProposal} project={project} id={routeProposal} columns={display} stamp={stamp} refresh={refresh} />
     </div>
   </>;
 
@@ -169,12 +178,12 @@ function Workspace({ project, projects, routeProposal, stamp, refresh }: {
   const name = (threadId: string) => project.managers.find(m => m.id === threadId)?.name ?? threadId;
   function proposalCard(row: ProposalRow) {
     const p = row.proposal, late = row.overdue;
-    return <JournalLink key={p.id} projectId={project.id} proposalId={p.id}
+    return <JournalLink key={p.id} projectId={project.id} proposalId={p.id} hidden={routeHidden}
       className={`${cardSurface} block text-left transition-colors hover:border-input hover:bg-state-hover focus-visible:outline focus-visible:outline-ring`}>
       <strong className="block break-words text-sm font-medium leading-snug">{p.title}</strong>
       <span className="mt-1 block break-words text-xs leading-snug text-muted-foreground">{row.entry.title}</span>
       <span className="mt-2 flex flex-wrap items-center gap-1.5">
-        {view === "history" && <span className={property}><StatusMark state={p.state} />{statusLabel(p.state)}</span>}
+        {view === "history" && <span className={property}><StatusMark state={p.state} display={display.find(column => column.id === p.state)} />{label(p.state)}</span>}
         <span className={property}><span className="min-w-0 break-words">{name(p.managerId)}</span></span>
         <span className={`${property} ${late ? "border-destructive/30 font-medium text-destructive" : ""}`}>
           <Icon name="Clock" className="size-3 shrink-0" />
@@ -189,8 +198,12 @@ function Workspace({ project, projects, routeProposal, stamp, refresh }: {
     <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2 border-b border-border-hairline bg-background px-4 py-2">
       <nav className="flex max-w-full flex-wrap items-center rounded-md bg-muted p-0.5" aria-label="Journal views">
         {(["board", "history", "runs"] as const).map(next =>
-          <button className={`rounded-sm px-2.5 py-1 text-xs font-medium focus-visible:outline focus-visible:outline-ring ${view === next ? "bg-background text-foreground shadow-2xs" : "text-muted-foreground hover:text-foreground"}`} key={next} type="button"
-            aria-pressed={view === next} onClick={() => { setView(next); reset(); }}>
+          <button className={`rounded-sm px-2.5 py-1 text-xs font-medium focus-visible:outline focus-visible:outline-ring ${(routeHidden ? next === "board" : tab === next) ? "bg-background text-foreground shadow-2xs" : "text-muted-foreground hover:text-foreground"}`} key={next} type="button"
+            aria-pressed={routeHidden ? next === "board" : tab === next} onClick={() => {
+              setTab(next);
+              reset();
+              if (routeHidden) navigate.toPluginPanel("process-journal", { subPath: project.id });
+            }}>
             {next === "runs" ? "Review runs" : next === "history" ? "History" : "Board"}
           </button>)}
       </nav>
@@ -201,16 +214,17 @@ function Workspace({ project, projects, routeProposal, stamp, refresh }: {
             {project.managers.map(m => <option key={m.id} value={m.id}>{m.name}{m.reachable ? "" : " (unavailable)"}</option>)}
           </select>
         </label>
-        {view === "board" && <label className={control}>
+        {inBoard && <label className={control}>
           <input type="checkbox" checked={overdue} onChange={event => { setOverdue(event.target.checked); reset(); }} /> Overdue only
         </label>}
+        {view === "board" && hiddenColumns.length > 0 && <JournalLink projectId={project.id} hidden className={button}>Hidden columns</JournalLink>}
       </div>
     </div>
     {view !== "runs" && <section aria-label="Weekly digest" className="flex flex-wrap items-center gap-x-4 gap-y-1 border-b border-border-hairline bg-background px-4 py-2 text-xs">
       <h2 className="font-medium text-muted-foreground">Weekly digest</h2>
       <dl className="flex flex-wrap items-center gap-x-3 gap-y-1">
         {(["applied", "kept", "reverted", "overdue"] as const).map(key => <div key={key} className="flex items-center gap-1.5">
-          <dt className="capitalize text-muted-foreground">{key}</dt>
+          <dt className="text-muted-foreground">{key === "overdue" ? "Overdue" : label(key)}</dt>
           <dd className={`font-medium tabular-nums ${key === "overdue" && digest?.overdue ? "text-destructive" : ""}`}>{digest?.[key] ?? "…"}</dd>
         </div>)}
       </dl>
@@ -233,13 +247,23 @@ function Workspace({ project, projects, routeProposal, stamp, refresh }: {
           <code className="block break-all text-xs text-muted-foreground">{run.id}</code>
         </li>)}</ul>}
       <Pages offset={offset} next={runs?.nextOffset} setOffset={setOffset} />
-    </section> : view === "board" ?
-      <div className="flex min-w-0 items-start gap-3 overflow-x-auto p-4 focus-visible:outline focus-visible:-outline-offset-2 focus-visible:outline-ring"
-        tabIndex={0} role="region" aria-label="Status columns">
-        {boardStates.map(status => <BoardColumn key={status} status={status} projectId={project.id} manager={manager}
-          overdue={overdue} stamp={stamp} refresh={refresh} offset={columnOffsets[status] ?? 0}
-          setOffset={next => setColumnOffsets(previous => ({ ...previous, [status]: next }))} renderCard={proposalCard} />)}
-      </div> : <section className="mx-auto max-w-5xl px-4 pb-5 pt-3">
+    </section> : inBoard ?
+      <section className={view === "hidden" ? "px-4 py-3" : ""} aria-label={view === "hidden" ? "Hidden columns" : undefined}>
+        {view === "hidden" && <h2 className="text-sm font-semibold">Hidden columns</h2>}
+        {!columns ? <p className="p-4 text-sm text-muted-foreground">Loading status display…</p>
+          : view === "hidden" && !hiddenColumns.length ? <p className="py-3 text-sm text-muted-foreground">No hidden columns.</p>
+          : view === "board" && hiddenColumns.length === columns.length ? <div className="space-y-2 p-4 text-sm">
+            <p>All board columns are hidden.</p>
+            <a className="underline" href={settingsPath}>Open Process Journal settings</a>
+          </div>
+          : <div className={view === "hidden" ? "grid gap-4 py-3 lg:grid-cols-2" : "flex min-w-0 items-start gap-3 overflow-x-auto p-4 focus-visible:outline focus-visible:-outline-offset-2 focus-visible:outline-ring"}
+              tabIndex={view === "board" ? 0 : undefined} role="region" aria-label={view === "board" ? "Status columns" : "Hidden status lists"}>
+            {(view === "hidden" ? hiddenColumns : columns.filter(column => column.visible)).map(column =>
+              <BoardColumn key={column.id} column={column} hiddenView={view === "hidden"} projectId={project.id} manager={manager}
+                overdue={overdue} stamp={stamp} refresh={refresh} offset={columnOffsets[column.id] ?? 0}
+                setOffset={next => setColumnOffsets(previous => ({ ...previous, [column.id]: next }))} renderCard={proposalCard} />)}
+          </div>}
+      </section> : <section className="mx-auto max-w-5xl px-4 pb-5 pt-3">
         <div className="flex flex-wrap items-center justify-between gap-2">
           <h2 className="text-sm font-semibold">Proposal history</h2>
           <div className="flex flex-wrap gap-2">
@@ -250,7 +274,7 @@ function Workspace({ project, projects, routeProposal, stamp, refresh }: {
             </label>
             <label className={control}>Status
               <select className={input} value={state} onChange={event => { setState(event.target.value as State | ""); reset(); }}>
-                <option value="">All statuses</option>{states.map(item => <option key={item} value={item}>{statusLabel(item)}</option>)}
+                <option value="">All statuses</option>{states.map(item => <option key={item} value={item}>{label(item)}</option>)}
               </select>
             </label>
           </div>
@@ -263,13 +287,14 @@ function Workspace({ project, projects, routeProposal, stamp, refresh }: {
   </>;
 }
 
-function BoardColumn({ status, projectId, manager, overdue, stamp, refresh, offset, setOffset, renderCard }: {
-  status: BoardState; projectId: string; manager: string; overdue: boolean; stamp: number; refresh: () => void;
+function BoardColumn({ column, hiddenView, projectId, manager, overdue, stamp, refresh, offset, setOffset, renderCard }: {
+  column: BoardColumnDisplay; hiddenView: boolean; projectId: string; manager: string; overdue: boolean; stamp: number; refresh: () => void;
   offset: number; setOffset: (offset: number) => void; renderCard: (row: ProposalRow) => ReactNode;
 }) {
   const rpc = useRpc<typeof rpcContract>();
   const [list, setList] = useState<Data<"list">>();
   const [error, setError] = useState("");
+  const status = column.id;
   const open = isOpen(status);
   const hiddenByOverdue = overdue && !open;
   useEffect(() => {
@@ -278,15 +303,16 @@ function BoardColumn({ status, projectId, manager, overdue, stamp, refresh, offs
     setList(undefined);
     setError("");
     rpc.call("list", { projectId, ...(manager ? { managerId: manager } : {}), state: status,
-      view: open ? "board" : "history", range: "quarter", offset, overdue }).then(data => {
+      view: open ? "board" : "history", range: "quarter", offset, overdue, ...(hiddenView ? { withTotal: true } : {}) }).then(data => {
       if (active) setList(data);
     }, cause => { if (active) setError(message(cause)); });
     return () => { active = false; };
-  }, [rpc, projectId, manager, status, open, overdue, hiddenByOverdue, offset, stamp]);
-  return <section className="min-w-[13.5rem] flex-1 basis-60" aria-label={statusLabel(status)}>
+  }, [rpc, projectId, manager, status, open, overdue, hiddenByOverdue, hiddenView, offset, stamp]);
+  return <section className={hiddenView ? "min-w-0" : "min-w-[13.5rem] flex-1 basis-60"} aria-label={column.name}>
     <div className="flex min-h-8 flex-wrap items-center gap-x-2 gap-y-0.5 px-1 pb-2">
-      <StatusMark state={status} />
-      <h3 className="text-sm font-semibold">{statusLabel(status)}</h3>
+      <StatusMark state={status} display={column} />
+      <h3 className="text-sm font-semibold [overflow-wrap:anywhere]">{column.name}</h3>
+      {hiddenView && <span className={property}>{hiddenByOverdue ? 0 : list?.total ?? "…"} proposals</span>}
       {!open && <p className="text-xs text-muted-foreground">Last 3 months</p>}
     </div>
     <div className={`space-y-2 p-1 ${!hiddenByOverdue && list?.items.length ? "rounded-lg bg-muted/35" : ""}`}>
@@ -309,7 +335,7 @@ function Pages({ offset, next, setOffset }: { offset: number; next?: number | nu
   </div>;
 }
 
-function ProposalDetail({ project, id, stamp, refresh }: { project: Projects[number]; id: string; stamp: number; refresh: () => void }) {
+function ProposalDetail({ project, id, columns, stamp, refresh }: { project: Projects[number]; id: string; columns: BoardColumnDisplay[]; stamp: number; refresh: () => void }) {
   const rpc = useRpc<typeof rpcContract>();
   const [detail, setDetail] = useState<Detail>();
   const [extra, setExtra] = useState<Detail["events"]>([]);
@@ -360,7 +386,7 @@ function ProposalDetail({ project, id, stamp, refresh }: { project: Projects[num
       <h2 className="break-words text-2xl font-semibold leading-tight">{p.title}</h2>
       <div className="flex flex-wrap items-center gap-2">
         <span className="inline-flex items-center gap-1.5 rounded-full border border-border bg-secondary px-2.5 py-0.5 text-xs font-medium">
-          <StatusMark state={p.state} />{statusLabel(p.state)}
+          <StatusMark state={p.state} display={columns.find(column => column.id === p.state)} />{displayName(p.state, columns)}
         </span>
         <a className="rounded-md px-1.5 py-0.5 text-xs text-muted-foreground underline hover:text-foreground" href={proposalPath(project.id, id)}>Proposal link</a>
       </div>
@@ -477,7 +503,7 @@ function ProposalDetail({ project, id, stamp, refresh }: { project: Projects[num
           <span className="min-w-0 break-words text-xs font-medium">{names.get(event.actor) ?? event.actor}</span>
           <time className="text-xs text-muted-foreground" dateTime={new Date(event.at).toISOString()}>{date(event.at)}</time>
         </div>
-        {event.state && <strong className="flex items-center gap-1.5 text-sm font-medium"><StatusMark state={event.state} />{statusLabel(event.state)}</strong>}
+        {event.state && <strong className="flex items-center gap-1.5 text-sm font-medium"><StatusMark state={event.state} display={columns.find(column => column.id === event.state)} />{displayName(event.state, columns)}</strong>}
         {event.state && isOpen(event.state) && event.deadlineAt !== undefined &&
           <p className="text-xs text-muted-foreground">Deadline · {date(event.deadlineAt)}</p>}
         {event.checkAt != null && <p className="text-xs text-muted-foreground">Measurement check · {date(event.checkAt)}</p>}
@@ -503,5 +529,6 @@ function ProposalDetail({ project, id, stamp, refresh }: { project: Projects[num
 }
 
 export default definePluginApp(app => {
+  app.slots.settingsSection({ id: "settings", title: "Process Journal", component: JournalSettings });
   app.slots.navPanel({ id: "process-journal", path: "process-journal", title: "Process Journal", icon: "process-journal/book-open", component: Journal });
 });
