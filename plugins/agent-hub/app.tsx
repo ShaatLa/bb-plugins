@@ -419,8 +419,8 @@ export function ItemCard({ item, members, late, live = true, chat = false, marka
     {item.kind === 'for_me' ? <div className="space-y-1">
       {/* The time sits in the action row, as under the owner's messages; this row only carries labels and the link out. */}
       {((item.status === 'open' && item.deadlineAt !== null) || (item.status === 'replied' && item.answerSource === 'agent') || item.urgency === 'blocking' || item.chatAsked || (item.dismissedAt !== null && item.answerSource === 'agent') || declinedOpen || (!!open && !item.threadDeleted)) && <div className="flex min-h-8 items-center gap-2 pl-2 text-xs text-muted-foreground">{item.status === 'open' && item.deadlineAt !== null && <Deadline item={item} />}{item.status === 'replied' && item.answerSource === 'agent' && <span>Defaulted</span>}{item.urgency === 'blocking' && <span>Blocking</span>}{item.chatAsked && <span title="The agent asked this in its reply text, not through Agent Hub" className="inline-flex items-center gap-1"><Icon name="MessageSquare" aria-hidden className="size-3" />Asked in chat</span>}{item.dismissedAt !== null && item.answerSource === 'agent' && <span title="The agent withdrew this question; its reason is below">Withdrawn</span>}{declinedOpen && <span title="You chose not to reply; the question stays open for the agent">Won’t reply</span>}<span className="flex-1" /><span className="opacity-60 transition-opacity hover:opacity-100 focus-within:opacity-100">{/* Only outside the chat it leads anywhere: in the chat the conversation is already open. */}{open && !item.threadDeleted && <Button asChild size="sm" {...iconProps(open.label)}><UrlLink href={open.href} onClick={event => { if (open.onClick) { event.preventDefault(); open.onClick(); } }}><Icon name="ExternalLink" aria-hidden /></UrlLink></Button>}</span></div>}
-      {/* An open question of several parts shows each prompt in its form's tabs, so its text above would only repeat them. */}
-      {!(item.status === 'open' && (item.questions?.length ?? 0) > 1) && <div ref={question} className={expanded ? '' : 'line-clamp-6'}>{agentBody(item.question, item.questionSeq)}</div>}
+      {/* A question of several parts still to answer shows each prompt in its form's tabs, so its text above would only repeat them. */}
+      {!(askable && (item.questions?.length ?? 0) > 1) && <div ref={question} className={expanded ? '' : 'line-clamp-6'}>{agentBody(item.question, item.questionSeq)}</div>}
     </div> : item.kind === 'update' ? <><IncomingHeader item={item} time={chat ? time : null} />
       {/* The quote has no header text: bb's [bb message from …] header, a notice's own line and a sender's leading [tag] are already in the header. */}
       {quoteText && <div data-agent-message className="ml-3 mr-2 border-l-2 sm:ml-8 border-border-seam pl-3 text-sm text-muted-foreground"><div ref={question} className={`break-words ${expanded ? '' : '[&_p]:my-0 line-clamp-3'}`}><AgentMarkdown content={quoteText} threadId={item.threadId} /></div></div>}
@@ -647,12 +647,12 @@ function AgentHubPanelContent({ threadId }: { threadId?: string }) {
     window.addEventListener(CONTACT_SELECTED, open); return () => window.removeEventListener(CONTACT_SELECTED, open);
   }, [threadId, page]);
   const { rows: pendingRows, settle: settlePending } = usePendingInteractionRows(threadId ? [] : threads);
-  // The Questions section is page-only, so a thread tab never reads the global list.
-  const forMe = useQuery({ contract: rpcContract, method: 'list', input: { view: 'for_me', limit: 50 }, enabled: !threadId });
+  // The Questions section is page-only, so a thread tab never reads the global list; it lists only what the owner can still answer, as its badge counts.
+  const forMe = useQuery({ contract: rpcContract, method: 'list', input: { view: 'for_me', limit: 50, answerable: true }, enabled: !threadId });
   // Reports other plugins could not deliver: one with a chat waits there as unread, since a report is no question; only one without a chat has nowhere else to show.
   const noticeList = useQuery({ contract: rpcContract, method: 'list', input: { view: 'unread', notices: true, limit: 50 }, enabled: !threadId });
   const notices = noticeList.data?.items.filter(item => item.notice && item.threadId === NOTICE_THREAD) ?? [];
-  const questionCount = Object.values(pendingRows).reduce((sum, rows) => sum + rows.length, 0) + (forMe.data?.items.filter(item => item.declinedAt === null).length ?? 0) + notices.length;
+  const questionCount = Object.values(pendingRows).reduce((sum, rows) => sum + rows.length, 0) + (forMe.data?.items.length ?? 0) + notices.length;
   const [error, setError] = useState('');
   const undo = useReadUndo(), [saved, setSaved] = useTransientText();
   useEffect(() => { const receive = (event: Event) => { const detail = (event as CustomEvent<{created:boolean}>).detail; localStorage.removeItem(SAVED_FLASH); setSaved(detail.created ? 'Saved to Agent Hub' : 'Already in Saved'); }; const stored = localStorage.getItem(SAVED_FLASH); if (stored) { localStorage.removeItem(SAVED_FLASH); try { const detail = JSON.parse(stored); if (Date.now() - detail.at < 5000) receive(new CustomEvent('answers:saved', { detail })); } catch {} } window.addEventListener('answers:saved', receive); return () => window.removeEventListener('answers:saved', receive); }, [setSaved]);

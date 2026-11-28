@@ -561,7 +561,8 @@ function InboxChat({ onBulkRead, bbChat = false, search: searchProp, onSearch, t
   const [settled, setSettled] = useState(false), settle = useRef<ReturnType<typeof setTimeout>>(undefined);
   const release = () => { clearTimeout(settle.current); pin.current = null; setSettled(true); };
   // Re-inserting moves an edited thread to the end, so key order is edit order for saveDrafts.
-  function updateCompose(threadId: string, value: ComposeDraft) { delete drafts[threadId]; drafts[threadId] = value; clearTimeout(draftTimer.current); draftTimer.current = setTimeout(saveDrafts, 300); if (threadId === selectedRef.current) setCompose(value); }
+  // A draft that starts or empties saves at once so the contact row's pencil follows; typing within a draft stays debounced.
+  function updateCompose(threadId: string, value: ComposeDraft) { const unsent = (draft?: ComposeDraft) => !!(draft?.text.trim() || draft?.files.length), flipped = unsent(drafts[threadId]) !== unsent(value); delete drafts[threadId]; drafts[threadId] = value; clearTimeout(draftTimer.current); if (flipped) saveDrafts(); else draftTimer.current = setTimeout(saveDrafts, 300); if (threadId === selectedRef.current) setCompose(value); }
   const recall = useRef<{threadId:string; index:number; draft:ComposeDraft; entries:HistoryInput[]; loading:boolean} | null>(null);
   function recallPrompt(direction: 'up' | 'down') {
     if (!selected) return false;

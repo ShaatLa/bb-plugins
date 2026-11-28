@@ -24,11 +24,21 @@ async function questionsSetup(overrides: Record<string, (...args: any[]) => any>
   await waitFor(() => expect(slot.container.querySelector('[data-pending-title="Choose?"]')).toBeTruthy());
   return slot;
 }
-it('shows a Won’t reply question in Questions read-only: its state, no choices and no Won’t reply button', async () => {
-  const slot = await questionsSetup({}, { options: ['Yes', 'No'], declinedAt: Date.now() });
-  expect(slot.getByText('Won’t reply')).toBeTruthy();
-  expect(slot.queryByRole('button', { name: 'Won’t reply' })).toBeNull();
-  expect(slot.queryByRole('button', { name: 'Yes' })).toBeNull();
+it('leaves a Won’t reply question out of Questions and its badge: the page lists only questions the owner can still answer', async () => {
+  localStorage.setItem('bb-plugin-answers:page:questions', 'true');
+  const app = await loadPluginApp(() => import('./app'));
+  const declined = { ...item, id: 'ans_ask', kind: 'for_me' as const, status: 'open' as const, question: 'Choose?', answer: null, options: ['Yes', 'No'], declinedAt: Date.now() };
+  // Answers as the server does: answerable leaves declined questions out.
+  const list = vi.fn((input: { view: string; answerable?: boolean }) => ({ items: input.view === 'for_me' && !input.answerable ? [declined] : [], nextCursor: null }));
+  const slot = renderSlot(app.navPanels[0]!, { subPath: '' }, { rpc: { recipients: () => ({ recipients: [] }), list, counts: () => ({ unread: 0, waiting: 0, forMe: 0, inbox: 0 }) } });
+  expect(await slot.findByText('No questions for you')).toBeTruthy();
+  expect(list).toHaveBeenCalledWith(expect.objectContaining({ view: 'for_me', answerable: true }));
+  expect(slot.queryByText('Choose?')).toBeNull(); expect(slot.queryByLabelText(/pending$/)).toBeNull();
+});
+it('shows the text of a declined question of several parts, whose form is no longer drawn', async () => {
+  const part = (id: string, prompt: string) => ({ id, prompt, options: [{ value: 'a', label: 'A' }], multiSelect: false, allowFreeText: false, required: true });
+  const slot = await questionsSetup({}, { questions: [part('q1', 'First?'), part('q2', 'Second?')], declinedAt: Date.now() });
+  expect(slot.getByText('Choose?')).toBeTruthy(); expect(slot.queryByRole('button', { name: 'Submit' })).toBeNull();
 });
 it('shows a withdrawn question in the chat history read-only', async () => {
   const slot = await questionsSetup({}, { options: ['Yes', 'No'], declinedAt: 4, dismissedAt: 5, answerSource: 'agent', note: 'Found it' });
@@ -38,10 +48,6 @@ it('does not count a declined open question as unread', async () => {
   const { isUnread } = await import('./app');
   const open = { ...item, kind: 'for_me' as const, status: 'open' as const, answer: null };
   expect(isUnread(open)).toBe(true); expect(isUnread({ ...open, declinedAt: 1 })).toBe(false);
-});
-it('does not count a declined question in the Questions tab badge', async () => {
-  const slot = await questionsSetup({}, { declinedAt: Date.now() });
-  expect(slot.queryByLabelText(/pending$/)).toBeNull();
 });
 it('counts an undeclined question in the Questions tab badge', async () => {
   const slot = await questionsSetup({});

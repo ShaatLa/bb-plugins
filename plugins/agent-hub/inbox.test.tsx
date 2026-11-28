@@ -77,6 +77,19 @@ it('keeps a failed draft and edits made during a pending send', async () => {
   await waitFor(() => expect(localStorage.getItem('bb-plugin-answers:page:compose')).toContain('First'));
   expect(slot.getByRole('alert').textContent).toContain('Delivery uncertain');
 });
+it('saves a draft the moment it gets its first text, so the contact pencil does not wait for a typing pause', async () => {
+  const { slot, recipients } = setup(); fireEvent.click(await recipients.findByRole('option'));
+  const editor = await slot.findByRole('textbox', { name:'Send message' });
+  vi.useFakeTimers();
+  try {
+    change(editor, { target:{ value:'H' } });
+    expect(localStorage.getItem('bb-plugin-answers:page:compose') ?? '').toContain('"H"');
+    change(editor, { target:{ value:'He' } });
+    expect(localStorage.getItem('bb-plugin-answers:page:compose') ?? '').not.toContain('"He"');
+    await act(async () => { await vi.advanceTimersByTimeAsync(300); });
+    expect(localStorage.getItem('bb-plugin-answers:page:compose') ?? '').toContain('"He"');
+  } finally { vi.useRealTimers(); }
+});
 it('jumps directly to a search result without fetching intermediate pages', async () => {
   const old = { ...base, id:'ans_old', question:'Ancient question', answer:'Ancient answer' };
   const { slot, recipients, list } = setup({ list: input => input.query ? { items:[old], nextCursor:null } : input.anchor ? { items:[old], nextCursor:null, newerCursor:'1|ans_old' } : input.after ? { items:[base], nextCursor:null, newerCursor:'2|ans_one' } : { items:[base], nextCursor:'1|ans_one' } });

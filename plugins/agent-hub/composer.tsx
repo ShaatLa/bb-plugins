@@ -1,5 +1,5 @@
 import { RichEditor, ComposerThread } from './rich-editor';
-import { useContext, useEffect, useRef, useState, type ReactNode } from 'react';
+import { useContext, useEffect, useRef, useState, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode, type TouchEvent } from 'react';
 // bb cancels a transcription when its voice input stops running, as a chat hidden by a switch does; the chat page keeps a
 // chat running (only out of sight) while its voice input is busy.
 export const VOICE_BUSY = 'agent-hub:voice-busy';
@@ -115,7 +115,7 @@ export function Composer({ label, value, onChange, attachments, onAttachments, p
           <div data-composer-voice className={`group/voice h-8 [&>.relative]:h-full [&_.absolute]:bottom-0 [&_.absolute]:right-0 [&:has(button[aria-label='Transcribing_voice_input'])_.h-7]:opacity-[0.08] ${voiceActive ? 'absolute inset-x-0 bottom-0 z-10 bg-background' : 'relative w-8'}`}>{/* bb's voice input only spins its stop button while it transcribes; a label left of it says so plainly. */}<span aria-hidden data-voice-transcribing className="pointer-events-none absolute inset-x-0 bottom-0 z-[1] hidden h-8 items-center justify-end pr-11 text-xs text-muted-foreground max-md:pointer-coarse:h-10 max-md:pointer-coarse:pr-[52px] group-has-[button[aria-label='Transcribing_voice_input']]/voice:flex"><span className="animate-pulse">Transcribing…</span></span><VoiceInputTextarea aria-label="Voice input" rows={1} value="" onValueChange={transcript => insertText.current(transcript)} onVoiceInputActiveChange={active => { setVoiceActive(active); if (voiceThread) window.dispatchEvent(new CustomEvent(VOICE_BUSY, { detail: { threadId: voiceThread, active } })); }} disabled={pending && !editableWhilePending} className="absolute h-8 w-full opacity-0 pointer-events-none" tabIndex={-1} /></div>
           <div className="flex items-center gap-1">
         {actions}
-        {editMode ? <Button type="button" size="sm" className="ml-1 h-8 px-2" aria-label={sendLabel} disabled={blocked} onPointerDown={keepFocus} onClick={() => submit()}><Icon name="CornerDownLeft" aria-hidden /></Button> : onStop && !value.trim() && !attachments.length && !uploading ? <Button type="button" size="sm" className="size-8 px-0" aria-label="Stop" onClick={onStop}><Icon name="Square" aria-hidden className="size-3.5 fill-current [&_*]:stroke-0" /></Button> : <SendButton label={sendLabel} disabled={blocked} onSend={submit} onPool={pool} poolFirst={poolFirst}><Icon name="ArrowUp" aria-hidden /></SendButton>}
+        {editMode ? <Button type="button" size="sm" className="ml-1 h-8 px-2" aria-label={sendLabel} disabled={blocked} {...tap(() => submit())}><Icon name="CornerDownLeft" aria-hidden /></Button> : onStop && !value.trim() && !attachments.length && !uploading ? <Button type="button" size="sm" className="size-8 px-0" aria-label="Stop" onClick={onStop}><Icon name="Square" aria-hidden className="size-3.5 fill-current [&_*]:stroke-0" /></Button> : <SendButton label={sendLabel} disabled={blocked} onSend={submit} onPool={pool} poolFirst={poolFirst}><Icon name="ArrowUp" aria-hidden /></SendButton>}
           </div>
         </div>
       </div>
@@ -124,12 +124,38 @@ export function Composer({ label, value, onChange, attachments, onAttachments, p
   </form>;
 }
 
+// A press that took focus from the editor would close a phone's keyboard first, and the layout jump swallows the tap: one tap must send.
+// iOS blurs on the tap itself, past pointerdown, so a touch that ends on the button acts there and cancels the blur and the click.
+// Only a tap counts: one finger, kept within a few pixels of where it started, not cancelled, lifted over the enabled button.
+const taps = new WeakMap<EventTarget, { id: number; x: number; y: number; starts: number }>(), pressedBy = new WeakMap<EventTarget, string>();
+// Every touch start on the page, so a second finger anywhere during a tap rejects it, even one lifted again before the first.
+let touchStarts = 0;
+if (typeof document !== 'undefined') document.addEventListener('touchstart', () => { touchStarts++; }, { capture: true, passive: true });
+const own = (event: TouchEvent<HTMLButtonElement>) => { const start = taps.get(event.currentTarget); return start && { start, touch: Array.from(event.changedTouches).find(touch => touch.identifier === start.id) }; };
+const tap = (action: () => void) => ({
+  onPointerDown: (event: ReactPointerEvent<HTMLButtonElement>) => { event.preventDefault(); pressedBy.set(event.currentTarget, event.pointerType); },
+  onTouchStart: (event: TouchEvent<HTMLButtonElement>) => { const touch = event.touches.length === 1 ? event.changedTouches[0] : undefined; if (touch) taps.set(event.currentTarget, { id: touch.identifier, x: touch.clientX, y: touch.clientY, starts: touchStarts }); else taps.delete(event.currentTarget); },
+  onTouchMove: (event: TouchEvent<HTMLButtonElement>) => { const { start, touch } = own(event) ?? {}; if (event.touches.length > 1 || (start && touch && Math.hypot(touch.clientX - start.x, touch.clientY - start.y) > 10)) taps.delete(event.currentTarget); },
+  onTouchCancel: (event: TouchEvent<HTMLButtonElement>) => { taps.delete(event.currentTarget); },
+  onTouchEnd: (event: TouchEvent<HTMLButtonElement>) => {
+    const button = event.currentTarget, { start, touch } = own(event) ?? {}; taps.delete(button);
+    if (!start || !touch || start.starts !== touchStarts || event.touches.length > 0 || button.disabled || !button.contains(document.elementFromPoint(touch.clientX, touch.clientY))) return;
+    // A cancelled touchend gets no click, so the press is settled here.
+    event.preventDefault(); pressedBy.delete(button); action();
+  },
+  // A touch acts only through touchend, so a click a browser still synthesizes after a rejected touch does nothing; mouse, pen, keyboard
+  // and assistive clicks act. The click's own pointerType tells them apart where it is a PointerEvent; elsewhere a click with a
+  // detail (not a key press) after a touch pointerdown on this button is that touch's.
+  onClick: (event: ReactMouseEvent<HTMLButtonElement>) => {
+    const button = event.currentTarget, pressed = pressedBy.get(button), type = (event.nativeEvent as Partial<PointerEvent>).pointerType; pressedBy.delete(button);
+    if (type ? type !== 'touch' : event.detail === 0 || pressed !== 'touch') action();
+  },
+});
+
 /**
  * bb's split send button: the main part queues; the menu steers, saves a draft held in the
  * thread's queue, or schedules. Children are the main part's content (an icon or a label).
  */
-// A press that took focus from the editor would close a phone's keyboard first, and the layout jump swallows the tap: one tap must send.
-const keepFocus = (event: { preventDefault(): void }) => event.preventDefault();
 // poolFirst: the owner is collecting into a reply pool, so the main button (and Enter) adds to it and Send now moves to the menu.
 export function SendButton({ label, disabled, onSend, onPool, poolFirst = false, children, side = 'top', className = 'size-8 px-0' }: { label: string; disabled?: boolean; onSend: (options?: SendOptions) => void; onPool?: () => void; poolFirst?: boolean; children: ReactNode; side?: 'top' | 'bottom'; className?: string }) {
   const pooling = poolFirst && !!onPool;
@@ -140,8 +166,8 @@ export function SendButton({ label, disabled, onSend, onPool, poolFirst = false,
   useEffect(() => { if (!menu && later === null) return; const outside = (event: PointerEvent) => { if (!box.current?.contains(event.target as Node)) close(); }; document.addEventListener('pointerdown', outside); return () => document.removeEventListener('pointerdown', outside); }, [menu, later !== null]);
   const item = 'flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm hover:bg-state-hover';
   return <div ref={box} className="relative flex shrink-0" onBlur={event => { if (!event.currentTarget.contains(event.relatedTarget as Node)) close(); }} onKeyDown={event => { if (event.key === 'Escape' && menu) { event.stopPropagation(); close(); } }}>
-    {pooling ? <Button type="button" size="sm" className={`rounded-r-none ${className}`} aria-label="Add to reply pool" onPointerDown={keepFocus} onClick={() => onPool!()}><Icon name="ListEnd" aria-hidden /></Button>
-      : <Button type="button" size="sm" className={`rounded-r-none ${className}`} aria-label={label} disabled={disabled} onPointerDown={keepFocus} onClick={() => onSend()}>{children}</Button>}
+    {pooling ? <Button type="button" size="sm" className={`rounded-r-none ${className}`} aria-label="Add to reply pool" {...tap(() => onPool!())}><Icon name="ListEnd" aria-hidden /></Button>
+      : <Button type="button" size="sm" className={`rounded-r-none ${className}`} aria-label={label} disabled={disabled} {...tap(() => onSend())}>{children}</Button>}
     <Button type="button" size="sm" className="h-8 w-6 rounded-l-none border-l border-background/25 px-0" aria-label="More send options" aria-haspopup="menu" aria-expanded={menu} disabled={disabled && !onPool} onClick={() => menu ? close() : setMenu(true)}><Icon name="ChevronDown" aria-hidden className="size-3.5" /></Button>
     {menu && <div role="menu" className={`absolute right-0 z-20 w-56 rounded-lg border border-border bg-background p-1 shadow-lg ${side === 'top' ? 'bottom-full mb-1' : 'top-full mt-1'}`}>
       {later === null ? <>

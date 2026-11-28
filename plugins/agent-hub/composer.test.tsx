@@ -2,7 +2,7 @@ import { usePreferences } from './use-preferences';
 import { mentionsForText } from './mentions';
 import { useState } from 'react';
 // @vitest-environment jsdom
-import { afterEach, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, waitFor, within } from '@testing-library/react';
 import { renderSlot } from '@get-bb/plugin-sdk/testing/app';
 vi.mock('@get-bb/plugin-sdk/app', async importOriginal => ({ ...await importOriginal<typeof import('@get-bb/plugin-sdk/app')>(), experimental_readPromptMentionClipboard: (element: Element) => element.getAttribute('data-test-kind') === 'project' ? { text: '@project:proj_one', mention: { kind: 'project', projectId: 'proj_one', label: 'Project One' } } : null, experimental_promptMentionClipboardAttributes: (_mention: any, text: string) => ({ 'data-prompt-mention': 'true', 'data-test-serialized': text }), experimental_VoiceInputTextarea: ({ onValueChange, onVoiceInputActiveChange, ...props }: any) => <><textarea {...props} onChange={event => onValueChange(event.target.value)} /><button onClick={() => onVoiceInputActiveChange(true)}>Start voice</button><button onClick={() => onVoiceInputActiveChange(false)}>Stop voice</button></> }));
@@ -423,6 +423,59 @@ it('keeps the editor focused when Send is pressed, so a phone keyboard does not 
   const send = slot.getByRole('button', { name:'Send' });
   expect(fireEvent.pointerDown(send)).toBe(false);
   fireEvent.click(send); expect(onSend).toHaveBeenCalledOnce();
+});
+describe('a tap on a send button acts on touchend, cancelling the blur and click that would close a phone keyboard first', () => {
+  const at = vi.fn((): Element | null => null);
+  beforeEach(() => Object.defineProperty(document, 'elementFromPoint', { configurable: true, value: at }));
+  afterEach(() => { delete (document as { elementFromPoint?: unknown }).elementFromPoint; at.mockReset(); });
+  const point = (x: number, y = 5, identifier = 1) => ({ identifier, clientX: x, clientY: y });
+  // A whole touch on the button, from pointerdown on; returns whether touchend was left uncancelled.
+  const press = (button: Element, { moveTo, cancel, fingers = 1, endAt = button, added, brief }: { moveTo?: number[]; cancel?: boolean; fingers?: number; endAt?: Element | null; added?: boolean; brief?: boolean } = {}) => {
+    at.mockReturnValue(endAt);
+    fireEvent.pointerDown(button, { pointerType: 'touch' });
+    fireEvent.touchStart(button, { touches: Array.from({ length: fingers }, (_, i) => point(5, 5, i + 1)), changedTouches: [point(5)] });
+    // brief: a second finger touched elsewhere and lifted again before the first, so the button never sees it.
+    if (brief) { fireEvent.touchStart(document.body, { touches: [point(5), point(90, 90, 2)], changedTouches: [point(90, 90, 2)] }); fireEvent.touchEnd(document.body, { touches: [point(5)], changedTouches: [point(90, 90, 2)] }); }
+    for (const x of moveTo ?? []) fireEvent.touchMove(button, { touches: [point(x)], changedTouches: [point(x)] });
+    if (cancel) return fireEvent.touchCancel(button, { touches: [], changedTouches: [point(5)] });
+    // added: a second finger came down elsewhere after touchstart and is still on the screen.
+    return fireEvent.touchEnd(button, { touches: fingers > 1 || added ? [point(5, 5, 2)] : [], changedTouches: [point(5)] });
+  };
+  // fireEvent.click is a MouseEvent with detail 0, as a key press makes; a mouse click has a pointerdown and a detail.
+  const key = (button: Element) => fireEvent.click(button);
+  const mouse = (button: Element) => { fireEvent.pointerDown(button, { pointerType: 'mouse' }); fireEvent.click(button, { detail: 1 }); };
+  // The click a browser may synthesize after a touch: a plain MouseEvent where click is no PointerEvent, else a PointerEvent of type touch.
+  const synthesized = (button: Element) => { fireEvent.click(button, { detail: 1 }); fireEvent(button, new PointerEvent('click', { bubbles: true, cancelable: true, detail: 1, pointerType: 'touch' })); };
+  const composer = (props: Partial<Parameters<typeof Composer>[0]> = {}) => renderSlot({ component: () => <Composer label="Reply" value="Hello" onChange={() => {}} attachments={[]} onAttachments={() => {}} projectId="p" onSend={() => {}} {...props} /> }, {});
+  it('sends once on a tap, and a key press or mouse click right after it sends once each', () => {
+    const onSend = vi.fn(), send = composer({ onSend }).getByRole('button', { name:'Send' });
+    expect(press(send)).toBe(false); expect(onSend).toHaveBeenCalledOnce();
+    key(send); expect(onSend).toHaveBeenCalledTimes(2);
+    mouse(send); expect(onSend).toHaveBeenCalledTimes(3);
+  });
+  it('sends nothing for a touch that is not a tap, even through a click synthesized after it', () => {
+    const onSend = vi.fn(), send = composer({ onSend }).getByRole('button', { name:'Send' });
+    // Off the button, dragged away and back, cancelled, two fingers at the start, a second finger added later, one added and lifted elsewhere.
+    for (const gesture of [{ endAt: document.body }, { moveTo: [40, 5] }, { cancel: true }, { fingers: 2 }, { added: true }, { brief: true }]) { expect(press(send, gesture)).toBe(true); synthesized(send); }
+    expect(onSend).not.toHaveBeenCalled();
+  });
+  it('acts on a key press or mouse click right after a rejected or cancelled touch', () => {
+    const onSend = vi.fn(), send = composer({ onSend }).getByRole('button', { name:'Send' });
+    press(send, { moveTo: [40, 5] }); key(send); expect(onSend).toHaveBeenCalledOnce();
+    press(send, { cancel: true }); mouse(send); expect(onSend).toHaveBeenCalledTimes(2);
+  });
+  it('does nothing on a disabled Send', () => {
+    const onSend = vi.fn(), send = composer({ onSend, sendDisabled: true }).getByRole('button', { name:'Send' });
+    expect((send as HTMLButtonElement).disabled).toBe(true);
+    expect(press(send)).toBe(true); expect(onSend).not.toHaveBeenCalled();
+  });
+  it('taps edit-mode Send and Add to reply pool once each', () => {
+    const onSend = vi.fn(), onPool = vi.fn();
+    expect(press(composer({ onSend, editMode: true, label: 'Edit' }).getByRole('button', { name:'Send' }))).toBe(false);
+    expect(onSend).toHaveBeenCalledOnce(); cleanup();
+    expect(press(composer({ onPool, poolFirst: true }).getByRole('button', { name:'Add to reply pool' }))).toBe(false);
+    expect(onPool).toHaveBeenCalledOnce();
+  });
 });
 it('clears an attach error when only attachments are sent', async () => {
   const onSend = vi.fn();
