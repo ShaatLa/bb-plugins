@@ -274,7 +274,7 @@ function BoardColumn({ status, projectId, manager, overdue, stamp, refresh, offs
       <h3 className="text-sm font-semibold">{statusLabel(status)}</h3>
       {!open && <p className="text-xs text-muted-foreground">Last 3 months</p>}
     </div>
-    <div className="space-y-2 rounded-lg bg-muted/35 p-1">
+    <div className={`space-y-2 p-1 ${!hiddenByOverdue && list?.items.length ? "rounded-lg bg-muted/35" : ""}`}>
       {hiddenByOverdue ? <p className="px-2 py-2 text-xs text-muted-foreground">No overdue proposals.</p> : <>
         {error && <p role="alert" className="text-xs">{error} <button className={button} onClick={refresh}>Retry</button></p>}
         {!list && !error && <p className="px-2 py-2 text-xs text-muted-foreground">Loading proposals…</p>}

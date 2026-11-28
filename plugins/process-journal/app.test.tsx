@@ -74,7 +74,8 @@ it("shows five stable columns and pages only the selected status", async () => {
   expect(within(columns.getByRole("region", { name: "Kept" })).getByText("Last 3 months")).toBeTruthy();
   expect(await within(columns.getByRole("region", { name: "Kept" })).findByRole("link", { name: /Keep the release checklist/ })).toBeTruthy();
   expect(rpc.list).toHaveBeenCalledWith(expect.objectContaining({ view: "history", range: "quarter", state: "kept" }));
-  expect(await within(columns.getByRole("region", { name: "Applied" })).findByText("No proposals.")).toBeTruthy();
+  const empty = await within(columns.getByRole("region", { name: "Applied" })).findByText("No proposals.");
+  expect(empty.parentElement?.classList.contains("bg-muted/35")).toBe(false);
   expect(screen.queryByRole("region", { name: "Proposal detail" })).toBeNull();
   expect(rpc["proposal.detail"]).not.toHaveBeenCalled();
   rpc.list.mockClear();
