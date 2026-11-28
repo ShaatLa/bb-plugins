@@ -1,14 +1,26 @@
 import { useCallback, useEffect, useState, type FormEvent } from "react";
-import { experimental_Icon as Icon, useRpc } from "@get-bb/plugin-sdk/app";
+import { useRpc } from "@get-bb/plugin-sdk/app";
+import { closestCenter, DndContext, KeyboardSensor, PointerSensor, useSensor, useSensors, type DragEndEvent, type Modifier } from "@dnd-kit/core";
+import { arrayMove, SortableContext, sortableKeyboardCoordinates, useSortable, verticalListSortingStrategy } from "@dnd-kit/sortable";
+import { CSS } from "@dnd-kit/utilities";
 import type { z } from "zod";
 import { boardColors, boardDisplayResultSchema, boardDisplaySchema, boardDisplayWriteSchema, boardIcons,
   type BoardColumnDisplay } from "./board-display-contract";
 import type { methods, rpcContract } from "./contract";
+import { JournalCheckbox, JournalSelect } from "./controls";
 import { ScheduleSettings } from "./schedule-settings";
 import { defaultColumns, defaultStatusName, StatusMark } from "./status-display";
 
-const input = "min-w-0 rounded-md border border-border bg-background px-2.5 py-1.5 text-sm focus-visible:outline focus-visible:outline-2 focus-visible:outline-ring";
-const button = `${input} shrink-0 hover:bg-muted disabled:opacity-50`;
+const focus = "focus-visible:outline focus-visible:outline-2 focus-visible:outline-ring";
+const input = `h-8 min-w-0 rounded-md border border-input bg-background px-2.5 text-sm ${focus} disabled:opacity-50`;
+const button = `${input} shrink-0 hover:bg-state-hover`;
+const rowGrid = "grid-cols-[2rem_1.25rem_minmax(0,1fr)_minmax(0,1fr)] items-center gap-x-2 px-3 @min-[40rem]:grid-cols-[2rem_1.25rem_minmax(0,2fr)_minmax(0,1fr)_minmax(0,1fr)_5rem]";
+const stayInList: Modifier = ({ transform, activeNodeRect, containerNodeRect }) => {
+  const y = activeNodeRect && containerNodeRect
+    ? Math.max(containerNodeRect.top - activeNodeRect.top, Math.min(transform.y, containerNodeRect.bottom - activeNodeRect.bottom))
+    : transform.y;
+  return { ...transform, x: 0, y };
+};
 const colorLabel: Record<BoardColumnDisplay["color"], string> = {
   default: "Default", slateblue: "Indigo", steelblue: "Blue", lightseagreen: "Teal", mediumseagreen: "Green",
   goldenrod: "Yellow", sandybrown: "Orange", indianred: "Red", palevioletred: "Pink", mediumpurple: "Purple",
@@ -18,6 +30,8 @@ const iconLabel: Record<BoardColumnDisplay["icon"], string> = {
   default: "Default", Circle: "Circle", Check: "Check", X: "Cross", Clock: "Clock", Search: "Search", Flag: "Flag",
   Pause: "Pause", Star: "Star",
 };
+const colors = boardColors.map(value => ({ value, label: colorLabel[value] }));
+const icons = boardIcons.map(value => ({ value, label: iconLabel[value] }));
 const message = (error: unknown) => error instanceof Error ? error.message : "The request failed";
 
 export function JournalSettings() {
@@ -36,12 +50,12 @@ export function JournalSettings() {
   if (!projects.length) return <p className="text-sm text-muted-foreground">Enable Process Journal for a project to manage its settings.</p>;
   const project = projects.find(candidate => candidate.id === selected) ?? projects[0]!;
   return <div className="space-y-4">
-    <label className="flex flex-wrap items-center gap-2 text-sm">
-      Project
-      <select className={input} value={project.id} onChange={event => setSelected(event.target.value)}>
-        {projects.map(candidate => <option value={candidate.id} key={candidate.id}>{candidate.name}</option>)}
-      </select>
-    </label>
+    <div className="flex flex-wrap items-center gap-2 text-sm">
+      <span className="text-muted-foreground">Project</span>
+      <JournalSelect label="Project" value={project.id} options={projects.map(candidate => ({
+        value: candidate.id, label: candidate.name,
+      }))} onChange={setSelected} />
+    </div>
     <div key={project.id} className="space-y-4">
       <StatusEditor projectId={project.id} />
       <ScheduleSettings projectId={project.id} managers={project.managers} />
@@ -77,13 +91,12 @@ function StatusEditor({ projectId }: { projectId: string }) {
     setDraft(columns => columns.map(column => column.id === id ? { ...column, ...patch } : column));
     setNotice("");
   }, []);
-  function move(from: number, to: number) {
-    setDraft(columns => {
-      const next = [...columns];
-      const [column] = next.splice(from, 1);
-      if (column) next.splice(to, 0, column);
-      return next;
-    });
+  const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 4 } }),
+    useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }));
+  function move({ active, over }: DragEndEvent) {
+    if (!over || active.id === over.id || busy) return;
+    setDraft(columns => arrayMove(columns, columns.findIndex(column => column.id === active.id),
+      columns.findIndex(column => column.id === over.id)));
     setNotice("");
   }
   async function save(columns: BoardColumnDisplay[] | null) {
@@ -120,48 +133,63 @@ function StatusEditor({ projectId }: { projectId: string }) {
     </div>}
     {busy && !stored && <p className="text-sm text-muted-foreground">Loading statuses…</p>}
     {stored && <form className="space-y-3" onSubmit={(event: FormEvent) => { event.preventDefault(); void save(draft); }}>
-      <ol className="divide-y divide-border-hairline rounded-lg border border-border bg-card">
-        {draft.map((column, index) => {
-          const original = defaultStatusName(column.id);
-          return <li className="flex flex-wrap items-end gap-x-3 gap-y-2 p-3" key={column.id}>
-            <div className="flex items-center gap-1 self-center">
-              <button type="button" className={button} aria-label={`Move ${original} up`} disabled={busy || index === 0}
-                onClick={() => move(index, index - 1)}><Icon name="ArrowUp" className="size-3.5" /></button>
-              <button type="button" className={button} aria-label={`Move ${original} down`} disabled={busy || index === draft.length - 1}
-                onClick={() => move(index, index + 1)}><Icon name="ArrowDown" className="size-3.5" /></button>
-              <StatusMark state={column.id} display={column} />
-            </div>
-            <label className="flex min-w-36 flex-1 flex-col gap-1 text-xs text-muted-foreground">
-              Name
-              <input className={input} aria-label={`${original} name`} disabled={busy} value={column.name}
-                onChange={event => edit(column.id, { name: event.target.value })} />
-            </label>
-            <label className="flex flex-col gap-1 text-xs text-muted-foreground">
-              Icon
-              <select className={input} aria-label={`${original} icon`} disabled={busy} value={column.icon}
-                onChange={event => edit(column.id, { icon: event.target.value as BoardColumnDisplay["icon"] })}>
-                {boardIcons.map(icon => <option key={icon} value={icon}>{iconLabel[icon]}</option>)}
-              </select>
-            </label>
-            <label className="flex flex-col gap-1 text-xs text-muted-foreground">
-              Color
-              <select className={input} aria-label={`${original} color`} disabled={busy} value={column.color}
-                onChange={event => edit(column.id, { color: event.target.value as BoardColumnDisplay["color"] })}>
-                {boardColors.map(color => <option key={color} value={color}>{colorLabel[color]}</option>)}
-              </select>
-            </label>
-            <label className="flex items-center gap-1.5 self-center text-xs text-muted-foreground">
-              <input type="checkbox" aria-label={`Show ${original} on board`} disabled={busy} checked={column.visible}
-                onChange={event => edit(column.id, { visible: event.target.checked })} />
-              Show on board
-            </label>
-          </li>;
-        })}
-      </ol>
+      <div className="@container rounded-lg border border-border bg-card">
+        <div aria-hidden="true" className={`${rowGrid} hidden border-b border-border-hairline bg-muted/25 py-2 text-xs font-medium text-muted-foreground @min-[40rem]:grid`}>
+          <span className="col-start-3">Name</span><span>Icon</span><span>Color</span><span className="text-center">On board</span>
+        </div>
+        <DndContext sensors={sensors} collisionDetection={closestCenter} modifiers={[stayInList]} onDragEnd={move}>
+          <SortableContext items={draft} strategy={verticalListSortingStrategy}>
+            <ol className="divide-y divide-border-hairline">
+              {draft.map(column => <StatusRow key={column.id} column={column} busy={busy} edit={edit} />)}
+            </ol>
+          </SortableContext>
+        </DndContext>
+      </div>
       <div className="flex flex-wrap items-center gap-2">
         <button className={button} type="submit" disabled={busy || conflict}>Save</button>
         <button className={button} type="button" disabled={busy || conflict} onClick={() => void save(null)}>Restore defaults</button>
       </div>
     </form>}
   </section>;
+}
+
+
+function StatusRow({ column, busy, edit }: {
+  column: BoardColumnDisplay; busy: boolean; edit: (id: BoardColumnDisplay["id"], patch: Partial<BoardColumnDisplay>) => void;
+}) {
+  const original = defaultStatusName(column.id);
+  const { attributes, listeners, isDragging, setActivatorNodeRef, setNodeRef, transform, transition } = useSortable({
+    id: column.id, disabled: busy,
+  });
+  return <li ref={setNodeRef} style={{ transform: CSS.Translate.toString(transform), transition }}
+    className={`${rowGrid} relative grid gap-y-2 py-2 ${isDragging ? "z-20 rounded-md bg-background shadow-lift ring-1 ring-border" : ""}`}>
+    <button type="button" ref={setActivatorNodeRef} {...attributes} {...listeners}
+      aria-label={`Reorder ${original}`} disabled={busy}
+      className={`grid size-8 touch-none cursor-grab place-items-center rounded-md text-muted-foreground hover:bg-state-hover active:cursor-grabbing disabled:opacity-50 ${focus}`}>
+      <svg aria-hidden="true" viewBox="0 0 12 16" className="size-3.5 fill-current">
+        <circle cx="4" cy="3" r="1" /><circle cx="8" cy="3" r="1" />
+        <circle cx="4" cy="8" r="1" /><circle cx="8" cy="8" r="1" />
+        <circle cx="4" cy="13" r="1" /><circle cx="8" cy="13" r="1" />
+      </svg>
+    </button>
+    <span className="grid place-items-center"><StatusMark state={column.id} display={column} /></span>
+    <input className={`${input} col-span-2 w-full @min-[40rem]:col-span-1`} aria-label={`${original} name`} disabled={busy} value={column.name}
+      onChange={event => edit(column.id, { name: event.target.value })} />
+    <div className="col-start-3 grid min-w-0 gap-1 @min-[40rem]:col-start-auto">
+      <span className="text-xs text-muted-foreground @min-[40rem]:hidden">Icon</span>
+      <JournalSelect label={`${original} icon`} disabled={busy} value={column.icon} options={icons}
+        onChange={icon => edit(column.id, { icon })} />
+    </div>
+    <div className="grid min-w-0 gap-1">
+      <span className="text-xs text-muted-foreground @min-[40rem]:hidden">Color</span>
+      <JournalSelect label={`${original} color`} disabled={busy} value={column.color} options={colors}
+        onChange={color => edit(column.id, { color })} />
+    </div>
+    <label className="col-span-2 col-start-3 flex min-h-8 w-fit cursor-pointer items-center gap-2 text-xs text-muted-foreground @min-[40rem]:col-span-1 @min-[40rem]:col-start-auto @min-[40rem]:justify-self-center"
+      title="Show on board">
+      <JournalCheckbox aria-label={`Show ${original} on board`} disabled={busy} checked={column.visible}
+        onChange={event => edit(column.id, { visible: event.target.checked })} />
+      <span className="@min-[40rem]:sr-only">Show on board</span>
+    </label>
+  </li>;
 }

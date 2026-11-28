@@ -4,7 +4,7 @@ Record how a process failed, track proposed fixes, and decide what to keep after
 
 ## Status display
 
-Open **Settings → Plugins → Process Journal → Statuses** and select an enabled project. Edit column names, icons, colors and order, then save. Hidden columns are available from **Hidden columns** on the board, with a count and paginated proposal list for each. Hidden states also remain available in the **History** filter. Display edits keep every proposal in its existing state with its original deadline.
+Open **Settings → Plugins → Process Journal → Statuses** and select an enabled project. Edit column names, icons and colors, then drag a row by its handle to reorder it. With the handle focused, press Space, use the arrow keys, then press Space to drop or Escape to cancel. Save to apply the changes. Hidden columns are available from **Hidden columns** on the board, with a count and paginated proposal list for each. Hidden states also remain available in the **History** filter. Display edits keep every proposal in its existing state with its original deadline.
 
 The keyed CLI read `bb process-journal config get boardDisplay --project proj_example` returns `{revision, columns}`. An unset setting returns revision 0 and null columns. A save takes `{expectedRevision, columns}` with all five canonical IDs (`proposed`, `applied`, `measuring`, `kept`, `reverted`) exactly once, in display order. Each row includes `id`, `name`, `icon`, `color` and `visible`. Use `default` for the built-in icon or color. Use null columns to restore the defaults, passing the revision you read.
 

@@ -3,6 +3,7 @@ import { definePluginApp, experimental_Icon as Icon, Markdown, useBbNavigate, us
 import type { z } from "zod";
 import { boardDisplaySchema, type BoardColumnDisplay } from "./board-display-contract";
 import type { methods, rpcContract } from "./contract";
+import { JournalCheckbox, JournalSelect } from "./controls";
 import { isOpen, states, type BoardState, type State } from "./states";
 import { cardPath, hiddenColumnsPath, journalPath, proposalPath, settingsPath } from "./paths";
 import { ProposalDates } from "./proposal-dates";
@@ -15,6 +16,9 @@ type Projects = Data<"projects">;
 type Detail = Data<"proposal.detail">;
 type ProposalRow = Data<"list">["items"][number];
 type Range = "week" | "month" | "quarter";
+const ranges: { value: Range; label: string }[] = [
+  { value: "week", label: "Last 7 days" }, { value: "month", label: "Last month" }, { value: "quarter", label: "Last 3 months" },
+];
 const input = "min-w-0 max-w-full rounded-md border border-border bg-background px-2 py-1 text-sm focus-visible:outline focus-visible:outline-2 focus-visible:outline-ring";
 const button = input + " hover:bg-muted disabled:opacity-50";
 const panel = "min-w-0 rounded-lg border border-border bg-card p-4";
@@ -161,12 +165,11 @@ function Workspace({ project, projects, routeProposal, routeHidden, routeRuns, s
       className="inline-flex size-8 shrink-0 items-center justify-center rounded-md hover:bg-state-hover focus-visible:outline focus-visible:outline-ring pointer-coarse:size-10">
       <Icon name="ArrowLeft" className="size-4" />
     </JournalLink>}
-    <label className={control}>Project
-      <select className={`${input} font-medium text-foreground`} value={project.id} onChange={event =>
-        navigate.toPluginPanel("process-journal", { subPath: event.target.value })}>
-        {projects.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
-      </select>
-    </label>
+    <div className={control}>
+      <span>Project</span>
+      <JournalSelect label="Project" value={project.id} options={projects.map(p => ({ value: p.id, label: p.name }))}
+        onChange={projectId => navigate.toPluginPanel("process-journal", { subPath: projectId })} />
+    </div>
   </header>;
 
   if (routeProposal) return <>
@@ -215,14 +218,15 @@ function Workspace({ project, projects, routeProposal, routeHidden, routeRuns, s
           </button>)}
       </nav>
       <div className="flex min-w-0 flex-wrap items-center gap-3">
-        <label className={control}>Manager
-          <select className={input} value={manager} onChange={event => { setManager(event.target.value); reset(); }}>
-            <option value="">All managers</option>
-            {project.managers.map(m => <option key={m.id} value={m.id}>{m.name}{m.reachable ? "" : " (unavailable)"}</option>)}
-          </select>
-        </label>
-        {inBoard && <label className={control}>
-          <input type="checkbox" checked={overdue} onChange={event => { setOverdue(event.target.checked); reset(); }} /> Overdue only
+        <div className={control}>
+          <span>Manager</span>
+          <JournalSelect label="Manager" value={manager} options={[
+            { value: "", label: "All managers" },
+            ...project.managers.map(m => ({ value: m.id, label: m.reachable ? m.name : `${m.name} (unavailable)` })),
+          ]} onChange={managerId => { setManager(managerId); reset(); }} />
+        </div>
+        {inBoard && <label className={`${control} min-h-8 cursor-pointer`}>
+          <JournalCheckbox checked={overdue} onChange={event => { setOverdue(event.target.checked); reset(); }} /> Overdue only
         </label>}
         {view === "board" && hiddenColumns.length > 0 && <JournalLink projectId={project.id} hidden className={button}>Hidden columns</JournalLink>}
       </div>
@@ -274,16 +278,17 @@ function Workspace({ project, projects, routeProposal, routeHidden, routeRuns, s
         <div className="flex flex-wrap items-center justify-between gap-2">
           <h2 className="text-sm font-semibold">Proposal history</h2>
           <div className="flex flex-wrap gap-2">
-            <label className={control}>Range
-              <select className={input} value={range} onChange={event => { setRange(event.target.value as Range); reset(); }}>
-                <option value="week">Last 7 days</option><option value="month">Last month</option><option value="quarter">Last 3 months</option>
-              </select>
-            </label>
-            <label className={control}>Status
-              <select className={input} value={state} onChange={event => { setState(event.target.value as State | ""); reset(); }}>
-                <option value="">All statuses</option>{states.map(item => <option key={item} value={item}>{label(item)}</option>)}
-              </select>
-            </label>
+            <div className={control}>
+              <span>Range</span>
+              <JournalSelect label="Range" value={range} options={ranges}
+                onChange={next => { setRange(next); reset(); }} />
+            </div>
+            <div className={control}>
+              <span>Status</span>
+              <JournalSelect<State | ""> label="Status" value={state} options={[
+                { value: "", label: "All statuses" }, ...states.map(value => ({ value, label: label(value) })),
+              ]} onChange={next => { setState(next); reset(); }} />
+            </div>
           </div>
         </div>
         {!list && !error && <p className="mt-3 text-sm text-muted-foreground">Loading proposals…</p>}
@@ -402,23 +407,19 @@ function ProposalDetail({ project, id, columns, stamp, refresh }: { project: Pro
         <div className="min-w-0">
           <dt className="mb-0.5 text-xs text-muted-foreground">Assigned manager</dt>
           <dd>
-            <select aria-label="Assigned manager" className={input} disabled={busy || !isOpen(p.state)} value={p.managerId}
-              onChange={event => {
-                const managerId = event.target.value;
-                void mutate(() => rpc.call("proposal.update", { ...edit, patch: { managerId } }));
-              }}>
-              {!names.has(p.managerId) && <option value={p.managerId}>{p.managerId}</option>}
-              {project.managers.map(m => <option key={m.id} value={m.id} disabled={!m.reachable}>{m.name}{m.reachable ? "" : " (unavailable)"}</option>)}
-            </select>
+            <JournalSelect label="Assigned manager" disabled={busy || !isOpen(p.state)} value={p.managerId} options={[
+              ...(!names.has(p.managerId) ? [{ value: p.managerId, label: p.managerId }] : []),
+              ...project.managers.map(m => ({ value: m.id, label: m.reachable ? m.name : `${m.name} (unavailable)`, disabled: !m.reachable })),
+            ]} onChange={managerId => void mutate(() => rpc.call("proposal.update", { ...edit, patch: { managerId } }))} />
           </dd>
         </div>
         <div>
           <dt className="mb-0.5 text-xs text-muted-foreground">{isOpen(p.state) ? "Deadline" : "Closed"}</dt>
-          <dd className="py-1">{date(p.deadlineAt)}</dd>
+          <dd className="flex min-h-8 items-center">{date(p.deadlineAt)}</dd>
         </div>
         {p.checkAt !== null && <div>
           <dt className="mb-0.5 text-xs text-muted-foreground">Measurement check</dt>
-          <dd className="py-1">{date(p.checkAt)}</dd>
+          <dd className="flex min-h-8 items-center">{date(p.checkAt)}</dd>
         </div>}
       </dl>
       <ProposalDates proposal={p} timeZone={project.timeZone} linked={detail.links.some(link => link.deadlineSource)}
@@ -500,8 +501,8 @@ function ProposalDetail({ project, id, columns, stamp, refresh }: { project: Pro
           <label className="block">Reason
             <textarea className={`${input} mt-1 block w-full`} required maxLength={8000} value={reason} onChange={event => setReason(event.target.value)} />
           </label>
-          {decision === "reverted" && !detail.measured && <label className="flex gap-2">
-            <input type="checkbox" checked={override} onChange={event => setOverride(event.target.checked)} /> Urgent rollback before measurement
+          {decision === "reverted" && !detail.measured && <label className="flex min-h-8 cursor-pointer items-center gap-2">
+            <JournalCheckbox checked={override} onChange={event => setOverride(event.target.checked)} /> Urgent rollback before measurement
           </label>}
           <button className={button} disabled={busy || !reason.trim() || (decision === "kept" ? !canKeep : !detail.measured && !override)}>
             {decision === "kept" ? "Confirm keep" : "Record rollback decision"}

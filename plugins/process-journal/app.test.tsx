@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { act, cleanup, fireEvent, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, screen as documentScreen, waitFor, within } from "@testing-library/react";
 import { loadPluginApp, renderSlot } from "@get-bb/plugin-sdk/testing/app";
 import { afterEach, expect, it, vi } from "vitest";
 import { configSchema, methods, rpcContract, type Entry, type Proposal, type ReviewRound, type ReviewSummary } from "./contract";
@@ -7,7 +7,18 @@ import { hiddenColumnsPath, proposalPath, reviewRunsPath } from "./paths";
 import { defaultColumns } from "./status-display";
 import type { BoardColumnDisplay } from "./board-display-contract";
 
+Element.prototype.scrollIntoView ??= () => {};
+
 afterEach(cleanup);
+
+async function openSelect(trigger: HTMLElement) {
+  fireEvent.keyDown(trigger, { key: "ArrowDown" });
+  return within(await documentScreen.findByRole("listbox"));
+}
+
+async function selectOption(trigger: HTMLElement, name: string) {
+  fireEvent.click((await openSelect(trigger)).getByRole("option", { name }));
+}
 const app = await loadPluginApp(() => import("./app"));
 const projectId = "proj_example", managerId = "thr_example", other = "thr_other";
 const now = Date.now();
@@ -62,7 +73,7 @@ it("opens the existing proposal URL as its own page with the entry, observations
   expect(metrics.getByText(/Verified evidence/)).toBeTruthy();
   const timeline = within(screen.getByRole("region", { name: "Timeline" }));
   expect(timeline.getByRole("textbox", { name: "Comment" })).toBeTruthy();
-  fireEvent.change(screen.getByRole("combobox", { name: "Assigned manager" }), { target: { value: other } });
+  await selectOption(screen.getByRole("combobox", { name: "Assigned manager" }), "Quality manager");
   await waitFor(() => expect(rpc["proposal.update"]).toHaveBeenCalledWith(expect.objectContaining({
     projectId, proposalId: proposal.id, revision: 4, patch: { managerId: other },
   })));
@@ -133,11 +144,11 @@ it("retains history filters on the way back from a proposal", async () => {
   const screen = renderSlot(app.navPanels[0], { subPath: "" }, { experimental_rpcContract: rpcContract, rpc });
   await screen.findByRole("button", { name: "History" });
   fireEvent.click(screen.getByRole("button", { name: "History" }));
-  fireEvent.change(screen.getByRole("combobox", { name: "Manager" }), { target: { value: managerId } });
+  await selectOption(screen.getByRole("combobox", { name: "Manager" }), "Release manager");
   await waitFor(() => expect(rpc.list).toHaveBeenCalledWith(expect.objectContaining({
     projectId, managerId, view: "history", range: "quarter",
   })));
-  fireEvent.change(screen.getByRole("combobox", { name: "Range" }), { target: { value: "month" } });
+  await selectOption(screen.getByRole("combobox", { name: "Range" }), "Last month");
   fireEvent.click(await screen.findByRole("link", { name: /Require approval/ }));
   expect(screen.inspection.navigateCalls).toContainEqual({
     method: "toPluginPanel", path: "process-journal", options: { subPath: `${projectId}/${proposal.id}` },
@@ -179,7 +190,7 @@ it("explains automatic review runs and shows their outcomes separately from the 
   expect(runs.getByText(/automatic proposal reviews/)).toBeTruthy();
   expect(await runs.findByText("No review runs to show.")).toBeTruthy();
   expect(screen.queryByRole("region", { name: "Weekly digest" })).toBeNull();
-  fireEvent.change(screen.getByRole("combobox", { name: "Manager" }), { target: { value: managerId } });
+  await selectOption(screen.getByRole("combobox", { name: "Manager" }), "Release manager");
   expect(await runs.findByText("Completed")).toBeTruthy();
   expect(runs.getByText("Reviewed two open proposals.")).toBeTruthy();
   expect(runs.getByText("run_example")).toBeTruthy();
@@ -241,10 +252,9 @@ it("keeps hidden closed statuses filterable in History even when all board colum
     .toBe("/settings/plugins/process-journal");
   expect(screen.getByRole("link", { name: "Hidden columns" })).toBeTruthy();
   fireEvent.click(screen.getByRole("button", { name: "History" }));
-  const status = screen.getByRole("combobox", { name: "Status" });
-  expect(within(status).getByRole("option", { name: "Retained" }).getAttribute("value")).toBe("kept");
-  expect(within(status).getByRole("option", { name: "Withdrawn" }).getAttribute("value")).toBe("withdrawn");
-  fireEvent.change(status, { target: { value: "kept" } });
+  const options = await openSelect(screen.getByRole("combobox", { name: "Status" }));
+  expect(options.getByRole("option", { name: "Withdrawn" })).toBeTruthy();
+  fireEvent.click(options.getByRole("option", { name: "Retained" }));
   await waitFor(() => expect(rpc.list).toHaveBeenLastCalledWith(expect.objectContaining({ view: "history", state: "kept" })));
 });
 
@@ -259,10 +269,20 @@ it("saves settings drafts, keeps them on conflict, and resets using the reloaded
   });
   const name = await screen.findByRole("textbox", { name: "Measuring name" }) as HTMLInputElement;
   fireEvent.change(name, { target: { value: "Collecting evidence" } });
-  fireEvent.change(screen.getByRole("combobox", { name: "Measuring icon" }), { target: { value: "Clock" } });
-  fireEvent.change(screen.getByRole("combobox", { name: "Measuring color" }), { target: { value: "steelblue" } });
+  await selectOption(screen.getByRole("combobox", { name: "Measuring icon" }), "Clock");
+  await selectOption(screen.getByRole("combobox", { name: "Measuring color" }), "Blue");
   fireEvent.click(screen.getByRole("checkbox", { name: "Show Measuring on board" }));
-  fireEvent.click(screen.getByRole("button", { name: "Move Measuring up" }));
+  const rows = within(screen.getByRole("region", { name: "Statuses" })).getByRole("list");
+  rows.getBoundingClientRect = () => new DOMRect(0, 0, 640, 220);
+  within(rows).getAllByRole("listitem").forEach((row, index) => {
+    row.getBoundingClientRect = () => new DOMRect(0, index * 44, 640, 44);
+  });
+  const grip = screen.getByRole("button", { name: "Reorder Measuring" });
+  grip.focus();
+  fireEvent.keyDown(grip, { key: " ", code: "Space" });
+  await act(() => new Promise(resolve => setTimeout(resolve, 0)));
+  fireEvent.keyDown(grip, { key: "ArrowUp", code: "ArrowUp" });
+  fireEvent.keyDown(grip, { key: " ", code: "Space" });
   fireEvent.click(screen.getByRole("button", { name: "Save" }));
   expect((await screen.findByRole("alert")).textContent).toMatch(/another window/i);
   expect(name.value).toBe("Collecting evidence");
@@ -274,7 +294,7 @@ it("saves settings drafts, keeps them on conflict, and resets using the reloaded
   fireEvent.click(screen.getByRole("button", { name: "Reload" }));
   await waitFor(() => expect(name.value).toBe("Measuring"));
   fireEvent.click(screen.getByRole("button", { name: "Restore defaults" }));
-  expect((await screen.findByRole("status")).textContent).toBe("Restored default statuses.");
+  expect((await screen.findByText("Restored default statuses.")).getAttribute("role")).toBe("status");
   expect(configSet).toHaveBeenLastCalledWith({ projectId, key: "boardDisplay", value: { expectedRevision: 1, columns: null } });
 });
 
@@ -423,7 +443,7 @@ it("ignores a late schedule read from another project and explains the missing r
     "config.get": request => methods["config.get"].input.parse(request).key === "boardDisplay" ? { revision: 0, columns: null }
       : methods["config.get"].input.parse(request).projectId === projectId ? pending : configSchema.parse({ scheduleTime: "05:00", scheduleSkill: "example-compound" }),
   } });
-  fireEvent.change(await screen.findByRole("combobox", { name: "Project" }), { target: { value: second.id } });
+  await selectOption(await screen.findByRole("combobox", { name: "Project" }), second.name);
   expect(await screen.findByDisplayValue("05:00")).toBeTruthy();
   await act(async () => { resolveFirst(configSchema.parse({ scheduleTime: "08:00", defaultManager: managerId })); });
   expect(screen.queryByDisplayValue("08:00")).toBeNull();
