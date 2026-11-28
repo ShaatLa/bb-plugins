@@ -432,3 +432,8 @@ it('clears an attach error when only attachments are sent', async () => {
   fireEvent.click(slot.getByRole('button', { name:'Send' }));
   expect(onSend).toHaveBeenCalledOnce(); expect(slot.queryByRole('alert')).toBeNull();
 });
+it('draws an empty last line after a trailing line break, so text typed after Enter starts on it', () => {
+  const { box } = editor('one\n');
+  expect(box.lastChild?.previousSibling?.nodeName).toBe('BR');
+  expect(box.textContent).toBe('one\n');
+});

@@ -151,8 +151,9 @@ export function RichEditor({ value, onChange, onSend, onCancel, onPasteFiles, di
       upTo(token.at); boundary(token.at); put(token.node()); last = token.at + token.length;
     }
     upTo(value.length); boundary(value.length);
-    // An empty line right after a quote (left with Shift+Enter) needs a <br> to show the caret under the quote.
-    if (quotes.at(-1)?.[1] === value.length - 1) fragment.append(document.createElement('br'));
+    // A trailing line break draws no line of its own: a <br> holds the empty last line (after Enter, or after a quote left with Shift+Enter),
+    // so the caret sits on it and the next typed text lands after the break instead of before it.
+    if (value.endsWith('\n')) fragment.append(document.createElement('br'));
     fragment.append(document.createTextNode(''));
     root.replaceChildren(fragment); drawn.current = signature; setPillContents(contents);
     if (at !== null) {
